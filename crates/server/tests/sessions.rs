@@ -521,3 +521,48 @@ async fn members_manage_only_their_own_keys() {
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
     assert!(res.body["data"]["revokedAt"].is_string());
 }
+
+#[tokio::test]
+async fn a_session_hold_is_not_bound_by_any_key_limit() {
+    let (app, _pool) = app_or_skip!(false);
+    let (email, _registration, key) = register(&app, "sessionhold").await;
+
+    // Fund the wallet through the key.
+    let res = call(
+        &app,
+        "POST",
+        "/api/v1/topups",
+        Some(json!({"idempotencyKey": "t1", "amountMinor": 5_000_000})),
+        Some(&key),
+        None,
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+
+    // Cap the key at one credit: the key itself could not hold two.
+    let res = call(
+        &app,
+        "POST",
+        "/api/v1/org/keys",
+        Some(json!({"name": "capped", "spendLimitMinor": 1_000_000})),
+        Some(&key),
+        None,
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+
+    // The session is a person, not a key: its hold is bounded by the balance only.
+    let login = login(&app, &email, PASSWORD).await;
+    assert_eq!(login.status, StatusCode::OK, "{}", login.body);
+    let cookie = session_cookie(&login);
+    let res = call(
+        &app,
+        "POST",
+        "/api/v1/holds",
+        Some(json!({"idempotencyKey": "s1", "amountMinor": 2_000_000})),
+        None,
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+}

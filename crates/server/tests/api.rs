@@ -542,3 +542,150 @@ async fn keys_are_minted_listed_and_revoked() {
     assert!(body["data"]["expiresAt"].is_null());
     assert!(body["data"]["secret"].as_str().unwrap().starts_with("oxs-"));
 }
+
+#[tokio::test]
+async fn key_spend_limit_round_trip() {
+    let (app, _pool) = app_or_skip!(Signup::Open);
+    let (_registration, key) = register(&app, "keylimit").await;
+
+    // Created with a limit: the response carries it, and the listing shows it.
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/org/keys",
+        Some(json!({"name": "capped", "spendLimitMinor": 1_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let key_id = body["data"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(body["data"]["spendLimitMinor"], 1_000_000);
+
+    let (status, body) = call(&app, "GET", "/api/v1/org/keys", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK);
+    let listed = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["id"] == key_id)
+        .expect("the new key is listed");
+    assert_eq!(listed["spendLimitMinor"], 1_000_000);
+
+    // PATCH changes the limit, and null clears it back to unlimited.
+    let (status, body) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/org/keys/{key_id}"),
+        Some(json!({"spendLimitMinor": 500})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["spendLimitMinor"], 500);
+
+    let (status, body) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/org/keys/{key_id}"),
+        Some(json!({"spendLimitMinor": null})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["data"]["spendLimitMinor"].is_null());
+
+    // A negative limit is refused at the boundary, on create and on update.
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/org/keys",
+        Some(json!({"spendLimitMinor": -1})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+    let (status, _) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/org/keys/{key_id}"),
+        Some(json!({"spendLimitMinor": -1})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // An unknown key id is not found, not forbidden.
+    let (status, _) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/org/keys/{}", uuid::Uuid::new_v4()),
+        Some(json!({"spendLimitMinor": 1})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn key_spend_limit_is_enforced_on_wallet_holds() {
+    let (app, _pool) = app_or_skip!(Signup::Open);
+    let (_registration, key) = register(&app, "keyhold").await;
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/topups",
+        Some(json!({"idempotencyKey": "t1", "amountMinor": 5_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // A key capped at one credit.
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/org/keys",
+        Some(json!({"name": "capped", "spendLimitMinor": 1_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let capped_secret = body["data"]["secret"].as_str().unwrap().to_owned();
+
+    // A hold that fits lands.
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/holds",
+        Some(json!({"idempotencyKey": "h1", "amountMinor": 600_000})),
+        Some(&capped_secret),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // One that would push the key past its limit is a quota refusal, not a balance one —
+    // and it names the limit code the contract promises.
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/holds",
+        Some(json!({"idempotencyKey": "h2", "amountMinor": 500_000})),
+        Some(&capped_secret),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert_eq!(body["error"]["code"], "KEY_LIMIT_EXCEEDED");
+
+    // The organization's first key has no limit: the same hold fits under the balance.
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/holds",
+        Some(json!({"idempotencyKey": "h3", "amountMinor": 500_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}

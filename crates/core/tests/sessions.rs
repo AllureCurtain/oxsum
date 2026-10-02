@@ -6,7 +6,9 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use oxsum_core::{CreatedSession, Db, KeyScope, NewUser, Principal, WalletError};
+use oxsum_core::{
+    ActingKey, CreatedSession, Db, KeyPrincipal, KeyScope, NewUser, Principal, WalletError,
+};
 use sqlx::PgPool;
 use sqlx::Row;
 use uuid::Uuid;
@@ -91,7 +93,13 @@ async fn login_mints_a_session_that_authenticates() {
     assert_eq!(resolved.role, oxsum_core::Role::Owner);
 
     // A key principal keeps acting as the whole organization: no user, full scope.
-    let key_principal = Principal::Key(registration.organization.clone());
+    let key_principal = Principal::Key(KeyPrincipal {
+        organization: registration.organization.clone(),
+        key: ActingKey {
+            key_id: Uuid::new_v4(),
+            spend_limit_minor: None,
+        },
+    });
     assert_eq!(key_principal.user_id(), None);
     assert!(matches!(key_principal.key_scope(), KeyScope::Organization));
 }
@@ -331,7 +339,7 @@ async fn role_scopes_constrain_key_listing_and_revocation() {
     );
 
     let owner_key = db
-        .create_key(org, Some("owner-key".into()), None, Some(owner.user.id))
+        .create_key(org, Some("owner-key".into()), None, Some(owner.user.id), None)
         .await
         .unwrap();
     let member_key = db
@@ -340,6 +348,7 @@ async fn role_scopes_constrain_key_listing_and_revocation() {
             Some("member-key".into()),
             None,
             Some(member_user.user.id),
+            None,
         )
         .await
         .unwrap();
@@ -389,7 +398,7 @@ async fn role_scopes_constrain_key_listing_and_revocation() {
     // A key minted with an API key records no creator: it is invisible to a member's
     // listing, and a member cannot revoke it. (The revoked member key is still listed,
     // with its revocation timestamp — listing never hides revoked keys.)
-    let machine_key = db.create_key(org, None, None, None).await.unwrap();
+    let machine_key = db.create_key(org, None, None, None, None).await.unwrap();
     assert_eq!(machine_key.key.created_by, None);
     let mine = db.list_keys(org, member.key_scope()).await.unwrap();
     assert_eq!(mine.len(), 1);

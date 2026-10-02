@@ -96,7 +96,7 @@ async fn registering_creates_a_user_with_a_personal_organization_and_one_key() {
     assert!(registration.api_key.key.expires_at.is_none());
 
     // The key resolves to the organization it was minted for, and nothing else.
-    let resolved = db.authenticate(secret).await.unwrap().expect("key works");
+    let (resolved, _) = db.authenticate(secret).await.unwrap().expect("key works");
     assert_eq!(resolved.id, registration.organization.id);
     assert_eq!(resolved.tenant_id, registration.organization.tenant_id);
 
@@ -180,18 +180,18 @@ async fn two_organizations_under_one_user_have_isolated_balances() {
     .await
     .unwrap();
     let b_key = db
-        .create_key(b_id, Some("second".into()), None, Some(user))
+        .create_key(b_id, Some("second".into()), None, Some(user), None)
         .await
         .unwrap();
 
     // Reading the keys back proves the credential, not the caller's wishes, picks the
     // organization: two keys of one user, two organizations.
-    let from_a = db
+    let (from_a, _) = db
         .authenticate(&registration.api_key.secret)
         .await
         .unwrap()
         .unwrap();
-    let from_b = db.authenticate(&b_key.secret).await.unwrap().unwrap();
+    let (from_b, _) = db.authenticate(&b_key.secret).await.unwrap().unwrap();
     assert_eq!(from_a.id, a.id);
     assert_eq!(from_b.id, b_id);
 
@@ -284,6 +284,7 @@ async fn an_expired_key_stops_authenticating() {
             Some("short-lived".into()),
             Some(time::OffsetDateTime::now_utc() + time::Duration::seconds(60)),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -308,6 +309,7 @@ async fn an_expired_key_stops_authenticating() {
             organization,
             None,
             Some(time::OffsetDateTime::now_utc() - time::Duration::seconds(1)),
+            None,
             None,
         )
         .await
@@ -403,7 +405,7 @@ async fn key_management_is_scoped_to_its_organization() {
     let organization = first.organization.id;
 
     let second = db
-        .create_key(organization, Some("  staging  ".into()), None, None)
+        .create_key(organization, Some("  staging  ".into()), None, None, None)
         .await
         .unwrap();
     assert_eq!(
@@ -434,7 +436,7 @@ async fn key_management_is_scoped_to_its_organization() {
     assert_eq!(other_keys[0].id, other.api_key.key.id);
 
     let too_long = db
-        .create_key(organization, Some("x".repeat(81)), None, None)
+        .create_key(organization, Some("x".repeat(81)), None, None, None)
         .await
         .unwrap_err();
     assert!(
