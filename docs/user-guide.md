@@ -175,7 +175,8 @@ Purpose: confirm a recorded transaction has not been altered since.
 
 Steps:
 
-1. `GET /api/v1/entries/{entryId}/proof` to fetch the proof bundle.
-2. Verify with the bundle and the `contentHash` you saved. The browser verification page is still in development.
+1. `GET /api/v1/entries/{entryId}/proof` to fetch the proof bundle (the entry source, the inclusion proof and the tree head, as JSON).
+2. Open `/verify` in the browser — no login needed — paste the bundle and the `contentHash` you saved, and submit. The check runs entirely in your browser: the page compiles the same `verify_bundle` the server runs to WebAssembly, so a passed check does not depend on trusting the server, and the bundle never leaves your machine.
+3. Read the verdict. "Verification passed" means the bundle matches the content hash and the inclusion proof links it to the tree head. "Verification failed" means something changed: altering any single number in the bundle fails the check. A bundle that does not parse, or a hash that is not 64 hex characters, gets its own error instead.
 
 Note: verification proves "this record has not been altered since it was written"; it cannot prove "the recorded number was correct in the first place".
