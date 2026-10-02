@@ -1,33 +1,50 @@
 use std::sync::Arc;
 
 use axum::extract::{Extension, Path, State};
+use axum::http::header::SET_COOKIE;
+use axum::http::{HeaderMap, HeaderValue};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router, middleware};
-use oxsum_core::{ApiKey, CreatedApiKey, NewUser, Organization, Registration, Tenants, Wallet};
+use oxsum_core::{
+    ApiKey, CreatedApiKey, CreatedSession, NewUser, Organization, Principal, Registration, Role,
+    Session, SessionPrincipal, Tenants, User, Wallet, SESSION_COOKIE,
+};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::auth::require_key;
+use crate::auth::{require_principal, session_cookie_value};
 use crate::error::ApiError;
 use crate::{AppState, Signup, today};
 
 /// The `/api/v1` surface, plus the two routes served outside it: health, and the gateway.
 pub fn router(state: AppState) -> Router {
-    // Behind a key: everything that touches an organization, its ledger or its credentials.
+    // Behind a credential: everything that touches an organization, its ledger or its
+    // credentials. The credential is an API key or a session cookie; both resolve to a
+    // principal.
     let authenticated = Router::new()
         .route("/org", get(organization))
         .route("/org/keys", get(list_keys).post(create_key))
         .route("/org/keys/{key_id}", delete(revoke_key))
+        .route("/session", get(session))
         .route("/topups", post(top_up))
         .route("/holds", post(hold))
         .route("/settlements", post(settle))
         .route("/balance", get(balance))
         .route("/entries/{entry_id}/proof", get(proof))
-        .layer(middleware::from_fn_with_state(state.clone(), require_key));
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_principal,
+        ));
 
-    // No key: health, and signup while the deployment allows it.
-    let open = Router::new().route("/auth/register", post(register));
+    // No credential: signup while the deployment allows it, and the login/logout pair.
+    // Logout sits outside the auth middleware on purpose: logging out twice is not an
+    // error, so it must answer 200 with no session at all.
+    let open = Router::new()
+        .route("/auth/register", post(register))
+        .route("/auth/login", post(login))
+        .route("/auth/logout", post(logout));
 
     // The platform admin: an operator token, not an organization key, and its own middleware.
     let admin = crate::admin::router(state.clone());
@@ -59,6 +76,40 @@ struct RegisterReq {
     password: String,
     organization_name: Option<String>,
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LoginReq {
+    email: String,
+    password: String,
+}
+
+/// Who a login authenticated, as the API presents it: the user, the organization the
+/// session acts as, the role in it, and the session itself.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionInfo {
+    user: User,
+    organization: Organization,
+    role: Role,
+    session: Session,
+}
+
+impl From<SessionPrincipal> for SessionInfo {
+    fn from(principal: SessionPrincipal) -> Self {
+        Self {
+            user: principal.user,
+            organization: principal.organization,
+            role: principal.role,
+            session: principal.session,
+        }
+    }
+}
+
+/// The logout answer: empty, because the logout is in the `Set-Cookie` header that clears
+/// the cookie.
+#[derive(Serialize)]
+struct LogoutRes {}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -113,39 +164,121 @@ async fn register(
         .await?)
 }
 
-async fn organization(Extension(organization): Extension<Organization>) -> ApiResult<Organization> {
-    ok(organization)
+/// Logs in: verifies the password, mints a session, and answers it in a cookie.
+///
+/// An unknown email and a wrong password fail identically (401, one message), so neither
+/// reveals whether an account exists.
+async fn login(
+    State(state): State<AppState>,
+    Json(r): Json<LoginReq>,
+) -> Result<Response, ApiError> {
+    let CreatedSession { principal, token } = state.db.login(&r.email, &r.password).await?;
+    let mut response = Json(Data {
+        data: SessionInfo::from(principal),
+    })
+    .into_response();
+    response.headers_mut().insert(
+        SET_COOKIE,
+        HeaderValue::from_str(&session_cookie(&token, state.config.session_cookie_secure()))
+            .map_err(|_| ApiError::Internal)?,
+    );
+    Ok(response)
+}
+
+/// Logs out: revokes the session the cookie names and clears the cookie.
+///
+/// Always 200: logging out twice is not an error, and neither is logging out without a
+/// session at all.
+async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, ApiError> {
+    if let Some(token) = session_cookie_value(&headers) {
+        state.db.logout(&token).await?;
+    }
+    let mut response = Json(Data { data: LogoutRes {} }).into_response();
+    response.headers_mut().insert(
+        SET_COOKIE,
+        HeaderValue::from_str(&clear_session_cookie(state.config.session_cookie_secure()))
+            .map_err(|_| ApiError::Internal)?,
+    );
+    Ok(response)
+}
+
+/// The `Set-Cookie` value for a session: `HttpOnly`, `SameSite=Lax`, `Path=/`, and `Secure`
+/// when the deployment says so (`OXSUM_SESSION_COOKIE_SECURE`, documented in
+/// docs/development.md).
+fn session_cookie(token: &str, secure: bool) -> String {
+    let mut cookie = format!("{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax");
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie
+}
+
+/// The `Set-Cookie` value that clears the session cookie: an empty value that expires
+/// immediately. `Max-Age=0` rather than an `Expires` date in the past: one mechanism, no
+/// date formatting.
+fn clear_session_cookie(secure: bool) -> String {
+    let mut cookie = format!("{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie
+}
+
+/// The current session: who is logged in, as which organization, in which role.
+///
+/// A key names no session, so for a key principal this is 404 rather than an empty answer.
+async fn session(Extension(principal): Extension<Principal>) -> ApiResult<SessionInfo> {
+    match principal {
+        Principal::Session(principal) => ok(SessionInfo::from(principal)),
+        Principal::Key(_) => Err(ApiError::NotFound),
+    }
+}
+
+async fn organization(Extension(principal): Extension<Principal>) -> ApiResult<Organization> {
+    ok(principal.organization().clone())
 }
 
 async fn create_key(
     State(state): State<AppState>,
-    Extension(organization): Extension<Organization>,
+    Extension(principal): Extension<Principal>,
     body: Option<Json<CreateKeyReq>>,
 ) -> ApiResult<CreatedApiKey> {
     let (name, expires_at) = body.map_or((None, None), |Json(r)| (r.name, r.expires_at));
-    // `created_by` stays empty: a key is not a person and no user acts through it yet, so
-    // product.md's per-member rules attach when sessions make a user the acting principal.
+    // A key minted through a session records who minted it, for product.md's per-member
+    // rules; a key minted with an API key records no creator, because no person acts there.
     ok(state
         .db
-        .create_key(organization.id, name, expires_at, None)
+        .create_key(
+            principal.organization().id,
+            name,
+            expires_at,
+            principal.user_id(),
+        )
         .await?)
 }
 
 async fn list_keys(
     State(state): State<AppState>,
-    Extension(organization): Extension<Organization>,
+    Extension(principal): Extension<Principal>,
 ) -> ApiResult<Vec<ApiKey>> {
-    ok(state.db.list_keys(organization.id).await?)
+    ok(state
+        .db
+        .list_keys(principal.organization().id, principal.key_scope())
+        .await?)
 }
 
 async fn revoke_key(
     State(state): State<AppState>,
-    Extension(organization): Extension<Organization>,
+    Extension(principal): Extension<Principal>,
     Path(key_id): Path<Uuid>,
 ) -> ApiResult<ApiKey> {
-    // A key id of another organization is not found, not forbidden: an id should not be
-    // probeable for existence.
-    match state.db.revoke_key(organization.id, key_id).await? {
+    // A key id of another organization — or, for a member, a key they did not create — is
+    // not found, not forbidden: an id should not be probeable for existence.
+    match state
+        .db
+        .revoke_key(principal.organization().id, key_id, principal.key_scope())
+        .await?
+    {
         Some(key) => ok(key),
         None => Err(ApiError::NotFound),
     }
@@ -153,20 +286,20 @@ async fn revoke_key(
 
 async fn top_up(
     State(state): State<AppState>,
-    Extension(organization): Extension<Organization>,
+    Extension(principal): Extension<Principal>,
     Json(r): Json<AmountReq>,
 ) -> ApiResult<oxsum_core::Receipt> {
-    let w = wallet(&state.tenants, &organization).await?;
+    let w = wallet(&state.tenants, principal.organization()).await?;
     ok(w.top_up(&r.idempotency_key, r.amount_minor, today())
         .await?)
 }
 
 async fn hold(
     State(state): State<AppState>,
-    Extension(organization): Extension<Organization>,
+    Extension(principal): Extension<Principal>,
     Json(r): Json<AmountReq>,
 ) -> ApiResult<oxsum_core::Receipt> {
-    let w = wallet(&state.tenants, &organization).await?;
+    let w = wallet(&state.tenants, principal.organization()).await?;
     // No description: this endpoint takes an amount, not a reason. The gateway, which knows what the
     // hold is for, records one.
     ok(w.hold(&r.idempotency_key, "", r.amount_minor, today())
@@ -175,10 +308,10 @@ async fn hold(
 
 async fn settle(
     State(state): State<AppState>,
-    Extension(organization): Extension<Organization>,
+    Extension(principal): Extension<Principal>,
     Json(r): Json<SettleReq>,
 ) -> ApiResult<oxsum_core::Receipt> {
-    let w = wallet(&state.tenants, &organization).await?;
+    let w = wallet(&state.tenants, principal.organization()).await?;
     // No description: this endpoint takes a hold key, not a reason. The gateway, which knows what
     // the hold is for, records one.
     ok(w.settle(&r.hold_key, "", r.actual_minor, today()).await?)
@@ -186,9 +319,9 @@ async fn settle(
 
 async fn balance(
     State(state): State<AppState>,
-    Extension(organization): Extension<Organization>,
+    Extension(principal): Extension<Principal>,
 ) -> ApiResult<BalanceRes> {
-    let w = wallet(&state.tenants, &organization).await?;
+    let w = wallet(&state.tenants, principal.organization()).await?;
     ok(BalanceRes {
         available_minor: w.available().await?,
     })
@@ -196,10 +329,10 @@ async fn balance(
 
 async fn proof(
     State(state): State<AppState>,
-    Extension(organization): Extension<Organization>,
+    Extension(principal): Extension<Principal>,
     Path(entry_id): Path<Uuid>,
 ) -> ApiResult<oxsum_core::ProofBundle> {
-    let w = wallet(&state.tenants, &organization).await?;
+    let w = wallet(&state.tenants, principal.organization()).await?;
     match w
         .receipt_proof(oxsum_core::EntryId::from_uuid(entry_id))
         .await?

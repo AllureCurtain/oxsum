@@ -9,6 +9,10 @@ use serde_json::json;
 pub enum ApiError {
     Validation(String),
     Unauthorized,
+    /// A login with an unknown email or a wrong password: 401 like any other failed
+    /// credential, but with its own message — "missing or invalid API key" would be the
+    /// wrong words here.
+    InvalidCredentials,
     Forbidden(String),
     NotFound,
     Conflict(String),
@@ -21,6 +25,7 @@ impl From<WalletError> for ApiError {
         match e {
             WalletError::InvalidInput(m) => Self::Validation(m),
             WalletError::Unauthenticated => Self::Unauthorized,
+            WalletError::InvalidCredentials => Self::InvalidCredentials,
             WalletError::Forbidden(m) => Self::Forbidden(m),
             WalletError::Conflict(m) => Self::Conflict(m),
             WalletError::HoldNotFound(_) => Self::NotFound,
@@ -50,6 +55,13 @@ impl IntoResponse for ApiError {
                 // One message for every way a key can fail: unknown, revoked, expired and
                 // missing are indistinguishable to the caller, on purpose.
                 "missing or invalid API key".into(),
+            ),
+            // One message for both ways a login can fail: an unknown email and a wrong
+            // password are indistinguishable to the caller, on purpose.
+            Self::InvalidCredentials => (
+                StatusCode::UNAUTHORIZED,
+                "UNAUTHORIZED",
+                "invalid email or password".into(),
             ),
             Self::Forbidden(m) => (StatusCode::FORBIDDEN, "FORBIDDEN", m),
             Self::NotFound => (StatusCode::NOT_FOUND, "NOT_FOUND", "not found".into()),
