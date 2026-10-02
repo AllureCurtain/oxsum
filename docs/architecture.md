@@ -16,7 +16,7 @@ API callers ──→ axum /api/v1 ───────────────
                      holding users, organizations, memberships and API keys
 ```
 
-The axum API, the core and doubleentry exist today, with oxsum's own identity tables in one `oxsum` schema. The gateway and the Leptos pages are not built yet; the order is in TODO.md.
+The axum API, the core, doubleentry and the gateway exist today, with oxsum's own identity tables in one `oxsum` schema. The Leptos pages are not built yet; the order is in TODO.md.
 
 ## Modules
 
@@ -53,7 +53,7 @@ crates/
                         the (channel, version, price, upstream) a request resolves once
       proof.rs          exists
       db.rs             exists: the one pool plus oxsum's own migration runner
-      users.rs          exists: registration, password hashing; login arrives with B-6
+      users.rs          exists: registration, password hashing, login/logout sessions (B-4)
       orgs.rs           exists: organizations, memberships, roles; invitations come later
       keys.rs           exists: API key mint, resolve, list, revoke
       sessions.rs       exists: session table reads, writes and renewal; login, logout,

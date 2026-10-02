@@ -85,7 +85,7 @@ Failure:
 - Members see and revoke only the keys they created; owners and admins see and revoke every key of the organization. A key that exists but is not the caller's answers `NOT_FOUND`, never `FORBIDDEN`, so ids cannot be probed. An API key acting as the organization keeps its full authority: roles constrain sessions, not keys.
 - Revocation is permanent and idempotent; a key id of another organization is `NOT_FOUND`, never `FORBIDDEN`, so ids cannot be probed.
 - Expiry is optional. An expired key is refused exactly like a revoked one.
-- Until sessions arrive, any active key of an organization may create and revoke keys of that organization: a role check needs a user to be the acting principal, and users act through web login. The schema already records what the check needs.
+- Since web login (TODO B-4, issue #17), role checks are enforced: members create and revoke only the keys they created; owners and admins see and revoke every key of the organization. A key acting as the organization keeps its full authority — roles constrain sessions, not keys.
 
 ## Pagination
 
