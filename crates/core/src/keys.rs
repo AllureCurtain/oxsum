@@ -194,7 +194,7 @@ pub(crate) async fn insert(
         "INSERT INTO oxsum.api_keys \
              (key_id, organization_id, name, prefix, secret_hash, created_by, expires_at) \
          VALUES ($1, $2, $3, $4, $5, $6, $7) \
-         RETURNING key_id, name, prefix, created_at, expires_at, revoked_at",
+         RETURNING key_id, name, prefix, created_by, created_at, expires_at, revoked_at",
     )
     .bind(Uuid::new_v4())
     .bind(organization_id)
