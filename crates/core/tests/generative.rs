@@ -25,6 +25,11 @@
 //!   `actual` out of settled money and releases `held` of reservation, and `held >= actual`, so
 //!   the available balance grows or stays put. The model therefore expects exactly two refusals:
 //!   an `actual` outside `0..=held`, and a release beyond the reserved total.
+//! - **A call's own argument is bounded before the ledger is consulted.** An `actual` outside
+//!   `0..=held` is invalid input even when the key already holds an entry, so replaying a refused
+//!   settlement stays invalid input instead of becoming a conflict. The model reads it in that
+//!   order because the wallet does; a version that read the key first mispredicted exactly that
+//!   replay, once a collision had written under the key.
 //! - **A key reused with different content is refused**, and the model only asserts that: that it
 //!   changes nothing and reports an error. The domain layer maps the engine's refusal to
 //!   `CONFLICT`, so the refusal arrives as a conflict, but the model reads all three classes the
@@ -338,6 +343,16 @@ impl Case<'_> {
 
     /// What the model expects of this call, before making it.
     fn predict(&self, key: &str, request: &Request) -> Predicted {
+        // The wallet bounds a call's own argument before it consults the ledger, so an impossible
+        // amount is invalid input even when the key already holds an entry. The model has to read
+        // that first, in the same order: otherwise a replay of a refused settlement is predicted as
+        // a conflict as soon as some other call has written under that key. Only a settlement can
+        // be impossible here — the generator's amounts are positive, and a bumped amount stays so.
+        if let Request::Settle { held, actual } = request
+            && (*actual < 0 || actual > held)
+        {
+            return Predicted::InvalidInput;
+        }
         if let Some((prior, _)) = self.written.get(key) {
             return if prior == request {
                 Predicted::Replays
@@ -354,11 +369,8 @@ impl Case<'_> {
                     Predicted::Writes
                 }
             }
-            Request::Settle { held, actual } => {
-                if *actual < 0 || actual > held {
-                    // The wallet bounds the argument before it looks at the books.
-                    Predicted::InvalidInput
-                } else if *held > self.reserved {
+            Request::Settle { held, .. } => {
+                if *held > self.reserved {
                     // The release credits the pending layer, and the wallet's limit refuses a
                     // pending credit the outstanding reservations cannot cover.
                     Predicted::InsufficientFunds
@@ -527,10 +539,18 @@ impl Case<'_> {
             return Ok(());
         };
         let predicted = self.predict(&key, &request);
+        // A settlement or hold records why it happened, and the record is part of the entry: the key
+        // is a deterministic stand-in for it here, which is what a real caller's record must be too,
+        // or a retry would be refused as a different request.
+        let because = key.clone();
         let receipt = match &request {
             Request::TopUp { amount } => self.wallet.top_up(&key, *amount, DAY).await,
-            Request::Hold { amount } => self.wallet.hold(&key, *amount, DAY).await,
-            Request::Settle { held, actual } => self.wallet.settle(&key, *held, *actual, DAY).await,
+            Request::Hold { amount } => self.wallet.hold(&key, &because, *amount, DAY).await,
+            Request::Settle { held, actual } => {
+                self.wallet
+                    .settle(&key, &because, *held, *actual, DAY)
+                    .await
+            }
         };
         let outcome = self.check(index, op, &key, &request, predicted, &receipt);
         self.steps.push(Step {
