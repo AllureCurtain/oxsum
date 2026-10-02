@@ -14,6 +14,7 @@ mod holds;
 mod keys;
 mod orgs;
 mod proof;
+mod sessions;
 mod tenants;
 mod users;
 mod wallet;
@@ -30,6 +31,9 @@ pub use holds::{DEFAULT_HOLD_TIMEOUT, OpenHold, SWEEP_INTERVAL, sweep_stale_hold
 pub use keys::{ApiKey, CreatedApiKey};
 pub use orgs::{Kind, Organization, Role};
 pub use proof::{ProofBundle, verify_bundle};
+pub use sessions::{
+    CreatedSession, KeyScope, Principal, Session, SessionPrincipal, SESSION_COOKIE, SESSION_LIFETIME,
+};
 pub use tenants::Tenants;
 pub use users::{NewUser, Registration, User};
 pub use wallet::{Credits, Receipt, SCALE, Wallet, entry_id_for, settlement_key_for};
