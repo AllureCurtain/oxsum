@@ -50,6 +50,10 @@ http-body-util.workspace = true
 tokio-tungstenite.workspace = true
 tower.workspace = true
 uuid.workspace = true
+# Integration tests verify tree-head notes and consistency proofs with the real types.
+doubleentry.workspace = true
+# Decoding the published verifying key in the head tests.
+base64.workspace = true
 
 [lints]
 workspace = true

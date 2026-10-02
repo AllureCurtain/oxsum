@@ -379,6 +379,22 @@ mod tests {
     }
 
     #[test]
+    fn the_head_signing_seed_is_32_base64_bytes() {
+        use base64::Engine as _;
+        let encoded = base64::engine::general_purpose::STANDARD.encode([9u8; 32]);
+        assert_eq!(
+            super::head_signing_seed_of(encoded),
+            Ok([9u8; 32]),
+            "whitespace is trimmed like the other secrets"
+        );
+        let short = base64::engine::general_purpose::STANDARD.encode([1u8; 16]);
+        let err = super::head_signing_seed_of(short).unwrap_err();
+        assert!(err.contains("OXSUM_HEAD_SIGNING_KEY"), "{err}");
+        let err = super::head_signing_seed_of("not base64!!".into()).unwrap_err();
+        assert!(err.contains("OXSUM_HEAD_SIGNING_KEY"), "{err}");
+    }
+
+    #[test]
     fn a_channel_drops_the_trailing_slash_and_keeps_its_book() {
         let gateway = Gateway::new("http://127.0.0.1:9/v1/", "secret", book());
         assert_eq!(gateway.base_url(), "http://127.0.0.1:9/v1");
