@@ -138,6 +138,11 @@ served by the same `oxsum` binary through `leptos_axum`: server-side rendering c
   session-cookie auth): a snapshot of the open holds on connect, then started, progress
   and settled events as turns happen. The events come from a process-wide broadcast the
   gateway publishes to — best-effort and in-memory; the watch table stays the record.
+- The public `/verify` page needs no login: it pastes a proof bundle and a content hash
+  into `oxsum_verify::verify_bundle` running in the browser (WASM), the same function
+  body the server runs. The pure verification logic lives in `crates/verify`
+  (`oxsum-verify`), shared through `oxsum-core` re-exports — `oxsum-core` itself cannot
+  target wasm32 because sqlx-postgres needs OS sockets (docs/decisions.md).
 
 ## Test strategy
 

@@ -2,6 +2,23 @@
 
 New decisions go on top. Overturned decisions are never deleted; mark them "Superseded" and name the decision that replaces it.
 
+## 2026-10-03 Bill verification in the browser via a shared `oxsum-verify` crate (issue #28)
+
+- Status: Adopted. Implemented 2026-10-03, closing issue #28 (TODO B-6).
+- Background: the verification page must run `verify_bundle` in the browser (WASM) — the component calls the same code the server runs, directly, with no round-trip. But `oxsum-core` cannot target `wasm32-unknown-unknown`: it depends on sqlx-postgres with the tokio `net` runtime, which needs OS sockets.
+- Decision:
+  - **New crate `oxsum-verify` for the pure verification half.** `ProofBundle`, `verify_bundle`, and the money `SCALE` the entry encoding depends on move into `crates/verify`, whose only dependencies are doubleentry (a path dep with the `serde` feature only — the workspace entry's `postgres` feature would pull sqlx and tokio-net back in), serde and serde_json. All three are verified wasm32-clean.
+  - **`oxsum-core` re-exports, nothing else changes.** `proof.rs` becomes a re-export shim and `wallet::SCALE` re-exports `oxsum_verify::SCALE`, so `oxsum_core::{verify_bundle, ProofBundle, SCALE}` keep resolving for the server and every existing caller. One definition of the scale: the writer and every verifier cannot drift.
+  - **A public `/verify` route, no login.** Verification is the trust surface for anyone holding a bill; a session gate would defeat the point. SSR renders the inert form; the check runs on submit in the browser. The dashboard sidenav links it next to the transaction log.
+  - **The verdict is icon plus words, never color alone** (DESIGN.md); a bundle that does not parse and a hash that is not 64 hex characters get their own error states, distinct from verification failure. The page states product.md's honesty sentence verbatim.
+- Rejected:
+  - **Feature-gating `oxsum-core` for wasm.** Making sqlx, tokio and the rest optional behind a feature would thread `#[cfg]` through the whole domain layer for one pure function; the extraction is smaller, and the boundary (I/O-free) is honest.
+  - **Duplicating the check in the web crate.** Two implementations of the verification would drift; the issue requires the same code the server runs.
+  - **Verifying through a server function.** The check would then depend on trusting the server — the party being checked.
+- Implementation notes:
+  - `crates/verify/src/lib.rs` carries a tamper unit test over a golden bundle fixture captured from a real ledger: the fixture verifies, the same fixture with one amount digit changed does not.
+  - `docs/development.md` ("Web dashboard") and `docs/user-guide.md` ("Verifying a bill") describe the page; TODO.md B-6 is closed.
+
 ## 2026-10-03 The dashboard is a Leptos 0.8 app in `crates/web`, served by the same binary
 
 - Status: Adopted. Implemented 2026-10-03, closing issue #26 (TODO B-5).
