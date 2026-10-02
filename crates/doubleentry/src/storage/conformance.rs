@@ -452,6 +452,7 @@ pub async fn check_all<const P: u8, S: LedgerStore<P>>(store: &S) -> Report {
     checks.push(check_open_items_track_residuals(store).await);
     checks.push(check_account_bindings_survive_a_restart(store).await);
     checks.push(check_balance_limits_are_enforced(store).await);
+    checks.push(check_reservation_limits_are_enforced(store).await);
     checks.push(check_a_posted_leaf_cannot_gain_a_child(store).await);
     checks.push(check_balances_slice_by_dimension(store).await);
     checks.push(check_statements_scope_to_a_period(store).await);
@@ -2113,6 +2114,224 @@ pub async fn check_balance_limits_are_enforced<const P: u8, S: LedgerStore<P>>(
     CheckResult::pass(NAME)
 }
 
+/// A reservation layer may not be released beyond what it reserved.
+///
+/// `NoDebitBalance` folds the two layers asymmetrically: an outstanding
+/// reservation consumes room, and a pending credit grants none. It does not make
+/// a pending credit *cost* anything either, so an entry that releases a
+/// reservation nobody made raises what the account may draw on by exactly that
+/// much, out of nothing. The rule that stops it is
+/// [`BalanceLimit::FundedReservations`](crate::BalanceLimit::FundedReservations):
+/// the pending layer must stay on the debit side.
+///
+/// Enforced in the write path, like every other limit, so a backend that checks
+/// only the settled layer, or only the folded net, accepts entries this refuses.
+/// The refusals are also checked for atomicity: a rejected release must leave the
+/// log exactly as long as it was.
+pub async fn check_reservation_limits_are_enforced<const P: u8, S: LedgerStore<P>>(
+    store: &S,
+) -> CheckResult {
+    const NAME: &str = "reservation limits are enforced";
+    let f = Fixture::new();
+
+    // A fresh account, so the check owns its balance outright.
+    let existing = match store.accounts().await {
+        Ok(records) => records,
+        Err(e) => return CheckResult::fail(NAME, format!("accounts failed: {e}")),
+    };
+    let mut registry = match AccountRegistry::from_records(existing) {
+        Ok(r) => r,
+        Err(e) => return CheckResult::fail(NAME, format!("stored bindings are unusable: {e}")),
+    };
+    let path = match AccountPath::parse("Conformance:Reserved") {
+        Ok(p) => p,
+        Err(e) => return CheckResult::fail(NAME, format!("bad fixture path: {e}")),
+    };
+    let reserved = match registry.register(Account::new(path, date!(2000 - 01 - 01))) {
+        Ok(id) => id,
+        Err(e) => return CheckResult::fail(NAME, format!("fixture registration failed: {e}")),
+    };
+    for record in registry.records() {
+        if let Err(e) = store.register_account(&record).await {
+            return CheckResult::fail(NAME, format!("register_account failed: {e}"));
+        }
+    }
+
+    // Master data moves: registered unconstrained, then limited. The limit has to
+    // survive the round trip, because enforcement reads it from the store.
+    if let Err(e) = registry.set_limit(reserved, BalanceLimit::FundedReservations) {
+        return CheckResult::fail(NAME, format!("set_limit failed: {e}"));
+    }
+    let Some(record) = registry.records().into_iter().find(|r| r.id == reserved) else {
+        return CheckResult::fail(NAME, "the limited account vanished from the registry");
+    };
+    if let Err(e) = store.register_account(&record).await {
+        return CheckResult::fail(NAME, format!("updating master data failed: {e}"));
+    }
+    match store.accounts().await {
+        Ok(stored) => match stored.iter().find(|r| r.id == reserved) {
+            Some(found) if found.account.limit == BalanceLimit::FundedReservations => {}
+            Some(found) => {
+                return CheckResult::fail(
+                    NAME,
+                    format!(
+                        "the limit came back as {}, not funded reservations",
+                        found.account.limit
+                    ),
+                );
+            }
+            None => return CheckResult::fail(NAME, "the limited account was not stored"),
+        },
+        Err(e) => return CheckResult::fail(NAME, format!("accounts failed: {e}")),
+    }
+
+    let ctx = SealContext {
+        accounts: &registry,
+        calendar: &f.calendar,
+        policy: &f.policy,
+    };
+    // Funding: left lends to the reserved account in the settled layer.
+    let movement = |key: &[u8], minor: i64| {
+        let amount = Amount::<P>::from_minor(minor);
+        Entry::<Draft, P>::new(
+            EntryId::generate(),
+            IdempotencyKey::new(key.to_vec()).ok()?,
+            date!(2026 - 03 - 23),
+        )
+        .debit(f.left, amount, Currency::EUR)
+        .credit(reserved, amount, Currency::EUR)
+        .seal(&ctx)
+        .ok()
+    };
+    // A reservation is a pending debit on the reserved account; a release is the
+    // pending credit that gives it back. Only the pending layer moves.
+    let pending = |key: &[u8], minor: i64, release: bool| {
+        let amount = Amount::<P>::from_minor(minor);
+        let draft = Entry::<Draft, P>::new(
+            EntryId::generate(),
+            IdempotencyKey::new(key.to_vec()).ok()?,
+            date!(2026 - 03 - 23),
+        );
+        let draft = if release {
+            draft
+                .post(
+                    crate::Posting::credit(reserved, amount, Currency::EUR)
+                        .in_layer(Layer::Pending),
+                )
+                .post(crate::Posting::debit(f.left, amount, Currency::EUR).in_layer(Layer::Pending))
+        } else {
+            draft
+                .post(
+                    crate::Posting::debit(reserved, amount, Currency::EUR).in_layer(Layer::Pending),
+                )
+                .post(
+                    crate::Posting::credit(f.left, amount, Currency::EUR).in_layer(Layer::Pending),
+                )
+        };
+        draft.seal(&ctx).ok()
+    };
+
+    let Some(funding) = movement(b"reserved-funding", 1_000) else {
+        return CheckResult::fail(NAME, "fixture entry failed to seal");
+    };
+    if let Err(e) = store.append(&EntryBatch::single(funding)).await {
+        return CheckResult::fail(NAME, format!("funding was refused: {e}"));
+    }
+
+    let Some(hold) = pending(b"reserved-hold", 400, false) else {
+        return CheckResult::fail(NAME, "fixture entry failed to seal");
+    };
+    if let Err(e) = store.append(&EntryBatch::single(hold)).await {
+        return CheckResult::fail(NAME, format!("a funded reservation was refused: {e}"));
+    }
+
+    // The heart of it: one minor unit more than was reserved. Under a rule that
+    // only folds the layers this is accepted, and the account is left able to draw
+    // on the funds it never promised.
+    let Some(over_release) = pending(b"reserved-over-release", 401, true) else {
+        return CheckResult::fail(NAME, "fixture entry failed to seal");
+    };
+    let before = store.len().await;
+    if store
+        .append(&EntryBatch::single(over_release))
+        .await
+        .is_ok()
+    {
+        return CheckResult::fail(
+            NAME,
+            "a release larger than the outstanding reservation was accepted",
+        );
+    }
+    match (before, store.len().await) {
+        (Ok(before), Ok(after)) if before == after => {}
+        (Ok(before), Ok(after)) => {
+            return CheckResult::fail(
+                NAME,
+                format!("a refused release still appended: {before} -> {after}"),
+            );
+        }
+        (Err(e), _) | (_, Err(e)) => return CheckResult::fail(NAME, format!("len failed: {e}")),
+    }
+
+    // Releasing exactly what was reserved is the legitimate case.
+    let Some(release) = pending(b"reserved-release", 400, true) else {
+        return CheckResult::fail(NAME, "fixture entry failed to seal");
+    };
+    if let Err(e) = store.append(&EntryBatch::single(release)).await {
+        return CheckResult::fail(
+            NAME,
+            format!("releasing exactly the reservation was refused: {e}"),
+        );
+    }
+
+    // And with the reservation discharged, one more minor unit has nothing left to
+    // give back.
+    let Some(second_release) = pending(b"reserved-second-release", 1, true) else {
+        return CheckResult::fail(NAME, "fixture entry failed to seal");
+    };
+    if store
+        .append(&EntryBatch::single(second_release))
+        .await
+        .is_ok()
+    {
+        return CheckResult::fail(
+            NAME,
+            "a second release was accepted after the reservation was discharged",
+        );
+    }
+
+    // The other half of the rule still holds: a reservation past the funds is
+    // refused, which a backend that only kept the pending layer on the debit side
+    // would accept.
+    let Some(over_reserve) = pending(b"reserved-over-reserve", 2_000, false) else {
+        return CheckResult::fail(NAME, "fixture entry failed to seal");
+    };
+    if store
+        .append(&EntryBatch::single(over_reserve))
+        .await
+        .is_ok()
+    {
+        return CheckResult::fail(NAME, "a reservation past the funds was accepted");
+    }
+
+    // Reserving and releasing again still works: the rule forbids unreserved
+    // releases, not the pending layer.
+    let Some(again) = pending(b"reserved-again", 100, false) else {
+        return CheckResult::fail(NAME, "fixture entry failed to seal");
+    };
+    if let Err(e) = store.append(&EntryBatch::single(again)).await {
+        return CheckResult::fail(NAME, format!("a later reservation was refused: {e}"));
+    }
+    let Some(undo) = pending(b"reserved-undo", 100, true) else {
+        return CheckResult::fail(NAME, "fixture entry failed to seal");
+    };
+    if let Err(e) = store.append(&EntryBatch::single(undo)).await {
+        return CheckResult::fail(NAME, format!("releasing it again was refused: {e}"));
+    }
+
+    CheckResult::pass(NAME)
+}
+
 /// Corrections follow the rules: at most one reversal, never of a reversal,
 /// never a claim that does not actually invert.
 pub async fn check_reversal_rules<const P: u8, S: LedgerStore<P>>(store: &S) -> CheckResult {
@@ -3038,7 +3257,7 @@ mod tests {
         report.assert_passed();
         // Pinned so a check cannot be dropped from `check_all` unnoticed: a
         // suite that silently shrinks still passes.
-        assert_eq!(report.checks.len(), 25);
+        assert_eq!(report.checks.len(), 26);
     }
 
     #[test]
