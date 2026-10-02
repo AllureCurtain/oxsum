@@ -115,6 +115,19 @@ fn append_lock_key(ledger: &LedgerId) -> i64 {
     i64::from_be_bytes(key)
 }
 
+/// The statement that points a transaction's `search_path` at `schema`.
+///
+/// oxsum change (not upstream): a schema name is an identifier, not a value, so it
+/// cannot be a bind parameter. It is quoted with embedded quotes doubled, the same
+/// way [`migrate`](PostgresStore::migrate) spells it; the name oxsum passes is
+/// assembled from a validated tenant id, never from request text.
+fn set_local_search_path(schema: &str) -> String {
+    format!(
+        "SET LOCAL search_path = \"{}\"",
+        schema.replace('"', "\"\"")
+    )
+}
+
 /// Whether one append assigns a position or leaves it to the sequencer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Placement {
@@ -442,6 +455,27 @@ impl<const P: u8> PostgresStore<P> {
         &self.pool
     }
 
+    /// Opens a transaction pinned to this store's schema.
+    ///
+    /// oxsum change (not upstream): upstream pins `search_path` in the connection
+    /// options, which costs a pool — and a set of backend connections — per ledger,
+    /// because a pooled connection cannot be reconfigured per borrower. oxsum serves
+    /// every ledger from one shared pool, so the schema is pinned per *transaction*
+    /// instead: `SET LOCAL` lasts exactly as long as the transaction, so a connection
+    /// handed back to the pool cannot carry one ledger's `search_path` into another
+    /// ledger's statement.
+    ///
+    /// Every statement this store issues goes through here, which is what makes the
+    /// isolation a property of the transaction rather than of remembering to reset.
+    async fn begin(&self) -> Result<Transaction<'static, Postgres>, PostgresError> {
+        let mut tx = self.pool.begin().await?;
+        // The transaction's first statement, before any name can be resolved.
+        sqlx::query(&set_local_search_path(&self.schema))
+            .execute(&mut *tx)
+            .await?;
+        Ok(tx)
+    }
+
     /// Applies [`SCHEMA`].
     ///
     /// # Errors
@@ -449,21 +483,26 @@ impl<const P: u8> PostgresStore<P> {
     /// Returns any error the database raises.
     pub async fn migrate(&self) -> Result<(), PostgresError> {
         // Create the schema before checking for it, so a correctly configured
-        // pool works on a database that has never seen this crate.
-        // Quoted so a schema name needing quoting is not silently folded to
-        // lower case or split on a dot.
+        // database that has never seen this crate migrates. Quoted so a schema name
+        // needing quoting is not silently folded to lower case or split on a dot.
+        //
+        // oxsum change (not upstream): both statements run in one pinned transaction.
+        // That is what the check below means now — `current_schema()` is where an
+        // unqualified CREATE TABLE lands, asked of the transaction that will run the
+        // DDL, rather than of whatever `search_path` the pool's connections happened
+        // to be configured with. A `SET LOCAL` to a schema that does not exist yet is
+        // legal and leaves `current_schema()` NULL, which is why creating the schema
+        // above happens first.
+        let mut tx = self.begin().await?;
         sqlx::query(&format!(
             "CREATE SCHEMA IF NOT EXISTS \"{}\"",
             self.schema.replace('"', "\"\"")
         ))
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
 
-        // `current_schema()` is where an unqualified CREATE TABLE lands. If it
-        // is not ours, every table below would be created somewhere else — most
-        // likely `public`, on top of whatever the application keeps there.
         let current: Option<String> = sqlx::query("SELECT current_schema() AS s")
-            .fetch_one(&self.pool)
+            .fetch_one(&mut *tx)
             .await?
             .try_get("s")?;
         if current.as_deref() != Some(self.schema.as_str()) {
@@ -472,22 +511,28 @@ impl<const P: u8> PostgresStore<P> {
                 found: current.unwrap_or_default(),
             });
         }
+        tx.commit().await?;
 
-        self.pool.execute_schema().await?;
+        // The DDL needs the pin too, on a connection of its own: the reference schema
+        // opens and closes its own transaction, so the transaction it must be pinned
+        // inside is opened around it. See `ExecuteSchema for PgPool`.
+        self.pool.execute_schema(&self.schema).await?;
+
         // One database, one ledger. Claim it on first use and refuse it
         // afterwards if it belongs to someone else — pointing two ledgers at one
         // database would merge two logs, two index spaces, and two seal chains
         // into one, silently.
+        let mut tx = self.begin().await?;
         sqlx::query(
             "INSERT INTO ledger_meta (only_row, ledger_id) VALUES (1, $1) \
              ON CONFLICT (only_row) DO NOTHING",
         )
         .bind(self.ledger.as_str())
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
 
         let found: String = sqlx::query("SELECT ledger_id FROM ledger_meta WHERE only_row = 1")
-            .fetch_one(&self.pool)
+            .fetch_one(&mut *tx)
             .await?
             .try_get("ledger_id")?;
         if found != self.ledger.as_str() {
@@ -496,6 +541,7 @@ impl<const P: u8> PostgresStore<P> {
                 found: LedgerId::new(found).map_err(|e| PostgresError::malformed(e.to_string()))?,
             });
         }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -684,7 +730,9 @@ impl<const P: u8> PostgresStore<P> {
              WHERE p.account_index = {account_bind} AND p.currency = {currency} \
                AND p.layer = {layer}{bound}{predicate}"
         );
-        let row = sql.apply(sqlx::query(&text)).fetch_one(&self.pool).await?;
+        let mut tx = self.begin().await?;
+        let row = sql.apply(sqlx::query(&text)).fetch_one(&mut *tx).await?;
+        tx.rollback().await?;
         Ok(Balance::<P> {
             debits: Amount::from_minor(row.try_get::<i64, _>("debits")?),
             credits: Amount::from_minor(row.try_get::<i64, _>("credits")?),
@@ -692,8 +740,11 @@ impl<const P: u8> PostgresStore<P> {
     }
 
     /// Loads postings for several entries at once, grouped by log index.
+    ///
+    /// Takes the caller's transaction: the entries whose postings these are were read
+    /// in that transaction, so both reads have to see the same pinned schema.
     async fn load_postings_for(
-        &self,
+        tx: &mut Transaction<'_, Postgres>,
         ids: &[uuid::Uuid],
     ) -> Result<std::collections::BTreeMap<uuid::Uuid, Vec<Posting<P>>>, PostgresError> {
         let mut grouped: std::collections::BTreeMap<uuid::Uuid, Vec<Posting<P>>> =
@@ -707,7 +758,7 @@ impl<const P: u8> PostgresStore<P> {
              FROM postings WHERE entry_id = ANY($1) ORDER BY entry_id, posting_index",
         )
         .bind(ids)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut **tx)
         .await?;
 
         // One query for the axes too, rather than one per posting.
@@ -716,7 +767,7 @@ impl<const P: u8> PostgresStore<P> {
              WHERE entry_id = ANY($1) ORDER BY entry_id, posting_index, axis",
         )
         .bind(ids)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut **tx)
         .await?;
         let dimensions = dimensions_from(&dim_rows)?;
 
@@ -986,10 +1037,13 @@ impl<const P: u8> PostgresStore<P> {
     /// One query over the ancestor paths, which is at most
     /// [`MAX_DEPTH`](crate::account::MAX_DEPTH) values and only ever run when
     /// an account is registered.
-    async fn posted_to_ancestor(
-        pool: &PgPool,
+    async fn posted_to_ancestor<'e, E>(
+        executor: E,
         path: &AccountPath,
-    ) -> Result<Option<String>, PostgresError> {
+    ) -> Result<Option<String>, PostgresError>
+    where
+        E: sqlx::Executor<'e, Database = Postgres>,
+    {
         let ancestors: Vec<String> = path.ancestors().iter().map(ToString::to_string).collect();
         if ancestors.is_empty() {
             return Ok(None);
@@ -1001,7 +1055,7 @@ impl<const P: u8> PostgresStore<P> {
              ORDER BY a.account_index LIMIT 1",
         )
         .bind(&ancestors)
-        .fetch_optional(pool)
+        .fetch_optional(executor)
         .await?
         .map(|row| row.try_get::<String, _>("path"))
         .transpose()
@@ -1079,7 +1133,9 @@ impl<const P: u8> PostgresStore<P> {
              WHERE p.account_index = {account} AND p.currency = {currency} \
                AND p.layer = {layer}{predicate}"
         );
-        let row = sql.apply(sqlx::query(&text)).fetch_one(&self.pool).await?;
+        let mut tx = self.begin().await?;
+        let row = sql.apply(sqlx::query(&text)).fetch_one(&mut *tx).await?;
+        tx.rollback().await?;
 
         Ok(Balance {
             debits: Amount::from_minor(row.try_get::<i64, _>("debits")?),
@@ -1424,7 +1480,12 @@ fn build_stored_entry<const P: u8>(
 
 /// Applies the schema. Kept as a trait so the query text stays next to it.
 trait ExecuteSchema {
-    fn execute_schema(&self) -> impl Future<Output = Result<(), PostgresError>> + Send;
+    /// oxsum change (not upstream): takes the schema to pin. Upstream reads it from
+    /// the pool's connection options; there is one shared pool now, so it is passed.
+    fn execute_schema(
+        &self,
+        schema: &str,
+    ) -> impl Future<Output = Result<(), PostgresError>> + Send;
 }
 
 /// Advisory-lock key serialising `migrate` across every ledger in one database.
@@ -1433,7 +1494,7 @@ trait ExecuteSchema {
 const MIGRATE_LOCK: i64 = 0x6f78_7375_6d6d_6967;
 
 impl ExecuteSchema for PgPool {
-    async fn execute_schema(&self) -> Result<(), PostgresError> {
+    async fn execute_schema(&self, schema: &str) -> Result<(), PostgresError> {
         // oxsum change (not upstream): `CREATE EXTENSION IF NOT EXISTS` is not safe
         // under concurrency — two ledgers migrating an empty database at once both
         // pass the existence check and the loser fails on `pg_extension`'s unique
@@ -1448,8 +1509,29 @@ impl ExecuteSchema for PgPool {
             .bind(MIGRATE_LOCK)
             .execute(&mut *conn)
             .await?;
+        // oxsum change (not upstream): pin the ledger's schema for the DDL. The
+        // reference schema opens its own transaction, so a `SET LOCAL` issued before
+        // it would sit outside any transaction block and be ignored — PostgreSQL only
+        // warns, and the tables would land in whatever schema the pooled connection
+        // happened to resolve to. The transaction is therefore opened here and closed
+        // here, whatever the DDL does with a transaction of its own.
+        sqlx::query("BEGIN").execute(&mut *conn).await?;
+        sqlx::query(&set_local_search_path(schema))
+            .execute(&mut *conn)
+            .await?;
         // `btree_gist` backs the non-overlapping period constraint.
         let applied = apply_schema(conn).await;
+        // The DDL commits its own transaction when it succeeds, in which case this
+        // COMMIT only warns that there is none in progress; when it fails, the
+        // aborted transaction needs the rollback before this connection can run
+        // anything else — the unlock below included.
+        let ended = sqlx::query(if applied.is_ok() {
+            "COMMIT"
+        } else {
+            "ROLLBACK"
+        })
+        .execute(&mut *conn)
+        .await;
         // Unlock before surfacing the migration's own result, so a failed
         // migration does not return the connection to the pool still locked.
         let unlocked = sqlx::query("SELECT pg_advisory_unlock($1)")
@@ -1457,6 +1539,7 @@ impl ExecuteSchema for PgPool {
             .execute(&mut *conn)
             .await;
         applied?;
+        ended?;
         unlocked?;
         Ok(())
     }
@@ -1479,6 +1562,9 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
 
     async fn register_account(&self, record: &AccountRecord) -> Result<(), Self::Error> {
         {
+            // A pinned transaction of its own: the leaf check and the upsert have to
+            // read and write the same ledger.
+            let mut tx = self.begin().await?;
             // The leaf rule, checked where the postings are. A registry holds
             // none, so it cannot see that this path would turn an account that
             // has already been posted to into an aggregation node — and the
@@ -1486,8 +1572,7 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
             //
             // Only a path the store has not seen can break it: a record it
             // already holds cannot change the shape of the tree.
-            if let Some(ancestor) =
-                Self::posted_to_ancestor(&self.pool, &record.account.path).await?
+            if let Some(ancestor) = Self::posted_to_ancestor(&mut *tx, &record.account.path).await?
             {
                 return Err(PostgresError::AncestorHasPostings {
                     path: record.account.path.to_string(),
@@ -1519,29 +1604,32 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
             .bind(record.account.opened_on)
             .bind(record.account.closed_on)
             .bind(limit_code(record.account.limit))
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
             if updated.rows_affected() == 0 {
                 return Err(PostgresError::AccountRebound { id: record.id });
             }
+            tx.commit().await?;
             Ok(())
         }
     }
 
     async fn accounts(&self) -> Result<Vec<AccountRecord>, Self::Error> {
         {
+            let mut tx = self.begin().await?;
             let rows = sqlx::query(
                 "SELECT account_index, path, kind, opened_on, closed_on, balance_limit \
                  FROM accounts ORDER BY account_index",
             )
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *tx)
             .await?;
+            tx.rollback().await?;
             rows.iter().map(account_record).collect()
         }
     }
 
     async fn append(&self, batch: &EntryBatch<P>) -> Result<Vec<Recorded>, Self::Error> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin().await?;
 
         let placement = match self.sequencing {
             Sequencing::Inline => {
@@ -1585,7 +1673,7 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
             return Ok(0);
         }
 
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin().await?;
         // One sequencing pass at a time: the positions it assigns must be dense,
         // so two passes must not both believe they start at the same index.
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
@@ -1640,15 +1728,17 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
     }
 
     async fn get(&self, id: EntryId) -> Result<Option<StoredEntry<P>>, Self::Error> {
+        let mut tx = self.begin().await?;
         let sql = format!("SELECT {ENTRY_COLUMNS} FROM entries WHERE entry_id = $1");
         let Some(row) = sqlx::query(&sql)
             .bind(id.as_uuid())
-            .fetch_optional(&self.pool)
+            .fetch_optional(&mut *tx)
             .await?
         else {
             return Ok(None);
         };
-        let mut grouped = self.load_postings_for(&[*id.as_uuid()]).await?;
+        let mut grouped = Self::load_postings_for(&mut tx, &[*id.as_uuid()]).await?;
+        tx.rollback().await?;
         Ok(Some(build_stored_entry::<P>(
             &row,
             grouped.remove(id.as_uuid()).unwrap_or_default(),
@@ -1660,16 +1750,18 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
         key: &IdempotencyKey,
     ) -> Result<Option<StoredEntry<P>>, Self::Error> {
         // The same unique index that makes the append idempotent.
+        let mut tx = self.begin().await?;
         let sql = format!("SELECT {ENTRY_COLUMNS} FROM entries WHERE idempotency_key = $1");
         let Some(row) = sqlx::query(&sql)
             .bind(key.as_bytes())
-            .fetch_optional(&self.pool)
+            .fetch_optional(&mut *tx)
             .await?
         else {
             return Ok(None);
         };
         let id: uuid::Uuid = row.try_get("entry_id")?;
-        let mut grouped = self.load_postings_for(&[id]).await?;
+        let mut grouped = Self::load_postings_for(&mut tx, &[id]).await?;
+        tx.rollback().await?;
         Ok(Some(build_stored_entry::<P>(
             &row,
             grouped.remove(&id).unwrap_or_default(),
@@ -1682,13 +1774,14 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
             .map_or(-1i64, |i| i64::try_from(i.get()).unwrap_or(i64::MAX));
         let limit = i64::try_from(cursor.effective_limit()).unwrap_or(i64::MAX);
 
+        let mut tx = self.begin().await?;
         let rows = sqlx::query(&format!(
             "SELECT {ENTRY_COLUMNS} FROM entries \
              WHERE log_index IS NOT NULL AND log_index > $1 ORDER BY log_index LIMIT $2"
         ))
         .bind(after)
         .bind(limit)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await?;
 
         // Fetch every posting for the page in one query rather than one per
@@ -1697,7 +1790,8 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
             .iter()
             .map(|r| r.try_get::<uuid::Uuid, _>("entry_id"))
             .collect::<Result<_, _>>()?;
-        let mut grouped = self.load_postings_for(&ids).await?;
+        let mut grouped = Self::load_postings_for(&mut tx, &ids).await?;
+        tx.rollback().await?;
 
         let mut records = Vec::with_capacity(rows.len());
         for (row, id) in rows.iter().zip(ids.iter()) {
@@ -1718,8 +1812,11 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
     }
 
     async fn head(&self) -> Result<TreeHead, Self::Error> {
-        let size = Self::log_size(&self.pool).await?;
-        Self::head_from_nodes(&self.pool, size).await
+        let mut tx = self.begin().await?;
+        let size = Self::log_size(&mut *tx).await?;
+        let head = Self::head_from_nodes(&mut *tx, size).await?;
+        tx.rollback().await?;
+        Ok(head)
     }
 
     /// `O(log n)` node reads — the perfect-subtree cover at that size.
@@ -1729,7 +1826,8 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
     /// fields that must agree are two fields that can disagree. Folding the
     /// cover is one query and cannot drift.
     async fn head_at(&self, size: u64) -> Result<TreeHead, Self::Error> {
-        let held = Self::log_size(&self.pool).await?;
+        let mut tx = self.begin().await?;
+        let held = Self::log_size(&mut *tx).await?;
         if size > held {
             // The log's real length, not a placeholder: this error is read by
             // whoever was told their archived head could not be reproduced, and
@@ -1741,7 +1839,9 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
             }
             .into());
         }
-        Self::head_from_nodes(&self.pool, size).await
+        let head = Self::head_from_nodes(&mut *tx, size).await?;
+        tx.rollback().await?;
+        Ok(head)
     }
 
     /// Counts the log, not the surviving entry rows.
@@ -1751,7 +1851,10 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
     /// `entries` would shrink underneath every head, proof and seal that had
     /// already been published.
     async fn len(&self) -> Result<u64, Self::Error> {
-        Self::log_size(&self.pool).await
+        let mut tx = self.begin().await?;
+        let size = Self::log_size(&mut *tx).await?;
+        tx.rollback().await?;
+        Ok(size)
     }
 
     async fn balance(
@@ -1775,18 +1878,22 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
              GROUP BY p.account_index, p.currency, p.layer \
              ORDER BY p.account_index, p.currency, p.layer"
         );
-        let rows = sql.apply(sqlx::query(&text)).fetch_all(&self.pool).await?;
+        let mut tx = self.begin().await?;
+        let rows = sql.apply(sqlx::query(&text)).fetch_all(&mut *tx).await?;
+        tx.rollback().await?;
         build_trial_balance::<P>(&rows)
     }
 
     async fn dimension_values(&self, axis: &str) -> Result<Vec<Label>, Self::Error> {
         // Index-driven on `posting_dimensions (axis, value)`.
+        let mut tx = self.begin().await?;
         let rows = sqlx::query(
             "SELECT DISTINCT value FROM posting_dimensions WHERE axis = $1 ORDER BY value",
         )
         .bind(axis)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await?;
+        tx.rollback().await?;
         rows.iter()
             .map(|row| {
                 let value: String = row.try_get("value")?;
@@ -1797,7 +1904,9 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
     }
 
     async fn prove_inclusion(&self, index: LogIndex) -> Result<InclusionProof, Self::Error> {
-        let size = Self::log_size(&self.pool).await?;
+        let mut tx = self.begin().await?;
+        let size = Self::log_size(&mut *tx).await?;
+        tx.rollback().await?;
         self.prove_inclusion_at(index, size).await
     }
 
@@ -1811,7 +1920,8 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
         index: LogIndex,
         size: u64,
     ) -> Result<InclusionProof, Self::Error> {
-        let held = Self::log_size(&self.pool).await?;
+        let mut tx = self.begin().await?;
+        let held = Self::log_size(&mut *tx).await?;
         if size > held {
             return Err(ProofError::SizeOutOfRange {
                 from: size,
@@ -1820,12 +1930,15 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
             .into());
         }
         let plan = nodes::InclusionPlan::new(index.get(), size)?;
-        let read = Self::read_nodes(&self.pool, plan.nodes()).await?;
+        let read = Self::read_nodes(&mut *tx, plan.nodes()).await?;
+        tx.rollback().await?;
         Ok(plan.assemble(&read)?)
     }
 
     async fn prove_consistency(&self, old_size: u64) -> Result<ConsistencyProof, Self::Error> {
-        let size = Self::log_size(&self.pool).await?;
+        let mut tx = self.begin().await?;
+        let size = Self::log_size(&mut *tx).await?;
+        tx.rollback().await?;
         self.prove_consistency_between(old_size, size).await
     }
 
@@ -1834,7 +1947,8 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
         old_size: u64,
         new_size: u64,
     ) -> Result<ConsistencyProof, Self::Error> {
-        let held = Self::log_size(&self.pool).await?;
+        let mut tx = self.begin().await?;
+        let held = Self::log_size(&mut *tx).await?;
         if new_size > held {
             return Err(ProofError::SizeOutOfRange {
                 from: new_size,
@@ -1843,13 +1957,15 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
             .into());
         }
         let plan = nodes::ConsistencyPlan::new(old_size, new_size)?;
-        let read = Self::read_nodes(&self.pool, plan.nodes()).await?;
+        let read = Self::read_nodes(&mut *tx, plan.nodes()).await?;
+        tx.rollback().await?;
         Ok(plan.assemble(&read)?)
     }
 
     async fn define_period(&self, period: &Period) -> Result<(), Self::Error> {
         // The EXCLUDE constraint enforces non-overlap; this insert only has to
         // be idempotent for a caller that declares its calendar on every start.
+        let mut tx = self.begin().await?;
         sqlx::query(
             "INSERT INTO periods (period_id, starts_on, ends_on, state) VALUES ($1, $2, $3, $4) \
              ON CONFLICT (period_id) DO UPDATE SET \
@@ -1861,8 +1977,9 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
         .bind(period.start)
         .bind(period.end)
         .bind(period_state_str(period.state))
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -1876,20 +1993,24 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
         // from the last.
         let mut calendar = self.calendar().await?;
         calendar.transition(period, to)?;
+        let mut tx = self.begin().await?;
         sqlx::query("UPDATE periods SET state = $2 WHERE period_id = $1")
             .bind(period.as_str())
             .bind(period_state_str(to))
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         Ok(())
     }
 
     async fn periods(&self) -> Result<Vec<Period>, Self::Error> {
+        let mut tx = self.begin().await?;
         let rows = sqlx::query(
             "SELECT period_id, starts_on, ends_on, state FROM periods ORDER BY starts_on",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await?;
+        tx.rollback().await?;
         let mut out = Vec::with_capacity(rows.len());
         for row in &rows {
             let id: String = row.try_get("period_id")?;
@@ -1927,6 +2048,7 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
         // Sequenced entries only. In deferred mode an entry can be durable
         // without a position, and one that is not in the log the tree head
         // commits to must not be counted as covered by it.
+        let mut tx = self.begin().await?;
         let span = sqlx::query(
             "SELECT MIN(log_index) AS first, MAX(log_index) AS last, COUNT(*)::BIGINT AS n \
              FROM entries \
@@ -1934,8 +2056,9 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
         )
         .bind(definition.start)
         .bind(definition.end)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await?;
+        tx.rollback().await?;
         let first: Option<i64> = span.try_get("first")?;
         let last: Option<i64> = span.try_get("last")?;
         let count: i64 = span.try_get("n")?;
@@ -1955,16 +2078,18 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
         // `O(log n)`. Derived from one source, so the proof and the head it
         // relates cannot have come from different trees; `Seal::from_parts`
         // re-checks that rather than trusting it.
-        let size = Self::log_size(&self.pool).await?;
-        let tree_head = Self::head_from_nodes(&self.pool, size).await?;
+        let mut tx = self.begin().await?;
+        let size = Self::log_size(&mut *tx).await?;
+        let tree_head = Self::head_from_nodes(&mut *tx, size).await?;
         let prev_consistency = match chain.last() {
             Some(previous) if previous.tree_head.size > 0 => {
                 let plan = nodes::ConsistencyPlan::new(previous.tree_head.size, size)?;
-                let read = Self::read_nodes(&self.pool, plan.nodes()).await?;
+                let read = Self::read_nodes(&mut *tx, plan.nodes()).await?;
                 Some(plan.assemble(&read)?)
             }
             _ => None,
         };
+        tx.rollback().await?;
 
         let seal = Seal::from_parts(
             self.ledger.clone(),
@@ -1986,7 +2111,7 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
             chain.last(),
         )?;
 
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin().await?;
         sqlx::query(
             "INSERT INTO seals ( \
                 period_id, first_index, last_index, entry_count, tree_size, tree_root, \
@@ -2026,14 +2151,16 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
     }
 
     async fn seals(&self) -> Result<Vec<Seal>, Self::Error> {
+        let mut tx = self.begin().await?;
         let rows = sqlx::query(
             "SELECT period_id, first_index, last_index, entry_count, tree_size, tree_root, \
              trial_balance_size, trial_balance_root, accounts_size, accounts_root, \
              prev_seal, prev_consistency, seal_hash \
              FROM seals ORDER BY chain_position",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await?;
+        tx.rollback().await?;
 
         let mut out = Vec::with_capacity(rows.len());
         for row in &rows {
@@ -2080,7 +2207,7 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
 
     async fn clear(&self, clearing: Clearing<P>) -> Result<(), Self::Error> {
         // Validate against the residuals the database reports, then record.
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin().await?;
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
             .bind(self.append_lock)
             .execute(&mut *tx)
@@ -2194,12 +2321,13 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
     }
 
     async fn reset_clearing(&self, id: ClearingId, on: Date) -> Result<(), Self::Error> {
+        let mut tx = self.begin().await?;
         let result = sqlx::query(
             "UPDATE clearings SET reset_on = $2 WHERE clearing_id = $1 AND reset_on IS NULL",
         )
         .bind(id.as_uuid())
         .bind(on)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
 
         // An UPDATE that matched nothing is not success: the caller asked to
@@ -2208,6 +2336,7 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
         if result.rows_affected() == 0 {
             return Err(PostgresError::ClearingNotResettable { id });
         }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -2227,6 +2356,7 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
         let limit = cursor.effective_limit();
         let probe = i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX);
 
+        let mut tx = self.begin().await?;
         let mut rows = sqlx::query(
             "SELECT e.log_index, o.entry_id, o.posting_index, o.direction, o.original_minor, \
                     o.applied_minor, o.residual_minor \
@@ -2243,8 +2373,9 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
         .bind(after_index)
         .bind(i16::try_from(after_posting).unwrap_or(i16::MAX))
         .bind(probe)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await?;
+        tx.rollback().await?;
         let has_more = rows.len() > limit;
         rows.truncate(limit);
 
@@ -2310,7 +2441,9 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
                AND p.layer = {layer_bind}{predicate} \
              GROUP BY p.account_index"
         );
-        let rows = sql.apply(sqlx::query(&text)).fetch_all(&self.pool).await?;
+        let mut tx = self.begin().await?;
+        let rows = sql.apply(sqlx::query(&text)).fetch_all(&mut *tx).await?;
+        tx.rollback().await?;
 
         let mut out = std::collections::BTreeMap::new();
         for row in &rows {
@@ -2370,7 +2503,9 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
                         AND p.posting_index > {after_posting_bind})){predicate} \
              ORDER BY e.log_index, p.posting_index LIMIT {probe_bind}"
         );
-        let mut rows = sql.apply(sqlx::query(&text)).fetch_all(&self.pool).await?;
+        let mut tx = self.begin().await?;
+        let mut rows = sql.apply(sqlx::query(&text)).fetch_all(&mut *tx).await?;
+        tx.rollback().await?;
         let has_more = rows.len() > limit;
         rows.truncate(limit);
 
@@ -2437,6 +2572,7 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
 
     /// Conditional on the tree size not going backwards — see the trait.
     async fn save_checkpoint(&self, checkpoint: &Checkpoint<P>) -> Result<(), Self::Error> {
+        let mut tx = self.begin().await?;
         sqlx::query(
             "INSERT INTO checkpoints ( \
                 account_index, currency, layer, debits_minor, credits_minor, \
@@ -2457,12 +2593,14 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
         .bind(checkpoint.balance.credits.to_minor())
         .bind(i64::try_from(checkpoint.tree_head.size).unwrap_or(i64::MAX))
         .bind(checkpoint.tree_head.root.as_bytes().as_slice())
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(())
     }
 
     async fn load_checkpoint(&self, key: BalanceKey) -> Result<Option<Checkpoint<P>>, Self::Error> {
+        let mut tx = self.begin().await?;
         let Some(row) = sqlx::query(
             "SELECT debits_minor, credits_minor, tree_size, tree_root \
              FROM checkpoints WHERE account_index = $1 AND currency = $2 AND layer = $3",
@@ -2470,11 +2608,12 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
         .bind(i32::try_from(key.account.index()).unwrap_or(i32::MAX))
         .bind(key.currency.code())
         .bind(layer_str(key.layer))
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await?
         else {
             return Ok(None);
         };
+        tx.rollback().await?;
         let size: i64 = row.try_get("tree_size")?;
         Ok(Some(Checkpoint::new(
             key,
