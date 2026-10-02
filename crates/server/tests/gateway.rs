@@ -223,6 +223,8 @@ struct World {
     tenants: Tenants,
     tenant_id: String,
     key: String,
+    /// The first key's id, for the key-management endpoints.
+    key_id: String,
     script: Script,
     /// The channel row this world put its upstream behind.
     channel: String,
@@ -356,6 +358,10 @@ async fn world_for(url: &str, top_up: i64) -> World {
         .as_str()
         .expect("registration names a tenant")
         .to_owned();
+    let key_id = registration["apiKey"]["id"]
+        .as_str()
+        .expect("registration names the key")
+        .to_owned();
     if top_up > 0 {
         call(
             &app,
@@ -371,6 +377,7 @@ async fn world_for(url: &str, top_up: i64) -> World {
         tenants,
         tenant_id,
         key,
+        key_id,
         script,
         channel,
         suffix,
@@ -1318,4 +1325,39 @@ async fn a_deployment_whose_key_is_missing_refuses_to_start() {
     .expect_err("a deployment that cannot open its channels must not start");
     let error = error.to_string();
     assert!(error.contains("OXSUM_SECRET_KEY"), "{error}");
+}
+
+#[tokio::test]
+async fn a_key_spend_limit_is_refused_before_upstream_is_contacted() {
+    let world = world!(1_000_000);
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+
+    // Cap the key below what a turn freezes: the wallet could cover it, the key may not.
+    let (status, body) = call(
+        &world.app,
+        "PATCH",
+        &format!("/api/v1/org/keys/{}", world.key_id),
+        Some(json!({"spendLimitMinor": 100})),
+        Some(&world.key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert_eq!(body["error"]["type"], "insufficient_quota");
+    assert_eq!(body["error"]["code"], "KEY_LIMIT_EXCEEDED");
+    // The message names the numbers, so the caller can act on it.
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.contains("100"), "{message}");
+    // Nothing was frozen, and upstream never heard about it.
+    assert!(world.script.seen().is_empty());
+    let wallet = world.wallet().await;
+    assert_eq!(wallet.reserved().await.unwrap(), 0);
 }
