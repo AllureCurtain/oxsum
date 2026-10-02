@@ -85,7 +85,7 @@ async fn tenants_on_one_pool_cannot_see_each_other() {
 
     let a_bill = a.top_up("a-1", 10 * ONE, D).await.unwrap();
     b.top_up("b-1", 3 * ONE, D).await.unwrap();
-    a.hold("a-2:hold", 4 * ONE, D).await.unwrap();
+    a.hold("a-2:hold", "", 4 * ONE, D).await.unwrap();
 
     assert_eq!(a.available().await.unwrap(), 6 * ONE);
     assert_eq!(b.available().await.unwrap(), 3 * ONE);
@@ -178,7 +178,7 @@ async fn concurrent_holds_cannot_overdraw() {
     let tasks: Vec<_> = (0..20)
         .map(|i| {
             let w = w.clone();
-            tokio::spawn(async move { w.hold(&format!("hold-{i}"), 3 * ONE, D).await })
+            tokio::spawn(async move { w.hold(&format!("hold-{i}"), "", 3 * ONE, D).await })
         })
         .collect();
     let mut accepted = 0;
@@ -202,17 +202,17 @@ async fn hold_then_partial_settle_refunds_the_rest() {
         .unwrap();
     w.top_up("fund", 10 * ONE, D).await.unwrap();
 
-    w.hold("req-1:hold", 4 * ONE, D).await.unwrap();
+    w.hold("req-1:hold", "", 4 * ONE, D).await.unwrap();
     assert_eq!(w.available().await.unwrap(), 6 * ONE);
 
-    w.settle("req-1:settle", 4 * ONE, 1_234_567, D)
+    w.settle("req-1:settle", "", 4 * ONE, 1_234_567, D)
         .await
         .unwrap();
     assert_eq!(w.available().await.unwrap(), 10 * ONE - 1_234_567);
 
     // Retrying the same settlement is idempotent; nothing is charged twice.
     let again = w
-        .settle("req-1:settle", 4 * ONE, 1_234_567, D)
+        .settle("req-1:settle", "", 4 * ONE, 1_234_567, D)
         .await
         .unwrap();
     assert!(!again.is_new);
@@ -225,7 +225,7 @@ async fn settle_rejects_actual_above_hold() {
     let w = Wallet::open(pool(&url).await, &fresh("bounds"))
         .await
         .unwrap();
-    let err = w.settle("s", ONE, 2 * ONE, D).await.unwrap_err();
+    let err = w.settle("s", "", ONE, 2 * ONE, D).await.unwrap_err();
     assert!(matches!(err, WalletError::InvalidInput(_)));
 }
 
@@ -244,7 +244,7 @@ async fn a_settlement_that_was_never_held_is_refused() {
         .unwrap();
     w.top_up("fund", 10 * ONE, D).await.unwrap();
 
-    let err = w.settle("ghost", ONE, 0, D).await.unwrap_err();
+    let err = w.settle("ghost", "", ONE, 0, D).await.unwrap_err();
     assert!(matches!(err, WalletError::InsufficientFunds), "{err:?}");
 
     // Not one minor unit moved, and nothing was written.
@@ -252,7 +252,10 @@ async fn a_settlement_that_was_never_held_is_refused() {
     assert_eq!(w.log_size().await.unwrap(), 1);
 
     // A settlement that charges nothing at all is the same claim on the same hold.
-    let err = w.settle("ghost-charges", ONE, ONE, D).await.unwrap_err();
+    let err = w
+        .settle("ghost-charges", "", ONE, ONE, D)
+        .await
+        .unwrap_err();
     assert!(matches!(err, WalletError::InsufficientFunds), "{err:?}");
     assert_eq!(w.available().await.unwrap(), 10 * ONE);
 }
@@ -265,21 +268,21 @@ async fn a_settlement_larger_than_the_hold_is_refused() {
         .await
         .unwrap();
     w.top_up("fund", 10 * ONE, D).await.unwrap();
-    w.hold("h", 4 * ONE, D).await.unwrap();
+    w.hold("h", "", 4 * ONE, D).await.unwrap();
     assert_eq!(w.available().await.unwrap(), 6 * ONE);
 
     // A hold exists, but it is smaller than the amount being released: five out of four.
-    let err = w.settle("s-over", 5 * ONE, 0, D).await.unwrap_err();
+    let err = w.settle("s-over", "", 5 * ONE, 0, D).await.unwrap_err();
     assert!(matches!(err, WalletError::InsufficientFunds), "{err:?}");
     assert_eq!(w.available().await.unwrap(), 6 * ONE);
     assert_eq!(w.log_size().await.unwrap(), 2);
 
     // The hold it actually took settles exactly as before.
-    w.settle("s-ok", 4 * ONE, ONE, D).await.unwrap();
+    w.settle("s-ok", "", 4 * ONE, ONE, D).await.unwrap();
     assert_eq!(w.available().await.unwrap(), 9 * ONE);
 
     // And once it is discharged, releasing it again has nothing left to give back.
-    let err = w.settle("s-again", 4 * ONE, 0, D).await.unwrap_err();
+    let err = w.settle("s-again", "", 4 * ONE, 0, D).await.unwrap_err();
     assert!(matches!(err, WalletError::InsufficientFunds), "{err:?}");
     assert_eq!(w.available().await.unwrap(), 9 * ONE);
 }
@@ -298,12 +301,12 @@ async fn concurrent_settlements_of_one_hold_cannot_both_release_it() {
             .unwrap(),
     );
     w.top_up("fund", 10 * ONE, D).await.unwrap();
-    w.hold("h", 4 * ONE, D).await.unwrap();
+    w.hold("h", "", 4 * ONE, D).await.unwrap();
 
     let tasks: Vec<_> = (0..2)
         .map(|i| {
             let w = w.clone();
-            tokio::spawn(async move { w.settle(&format!("s-{i}"), 4 * ONE, 0, D).await })
+            tokio::spawn(async move { w.settle(&format!("s-{i}"), "", 4 * ONE, 0, D).await })
         })
         .collect();
     let mut released = 0;
@@ -373,7 +376,7 @@ async fn opening_a_wallet_tightens_a_ledger_written_under_the_old_rule() {
     assert_eq!(w.available().await.unwrap(), 10 * ONE);
 
     // Which is the point: the rule is enforced again.
-    let err = w.settle("ghost", ONE, 0, D).await.unwrap_err();
+    let err = w.settle("ghost", "", ONE, 0, D).await.unwrap_err();
     assert!(matches!(err, WalletError::InsufficientFunds), "{err:?}");
     assert_eq!(w.available().await.unwrap(), 10 * ONE);
 }
@@ -408,7 +411,7 @@ async fn reusing_a_key_for_a_different_request_is_a_conflict() {
     assert_eq!(replay.entry_id, first.entry_id);
 
     // A different kind under a key another kind already holds is the same conflict.
-    let err = w.hold("same-key", ONE, D).await.unwrap_err();
+    let err = w.hold("same-key", "", ONE, D).await.unwrap_err();
     assert!(matches!(err, WalletError::Conflict(_)), "{err:?}");
     assert_eq!(w.available().await.unwrap(), 5 * ONE);
 }
@@ -420,7 +423,7 @@ async fn bill_proof_verifies_and_catches_tampering() {
         .await
         .unwrap();
     w.top_up("fund", 10 * ONE, D).await.unwrap();
-    let bill = w.hold("req-9:hold", 2 * ONE, D).await.unwrap();
+    let bill = w.hold("req-9:hold", "", 2 * ONE, D).await.unwrap();
     for i in 0..5 {
         w.top_up(&format!("noise-{i}"), ONE, D).await.unwrap();
     }
