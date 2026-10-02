@@ -205,16 +205,12 @@ async fn hold_then_partial_settle_refunds_the_rest() {
     w.hold("req-1:hold", "", 4 * ONE, D).await.unwrap();
     assert_eq!(w.available().await.unwrap(), 6 * ONE);
 
-    w.settle("req-1:settle", "", 4 * ONE, 1_234_567, D)
-        .await
-        .unwrap();
+    // The settlement names the hold it releases; its amount comes from the hold entry.
+    w.settle("req-1:hold", "", 1_234_567, D).await.unwrap();
     assert_eq!(w.available().await.unwrap(), 10 * ONE - 1_234_567);
 
     // Retrying the same settlement is idempotent; nothing is charged twice.
-    let again = w
-        .settle("req-1:settle", "", 4 * ONE, 1_234_567, D)
-        .await
-        .unwrap();
+    let again = w.settle("req-1:hold", "", 1_234_567, D).await.unwrap();
     assert!(!again.is_new);
     assert_eq!(w.available().await.unwrap(), 10 * ONE - 1_234_567);
 }
@@ -225,17 +221,19 @@ async fn settle_rejects_actual_above_hold() {
     let w = Wallet::open(pool(&url).await, &fresh("bounds"))
         .await
         .unwrap();
-    let err = w.settle("s", "", ONE, 2 * ONE, D).await.unwrap_err();
+    w.top_up("fund", 10 * ONE, D).await.unwrap();
+    w.hold("h", "", ONE, D).await.unwrap();
+
+    // The actual may not exceed what the hold reserved: the bound comes from the ledger.
+    let err = w.settle("h", "", 2 * ONE, D).await.unwrap_err();
     assert!(matches!(err, WalletError::InvalidInput(_)));
 }
 
-/// A settlement of an amount that was never held is refused, and invents nothing.
+/// A settlement naming a hold that was never taken is refused, and invents nothing.
 ///
-/// This is the hole the generative tests found (issue #6): a settlement releases the `held`
-/// the caller reports, and the release is a *credit* in the pending layer. Under a rule that
-/// only folds the layers, a pending credit granted no room but cost none either, so this
-/// settlement raised the available balance by 1 credit out of nothing — spendable, and backed
-/// by no money at all.
+/// The settlement names the hold it releases, and the server reads the hold from the
+/// ledger. No entry under the key means no hold, so there is nothing to release — refused
+/// even though the wallet holds enough to cover it.
 #[tokio::test]
 async fn a_settlement_that_was_never_held_is_refused() {
     let url = db_or_skip!();
@@ -244,54 +242,56 @@ async fn a_settlement_that_was_never_held_is_refused() {
         .unwrap();
     w.top_up("fund", 10 * ONE, D).await.unwrap();
 
-    let err = w.settle("ghost", "", ONE, 0, D).await.unwrap_err();
-    assert!(matches!(err, WalletError::InsufficientFunds), "{err:?}");
+    let err = w.settle("ghost", "", 0, D).await.unwrap_err();
+    assert!(matches!(err, WalletError::HoldNotFound(_)), "{err:?}");
 
     // Not one minor unit moved, and nothing was written.
     assert_eq!(w.available().await.unwrap(), 10 * ONE);
     assert_eq!(w.log_size().await.unwrap(), 1);
 
-    // A settlement that charges nothing at all is the same claim on the same hold.
-    let err = w
-        .settle("ghost-charges", "", ONE, ONE, D)
-        .await
-        .unwrap_err();
-    assert!(matches!(err, WalletError::InsufficientFunds), "{err:?}");
+    // A settlement that charges something names the same missing hold.
+    let err = w.settle("ghost-charges", "", ONE, D).await.unwrap_err();
+    assert!(matches!(err, WalletError::HoldNotFound(_)), "{err:?}");
     assert_eq!(w.available().await.unwrap(), 10 * ONE);
 }
 
-/// Releasing more than was reserved is refused, however much the wallet holds.
+/// Settling a hold that is already discharged is refused, even when other holds would
+/// cover the release.
+///
+/// This is the pairing issue #10 adds over the aggregate rule: hold A is settled while
+/// hold B still reserves 4, and settling A again must not spend B's reservation. The
+/// refusal is the ledger's idempotency gate — the settlement entry's key is derived from
+/// the hold's key — so the second, different settlement of A is a conflict.
 #[tokio::test]
-async fn a_settlement_larger_than_the_hold_is_refused() {
+async fn settling_a_discharged_hold_is_refused() {
     let url = db_or_skip!();
-    let w = Wallet::open(pool(&url).await, &fresh("overshoot"))
+    let w = Wallet::open(pool(&url).await, &fresh("discharged"))
         .await
         .unwrap();
     w.top_up("fund", 10 * ONE, D).await.unwrap();
-    w.hold("h", "", 4 * ONE, D).await.unwrap();
+    w.hold("a", "", 4 * ONE, D).await.unwrap();
+    w.hold("b", "", 4 * ONE, D).await.unwrap();
+    assert_eq!(w.available().await.unwrap(), 2 * ONE);
+
+    w.settle("a", "", 0, D).await.unwrap();
     assert_eq!(w.available().await.unwrap(), 6 * ONE);
 
-    // A hold exists, but it is smaller than the amount being released: five out of four.
-    let err = w.settle("s-over", "", 5 * ONE, 0, D).await.unwrap_err();
-    assert!(matches!(err, WalletError::InsufficientFunds), "{err:?}");
+    // A again, for a different charge: the hold is discharged, and B's reservation is
+    // not A's to spend.
+    let err = w.settle("a", "", ONE, D).await.unwrap_err();
+    assert!(matches!(err, WalletError::Conflict(_)), "{err:?}");
     assert_eq!(w.available().await.unwrap(), 6 * ONE);
-    assert_eq!(w.log_size().await.unwrap(), 2);
 
-    // The hold it actually took settles exactly as before.
-    w.settle("s-ok", "", 4 * ONE, ONE, D).await.unwrap();
-    assert_eq!(w.available().await.unwrap(), 9 * ONE);
-
-    // And once it is discharged, releasing it again has nothing left to give back.
-    let err = w.settle("s-again", "", 4 * ONE, 0, D).await.unwrap_err();
-    assert!(matches!(err, WalletError::InsufficientFunds), "{err:?}");
+    // B still settles exactly as before.
+    w.settle("b", "", ONE, D).await.unwrap();
     assert_eq!(w.available().await.unwrap(), 9 * ONE);
 }
 
 /// Two settlements racing to release the same hold cannot both succeed.
 ///
-/// The check runs inside the append, against the balance the entry would leave behind, and the
-/// append takes the constrained account's row lock — so the second one sees the first one's
-/// release and is refused. A check the caller did beforehand would let both through.
+/// The settlement entry's idempotency key is derived from the hold's key, so the two
+/// appends collide on the ledger's idempotency gate: one wins, the other is refused as a
+/// conflict. A check the caller did beforehand would let both through.
 #[tokio::test]
 async fn concurrent_settlements_of_one_hold_cannot_both_release_it() {
     let url = db_or_skip!();
@@ -303,17 +303,18 @@ async fn concurrent_settlements_of_one_hold_cannot_both_release_it() {
     w.top_up("fund", 10 * ONE, D).await.unwrap();
     w.hold("h", "", 4 * ONE, D).await.unwrap();
 
+    // Different charges, so the loser is a conflict rather than an idempotent replay.
     let tasks: Vec<_> = (0..2)
         .map(|i| {
             let w = w.clone();
-            tokio::spawn(async move { w.settle(&format!("s-{i}"), "", 4 * ONE, 0, D).await })
+            tokio::spawn(async move { w.settle("h", "", i * ONE, D).await })
         })
         .collect();
     let mut released = 0;
     for task in tasks {
         match task.await.unwrap() {
             Ok(_) => released += 1,
-            Err(WalletError::InsufficientFunds) => {}
+            Err(WalletError::Conflict(_)) => {}
             Err(e) => panic!("unexpected: {e:?}"),
         }
     }
@@ -375,8 +376,9 @@ async fn opening_a_wallet_tightens_a_ledger_written_under_the_old_rule() {
     assert_eq!(stored, "funded_reservations");
     assert_eq!(w.available().await.unwrap(), 10 * ONE);
 
-    // Which is the point: the rule is enforced again.
-    let err = w.settle("ghost", "", ONE, 0, D).await.unwrap_err();
+    // Which is the point: the rule is enforced again — a hold the balance cannot cover
+    // is refused by the re-applied limit.
+    let err = w.hold("over", "", 11 * ONE, D).await.unwrap_err();
     assert!(matches!(err, WalletError::InsufficientFunds), "{err:?}");
     assert_eq!(w.available().await.unwrap(), 10 * ONE);
 }

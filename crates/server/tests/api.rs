@@ -248,7 +248,7 @@ async fn wallet_round_trip() {
         &app,
         "POST",
         "/api/v1/settlements",
-        Some(json!({"idempotencyKey": "s1", "heldMinor": 3_000_000, "actualMinor": 2_000_000})),
+        Some(json!({"holdKey": "h2", "actualMinor": 2_000_000})),
         Some(&key),
     )
     .await;
@@ -270,7 +270,7 @@ async fn wallet_round_trip() {
 }
 
 #[tokio::test]
-async fn an_unheld_settlement_is_insufficient_funds() {
+async fn a_settlement_naming_no_hold_is_not_found() {
     let (app, _pool) = app_or_skip!(Signup::Open);
     let (_registration, key) = register(&app, "unheld").await;
 
@@ -284,20 +284,21 @@ async fn an_unheld_settlement_is_insufficient_funds() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // A settlement of an amount that was never held: the release would credit the pending
-    // layer beyond anything the wallet reserved, so it is refused like an unfunded hold.
+    // A settlement naming a hold that was never taken: there is nothing to release, even
+    // though the wallet holds enough to cover it.
     let (status, body) = call(
         &app,
         "POST",
         "/api/v1/settlements",
-        Some(json!({"idempotencyKey": "s1", "heldMinor": 1_000_000, "actualMinor": 0})),
+        Some(json!({"holdKey": "ghost", "actualMinor": 0})),
         Some(&key),
     )
     .await;
-    assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "{body}");
-    assert_eq!(body["error"]["code"], "INSUFFICIENT_FUNDS");
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["error"]["code"], "NOT_FOUND");
 
-    // A hold exists, but it is smaller than what the settlement releases.
+    // Take a hold, settle it, and settle it again for a different charge: the hold is
+    // discharged, so the second settlement is a conflict.
     let (status, _) = call(
         &app,
         "POST",
@@ -307,32 +308,27 @@ async fn an_unheld_settlement_is_insufficient_funds() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let (status, body) = call(
-        &app,
-        "POST",
-        "/api/v1/settlements",
-        Some(json!({"idempotencyKey": "s2", "heldMinor": 3_000_000, "actualMinor": 0})),
-        Some(&key),
-    )
-    .await;
-    assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "{body}");
-    assert_eq!(body["error"]["code"], "INSUFFICIENT_FUNDS");
-
-    // Neither refusal moved anything: the hold is still there, and the wallet is whole.
-    let (status, body) = call(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["data"]["availableMinor"], 3_000_000);
-
-    // The hold it actually took settles, and the actual charge lands.
     let (status, _) = call(
         &app,
         "POST",
         "/api/v1/settlements",
-        Some(json!({"idempotencyKey": "s3", "heldMinor": 2_000_000, "actualMinor": 1_000_000})),
+        Some(json!({"holdKey": "h1", "actualMinor": 1_000_000})),
         Some(&key),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/settlements",
+        Some(json!({"holdKey": "h1", "actualMinor": 0})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "CONFLICT");
+
+    // Neither refusal moved anything: the wallet holds what the one settlement left.
     let (status, body) = call(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["availableMinor"], 4_000_000);
