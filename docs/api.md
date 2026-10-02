@@ -52,6 +52,16 @@ Whoever deploys oxsum, and nobody else: the credential is the operator token fro
 
 A deployment that sets no `OXSUM_ADMIN_TOKEN` has no admin surface: the routes exist and answer `UNAUTHORIZED`, rather than being open or absent.
 
+## Tree heads (`/api/v1/log`)
+
+Each organization's ledger is its own append-only Merkle log, and the operator signs its head. A user holding an old head can verify the new head was appended onto it — the signature, then a consistency proof:
+
+- `GET /api/v1/log/head` — the current head, signed: a C2SP signed-note (`note`: body, blank line, signature lines), the `origin` (`oxsum/ledgers/<tenant_id>`), the structured head (`size`, lowercase-hex `root`), and the signing key (`keyName`, base64 `publicKey`, the `keyHash` selector naming the operator's signature line). The note text is what the signature covers, byte for byte: verify what you read, not what you re-render.
+- `GET /api/v1/log/consistency?from=<size>` — the signed new head, the old head at `from` recomputed from the log, and the `proof` (`oldSize`, `newSize`, lowercase-hex `path`) between them. `from` must be at least 1: every log extends the empty tree, so a proof from size 0 would verify against any history and is `VALIDATION_ERROR` rather than answered; `from` beyond the log is `VALIDATION_ERROR` too.
+- `GET /api/v1/log/key` — the operator's verifying key. No credential: this is a public key. Fetching it from the server is convenience — a verifier must have chosen the key through a channel the operator does not control, or the signature proves only that the server agrees with itself.
+
+The key signs under the fixed name `oxsum/tree-heads`; the seed is `OXSUM_HEAD_SIGNING_KEY` (32 bytes, base64). A deployment that sets none serves the wallet but not the log surface: those routes answer `SERVICE_UNAVAILABLE`.
+
 ## Response format
 
 Success:
@@ -77,6 +87,7 @@ Failure:
 | `NOT_FOUND` | 404 | resource does not exist, or belongs to another organization; a settlement naming a hold that is not outstanding |
 | `CONFLICT` | 409 | the value is already taken, or a key was reused for a different request; registering an email that exists; settling a hold that is already discharged |
 | `INTERNAL_ERROR` | 500 | server error; details only in logs |
+| `SERVICE_UNAVAILABLE` | 503 | a feature the deployment did not configure: the wallet works, this surface does not — today, the tree-head endpoints without `OXSUM_HEAD_SIGNING_KEY` |
 
 ## API keys
 
