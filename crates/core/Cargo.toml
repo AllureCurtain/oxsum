@@ -11,6 +11,7 @@ publish = false
 aes-gcm.workspace = true
 base64.workspace = true
 doubleentry.workspace = true
+oxsum-verify.workspace = true
 password-auth.workspace = true
 rand.workspace = true
 serde.workspace = true

@@ -3208,6 +3208,7 @@ dependencies = [
  "base64 0.21.7",
  "dotenvy",
  "doubleentry",
+ "oxsum-verify",
  "password-auth",
  "proptest",
  "rand 0.10.3",
@@ -3253,6 +3254,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxsum-verify"
+version = "0.1.0"
+dependencies = [
+ "doubleentry",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "oxsum-web"
 version = "0.1.0"
 dependencies = [
@@ -3264,6 +3274,7 @@ dependencies = [
  "leptos_meta",
  "leptos_router",
  "oxsum-core",
+ "oxsum-verify",
  "serde",
  "serde_json",
  "uuid",
