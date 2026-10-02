@@ -269,6 +269,75 @@ async fn wallet_round_trip() {
 }
 
 #[tokio::test]
+async fn an_unheld_settlement_is_insufficient_funds() {
+    let (app, _pool) = app_or_skip!(Signup::Open);
+    let (_registration, key) = register(&app, "unheld").await;
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/topups",
+        Some(json!({"idempotencyKey": "t1", "amountMinor": 5_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // A settlement of an amount that was never held: the release would credit the pending
+    // layer beyond anything the wallet reserved, so it is refused like an unfunded hold.
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/settlements",
+        Some(json!({"idempotencyKey": "s1", "heldMinor": 1_000_000, "actualMinor": 0})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "{body}");
+    assert_eq!(body["error"]["code"], "INSUFFICIENT_FUNDS");
+
+    // A hold exists, but it is smaller than what the settlement releases.
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/holds",
+        Some(json!({"idempotencyKey": "h1", "amountMinor": 2_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/settlements",
+        Some(json!({"idempotencyKey": "s2", "heldMinor": 3_000_000, "actualMinor": 0})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "{body}");
+    assert_eq!(body["error"]["code"], "INSUFFICIENT_FUNDS");
+
+    // Neither refusal moved anything: the hold is still there, and the wallet is whole.
+    let (status, body) = call(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["availableMinor"], 3_000_000);
+
+    // The hold it actually took settles, and the actual charge lands.
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/settlements",
+        Some(json!({"idempotencyKey": "s3", "heldMinor": 2_000_000, "actualMinor": 1_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = call(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["availableMinor"], 4_000_000);
+}
+
+#[tokio::test]
 async fn a_reused_key_with_different_content_is_a_conflict() {
     let (app, _pool) = app_or_skip!(Signup::Open);
     let (_registration, key) = register(&app, "reuse").await;
