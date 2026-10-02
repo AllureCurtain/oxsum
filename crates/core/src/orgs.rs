@@ -10,6 +10,7 @@ use sqlx::{Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::db::Db;
 use crate::error::WalletError;
 
 /// Whether an organization is one person's or a team's. product.md: a personal
@@ -83,6 +84,46 @@ pub struct Organization {
     pub kind: Kind,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+}
+
+/// One membership as the dashboard lists it: who holds it, in which role, since when.
+#[derive(Debug, Clone)]
+pub struct Member {
+    pub user_id: Uuid,
+    pub email: String,
+    pub role: Role,
+    pub joined_at: OffsetDateTime,
+}
+
+impl Db {
+    /// The members of an organization, oldest first: what the dashboard's members page
+    /// lists. Invitations do not exist yet, so today this is everyone the organization
+    /// has.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn members(&self, organization_id: Uuid) -> Result<Vec<Member>, WalletError> {
+        let rows = sqlx::query(
+            "SELECT m.user_id, u.email, m.role, m.created_at \
+             FROM oxsum.memberships m JOIN oxsum.users u USING (user_id) \
+             WHERE m.organization_id = $1 ORDER BY m.created_at",
+        )
+        .bind(organization_id)
+        .fetch_all(self.pool())
+        .await?;
+        let mut members = Vec::with_capacity(rows.len());
+        for row in &rows {
+            use sqlx::Row;
+            members.push(Member {
+                user_id: row.try_get("user_id")?,
+                email: row.try_get("email")?,
+                role: Role::parse(&row.try_get::<String, _>("role")?)?,
+                joined_at: row.try_get("created_at")?,
+            });
+        }
+        Ok(members)
+    }
 }
 
 /// The tenant id of a fresh organization.

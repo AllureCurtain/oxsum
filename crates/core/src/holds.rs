@@ -10,6 +10,7 @@
 
 use std::time::Duration;
 
+use serde::Serialize;
 use sqlx::Row;
 use time::{Date, OffsetDateTime};
 
@@ -20,7 +21,8 @@ use crate::{Settlement, SettlementKind};
 
 /// One gateway hold the sweeper is watching: everything the swept settlement's record needs, so
 /// the description is built from the row alone and a retried sweep reproduces it exactly.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OpenHold {
     /// `req-<request id>:hold`: the idempotency key the hold was taken under.
     pub hold_key: String,
@@ -100,22 +102,47 @@ impl Db {
         .bind(older_than)
         .fetch_all(self.pool())
         .await?;
-        let mut holds = Vec::with_capacity(rows.len());
-        for row in &rows {
-            holds.push(OpenHold {
-                hold_key: row.try_get("hold_key")?,
-                tenant_id: row.try_get("tenant_id")?,
-                request_id: row.try_get("request_id")?,
-                model: row.try_get("model")?,
-                channel: row.try_get("channel")?,
-                price_version: row.try_get("price_version")?,
-                input_price: row.try_get("input_price")?,
-                output_price: row.try_get("output_price")?,
-                freeze_minor: row.try_get("freeze_minor")?,
-            });
-        }
-        Ok(holds)
+        rows.iter().map(open_hold_from_row).collect()
     }
+
+    /// The holds one organization currently has in flight, newest first.
+    ///
+    /// What the dashboard's holds section lists and the billing WebSocket keeps live.
+    /// The ledger stays the source of truth — a row whose hold is gone is deleted, not
+    /// shown — this only finds the rows.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn open_holds_for_tenant(
+        &self,
+        tenant_id: &str,
+    ) -> Result<Vec<OpenHold>, WalletError> {
+        let rows = sqlx::query(
+            "SELECT hold_key, tenant_id, request_id, model, channel, \
+             price_version, input_price, output_price, freeze_minor \
+             FROM oxsum.open_holds WHERE tenant_id = $1 ORDER BY opened_at DESC",
+        )
+        .bind(tenant_id)
+        .fetch_all(self.pool())
+        .await?;
+        rows.iter().map(open_hold_from_row).collect()
+    }
+}
+
+/// Maps one `oxsum.open_holds` row to [`OpenHold`].
+fn open_hold_from_row(row: &sqlx::postgres::PgRow) -> Result<OpenHold, WalletError> {
+    Ok(OpenHold {
+        hold_key: row.try_get("hold_key")?,
+        tenant_id: row.try_get("tenant_id")?,
+        request_id: row.try_get("request_id")?,
+        model: row.try_get("model")?,
+        channel: row.try_get("channel")?,
+        price_version: row.try_get("price_version")?,
+        input_price: row.try_get("input_price")?,
+        output_price: row.try_get("output_price")?,
+        freeze_minor: row.try_get("freeze_minor")?,
+    })
 }
 
 /// Settles every watched hold older than `older_than` at 0 with kind [`SettlementKind::Swept`],
