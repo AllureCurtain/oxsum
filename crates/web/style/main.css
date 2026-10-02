@@ -1,0 +1,297 @@
+/* oxsum dashboard tokens and styles.
+ *
+ * Token rules live in DESIGN.md; the values live here.
+ * Type scale: 12 / 14 / 16 / 20 / 24. Body text is 14.
+ * Spacing in multiples of 4: 4 / 8 / 12 / 16 / 24 / 32.
+ */
+
+:root {
+    --primary: #1d4ed8;
+    --primary-hover: #1e40af;
+    --danger: #b91c1c;
+    --danger-hover: #991b1b;
+    --success: #15803d;
+    --pending: #a16207;
+    --text: #111827;
+    --text-muted: #6b7280;
+    --background: #f9fafb;
+    --surface: #ffffff;
+    --border: #e5e7eb;
+    --focus-ring: #93c5fd;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--text);
+    background: var(--background);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.mono {
+    font-family: var(--mono);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+
+.muted {
+    color: var(--text-muted);
+}
+
+.num {
+    text-align: right;
+}
+
+.error {
+    color: var(--danger);
+}
+
+.live {
+    color: var(--success);
+    font-weight: 600;
+}
+
+/* Layout */
+
+.layout {
+    display: flex;
+    min-height: 100vh;
+}
+
+.sidenav {
+    width: 200px;
+    flex-shrink: 0;
+    padding: 24px 16px;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.sidenav .brand {
+    font-size: 20px;
+    font-weight: 700;
+    margin-bottom: 16px;
+    padding: 0 8px;
+}
+
+.sidenav a {
+    padding: 8px;
+    border-radius: 4px;
+    color: var(--text);
+    text-decoration: none;
+}
+
+.sidenav a:hover {
+    background: var(--background);
+}
+
+.sidenav a[aria-current="page"] {
+    background: #dbeafe;
+    color: var(--primary);
+    font-weight: 600;
+}
+
+.content {
+    flex: 1;
+    padding: 24px;
+    max-width: 1024px;
+}
+
+.center {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+}
+
+/* Cards and tables */
+
+.card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 24px;
+    margin-bottom: 24px;
+}
+
+.card h1 {
+    font-size: 24px;
+    margin: 0 0 8px;
+}
+
+.card h2 {
+    font-size: 16px;
+    margin: 0 0 12px;
+}
+
+.balance {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin: 16px 0 0;
+}
+
+.balance strong {
+    font-size: 20px;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0;
+}
+
+th,
+td {
+    padding: 8px;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    vertical-align: top;
+}
+
+th {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-weight: 600;
+}
+
+/* Forms */
+
+form.card {
+    width: 100%;
+    max-width: 400px;
+}
+
+label {
+    display: block;
+    margin: 12px 0;
+    font-weight: 600;
+}
+
+input[type="email"],
+input[type="password"],
+input[type="text"] {
+    display: block;
+    width: 100%;
+    margin-top: 4px;
+    padding: 8px;
+    font-size: 14px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+}
+
+input:focus-visible,
+button:focus-visible,
+a:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+}
+
+button {
+    padding: 8px 16px;
+    font-size: 14px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: var(--primary);
+    color: #fff;
+    cursor: pointer;
+}
+
+button:hover {
+    background: var(--primary-hover);
+}
+
+button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+button.danger {
+    background: var(--danger);
+    padding: 4px 8px;
+    font-size: 12px;
+}
+
+button.danger:hover {
+    background: var(--danger-hover);
+}
+
+form.row {
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+    margin-bottom: 16px;
+}
+
+form.row label {
+    margin: 0;
+    flex: 1;
+}
+
+/* The freshly minted secret: shown once, impossible to miss. */
+
+.secret {
+    border: 1px solid var(--danger);
+    border-radius: 4px;
+    padding: 12px;
+    margin-bottom: 16px;
+    background: #fef2f2;
+}
+
+.secret code {
+    display: block;
+    padding: 8px;
+    margin: 8px 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    user-select: all;
+}
+
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+    .layout {
+        flex-direction: column;
+    }
+
+    .sidenav {
+        width: 100%;
+        flex-direction: row;
+        flex-wrap: wrap;
+        align-items: center;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+        padding: 12px 16px;
+    }
+
+    .sidenav .brand {
+        margin-bottom: 0;
+        margin-right: 8px;
+    }
+
+    .content {
+        padding: 16px;
+    }
+
+    table {
+        display: block;
+        overflow-x: auto;
+    }
+}

@@ -1,0 +1,73 @@
+[package]
+name = "oxsum-web"
+description = "oxsum web dashboard: Leptos admin pages, server-side rendering plus browser hydration."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["ssr"]
+# Browser build (cargo-leptos passes --no-default-features): the components hydrate in
+# the browser; server functions become fetch stubs.
+hydrate = ["leptos/hydrate"]
+# Server build: server-side rendering plus the server-function implementations, which
+# call oxsum-core directly.
+ssr = [
+    "dep:axum",
+    "dep:leptos_axum",
+    "dep:oxsum-core",
+    "leptos/ssr",
+]
+
+[dependencies]
+leptos.workspace = true
+leptos_meta.workspace = true
+leptos_router.workspace = true
+# Server-only: rendering integration and the request parts the server functions read the
+# session cookie from.
+leptos_axum = { workspace = true, optional = true }
+axum = { workspace = true, optional = true }
+# Server-only: SSR calls the domain layer directly (docs/architecture.md).
+oxsum-core = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+# The login/logout pages call the session endpoints from the browser with fetch.
+gloo-net = "0.6"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "WebSocket",
+    "MessageEvent",
+    "Window",
+    "Location",
+] }
+
+[lints]
+workspace = true
+
+# uuid's `v4` feature unconditionally enables its `rng` module, which hard-errors on
+# `wasm32-unknown-unknown` unless a randomness source is named (`js`, `rng-getrandom`,
+# or `rng-rand`). The browser build targets wasm32, so on that target only, bind the
+# randomness to the browser via wasm-bindgen. Native targets keep the plain workspace
+# dep above. (Same pattern as crates/doubleentry/Cargo.toml.)
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { version = "1", features = ["js"] }
+
+# cargo-leptos builds the dashboard from this package: `cargo leptos build` compiles
+# the `oxsum` binary (bin-package, which serves the pages) and this crate to WASM for
+# the browser (lib-package). Plain `cargo build` / `cargo test` ignore this section.
+# Paths are relative to this directory; site-root defaults to the workspace target dir.
+[package.metadata.leptos]
+output-name = "oxsum"
+style-file = "style/main.css"
+bin-package = "oxsum-server"
+lib-package = "oxsum-web"
+# The WASM build turns the default (ssr) features off and enables hydrate instead.
+lib-features = ["hydrate"]
