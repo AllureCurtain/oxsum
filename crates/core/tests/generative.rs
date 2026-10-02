@@ -12,24 +12,28 @@
 //!
 //! Four things are pinned here on purpose, because they are decisions rather than accidents:
 //!
-//! - **The generator settles only holds the ledger actually took.** `Wallet::settle` reverses
-//!   exactly the `held` amount it is handed and never looks the hold up, so settling an amount
-//!   that was never held is accepted today and fabricates available balance (issue #6). The
-//!   oracle does not enshrine that: the op is generated, and the case records that it was
-//!   skipped rather than issued. The restriction goes away with the fix.
-//! - **A settlement cannot fail for lack of funds.** Releasing a hold credits the pending layer,
-//!   and the engine folds the pending layer into `NoDebitBalance` asymmetrically: a reservation
-//!   consumes room, a release grants none. The settled layer therefore has to cover `actual` on
-//!   its own, and it does for any hold the wallet accepted. So the model expects a settlement to
-//!   succeed unless `actual` is outside `0..=held`.
+//! - **A settlement releases at most what is held in total.** The wallet's limit refuses a
+//!   pending credit the outstanding holds cannot cover, so a settlement naming an amount that was
+//!   never held — or naming a hold it has already released, with nothing else covering it — is
+//!   `INSUFFICIENT_FUNDS`. The model predicts that from the one number the rule is stated in, the
+//!   reserved total, and the generator is free to settle any earlier op's amount, hold or not: the
+//!   restriction that it only settle holds the ledger actually took is gone with the fix (#6).
+//!   The pairing is aggregate (docs/decisions.md), so a settlement *may* release more than the
+//!   hold it names while other holds cover the total; tracking the total rather than per-hold
+//!   bookkeeping is what makes the model exact there rather than merely safe.
+//! - **A settlement within the reserved total cannot fail for lack of funds.** It charges
+//!   `actual` out of settled money and releases `held` of reservation, and `held >= actual`, so
+//!   the available balance grows or stays put. The model therefore expects exactly two refusals:
+//!   an `actual` outside `0..=held`, and a release beyond the reserved total.
 //! - **A key reused with different content is refused**, and the model only asserts that: that it
 //!   changes nothing and reports an error. The domain layer maps the engine's refusal to
 //!   `CONFLICT`, so the refusal arrives as a conflict, but the model reads all three classes the
 //!   same way and does not depend on that mapping beyond it not being a storage failure.
 //! - **The cases share eight ledgers rather than creating one each.** Creating a ledger is a DDL
 //!   migration (an extension plus eleven tables); a thousand of them would spend the whole run on
-//!   schema creation and leave a thousand schemas behind. Each case reads its tenant's balance and
-//!   log size and works in deltas from there, which asserts exactly the same thing.
+//!   schema creation and leave a thousand schemas behind. Each case reads its tenant's settled and
+//!   reserved totals and its log size and works from there, so what a case asserts is absolute
+//!   rather than a delta, and the leftover state of a shared ledger cancels out of both sides.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -117,21 +121,15 @@ enum Op {
 
 /// One concrete wallet call. Two requests are the same request when their content matches, which
 /// is what idempotency is about.
+///
+/// A settlement carries no reference to the hold it names: the wallet builds the same entry from
+/// `held` and `actual` whatever the caller had in mind, so a second settlement with the same pair
+/// under the same key *is* the same request, and the model says so.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Request {
-    TopUp {
-        amount: i64,
-    },
-    Hold {
-        amount: i64,
-    },
-    /// `releases` is the key of the hold this settlement frees, so the model knows which
-    /// reservation leaves the pending layer.
-    Settle {
-        releases: String,
-        held: i64,
-        actual: i64,
-    },
+    TopUp { amount: i64 },
+    Hold { amount: i64 },
+    Settle { held: i64, actual: i64 },
 }
 
 impl Request {
@@ -145,12 +143,7 @@ impl Request {
             Request::Hold { amount } => Request::Hold {
                 amount: bumped(*amount, up),
             },
-            Request::Settle {
-                releases,
-                held,
-                actual,
-            } => Request::Settle {
-                releases: releases.clone(),
+            Request::Settle { held, actual } => Request::Settle {
                 held: *held,
                 actual: bumped_actual(*actual, *held, up),
             },
@@ -323,25 +316,24 @@ struct Step {
 /// One case: the wallet, the model of its balance, and the record of what was asked for.
 struct Case<'a> {
     wallet: &'a Wallet,
-    /// The wallet account's settled layer, as a delta from where the case started.
+    /// The wallet account's settled layer, in the wallet's own units.
     settled: i64,
-    /// The wallet account's pending layer: negative while holds are outstanding.
-    pending: i64,
+    /// What holds have reserved of it and settlements have not released yet. The wallet's limit
+    /// keeps this on the reserved side, so it is also the ceiling on what a settlement may release.
+    reserved: i64,
     /// The entry log's size at the start of the case.
     log_size: u64,
     /// One record per generated op, in order.
     steps: Vec<Step>,
     /// The request that wrote an entry under a key, and the entry it wrote.
     written: HashMap<String, (Request, EntryId)>,
-    /// Amounts currently held, by the key that holds them.
-    held: HashMap<String, i64>,
     /// Entries this case wrote, with the hash their proof has to verify against.
     entries: Vec<(EntryId, Hash)>,
 }
 
 impl Case<'_> {
     fn available(&self) -> i64 {
-        self.settled + self.pending
+        self.settled - self.reserved
     }
 
     /// What the model expects of this call, before making it.
@@ -362,9 +354,14 @@ impl Case<'_> {
                     Predicted::Writes
                 }
             }
-            Request::Settle { held, actual, .. } => {
+            Request::Settle { held, actual } => {
                 if *actual < 0 || actual > held {
+                    // The wallet bounds the argument before it looks at the books.
                     Predicted::InvalidInput
+                } else if *held > self.reserved {
+                    // The release credits the pending layer, and the wallet's limit refuses a
+                    // pending credit the outstanding reservations cannot cover.
+                    Predicted::InsufficientFunds
                 } else {
                     Predicted::Writes
                 }
@@ -378,21 +375,22 @@ impl Case<'_> {
             Op::TopUp { key, amount } => (key.clone(), Some(Request::TopUp { amount: *amount })),
             Op::Hold { key, amount } => (key.clone(), Some(Request::Hold { amount: *amount })),
             Op::Settle { key, which, mode } => {
-                let held_by = &self.steps[*which].key;
-                // Only a hold the wallet took and has not released can be settled: the wallet
-                // trusts the amount it is handed (issue #6), so anything else would be asking the
-                // ledger to release a reservation that does not exist.
-                match self.held.get(held_by) {
-                    Some(held) => (
-                        key.clone(),
-                        Some(Request::Settle {
-                            releases: held_by.clone(),
-                            held: *held,
-                            actual: mode.actual(*held),
-                        }),
-                    ),
-                    None => (key.clone(), None),
-                }
+                // The amount the named op asked for, whether or not it was a hold and whether or
+                // not it was taken: settling a top-up's amount, or a hold the wallet refused, is
+                // exactly the claim about a reservation that does not exist that the limit is
+                // there to refuse.
+                let held = match self.steps[*which].request.as_ref() {
+                    Some(Request::TopUp { amount } | Request::Hold { amount }) => *amount,
+                    Some(Request::Settle { held, .. }) => *held,
+                    None => return (key.clone(), None),
+                };
+                (
+                    key.clone(),
+                    Some(Request::Settle {
+                        held,
+                        actual: mode.actual(held),
+                    }),
+                )
             }
             // A replay reproduces the request as it was issued, even if that op was skipped or
             // refused: a refused attempt leaves no trace, so trying it again is a fresh attempt.
@@ -434,18 +432,10 @@ impl Case<'_> {
                 }
                 match request {
                     Request::TopUp { amount } => self.settled += amount,
-                    Request::Hold { amount } => {
-                        self.pending -= amount;
-                        self.held.insert(key.to_owned(), *amount);
-                    }
-                    Request::Settle {
-                        releases,
-                        held,
-                        actual,
-                    } => {
-                        self.pending += held;
+                    Request::Hold { amount } => self.reserved += amount,
+                    Request::Settle { held, actual } => {
+                        self.reserved -= held;
                         self.settled -= actual;
-                        self.held.remove(releases);
                     }
                 }
                 self.log_size += 1;
@@ -500,14 +490,20 @@ impl Case<'_> {
             .map_err(|error| format!("{context}: reading the balance: {error}"))?;
         if available != self.available() {
             return Err(format!(
-                "{context}: the wallet says {available} available, the model says {} (settled {}, pending {})",
+                "{context}: the wallet says {available} available, the model says {} (settled {}, reserved {})",
                 self.available(),
                 self.settled,
-                self.pending
+                self.reserved
             ));
         }
         if available < 0 {
             return Err(format!("{context}: available went negative: {available}"));
+        }
+        if self.reserved < 0 {
+            return Err(format!(
+                "{context}: the model released more than it had reserved: {}",
+                self.reserved
+            ));
         }
         let log_size = self
             .wallet
@@ -534,9 +530,7 @@ impl Case<'_> {
         let receipt = match &request {
             Request::TopUp { amount } => self.wallet.top_up(&key, *amount, DAY).await,
             Request::Hold { amount } => self.wallet.hold(&key, *amount, DAY).await,
-            Request::Settle { held, actual, .. } => {
-                self.wallet.settle(&key, *held, *actual, DAY).await
-            }
+            Request::Settle { held, actual } => self.wallet.settle(&key, *held, *actual, DAY).await,
         };
         let outcome = self.check(index, op, &key, &request, predicted, &receipt);
         self.steps.push(Step {
@@ -622,12 +616,19 @@ async fn check_case(
         .get(tenant_id)
         .await
         .map_err(|error| format!("opening {tenant_id}: {error}"))?;
+    // The ledger is shared with the cases before it, so the model starts from what is actually
+    // there: both layers in the wallet's own units, and the log size. Nothing is a delta.
+    let settled = wallet
+        .settled()
+        .await
+        .map_err(|error| format!("reading {tenant_id}'s settled balance: {error}"))?;
+    let reserved = wallet
+        .reserved()
+        .await
+        .map_err(|error| format!("reading {tenant_id}'s reservations: {error}"))?;
     let mut case = Case {
-        settled: wallet
-            .available()
-            .await
-            .map_err(|error| format!("reading {tenant_id}'s balance: {error}"))?,
-        pending: 0,
+        settled,
+        reserved,
         log_size: wallet
             .log_size()
             .await
@@ -635,7 +636,6 @@ async fn check_case(
         wallet: &wallet,
         steps: Vec::new(),
         written: HashMap::new(),
-        held: HashMap::new(),
         entries: Vec::new(),
     };
     for (index, op) in resolve(raw, number).iter().enumerate() {
