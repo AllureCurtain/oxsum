@@ -24,6 +24,13 @@ pub enum WalletError {
     #[error("insufficient funds")]
     InsufficientFunds,
 
+    /// This deployment cannot serve what it was asked for: a stored channel credential that does not
+    /// open under `OXSUM_SECRET_KEY`, or a key that is not configured at all. The message is for the
+    /// operator; the HTTP layer answers 500 with a generic one, because this is neither the caller's
+    /// mistake nor anything a caller can act on (docs/api.md).
+    #[error("misconfigured: {0}")]
+    Misconfigured(String),
+
     /// A storage failure. Details go to the logs only, never to the caller.
     #[error("storage error: {0}")]
     Storage(#[source] PostgresError),
