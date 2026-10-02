@@ -33,6 +33,13 @@ impl From<PostgresError> for WalletError {
     fn from(e: PostgresError) -> Self {
         match e {
             PostgresError::LimitBreached { .. } => Self::InsufficientFunds,
+            // A key that is already held by an entry with different content is the caller's
+            // mistake, not a broken ledger: the request is a conflicting reuse of a key, and
+            // the caller can fix it by choosing another one. Mapping it to a storage failure
+            // would answer 500 for a 409, and log a caller error as an incident.
+            PostgresError::IdempotencyConflict { .. } => {
+                Self::Conflict("idempotency key already used for a different request".into())
+            }
             other => Self::Storage(other),
         }
     }
