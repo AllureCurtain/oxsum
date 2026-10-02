@@ -13,7 +13,11 @@ use crate::error::{WalletError, invalid};
 use crate::proof::ProofBundle;
 
 /// Money precision: 6 decimal places; 1 credit = 1_000_000 minor, fine enough for per-token pricing.
-pub const SCALE: u8 = 6;
+///
+/// Defined in `oxsum-verify`, the crate the browser page shares: the entry encoding —
+/// and therefore the content hash — depends on it, so writer and verifier use the one
+/// definition.
+pub use oxsum_verify::SCALE;
 pub type Credits = Amount<SCALE>;
 
 /// Account opening date. Every posting date must not be earlier than this.

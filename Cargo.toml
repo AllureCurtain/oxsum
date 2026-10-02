@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/doubleentry", "crates/core", "crates/server", "crates/web"]
+members = ["crates/doubleentry", "crates/core", "crates/server", "crates/verify", "crates/web"]
 default-members = ["crates/core", "crates/server"]
 
 [workspace.package]
@@ -28,6 +28,7 @@ lib-features = ["hydrate"]
 
 [workspace.dependencies]
 oxsum-core = { path = "crates/core" }
+oxsum-verify = { path = "crates/verify" }
 oxsum-web = { path = "crates/web" }
 doubleentry = { path = "crates/doubleentry", features = ["postgres", "serde"] }
 

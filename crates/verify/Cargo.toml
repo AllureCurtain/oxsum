@@ -1,0 +1,21 @@
+[package]
+name = "oxsum-verify"
+description = "oxsum bill verification: the pure, I/O-free proof check, shared by the server and the browser."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# Path, not the workspace entry: the workspace entry enables doubleentry's
+# `postgres` feature (sqlx plus the tokio `net` runtime), which cannot target
+# wasm32-unknown-unknown. The verifier only needs the serde transport impls;
+# on native targets the `postgres` feature is unified back in through
+# oxsum-core, which also depends on this crate.
+doubleentry = { path = "../doubleentry", default-features = false, features = ["serde"] }
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
