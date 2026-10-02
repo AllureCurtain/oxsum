@@ -20,6 +20,9 @@ axum.workspace = true
 dotenvy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# The one pool every tenant shares is built here, at startup: see main.rs and
+# docs/decisions.md, "all tenants share one connection pool".
+sqlx.workspace = true
 time.workspace = true
 tokio.workspace = true
 tracing.workspace = true

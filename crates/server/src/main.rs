@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 
 use oxsum_core::Tenants;
+use sqlx::postgres::PgPoolOptions;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -20,13 +21,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "127.0.0.1:3000".into())
         .parse()?;
 
-    let app = oxsum_server::app(Tenants::new(database_url), api_token);
+    // One pool for the whole database, shared by every tenant. Each PostgreSQL connection
+    // is a backend process, so this number is the process's whole connection budget rather
+    // than a per-tenant allowance; see docs/decisions.md, "all tenants share one connection
+    // pool". Tenants are told apart by `search_path`, pinned per transaction, not by pool.
+    let max_connections = pool_size()?;
+    let pool = PgPoolOptions::new()
+        .max_connections(max_connections)
+        .connect(&database_url)
+        .await?;
+    tracing::info!(%max_connections, "database pool ready");
+
+    let app = oxsum_server::app(Tenants::new(pool), api_token);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "oxsum listening");
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     Ok(())
+}
+
+/// The shared pool's size, from `OXSUM_DB_MAX_CONNECTIONS` (default 10).
+fn pool_size() -> Result<u32, String> {
+    match std::env::var("OXSUM_DB_MAX_CONNECTIONS") {
+        Ok(v) => v
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|n| *n > 0)
+            .ok_or_else(|| {
+                format!("OXSUM_DB_MAX_CONNECTIONS must be a positive integer, got {v:?}")
+            }),
+        Err(_) => Ok(10),
+    }
 }
 
 /// Validates required environment variables at startup and exits rather than running with an empty config.

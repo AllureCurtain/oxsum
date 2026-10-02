@@ -5,6 +5,7 @@ use doubleentry::{
     EntryBatch, EntryId, Hash, IdempotencyKey, Layer, LedgerId, LedgerPolicy, LedgerStore,
     PeriodCalendar, Posting, SealContext,
 };
+use sqlx::PgPool;
 use time::Date;
 use time::macros::date;
 
@@ -50,14 +51,20 @@ pub struct Receipt {
 }
 
 impl Wallet {
-    /// Opens a tenant's ledger, creating it on first use.
+    /// Opens a tenant's ledger on the shared pool, creating the ledger on first use.
+    ///
+    /// The pool is the process's one pool, shared by every tenant: a wallet is a facade
+    /// over a schema, not an owner of connections. Which schema each statement resolves
+    /// is pinned per transaction inside `PostgresStore`, so the same connection can serve
+    /// one tenant and then the next without carrying anything over — see
+    /// docs/decisions.md, "all tenants share one connection pool".
     ///
     /// The schema name is derived server-side from the validated tenant id and is never taken from external input.
-    pub async fn open(database_url: &str, tenant_id: &str) -> Result<Self, WalletError> {
+    pub async fn open(pool: PgPool, tenant_id: &str) -> Result<Self, WalletError> {
         validate_tenant_id(tenant_id)?;
         let ledger = LedgerId::new(format!("tenant-{tenant_id}")).map_err(invalid)?;
         let schema = format!("ledger_{tenant_id}");
-        let store = PostgresStore::<SCALE>::connect_with(database_url, ledger, &schema).await?;
+        let store = PostgresStore::<SCALE>::new(pool, ledger).in_schema(&schema);
         store.migrate().await?;
 
         // Account handles must be restored from storage on restart. Re-registering by
