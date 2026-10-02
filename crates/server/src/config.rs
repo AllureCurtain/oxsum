@@ -4,7 +4,9 @@
 //! a request is handled. Everything else the server needs is an environment variable read
 //! once at startup, in main.rs.
 
-use oxsum_core::{PriceBook, SecretKey};
+use std::time::Duration;
+
+use oxsum_core::{DEFAULT_HOLD_TIMEOUT, PriceBook, SecretKey};
 
 /// Whether this deployment lets people register themselves.
 ///
@@ -140,6 +142,7 @@ pub struct Config {
     gateway: Option<Gateway>,
     secret: Option<SecretKey>,
     admin_token: Option<String>,
+    hold_timeout: Duration,
 }
 
 impl Config {
@@ -150,6 +153,7 @@ impl Config {
             gateway,
             secret: None,
             admin_token: None,
+            hold_timeout: DEFAULT_HOLD_TIMEOUT,
         }
     }
 
@@ -182,11 +186,16 @@ impl Config {
             .map(|raw| SecretKey::parse(&raw))
             .transpose()?;
         let admin_token = var("OXSUM_ADMIN_TOKEN").map(admin_token_of).transpose()?;
+        let hold_timeout = var("OXSUM_HOLD_TIMEOUT")
+            .map(hold_timeout_of)
+            .transpose()?
+            .unwrap_or(DEFAULT_HOLD_TIMEOUT);
         Ok(Self {
             signup,
             gateway: Gateway::from_env()?,
             secret,
             admin_token,
+            hold_timeout,
         })
     }
 
@@ -213,6 +222,12 @@ impl Config {
     pub(crate) fn admin_token(&self) -> Option<&str> {
         self.admin_token.as_deref()
     }
+
+    /// How long a hold may sit unsettled before the background sweeper releases it.
+    #[must_use]
+    pub fn hold_timeout(&self) -> Duration {
+        self.hold_timeout
+    }
 }
 
 /// A token worth putting in front of the admin surface: long enough that it is not worth guessing.
@@ -228,6 +243,47 @@ fn admin_token_of(token: String) -> Result<String, String> {
         ));
     }
     Ok(token)
+}
+
+/// Parses `OXSUM_HOLD_TIMEOUT`: how long a hold may sit unsettled before the background sweeper
+/// releases it.
+///
+/// A number with an `s`, `m` or `h` suffix, or a bare number of seconds. Refused at startup when
+/// it does not parse or is below a minute: a timeout that short stops being a crash
+/// backstop and starts racing legitimate requests — including the classic `30s`-for-`30m` typo —
+/// so the server does not start rather than sweep with a timeout it had to guess.
+fn hold_timeout_of(raw: String) -> Result<Duration, String> {
+    /// Below a minute the timeout is a hazard rather than a backstop (docs/product.md: it must
+    /// exceed the longest possible single request).
+    const MIN_HOLD_TIMEOUT: Duration = Duration::from_secs(60);
+    let text = raw.trim();
+    let (number, factor) = match text.strip_suffix(['s', 'm', 'h']) {
+        Some(number) => {
+            let factor = match text.chars().last() {
+                Some('s') => 1,
+                Some('m') => 60,
+                Some('h') => 3600,
+                _ => unreachable!("the suffix was just stripped"),
+            };
+            (number, factor)
+        }
+        None => (text, 1),
+    };
+    let seconds: u64 = number.parse().map_err(|_| {
+        format!("OXSUM_HOLD_TIMEOUT must be a number of seconds with an optional s/m/h suffix, got {raw:?}")
+    })?;
+    let timeout = seconds
+        .checked_mul(factor)
+        .map(Duration::from_secs)
+        .filter(|timeout| !timeout.is_zero())
+        .ok_or_else(|| format!("OXSUM_HOLD_TIMEOUT must be a positive duration, got {raw:?}"))?;
+    if timeout < MIN_HOLD_TIMEOUT {
+        return Err(format!(
+            "OXSUM_HOLD_TIMEOUT must be at least {} seconds, got {raw:?}",
+            MIN_HOLD_TIMEOUT.as_secs()
+        ));
+    }
+    Ok(timeout)
 }
 
 #[cfg(test)]
@@ -288,5 +344,51 @@ mod tests {
     fn config_from_token(token: &str) -> Result<Config, String> {
         super::admin_token_of(token.to_owned())
             .map(|token| Config::new(Signup::Invite, None).with_admin_token(token))
+    }
+
+    #[test]
+    fn the_hold_timeout_defaults_to_thirty_minutes_and_parses_suffixes() {
+        use std::time::Duration;
+
+        assert_eq!(
+            Config::new(Signup::Invite, None).hold_timeout(),
+            Duration::from_secs(30 * 60)
+        );
+        assert_eq!(
+            super::hold_timeout_of("90s".to_owned()).expect("seconds parse"),
+            Duration::from_secs(90)
+        );
+        assert_eq!(
+            super::hold_timeout_of("30m".to_owned()).expect("minutes parse"),
+            Duration::from_secs(30 * 60)
+        );
+        assert_eq!(
+            super::hold_timeout_of("2h".to_owned()).expect("hours parse"),
+            Duration::from_secs(2 * 3600)
+        );
+        assert_eq!(
+            super::hold_timeout_of("3600".to_owned()).expect("a bare number is seconds"),
+            Duration::from_secs(3600)
+        );
+        assert_eq!(
+            super::hold_timeout_of(" 45m ".to_owned()).expect("surrounding space is trimmed"),
+            Duration::from_secs(45 * 60)
+        );
+    }
+
+    #[test]
+    fn a_hold_timeout_that_is_not_a_sane_duration_is_refused() {
+        // Not a number at all.
+        assert!(super::hold_timeout_of("soon".to_owned()).is_err());
+        assert!(super::hold_timeout_of("30x".to_owned()).is_err());
+        assert!(super::hold_timeout_of("".to_owned()).is_err());
+        // Zero is not a timeout.
+        assert!(super::hold_timeout_of("0".to_owned()).is_err());
+        assert!(super::hold_timeout_of("0m".to_owned()).is_err());
+        // Below a minute the timeout races legitimate requests rather than backing them up,
+        // including the classic `30s`-for-`30m` typo.
+        assert!(super::hold_timeout_of("30s".to_owned()).is_err());
+        assert!(super::hold_timeout_of("59s".to_owned()).is_err());
+        assert!(super::hold_timeout_of("60s".to_owned()).is_ok());
     }
 }
