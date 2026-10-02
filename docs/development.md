@@ -65,6 +65,7 @@ creates `ledger_<tenant_id>` on first use.
 | Start the server | `cargo run -p oxsum-server` |
 | All tests | `cargo test --workspace` (loads `DATABASE_URL` from `.env` or the shell) |
 | oxsum only | `cargo test -p oxsum-core -p oxsum-server` |
+| Generative sequences, quick run | `PROPTEST_CASES=50 cargo test -p oxsum-core --test generative` |
 | doubleentry's Postgres tests | `cargo test -p doubleentry --features postgres --test postgres` (spins up its own container via testcontainers) |
 | Verify doubleentry builds for the browser | `cargo build -p doubleentry --features serde --target wasm32-unknown-unknown` |
 | Format | `cargo fmt --all` |
@@ -75,10 +76,10 @@ creates `ledger_<tenant_id>` on first use.
 - Unit tests: inside each module's `#[cfg(test)]`, covering pure logic such as tenant id validation and configuration parsing.
 - Integration tests:
   - `crates/core/tests/` exercises the wallet's invariants on real PostgreSQL: isolation, concurrent no-overdraw, hold/settle, idempotency, tamper detection, restart recovery, concurrent migrate; `crates/core/tests/identity.rs` covers registration, organizations and API keys, including that the plaintext secret is nowhere in the database.
+  - `crates/core/tests/generative.rs` generates random sequences of top-ups, holds, settlements, replays and key collisions and checks each step against an in-memory model of the wallet account's two layers: the outcome the model predicted, the available balance, that it never went negative, the log size, and a proof for every entry the case wrote (including that a changed amount stops verifying). 1000 cases by default, `PROPTEST_CASES` to narrow it locally; a failure prints its seed and the shortest failing sequence. It settles only holds the ledger actually took, because settling an amount that was never held is accepted today (issue #6).
   - `crates/server/tests/` covers the HTTP layer: key auth, error format, full request chains, and that one organization's key cannot reach another's ledger.
 - doubleentry's own tests: changing `crates/doubleentry` requires all of them passing, including its conformance suite.
 - Planned:
-  - Generative tests: random operation sequences checked against an in-memory model
   - E2E: the full top-up → call → verify flow
   - See TODO.md
 
