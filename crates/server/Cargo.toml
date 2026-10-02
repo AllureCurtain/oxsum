@@ -17,6 +17,8 @@ path = "src/main.rs"
 [dependencies]
 oxsum-core.workspace = true
 axum.workspace = true
+# The verifying key is published base64; the note format keeps its own base64 inside.
+base64.workspace = true
 dotenvy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
