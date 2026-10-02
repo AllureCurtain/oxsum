@@ -87,6 +87,8 @@ impl From<WalletError> for GatewayError {
                 param: None,
             },
             WalletError::Unauthenticated => Self::Unauthorized,
+            // Unreachable on the gateway path: there is no login here. A 401 either way.
+            WalletError::InvalidCredentials => Self::Unauthorized,
             WalletError::Forbidden(message) => Self::Forbidden(message),
             WalletError::Conflict(message) => Self::Conflict(message),
             WalletError::InsufficientFunds => {

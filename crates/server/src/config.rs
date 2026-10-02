@@ -143,6 +143,7 @@ pub struct Config {
     secret: Option<SecretKey>,
     admin_token: Option<String>,
     hold_timeout: Duration,
+    session_cookie_secure: bool,
 }
 
 impl Config {
@@ -154,6 +155,7 @@ impl Config {
             secret: None,
             admin_token: None,
             hold_timeout: DEFAULT_HOLD_TIMEOUT,
+            session_cookie_secure: false,
         }
     }
 
@@ -168,6 +170,14 @@ impl Config {
     #[must_use]
     pub fn with_admin_token(mut self, token: impl Into<String>) -> Self {
         self.admin_token = Some(token.into());
+        self
+    }
+
+    /// Sets whether the session cookie carries the `Secure` attribute. Tests use this; the
+    /// server reads `OXSUM_SESSION_COOKIE_SECURE`.
+    #[must_use]
+    pub fn with_session_cookie_secure(mut self, secure: bool) -> Self {
+        self.session_cookie_secure = secure;
         self
     }
 
@@ -190,12 +200,17 @@ impl Config {
             .map(hold_timeout_of)
             .transpose()?
             .unwrap_or(DEFAULT_HOLD_TIMEOUT);
+        let session_cookie_secure = var("OXSUM_SESSION_COOKIE_SECURE")
+            .map(session_cookie_secure_of)
+            .transpose()?
+            .unwrap_or(false);
         Ok(Self {
             signup,
             gateway: Gateway::from_env()?,
             secret,
             admin_token,
             hold_timeout,
+            session_cookie_secure,
         })
     }
 
@@ -228,6 +243,13 @@ impl Config {
     pub fn hold_timeout(&self) -> Duration {
         self.hold_timeout
     }
+
+    /// Whether the session cookie carries the `Secure` attribute. A deployment behind TLS
+    /// must enable it; local http development needs it off.
+    #[must_use]
+    pub(crate) fn session_cookie_secure(&self) -> bool {
+        self.session_cookie_secure
+    }
 }
 
 /// A token worth putting in front of the admin surface: long enough that it is not worth guessing.
@@ -243,6 +265,22 @@ fn admin_token_of(token: String) -> Result<String, String> {
         ));
     }
     Ok(token)
+}
+
+/// Parses `OXSUM_SESSION_COOKIE_SECURE`: whether the session cookie carries the `Secure`
+/// attribute.
+///
+/// `true`/`1` enable it, `false`/`0` (and absence) disable it for local http development; a
+/// deployment behind TLS must set it, or browsers will not send the cookie back over https.
+/// Anything else refuses to start rather than guess.
+fn session_cookie_secure_of(raw: String) -> Result<bool, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" => Ok(true),
+        "false" | "0" => Ok(false),
+        other => Err(format!(
+            "OXSUM_SESSION_COOKIE_SECURE must be true or false, got {other:?}"
+        )),
+    }
 }
 
 /// Parses `OXSUM_HOLD_TIMEOUT`: how long a hold may sit unsettled before the background sweeper
@@ -390,5 +428,31 @@ mod tests {
         assert!(super::hold_timeout_of("30s".to_owned()).is_err());
         assert!(super::hold_timeout_of("59s".to_owned()).is_err());
         assert!(super::hold_timeout_of("60s".to_owned()).is_ok());
+    }
+
+    #[test]
+    fn the_session_cookie_secure_flag_defaults_to_off_and_parses_booleans() {
+        assert!(!Config::new(Signup::Invite, None).session_cookie_secure());
+        assert!(
+            Config::new(Signup::Invite, None)
+                .with_session_cookie_secure(true)
+                .session_cookie_secure()
+        );
+        assert_eq!(
+            super::session_cookie_secure_of("true".to_owned()),
+            Ok(true)
+        );
+        assert_eq!(super::session_cookie_secure_of("1".to_owned()), Ok(true));
+        assert_eq!(
+            super::session_cookie_secure_of("false".to_owned()),
+            Ok(false)
+        );
+        assert_eq!(
+            super::session_cookie_secure_of(" True ".to_owned()),
+            Ok(true)
+        );
+        // Anything else refuses to start rather than guess.
+        assert!(super::session_cookie_secure_of("yes".to_owned()).is_err());
+        assert!(super::session_cookie_secure_of("".to_owned()).is_err());
     }
 }
