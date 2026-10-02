@@ -28,6 +28,12 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
+# The relay generator, see Cargo.toml at the workspace root.
+async-stream.workspace = true
+# The `Stream` trait for the relay's return type; nothing else from futures is needed.
+futures-core.workspace = true
+# The upstream HTTP client, built once in lib.rs and shared through AppState.
+reqwest.workspace = true
 
 [dev-dependencies]
 dotenvy.workspace = true
