@@ -131,7 +131,7 @@ Two settled trade-offs:
 
 ### How one request is booked
 
-- One request maps to two entries: the freeze and the settlement. Idempotency keys: `req-<id>:hold` and `req-<id>:settle`.
+- One request maps to two entries: the freeze and the settlement. Idempotency keys: `req-<id>:hold`, and the settlement's key derived from it (`oxsum_core::settlement_key_for`).
 - The settlement entry's description carries a compact JSON: request id, model, input and output token counts, both prices, settlement type. The description is hashed into the entry, so what the user verifies is not just "how much was charged" but "by how many tokens at what price". The description caps at 512 characters — enough.
 - The full request state (in flight, settled, anomalous) lives in oxsum's own `requests` table; only what needs proving goes into the ledger.
 

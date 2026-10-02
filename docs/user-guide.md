@@ -61,7 +61,8 @@ Steps:
    ```
 
 2. Every response carries an `x-oxsum-request-id` header. That id is how the turn is found in the
-   ledger: its entries are keyed `req-<id>:hold` and `req-<id>:settle`.
+   ledger: its entries are keyed `req-<id>:hold` and the settlement derived from it
+   (`oxsum_core::settlement_key_for`).
 
 Notes:
 
@@ -104,15 +105,15 @@ Steps:
 1. Before calling the LLM, `POST /api/v1/holds` to freeze an upper bound of what the call can cost.
    - A 402 `INSUFFICIENT_FUNDS` response means the balance is too low; do not start the call.
 2. After the call finishes (success or failure), `POST /api/v1/settlements`:
-   - `heldMinor`: the amount originally frozen
+   - `holdKey`: the `idempotencyKey` the hold was taken under
    - `actualMinor`: the actual spend; use 0 for a failed call and the whole hold is refunded
 
 Notes:
 
-- The hold and the settlement use different `idempotencyKey`s, e.g. `req-123:hold` and `req-123:settle`.
-- After a network timeout, retry with the same key; you will not be charged twice.
-- `actualMinor` must not exceed `heldMinor`.
-- `heldMinor` must be covered by holds that are still outstanding; settling an amount that was never held is a 402 `INSUFFICIENT_FUNDS`, not free credit. Settle the hold you took, for the amount you took it for.
+- The settlement names the hold it releases; its own idempotency key is derived from the hold's.
+- After a network timeout, retry with the same hold key and the same actual; you will not be charged twice.
+- `actualMinor` must not exceed what the hold reserved.
+- Naming a hold that was never taken, or one that is already settled, is refused (404, 409) — not free credit. Settle the hold you took, for the amount you took it for.
 - A hold that is never settled is not released by itself yet: sweeping timed-out holds is issue #13.
 
 ## Balance
