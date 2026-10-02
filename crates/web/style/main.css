@@ -52,6 +52,10 @@ body {
     color: var(--danger);
 }
 
+.success {
+    color: var(--success);
+}
+
 .live {
     color: var(--success);
     font-weight: 600;
@@ -171,6 +175,27 @@ form.card {
     max-width: 400px;
 }
 
+/* The verification page holds a whole bundle: wider than a login form. */
+.card.verify {
+    width: 100%;
+    max-width: 640px;
+}
+
+.verdict {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+}
+
+.verdict p {
+    margin: 4px 0;
+}
+
+.fine-print {
+    font-size: 12px;
+    margin-top: 16px;
+}
+
 label {
     display: block;
     margin: 12px 0;
@@ -179,7 +204,8 @@ label {
 
 input[type="email"],
 input[type="password"],
-input[type="text"] {
+input[type="text"],
+textarea {
     display: block;
     width: 100%;
     margin-top: 4px;
@@ -189,7 +215,14 @@ input[type="text"] {
     border-radius: 4px;
 }
 
+textarea {
+    font-family: var(--mono);
+    font-size: 12px;
+    resize: vertical;
+}
+
 input:focus-visible,
+textarea:focus-visible,
 button:focus-visible,
 a:focus-visible {
     outline: 2px solid var(--focus-ring);

@@ -51,6 +51,9 @@ pub fn App() -> impl IntoView {
                 <Route path=path!("/") view=|| view! { <Redirect path="/dashboard"/> }/>
                 <Route path=path!("/login") view=LoginPage/>
                 <Route path=path!("/logout") view=LogoutPage/>
+                // Public: anyone holding a bill and its content hash can verify it, no
+                // session needed. Verification runs in the browser, not on the server.
+                <Route path=path!("/verify") view=VerifyPage/>
                 <ParentRoute path=path!("/dashboard") view=DashboardLayout>
                     <Route path=path!("/") view=OverviewPage/>
                     <Route path=path!("/keys") view=KeysPage/>
@@ -258,6 +261,8 @@ fn DashboardLayout() -> impl IntoView {
                 <A href="/dashboard/keys">"API keys"</A>
                 <A href="/dashboard/members">"Members"</A>
                 <A href="/dashboard/log">"Transaction log"</A>
+                // Top-level and public, like /logout: verification needs no session.
+                <A href="/verify">"Verify a bill"</A>
                 <A href="/logout">"Log out"</A>
             </nav>
             <main class="content">
@@ -732,5 +737,135 @@ fn LogPage() -> impl IntoView {
                 })}
             </Suspense>
         </section>
+    }
+}
+
+/// What one verification attempt concluded.
+#[derive(Debug, Clone)]
+enum VerifyOutcome {
+    /// The bundle matches the content hash and the proof links it to the tree head.
+    Passed,
+    /// The bundle does not match the hash, or the proof does not link to the head.
+    Failed,
+    /// The content hash field is not 64 hexadecimal characters.
+    BadHash,
+    /// The bundle field does not parse as a proof bundle; carries the parse error.
+    BadBundle(String),
+}
+
+/// The public verification page: paste a proof bundle and the content hash recorded
+/// with the bill, and see the verdict.
+///
+/// Verification runs entirely in the browser — [`oxsum_verify::verify_bundle`] is
+/// the same code the server runs, compiled to WASM — so a passed check does not
+/// depend on trusting this server, and the bundle never leaves the browser.
+#[component]
+fn VerifyPage() -> impl IntoView {
+    let (bundle, set_bundle) = signal(String::new());
+    let (content_hash, set_content_hash) = signal(String::new());
+    let (outcome, set_outcome) = signal(Option::<VerifyOutcome>::None);
+
+    let ready = move || !(bundle.get().trim().is_empty() || content_hash.get().trim().is_empty());
+
+    let verify = move |ev: web_sys::SubmitEvent| {
+        ev.prevent_default();
+        let outcome = match oxsum_verify::Hash::parse_hex(content_hash.get_untracked().trim()) {
+            Err(_) => VerifyOutcome::BadHash,
+            Ok(expected) => match oxsum_verify::verify_bundle(&bundle.get_untracked(), &expected) {
+                Err(error) => VerifyOutcome::BadBundle(error.to_string()),
+                Ok(true) => VerifyOutcome::Passed,
+                Ok(false) => VerifyOutcome::Failed,
+            },
+        };
+        set_outcome.set(Some(outcome));
+    };
+
+    view! {
+        <main class="center">
+            <section class="card verify" aria-label="Verify a bill">
+                <h1>"Verify a bill"</h1>
+                <p class="muted">
+                    "Paste the proof bundle and the content hash you recorded with the bill. "
+                    "Verification runs in this browser — the bundle is never sent to the server."
+                </p>
+                <form on:submit=verify aria-label="Verify a proof bundle">
+                    <label>
+                        "Proof bundle (JSON)"
+                        <textarea
+                            name="bundle"
+                            rows="10"
+                            spellcheck="false"
+                            autocomplete="off"
+                            placeholder="{\"entry\": …}"
+                            prop:value=move || bundle.get()
+                            on:input=move |ev| set_bundle.set(event_target_value(&ev))
+                        />
+                    </label>
+                    <label>
+                        "Content hash"
+                        <input
+                            type="text"
+                            name="content-hash"
+                            autocomplete="off"
+                            spellcheck="false"
+                            placeholder="64 hexadecimal characters"
+                            class="mono"
+                            prop:value=move || content_hash.get()
+                            on:input=move |ev| set_content_hash.set(event_target_value(&ev))
+                        />
+                    </label>
+                    <button type="submit" prop:disabled=move || !ready()>
+                        "Verify"
+                    </button>
+                </form>
+                {move || outcome.get().map(|outcome| view! { <Verdict outcome=outcome/> })}
+                <p class="muted fine-print">
+                    "Verification proves: this record was not altered after being written, and history was not rewritten. "
+                    "It does not prove: upstream really returned that many tokens."
+                </p>
+            </section>
+        </main>
+    }
+}
+
+/// The verdict of one verification attempt: an icon plus words, never color alone.
+#[component]
+fn Verdict(outcome: VerifyOutcome) -> impl IntoView {
+    let (class, icon, title, detail) = match &outcome {
+        VerifyOutcome::Passed => (
+            "success",
+            "✓",
+            "Verification passed.",
+            "The bundle matches the content hash, and the inclusion proof links it to the tree head."
+                .to_owned(),
+        ),
+        VerifyOutcome::Failed => (
+            "error",
+            "✗",
+            "Verification failed.",
+            "The bundle does not match this content hash, or the inclusion proof does not link to the tree head. Changing any single number in the bundle fails the check."
+                .to_owned(),
+        ),
+        VerifyOutcome::BadHash => (
+            "error",
+            "✗",
+            "That is not a content hash.",
+            "The content hash is 64 hexadecimal characters — the value recorded with the bill."
+                .to_owned(),
+        ),
+        VerifyOutcome::BadBundle(error) => (
+            "error",
+            "✗",
+            "That is not a proof bundle.",
+            format!("The bundle does not parse as JSON: {error}"),
+        ),
+    };
+    view! {
+        <div class="verdict" role="status">
+            <p class=class>
+                <span aria-hidden="true">{icon}</span> <strong>{title}</strong>
+            </p>
+            <p class="muted">{detail}</p>
+        </div>
     }
 }
