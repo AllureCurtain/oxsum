@@ -2,6 +2,28 @@
 
 New decisions go on top. Overturned decisions are never deleted; mark them "Superseded" and name the decision that replaces it.
 
+## 2026-10-03 Per-key spend limits: committed spend, serialized per key (issue #32)
+
+- Status: Adopted. Implemented 2026-10-03, closing issue #32 (TODO B-8).
+- Background: API keys have full authority (#17: roles constrain sessions, not keys), so one key could spend an organization's whole balance. product.md deferred per-key spend limits to post-v1, and the gateway's freeze discipline made them the natural next step: a limit that only bound settled spend would be after-the-fact interception — the exact failure this file criticizes in OpenAI's limits.
+- Decision:
+  - **Storage: `oxsum.api_keys.spend_limit_minor`** — nullable bigint, `CHECK (spend_limit_minor >= 0)`, migration `0005_key_spend_limits`. NULL is unlimited, so every existing key is unaffected; 0 means the key can never hold. A limits table would be a 1:1 join for no reason: exactly one limit per key, with the key row's lifetime.
+  - **What it limits: committed spend** — settled charges attributed to the key **plus** outstanding holds attributed to the key, in minor units. A hold of `m` is refused when `committed + m > limit`. A pure hold cap lets cumulative spend blow past the limit; a pure spend cap lets in-flight freezes exceed it, and the freeze-before-spend discipline is the product's whole pitch.
+  - **Attribution: `provenance.actor`** — the key id in uuid simple form. Hold entries carry it; `Wallet::settle` copies the hold's actor onto the settlement entry (it already reads the hold entry for the held amount), so the release side and the settled charge side attribute to the key with no extra plumbing: the sweeper, the gateway and the wallet API all attribute for free. Keys with no limit attribute too, so a limit added later counts history.
+  - **Enforcement: `Wallet::hold_for_key`**, serialized per key around the engine append, with no engine change. It begins a transaction, takes `pg_advisory_xact_lock` on a stable hash of (tenant, key id), re-reads the limit from the key row `FOR UPDATE` (the value in force now, pinned against a concurrent limit change), reads committed spend from the ledger — postings joined to entries on the actor, wallet account, both layers — and only then appends through the engine's normal path. The lock is held until commit, i.e. until after the engine's append committed, so a racing second hold for the same key can only read usage that already includes the first hold. Two racing holds cannot both pass the check.
+  - **Lock order is always key-lock, then the engine's per-tenant append lock**, and the engine never takes the key lock: no deadlock. Per-key serialization adds no tenant-level contention beyond the append lock that already serializes the tenant.
+  - **Refusal: `WalletError::KeyLimitExceeded`** — 429 `KEY_LIMIT_EXCEEDED` on `/api/v1`, and on the gateway as `insufficient_quota` in the OpenAI shape. A quota refusal, not a balance one: 402 stays the wallet's.
+  - **Management: `spendLimitMinor`** on key creation, and `PATCH /api/v1/org/keys/{keyId}` to set or clear it, under the revoke scope rules (members: keys they created; owners, admins and keys acting as the organization: all; anything else 404). Sessions carry no limit — the wallet hold route enforces only for key principals.
+- Rejected:
+  - **An engine-side limit** (a `BalanceLimit` variant carrying an amount): it would change the account record's canonical encoding and invalidate the content hash of every stored account, for what oxsum can do outside the engine.
+  - **Read-then-write in `Wallet::hold` without the lock**: the exact race the `FundedReservations` decision documents — two requests both read pre-append usage and both commit.
+  - **An oxsum-side holds table**: duplicates ledger state that can drift, and would need the same lock to be honest.
+  - **A DB CHECK on postings**: the per-key total is an aggregate over attributed postings, not a column.
+- Implementation notes:
+  - `crates/core/src/keys.rs` (`ActingKey`, `update_key_limit`), `crates/core/src/wallet.rs` (`hold_for_key`, `key_committed`, the settle actor flow, the lock-key hash), `Principal::Key(KeyPrincipal)` carrying the acting key, `crates/server/src/auth.rs` resolving it on both middlewares.
+  - The concurrency test races ten 300-minor holds against a 1000 limit: exactly three succeed and 900 is committed — deterministic under the serialization.
+  - One in-flight `hold_for_key` transiently needs two pool connections (the outer transaction plus the engine's append inside it); `OXSUM_DB_MAX_CONNECTIONS` should stay comfortably above peak concurrent key-holds.
+
 ## 2026-10-03 Trustworthy tree heads: operator-signed heads via doubleentry's witness module (issue #30)
 
 - Status: Adopted. Implemented 2026-10-03, closing issue #30 (TODO B-7).

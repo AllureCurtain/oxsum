@@ -28,6 +28,7 @@ On timeout or network errors the client retries with the same key, never a new o
 - A hold reserves part of the available balance. The settled balance is untouched until a settlement discharges the hold; the difference between the amount held and the amount charged goes back to the available balance.
 - A settlement names the hold it releases (`holdKey`): the server reads the hold's amount from the hold entry in the ledger, so there is no amount to assert. One hold settles at most once — the settlement entry's idempotency key is derived from the hold's key (`oxsum_core::settlement_key_for`), and the ledger's idempotency gate refuses a second settlement of the same hold with `CONFLICT`, inside the append. Retrying the identical settlement replays it.
 - Naming a hold that is not outstanding is `NOT_FOUND`, even when other holds would cover the amount. The wallet's limit still refuses a release the outstanding reservations cannot cover, as the backstop behind the pairing.
+- A hold taken with an API key is checked against the key's spend limit when it has one: settled charges plus outstanding holds attributed to the key may not exceed `spendLimitMinor`. The check is serialized per key and atomic with the ledger append — concurrent holds cannot together exceed it — and the refusal is 429 `KEY_LIMIT_EXCEEDED`.
 
 ## OpenAI-compatible gateway (`/v1`)
 
@@ -84,6 +85,7 @@ Failure:
 | `UNAUTHORIZED` | 401 | credential missing, malformed, unknown, revoked or expired — key, operator token or session alike — or a login with an unknown email or a wrong password |
 | `FORBIDDEN` | 403 | the caller may not do this; registration when signup is not open |
 | `INSUFFICIENT_FUNDS` | 402 | the wallet cannot cover it: a hold larger than the available balance |
+| `KEY_LIMIT_EXCEEDED` | 429 | the acting API key's spend limit is exhausted: settled charges plus outstanding holds attributed to the key would exceed it |
 | `NOT_FOUND` | 404 | resource does not exist, or belongs to another organization; a settlement naming a hold that is not outstanding |
 | `CONFLICT` | 409 | the value is already taken, or a key was reused for a different request; registering an email that exists; settling a hold that is already discharged |
 | `INTERNAL_ERROR` | 500 | server error; details only in logs |
@@ -97,6 +99,7 @@ Failure:
 - Revocation is permanent and idempotent; a key id of another organization is `NOT_FOUND`, never `FORBIDDEN`, so ids cannot be probed.
 - Expiry is optional. An expired key is refused exactly like a revoked one.
 - Since web login (TODO B-4, issue #17), role checks are enforced: members create and revoke only the keys they created; owners and admins see and revoke every key of the organization. A key acting as the organization keeps its full authority — roles constrain sessions, not keys.
+- A key may carry a spend limit (`spendLimitMinor`, minor units; null is unlimited), set at creation or with `PATCH /api/v1/org/keys/{keyId}` under the revoke scope rules. The limit caps the key's committed spend — settled charges plus outstanding holds attributed to it. A hold that would push past it is refused with 429 `KEY_LIMIT_EXCEEDED`, atomically with the ledger append, so concurrent requests cannot exceed it. The gateway answers the same refusal as `insufficient_quota` in its OpenAI error shape. Sessions carry no limit.
 
 ## Pagination
 

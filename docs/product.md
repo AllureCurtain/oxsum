@@ -76,7 +76,7 @@ v1 has no payment integration; credit has exactly three sources, each recording 
 - The plaintext shows once at creation. The database stores only the SHA-256 hash and a prefix; the dashboard uses the prefix to help users recognize keys.
 - Format: `oxs-` followed by 32 random bytes, so secret-scanning tools can recognize them.
 - Optional name and expiry. Revocation is permanent.
-- Per-key spend limits and model whitelists are post-v1 (TODO.md's "per-key sub-limits").
+- Per-key spend limits are implemented (backend, TODO B-8): a key's `spendLimitMinor` caps its committed spend, enforced atomically with the hold append. Model whitelists are still post-v1.
 
 ## Gateway
 
