@@ -438,10 +438,7 @@ mod tests {
                 .with_session_cookie_secure(true)
                 .session_cookie_secure()
         );
-        assert_eq!(
-            super::session_cookie_secure_of("true".to_owned()),
-            Ok(true)
-        );
+        assert_eq!(super::session_cookie_secure_of("true".to_owned()), Ok(true));
         assert_eq!(super::session_cookie_secure_of("1".to_owned()), Ok(true));
         assert_eq!(
             super::session_cookie_secure_of("false".to_owned()),

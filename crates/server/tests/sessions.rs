@@ -111,7 +111,12 @@ async fn register(app: &Router, name: &str) -> (String, Value, String) {
         None,
     )
     .await;
-    assert_eq!(res.status, StatusCode::OK, "registration failed: {}", res.body);
+    assert_eq!(
+        res.status,
+        StatusCode::OK,
+        "registration failed: {}",
+        res.body
+    );
     let secret = res.body["data"]["apiKey"]["secret"]
         .as_str()
         .unwrap()
@@ -258,9 +263,20 @@ async fn logout_revokes_the_session_clears_the_cookie_and_is_idempotent() {
     let (email, _registration, _secret) = register(&app, "logout").await;
     let cookie = session_cookie(&login(&app, &email, PASSWORD).await);
 
-    let res = call(&app, "POST", "/api/v1/auth/logout", None, None, Some(&cookie)).await;
+    let res = call(
+        &app,
+        "POST",
+        "/api/v1/auth/logout",
+        None,
+        None,
+        Some(&cookie),
+    )
+    .await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
-    let set_cookie = res.set_cookie.as_deref().expect("Set-Cookie clears the cookie");
+    let set_cookie = res
+        .set_cookie
+        .as_deref()
+        .expect("Set-Cookie clears the cookie");
     assert!(
         set_cookie.starts_with("oxsum_session=;"),
         "the cookie is cleared: {set_cookie}"
@@ -275,7 +291,15 @@ async fn logout_revokes_the_session_clears_the_cookie_and_is_idempotent() {
     assert_eq!(res.status, StatusCode::UNAUTHORIZED, "{}", res.body);
 
     // Logging out twice is not an error — with the dead cookie, or with none at all.
-    let res = call(&app, "POST", "/api/v1/auth/logout", None, None, Some(&cookie)).await;
+    let res = call(
+        &app,
+        "POST",
+        "/api/v1/auth/logout",
+        None,
+        None,
+        Some(&cookie),
+    )
+    .await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
     let res = call(&app, "POST", "/api/v1/auth/logout", None, None, None).await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
@@ -365,7 +389,10 @@ async fn members_manage_only_their_own_keys() {
     let (app, pool) = app_or_skip!(false);
     let (owner_email, owner_data, owner_signup_key) = register(&app, "boss").await;
     let (member_email, member_data, _member_signup_key) = register(&app, "teammate").await;
-    let org_a = owner_data["organization"]["id"].as_str().unwrap().to_owned();
+    let org_a = owner_data["organization"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let owner_uid = owner_data["user"]["id"].as_str().unwrap().to_owned();
     let member_uid = member_data["user"]["id"].as_str().unwrap().to_owned();
 
@@ -430,7 +457,15 @@ async fn members_manage_only_their_own_keys() {
     assert!(res.body["data"]["createdBy"].is_null());
 
     // The member lists only the key they created.
-    let res = call(&app, "GET", "/api/v1/org/keys", None, None, Some(&member_cookie)).await;
+    let res = call(
+        &app,
+        "GET",
+        "/api/v1/org/keys",
+        None,
+        None,
+        Some(&member_cookie),
+    )
+    .await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
     let listed: Vec<&str> = res.body["data"]
         .as_array()
@@ -441,7 +476,15 @@ async fn members_manage_only_their_own_keys() {
     assert_eq!(listed, [member_key.as_str()]);
 
     // The owner sees every key of the organization.
-    let res = call(&app, "GET", "/api/v1/org/keys", None, None, Some(&owner_cookie)).await;
+    let res = call(
+        &app,
+        "GET",
+        "/api/v1/org/keys",
+        None,
+        None,
+        Some(&owner_cookie),
+    )
+    .await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
     assert_eq!(res.body["data"].as_array().unwrap().len(), 4);
 
@@ -458,7 +501,12 @@ async fn members_manage_only_their_own_keys() {
     assert_eq!(res.status, StatusCode::NOT_FOUND, "{}", res.body);
     assert_eq!(res.body["error"]["code"], "NOT_FOUND");
     let res = call(&app, "GET", "/api/v1/org", None, Some(&owner_secret), None).await;
-    assert_eq!(res.status, StatusCode::OK, "the key still works: {}", res.body);
+    assert_eq!(
+        res.status,
+        StatusCode::OK,
+        "the key still works: {}",
+        res.body
+    );
 
     // The owner revoking the member's key works.
     let res = call(

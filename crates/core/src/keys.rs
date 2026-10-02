@@ -107,9 +107,9 @@ impl Db {
         organization_id: Uuid,
         scope: KeyScope,
     ) -> Result<Vec<ApiKey>, WalletError> {
-        let rows = match scope {
-            KeyScope::Own(user_id) => {
-                sqlx::query(
+        let rows =
+            match scope {
+                KeyScope::Own(user_id) => sqlx::query(
                     "SELECT key_id, name, prefix, created_by, created_at, expires_at, revoked_at \
                      FROM oxsum.api_keys \
                      WHERE organization_id = $1 AND created_by = $2 \
@@ -118,10 +118,8 @@ impl Db {
                 .bind(organization_id)
                 .bind(user_id)
                 .fetch_all(self.pool())
-                .await?
-            }
-            KeyScope::Organization | KeyScope::All => {
-                sqlx::query(
+                .await?,
+                KeyScope::Organization | KeyScope::All => sqlx::query(
                     "SELECT key_id, name, prefix, created_by, created_at, expires_at, revoked_at \
                      FROM oxsum.api_keys \
                      WHERE organization_id = $1 \
@@ -129,9 +127,8 @@ impl Db {
                 )
                 .bind(organization_id)
                 .fetch_all(self.pool())
-                .await?
-            }
-        };
+                .await?,
+            };
         rows.iter().map(key_from_row).collect()
     }
 

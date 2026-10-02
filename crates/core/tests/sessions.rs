@@ -93,10 +93,7 @@ async fn login_mints_a_session_that_authenticates() {
     // A key principal keeps acting as the whole organization: no user, full scope.
     let key_principal = Principal::Key(registration.organization.clone());
     assert_eq!(key_principal.user_id(), None);
-    assert!(matches!(
-        key_principal.key_scope(),
-        KeyScope::Organization
-    ));
+    assert!(matches!(key_principal.key_scope(), KeyScope::Organization));
 }
 
 #[tokio::test]
@@ -105,7 +102,9 @@ async fn login_failures_are_indistinguishable() {
     let db = db(&url).await;
     let registration = register(&db, "loginfail").await;
 
-    let wrong_password = db.login(&registration.user.email, "wrong password 123").await;
+    let wrong_password = db
+        .login(&registration.user.email, "wrong password 123")
+        .await;
     let unknown_email = db
         .login("nobody-has-this@example.com", "wrong password 123")
         .await;
@@ -122,9 +121,7 @@ async fn login_failures_are_indistinguishable() {
     // Email matching is case-insensitive and trims, like registration's uniqueness rule.
     let upper = registration.user.email.to_uppercase();
     assert!(
-        db.login(&format!("  {upper}  "), PASSWORD)
-            .await
-            .is_ok(),
+        db.login(&format!("  {upper}  "), PASSWORD).await.is_ok(),
         "login normalizes the email the way signup does"
     );
 }
@@ -158,13 +155,12 @@ async fn the_plaintext_token_is_nowhere_in_the_database() {
 
     // The hash is a SHA-256 of the token, not the token: 32 bytes, unlike a 71-character
     // token, and the token cannot be read back out of it.
-    let hash: Vec<u8> = sqlx::query_scalar(
-        "SELECT token_hash FROM oxsum.sessions WHERE session_id = $1",
-    )
-    .bind(created.principal.session.id)
-    .fetch_one(db.pool())
-    .await
-    .unwrap();
+    let hash: Vec<u8> =
+        sqlx::query_scalar("SELECT token_hash FROM oxsum.sessions WHERE session_id = $1")
+            .bind(created.principal.session.id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
     assert_eq!(hash.len(), 32);
     assert_ne!(hash, token.as_bytes());
 
@@ -203,21 +199,19 @@ async fn logout_revokes_and_is_idempotent() {
     );
 
     // Logging out twice is not an error, and does not move the timestamp.
-    let first: Option<time::OffsetDateTime> = sqlx::query_scalar(
-        "SELECT revoked_at FROM oxsum.sessions WHERE session_id = $1",
-    )
-    .bind(created.principal.session.id)
-    .fetch_one(db.pool())
-    .await
-    .unwrap();
+    let first: Option<time::OffsetDateTime> =
+        sqlx::query_scalar("SELECT revoked_at FROM oxsum.sessions WHERE session_id = $1")
+            .bind(created.principal.session.id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
     db.logout(&created.token).await.unwrap();
-    let second: Option<time::OffsetDateTime> = sqlx::query_scalar(
-        "SELECT revoked_at FROM oxsum.sessions WHERE session_id = $1",
-    )
-    .bind(created.principal.session.id)
-    .fetch_one(db.pool())
-    .await
-    .unwrap();
+    let second: Option<time::OffsetDateTime> =
+        sqlx::query_scalar("SELECT revoked_at FROM oxsum.sessions WHERE session_id = $1")
+            .bind(created.principal.session.id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
     assert_eq!(first, second);
 
     // A token that was never minted is not an error either.
@@ -272,14 +266,12 @@ async fn a_session_dies_with_its_membership() {
 
     // The membership is removed directly: invitation flows that do this through the API
     // are a later item, and the session layer only cares about the row.
-    sqlx::query(
-        "DELETE FROM oxsum.memberships WHERE organization_id = $1 AND user_id = $2",
-    )
-    .bind(registration.organization.id)
-    .bind(registration.user.id)
-    .execute(db.pool())
-    .await
-    .unwrap();
+    sqlx::query("DELETE FROM oxsum.memberships WHERE organization_id = $1 AND user_id = $2")
+        .bind(registration.organization.id)
+        .bind(registration.user.id)
+        .execute(db.pool())
+        .await
+        .unwrap();
     assert!(
         db.authenticate_session(&created.token)
             .await
@@ -343,7 +335,12 @@ async fn role_scopes_constrain_key_listing_and_revocation() {
         .await
         .unwrap();
     let member_key = db
-        .create_key(org, Some("member-key".into()), None, Some(member_user.user.id))
+        .create_key(
+            org,
+            Some("member-key".into()),
+            None,
+            Some(member_user.user.id),
+        )
         .await
         .unwrap();
 
@@ -362,7 +359,10 @@ async fn role_scopes_constrain_key_listing_and_revocation() {
             .principal,
     );
     assert!(matches!(owner_principal.key_scope(), KeyScope::All));
-    let all = db.list_keys(org, owner_principal.key_scope()).await.unwrap();
+    let all = db
+        .list_keys(org, owner_principal.key_scope())
+        .await
+        .unwrap();
     assert_eq!(all.len(), 3);
 
     // A member revoking a key they did not create gets a 404-shaped answer — None — and
@@ -374,10 +374,7 @@ async fn role_scopes_constrain_key_listing_and_revocation() {
             .is_none()
     );
     assert!(
-        db.authenticate(&owner_key.secret)
-            .await
-            .unwrap()
-            .is_some(),
+        db.authenticate(&owner_key.secret).await.unwrap().is_some(),
         "the key a member could not revoke still works"
     );
 
