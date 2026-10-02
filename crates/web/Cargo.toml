@@ -34,6 +34,10 @@ leptos_axum = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 # Server-only: SSR calls the domain layer directly (docs/architecture.md).
 oxsum-core = { workspace = true, optional = true }
+# Always: the verification page runs the pure proof check in the browser (WASM),
+# and the same function body serves SSR. oxsum-core itself cannot target wasm32
+# (sqlx-postgres needs OS sockets), so the shared logic lives in this crate.
+oxsum-verify = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
