@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.6.0
+  version: 0.7.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -211,6 +211,41 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/keys/{keyId}:
+    patch:
+      summary: Set or clear an API key's spend limit
+      description: |
+        `spendLimitMinor` caps what the key may have committed — settled charges plus
+        outstanding holds attributed to it, in minor units; `null` clears the limit back to
+        unlimited. A hold that would push the key past its limit is refused with 429
+        `KEY_LIMIT_EXCEEDED`, atomically with the ledger append, so concurrent requests
+        cannot exceed it. The scope rules are the revoke's: a member may change only the keys
+        they created — any other key id answers 404 and the key is untouched; owners, admins
+        and API keys acting as the organization may change any key of the organization. A key
+        id belonging to another organization is `NOT_FOUND`.
+      parameters: [{ $ref: "#/components/parameters/KeyId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [spendLimitMinor]
+              properties:
+                spendLimitMinor: { type: [integer, "null"], format: int64, minimum: 0, description: "the new limit in minor units, or null for unlimited" }
+      responses:
+        "200":
+          description: The key with its new limit
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ApiKey" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
     delete:
       summary: Revoke an API key
       description: |
@@ -258,6 +293,7 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "402": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/settlements:
     post:
@@ -697,9 +733,10 @@ components:
       properties:
         name: { type: string, minLength: 1, maxLength: 80 }
         expiresAt: { type: [string, "null"], format: date-time, description: optional expiry; an expired key authenticates nothing }
+        spendLimitMinor: { type: [integer, "null"], format: int64, minimum: 0, description: "the key's spend limit in minor units: settled charges plus outstanding holds attributed to the key may not exceed it; null (the default) is unlimited" }
     ApiKey:
       type: object
-      required: [id, name, prefix, createdBy, createdAt, expiresAt, revokedAt]
+      required: [id, name, prefix, createdBy, createdAt, expiresAt, revokedAt, spendLimitMinor]
       properties:
         id: { type: string, format: uuid }
         name: { type: [string, "null"] }
@@ -708,6 +745,7 @@ components:
         createdAt: { type: string, format: date-time }
         expiresAt: { type: [string, "null"], format: date-time }
         revokedAt: { type: [string, "null"], format: date-time }
+        spendLimitMinor: { type: [integer, "null"], format: int64, minimum: 0, description: "the key's spend limit in minor units; null is unlimited" }
     CreatedApiKey:
       allOf:
         - $ref: "#/components/schemas/ApiKey"
