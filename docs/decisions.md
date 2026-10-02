@@ -2,6 +2,25 @@
 
 New decisions go on top. Overturned decisions are never deleted; mark them "Superseded" and name the decision that replaces it.
 
+## 2026-10-02 The generative suite loads `.env` before reading `DATABASE_URL`
+
+- Status: Adopted. Implemented 2026-10-02, closing issue #18.
+- Background: `tenants()` in `crates/core/tests/generative.rs` read `DATABASE_URL` from the process environment before `runtime()` loaded `.env` via dotenvy. Under the documented setup (`cp .env.example .env`, nothing exported) every one of the 1000 proptest cases hit `let Some(tenants) = tenants() else { return Ok(()); }` and the suite passed in ~0.2s, having tested nothing. The other suites (`wallet.rs`, `channels.rs`, `identity.rs`, `admin.rs`, `api.rs`, `gateway.rs`) all load `.env` first; the generative suite was the only one with the inverted order.
+- Decision:
+  - The suite reads the variable through a `database_url()` helper that calls `dotenvy::dotenv()` first, mirroring the `url()` helper in the other suites.
+  - The no-database skip stays: docs/development.md documents that database tests skip without `DATABASE_URL`. But it is loud now — a warning naming the skipped case count, printed once, so a vacuous run cannot look like a real one.
+  - A subprocess probe pins the ordering: it runs one proptest case in a child whose environment has no `DATABASE_URL` and whose working directory holds a `.env` with an unparseable URL, and asserts the child fails (it tried the database). Hermetic — no real database, no repo `.env` — and fast, since the URL fails at parse time before any I/O.
+- Why:
+  - Keeping the skip (rather than failing hard without a database) is what the docs promise, and a bare `cargo test` on a machine without PostgreSQL must stay green.
+  - Loading `.env` in the helper rather than requiring an exported variable is what makes the documented setup honest: `cp .env.example .env` followed by `cargo test` now really tests.
+  - A subprocess probe rather than a unit test: the ordering is a process-global property (environment plus working directory), so only a subprocess can pin it without racing the suite's own parallel cases.
+- Rejected:
+  - Making the skip a hard failure: contradicts the documented contract and would break `cargo test` on machines without a database.
+  - Requiring `DATABASE_URL` to be exported: contradicts the documented setup and the other suites' behaviour.
+- Implementation notes:
+  - Verified both directions: the probe passes with the fix and fails with the exact assertion message when the lookup is reverted to the environment-before-`.env` order.
+  - `runtime()` keeps its own `dotenvy::dotenv()` call; loading twice is harmless (dotenvy never overrides an existing variable).
+
 ## 2026-10-02 Channels and versioned prices: the database is the configuration, and a request is priced by the version it starts on
 
 - Status: Adopted. Implemented 2026-10-02, closing TODO 3 / issue #15. Replaces one line of "A gateway turn freezes first": prices still come from a `PriceBook` behind a seam, and what fills the seam is now rows rather than the environment.
