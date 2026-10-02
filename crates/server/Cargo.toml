@@ -1,6 +1,6 @@
 [package]
 name = "oxsum-server"
-description = "oxsum server: axum JSON API (web dashboard mounted later), single binary."
+description = "oxsum server: axum JSON API, OpenAI-compatible gateway and Leptos web dashboard, single binary."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -35,10 +35,17 @@ async-stream.workspace = true
 futures-core.workspace = true
 # The upstream HTTP client, built once in lib.rs and shared through AppState.
 reqwest.workspace = true
+# The dashboard pages: server-side rendering plus hydration, mounted through
+# leptos_axum into the same binary (docs/decisions.md, "pages move to Leptos").
+oxsum-web.workspace = true
+leptos.workspace = true
+leptos_axum.workspace = true
 
 [dev-dependencies]
 dotenvy.workspace = true
+futures-util.workspace = true
 http-body-util.workspace = true
+tokio-tungstenite.workspace = true
 tower.workspace = true
 uuid.workspace = true
 

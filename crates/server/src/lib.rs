@@ -2,15 +2,22 @@
 
 mod admin;
 mod auth;
+mod billing;
 mod config;
 mod error;
 mod gateway;
 mod routes;
+mod web;
+mod ws;
 
 use axum::Router;
+use axum::extract::FromRef;
+use leptos::config::LeptosOptions;
 use oxsum_core::{Db, Tenants, WalletError};
 use time::OffsetDateTime;
+use tokio::sync::broadcast;
 
+pub use billing::BillingEvent;
 pub use config::{Config, Gateway, Signup};
 
 /// Everything a request handler may need.
@@ -24,6 +31,17 @@ pub(crate) struct AppState {
     pub(crate) tenants: Tenants,
     pub(crate) config: Config,
     pub(crate) http: reqwest::Client,
+    /// Where the gateway publishes [`BillingEvent`]s: the `/ws/billing` route forwards
+    /// them to the dashboard. Process-wide and in-memory — a missed event is a missed
+    /// live update, not lost state, because the watch table stays the record.
+    pub(crate) billing: broadcast::Sender<BillingEvent>,
+    pub(crate) leptos_options: LeptosOptions,
+}
+
+impl FromRef<AppState> for LeptosOptions {
+    fn from_ref(state: &AppState) -> Self {
+        state.leptos_options.clone()
+    }
 }
 
 /// Builds the full application router. Shared by main and the integration tests.
@@ -32,13 +50,26 @@ pub(crate) struct AppState {
 /// first. Keeping them apart is what lets a test build a router over a pool that never connects, for
 /// requests that are answered without the database.
 pub fn app(db: Db, config: Config) -> Router {
+    app_with_billing(db, config).0
+}
+
+/// Builds the router plus the broadcast sender the gateway publishes [`BillingEvent`]s to.
+///
+/// The dashboard's `/ws/billing` forwards them to the browser; tests subscribe to the
+/// sender to assert what a turn publishes, without opening a socket.
+pub fn app_with_billing(db: Db, config: Config) -> (Router, broadcast::Sender<BillingEvent>) {
+    // The billing broadcast is best-effort: a slow dashboard misses an event, and the
+    // watch table stays the record of in-flight holds.
+    let (billing, _) = broadcast::channel(128);
     let state = AppState {
         tenants: Tenants::new(db.pool().clone()),
         db,
         config,
         http: gateway::client(),
+        billing: billing.clone(),
+        leptos_options: web::options(),
     };
-    routes::router(state)
+    (routes::router(state), billing)
 }
 
 /// Prepares a database for serving: seed the first channel, and make sure the configured key opens

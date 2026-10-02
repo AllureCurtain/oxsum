@@ -197,7 +197,20 @@ async fn run(
         &serving,
         freeze,
         request.texts.clone(),
+        &organization.tenant_id,
+        state.billing.clone(),
     );
+    // The dashboard's live section sees the turn from here: the hold is taken, upstream is
+    // next. Best-effort — a missed event is a missed live update, not lost state.
+    let _ = state
+        .billing
+        .send(crate::billing::BillingEvent::TurnStarted {
+            tenant_id: organization.tenant_id.clone(),
+            request_id: request_id.to_owned(),
+            model: request.model.clone(),
+            channel: serving.channel.clone(),
+            freeze_minor: freeze,
+        });
     let upstream = state
         .http
         .post(format!("{}/chat/completions", serving.base_url))
