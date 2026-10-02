@@ -3,7 +3,8 @@ use doubleentry::storage::postgres::PostgresStore;
 use doubleentry::{
     AccountId, Amount, BalanceKey, BalanceLimit, BalanceQuery, Balanced, Currency, Cursor,
     Description, Direction, Draft, Entry, EntryBatch, EntryId, Hash, IdempotencyKey, Layer,
-    LedgerId, LedgerPolicy, LedgerStore, LogIndex, PeriodCalendar, Posting, Provenance, SealContext,
+    LedgerId, LedgerPolicy, LedgerStore, LogIndex, PeriodCalendar, Posting, Provenance,
+    SealContext,
 };
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
@@ -246,11 +247,12 @@ impl Wallet {
             .await?;
         // The limit in force now, not the one the request authenticated with: locked, so a
         // PATCH landing between authentication and this hold cannot be missed.
-        let limit: Option<Option<i64>> =
-            sqlx::query_scalar("SELECT spend_limit_minor FROM oxsum.api_keys WHERE key_id = $1 FOR UPDATE")
-                .bind(key.key_id)
-                .fetch_optional(&mut *tx)
-                .await?;
+        let limit: Option<Option<i64>> = sqlx::query_scalar(
+            "SELECT spend_limit_minor FROM oxsum.api_keys WHERE key_id = $1 FOR UPDATE",
+        )
+        .bind(key.key_id)
+        .fetch_optional(&mut *tx)
+        .await?;
         let Some(limit) = limit else {
             // Keys are never deleted; a missing row means the credential died mid-request.
             return Err(WalletError::Unauthenticated);
@@ -369,8 +371,7 @@ impl Wallet {
         // caller input to get wrong. A hold taken before key attribution existed settles
         // unattributed, like it was held.
         if let Some(actor) = outstanding_actor {
-            draft = draft
-                .with_provenance(Provenance::none().with_actor(&actor).map_err(invalid)?);
+            draft = draft.with_provenance(Provenance::none().with_actor(&actor).map_err(invalid)?);
         }
         draft = draft
             .post(Posting::credit(self.wallet, held, currency()).in_layer(Layer::Pending))

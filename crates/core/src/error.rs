@@ -37,7 +37,9 @@ pub enum WalletError {
     /// A hold would push the acting API key past its spend limit: settled charges plus
     /// outstanding holds attributed to the key, in minor units, would exceed the limit.
     /// The HTTP layer answers 429; the numbers are the key's own, so they are safe to show.
-    #[error("key spend limit exceeded: {committed_minor} of {limit_minor} minor units already committed")]
+    #[error(
+        "key spend limit exceeded: {committed_minor} of {limit_minor} minor units already committed"
+    )]
     KeyLimitExceeded {
         limit_minor: i64,
         committed_minor: i64,
