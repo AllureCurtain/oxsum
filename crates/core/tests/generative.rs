@@ -779,3 +779,46 @@ proptest! {
         }
     }
 }
+
+/// The `.env`-first lookup, pinned (issue #18).
+///
+/// Runs one proptest case in a child process whose environment has no
+/// `DATABASE_URL` and whose working directory holds a `.env` pointing at a
+/// database that cannot exist. The suite must *try* the database — the child
+/// must fail on the value — rather than skip vacuously and pass. Hermetic: it
+/// needs no real database and no repo `.env`.
+#[test]
+fn dot_env_is_consulted_before_the_database_check() {
+    // The probe child runs only the proptest (see the `--exact` filter
+    // below), but guard against recursion anyway.
+    if std::env::var("OXSUM_GENERATIVE_DOTENV_PROBE").is_ok() {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!(
+        "oxsum-generative-dotenv-probe-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).expect("probe dir");
+    // Not a URL at all: the parse fails before any I/O, so the probe stays
+    // fast. A hostname that hangs (rather than refusing) would make every
+    // `cargo test` pay the pool timeout here.
+    std::fs::write(dir.join(".env"), "DATABASE_URL=not-a-database-url\n").expect("probe .env");
+    let exe = std::env::current_exe().expect("test executable");
+    // Capture the child's output: its failure is the assertion, and letting
+    // it through would print a FAILED block into this run's log.
+    let output = std::process::Command::new(exe)
+        .arg("--exact")
+        .arg("generated_sequences_match_the_model")
+        .env("PROPTEST_CASES", "1")
+        .env("OXSUM_GENERATIVE_DOTENV_PROBE", "1")
+        .env_remove("DATABASE_URL")
+        .current_dir(&dir)
+        .output()
+        .expect("probe child");
+    std::fs::remove_dir_all(&dir).ok();
+    assert!(
+        !output.status.success(),
+        "the suite skipped vacuously: with DATABASE_URL only in .env, it must try the database; child stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
