@@ -3,10 +3,11 @@
 //! A tenant is an organization: its balance, its ledger and its API keys. One organization
 //! maps to one PostgreSQL schema (`ledger_<tenant_id>`) and one doubleentry ledger, so each
 //! ledger has its own log, Merkle tree and idempotency-key space — physical isolation, not
-//! filtering. oxsum's own tables (users, organizations, memberships, API keys) live in one
-//! `oxsum` schema, outside the ledgers; see [`Db`].
+//! filtering. oxsum's own tables (users, organizations, memberships, API keys, channels and
+//! their prices) live in one `oxsum` schema, outside the ledgers; see [`Db`].
 
 mod billing;
+mod channels;
 mod db;
 mod error;
 mod keys;
@@ -20,6 +21,7 @@ pub use billing::{
     Price, PriceBook, Settlement, SettlementKind, Usage, estimate_tokens, hold_description,
     input_upper_bound,
 };
+pub use channels::{Channel, ModelPrice, SecretKey, Serving};
 pub use db::{Db, SCHEMA};
 pub use doubleentry::{EntryId, Hash};
 pub use error::WalletError;

@@ -8,6 +8,8 @@ license.workspace = true
 publish = false
 
 [dependencies]
+aes-gcm.workspace = true
+base64.workspace = true
 doubleentry.workspace = true
 password-auth.workspace = true
 rand.workspace = true
@@ -19,6 +21,7 @@ thiserror.workspace = true
 tiktoken-rs.workspace = true
 time.workspace = true
 tokio.workspace = true
+url.workspace = true
 uuid.workspace = true
 
 [lints]

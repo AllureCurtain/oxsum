@@ -15,11 +15,20 @@ oxsum-core = { path = "crates/core" }
 doubleentry = { path = "crates/doubleentry", features = ["postgres", "serde"] }
 
 axum = "0.8"
+# Sealing channel credentials at rest: AES-256-GCM, and the base64 the stored record uses.
+aes-gcm = "0.10"
+base64 = "0.21"
 dotenvy = "0.15"
 password-auth = "1"
 proptest = "1"
 rand = "0.10"
 sha2 = "0.11"
+# The operator token on the admin surface is compared in constant time, so a wrong guess learns
+# nothing from how long the comparison took.
+subtle = "2"
+# Parsing a channel's base URL where the rule lives (core), rather than trusting the HTTP layer to
+# have checked it.
+url = "2"
 # The gateway's upstream client and both halves of the streaming relay: `rustls` so a
 # deployment needs no OpenSSL, `stream` for the passthrough. See docs/decisions.md,
 # "gateway HTTP client and token estimation".
