@@ -31,7 +31,8 @@ The axum API, the core and doubleentry exist today, with oxsum's own identity ta
 | Identity | `crates/core/src/users.rs`, `orgs.rs`, `keys.rs` | Registration (user, personal organization, owner membership and first API key, one transaction), organizations and memberships, and API keys: mint, resolve, list, revoke. The credential names the organization |
 | proof | `crates/core/src/proof.rs` | Proof bundle structure and the client-side verify function, later called directly inside a Leptos component |
 | HTTP | `crates/server/src/` | Routing, API-key middleware, error mapping |
-| Gateway | `crates/server/src/gateway/` | The OpenAI-compatible `/v1` surface: model list, chat completions, OpenAI-shaped errors, and the relay that freezes before upstream and settles however the turn ends. Its own auth middleware, because a refusal here has to look like OpenAI's. It resolves its channel and price version from the rows in `crates/core` once per request, and records both in the settlement. Pricing is in core, see docs/decisions.md |
+| Gateway | `crates/server/src/gateway/` | The OpenAI-compatible `/v1` surface: model list, chat completions, OpenAI-shaped errors, and the relay that freezes before upstream and settles however the turn ends. Its own auth middleware, because a refusal here has to look like OpenAI's. It resolves its channel and price version from the rows in `crates/core` once per request, and records both in the settlement. Pricing is in core, see docs/decisions.md. It notes each hold in the sweeper's watch table before taking it, and clears the row when the turn settles |
+| Hold sweeper | `crates/core/src/holds.rs`, spawned in `crates/server/src/main.rs` | The background job that settles watched holds older than `OXSUM_HOLD_TIMEOUT` at 0 with kind `swept`, releasing the whole freeze. The watch table (`oxsum.open_holds`) is a finding aid only: the ledger stays the source of truth, and the derived settlement key is the atomic guard against a late settlement landing alongside the sweep. See docs/decisions.md |
 | Admin | `crates/server/src/admin.rs` | The platform admin's `/api/v1/admin` surface: channels and their price versions, behind `OXSUM_ADMIN_TOKEN` in a middleware of its own, because this is not an organization's credential. Store and rules are in core, see docs/decisions.md |
 | Pages | `crates/web` (not yet created) | Leptos admin dashboard, bill page, chat page. SSR plus hydration, mounted through the official `leptos_axum`, one binary |
 
@@ -102,6 +103,12 @@ Principle: **domain logic belongs in core; the gateway does protocol and orchest
    - The same limit checks the release as a backstop, so the amount it gives back cannot exceed what holds reserved. The pairing itself is one-to-one: a settlement names the hold it releases, and the hold's entry is the amount — see docs/decisions.md.
    - The gateway settles when the relayed stream ends, and the settlement is awaited before the stream closes, so a client that read a stream to its end reads a settled bill. The write runs in a task of its own, so a client that hangs up while it is being appended cannot cancel it; a client that hangs up before that cancels the upstream call and settles what had been forwarded from a local estimate.
 3. Each step carries its own `idempotencyKey`, so retries are safe. For a gateway turn the hold's key is derived from the request id the response header carries (`req-<id>:hold`), and the settlement's key is derived from the hold's (`oxsum_core::settlement_key_for`).
+
+### The hold sweeper
+
+1. The gateway notes each hold in `oxsum.open_holds` *before* taking it, and deletes the row when the turn settles — however the turn ends, including the `Drop` path for a client that disconnects mid-stream. A row without a hold (the process died in between) heals itself: the sweeper deletes it when the hold is not there.
+2. Every 60 seconds the background job settles the rows older than `OXSUM_HOLD_TIMEOUT` at 0 with kind `swept`: the whole freeze is released and the settlement record marks the anomaly. A hold younger than the timeout is never touched — "old but still streaming" is excluded by the timeout contract, which must exceed the longest possible single request.
+3. The sweeper and a late settlement share the derived settlement key, so both cannot take effect: whichever appends first wins, the other sees `Conflict("hold already settled")`, and the row is cleared either way.
 
 ### User bill verification
 
