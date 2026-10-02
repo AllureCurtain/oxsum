@@ -10,8 +10,9 @@ use uuid::Uuid;
 
 use crate::auth::require_key;
 use crate::error::ApiError;
-use crate::{AppState, Signup};
+use crate::{AppState, Signup, today};
 
+/// The `/api/v1` surface, plus the two routes served outside it: health, and the gateway.
 pub fn router(state: AppState) -> Router {
     // Behind a key: everything that touches an organization, its ledger or its credentials.
     let authenticated = Router::new()
@@ -31,6 +32,8 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .nest("/api/v1", open.merge(authenticated))
+        // The OpenAI-compatible surface, which brings its own auth and its own error format.
+        .nest("/v1", crate::gateway::router(state.clone()))
         .with_state(state)
 }
 
@@ -87,11 +90,6 @@ struct BalanceRes {
 /// The ledger facade of the organization the credential belongs to.
 async fn wallet(tenants: &Tenants, organization: &Organization) -> Result<Arc<Wallet>, ApiError> {
     Ok(tenants.get(&organization.tenant_id).await?)
-}
-
-/// The posting date is the server's current UTC date.
-fn today() -> time::Date {
-    OffsetDateTime::now_utc().date()
 }
 
 async fn register(
@@ -167,7 +165,10 @@ async fn hold(
     Json(r): Json<AmountReq>,
 ) -> ApiResult<oxsum_core::Receipt> {
     let w = wallet(&state.tenants, &organization).await?;
-    ok(w.hold(&r.idempotency_key, r.amount_minor, today()).await?)
+    // No description: this endpoint takes an amount, not a reason. The gateway, which knows what the
+    // hold is for, records one.
+    ok(w.hold(&r.idempotency_key, "", r.amount_minor, today())
+        .await?)
 }
 
 async fn settle(
@@ -176,10 +177,14 @@ async fn settle(
     Json(r): Json<SettleReq>,
 ) -> ApiResult<oxsum_core::Receipt> {
     let w = wallet(&state.tenants, &organization).await?;
-    ok(
-        w.settle(&r.idempotency_key, r.held_minor, r.actual_minor, today())
-            .await?,
+    ok(w.settle(
+        &r.idempotency_key,
+        "",
+        r.held_minor,
+        r.actual_minor,
+        today(),
     )
+    .await?)
 }
 
 async fn balance(

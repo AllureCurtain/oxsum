@@ -25,7 +25,8 @@ fn unused_pool() -> PgPool {
 
 /// An app over a pool that never connects, for requests answered without the database.
 fn offline_app(signup: Signup) -> Router {
-    oxsum_server::app(Db::from_pool(unused_pool()), Config::new(signup))
+    // No gateway channel: these tests cover the wallet API, which does not depend on one.
+    oxsum_server::app(Db::from_pool(unused_pool()), Config::new(signup, None))
 }
 
 /// An app over a real database with oxsum's tables migrated.
@@ -37,7 +38,7 @@ async fn online_app(url: &str, signup: Signup) -> (Router, PgPool) {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
-    (oxsum_server::app(db, Config::new(signup)), pool)
+    (oxsum_server::app(db, Config::new(signup, None)), pool)
 }
 
 /// The DATABASE_URL tests need, or None to skip.
