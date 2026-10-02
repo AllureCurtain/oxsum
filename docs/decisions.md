@@ -520,3 +520,13 @@ New decisions go on top. Overturned decisions are never deleted; mark them "Supe
   - Waiting for the `requests` table: would drag this issue into item 5's (Leptos dashboard) scope; the watch list is superseded by that table when it arrives.
   - A ledger scan per tenant: O(log) per tenant per sweep pass, opening every tenant's ledger, no index.
   - A per-chunk heartbeat for liveness: a write per chunk for a case the timeout contract already excludes.
+
+## 2026-10-03 Demo materials: a self-driving Python script, an honestly-manual GIF (issue #35)
+
+- Status: Adopted
+- Decision: `demo/demo.py` (stdlib plus the official `openai` SDK) starts everything it needs: a scripted mock upstream in-process — mirroring `crates/server/tests/gateway.rs`' upstream (one scripted model, SSE answer frames, the token usage in the final chunk) — and the oxsum server on a free port with bootstrap env (`OXSUM_SIGNUP=open`, the mock as `OXSUM_UPSTREAM_BASE_URL`, one demo model with fixed prices, a fresh `OXSUM_SECRET_KEY`). It registers a fresh demo user (a fresh org per run, so a run never touches real data), tops up a fixed amount, runs one streaming chat turn through the SDK with `base_url` pointed at oxsum, and prints the balance delta, the turn's settlement entry — named from the `x-oxsum-request-id` header via the UUIDv5 derivations `docs/api.md` documents as caller-computable (`req-<id>:hold`, `oxsum_core::settlement_key_for`, `entry_id_for`) — with its billing record, and both proof bundles. No real provider, no API key; no new Rust code and no new HTTP endpoints: the demo uses only what the contract already promises.
+- Why Python: the demo's point is the OpenAI SDK path a real user takes, and the SDK's reference implementation is Python — a demo in any other language would demo a different client. The transcript is deterministic (fixed prices, fixed scripted usage, fixed top-up); only the demo email and the API key vary per run.
+- The GIF is deliberately not faked: this environment cannot record one, so the script prints a deterministic terminal-friendly transcript and the recording (the terminal running `python3 demo/demo.py`) is a manual follow-up for the repo owner, noted in the issue and the PR. No placeholder GIF is committed.
+- Rejected:
+  - Driving the demo against a real provider: needs a real key, is non-deterministic, and costs money — the scripted upstream answers the same wire format.
+  - A new `/api/v1/entries` listing endpoint for the demo: the request-id-to-entry derivation is already public interface; adding a listing endpoint would widen the contract for a demo's convenience.

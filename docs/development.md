@@ -115,6 +115,7 @@ creates `ledger_<tenant_id>` on first use.
 | Run the server with the dashboard, rebuilding on change | `cargo leptos serve` |
 | All tests | `cargo test --workspace` (loads `DATABASE_URL` from `.env` or the shell) |
 | oxsum only | `cargo test -p oxsum-core -p oxsum-server` |
+| Run the end-to-end demo | `python3 demo/demo.py` (needs `pip install -r demo/requirements.txt`; starts its own mock upstream and server) |
 | Generative sequences, quick run | `PROPTEST_CASES=50 cargo test -p oxsum-core --test generative` |
 | doubleentry's Postgres tests | `cargo test -p doubleentry --features postgres --test postgres` (spins up its own container via testcontainers) |
 | Verify doubleentry builds for the browser | `cargo build -p doubleentry --features serde --target wasm32-unknown-unknown` |
