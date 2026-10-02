@@ -16,7 +16,7 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router, middleware};
-use oxsum_core::{Organization, SettlementKind, hold_description};
+use oxsum_core::{Organization, Serving, SettlementKind, hold_description};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -56,26 +56,51 @@ pub fn router(state: AppState) -> Router<AppState> {
 
 /// Lists the models this deployment can serve, in OpenAI's shape.
 ///
-/// Only models with a configured price appear: a model the gateway cannot price cannot be frozen,
-/// so it is not served at all. `created` is zero because an environment-configured model has no
-/// creation time to report; TODO item 3's versioned rows will carry one.
+/// Only models with a price appear: a model the gateway cannot price cannot be frozen, so it is not
+/// served at all. `created` is when the version in force was written — the closest thing a price row
+/// has to a creation time — and `owned_by` is the channel that serves it.
 async fn models(State(state): State<AppState>) -> Response {
-    let data: Vec<Value> = match state.config.gateway() {
-        Some(gateway) => gateway
-            .book()
-            .models()
-            .map(|(model, _)| {
+    let channels = match state.db.channels().await {
+        Ok(channels) => channels,
+        // A listing that cannot be read does not touch the wallet, but it is answered in OpenAI's
+        // shape: this is the surface an OpenAI client is pointed at.
+        Err(error) => {
+            tracing::error!(%error, "listing the served models failed");
+            return GatewayError::upstream(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "the model list could not be read".to_owned(),
+                None,
+            )
+            .into_response();
+        }
+    };
+    let data: Vec<Value> = channels
+        .into_iter()
+        .flat_map(|channel| {
+            channel.models.into_iter().map(move |model| {
                 json!({
-                    "id": model,
+                    "id": model.model,
                     "object": "model",
-                    "created": 0,
-                    "owned_by": gateway.book().channel(),
+                    "created": model.created_at.unix_timestamp(),
+                    "owned_by": channel.name,
                 })
             })
-            .collect(),
-        None => Vec::new(),
-    };
+        })
+        .collect();
     Json(json!({ "object": "list", "data": data })).into_response()
+}
+
+/// The channel and price version that serve a model, or `None` when nothing does.
+///
+/// A deployment with no sealing key serves no channel at all: `app` refuses to start when channels
+/// exist without one, so this is the "the wallet is running, the gateway is not configured" case.
+/// A credential that will not open is [`oxsum_core::WalletError::Misconfigured`], which becomes a
+/// 500: the operator's mistake, not the caller's.
+async fn serving(state: &AppState, model: &str) -> Result<Option<Serving>, GatewayError> {
+    let Some(secret) = state.config.secret() else {
+        return Ok(None);
+    };
+    Ok(state.db.serving(model, secret).await?)
 }
 
 /// One chat completion: freeze, relay, settle.
@@ -114,16 +139,13 @@ async fn run(
     body: Value,
     request_id: &str,
 ) -> Result<Response, GatewayError> {
-    let Some(gateway) = state.config.gateway() else {
-        return Err(GatewayError::Invalid {
-            message: "this deployment serves no models".to_owned(),
-            param: Some("model"),
-        });
-    };
     let request = ChatRequest::parse(body)?;
-    let Some(price) = gateway.book().get(&request.model).copied() else {
+    // The channel and the price version are resolved once, here, before anything is frozen: this
+    // turn is priced by the version in force when it starts, whatever happens to prices later.
+    let Some(serving) = serving(state, &request.model).await? else {
         return Err(GatewayError::model_not_served(&request.model));
     };
+    let price = serving.price;
     let output_bound = price.output_upper_bound(request.max_tokens)?;
     let texts: Vec<&str> = request.texts.iter().map(String::as_str).collect();
     let freeze = price.freeze_minor(&texts, request.max_tokens)?;
@@ -146,14 +168,14 @@ async fn run(
         wallet,
         request_id,
         &request.model,
-        price,
+        &serving,
         freeze,
         request.texts.clone(),
     );
     let upstream = state
         .http
-        .post(format!("{}/chat/completions", gateway.base_url()))
-        .bearer_auth(gateway.api_key())
+        .post(format!("{}/chat/completions", serving.base_url))
+        .bearer_auth(&serving.api_key)
         .json(&request.forwarded(output_bound))
         .send()
         .await;

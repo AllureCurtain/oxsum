@@ -198,16 +198,25 @@ pub enum SettlementKind {
 ///
 /// The description is part of the entry and covered by its content hash, so a bill proves not only
 /// what was charged but by how many tokens at what price — the arithmetic is verifiable, not just
-/// the total. It is built only from what the request itself decided (the request id, the model, the
-/// prices, the counts), never from a clock or a counter, so a retry under the same idempotency key
-/// reproduces the same entry instead of colliding with it.
+/// the total. It is built only from what the request itself decided (the request id, the channel and
+/// the price version it started on, the model, the prices, the counts), never from a clock or a
+/// counter, so a retry under the same idempotency key reproduces the same entry instead of colliding
+/// with it.
+///
+/// The channel and the version are what keep those prices checkable later: a price change appends a
+/// version rather than replacing one (docs/product.md, "Channels and prices"), so "this turn was
+/// priced by version 3" stays a statement about a row that is still there.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settlement<'a> {
     /// The request id from `x-oxsum-request-id`; the ledger keys are derived from it.
     pub request: &'a str,
+    /// The channel that served the request.
+    pub channel: &'a str,
     /// The model the caller asked for.
     pub model: &'a str,
+    /// The price version in force when the request started.
+    pub price_version: i64,
     /// How this turn was priced.
     pub kind: SettlementKind,
     /// Tokens billed as input.
@@ -411,7 +420,9 @@ mod tests {
     fn the_description_carries_the_arithmetic() {
         let settlement = Settlement {
             request: "abc",
+            channel: "deepseek",
             model: "deepseek-chat",
+            price_version: 3,
             kind: SettlementKind::Usage,
             input_tokens: 116,
             output_tokens: 100,
@@ -423,7 +434,7 @@ mod tests {
         let json = settlement.description().unwrap();
         assert_eq!(
             json,
-            r#"{"request":"abc","model":"deepseek-chat","kind":"usage","inputTokens":116,"outputTokens":100,"inputPrice":1000000,"outputPrice":2000000,"charged":316,"freeze":400}"#
+            r#"{"request":"abc","channel":"deepseek","model":"deepseek-chat","priceVersion":3,"kind":"usage","inputTokens":116,"outputTokens":100,"inputPrice":1000000,"outputPrice":2000000,"charged":316,"freeze":400}"#
         );
         // Within the ledger's limit, whatever the model is called.
         assert!(json.len() < 512);

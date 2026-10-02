@@ -24,6 +24,12 @@ impl From<WalletError> for ApiError {
             WalletError::Forbidden(m) => Self::Forbidden(m),
             WalletError::Conflict(m) => Self::Conflict(m),
             WalletError::InsufficientFunds => Self::InsufficientFunds,
+            // A deployment that cannot open its own channel credentials is broken rather than asked
+            // something wrong: the operator gets the detail in the log, the caller gets a 500.
+            WalletError::Misconfigured(detail) => {
+                tracing::error!(%detail, "this deployment is misconfigured");
+                Self::Internal
+            }
             // Storage details go to the logs only, never back to the caller.
             WalletError::Storage(err) => {
                 tracing::error!(error = %err, "storage failure");

@@ -29,9 +29,12 @@ pub fn router(state: AppState) -> Router {
     // No key: health, and signup while the deployment allows it.
     let open = Router::new().route("/auth/register", post(register));
 
+    // The platform admin: an operator token, not an organization key, and its own middleware.
+    let admin = crate::admin::router(state.clone());
+
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
-        .nest("/api/v1", open.merge(authenticated))
+        .nest("/api/v1", open.merge(authenticated).nest("/admin", admin))
         // The OpenAI-compatible surface, which brings its own auth and its own error format.
         .nest("/v1", crate::gateway::router(state.clone()))
         .with_state(state)
@@ -39,13 +42,13 @@ pub fn router(state: AppState) -> Router {
 
 /// The uniform success envelope: { "data": ... }.
 #[derive(Serialize)]
-struct Data<T> {
+pub(crate) struct Data<T> {
     data: T,
 }
 
-type ApiResult<T> = Result<Json<Data<T>>, ApiError>;
+pub(crate) type ApiResult<T> = Result<Json<Data<T>>, ApiError>;
 
-fn ok<T>(data: T) -> ApiResult<T> {
+pub(crate) fn ok<T>(data: T) -> ApiResult<T> {
     Ok(Json(Data { data }))
 }
 

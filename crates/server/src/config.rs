@@ -4,7 +4,7 @@
 //! a request is handled. Everything else the server needs is an environment variable read
 //! once at startup, in main.rs.
 
-use oxsum_core::PriceBook;
+use oxsum_core::{PriceBook, SecretKey};
 
 /// Whether this deployment lets people register themselves.
 ///
@@ -29,12 +29,13 @@ impl Signup {
     }
 }
 
-/// The one upstream channel this deployment relays to, and what its models cost.
+/// The first upstream channel a deployment starts with, and what its models cost.
 ///
 /// In v1 one model maps to exactly one channel (product.md), so a deployment has exactly one of
-/// these. TODO item 3 replaces the environment with versioned rows managed from the admin
-/// dashboard: the gateway reads a [`PriceBook`] and a base URL, so that is a change of source
-/// rather than a change of the request path.
+/// these. It is the *bootstrap*: [`crate::app`] writes it into `oxsum.channels` when the database has
+/// no channels yet, and after that the rows are the configuration (docs/decisions.md, "channels and
+/// versioned prices"). A deployment can therefore describe its first channel here and change its
+/// prices over the admin API, without ever editing the environment again.
 #[derive(Debug, Clone)]
 pub struct Gateway {
     base_url: String,
@@ -53,10 +54,11 @@ impl Gateway {
         }
     }
 
-    /// Reads the channel from the environment.
+    /// Reads the bootstrap channel from the environment.
     ///
-    /// `None` means this deployment serves no gateway at all, which is a valid way to run the
-    /// wallet: the three variables are all absent and nothing is configured.
+    /// `None` means the environment describes no channel, which is a valid way to run the wallet and
+    /// also what a deployment does after it has configured channels over the admin API: the three
+    /// variables are all absent and nothing is seeded.
     ///
     /// # Errors
     ///
@@ -127,16 +129,42 @@ fn var(name: &str) -> Option<String> {
 }
 
 /// Deployment configuration, passed to [`crate::app`].
+///
+/// The gateway part is the *bootstrap* channel: channels and their prices are rows in oxsum's own
+/// tables (docs/decisions.md, "channels and versioned prices"), and the environment only describes
+/// what a brand-new database starts with. Everything else here is process configuration: the signup
+/// policy, the key that seals channel credentials, and the operator token on the admin surface.
 #[derive(Debug, Clone)]
 pub struct Config {
     signup: Signup,
     gateway: Option<Gateway>,
+    secret: Option<SecretKey>,
+    admin_token: Option<String>,
 }
 
 impl Config {
     #[must_use]
     pub fn new(signup: Signup, gateway: Option<Gateway>) -> Self {
-        Self { signup, gateway }
+        Self {
+            signup,
+            gateway,
+            secret: None,
+            admin_token: None,
+        }
+    }
+
+    /// Sets the key that seals upstream credentials. Required as soon as a channel exists.
+    #[must_use]
+    pub fn with_secret(mut self, secret: SecretKey) -> Self {
+        self.secret = Some(secret);
+        self
+    }
+
+    /// Sets the operator token that opens `/api/v1/admin`.
+    #[must_use]
+    pub fn with_admin_token(mut self, token: impl Into<String>) -> Self {
+        self.admin_token = Some(token.into());
+        self
     }
 
     /// Reads the configuration from the environment.
@@ -150,9 +178,15 @@ impl Config {
             Ok(raw) => Signup::parse(&raw)?,
             Err(_) => Signup::Invite,
         };
+        let secret = var("OXSUM_SECRET_KEY")
+            .map(|raw| SecretKey::parse(&raw))
+            .transpose()?;
+        let admin_token = var("OXSUM_ADMIN_TOKEN").map(admin_token_of).transpose()?;
         Ok(Self {
             signup,
             gateway: Gateway::from_env()?,
+            secret,
+            admin_token,
         })
     }
 
@@ -161,11 +195,39 @@ impl Config {
         self.signup
     }
 
-    /// The configured channel, or `None` when this deployment serves no gateway.
+    /// The bootstrap channel, or `None` when the environment describes none.
     #[must_use]
-    pub(crate) fn gateway(&self) -> Option<&Gateway> {
+    pub(crate) fn bootstrap(&self) -> Option<&Gateway> {
         self.gateway.as_ref()
     }
+
+    /// The key that opens sealed channel credentials, or `None` when none is configured — in which
+    /// case this deployment can hold no channels at all ([`crate::app`] enforces that).
+    #[must_use]
+    pub(crate) fn secret(&self) -> Option<&SecretKey> {
+        self.secret.as_ref()
+    }
+
+    /// The operator token, or `None` when the admin surface is closed.
+    #[must_use]
+    pub(crate) fn admin_token(&self) -> Option<&str> {
+        self.admin_token.as_deref()
+    }
+}
+
+/// A token worth putting in front of the admin surface: long enough that it is not worth guessing.
+///
+/// A short token is refused at startup rather than accepted quietly: the surface it guards can point
+/// the gateway at another upstream and change what every request costs.
+fn admin_token_of(token: String) -> Result<String, String> {
+    const MIN: usize = 16;
+    if token.chars().count() < MIN {
+        return Err(format!(
+            "OXSUM_ADMIN_TOKEN must be at least {MIN} characters, got {}",
+            token.chars().count()
+        ));
+    }
+    Ok(token)
 }
 
 #[cfg(test)]
@@ -174,7 +236,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::{Config, Gateway, Signup};
-    use oxsum_core::PriceBook;
+    use oxsum_core::{PriceBook, SecretKey};
 
     fn book() -> PriceBook {
         PriceBook::from_json(
@@ -201,14 +263,30 @@ mod tests {
     }
 
     #[test]
-    fn configuration_carries_its_gateway_or_none() {
+    fn configuration_carries_its_bootstrap_channel_and_its_secrets() {
         let config = Config::new(
             Signup::Open,
             Some(Gateway::new("http://127.0.0.1:9/v1", "k", book())),
         );
         assert_eq!(config.signup(), Signup::Open);
-        assert!(config.gateway().is_some());
+        assert!(config.bootstrap().is_some());
+        assert!(config.secret().is_none());
+        assert!(config.admin_token().is_none());
+        let config = config
+            .with_secret(SecretKey::from_bytes([1; 32]))
+            .with_admin_token("operator-token-1234");
+        assert!(config.secret().is_some());
+        assert_eq!(config.admin_token(), Some("operator-token-1234"));
         assert_eq!(config.clone().signup(), Signup::Open);
-        assert!(Config::new(Signup::Invite, None).gateway().is_none());
+        assert!(Config::new(Signup::Invite, None).bootstrap().is_none());
+        // A token short enough to guess is refused where it is read, not accepted quietly.
+        assert!(config_from_token("short").is_err());
+        assert!(config_from_token("long-enough-token").is_ok());
+    }
+
+    /// A configuration built the way `from_env` builds the operator token.
+    fn config_from_token(token: &str) -> Result<Config, String> {
+        super::admin_token_of(token.to_owned())
+            .map(|token| Config::new(Signup::Invite, None).with_admin_token(token))
     }
 }
