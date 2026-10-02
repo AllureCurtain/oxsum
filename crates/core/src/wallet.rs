@@ -23,10 +23,28 @@ const WALLET: &str = "Liabilities:Wallet";
 const CASH: &str = "Assets:Cash";
 const REVENUE: &str = "Income:Usage";
 
+/// What the wallet account may do: be drawn on only up to what it holds, and never
+/// release a reservation it did not take.
+///
+/// `NoDebitBalance` alone is not enough, and the difference is the whole point: a
+/// settlement *credits* the pending layer, and a pending credit neither consumes
+/// nor grants room under that rule, so settling an amount that was never held
+/// raised the available balance by exactly that amount. `FundedReservations` adds
+/// the missing half — the pending layer may not carry a credit of its own — so a
+/// release can only give back room a hold first took. It is enforced inside the
+/// append, against the balance the entry would leave behind, which is why it holds
+/// under concurrency: two settlements cannot both release a reservation only one
+/// of them can cover.
+///
+/// oxsum change (not upstream) on the engine side too: the variant exists for this
+/// account. See docs/decisions.md.
+const WALLET_LIMIT: BalanceLimit = BalanceLimit::FundedReservations;
+
 /// One tenant's wallet ledger.
 ///
 /// Three fixed accounts:
-/// - wallet: the balance owed to the user, a liability. Carries `NoDebitBalance`, no overdraft.
+/// - wallet: the balance owed to the user, a liability. Carries `FundedReservations`:
+///   no overdraft, and no release beyond what was reserved.
 /// - cash: money received from top-ups.
 /// - revenue: income recognized on settlement.
 pub struct Wallet {
@@ -70,33 +88,50 @@ impl Wallet {
         // Account handles must be restored from storage on restart. Re-registering by
         // path could mint different handle numbers and mispoint historical entries.
         let stored = store.accounts().await?;
-        let registry = if stored.is_empty() {
+        let creating = stored.is_empty();
+        let mut registry = if creating {
             let mut r = AccountRegistry::new();
-            let wallet = r.register_path(WALLET, OPENED).map_err(invalid)?;
+            r.register_path(WALLET, OPENED).map_err(invalid)?;
             r.register_path(CASH, OPENED).map_err(invalid)?;
             r.register_path(REVENUE, OPENED).map_err(invalid)?;
-            r.set_limit(wallet, BalanceLimit::NoDebitBalance)
-                .map_err(invalid)?;
-            for record in r.records() {
-                store.register_account(&record).await?;
-            }
             r
         } else {
             AccountRegistry::from_records(stored).map_err(invalid)?
         };
 
-        let find = |path: &str| {
-            registry
+        // The wallet's limit is oxsum's rule about its own account, so it is applied on
+        // every open rather than only where a ledger is created. `register_account`
+        // upserts master data, which is what lets a ledger written under a weaker rule be
+        // tightened here instead of keeping that rule for the rest of its life.
+        let wallet = find_account(&registry, WALLET)?;
+        let weakened = registry
+            .records()
+            .into_iter()
+            .find(|r| r.id == wallet)
+            .is_none_or(|r| r.account.limit != WALLET_LIMIT);
+        if weakened {
+            registry.set_limit(wallet, WALLET_LIMIT).map_err(invalid)?;
+            let record = registry
                 .records()
                 .into_iter()
-                .find(|r| r.account.path.to_string() == path)
-                .map(|r| r.id)
-                .ok_or_else(|| WalletError::InvalidInput(format!("missing account {path}")))
-        };
+                .find(|r| r.id == wallet)
+                .ok_or_else(|| WalletError::InvalidInput(format!("missing account {WALLET}")))?;
+            store.register_account(&record).await?;
+        }
+        // A ledger that did not exist a moment ago has no rows at all, so the other two
+        // accounts are written once, with it.
+        if creating {
+            for record in registry.records() {
+                if record.id != wallet {
+                    store.register_account(&record).await?;
+                }
+            }
+        }
+
         Ok(Self {
-            wallet: find(WALLET)?,
-            cash: find(CASH)?,
-            revenue: find(REVENUE)?,
+            wallet,
+            cash: find_account(&registry, CASH)?,
+            revenue: find_account(&registry, REVENUE)?,
             store,
             registry,
             calendar: PeriodCalendar::new(),
@@ -117,8 +152,9 @@ impl Wallet {
 
     /// Hold: reserves part of the wallet balance in the pending layer; the settled balance is untouched.
     ///
-    /// The wallet's `NoDebitBalance` limit counts the pending layer, so concurrent holds
-    /// cannot together exceed the balance.
+    /// The wallet's limit counts the pending layer, so concurrent holds cannot
+    /// together exceed the balance. Refused with [`WalletError::InsufficientFunds`]
+    /// when the balance cannot cover it.
     pub async fn hold(&self, key: &str, minor: i64, on: Date) -> Result<Receipt, WalletError> {
         let amt = positive(minor)?;
         self.append(
@@ -134,6 +170,18 @@ impl Wallet {
     ///
     /// `actual` may be less than the held amount; the difference returns to the available
     /// balance. `actual` of zero amounts to a full release.
+    ///
+    /// `held_minor` is a claim about a hold this wallet took, and it is checked as one: the
+    /// release credits the pending layer, and the wallet's limit refuses a pending credit that
+    /// the outstanding reservations cannot cover, with
+    /// [`WalletError::InsufficientFunds`]. So a settlement releases at most what is reserved
+    /// in total, and two settlements cannot both release the same reservation — the check runs
+    /// inside the append, against the balance the entry would leave behind.
+    ///
+    /// What it does not do is pair one settlement with one hold: the reservation layer is
+    /// checked in aggregate, so releasing more than the hold it names is permitted while other
+    /// reservations cover the amount. No value can be fabricated that way — the total released
+    /// still cannot exceed the total reserved — but the pairing is loose, see docs/decisions.md.
     pub async fn settle(
         &self,
         key: &str,
@@ -163,7 +211,25 @@ impl Wallet {
 
     /// Available balance in minor units = settled balance - unsettled holds.
     pub async fn available(&self) -> Result<i64, WalletError> {
-        Ok(self.wallet_net(Layer::Settled).await? + self.wallet_net(Layer::Pending).await?)
+        Ok(self.settled().await? - self.reserved().await?)
+    }
+
+    /// Credits that have settled into the wallet: what top-ups put there, less what settlements
+    /// have charged.
+    ///
+    /// Separate from [`reserved`](Self::reserved) because a hold and a settlement are answered
+    /// from different layers: a hold draws on the two together, a settlement gives back part of
+    /// the reserved one.
+    pub async fn settled(&self) -> Result<i64, WalletError> {
+        self.wallet_net(Layer::Settled).await
+    }
+
+    /// Credits currently reserved by holds that have not been settled yet.
+    ///
+    /// Never negative: the wallet's limit keeps the pending layer on the hold side, which is what
+    /// makes this the ceiling on what a settlement may release.
+    pub async fn reserved(&self) -> Result<i64, WalletError> {
+        Ok(-self.wallet_net(Layer::Pending).await?)
     }
 
     /// Builds the proof bundle for one entry. Returns None when the entry does not exist.
@@ -229,6 +295,19 @@ impl Wallet {
             is_new: r.is_new,
         })
     }
+}
+
+/// The handle of the account registered at `path`, or an error naming it.
+///
+/// A ledger whose accounts are not the three this module registers is not a wallet;
+/// saying which one is missing beats a panic or a silent default.
+fn find_account(registry: &AccountRegistry, path: &str) -> Result<AccountId, WalletError> {
+    registry
+        .records()
+        .into_iter()
+        .find(|r| r.account.path.to_string() == path)
+        .map(|r| r.id)
+        .ok_or_else(|| WalletError::InvalidInput(format!("missing account {path}")))
 }
 
 /// Tenant ids end up inside schema names, so only lowercase letters, digits and underscores are allowed, 1 to 40 chars.
