@@ -23,8 +23,9 @@
 //!   its own, and it does for any hold the wallet accepted. So the model expects a settlement to
 //!   succeed unless `actual` is outside `0..=held`.
 //! - **A key reused with different content is refused**, and the model only asserts that: that it
-//!   changes nothing and reports an error. Today the refusal reaches the domain layer wrapped as
-//!   a storage failure; issue #7 maps it to `CONFLICT`. Neither shape touches this file.
+//!   changes nothing and reports an error. The domain layer maps the engine's refusal to
+//!   `CONFLICT`, so the refusal arrives as a conflict, but the model reads all three classes the
+//!   same way and does not depend on that mapping beyond it not being a storage failure.
 //! - **The cases share eight ledgers rather than creating one each.** Creating a ledger is a DDL
 //!   migration (an extension plus eleven tables); a thousand of them would spend the whole run on
 //!   schema creation and leave a thousand schemas behind. Each case reads its tenant's balance and
@@ -35,7 +36,6 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use doubleentry::storage::postgres::PostgresError;
 use oxsum_core::{EntryId, Hash, Receipt, Tenants, Wallet, WalletError, verify_bundle};
 use proptest::collection::vec;
 use proptest::prelude::*;
@@ -303,9 +303,9 @@ fn refusal_of(error: &WalletError) -> Option<Refusal> {
         WalletError::Conflict(_) => Some(Refusal::Conflict),
         WalletError::InsufficientFunds => Some(Refusal::InsufficientFunds),
         WalletError::InvalidInput(_) => Some(Refusal::InvalidInput),
-        // Until issue #7 is fixed, a reused key reaches the domain layer wrapped like this; once
-        // it is mapped to `Conflict`, the arm above is the one that fires.
-        WalletError::Storage(PostgresError::IdempotencyConflict { .. }) => Some(Refusal::Conflict),
+        // No arm for the engine's `IdempotencyConflict` wrapped as a storage failure: the
+        // domain layer maps it to `Conflict`, so a caller seeing it as storage would be a
+        // regression, and not one this model reads as a refusal.
         _ => None,
     }
 }

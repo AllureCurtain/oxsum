@@ -229,6 +229,41 @@ async fn settle_rejects_actual_above_hold() {
     assert!(matches!(err, WalletError::InvalidInput(_)));
 }
 
+/// Reusing a key for a different request is the caller's mistake, and it says so.
+///
+/// The engine refuses it; what matters here is that the refusal reaches the domain layer as a
+/// conflict rather than as a storage failure. `Storage` means the ledger is broken and answers
+/// 500 with the details in the logs; this is a request the caller can fix by choosing another
+/// key, and the API answers it 409 CONFLICT.
+#[tokio::test]
+async fn reusing_a_key_for_a_different_request_is_a_conflict() {
+    let url = db_or_skip!();
+    let w = Wallet::open(pool(&url).await, &fresh("reuse"))
+        .await
+        .unwrap();
+    let first = w.top_up("same-key", 5 * ONE, D).await.unwrap();
+    assert!(first.is_new);
+
+    let err = w.top_up("same-key", 6 * ONE, D).await.unwrap_err();
+    match err {
+        WalletError::Conflict(message) => assert!(message.contains("idempotency key"), "{message}"),
+        other => panic!("expected a conflict, got {other:?}"),
+    }
+
+    // The refused attempt changed nothing: same balance, same log, and the key still belongs
+    // to the entry that took it.
+    assert_eq!(w.available().await.unwrap(), 5 * ONE);
+    assert_eq!(w.log_size().await.unwrap(), 1);
+    let replay = w.top_up("same-key", 5 * ONE, D).await.unwrap();
+    assert!(!replay.is_new);
+    assert_eq!(replay.entry_id, first.entry_id);
+
+    // A different kind under a key another kind already holds is the same conflict.
+    let err = w.hold("same-key", ONE, D).await.unwrap_err();
+    assert!(matches!(err, WalletError::Conflict(_)), "{err:?}");
+    assert_eq!(w.available().await.unwrap(), 5 * ONE);
+}
+
 #[tokio::test]
 async fn bill_proof_verifies_and_catches_tampering() {
     let url = db_or_skip!();

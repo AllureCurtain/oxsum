@@ -269,6 +269,69 @@ async fn wallet_round_trip() {
 }
 
 #[tokio::test]
+async fn a_reused_key_with_different_content_is_a_conflict() {
+    let (app, _pool) = app_or_skip!(Signup::Open);
+    let (_registration, key) = register(&app, "reuse").await;
+
+    let (status, first) = call(
+        &app,
+        "POST",
+        "/api/v1/topups",
+        Some(json!({"idempotencyKey": "t1", "amountMinor": 5_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    let entry_id = first["data"]["entryId"].as_str().unwrap().to_owned();
+
+    // Same key, different amount: a request the caller can fix, so 409 rather than 500, and
+    // nothing about the ledger's internals in the message.
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/topups",
+        Some(json!({"idempotencyKey": "t1", "amountMinor": 6_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"]["code"], "CONFLICT");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.contains("idempotency key"), "{message}");
+    assert!(!message.contains("storage"), "{message}");
+
+    // A different kind under the same key is the same conflict, and neither attempt moved
+    // anything.
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/holds",
+        Some(json!({"idempotencyKey": "t1", "amountMinor": 1_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "CONFLICT");
+
+    let (status, body) = call(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["availableMinor"], 5_000_000);
+
+    // The key still belongs to the entry that took it, so the original request still replays.
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/topups",
+        Some(json!({"idempotencyKey": "t1", "amountMinor": 5_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["isNew"], false);
+    assert_eq!(body["data"]["entryId"], entry_id);
+}
+
+#[tokio::test]
 async fn the_credential_names_the_organization() {
     let (app, _pool) = app_or_skip!(Signup::Open);
     let (first, first_key) = register(&app, "orgs_a").await;
