@@ -90,6 +90,7 @@ How each turn is recorded, in the settlement entry's own words:
 | `upstream_error` | Upstream answered with an error before emitting anything | Nothing; the whole freeze is released |
 | `upstream_unreachable` | Upstream could not be reached at all | Nothing; the whole freeze is released |
 | `capped` | Upstream's usage priced above the freeze | The freeze, and the excess is recorded as an anomaly |
+| `swept` | The hold timed out with no settlement (e.g. the gateway crashed) | Nothing; the whole freeze is released, recorded as an anomaly |
 
 Every settlement also records which channel served the turn and which price version priced it
 (`priceVersion` beside the prices and the token counts). A version is never rewritten, so a price
