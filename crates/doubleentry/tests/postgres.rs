@@ -1163,27 +1163,95 @@ async fn the_ledger_coexists_with_an_application_schema() {
     assert_eq!(balance, 4200);
 }
 
-/// A pool that does not resolve to the ledger's schema is refused, not silently
-/// pointed at `public`.
+/// oxsum change (not upstream): a store pins its own schema per transaction, so a pool
+/// whose connections resolve elsewhere is no longer a misconfiguration — the store's
+/// schema wins, and nothing lands where the pool pointed.
 #[tokio::test]
-async fn a_misconfigured_search_path_is_refused() {
+async fn the_store_pins_its_own_schema_over_the_pools() {
     let h = Harness::start().await;
     let url = h.url.clone();
 
+    // A pool with no `search_path` of its own: unqualified names resolve to `public`,
+    // which is exactly where a ledger must not put its tables.
     let pool = PgPoolOptions::new()
         .max_connections(1)
         .connect(&url)
         .await
         .expect("connects");
-    let store = PostgresStore::<2>::new(pool, LedgerId::new("stray").expect("valid"));
+    let store = PostgresStore::<2>::new(pool, LedgerId::new("stray").expect("valid"))
+        .in_schema("stray_ledger");
 
-    match store.migrate().await {
-        Err(PostgresError::WrongSearchPath { expected, found }) => {
-            assert_eq!(expected, DEFAULT_SCHEMA);
-            assert_eq!(found, "public");
-        }
-        other => panic!("expected WrongSearchPath, got {other:?}"),
+    store
+        .migrate()
+        .await
+        .expect("the store's own schema is pinned");
+    assert_eq!(store.schema(), "stray_ledger");
+
+    let schemas: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT table_schema::text FROM information_schema.tables \
+         WHERE table_name = 'entries' ORDER BY 1",
+    )
+    .fetch_all(store.pool())
+    .await
+    .expect("reads catalogue");
+    // The harness's own ledger, and this one — not `public`.
+    assert_eq!(
+        schemas,
+        vec![DEFAULT_SCHEMA.to_owned(), "stray_ledger".to_owned()]
+    );
+
+    let in_public: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'",
+    )
+    .fetch_one(store.pool())
+    .await
+    .expect("reads catalogue");
+    assert_eq!(in_public, 0, "the DDL followed the pool, not the store");
+}
+
+/// oxsum change (not upstream): two ledgers on one pool, in two schemas. A pool of one
+/// connection makes every statement after the first reuse the same backend, so a pin that
+/// did not follow the transaction would show up here as one ledger reading the other's rows.
+#[tokio::test]
+async fn one_pool_serves_two_ledgers_without_leaking() {
+    let h = Harness::start().await;
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&h.url)
+        .await
+        .expect("connects");
+
+    let a = PostgresStore::<2>::new(pool.clone(), LedgerId::new("pool-a").expect("valid"))
+        .in_schema("pool_a_ledger");
+    let b = PostgresStore::<2>::new(pool.clone(), LedgerId::new("pool-b").expect("valid"))
+        .in_schema("pool_b_ledger");
+    a.migrate().await.expect("migrates a");
+    b.migrate().await.expect("migrates b");
+    for record in h.accounts.records() {
+        a.register_account(&record).await.expect("registers");
+        b.register_account(&record).await.expect("registers");
     }
+
+    let entry = h.entry(b"pool-a-1", 100);
+    let id = entry.id();
+    a.append(&EntryBatch::single(entry))
+        .await
+        .expect("appends to a");
+
+    // Interleaved through one connection: b's reads cannot see a's rows.
+    assert_eq!(a.len().await.expect("counts"), 1);
+    assert_eq!(b.len().await.expect("counts"), 0);
+    assert!(b.get(id).await.expect("reads").is_none());
+    assert!(a.get(id).await.expect("reads").is_some());
+
+    b.append(&EntryBatch::single(h.entry(b"pool-b-1", 250)))
+        .await
+        .expect("appends to b");
+    assert_eq!(a.len().await.expect("counts"), 1);
+    assert_eq!(b.len().await.expect("counts"), 1);
+    // The pins belong to the transactions, not to the pool's connections: back to a.
+    assert_eq!(a.head().await.expect("reads").size, 1);
+    assert_eq!(b.head().await.expect("reads").size, 1);
 }
 
 /// Handles survive a restart: a second store over the same database rebuilds the
