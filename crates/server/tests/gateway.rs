@@ -21,10 +21,11 @@ use axum::http::{HeaderMap, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use http_body_util::BodyExt;
-use oxsum_core::{Db, Tenants, input_upper_bound};
+use oxsum_core::{Db, Tenants, input_upper_bound, sweep_stale_holds};
 use oxsum_server::{Config, Signup};
 use serde_json::{Value, json};
 use sqlx::PgPool;
+use time::OffsetDateTime;
 use tower::ServiceExt;
 
 /// The operator token the admin app in these tests is configured with.
@@ -472,6 +473,41 @@ fn request_id(response: &Response) -> String {
         .to_str()
         .expect("the request id is ASCII")
         .to_owned()
+}
+
+/// Serialises the test sweepers across test binaries: production runs one sweeper, so the tests
+/// take an advisory lock around aging and sweeping, and no two test sweepers run at once. Shared
+/// with `sweep.rs`, which takes the same lock.
+const SWEEP_LOCK: i64 = i64::from_be_bytes(*b"oxsumswp");
+
+/// Takes the sweep lock, returning the connection that holds it. A previous test that failed
+/// while holding the lock fails this one loudly instead of hanging the suite.
+async fn lock_sweeper(pool: &PgPool) -> sqlx::pool::PoolConnection<sqlx::Postgres> {
+    let mut conn = pool
+        .acquire()
+        .await
+        .expect("a connection for the sweep lock");
+    for _ in 0..600 {
+        let locked: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
+            .bind(SWEEP_LOCK)
+            .fetch_one(&mut *conn)
+            .await
+            .expect("tries the sweep lock");
+        if locked {
+            return conn;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("could not take the sweep lock within a minute");
+}
+
+/// Releases the sweep lock.
+async fn unlock_sweeper(mut conn: sqlx::pool::PoolConnection<sqlx::Postgres>) {
+    sqlx::query("SELECT pg_advisory_unlock($1)")
+        .bind(SWEEP_LOCK)
+        .execute(&mut *conn)
+        .await
+        .expect("releases the sweep lock");
 }
 
 async fn json_of(response: Response) -> (StatusCode, Value) {
@@ -963,6 +999,107 @@ async fn a_client_that_hangs_up_at_the_terminator_still_gets_its_usage_bill() {
     let wallet = world.wallet().await;
     assert_eq!(wallet.reserved().await.unwrap(), 0);
     assert_eq!(wallet.settled().await.unwrap(), 1_000_000 - 12);
+}
+
+/// A turn that settles normally leaves no watch row behind: the sweeper only ever sees holds
+/// whose request never settled.
+#[tokio::test]
+async fn a_settled_turn_leaves_no_watch_row() {
+    let world = world!(1_000_000);
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+
+    let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let id = request_id(&response);
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["kind"], "usage");
+
+    // The settled turn left no watch row: other tests may have in-flight rows of their own, so
+    // this checks the request's row rather than the whole table.
+    let db = Db::from_pool(world.pool.clone());
+    let rows = db
+        .stale_open_holds(OffsetDateTime::now_utc() + Duration::from_secs(3600))
+        .await
+        .expect("lists the watch rows");
+    assert!(
+        !rows.iter().any(|row| row.request_id == id),
+        "the settled turn left a watch row"
+    );
+}
+
+/// A stalled turn's hold is swept once it passes the timeout: the whole freeze is released and
+/// the settlement is recorded as the `swept` anomaly. This is the crash the sweeper exists for —
+/// upstream never answered, so without it the freeze would sit reserved forever.
+#[tokio::test]
+async fn a_stalled_turn_is_swept_when_its_hold_times_out() {
+    let world = world!(1_000_000);
+    // One sweeper at a time across test binaries: the sweep below must not resolve another
+    // binary's aged rows, nor have its own stolen.
+    let sweeper = lock_sweeper(&world.pool).await;
+    world.answers("stall", Answer::Stall);
+
+    let response = chat(
+        &world.app,
+        &world.key,
+        json!({
+            "model": world.model("stall"),
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true,
+        }),
+    )
+    .await;
+    let id = request_id(&response);
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = response.into_body();
+    let _ = body.frame().await.expect("a frame").expect("readable");
+
+    // The turn is in flight and watched: the freeze is reserved and the row names the request.
+    // Other tests may have in-flight rows of their own, so this checks the request's row.
+    let db = Db::from_pool(world.pool.clone());
+    let wallet = world.wallet().await;
+    assert!(wallet.reserved().await.expect("reserved") > 0);
+    let rows = db
+        .stale_open_holds(OffsetDateTime::now_utc() + Duration::from_secs(3600))
+        .await
+        .expect("lists the watch rows");
+    assert_eq!(
+        rows.iter().filter(|row| row.request_id == id).count(),
+        1,
+        "the in-flight turn has no watch row"
+    );
+
+    // Past the timeout, the sweeper settles it at 0 with kind `swept`. The row is aged on
+    // purpose: staleness is global, so the test scopes it with age and other tests' young rows
+    // stay untouched.
+    let hold_key = format!("req-{id}:hold");
+    sqlx::query("UPDATE oxsum.open_holds SET opened_at = $1 WHERE hold_key = $2")
+        .bind(OffsetDateTime::now_utc() - Duration::from_secs(3600))
+        .bind(&hold_key)
+        .execute(db.pool())
+        .await
+        .expect("ages the watch row");
+    let resolved = sweep_stale_holds(
+        &db,
+        &world.tenants,
+        OffsetDateTime::now_utc() - Duration::from_secs(30 * 60),
+        OffsetDateTime::now_utc().date(),
+    )
+    .await
+    .expect("sweeps");
+    assert_eq!(resolved, 1);
+
+    let record = world.settlement_within(&id).await;
+    assert_eq!(record["kind"], "swept");
+    assert_eq!(record["charged"], 0);
+    assert_eq!(wallet.reserved().await.expect("reserved"), 0);
+    assert_eq!(wallet.available().await.expect("available"), 1_000_000);
+    unlock_sweeper(sweeper).await;
+    drop(body);
 }
 
 #[tokio::test]
