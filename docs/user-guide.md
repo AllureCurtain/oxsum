@@ -53,6 +53,7 @@ Notes:
 - The hold and the settlement use different `idempotencyKey`s, e.g. `req-123:hold` and `req-123:settle`.
 - After a network timeout, retry with the same key; you will not be charged twice.
 - `actualMinor` must not exceed `heldMinor`.
+- `heldMinor` must be covered by holds that are still outstanding; settling an amount that was never held is a 402 `INSUFFICIENT_FUNDS`, not free credit. Settle the hold you took, for the amount you took it for.
 
 ## Balance
 
