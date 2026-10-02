@@ -1,22 +1,29 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use sqlx::PgPool;
 use tokio::sync::RwLock;
 
 use crate::error::WalletError;
 use crate::wallet::Wallet;
 
-/// Tenant registry: opens a ledger on first use, then serves it from the cache.
+/// Tenant registry: one shared pool, one ledger facade per tenant, opened on first use.
+///
+/// The pool is the whole database's, created once by the process and handed to every
+/// tenant. A tenant therefore costs a cached [`Wallet`] and nothing else: connection
+/// count is the pool's size, not a multiple of the tenant count. Which schema a wallet
+/// reads and writes is pinned per transaction by `PostgresStore`, see docs/decisions.md,
+/// "all tenants share one connection pool".
 #[derive(Clone)]
 pub struct Tenants {
-    url: Arc<str>,
+    pool: PgPool,
     open: Arc<RwLock<HashMap<String, Arc<Wallet>>>>,
 }
 
 impl Tenants {
-    pub fn new(database_url: impl Into<Arc<str>>) -> Self {
+    pub fn new(pool: PgPool) -> Self {
         Self {
-            url: database_url.into(),
+            pool,
             open: Arc::default(),
         }
     }
@@ -30,7 +37,7 @@ impl Tenants {
         if let Some(w) = guard.get(tenant_id) {
             return Ok(w.clone());
         }
-        let w = Arc::new(Wallet::open(&self.url, tenant_id).await?);
+        let w = Arc::new(Wallet::open(self.pool.clone(), tenant_id).await?);
         guard.insert(tenant_id.to_owned(), w.clone());
         Ok(w)
     }

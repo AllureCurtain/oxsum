@@ -2503,6 +2503,7 @@ dependencies = [
  "oxsum-core",
  "serde",
  "serde_json",
+ "sqlx",
  "time",
  "tokio",
  "tower",

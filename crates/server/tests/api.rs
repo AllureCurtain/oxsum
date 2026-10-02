@@ -11,6 +11,15 @@ use tower::ServiceExt;
 
 const TOKEN: &str = "test-token";
 
+/// A pool that connects to nothing: these requests are answered before the ledger is
+/// reached (auth rejects them, and `/healthz` never touches the database), so the pool
+/// only has to exist. `connect_lazy` defers the first connection to first use.
+fn unused_pool() -> sqlx::PgPool {
+    sqlx::postgres::PgPoolOptions::new()
+        .connect_lazy("postgres://unused")
+        .expect("parses the placeholder URL")
+}
+
 async fn call(
     app: &axum::Router,
     method: &str,
@@ -38,7 +47,7 @@ async fn call(
 #[tokio::test]
 async fn rejects_missing_or_wrong_token() {
     // No database needed: auth rejects the request before it ever reaches the ledger.
-    let app = oxsum_server::app(Tenants::new("postgres://unused"), TOKEN);
+    let app = oxsum_server::app(Tenants::new(unused_pool()), TOKEN);
     let (s, body) = call(&app, "GET", "/api/v1/tenants/acme/balance", None, None).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
     assert_eq!(body["error"]["code"], "UNAUTHORIZED");
@@ -55,7 +64,7 @@ async fn rejects_missing_or_wrong_token() {
 
 #[tokio::test]
 async fn health_needs_no_token() {
-    let app = oxsum_server::app(Tenants::new("postgres://unused"), TOKEN);
+    let app = oxsum_server::app(Tenants::new(unused_pool()), TOKEN);
     let res = app
         .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
         .await
@@ -71,7 +80,16 @@ async fn wallet_round_trip() {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
-    let app = oxsum_server::app(Tenants::new(url), TOKEN);
+    let app = oxsum_server::app(
+        Tenants::new(
+            sqlx::postgres::PgPoolOptions::new()
+                .max_connections(5)
+                .connect(&url)
+                .await
+                .unwrap(),
+        ),
+        TOKEN,
+    );
     let tenant = format!("http_{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
     let base = format!("/api/v1/tenants/{tenant}");
 
