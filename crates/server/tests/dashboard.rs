@@ -190,6 +190,36 @@ async fn the_dashboard_shell_is_served() {
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
 }
 
+/// The static bundle is served from the site root: `cargo leptos build` writes the
+/// WASM/CSS to `<site-root>/pkg`, and the shell references `/pkg/*` — without the pkg
+/// route the pages render but never hydrate. `web::mount` wires this route with the
+/// same two `leptos_axum` helpers, so this pins the serving behavior they provide.
+#[tokio::test]
+async fn the_pkg_bundle_is_served_from_the_site_root() {
+    let site = std::env::temp_dir().join(format!("oxsum-pkg-{}", std::process::id()));
+    let pkg = site.join("pkg");
+    std::fs::create_dir_all(&pkg).expect("creates the fake site dir");
+    std::fs::write(pkg.join("probe.txt"), "bundle-bytes").expect("writes the fake bundle");
+
+    let options = leptos::config::LeptosOptions::builder()
+        .output_name("oxsum")
+        .site_root(site.to_str().expect("the temp dir is UTF-8"))
+        .build();
+    let app = Router::new().route_service(
+        &leptos_axum::site_pkg_dir_service_route_path(&options),
+        leptos_axum::site_pkg_dir_service(&options),
+    );
+    let req = Request::builder()
+        .uri("/pkg/probe.txt")
+        .body(Body::empty())
+        .unwrap();
+    let res = app.oneshot(req).await.unwrap();
+    std::fs::remove_dir_all(&site).ok();
+    assert_eq!(res.status(), StatusCode::OK);
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&bytes[..], b"bundle-bytes");
+}
+
 /// A logged-in socket gets a snapshot of the in-flight holds first, then its
 /// organization's live events — and never another organization's.
 #[tokio::test]
