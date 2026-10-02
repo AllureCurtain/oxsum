@@ -229,6 +229,155 @@ async fn settle_rejects_actual_above_hold() {
     assert!(matches!(err, WalletError::InvalidInput(_)));
 }
 
+/// A settlement of an amount that was never held is refused, and invents nothing.
+///
+/// This is the hole the generative tests found (issue #6): a settlement releases the `held`
+/// the caller reports, and the release is a *credit* in the pending layer. Under a rule that
+/// only folds the layers, a pending credit granted no room but cost none either, so this
+/// settlement raised the available balance by 1 credit out of nothing — spendable, and backed
+/// by no money at all.
+#[tokio::test]
+async fn a_settlement_that_was_never_held_is_refused() {
+    let url = db_or_skip!();
+    let w = Wallet::open(pool(&url).await, &fresh("unheld"))
+        .await
+        .unwrap();
+    w.top_up("fund", 10 * ONE, D).await.unwrap();
+
+    let err = w.settle("ghost", ONE, 0, D).await.unwrap_err();
+    assert!(matches!(err, WalletError::InsufficientFunds), "{err:?}");
+
+    // Not one minor unit moved, and nothing was written.
+    assert_eq!(w.available().await.unwrap(), 10 * ONE);
+    assert_eq!(w.log_size().await.unwrap(), 1);
+
+    // A settlement that charges nothing at all is the same claim on the same hold.
+    let err = w.settle("ghost-charges", ONE, ONE, D).await.unwrap_err();
+    assert!(matches!(err, WalletError::InsufficientFunds), "{err:?}");
+    assert_eq!(w.available().await.unwrap(), 10 * ONE);
+}
+
+/// Releasing more than was reserved is refused, however much the wallet holds.
+#[tokio::test]
+async fn a_settlement_larger_than_the_hold_is_refused() {
+    let url = db_or_skip!();
+    let w = Wallet::open(pool(&url).await, &fresh("overshoot"))
+        .await
+        .unwrap();
+    w.top_up("fund", 10 * ONE, D).await.unwrap();
+    w.hold("h", 4 * ONE, D).await.unwrap();
+    assert_eq!(w.available().await.unwrap(), 6 * ONE);
+
+    // A hold exists, but it is smaller than the amount being released: five out of four.
+    let err = w.settle("s-over", 5 * ONE, 0, D).await.unwrap_err();
+    assert!(matches!(err, WalletError::InsufficientFunds), "{err:?}");
+    assert_eq!(w.available().await.unwrap(), 6 * ONE);
+    assert_eq!(w.log_size().await.unwrap(), 2);
+
+    // The hold it actually took settles exactly as before.
+    w.settle("s-ok", 4 * ONE, ONE, D).await.unwrap();
+    assert_eq!(w.available().await.unwrap(), 9 * ONE);
+
+    // And once it is discharged, releasing it again has nothing left to give back.
+    let err = w.settle("s-again", 4 * ONE, 0, D).await.unwrap_err();
+    assert!(matches!(err, WalletError::InsufficientFunds), "{err:?}");
+    assert_eq!(w.available().await.unwrap(), 9 * ONE);
+}
+
+/// Two settlements racing to release the same hold cannot both succeed.
+///
+/// The check runs inside the append, against the balance the entry would leave behind, and the
+/// append takes the constrained account's row lock — so the second one sees the first one's
+/// release and is refused. A check the caller did beforehand would let both through.
+#[tokio::test]
+async fn concurrent_settlements_of_one_hold_cannot_both_release_it() {
+    let url = db_or_skip!();
+    let w = Arc::new(
+        Wallet::open(pool(&url).await, &fresh("settle_race"))
+            .await
+            .unwrap(),
+    );
+    w.top_up("fund", 10 * ONE, D).await.unwrap();
+    w.hold("h", 4 * ONE, D).await.unwrap();
+
+    let tasks: Vec<_> = (0..2)
+        .map(|i| {
+            let w = w.clone();
+            tokio::spawn(async move { w.settle(&format!("s-{i}"), 4 * ONE, 0, D).await })
+        })
+        .collect();
+    let mut released = 0;
+    for task in tasks {
+        match task.await.unwrap() {
+            Ok(_) => released += 1,
+            Err(WalletError::InsufficientFunds) => {}
+            Err(e) => panic!("unexpected: {e:?}"),
+        }
+    }
+    assert_eq!(released, 1);
+    // The winner released the whole hold and charged nothing, so the wallet is whole again.
+    assert_eq!(w.available().await.unwrap(), 10 * ONE);
+    assert_eq!(w.log_size().await.unwrap(), 3);
+}
+
+/// Opening a ledger written under the older rule tightens it.
+///
+/// The limit is master data the wallet owns, and `register_account` upserts it, so an
+/// existing ledger is fixed on the next open rather than keeping the weaker rule — and the
+/// hole with it — for the rest of its life.
+#[tokio::test]
+async fn opening_a_wallet_tightens_a_ledger_written_under_the_old_rule() {
+    let url = db_or_skip!();
+    let tenant = fresh("upgrade");
+    let pool = pool(&url).await;
+    let w = Wallet::open(pool.clone(), &tenant).await.unwrap();
+    w.top_up("fund", 10 * ONE, D).await.unwrap();
+    drop(w);
+
+    // A ledger created before the reservation rule existed stored the weaker limit. The
+    // schema is assembled from this test's own generated tenant id, never from input.
+    let weakened = sqlx::query(&format!(
+        "UPDATE ledger_{tenant}.accounts SET balance_limit = 'no_debit' \
+         WHERE path = 'Liabilities:Wallet'"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(weakened.rows_affected(), 1);
+
+    // Including the constraint that stored code was allowed by. `CREATE TABLE IF NOT EXISTS`
+    // would leave it exactly as it is, so the migration has to widen it — otherwise the limit
+    // below cannot be written at all.
+    sqlx::query(&format!(
+        "ALTER TABLE ledger_{tenant}.accounts DROP CONSTRAINT accounts_balance_limit"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(&format!(
+        "ALTER TABLE ledger_{tenant}.accounts ADD CONSTRAINT accounts_balance_limit \
+         CHECK (balance_limit IN ('unlimited', 'no_credit', 'no_debit'))"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let w = Wallet::open(pool.clone(), &tenant).await.unwrap();
+    let stored: String = sqlx::query_scalar(&format!(
+        "SELECT balance_limit FROM ledger_{tenant}.accounts WHERE path = 'Liabilities:Wallet'"
+    ))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(stored, "funded_reservations");
+    assert_eq!(w.available().await.unwrap(), 10 * ONE);
+
+    // Which is the point: the rule is enforced again.
+    let err = w.settle("ghost", ONE, 0, D).await.unwrap_err();
+    assert!(matches!(err, WalletError::InsufficientFunds), "{err:?}");
+    assert_eq!(w.available().await.unwrap(), 10 * ONE);
+}
+
 /// Reusing a key for a different request is the caller's mistake, and it says so.
 ///
 /// The engine refuses it; what matters here is that the refusal reaches the domain layer as a
