@@ -12,7 +12,7 @@ Three phases, in order; the rationale is in docs/decisions.md under "wallet serv
 
 ### A. Wallet service
 
-1. Generative tests (backend): randomly generate sequences of top-ups, holds and settlements, check them against an in-memory model, verifying balance conservation, no negative balances, and that every proof validates. Done when the tests run 1000 cases in CI, all passing.
+Closed. The wallet service is feature complete for this phase: holds and settlements, per-organization ledgers and identity, and generative tests over both. The two defects the generator surfaced while it was being written are tracked as issues #6 (settling an amount that was never held fabricates available balance) and #7 (a key reused with different content answers 500 instead of 409).
 
 ### B. AI gateway
 
@@ -36,6 +36,7 @@ Nothing.
 
 ## Recently completed
 
+- 2026-10-02 Generative wallet sequences: `crates/core/tests/generative.rs` generates sequences of top-ups, holds, settlements, replays and key collisions and checks every step against a model of the wallet account's two layers — the outcome class, the available balance, that it never goes negative, the log size, and a proof (which stops verifying once an amount is changed) for each entry the case wrote. 1000 cases share eight ledgers, dropped and recreated per run, with per-case key prefixes; `PROPTEST_CASES` narrows it. Writing it surfaced issue #6 (an unheld settlement fabricates available balance) and issue #7 (a reused key answers 500 instead of 409)
 - 2026-10-02 Users, organizations and API keys: `oxsum.users`, `organizations`, `memberships` and `api_keys` live in one schema migrated by oxsum itself at startup; registration creates the user, personal organization, owner membership and first key in one transaction; a key (`oxs-` + 32 random bytes, stored only as a SHA-256 hash) resolves the request to its organization, so the ledger endpoints lost their tenant path segment and `OXSUM_API_TOKEN` is gone; with it, 403 `FORBIDDEN` and 409 `CONFLICT`, and `OXSUM_SIGNUP=invite|open`
 - 2026-10-02 One connection pool shared by all tenants: `Tenants` holds a single `PgPool` and hands each tenant a cached ledger facade, doubleentry pins `SET LOCAL search_path` at the start of every transaction (`PostgresStore::begin`, marked `oxsum change`), the reference DDL is pinned inside a transaction opened for it, and three new tests cover two tenants on one pool, one connection reused by A then B then A, and a tenant costing no connection of its own
 - 2026-10-02 Finalized the documentation standard and branch naming convention: branches use `<type>/<kebab-case-description>`, while issue numbers stay in issue and PR metadata

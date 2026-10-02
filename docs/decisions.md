@@ -2,6 +2,28 @@
 
 New decisions go on top. Overturned decisions are never deleted; mark them "Superseded" and name the decision that replaces them.
 
+## 2026-10-02 Generative wallet sequences: proptest against an in-memory model, on eight shared ledgers
+
+- Status: Adopted. Implemented 2026-10-02 (`crates/core/tests/generative.rs`), closing TODO 1 / issue #5.
+- Background: the unit and integration tests cover the cases somebody thought of, while the wallet's promises are about *sequences*: a hold settled twice, a top-up replayed after a failure, a key reused with different content, a hold that runs into the balance after an earlier settlement released part of it. The project already has this style of test in the engine (`crates/doubleentry/tests/simulation.rs` generates seeded sequences and checks the engine's invariants after every step), so the tool and the shape were not up for debate: proptest, an explicit operation enum, a model, assertions after each step.
+- Decision:
+  - `Vec<Raw>` of `TopUp`, `Hold`, `Settle { back, mode }`, `Replay { back }`, `Collide { back, up }` is generated, then resolved **positionally** into ops, so a back-reference can only ever name an earlier op and every generated sequence is well formed. The first op has no earlier op, so a back-reference there becomes the write it would otherwise have referred to.
+  - The oracle is the wallet account's two layers (`settled`, `pending`) plus the map of keys that have written an entry. After every step it asserts the outcome class the model predicted (writes / replays / conflict / insufficient funds / invalid input), `available() == settled + pending`, `available() >= 0`, and the log size. At the end of a case it asserts a proof for every entry the case wrote, and that the proof stops verifying when the amount it records changes.
+  - The 1000 cases **share eight ledgers** (`generative_0` … `generative_7`), dropped and recreated once per run, and each case's keys carry its own number. A case reads its tenant's balance and log size at the start and works in deltas from there.
+  - `PROPTEST_CASES` sets the case count; the default is 1000, which is what TODO asks CI for.
+- Why:
+  - Sharing ledgers is what makes 1000 cases affordable and repeatable. Creating a ledger is a DDL migration (an extension plus eleven tables); one per case would spend the whole run on schema creation and leave a thousand schemas behind. The delta is not a weaker assertion: the state at the start of a case cancels out of both sides of it, and the invariants (never negative, log size, proofs, idempotency) do not depend on where the case began.
+  - The oracle comes from the *intended* contract, not from what the implementation happens to do, which is the only way such a test can find anything. Where the implementation deviates today the deviation is named in the module docs and left to its issue, rather than written into the oracle as if it were correct: the generator currently settles only holds the ledger actually took (issue #6) and asserts only that a reused key is refused and changes nothing (issue #7).
+  - Keys are derived from the op index rather than generated as random strings, because the interesting operations reference earlier ones by name; a per-case prefix keeps two cases on one ledger from colliding in the ledger's idempotency space.
+- Rejected:
+  - One ledger per case: the DDL cost above, and a test database that grows by a thousand schemas per run.
+  - Asserting on `WalletError` variants for the reused-key case: today the engine's refusal reaches the domain layer wrapped as a storage failure, and issue #7 changes that to `CONFLICT`. The model asserts the class — refused, nothing changed — so the remapping does not rewrite this test.
+  - A tamper check that flips a byte: it can land in a field name, and the verifier deliberately ignores fields it does not know so that a newer server can add one without breaking browsers that already shipped. The tamper check moves an amount instead, which the content hash covers.
+- Implementation notes:
+  - The generator found two things while it was being written, both filed rather than papered over: a settlement of an amount that was never held is accepted and fabricates available balance (issue #6, `Wallet::settle` reverses the `held` it is handed without looking the hold up), and a key reused with different content reaches the API as a 500 rather than a 409 (issue #7).
+  - The first version shared ledgers without a per-case key prefix and failed immediately: case two's `op-0` collided with case one's entry. The seed, the shrunken input and the message came out of proptest and made it a two-minute fix.
+  - A settlement cannot fail for lack of funds, which the oracle relies on: releasing a hold credits the pending layer, and `NoDebitBalance` folds the layers asymmetrically (a reservation consumes room, a release grants none), so the settled layer has to cover `actual` alone — and it does for any hold the wallet accepted, because a hold can only be taken against settled money that later settlements cannot take below it.
+
 ## 2026-10-02 oxsum's own tables live in one `oxsum` schema, and an organization's ledger is created on first use
 
 - Status: Adopted. Implemented 2026-10-02. Refines "a tenant is an organization" (which already put these tables outside the ledger schemas) and corrects one line of "users and login": registration no longer creates the ledger inside its transaction.
