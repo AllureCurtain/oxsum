@@ -2,6 +2,25 @@
 
 New decisions go on top. Overturned decisions are never deleted; mark them "Superseded" and name the decision that replaces it.
 
+## 2026-10-03 Trustworthy tree heads: operator-signed heads via doubleentry's witness module (issue #30)
+
+- Status: Adopted. Implemented 2026-10-03, closing issue #30 (TODO B-7).
+- Background: inclusion proofs answer everything about the history a user was *shown*; they cannot answer whether it is the history everybody else was shown. Each guarantee in the ledger is relative to a head, and a user who archived an old head had no way to check that today's head extends it — the server could serve two heads to two users, each with perfectly verifying proofs.
+- Decision:
+  - **The operator signs each tenant's ledger head** as a C2SP `signed-note` (a `tlog-checkpoint` body) with an Ed25519 operator note signature (algorithm `0x01`, `SigningKey::sign`) under the fixed key name `oxsum/tree-heads`, using doubleentry's witness module as a dependency. Each tenant's ledger is its own Merkle log, so the origin names the tenant: `oxsum/ledgers/<tenant_id>`.
+  - **Signing is on demand and stateless.** The note attests the head at signing time; nothing is stored, so rotating the key rotates every head with no migration. A write landing mid-request leaves the answer one entry behind the absolute latest — still a true statement about the head it attests.
+  - **No server-side `Witness`.** The state machine is for independent parties, and the operator witnessing its own log would prove nothing. The C2SP wire format is the interop point: third-party witnesses can cosign these notes later, with software that is not this crate's.
+  - **Key management: `OXSUM_HEAD_SIGNING_KEY`**, 32 bytes base64 like `OXSUM_SECRET_KEY` (generate with `openssl rand -base64 32`). Unset means the `/api/v1/log` endpoints answer 503; the wallet serves without it. The verifying key is published at the public `GET /api/v1/log/key` — key name, base64 public key, and the 4-byte signature selector. Fetching it from the server is convenience: a verifier must have chosen the key through a channel the operator does not control, or the signature proves only that the server agrees with itself.
+  - **Endpoints:** `GET /api/v1/log/head` (org credential: the current head, signed), `GET /api/v1/log/consistency?from=<size>` (org credential: the signed new head, the old head recomputed from the log, and the proof between them), `GET /api/v1/log/key` (public). `from=0` is 400 — every log extends the empty tree, so such a proof would verify against any history; `from` beyond the log is 400; `from == size` answers the trivial empty proof.
+- Rejected:
+  - **A `tree_heads` table of stored signed heads.** The ledger is the record; signing on demand is one Ed25519 sign per request and cannot drift from the log it attests.
+  - **Cosignatures (algorithm `0x04`) from the operator.** A cosignature says "an independent party had seen this history by time T"; the operator cannot be its own witness, and a self-cosignature would be theater.
+  - **Refusing to boot without the key.** The wallet is useful without signed heads; the admin-token precedent (unset means the surface stays closed) fits — 503 names the missing variable instead.
+- Implementation notes:
+  - `crates/core/src/heads.rs` (origin, signing, key publication), `Wallet::{signed_head, consistency}`, thin routes in `crates/server/src/routes.rs`, `ApiError::ServiceUnavailable` → 503 `SERVICE_UNAVAILABLE`.
+  - `crates/doubleentry` is untouched; the `witness` cargo feature is enabled on the workspace dependency.
+  - Contract first per the hard rules: openapi.yaml is at 0.6.0 with the three endpoints and the new schemas.
+
 ## 2026-10-03 Bill verification in the browser via a shared `oxsum-verify` crate (issue #28)
 
 - Status: Adopted. Implemented 2026-10-03, closing issue #28 (TODO B-6).

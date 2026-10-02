@@ -30,6 +30,7 @@ The axum API, the core, doubleentry and the gateway exist today, with oxsum's ow
 | Db | `crates/core/src/db.rs` | The process's one pool, plus oxsum's own tables: `migrate` creates the `oxsum` schema and applies `crates/core/migrations/` in order, each file and its recorded version in one transaction |
 | Identity | `crates/core/src/users.rs`, `orgs.rs`, `keys.rs` | Registration (user, personal organization, owner membership and first API key, one transaction), organizations and memberships, and API keys: mint, resolve, list, revoke. The credential names the organization |
 | proof | `crates/core/src/proof.rs` | Proof bundle structure and the client-side verify function, later called directly inside a Leptos component |
+| Tree heads | `crates/core/src/heads.rs`, `Wallet::{signed_head, consistency}` | The operator's signed tree heads: the per-tenant origin (`oxsum/ledgers/<tenant_id>`), the C2SP signed-note signed under `oxsum/tree-heads`, and the key publication. The seed is `OXSUM_HEAD_SIGNING_KEY`; signing is on demand and stateless. See docs/decisions.md |
 | HTTP | `crates/server/src/` | Routing, API-key middleware, error mapping |
 | Gateway | `crates/server/src/gateway/` | The OpenAI-compatible `/v1` surface: model list, chat completions, OpenAI-shaped errors, and the relay that freezes before upstream and settles however the turn ends. Its own auth middleware, because a refusal here has to look like OpenAI's. It resolves its channel and price version from the rows in `crates/core` once per request, and records both in the settlement. Pricing is in core, see docs/decisions.md. It notes each hold in the sweeper's watch table before taking it, and clears the row when the turn settles |
 | Hold sweeper | `crates/core/src/holds.rs`, spawned in `crates/server/src/main.rs` | The background job that settles watched holds older than `OXSUM_HOLD_TIMEOUT` at 0 with kind `swept`, releasing the whole freeze. The watch table (`oxsum.open_holds`) is a finding aid only: the ledger stays the source of truth, and the derived settlement key is the atomic guard against a late settlement landing alongside the sweep. See docs/decisions.md |
@@ -52,6 +53,8 @@ crates/
       channels.rs       exists: channels, append-only price versions, credential sealing, and
                         the (channel, version, price, upstream) a request resolves once
       proof.rs          exists
+      heads.rs          exists: operator-signed tree heads (C2SP signed-notes) and the
+                        verifying-key publication; the seed is OXSUM_HEAD_SIGNING_KEY
       db.rs             exists: the one pool plus oxsum's own migration runner
       users.rs          exists: registration, password hashing, login/logout sessions (B-4)
       orgs.rs           exists: organizations, memberships, roles; invitations come later

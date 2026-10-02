@@ -180,3 +180,9 @@ Steps:
 3. Read the verdict. "Verification passed" means the bundle matches the content hash and the inclusion proof links it to the tree head. "Verification failed" means something changed: altering any single number in the bundle fails the check. A bundle that does not parse, or a hash that is not 64 hex characters, gets its own error instead.
 
 Note: verification proves "this record has not been altered since it was written"; it cannot prove "the recorded number was correct in the first place".
+
+## Verifying the log's history
+
+Purpose: confirm the ledger you see today is the ledger you saw last week, with entries appended and nothing rewritten.
+
+The operator signs the head of your organization's log. Save the signed head from `GET /api/v1/log/head` (the `note` text and the `size`/`root` it carries) alongside your records. Later, `GET /api/v1/log/consistency?from=<that size>` returns the new signed head and the proof between them. Check the note's signature against the operator's key (published at `GET /api/v1/log/key` — get the key through a channel the operator does not control the first time, or the signature proves only that the server agrees with itself), then check the proof against the two heads. It passes only when the new log is the old log with entries appended: a second history at a size the operator already signed for cannot produce it.
