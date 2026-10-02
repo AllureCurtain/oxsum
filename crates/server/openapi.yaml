@@ -165,14 +165,15 @@ paths:
     post:
       summary: "Settle a hold: release it and charge the actual usage"
       description: >-
-        The release credits the pending layer, and the wallet's limit refuses a pending credit
-        that the outstanding holds cannot cover, so the amount released may never exceed what is
-        held. `heldMinor` is a claim about a hold this wallet took, and a settlement making a
-        larger claim is refused with 402, like a hold the balance cannot cover. The check runs
-        inside the append, against the balance the entry would leave behind, so two settlements
-        cannot both release the same hold. It is aggregate: releasing more than the hold named
-        is allowed while other holds cover the total, which cannot fabricate value because the
-        total released still may not exceed the total held.
+        A settlement names the hold it releases (`holdKey`); the server reads the hold's amount
+        from the hold entry in the ledger, so there is no amount to assert. One hold settles at
+        most once: the settlement entry's idempotency key is derived from the hold's key
+        (`oxsum_core::settlement_key_for`), and the ledger's idempotency gate refuses a second
+        settlement of the same hold with 409, inside the append, so concurrent settlements naming
+        one hold cannot both release it. Retrying the identical settlement replays it. Naming a
+        hold that is not outstanding is 404, even when other holds would cover the amount; the
+        wallet's limit still refuses a release the outstanding reservations cannot cover, as the
+        backstop behind the pairing.
       requestBody:
         required: true
         content:
@@ -182,7 +183,8 @@ paths:
         "200": { $ref: "#/components/responses/Receipt" }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
-        "402": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/balance:
     get:
@@ -540,11 +542,10 @@ components:
         amountMinor: { type: integer, format: int64, minimum: 1 }
     SettleRequest:
       type: object
-      required: [idempotencyKey, heldMinor, actualMinor]
+      required: [holdKey, actualMinor]
       properties:
-        idempotencyKey: { type: string, minLength: 1, maxLength: 128, description: UTF-8 idempotency key; the server accepts at most 128 bytes }
-        heldMinor: { type: integer, format: int64, minimum: 1, description: the amount originally held; the release may not exceed the holds outstanding }
-        actualMinor: { type: integer, format: int64, minimum: 0, description: actual usage, must not exceed heldMinor }
+        holdKey: { type: string, minLength: 1, maxLength: 128, description: the idempotency key of the hold this settlement releases; the hold's amount is read from the ledger, and one hold settles at most once }
+        actualMinor: { type: integer, format: int64, minimum: 0, description: actual usage, must not exceed the hold's amount }
     Receipt:
       type: object
       required: [entryId, contentHash, isNew]

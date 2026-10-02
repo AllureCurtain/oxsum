@@ -2,8 +2,8 @@ use doubleentry::account::AccountRegistry;
 use doubleentry::storage::postgres::PostgresStore;
 use doubleentry::{
     AccountId, Amount, BalanceKey, BalanceLimit, BalanceQuery, Balanced, Currency, Description,
-    Draft, Entry, EntryBatch, EntryId, Hash, IdempotencyKey, Layer, LedgerId, LedgerPolicy,
-    LedgerStore, PeriodCalendar, Posting, SealContext,
+    Direction, Draft, Entry, EntryBatch, EntryId, Hash, IdempotencyKey, Layer, LedgerId,
+    LedgerPolicy, LedgerStore, PeriodCalendar, Posting, SealContext,
 };
 use sqlx::PgPool;
 use time::Date;
@@ -179,44 +179,57 @@ impl Wallet {
     /// Settle: one entry does two things — releases the hold (a reversal in the pending layer)
     /// and charges the actual usage (recorded in the settled layer).
     ///
+    /// The settlement names the hold it releases: `hold_key` is the idempotency key the hold was
+    /// taken under. The held amount is read from the hold entry in the ledger — the entry's
+    /// pending-layer debit on the wallet account — so there is nothing for the caller to assert
+    /// and nothing for a caller to get wrong.
+    ///
     /// `actual` may be less than the held amount; the difference returns to the available
     /// balance. `actual` of zero amounts to a full release.
     ///
-    /// `held_minor` is a claim about a hold this wallet took, and it is checked as one: the
-    /// release credits the pending layer, and the wallet's limit refuses a pending credit that
-    /// the outstanding reservations cannot cover, with
-    /// [`WalletError::InsufficientFunds`]. So a settlement releases at most what is reserved
-    /// in total, and two settlements cannot both release the same reservation — the check runs
-    /// inside the append, against the balance the entry would leave behind.
+    /// One hold settles at most once. The settlement entry's idempotency key is
+    /// [`settlement_key_for`] of the hold's key, so the ledger's idempotency gate — inside the
+    /// append — refuses a second settlement of the same hold with [`WalletError::Conflict`]:
+    /// concurrent settlements naming one hold cannot both release it, and retrying the
+    /// identical settlement replays it. The wallet's limit still refuses a release the
+    /// outstanding reservations cannot cover, as the backstop behind the pairing.
+    ///
+    /// Naming a hold that is not outstanding — no entry under the key, or an entry that is not
+    /// a hold — is [`WalletError::HoldNotFound`], refused even when other holds would cover the
+    /// amount.
     ///
     /// `description` is what the entry says it is, in the caller's words — for a gateway turn, the
     /// record built by [`crate::Settlement::description`], which carries the token counts and the
     /// prices so a bill proves the arithmetic and not only the total. It must be derived from the
-    /// request alone: two settlements under one key with different descriptions are different
+    /// request alone: two settlements of one hold with different descriptions are different
     /// requests, and the ledger refuses the second.
-    ///
-    /// What it does not do is pair one settlement with one hold: the reservation layer is
-    /// checked in aggregate, so releasing more than the hold it names is permitted while other
-    /// reservations cover the amount. No value can be fabricated that way — the total released
-    /// still cannot exceed the total reserved — but the pairing is loose, see docs/decisions.md.
     pub async fn settle(
         &self,
-        key: &str,
+        hold_key: &str,
         description: &str,
-        held_minor: i64,
         actual_minor: i64,
         on: Date,
     ) -> Result<Receipt, WalletError> {
-        let held = positive(held_minor)?;
-        if !(0..=held_minor).contains(&actual_minor) {
+        // A call's own argument is bounded before the ledger is consulted.
+        idem(hold_key)?;
+        if actual_minor < 0 {
             return Err(WalletError::InvalidInput(
                 "actual must be within 0..=held".into(),
             ));
         }
-        let mut draft = Entry::<Draft, SCALE>::new(entry_id_for(key), idem(key)?, on)
-            .with_description(description_of(description)?)
-            .post(Posting::credit(self.wallet, held, currency()).in_layer(Layer::Pending))
-            .post(Posting::debit(self.revenue, held, currency()).in_layer(Layer::Pending));
+        let held_minor = self.outstanding_hold(hold_key).await?;
+        if actual_minor > held_minor {
+            return Err(WalletError::InvalidInput(
+                "actual must be within 0..=held".into(),
+            ));
+        }
+        let held = Credits::from_minor(held_minor);
+        let settle_key = settlement_key_for(hold_key);
+        let mut draft =
+            Entry::<Draft, SCALE>::new(entry_id_for(&settle_key), idem(&settle_key)?, on)
+                .with_description(description_of(description)?)
+                .post(Posting::credit(self.wallet, held, currency()).in_layer(Layer::Pending))
+                .post(Posting::debit(self.revenue, held, currency()).in_layer(Layer::Pending));
         if actual_minor > 0 {
             let actual = Credits::from_minor(actual_minor);
             draft = draft.debit(self.wallet, actual, currency()).credit(
@@ -225,7 +238,14 @@ impl Wallet {
                 currency(),
             );
         }
-        self.append(draft).await
+        match self.append(draft).await {
+            // The settlement's idempotency key is derived from the hold's key, so a key
+            // conflict here means exactly one thing: the hold was already settled.
+            Err(WalletError::Conflict(_)) => {
+                Err(WalletError::Conflict("hold already settled".into()))
+            }
+            other => other,
+        }
     }
 
     /// Available balance in minor units = settled balance - unsettled holds.
@@ -249,6 +269,37 @@ impl Wallet {
     /// makes this the ceiling on what a settlement may release.
     pub async fn reserved(&self) -> Result<i64, WalletError> {
         Ok(-self.wallet_net(Layer::Pending).await?)
+    }
+
+    /// The amount of the hold taken under `hold_key`, read from the hold entry in the ledger.
+    ///
+    /// The hold entry is found by the id it was given when the hold was taken
+    /// ([`entry_id_for`] of the key), and the amount is the entry's pending-layer debit on the
+    /// wallet account — the ledger's own record of what was reserved, not a caller assertion.
+    /// [`WalletError::HoldNotFound`] when no entry is stored under the key, or when the entry
+    /// is not a hold.
+    async fn outstanding_hold(&self, hold_key: &str) -> Result<i64, WalletError> {
+        let Some(stored) = self.store.get(entry_id_for(hold_key)).await? else {
+            return Err(WalletError::HoldNotFound(format!(
+                "no hold under key {hold_key:?}"
+            )));
+        };
+        let held = stored
+            .entry
+            .postings()
+            .iter()
+            .filter(|p| p.account == self.wallet && p.layer == Layer::Pending)
+            .map(|p| match p.direction {
+                Direction::Debit => p.amount.to_minor(),
+                Direction::Credit => -p.amount.to_minor(),
+            })
+            .sum::<i64>();
+        if held <= 0 {
+            return Err(WalletError::HoldNotFound(format!(
+                "key {hold_key:?} does not name a hold"
+            )));
+        }
+        Ok(held)
     }
 
     /// Builds the proof bundle for one entry. Returns None when the entry does not exist.
@@ -369,16 +420,32 @@ fn description_of(text: &str) -> Result<Description, WalletError> {
 /// Derives the EntryId deterministically from the idempotency key, so a retry always lands on the
 /// same entry.
 ///
-/// Public because the derivation is part of the interface: a gateway response carries an
-/// `x-oxsum-request-id`, and the entries that request produced are `req-<id>:hold` and
-/// `req-<id>:settle` under this rule. A caller holding a request id can therefore name the entries
-/// it caused without asking the server which ones they were (docs/api.md).
+/// Public because the derivation is part of the interface: a gateway hold is taken under
+/// `req-<id>:hold`, and a caller holding a request id can name that entry without asking the
+/// server (docs/api.md).
 #[must_use]
 pub fn entry_id_for(key: &str) -> EntryId {
     EntryId::from_uuid(uuid::Uuid::new_v5(
         &uuid::Uuid::NAMESPACE_OID,
         key.as_bytes(),
     ))
+}
+
+/// The idempotency key of the settlement that releases the hold taken under `hold_key`.
+///
+/// One hold settles at most once, so the hold's key is the settlement's idempotency key in
+/// derived form: retrying the same settlement replays it, and settling the same hold twice is
+/// refused by the ledger's idempotency gate, inside the append — which is what makes the
+/// pairing hold under concurrency. The derivation hashes the hold key because a hold key may
+/// already sit at the engine's 128-byte idempotency limit, where a readable suffix would
+/// overflow it.
+///
+/// Public because the derivation is part of the interface: the settlement entry's id is
+/// [`entry_id_for`] of this key, so a caller holding a hold key can name the settlement entry
+/// without asking the server (docs/api.md).
+#[must_use]
+pub fn settlement_key_for(hold_key: &str) -> String {
+    format!("settle:{}", entry_id_for(hold_key).as_uuid().as_simple())
 }
 
 #[cfg(test)]

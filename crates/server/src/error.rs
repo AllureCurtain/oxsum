@@ -23,6 +23,7 @@ impl From<WalletError> for ApiError {
             WalletError::Unauthenticated => Self::Unauthorized,
             WalletError::Forbidden(m) => Self::Forbidden(m),
             WalletError::Conflict(m) => Self::Conflict(m),
+            WalletError::HoldNotFound(_) => Self::NotFound,
             WalletError::InsufficientFunds => Self::InsufficientFunds,
             // A deployment that cannot open its own channel credentials is broken rather than asked
             // something wrong: the operator gets the detail in the log, the caller gets a 500.
