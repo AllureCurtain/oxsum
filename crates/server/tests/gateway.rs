@@ -22,10 +22,13 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use http_body_util::BodyExt;
 use oxsum_core::{Db, Tenants, input_upper_bound};
-use oxsum_server::{Config, Gateway, Signup};
+use oxsum_server::{Config, Signup};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower::ServiceExt;
+
+/// The operator token the admin app in these tests is configured with.
+const OPERATOR_TOKEN: &str = "operator-token-0123456789";
 
 // ── the scripted upstream ────────────────────────────────────────────────────
 
@@ -186,7 +189,11 @@ fn sse(body: Body) -> Response {
 ///
 /// With `inputPricePerMillion` and `outputPricePerMillion` both 1_000_000, a token costs exactly
 /// one minor unit, so the arithmetic in the assertions is the token count itself.
-fn price_list() -> String {
+///
+/// The names carry a per-world suffix because the database is shared between tests: a model belongs
+/// to exactly one channel (docs/product.md), so two worlds running at once must not want the same
+/// model name — each world has its own upstream, and a model has to resolve to the right one.
+fn price_list(suffix: &str) -> String {
     let price = json!({
         "inputPricePerMillion": 1_000_000,
         "outputPricePerMillion": 1_000_000,
@@ -203,7 +210,7 @@ fn price_list() -> String {
         "garbage",
         "over",
     ] {
-        models.insert(model.to_owned(), price.clone());
+        models.insert(format!("{model}-{suffix}"), price.clone());
     }
     Value::Object(models).to_string()
 }
@@ -215,11 +222,25 @@ struct World {
     tenant_id: String,
     key: String,
     script: Script,
+    /// The channel row this world put its upstream behind.
+    channel: String,
+    /// What its model names end in.
+    suffix: String,
     #[allow(dead_code)]
     pool: PgPool,
 }
 
 impl World {
+    /// One of this world's models, as the gateway and its upstream see it.
+    fn model(&self, name: &str) -> String {
+        format!("{name}-{}", self.suffix)
+    }
+
+    /// Teaches this world's upstream how to answer for one of its models.
+    fn answers(&self, model: &str, answer: Answer) {
+        self.script.answers(&self.model(model), answer);
+    }
+
     /// The ledger of the organization this world registered.
     async fn wallet(&self) -> Arc<oxsum_core::Wallet> {
         self.tenants
@@ -298,14 +319,27 @@ async fn world_for(url: &str, top_up: i64) -> World {
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
 
+    let suffix = uuid::Uuid::new_v4().simple().to_string()[..8].to_owned();
+    let channel = format!("mock-{suffix}");
+    let secret = oxsum_core::SecretKey::from_bytes([7; 32]);
     let script = Script::default();
     let base_url = start_upstream(script.clone()).await;
-    let book = oxsum_core::PriceBook::from_json("mock", &price_list())
+    let book = oxsum_core::PriceBook::from_json(&channel, &price_list(&suffix))
         .expect("the test's own prices parse");
-    let config = Config::new(
-        Signup::Open,
-        Some(Gateway::new(base_url, "upstream-secret", book)),
-    );
+    // The channel and its prices are rows, the way an operator's would be: the gateway reads the
+    // database, and the environment is only what a brand-new deployment seeds its first channel with.
+    db.set_channel(&channel, &base_url, "upstream-secret", &secret)
+        .await
+        .expect("the channel is written");
+    for (model, price) in book.models() {
+        db.append_price(&channel, model, *price)
+            .await
+            .expect("the price is written");
+    }
+    let config = Config::new(Signup::Open, None).with_secret(secret);
+    oxsum_server::prepare(&db, &config)
+        .await
+        .expect("the deployment is prepared");
     let app = oxsum_server::app(db, config);
     let tenants = Tenants::new(pool.clone());
 
@@ -330,8 +364,19 @@ async fn world_for(url: &str, top_up: i64) -> World {
         tenant_id,
         key,
         script,
+        channel,
+        suffix,
         pool,
     }
+}
+
+/// An app over the same database with the operator token configured: the platform admin, changing a
+/// price.
+fn admin_app(world: &World) -> Router {
+    let config = Config::new(Signup::Open, None)
+        .with_secret(oxsum_core::SecretKey::from_bytes([7; 32]))
+        .with_admin_token(OPERATOR_TOKEN);
+    oxsum_server::app(Db::from_pool(world.pool.clone()), config)
 }
 
 /// Registers an organization and returns its document and its first API key.
@@ -455,14 +500,14 @@ async fn text_of(response: Response) -> String {
 #[tokio::test]
 async fn a_whole_answer_is_charged_from_upstreams_usage() {
     let world = world!(1_000_000);
-    world.script.answers(
+    world.answers(
         "ok",
         Answer::Completion {
             usage: Some((10, 2)),
         },
     );
 
-    let response = chat(&world.app, &world.key, simple("ok")).await;
+    let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
     let id = request_id(&response);
     let (status, body) = json_of(response).await;
     assert_eq!(status, StatusCode::OK);
@@ -484,7 +529,7 @@ async fn a_whole_answer_is_charged_from_upstreams_usage() {
     assert_eq!(record["inputTokens"], 10);
     assert_eq!(record["outputTokens"], 2);
     assert_eq!(record["charged"], 12);
-    assert_eq!(record["model"], "ok");
+    assert_eq!(record["model"], world.model("ok"));
     assert_eq!(record["request"], id);
 
     // The freeze went back whole, less the charge.
@@ -498,7 +543,7 @@ async fn a_whole_answer_is_charged_from_upstreams_usage() {
 #[tokio::test]
 async fn a_streamed_turn_charges_the_usage_of_its_last_chunk() {
     let world = world!(1_000_000);
-    world.script.answers(
+    world.answers(
         "stream",
         Answer::Stream {
             usage: true,
@@ -510,7 +555,7 @@ async fn a_streamed_turn_charges_the_usage_of_its_last_chunk() {
         &world.app,
         &world.key,
         json!({
-            "model": "stream",
+            "model": world.model("stream"),
             "messages": [{"role": "user", "content": "hi"}],
             "stream": true,
         }),
@@ -548,7 +593,7 @@ async fn a_streamed_turn_charges_the_usage_of_its_last_chunk() {
 #[tokio::test]
 async fn a_stream_that_ends_without_its_terminator_is_closed_for_the_client() {
     let world = world!(1_000_000);
-    world.script.answers(
+    world.answers(
         "stream-open",
         Answer::Stream {
             usage: true,
@@ -560,7 +605,7 @@ async fn a_stream_that_ends_without_its_terminator_is_closed_for_the_client() {
         &world.app,
         &world.key,
         json!({
-            "model": "stream-open",
+            "model": world.model("stream-open"),
             "messages": [{"role": "user", "content": "hi"}],
             "stream": true,
         }),
@@ -576,11 +621,9 @@ async fn a_stream_that_ends_without_its_terminator_is_closed_for_the_client() {
 #[tokio::test]
 async fn a_missing_usage_report_falls_back_to_a_local_estimate() {
     let world = world!(1_000_000);
-    world
-        .script
-        .answers("no-usage", Answer::Completion { usage: None });
+    world.answers("no-usage", Answer::Completion { usage: None });
 
-    let response = chat(&world.app, &world.key, simple("no-usage")).await;
+    let response = chat(&world.app, &world.key, simple(&world.model("no-usage"))).await;
     let id = request_id(&response);
     let (status, body) = json_of(response).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -602,14 +645,14 @@ async fn usage_above_the_freeze_is_capped_at_it() {
     let world = world!(1_000_000);
     // Upstream reports 10 input and 500 output tokens, which at one minor unit each is far more than
     // a caller who asked for a single output token was frozen for.
-    world.script.answers(
+    world.answers(
         "over",
         Answer::Completion {
             usage: Some((10, 500)),
         },
     );
 
-    let mut body = simple("over");
+    let mut body = simple(&world.model("over"));
     body["max_tokens"] = json!(1);
     let response = chat(&world.app, &world.key, body).await;
     let id = request_id(&response);
@@ -631,7 +674,7 @@ async fn usage_above_the_freeze_is_capped_at_it() {
 #[tokio::test]
 async fn an_upstream_refusal_charges_nothing_and_passes_the_reason_through() {
     let world = world!(1_000_000);
-    world.script.answers(
+    world.answers(
         "refuse",
         Answer::Refuse {
             status: 500,
@@ -639,7 +682,7 @@ async fn an_upstream_refusal_charges_nothing_and_passes_the_reason_through() {
         },
     );
 
-    let response = chat(&world.app, &world.key, simple("refuse")).await;
+    let response = chat(&world.app, &world.key, simple(&world.model("refuse"))).await;
     let id = request_id(&response);
     let (status, body) = json_of(response).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
@@ -666,18 +709,17 @@ async fn an_unreachable_upstream_charges_nothing() {
         .expect("binds a free port");
     let dead = format!("http://{}/v1", listener.local_addr().unwrap());
     drop(listener);
-    let book =
-        oxsum_core::PriceBook::from_json("mock", &price_list()).expect("the test's own prices");
-    let pool = world.pool.clone();
-    let app = oxsum_server::app(
-        Db::from_pool(pool),
-        Config::new(
-            Signup::Open,
-            Some(Gateway::new(dead, "upstream-secret", book)),
-        ),
-    );
+    // Point this world's channel at the dead address and build the app again from the same rows:
+    // that is what changing a channel's connection does, and the prices are untouched by it.
+    let secret = oxsum_core::SecretKey::from_bytes([7; 32]);
+    let db = Db::from_pool(world.pool.clone());
+    db.set_channel(&world.channel, &dead, "upstream-secret", &secret)
+        .await
+        .expect("the channel is repointed");
+    let config = Config::new(Signup::Open, None).with_secret(secret);
+    let app = oxsum_server::app(db, config);
 
-    let response = chat(&app, &world.key, simple("ok")).await;
+    let response = chat(&app, &world.key, simple(&world.model("ok"))).await;
     let id = request_id(&response);
     let (status, body) = json_of(response).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
@@ -692,9 +734,9 @@ async fn an_unreachable_upstream_charges_nothing() {
 #[tokio::test]
 async fn a_200_that_is_not_json_is_upstream_breaking_its_contract() {
     let world = world!(1_000_000);
-    world.script.answers("garbage", Answer::Garbage);
+    world.answers("garbage", Answer::Garbage);
 
-    let response = chat(&world.app, &world.key, simple("garbage")).await;
+    let response = chat(&world.app, &world.key, simple(&world.model("garbage"))).await;
     let id = request_id(&response);
     let (status, body) = json_of(response).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
@@ -710,14 +752,14 @@ async fn a_200_that_is_not_json_is_upstream_breaking_its_contract() {
 #[tokio::test]
 async fn a_freeze_beyond_the_balance_is_refused_before_upstream_is_contacted() {
     let world = world!(500);
-    world.script.answers(
+    world.answers(
         "ok",
         Answer::Completion {
             usage: Some((10, 2)),
         },
     );
 
-    let response = chat(&world.app, &world.key, simple("ok")).await;
+    let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
     let (status, body) = json_of(response).await;
     assert_eq!(status, StatusCode::PAYMENT_REQUIRED);
     assert_eq!(body["error"]["type"], "insufficient_quota");
@@ -740,14 +782,14 @@ async fn a_freeze_beyond_the_balance_is_refused_before_upstream_is_contacted() {
 #[tokio::test]
 async fn the_output_ceiling_scales_the_freeze() {
     let world = world!(1_000_000);
-    world.script.answers(
+    world.answers(
         "ok",
         Answer::Completion {
             usage: Some((10, 2)),
         },
     );
 
-    let mut body = simple("ok");
+    let mut body = simple(&world.model("ok"));
     body["max_tokens"] = json!(7);
     let response = chat(&world.app, &world.key, body).await;
     let id = request_id(&response);
@@ -764,7 +806,7 @@ async fn the_output_ceiling_scales_the_freeze() {
 #[tokio::test]
 async fn content_that_is_not_text_is_refused_without_freezing_anything() {
     let world = world!(1_000_000);
-    world.script.answers(
+    world.answers(
         "ok",
         Answer::Completion {
             usage: Some((10, 2)),
@@ -775,7 +817,7 @@ async fn content_that_is_not_text_is_refused_without_freezing_anything() {
         &world.app,
         &world.key,
         json!({
-            "model": "ok",
+            "model": world.model("ok"),
             "messages": [{
                 "role": "user",
                 "content": [
@@ -799,7 +841,7 @@ async fn content_that_is_not_text_is_refused_without_freezing_anything() {
 #[tokio::test]
 async fn a_model_without_a_price_is_refused() {
     let world = world!(1_000_000);
-    world.script.answers(
+    world.answers(
         "ok",
         Answer::Completion {
             usage: Some((10, 2)),
@@ -816,13 +858,13 @@ async fn a_model_without_a_price_is_refused() {
 #[tokio::test]
 async fn a_client_that_goes_away_settles_what_it_received() {
     let world = world!(1_000_000);
-    world.script.answers("stall", Answer::Stall);
+    world.answers("stall", Answer::Stall);
 
     let response = chat(
         &world.app,
         &world.key,
         json!({
-            "model": "stall",
+            "model": world.model("stall"),
             "messages": [{"role": "user", "content": "hi"}],
             "stream": true,
         }),
@@ -860,7 +902,7 @@ async fn a_client_that_goes_away_settles_what_it_received() {
 #[tokio::test]
 async fn a_client_that_hangs_up_at_the_terminator_still_gets_its_usage_bill() {
     let world = world!(1_000_000);
-    world.script.answers(
+    world.answers(
         "stream",
         Answer::Stream {
             usage: true,
@@ -882,7 +924,7 @@ async fn a_client_that_hangs_up_at_the_terminator_still_gets_its_usage_bill() {
         .post(format!("http://{address}/v1/chat/completions"))
         .bearer_auth(&world.key)
         .json(&json!({
-            "model": "stream",
+            "model": world.model("stream"),
             "messages": [{"role": "user", "content": "hi"}],
             "stream": true,
         }))
@@ -923,8 +965,8 @@ async fn a_client_that_hangs_up_at_the_terminator_still_gets_its_usage_bill() {
 #[tokio::test]
 async fn concurrent_turns_cannot_overdraw_the_wallet() {
     let world = world!(1500);
-    world.script.answers("stall", Answer::Stall);
-    world.script.answers(
+    world.answers("stall", Answer::Stall);
+    world.answers(
         "ok",
         Answer::Completion {
             usage: Some((10, 2)),
@@ -936,7 +978,7 @@ async fn concurrent_turns_cannot_overdraw_the_wallet() {
         &world.app,
         &world.key,
         json!({
-            "model": "stall",
+            "model": world.model("stall"),
             "messages": [{"role": "user", "content": "hi"}],
             "stream": true,
         }),
@@ -948,7 +990,7 @@ async fn concurrent_turns_cannot_overdraw_the_wallet() {
     let _ = body.frame().await.expect("a frame").expect("readable");
 
     // A second turn of the same size cannot be frozen on top of it.
-    let second = chat(&world.app, &world.key, simple("ok")).await;
+    let second = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
     let (status, refused) = json_of(second).await;
     assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "{refused}");
     assert_eq!(refused["error"]["code"], "INSUFFICIENT_FUNDS");
@@ -961,6 +1003,73 @@ async fn concurrent_turns_cannot_overdraw_the_wallet() {
     // The refused turn left nothing behind.
     let wallet = world.wallet().await;
     assert_eq!(wallet.reserved().await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn a_price_change_lands_on_later_requests_and_not_on_the_one_in_flight() {
+    let world = world!(1_000_000);
+    world.answers("stall", Answer::Stall);
+
+    // A streamed turn on the stalling answer: frozen, in flight, and priced by version 1.
+    let first = chat(
+        &world.app,
+        &world.key,
+        json!({
+            "model": world.model("stall"),
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true,
+        }),
+    )
+    .await;
+    let first_id = request_id(&first);
+    assert_eq!(first.status(), StatusCode::OK);
+    let mut body = first.into_body();
+    let _ = body.frame().await.expect("a frame").expect("readable");
+
+    // The platform admin changes that model's price while the turn is in flight.
+    let admin = admin_app(&world);
+    let (status, changed) = call(
+        &admin,
+        "POST",
+        &format!("/api/v1/admin/channels/{}/prices", world.channel),
+        Some(json!({
+            "model": world.model("stall"),
+            "inputPricePerMillion": 10_000_000,
+            "outputPricePerMillion": 10_000_000,
+            "maxOutputTokens": 1000,
+        })),
+        Some(OPERATOR_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{changed}");
+    assert_eq!(changed["data"]["version"], 2);
+
+    // The turn that was already in flight settles at the version it started on, and says which.
+    drop(body);
+    let record = world.settlement_within(&first_id).await;
+    assert_eq!(record["channel"], world.channel.as_str());
+    assert_eq!(record["priceVersion"], 1);
+    assert_eq!(record["inputPrice"], 1_000_000);
+    assert_eq!(record["outputPrice"], 1_000_000);
+
+    // A turn that starts after the change is priced by version 2: the same call, ten times the price.
+    world.answers(
+        "stall",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+    let second = chat(&world.app, &world.key, simple(&world.model("stall"))).await;
+    let second_id = request_id(&second);
+    let (status, forwarded) = json_of(second).await;
+    assert_eq!(status, StatusCode::OK, "{forwarded}");
+    let record = world
+        .settlement(&second_id)
+        .await
+        .expect("the turn settled");
+    assert_eq!(record["priceVersion"], 2);
+    assert_eq!(record["inputPrice"], 10_000_000);
+    assert_eq!(record["charged"], 120);
 }
 
 #[tokio::test]
@@ -982,42 +1091,33 @@ async fn the_model_list_is_what_this_deployment_serves() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["object"], "list");
-    let ids: Vec<&str> = body["data"]
-        .as_array()
-        .expect("a list of models")
-        .iter()
-        .map(|model| model["id"].as_str().expect("every model has an id"))
-        .collect();
-    assert!(ids.contains(&"ok"), "{ids:?}");
-    assert!(ids.contains(&"stream"), "{ids:?}");
-    assert_eq!(body["data"][0]["object"], "model");
-    assert_eq!(body["data"][0]["owned_by"], "mock");
+    // The list is every priced model in the database, so this test looks for its own rather than
+    // assuming it is the only world in there. Its channel is reported as the owner, and the creation
+    // time is the version's, not a placeholder.
+    let listed = body["data"].as_array().expect("a list of models");
+    for name in ["ok", "stream"] {
+        let mine = listed
+            .iter()
+            .find(|model| model["id"] == world.model(name).as_str())
+            .unwrap_or_else(|| panic!("{} is listed in {listed:?}", world.model(name)));
+        assert_eq!(mine["object"], "model");
+        assert_eq!(mine["owned_by"], world.channel.as_str());
+        assert!(mine["created"].as_i64().expect("a creation time") > 0);
+    }
 }
 
 #[tokio::test]
-async fn a_deployment_without_a_channel_serves_no_models() {
+async fn a_deployment_whose_key_is_missing_refuses_to_start() {
     let world = world!(1_000_000);
-    // The same database, no channel: the wallet API still works and `/v1` has nothing to serve.
-    let app = oxsum_server::app(
-        Db::from_pool(world.pool.clone()),
-        Config::new(Signup::Open, None),
-    );
-    let request = Request::builder()
-        .uri("/v1/models")
-        .header("authorization", format!("Bearer {}", world.key))
-        .body(Body::empty())
-        .expect("the test's own request");
-    let (status, body) = json_of(
-        app.clone()
-            .oneshot(request)
-            .await
-            .expect("the router answers"),
+    // The database holds channels, and a deployment built without the key that seals their
+    // credentials cannot open any of them. It says so at startup instead of answering every relayed
+    // request with a 500 for a mistake of the operator's.
+    let error = oxsum_server::prepare(
+        &Db::from_pool(world.pool.clone()),
+        &Config::new(Signup::Open, None),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["data"].as_array().expect("an empty list").len(), 0);
-
-    let (status, body) = json_of(chat(&app, &world.key, simple("ok")).await).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body["error"]["param"], "model");
+    .await
+    .expect_err("a deployment that cannot open its channels must not start");
+    let error = error.to_string();
+    assert!(error.contains("OXSUM_SECRET_KEY"), "{error}");
 }
