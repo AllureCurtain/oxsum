@@ -10,9 +10,21 @@ rust-version = "1.98"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/AllureCurtain/oxsum"
 
-# cargo-leptos reads its `[package.metadata.leptos]` from `crates/web/Cargo.toml`.
-# `cargo leptos build` compiles the `oxsum` binary plus the WASM dashboard;
-# plain `cargo build` / `cargo test` are unaffected.
+# cargo-leptos builds the dashboard: the `oxsum` binary (bin-package) serves the pages,
+# and `oxsum-web` (lib-package) compiles to WASM for the browser. `cargo leptos build`
+# and `cargo leptos serve` read this section; plain `cargo build` ignores it. It lives
+# here (rather than in a package) because the binary and the pages are different
+# packages; paths are relative to the workspace root, site-root defaults to target/site.
+[[workspace.metadata.leptos]]
+name = "oxsum"
+bin-package = "oxsum-server"
+lib-package = "oxsum-web"
+output-name = "oxsum"
+# The binary is `oxsum` (see crates/server/Cargo.toml's [[bin]]), not the package name.
+bin-exe-name = "oxsum"
+style-file = "crates/web/style/main.css"
+# The WASM build turns the web crate's default (ssr) features off and enables hydrate.
+lib-features = ["hydrate"]
 
 [workspace.dependencies]
 oxsum-core = { path = "crates/core" }
