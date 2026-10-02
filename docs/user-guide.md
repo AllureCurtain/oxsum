@@ -87,8 +87,9 @@ Notes:
 - The gateway freezes an upper bound *before* it contacts upstream, then charges upstream's reported
   usage, never more than the freeze. A 402 means the freeze does not fit in your balance: the
   message states the freeze and the balance, and lowering `max_tokens` lowers the freeze.
-- `max_tokens` is what bounds the price, so it is always what upstream is told; a request that sets
-  it too high is refused rather than quietly charged for more than you meant to allow.
+- `max_tokens` is what bounds the price, so it is always what upstream is told; a `max_tokens`
+  larger than the model's configured maximum output is lowered to that maximum before the freeze
+  is computed, so a request is never charged for more than the model can emit.
 - Streaming works with `stream=True`. The forwarded frames are upstream's own, and the stream only
   closes after the turn has settled, so a finished stream is a settled bill. A client that hangs up
   first — an OpenAI SDK client does, the moment it reads the terminator — cancels the upstream call
@@ -133,7 +134,7 @@ Notes:
 - After a network timeout, retry with the same hold key and the same actual; you will not be charged twice.
 - `actualMinor` must not exceed what the hold reserved.
 - Naming a hold that was never taken, or one that is already settled, is refused (404, 409) — not free credit. Settle the hold you took, for the amount you took it for.
-- A hold that is never settled is not released by itself yet: sweeping timed-out holds is issue #13.
+- A hold that is never settled does not stay frozen forever: the hold sweeper (issue #13) releases gateway holds older than `OXSUM_HOLD_TIMEOUT` (default 30 minutes) at 0 with settlement kind `swept`, recorded as an anomaly.
 
 ## Balance
 

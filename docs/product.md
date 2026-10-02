@@ -37,7 +37,7 @@ The platform admin is not an organization role but a deployment-level identity; 
 - Login is email plus password; passwords are stored with argon2. v1 sends no email, so there is no email verification and no password recovery; the platform admin resets forgotten passwords.
 - A login mints a session: the response names the user, the organization and the role, and a cookie (`oxsum_session`, `HttpOnly`, `SameSite=Lax`, `Path=/`, plus `Secure` when the deployment is behind TLS) carries it from then on. The session acts as the user's organization in their role, expires thirty days after login, and stops authenticating the moment the user's membership in that organization is gone. Logging out revokes it. An unknown email and a wrong password answer the same 401 with the same message, so neither reveals whether an account exists.
 - Sessions and API keys are two credentials for the same organization: every `/api/v1` endpoint takes either (an explicit bearer token wins over the cookie), while the gateway (`/v1`) takes an API key only. Role rules apply to sessions; a key keeps acting as the whole organization.
-- Platform admins are created only from the server command line: `oxsum admin create --email ...`. Not "the first registrant becomes admin" — on a public instance, whoever registers first would own it.
+- The platform admin is whoever deploys oxsum: the operator token `OXSUM_ADMIN_TOKEN` opens `/api/v1/admin`, and there is no platform-admin user — see docs/decisions.md ("an operator token rather than a session"). Not "the first registrant becomes admin" — on a public instance, whoever registers first would own it.
 - Registration mode is deployment-configured (`OXSUM_SIGNUP`):
   - `invite` (default): registration only through invitation links
   - `open`: anyone can register
@@ -135,7 +135,7 @@ Two settled trade-offs:
 
 - One request maps to two entries: the freeze and the settlement. Idempotency keys: `req-<id>:hold`, and the settlement's key derived from it (`oxsum_core::settlement_key_for`).
 - The settlement entry's description carries a compact JSON: request id, model, input and output token counts, both prices, settlement type. The description is hashed into the entry, so what the user verifies is not just "how much was charged" but "by how many tokens at what price". The description caps at 512 characters — enough.
-- The full request state (in flight, settled, anomalous) lives in oxsum's own `requests` table; only what needs proving goes into the ledger.
+- The full request state (in flight, settled, anomalous) will live in oxsum's own `requests` table (TODO B-5); until then, in-flight gateway holds are tracked in the sweeper's `oxsum.open_holds` watch table and the ledger stays the source of truth. Only what needs proving goes into the ledger.
 
 ## Bills and verification
 
