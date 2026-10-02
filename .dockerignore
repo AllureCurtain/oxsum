@@ -1,0 +1,6 @@
+# The image build must never see secrets or host build residue: .env holds the
+# local database credentials and target/ is rebuilt inside the builder stage.
+.env
+target
+.git
+.worktrees
