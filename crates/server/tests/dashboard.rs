@@ -199,10 +199,7 @@ async fn billing_socket_sends_a_snapshot_then_live_events() {
 
     // One hold in flight before the socket connects: the snapshot must carry it. The key
     // is unique per run: the tests share one database.
-    let hold_key = format!(
-        "req-snapshot-{}:hold",
-        uuid::Uuid::new_v4().simple().to_string()
-    );
+    let hold_key = format!("req-snapshot-{}:hold", uuid::Uuid::new_v4().simple());
     db.note_open_hold(&OpenHold {
         hold_key: hold_key.clone(),
         tenant_id: tenant_id.clone(),

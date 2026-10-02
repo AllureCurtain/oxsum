@@ -59,15 +59,3 @@ workspace = true
 # dep above. (Same pattern as crates/doubleentry/Cargo.toml.)
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { version = "1", features = ["js"] }
-
-# cargo-leptos builds the dashboard from this package: `cargo leptos build` compiles
-# the `oxsum` binary (bin-package, which serves the pages) and this crate to WASM for
-# the browser (lib-package). Plain `cargo build` / `cargo test` ignore this section.
-# Paths are relative to this directory; site-root defaults to the workspace target dir.
-[package.metadata.leptos]
-output-name = "oxsum"
-style-file = "style/main.css"
-bin-package = "oxsum-server"
-lib-package = "oxsum-web"
-# The WASM build turns the default (ssr) features off and enables hydrate instead.
-lib-features = ["hydrate"]

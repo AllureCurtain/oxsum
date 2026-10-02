@@ -33,15 +33,17 @@ pub fn mount(router: Router<AppState>, state: &AppState) -> Router<AppState> {
     )
 }
 
-/// The Leptos options, from `crates/web/Cargo.toml`'s `[package.metadata.leptos]`
+/// The Leptos options, from the workspace `Cargo.toml`'s `[[workspace.metadata.leptos]]`
 /// with environment overrides (what `cargo leptos serve` sets).
 ///
 /// Panics when the manifest lacks the section: that is a broken checkout, not a
 /// runtime failure, and nothing can be served without it.
 pub fn options() -> leptos::config::LeptosOptions {
-    let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/../web/Cargo.toml");
+    let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.toml");
     match leptos::config::get_configuration(Some(manifest)) {
         Ok(conf) => conf.leptos_options,
-        Err(error) => panic!("crates/web/Cargo.toml carries [package.metadata.leptos]: {error}"),
+        Err(error) => {
+            panic!("the workspace Cargo.toml carries [[workspace.metadata.leptos]]: {error}")
+        }
     }
 }
