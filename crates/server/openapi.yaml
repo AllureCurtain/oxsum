@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.4.0
+  version: 0.5.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -18,7 +18,13 @@ info:
     0.2.0 changed the auth model: an API key belongs to exactly one organization and decides whose
     balance a request spends, so the ledger endpoints no longer name a tenant in the path. 0.3.0 added
     the gateway surface. 0.4.0 added channel and price configuration: prices are append-only versions,
-    and a request is priced by the version in force when it starts.
+    and a request is priced by the version in force when it starts. 0.5.0 added web login: a session
+    is a second credential next to the API key, carried in a cookie, and the role rules (owner, admin,
+    member) now constrain what a session principal may do with the organization's keys.
+
+    Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie, except
+    `/api/v1/auth/login`, `/api/v1/auth/logout` and `/api/v1/auth/register`, which take no
+    credential at all. The cookie is never accepted on `/v1`: the gateway takes an API key only.
 servers:
   - url: http://localhost:3000
 security:
@@ -60,10 +66,91 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/auth/login:
+    post:
+      summary: Log in with email and password
+      description: |
+        Mints a session and answers it in the body together with a `Set-Cookie` header carrying the
+        session cookie (`oxsum_session`, `HttpOnly`, `SameSite=Lax`, `Path=/`, plus `Secure` when the
+        deployment sets `OXSUM_SESSION_COOKIE_SECURE`).
+
+        An unknown email and a wrong password answer the same 401 with the same message, and the
+        unknown-email path still pays for one password-hash verification, so neither timing nor
+        wording reveals whether an account exists. The session acts as the user's organization, in
+        their role; it expires thirty days after login and stops authenticating the moment the
+        user's membership in that organization is gone.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "200":
+          description: The user, the organization, the role and the session; the `Set-Cookie` header carries the session cookie
+          headers:
+            Set-Cookie:
+              description: "the session cookie: `oxsum_session=<token>; Path=/; HttpOnly; SameSite=Lax`, plus `; Secure` when the deployment sets `OXSUM_SESSION_COOKIE_SECURE`"
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/SessionInfo" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/auth/logout:
+    post:
+      summary: Log out
+      description: |
+        Revokes the session the cookie names and clears the cookie with a `Set-Cookie` header
+        (`Max-Age=0`). Always 200: logging out twice is not an error, and neither is logging out
+        without a session at all — which is why this route takes no credential.
+      security: []
+      responses:
+        "200":
+          description: Logged out; the `Set-Cookie` header clears the cookie
+          headers:
+            Set-Cookie:
+              description: "`oxsum_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`, plus `; Secure` when the deployment sets `OXSUM_SESSION_COOKIE_SECURE`"
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/LogoutResponse" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/session:
+    get:
+      summary: The current session
+      description: |
+        Who is logged in, as which organization, in which role. Takes the session cookie; a bearer
+        key names no session and answers 404.
+      security:
+        - bearer: []
+        - sessionCookie: []
+      responses:
+        "200":
+          description: The session, the user, the organization and the role
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/SessionInfo" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/org:
     get:
       summary: The authenticated organization
-      description: The organization the presented API key belongs to.
+      description: The organization the presented credential belongs to.
       responses:
         "200":
           description: The organization
@@ -79,7 +166,10 @@ paths:
   /api/v1/org/keys:
     get:
       summary: List the organization's API keys
-      description: Metadata only. Neither a secret nor a hash is ever returned.
+      description: |
+        Metadata only. Neither a secret nor a hash is ever returned. Members see only the keys they
+        created; owners and admins see every key of the organization. An API key acting as the
+        organization sees all of them, as before sessions.
       responses:
         "200":
           description: The organization's keys, newest first
@@ -96,7 +186,10 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
     post:
       summary: Create an API key
-      description: Returns the secret once. Any active key of the organization may create keys until role checks arrive with sessions; see docs/api.md.
+      description: |
+        Returns the secret once. A key minted through a session records who minted it (`createdBy`),
+        for the per-member role rules; a key minted with an API key records no creator, because no
+        person acts there.
       requestBody:
         required: false
         content:
@@ -118,7 +211,10 @@ paths:
   /api/v1/org/keys/{keyId}:
     delete:
       summary: Revoke an API key
-      description: Permanent and idempotent. A key id belonging to another organization is `NOT_FOUND`.
+      description: |
+        Permanent and idempotent. A member may revoke only the keys they created — revoking any
+        other answers 404 and the key stays live; owners and admins may revoke any key. A key id
+        belonging to another organization is `NOT_FOUND`.
       parameters: [{ $ref: "#/components/parameters/KeyId" }]
       responses:
         "200":
@@ -423,6 +519,16 @@ components:
         The operator token from `OXSUM_ADMIN_TOKEN`, at least 16 characters, compared in constant time.
         It is not an API key and belongs to no organization: it is whoever deploys oxsum. A deployment
         that sets no token has no admin surface at all.
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: oxsum_session
+      description: |
+        A web session from `POST /api/v1/auth/login`: `oxsess-` followed by 32 random bytes, carried
+        in the `oxsum_session` cookie (`HttpOnly`, `SameSite=Lax`, `Path=/`, plus `Secure` when the
+        deployment sets `OXSUM_SESSION_COOKIE_SECURE`). The database keeps only its SHA-256 hash.
+        Accepted on `/api/v1` wherever a bearer key is; never accepted on `/v1`, where the gateway
+        takes an API key only.
   parameters:
     KeyId:
       name: keyId
@@ -460,6 +566,31 @@ components:
       properties:
         id: { type: string, format: uuid }
         email: { type: string }
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email, maxLength: 320 }
+        password: { type: string, minLength: 12, maxLength: 256, description: at least 12 characters }
+    Session:
+      type: object
+      required: [id, createdAt, expiresAt, lastUsedAt]
+      properties:
+        id: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time, description: "absolute expiry: thirty days after login, no sliding renewal in v1" }
+        lastUsedAt: { type: string, format: date-time, description: "the last authenticated request; touched at most once per five minutes" }
+    SessionInfo:
+      type: object
+      required: [user, organization, role, session]
+      properties:
+        user: { $ref: "#/components/schemas/User" }
+        organization: { $ref: "#/components/schemas/Organization" }
+        role: { type: string, enum: [owner, admin, member], description: "the user's role in the organization the session acts as" }
+        session: { $ref: "#/components/schemas/Session" }
+    LogoutResponse:
+      type: object
+      description: "empty: the logout is in the Set-Cookie header that clears the cookie"
     Organization:
       type: object
       required: [id, name, tenantId, kind, createdAt]
@@ -476,11 +607,12 @@ components:
         expiresAt: { type: [string, "null"], format: date-time, description: optional expiry; an expired key authenticates nothing }
     ApiKey:
       type: object
-      required: [id, name, prefix, createdAt, expiresAt, revokedAt]
+      required: [id, name, prefix, createdBy, createdAt, expiresAt, revokedAt]
       properties:
         id: { type: string, format: uuid }
         name: { type: [string, "null"] }
         prefix: { type: string, description: "leading characters of the secret, for recognizing the key in a list" }
+        createdBy: { type: [string, "null"], format: uuid, description: "the user who minted the key, for the per-member role rules; null for keys minted with an API key" }
         createdAt: { type: string, format: date-time }
         expiresAt: { type: [string, "null"], format: date-time }
         revokedAt: { type: [string, "null"], format: date-time }
