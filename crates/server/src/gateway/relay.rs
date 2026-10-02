@@ -22,7 +22,7 @@ use std::sync::Arc;
 use axum::body::Bytes;
 use futures_core::Stream;
 use oxsum_core::{
-    Price, Receipt, Serving, Settlement, SettlementKind, Usage, Wallet, WalletError,
+    Db, Price, Receipt, Serving, Settlement, SettlementKind, Usage, Wallet, WalletError,
     estimate_tokens,
 };
 use serde_json::Value;
@@ -56,6 +56,9 @@ pub struct Turn {
 /// Everything a settlement needs, including the text the estimate is computed from.
 struct Plan {
     wallet: Arc<Wallet>,
+    /// The watch row this hold was noted under, cleared once the turn settles: the sweeper only
+    /// looks at rows, so a settled turn must leave none behind.
+    db: Db,
     /// `req-<id>:hold`: the key the hold was taken under, which the settlement names.
     hold_key: String,
     /// The request id, as the description and the response header carry it.
@@ -131,6 +134,7 @@ impl Turn {
     /// Starts a turn that has already been frozen, priced by the channel and version it started on.
     #[must_use]
     pub fn new(
+        db: Db,
         wallet: Arc<Wallet>,
         request_id: &str,
         model: &str,
@@ -140,6 +144,7 @@ impl Turn {
     ) -> Self {
         Self {
             plan: Some(Plan {
+                db,
                 wallet,
                 hold_key: format!("req-{request_id}:hold"),
                 request: request_id.to_owned(),
@@ -302,9 +307,26 @@ impl Plan {
             freeze: self.freeze,
         };
         let description = settlement.description()?;
-        self.wallet
+        let outcome = self
+            .wallet
             .settle(&self.hold_key, &description, charged, today())
-            .await
+            .await;
+        match &outcome {
+            // Settled, so the sweeper must not see this hold anymore. The conflict arm is the
+            // race the derived settlement key decides: the sweeper settled it first, and the
+            // ledger refused this write as "hold already settled". `HoldNotFound` is the hold
+            // being gone another way. Either way there is nothing left to watch.
+            Ok(_) | Err(WalletError::Conflict(_)) | Err(WalletError::HoldNotFound(_)) => {
+                if let Err(error) = self.db.clear_open_hold(&self.hold_key).await {
+                    tracing::error!(%error, request = %self.request,
+                        "clearing the settled hold's watch row failed");
+                }
+            }
+            // Any other failure leaves the row watched: the settlement did not land, and the
+            // sweeper retries what the turn could not finish.
+            Err(_) => {}
+        }
+        outcome
     }
 }
 

@@ -16,7 +16,7 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router, middleware};
-use oxsum_core::{Organization, Serving, SettlementKind, hold_description};
+use oxsum_core::{OpenHold, Organization, Serving, SettlementKind, hold_description};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -153,7 +153,32 @@ async fn run(
     let wallet = state.tenants.get(&organization.tenant_id).await?;
     let hold_key = format!("req-{request_id}:hold");
     let description = hold_description(request_id, &request.model, freeze)?;
+    // The watch row goes in before the hold is taken: a row without a hold heals itself — the
+    // sweeper deletes it when the hold is not there — while a hold without a row would be
+    // invisible to the sweeper if this process died.
+    if let Err(error) = state
+        .db
+        .note_open_hold(&OpenHold {
+            hold_key: hold_key.clone(),
+            tenant_id: organization.tenant_id.clone(),
+            request_id: request_id.to_owned(),
+            model: request.model.clone(),
+            channel: serving.channel.clone(),
+            price_version: serving.version,
+            input_price: price.input_per_million,
+            output_price: price.output_per_million,
+            freeze_minor: freeze,
+        })
+        .await
+    {
+        tracing::error!(%error, "recording the open hold failed");
+        return Err(error.into());
+    }
     if let Err(error) = wallet.hold(&hold_key, &description, freeze, today()).await {
+        // The hold was refused, so there is nothing for the sweeper to watch.
+        if let Err(clear) = state.db.clear_open_hold(&hold_key).await {
+            tracing::error!(%clear, "clearing a refused hold's watch row failed");
+        }
         return Err(match error {
             oxsum_core::WalletError::InsufficientFunds => {
                 // Reading the balance again can fail; saying so beats reporting a balance of zero.
@@ -165,6 +190,7 @@ async fn run(
     }
 
     let mut turn = Turn::new(
+        state.db.clone(),
         wallet,
         request_id,
         &request.model,
