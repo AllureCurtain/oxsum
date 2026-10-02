@@ -33,6 +33,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0003_open_holds",
         include_str!("../migrations/0003_open_holds.sql"),
     ),
+    (
+        "0004_sessions",
+        include_str!("../migrations/0004_sessions.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.
