@@ -1,12 +1,21 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.2.0
+  version: 0.3.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
-    0.2.0 changes the auth model: an API key belongs to exactly one organization and decides whose
-    balance a request spends, so the ledger endpoints no longer name a tenant in the path.
+    Two surfaces, deliberately different:
+
+    - `/api/v1/*` is oxsum's own API: enveloped responses (`{"data": …}`), oxsum error codes, camelCase.
+    - `/v1/*` is the OpenAI-compatible gateway: OpenAI's request and response shapes, OpenAI's error
+      object, and everything the gateway does not understand is passed upstream unchanged, so an OpenAI
+      SDK works by changing `base_url` only. A gateway request freezes credit before upstream is
+      contacted and settles against the usage upstream reports.
+
+    0.2.0 changed the auth model: an API key belongs to exactly one organization and decides whose
+    balance a request spends, so the ledger endpoints no longer name a tenant in the path. 0.3.0 adds
+    the gateway surface.
 servers:
   - url: http://localhost:3000
 security:
@@ -223,6 +232,67 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /v1/models:
+    get:
+      summary: List the served models, in OpenAI's shape
+      description: |
+        Only models with a configured price are listed: a model the gateway cannot price cannot be
+        frozen, so it cannot be served.
+      responses:
+        "200":
+          description: The model list
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelList" }
+        "401": { $ref: "#/components/responses/GatewayError" }
+        "500": { $ref: "#/components/responses/GatewayError" }
+  /v1/chat/completions:
+    post:
+      summary: Chat completion, billed by freezing credit first and settling against upstream usage
+      description: |
+        The gateway computes the most the request could cost, freezes that much, and only then
+        contacts upstream. Upstream's request always carries the output upper bound as `max_tokens`,
+        and a streaming request always carries `stream_options.include_usage = true`, so upstream
+        cannot return more than the freeze was computed for and its usage arrives in the final chunk.
+        The request settles against that usage, capped at the freeze.
+
+        Every response carries `x-oxsum-request-id`. The two ledger entries use `req-<id>:hold` and
+        `req-<id>:settle`, and the settlement's description carries the token counts and the prices
+        that produced the charge, so a bill can be verified down to the arithmetic.
+
+        Request content is text-only in v1: a message whose `content` is an array containing anything
+        but text is refused with 400, because the input upper bound must be computable for the freeze
+        promise to hold.
+
+        A `stream: true` response ends with `data: [DONE]`. If upstream reports usage, the last frame
+        before it carries the `usage` object, and that is what was billed. If the client disconnects,
+        the upstream call is cancelled and the turn settles on local estimation, marked as estimated
+        in the settlement description; if upstream is unreachable or answers with an error before
+        emitting anything, the whole freeze is released and nothing is charged.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChatCompletionRequest" }
+      responses:
+        "200":
+          description: Upstream's completion, passed through unchanged
+          headers:
+            x-oxsum-request-id: { $ref: "#/components/headers/RequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChatCompletion" }
+            text/event-stream:
+              schema:
+                type: string
+                description: "OpenAI SSE frames, passed through unchanged, terminated by `data: [DONE]`"
+        "400": { $ref: "#/components/responses/GatewayError" }
+        "401": { $ref: "#/components/responses/GatewayError" }
+        "402": { $ref: "#/components/responses/GatewayError" }
+        "403": { $ref: "#/components/responses/GatewayError" }
+        "409": { $ref: "#/components/responses/GatewayError" }
+        "500": { $ref: "#/components/responses/GatewayError" }
+        "502": { $ref: "#/components/responses/GatewayError" }
 components:
   securitySchemes:
     bearer:
@@ -235,6 +305,10 @@ components:
       in: path
       required: true
       schema: { type: string, format: uuid }
+  headers:
+    RequestId:
+      description: "the id the ledger entries are keyed by: `req-<id>:hold` and `req-<id>:settle`"
+      schema: { type: string }
   schemas:
     RegisterRequest:
       type: object
@@ -321,6 +395,90 @@ components:
               enum: [VALIDATION_ERROR, UNAUTHORIZED, FORBIDDEN, INSUFFICIENT_FUNDS, NOT_FOUND, CONFLICT, INTERNAL_ERROR]
             message: { type: string }
             details: { type: array, items: {} }
+    ChatCompletionRequest:
+      type: object
+      required: [model, messages]
+      description: |
+        The fields the gateway acts on. Everything else is forwarded to upstream unchanged — temperature,
+        tools, response_format, seed and the rest — which is what keeps an OpenAI SDK working here.
+      properties:
+        model: { type: string, description: must be a model with a configured price }
+        messages:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/ChatMessage" }
+        stream: { type: boolean, default: false }
+        max_tokens: { type: integer, format: int64, minimum: 1, description: "the output upper bound the freeze uses; absent means the model's configured maximum" }
+        max_completion_tokens: { type: integer, format: int64, minimum: 1, description: "newer spelling of max_tokens; when both are present this one wins" }
+      additionalProperties: true
+    ChatMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role: { type: string, enum: [system, developer, user, assistant, tool] }
+        content:
+          type: string
+          description: "text only: a content array containing anything but text (an image) is refused with 400"
+        name: { type: string }
+        tool_call_id: { type: string }
+      additionalProperties: true
+    ChatCompletion:
+      type: object
+      description: |
+        Upstream's response, passed through unchanged. The only field oxsum reads is `usage`; without it
+        the turn settles on local estimation.
+      properties:
+        id: { type: string }
+        object: { type: string }
+        created: { type: integer, format: int64 }
+        model: { type: string }
+        choices: { type: array, items: { type: object } }
+        usage:
+          type: object
+          properties:
+            prompt_tokens: { type: integer, format: int64 }
+            completion_tokens: { type: integer, format: int64 }
+            total_tokens: { type: integer, format: int64 }
+      additionalProperties: true
+    ModelList:
+      type: object
+      required: [object, data]
+      properties:
+        object: { type: string, const: list }
+        data:
+          type: array
+          items:
+            type: object
+            required: [id, object, created, owned_by]
+            properties:
+              id: { type: string }
+              object: { type: string, const: model }
+              created: { type: integer, format: int64 }
+              owned_by: { type: string, description: the configured channel's name }
+    GatewayError:
+      type: object
+      required: [error]
+      description: OpenAI's error object, because that is what an OpenAI SDK shows its caller.
+      properties:
+        error:
+          type: object
+          required: [message, type]
+          properties:
+            message: { type: string }
+            type:
+              type: string
+              enum:
+                - invalid_request_error
+                - authentication_error
+                - permission_error
+                - insufficient_quota
+                - api_error
+            param: { type: [string, "null"] }
+            code:
+              type: [string, "null"]
+              description: >-
+                oxsum's own code: VALIDATION_ERROR, UNAUTHORIZED, FORBIDDEN, CONFLICT,
+                INSUFFICIENT_FUNDS, UPSTREAM_ERROR or INTERNAL_ERROR
   responses:
     Receipt:
       description: The ledger receipt
@@ -336,3 +494,8 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    GatewayError:
+      description: An OpenAI-shaped error
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/GatewayError" }
