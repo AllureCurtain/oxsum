@@ -28,7 +28,7 @@ pub fn router(state: AppState) -> Router {
     let authenticated = Router::new()
         .route("/org", get(organization))
         .route("/org/keys", get(list_keys).post(create_key))
-        .route("/org/keys/{key_id}", delete(revoke_key))
+        .route("/org/keys/{key_id}", delete(revoke_key).patch(patch_key))
         .route("/session", get(session))
         .route("/topups", post(top_up))
         .route("/holds", post(hold))
@@ -127,6 +127,17 @@ struct CreateKeyReq {
     /// RFC 3339; absent means a key that never expires.
     #[serde(default, with = "time::serde::rfc3339::option")]
     expires_at: Option<OffsetDateTime>,
+    /// Minor units; absent or null means unlimited.
+    #[serde(default)]
+    spend_limit_minor: Option<i64>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateKeyLimitReq {
+    /// The new limit in minor units; null clears it back to unlimited.
+    #[serde(default)]
+    spend_limit_minor: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -255,7 +266,10 @@ async fn create_key(
     Extension(principal): Extension<Principal>,
     body: Option<Json<CreateKeyReq>>,
 ) -> ApiResult<CreatedApiKey> {
-    let (name, expires_at) = body.map_or((None, None), |Json(r)| (r.name, r.expires_at));
+    let (name, expires_at, spend_limit_minor) =
+        body.map_or((None, None, None), |Json(r)| {
+            (r.name, r.expires_at, r.spend_limit_minor)
+        });
     // A key minted through a session records who minted it, for product.md's per-member
     // rules; a key minted with an API key records no creator, because no person acts there.
     ok(state
@@ -265,6 +279,7 @@ async fn create_key(
             name,
             expires_at,
             principal.user_id(),
+            spend_limit_minor,
         )
         .await?)
 }
@@ -296,6 +311,29 @@ async fn revoke_key(
     }
 }
 
+async fn patch_key(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(key_id): Path<Uuid>,
+    Json(r): Json<UpdateKeyLimitReq>,
+) -> ApiResult<ApiKey> {
+    // The scope rules are the revoke's: a member may change only the keys they created,
+    // and any other key id answers 404 with the key untouched, so ids cannot be probed.
+    match state
+        .db
+        .update_key_limit(
+            principal.organization().id,
+            key_id,
+            principal.key_scope(),
+            r.spend_limit_minor,
+        )
+        .await?
+    {
+        Some(key) => ok(key),
+        None => Err(ApiError::NotFound),
+    }
+}
+
 async fn top_up(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
@@ -313,9 +351,14 @@ async fn hold(
 ) -> ApiResult<oxsum_core::Receipt> {
     let w = wallet(&state.tenants, principal.organization()).await?;
     // No description: this endpoint takes an amount, not a reason. The gateway, which knows what the
-    // hold is for, records one.
-    ok(w.hold(&r.idempotency_key, "", r.amount_minor, today())
-        .await?)
+    // hold is for, records one. A key's hold is attributed to the key and checked against its
+    // spend limit; a session holds unattributed, with no limit to check.
+    match principal.acting_key() {
+        Some(key) => ok(w
+            .hold_for_key(key, &r.idempotency_key, "", r.amount_minor, today())
+            .await?),
+        None => ok(w.hold(&r.idempotency_key, "", r.amount_minor, today()).await?),
+    }
 }
 
 async fn settle(

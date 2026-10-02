@@ -33,11 +33,11 @@ pub use heads::{
     sign_head, signing_key,
 };
 pub use holds::{DEFAULT_HOLD_TIMEOUT, OpenHold, SWEEP_INTERVAL, sweep_stale_holds};
-pub use keys::{ApiKey, CreatedApiKey};
+pub use keys::{ActingKey, ApiKey, CreatedApiKey};
 pub use orgs::{Kind, Member, Organization, Role};
 pub use proof::{ProofBundle, verify_bundle};
 pub use sessions::{
-    CreatedSession, KeyScope, Principal, SESSION_COOKIE, SESSION_LIFETIME, Session,
+    CreatedSession, KeyPrincipal, KeyScope, Principal, SESSION_COOKIE, SESSION_LIFETIME, Session,
     SessionPrincipal,
 };
 pub use tenants::Tenants;

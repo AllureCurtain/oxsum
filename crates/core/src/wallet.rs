@@ -3,14 +3,17 @@ use doubleentry::storage::postgres::PostgresStore;
 use doubleentry::{
     AccountId, Amount, BalanceKey, BalanceLimit, BalanceQuery, Balanced, Currency, Cursor,
     Description, Direction, Draft, Entry, EntryBatch, EntryId, Hash, IdempotencyKey, Layer,
-    LedgerId, LedgerPolicy, LedgerStore, LogIndex, PeriodCalendar, Posting, SealContext,
+    LedgerId, LedgerPolicy, LedgerStore, LogIndex, PeriodCalendar, Posting, Provenance, SealContext,
 };
+use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use time::Date;
 use time::macros::date;
+use uuid::Uuid;
 
 use crate::error::{WalletError, invalid};
 use crate::heads::{Consistency, HeadSigningKey, SignedHead, origin_for, sign_head};
+use crate::keys::ActingKey;
 use crate::proof::ProofBundle;
 
 /// Money precision: 6 decimal places; 1 credit = 1_000_000 minor, fine enough for per-token pricing.
@@ -203,13 +206,119 @@ impl Wallet {
         .await
     }
 
+    /// Hold attributed to an API key, enforcing the key's spend limit when it has one.
+    ///
+    /// The hold entry carries the key id as its provenance actor, so the key's committed
+    /// spend — settled charges plus outstanding holds attributed to it — is readable from
+    /// the ledger afterwards, even for keys that have no limit today.
+    ///
+    /// The limit check is serialized per key and atomic with the append: the transaction
+    /// takes a per-key advisory lock, re-reads the limit from the key row (locked, so a
+    /// concurrent limit change cannot slip between the read and the append), reads the
+    /// key's committed spend from the ledger, and only then appends through the engine's
+    /// normal path. The lock is held until commit — after the engine's append committed —
+    /// so a racing second hold for the same key can only read usage that already includes
+    /// the first hold. Two racing holds cannot both pass the check.
+    ///
+    /// Refused with [`WalletError::KeyLimitExceeded`] when the hold would push the key's
+    /// committed spend past its limit, and with [`WalletError::InsufficientFunds`] when the
+    /// wallet's own balance cannot cover it — the key limit never overrides the balance.
+    pub async fn hold_for_key(
+        &self,
+        key: &ActingKey,
+        idem_key: &str,
+        description: &str,
+        minor: i64,
+        on: Date,
+    ) -> Result<Receipt, WalletError> {
+        let amt = positive(minor)?;
+        let actor = Provenance::none()
+            .with_actor(&key.key_id.as_simple().to_string())
+            .map_err(invalid)?;
+        let mut tx = self.store.pool().begin().await?;
+        // The check and the append serialize on this lock, per key. The engine's own
+        // append takes the per-tenant lock inside, so the order is always key lock first,
+        // tenant lock second, and the engine never takes the key lock: no deadlock, and no
+        // tenant-level contention beyond the append lock that already exists.
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(limit_lock_key(&self.tenant_id, &key.key_id))
+            .execute(&mut *tx)
+            .await?;
+        // The limit in force now, not the one the request authenticated with: locked, so a
+        // PATCH landing between authentication and this hold cannot be missed.
+        let limit: Option<Option<i64>> =
+            sqlx::query_scalar("SELECT spend_limit_minor FROM oxsum.api_keys WHERE key_id = $1 FOR UPDATE")
+                .bind(key.key_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some(limit) = limit else {
+            // Keys are never deleted; a missing row means the credential died mid-request.
+            return Err(WalletError::Unauthenticated);
+        };
+        if let Some(limit) = limit {
+            let committed = self.key_committed_in(&mut tx, &key.key_id).await?;
+            if committed + minor > limit {
+                return Err(WalletError::KeyLimitExceeded {
+                    limit_minor: limit,
+                    committed_minor: committed,
+                });
+            }
+        }
+        let receipt = self
+            .append(
+                Entry::<Draft, SCALE>::new(entry_id_for(idem_key), idem(idem_key)?, on)
+                    .with_description(description_of(description)?)
+                    .with_provenance(actor)
+                    .post(Posting::debit(self.wallet, amt, currency()).in_layer(Layer::Pending))
+                    .post(Posting::credit(self.revenue, amt, currency()).in_layer(Layer::Pending)),
+            )
+            .await?;
+        tx.commit().await?;
+        Ok(receipt)
+    }
+
+    /// What one API key has committed: settled charges plus outstanding holds attributed
+    /// to it, in minor units. Read from the ledger's own postings — the pending release
+    /// and the settled charge of a settlement both carry the hold's actor — so it cannot
+    /// drift from the books.
+    pub async fn key_committed(&self, key_id: &Uuid) -> Result<i64, WalletError> {
+        let mut conn = self.store.pool().acquire().await?;
+        self.key_committed_in(&mut conn, key_id).await
+    }
+
+    /// The [`key_committed`](Self::key_committed) read, on the caller's connection: the
+    /// limit check runs it inside the transaction that holds the per-key advisory lock.
+    async fn key_committed_in(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        key_id: &Uuid,
+    ) -> Result<i64, WalletError> {
+        // The schema name is assembled from the validated tenant id, like `Wallet::open`
+        // does; the actor is the key id in uuid simple form, bound as a parameter.
+        let sql = format!(
+            "SELECT COALESCE(SUM(CASE WHEN p.direction = 'D' THEN p.amount_minor \
+                              ELSE -p.amount_minor END), 0)::bigint AS committed \
+             FROM ledger_{schema}.postings p \
+             JOIN ledger_{schema}.entries e ON e.entry_id = p.entry_id \
+             WHERE p.account_index = $1 AND e.provenance_actor = $2",
+            schema = self.tenant_id,
+        );
+        let committed: i64 = sqlx::query_scalar(&sql)
+            .bind(self.wallet.index() as i32)
+            .bind(key_id.as_simple().to_string())
+            .fetch_one(&mut *conn)
+            .await?;
+        Ok(committed)
+    }
+
     /// Settle: one entry does two things — releases the hold (a reversal in the pending layer)
     /// and charges the actual usage (recorded in the settled layer).
     ///
     /// The settlement names the hold it releases: `hold_key` is the idempotency key the hold was
     /// taken under. The held amount is read from the hold entry in the ledger — the entry's
     /// pending-layer debit on the wallet account — so there is nothing for the caller to assert
-    /// and nothing for a caller to get wrong.
+    /// and nothing for a caller to get wrong. The hold's provenance actor is copied onto the
+    /// settlement entry, so both the release and the charge attribute to the key that held.
     ///
     /// `actual` may be less than the held amount; the difference returns to the available
     /// balance. `actual` of zero amounts to a full release.
@@ -244,7 +353,7 @@ impl Wallet {
                 "actual must be within 0..=held".into(),
             ));
         }
-        let held_minor = self.outstanding_hold(hold_key).await?;
+        let (held_minor, outstanding_actor) = self.outstanding_hold(hold_key).await?;
         if actual_minor > held_minor {
             return Err(WalletError::InvalidInput(
                 "actual must be within 0..=held".into(),
@@ -254,9 +363,18 @@ impl Wallet {
         let settle_key = settlement_key_for(hold_key);
         let mut draft =
             Entry::<Draft, SCALE>::new(entry_id_for(&settle_key), idem(&settle_key)?, on)
-                .with_description(description_of(description)?)
-                .post(Posting::credit(self.wallet, held, currency()).in_layer(Layer::Pending))
-                .post(Posting::debit(self.revenue, held, currency()).in_layer(Layer::Pending));
+                .with_description(description_of(description)?);
+        // The settlement attributes to the key the hold attributed to: the release side and
+        // the settled charge side both count toward that key's committed spend, with no
+        // caller input to get wrong. A hold taken before key attribution existed settles
+        // unattributed, like it was held.
+        if let Some(actor) = outstanding_actor {
+            draft = draft
+                .with_provenance(Provenance::none().with_actor(&actor).map_err(invalid)?);
+        }
+        draft = draft
+            .post(Posting::credit(self.wallet, held, currency()).in_layer(Layer::Pending))
+            .post(Posting::debit(self.revenue, held, currency()).in_layer(Layer::Pending));
         if actual_minor > 0 {
             let actual = Credits::from_minor(actual_minor);
             draft = draft.debit(self.wallet, actual, currency()).credit(
@@ -298,14 +416,16 @@ impl Wallet {
         Ok(-self.wallet_net(Layer::Pending).await?)
     }
 
-    /// The amount of the hold taken under `hold_key`, read from the hold entry in the ledger.
+    /// The amount of the hold taken under `hold_key`, read from the hold entry in the ledger,
+    /// plus the provenance actor the hold attributed to — the API key whose spend it counts
+    /// toward, if the hold named one.
     ///
     /// The hold entry is found by the id it was given when the hold was taken
     /// ([`entry_id_for`] of the key), and the amount is the entry's pending-layer debit on the
     /// wallet account — the ledger's own record of what was reserved, not a caller assertion.
     /// [`WalletError::HoldNotFound`] when no entry is stored under the key, or when the entry
     /// is not a hold.
-    async fn outstanding_hold(&self, hold_key: &str) -> Result<i64, WalletError> {
+    async fn outstanding_hold(&self, hold_key: &str) -> Result<(i64, Option<String>), WalletError> {
         let Some(stored) = self.store.get(entry_id_for(hold_key)).await? else {
             return Err(WalletError::HoldNotFound(format!(
                 "no hold under key {hold_key:?}"
@@ -326,7 +446,13 @@ impl Wallet {
                 "key {hold_key:?} does not name a hold"
             )));
         }
-        Ok(held)
+        let actor = stored
+            .entry
+            .provenance()
+            .actor
+            .as_ref()
+            .map(|actor| actor.as_str().to_owned());
+        Ok((held, actor))
     }
 
     /// Builds the proof bundle for one entry. Returns None when the entry does not exist.
@@ -562,6 +688,21 @@ pub fn entry_id_for(key: &str) -> EntryId {
 #[must_use]
 pub fn settlement_key_for(hold_key: &str) -> String {
     format!("settle:{}", entry_id_for(hold_key).as_uuid().as_simple())
+}
+
+/// The advisory-lock key serializing one key's limit check with its appends.
+///
+/// A stable hash of the tenant id and the key id: every process holding the same key
+/// computes the same lock, and a key of one tenant can never collide with a key of
+/// another. The domain prefix keeps it out of the engine's lock namespace.
+fn limit_lock_key(tenant_id: &str, key_id: &Uuid) -> i64 {
+    let mut hasher = Sha256::new();
+    hasher.update(b"oxsum/key-spend-limit/v1\0");
+    hasher.update(tenant_id.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(key_id.as_bytes());
+    let digest = hasher.finalize();
+    i64::from_le_bytes(digest[..8].try_into().expect("SHA-256 is 32 bytes"))
 }
 
 #[cfg(test)]

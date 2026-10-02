@@ -15,7 +15,7 @@ use axum::http::HeaderMap;
 use axum::http::header::{AUTHORIZATION, COOKIE};
 use axum::middleware::Next;
 use axum::response::Response;
-use oxsum_core::{Organization, Principal, SESSION_COOKIE};
+use oxsum_core::{ActingKey, KeyPrincipal, Organization, Principal, SESSION_COOKIE};
 
 use crate::AppState;
 use crate::error::ApiError;
@@ -42,16 +42,18 @@ pub async fn require_principal(
 /// The same, for the OpenAI-compatible surface, where a refusal has to look like OpenAI's.
 ///
 /// Keys only: the session cookie is never read here, so a logged-in browser cannot spend
-/// through the gateway and the gateway's credential stays the API key alone.
+/// through the gateway and the gateway's credential stays the API key alone. The acting key
+/// goes in beside the organization: the gateway's hold path enforces its spend limit.
 pub async fn require_key_gateway(
     State(state): State<AppState>,
     mut request: Request,
     next: Next,
 ) -> Result<Response, GatewayError> {
-    let organization = resolve_key(&state, request.headers())
+    let (organization, key) = resolve_key(&state, request.headers())
         .await
         .ok_or(GatewayError::Unauthorized)?;
     request.extensions_mut().insert(organization);
+    request.extensions_mut().insert(key);
     Ok(next.run(request).await)
 }
 
@@ -61,7 +63,8 @@ pub async fn require_key_gateway(
 /// ambient one. With no bearer credential at all, the session cookie is tried.
 async fn resolve(state: &AppState, headers: &HeaderMap) -> Option<Principal> {
     if bearer(headers).is_some() {
-        return resolve_key(state, headers).await.map(Principal::Key);
+        let (organization, key) = resolve_key(state, headers).await?;
+        return Some(Principal::Key(KeyPrincipal { organization, key }));
     }
     let token = session_cookie_value(headers)?;
     state
@@ -73,8 +76,9 @@ async fn resolve(state: &AppState, headers: &HeaderMap) -> Option<Principal> {
         .map(Principal::Session)
 }
 
-/// The organization the presented API key spends for, if it is a usable one.
-async fn resolve_key(state: &AppState, headers: &HeaderMap) -> Option<Organization> {
+/// The organization the presented API key spends for, and the key that acted, if the
+/// credential is a usable one.
+async fn resolve_key(state: &AppState, headers: &HeaderMap) -> Option<(Organization, ActingKey)> {
     let presented = bearer(headers)?;
     state.db.authenticate(presented).await.ok().flatten()
 }

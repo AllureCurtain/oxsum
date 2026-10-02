@@ -34,6 +34,15 @@ pub enum WalletError {
     #[error("insufficient funds")]
     InsufficientFunds,
 
+    /// A hold would push the acting API key past its spend limit: settled charges plus
+    /// outstanding holds attributed to the key, in minor units, would exceed the limit.
+    /// The HTTP layer answers 429; the numbers are the key's own, so they are safe to show.
+    #[error("key spend limit exceeded: {committed_minor} of {limit_minor} minor units already committed")]
+    KeyLimitExceeded {
+        limit_minor: i64,
+        committed_minor: i64,
+    },
+
     /// This deployment cannot serve what it was asked for: a stored channel credential that does not
     /// open under `OXSUM_SECRET_KEY`, or a key that is not configured at all. The message is for the
     /// operator; the HTTP layer answers 500 with a generic one, because this is neither the caller's

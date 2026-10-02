@@ -17,6 +17,9 @@ pub enum ApiError {
     NotFound,
     Conflict(String),
     InsufficientFunds,
+    /// The acting API key's spend limit is exhausted: settled charges plus outstanding
+    /// holds attributed to the key would exceed it. A quota refusal, not a balance one.
+    KeyLimitExceeded { limit_minor: i64, committed_minor: i64 },
     /// A feature the deployment did not configure: the wallet works, this surface does not.
     ServiceUnavailable(String),
     Internal,
@@ -32,6 +35,13 @@ impl From<WalletError> for ApiError {
             WalletError::Conflict(m) => Self::Conflict(m),
             WalletError::HoldNotFound(_) => Self::NotFound,
             WalletError::InsufficientFunds => Self::InsufficientFunds,
+            WalletError::KeyLimitExceeded {
+                limit_minor,
+                committed_minor,
+            } => Self::KeyLimitExceeded {
+                limit_minor,
+                committed_minor,
+            },
             // A deployment that cannot open its own channel credentials is broken rather than asked
             // something wrong: the operator gets the detail in the log, the caller gets a 500.
             WalletError::Misconfigured(detail) => {
@@ -72,6 +82,16 @@ impl IntoResponse for ApiError {
                 StatusCode::PAYMENT_REQUIRED,
                 "INSUFFICIENT_FUNDS",
                 "insufficient funds".into(),
+            ),
+            Self::KeyLimitExceeded {
+                limit_minor,
+                committed_minor,
+            } => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "KEY_LIMIT_EXCEEDED",
+                format!(
+                    "this API key has committed {committed_minor} of its {limit_minor} minor-unit spend limit"
+                ),
             ),
             Self::ServiceUnavailable(m) => {
                 (StatusCode::SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE", m)

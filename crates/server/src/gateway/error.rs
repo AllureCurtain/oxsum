@@ -23,6 +23,9 @@ pub enum GatewayError {
     },
     /// The wallet cannot cover the freeze, or refused the release.
     InsufficientFunds(String),
+    /// The acting API key's spend limit is exhausted: settled charges plus outstanding
+    /// holds attributed to the key would exceed it. A quota refusal, not a balance one.
+    KeyLimitExceeded(String),
     /// No usable credential.
     Unauthorized,
     /// The credential is not allowed to do this. Unreachable until roles arrive; mapped rather
@@ -94,6 +97,15 @@ impl From<WalletError> for GatewayError {
             WalletError::InsufficientFunds => {
                 Self::InsufficientFunds("the wallet cannot cover this request".to_owned())
             }
+            // The numbers are the key's own, so they are safe to show — and naming the
+            // limit is what lets the caller act on it, like the freeze refusal does.
+            WalletError::KeyLimitExceeded {
+                limit_minor,
+                committed_minor,
+            } => Self::KeyLimitExceeded(format!(
+                "this API key has committed {committed_minor} of its {limit_minor} \
+                 minor-unit spend limit"
+            )),
             // The gateway settles the hold it took itself in this turn; a hold it cannot find
             // is an internal inconsistency, not a caller error.
             WalletError::HoldNotFound(key) => {
@@ -129,6 +141,13 @@ impl IntoResponse for GatewayError {
                 &message,
                 "insufficient_quota",
                 "INSUFFICIENT_FUNDS",
+                None,
+            ),
+            Self::KeyLimitExceeded(message) => error_response(
+                StatusCode::TOO_MANY_REQUESTS,
+                &message,
+                "insufficient_quota",
+                "KEY_LIMIT_EXCEEDED",
                 None,
             ),
             Self::Unauthorized => error_response(
