@@ -1,8 +1,12 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.1.0
-  description: Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
+  version: 0.2.0
+  description: |
+    Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
+
+    0.2.0 changes the auth model: an API key belongs to exactly one organization and decides whose
+    balance a request spends, so the ledger endpoints no longer name a tenant in the path.
 servers:
   - url: http://localhost:3000
 security:
@@ -18,10 +22,109 @@ paths:
           content:
             text/plain:
               schema: { type: string, example: ok }
-  /api/v1/tenants/{tenant}/topups:
+  /api/v1/auth/register:
+    post:
+      summary: Register a user, its personal organization and the first API key
+      description: |
+        Refused with `FORBIDDEN` unless the deployment allows self-service signup (`OXSUM_SIGNUP=open`).
+        The API key secret is returned once, here, and is never retrievable again.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegisterRequest" }
+      responses:
+        "200":
+          description: The new user and organization, plus the one API key secret
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/Registration" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org:
+    get:
+      summary: The authenticated organization
+      description: The organization the presented API key belongs to.
+      responses:
+        "200":
+          description: The organization
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/Organization" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/keys:
+    get:
+      summary: List the organization's API keys
+      description: Metadata only. Neither a secret nor a hash is ever returned.
+      responses:
+        "200":
+          description: The organization's keys, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/ApiKey" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Create an API key
+      description: Returns the secret once. Any active key of the organization may create keys until role checks arrive with sessions; see docs/api.md.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateKeyRequest" }
+      responses:
+        "200":
+          description: The new key and its secret, shown only here
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/CreatedApiKey" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/keys/{keyId}:
+    delete:
+      summary: Revoke an API key
+      description: Permanent and idempotent. A key id belonging to another organization is `NOT_FOUND`.
+      parameters: [{ $ref: "#/components/parameters/KeyId" }]
+      responses:
+        "200":
+          description: The revoked key
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ApiKey" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/topups:
     post:
       summary: Top up credits
-      parameters: [{ $ref: "#/components/parameters/Tenant" }]
       requestBody:
         required: true
         content:
@@ -32,10 +135,9 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
-  /api/v1/tenants/{tenant}/holds:
+  /api/v1/holds:
     post:
       summary: Hold credits (before a streaming call starts)
-      parameters: [{ $ref: "#/components/parameters/Tenant" }]
       requestBody:
         required: true
         content:
@@ -47,10 +149,9 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "402": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
-  /api/v1/tenants/{tenant}/settlements:
+  /api/v1/settlements:
     post:
       summary: "Settle a hold: release it and charge the actual usage"
-      parameters: [{ $ref: "#/components/parameters/Tenant" }]
       requestBody:
         required: true
         content:
@@ -61,10 +162,9 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
-  /api/v1/tenants/{tenant}/balance:
+  /api/v1/balance:
     get:
       summary: Available balance (settled minus unsettled holds)
-      parameters: [{ $ref: "#/components/parameters/Tenant" }]
       responses:
         "200":
           description: The balance
@@ -79,14 +179,12 @@ paths:
                     required: [availableMinor]
                     properties:
                       availableMinor: { type: integer, format: int64 }
-        "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
-  /api/v1/tenants/{tenant}/entries/{entryId}/proof:
+  /api/v1/entries/{entryId}/proof:
     get:
       summary: "Bill proof bundle: entry source + inclusion proof + tree head"
       parameters:
-        - { $ref: "#/components/parameters/Tenant" }
         - name: entryId
           in: path
           required: true
@@ -117,14 +215,68 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
 components:
   securitySchemes:
-    bearer: { type: http, scheme: bearer }
+    bearer:
+      type: http
+      scheme: bearer
+      description: "An oxsum API key: `oxs-` followed by 32 random bytes, shown once at creation."
   parameters:
-    Tenant:
-      name: tenant
+    KeyId:
+      name: keyId
       in: path
       required: true
-      schema: { type: string, pattern: "^[a-z0-9_]{1,40}$" }
+      schema: { type: string, format: uuid }
   schemas:
+    RegisterRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email, maxLength: 320 }
+        password: { type: string, minLength: 12, maxLength: 256, description: at least 12 characters }
+        organizationName: { type: string, minLength: 1, maxLength: 80, description: name of the personal organization; defaults to the local part of the email }
+    Registration:
+      type: object
+      required: [user, organization, apiKey]
+      properties:
+        user: { $ref: "#/components/schemas/User" }
+        organization: { $ref: "#/components/schemas/Organization" }
+        apiKey: { $ref: "#/components/schemas/CreatedApiKey" }
+    User:
+      type: object
+      required: [id, email]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string }
+    Organization:
+      type: object
+      required: [id, name, tenantId, kind, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        tenantId: { type: string, description: "ledger tenant id; the ledger lives in the schema ledger_<tenantId>" }
+        kind: { type: string, enum: [personal, team] }
+        createdAt: { type: string, format: date-time }
+    CreateKeyRequest:
+      type: object
+      properties:
+        name: { type: string, minLength: 1, maxLength: 80 }
+        expiresAt: { type: [string, "null"], format: date-time, description: optional expiry; an expired key authenticates nothing }
+    ApiKey:
+      type: object
+      required: [id, name, prefix, createdAt, expiresAt, revokedAt]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: [string, "null"] }
+        prefix: { type: string, description: "leading characters of the secret, for recognizing the key in a list" }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: [string, "null"], format: date-time }
+        revokedAt: { type: [string, "null"], format: date-time }
+    CreatedApiKey:
+      allOf:
+        - $ref: "#/components/schemas/ApiKey"
+        - type: object
+          required: [secret]
+          properties:
+            secret: { type: string, description: "the plaintext key; shown once and stored only as a SHA-256 hash" }
     AmountRequest:
       type: object
       required: [idempotencyKey, amountMinor]
@@ -156,7 +308,7 @@ components:
           properties:
             code:
               type: string
-              enum: [VALIDATION_ERROR, UNAUTHORIZED, INSUFFICIENT_FUNDS, NOT_FOUND, INTERNAL_ERROR]
+              enum: [VALIDATION_ERROR, UNAUTHORIZED, FORBIDDEN, INSUFFICIENT_FUNDS, NOT_FOUND, CONFLICT, INTERNAL_ERROR]
             message: { type: string }
             details: { type: array, items: {} }
   responses:
