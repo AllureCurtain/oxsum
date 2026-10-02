@@ -257,7 +257,32 @@ impl Wallet {
             // Keys are never deleted; a missing row means the credential died mid-request.
             return Err(WalletError::Unauthenticated);
         };
-        if let Some(limit) = limit {
+        let entry = self.seal(
+            Entry::<Draft, SCALE>::new(entry_id_for(idem_key), idem(idem_key)?, on)
+                .with_description(description_of(description)?)
+                .with_provenance(actor)
+                .post(Posting::debit(self.wallet, amt, currency()).in_layer(Layer::Pending))
+                .post(Posting::credit(self.revenue, amt, currency()).in_layer(Layer::Pending)),
+        )?;
+        // An identical retry replays instead of spending again: the limit guards new spend,
+        // so a replay answers before the check. A different request under a reused key falls
+        // through to the engine's idempotency gate, which names the conflict — also past the
+        // check, because that write never lands either.
+        let existing = self.store.get(entry.id()).await?;
+        if let Some(stored) = &existing
+            && stored.content_hash == entry.content_hash()
+        {
+            tx.rollback().await?;
+            return Ok(Receipt {
+                entry_id: stored.entry.id(),
+                log_index: stored.require_index().map(|index| index.get()).ok(),
+                content_hash: stored.content_hash,
+                is_new: false,
+            });
+        }
+        if existing.is_none()
+            && let Some(limit) = limit
+        {
             let committed = self.key_committed_in(&mut tx, &key.key_id).await?;
             if committed + minor > limit {
                 return Err(WalletError::KeyLimitExceeded {
@@ -266,15 +291,7 @@ impl Wallet {
                 });
             }
         }
-        let receipt = self
-            .append(
-                Entry::<Draft, SCALE>::new(entry_id_for(idem_key), idem(idem_key)?, on)
-                    .with_description(description_of(description)?)
-                    .with_provenance(actor)
-                    .post(Posting::debit(self.wallet, amt, currency()).in_layer(Layer::Pending))
-                    .post(Posting::credit(self.revenue, amt, currency()).in_layer(Layer::Pending)),
-            )
-            .await?;
+        let receipt = self.append_sealed(entry).await?;
         tx.commit().await?;
         Ok(receipt)
     }
@@ -596,6 +613,10 @@ impl Wallet {
 
     async fn append(&self, draft: Entry<Draft, SCALE>) -> Result<Receipt, WalletError> {
         let entry = self.seal(draft)?;
+        self.append_sealed(entry).await
+    }
+
+    async fn append_sealed(&self, entry: Entry<Balanced, SCALE>) -> Result<Receipt, WalletError> {
         let recorded = self.store.append(&EntryBatch::single(entry)).await?;
         let r = recorded
             .into_iter()
@@ -703,7 +724,9 @@ fn limit_lock_key(tenant_id: &str, key_id: &Uuid) -> i64 {
     hasher.update(b"\0");
     hasher.update(key_id.as_bytes());
     let digest = hasher.finalize();
-    i64::from_le_bytes(digest[..8].try_into().expect("SHA-256 is 32 bytes"))
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&digest[..8]);
+    i64::from_le_bytes(bytes)
 }
 
 #[cfg(test)]

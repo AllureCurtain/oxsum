@@ -167,7 +167,7 @@ impl Db {
             }
             KeyScope::Organization | KeyScope::All => {
                 sqlx::query(
-                    "UPDATE oxsum.api_keys SET spend_limit_minor = $4 \
+                    "UPDATE oxsum.api_keys SET spend_limit_minor = $3 \
                  WHERE organization_id = $1 AND key_id = $2 \
                  RETURNING key_id, name, prefix, created_by, created_at, expires_at, \
                            revoked_at, spend_limit_minor",

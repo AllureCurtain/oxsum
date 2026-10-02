@@ -367,3 +367,55 @@ async fn negative_limit_is_refused() {
         "wrong error: {err:?}"
     );
 }
+
+/// An identical retry replays rather than spending again: the limit guards new spend, so a
+/// retry that lands after the limit filled up answers with the original receipt, not 429.
+#[tokio::test]
+async fn identical_retry_replays_past_a_full_limit() {
+    let url = db_or_skip!();
+    let db = db(&url, 5).await;
+    let world = world(&db, "replay").await;
+    db.update_key_limit(
+        world.organization_id,
+        world.key.key_id,
+        KeyScope::Organization,
+        Some(10 * ONE),
+    )
+    .await
+    .unwrap();
+
+    let first = world
+        .wallet
+        .hold_for_key(&world.key, "h1", "", 6 * ONE, D)
+        .await
+        .unwrap();
+    assert!(first.is_new);
+    // Fill the limit with a second hold.
+    world
+        .wallet
+        .hold_for_key(&world.key, "h2", "", 4 * ONE, D)
+        .await
+        .unwrap();
+    // The identical retry of the first hold replays: same entry, nothing new written.
+    let replay = world
+        .wallet
+        .hold_for_key(&world.key, "h1", "", 6 * ONE, D)
+        .await
+        .unwrap();
+    assert!(!replay.is_new);
+    assert_eq!(replay.entry_id, first.entry_id);
+    assert_eq!(
+        world.wallet.key_committed(&world.key.key_id).await.unwrap(),
+        10 * ONE
+    );
+    // A conflicting reuse of the key is still the engine's conflict, not a limit refusal.
+    let err = world
+        .wallet
+        .hold_for_key(&world.key, "h1", "a different description", 6 * ONE, D)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, WalletError::Conflict(_)),
+        "wrong error: {err:?}"
+    );
+}
