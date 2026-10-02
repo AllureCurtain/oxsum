@@ -8,16 +8,25 @@ What makes it different from existing gateways: each balance check and freeze is
 
 ```bash
 git clone https://github.com/AllureCurtain/oxsum.git && cd oxsum
-cp .env.example .env            # adjust OXSUM_API_TOKEN as needed
+cp .env.example .env            # OXSUM_SIGNUP=open if you want to register through the API
 docker compose up -d            # local PostgreSQL
 cargo run -p oxsum-server
 ```
 
-Then visit <http://localhost:3000/healthz>. The API reference is in [docs/api.md](docs/api.md).
+Then visit <http://localhost:3000/healthz>. The database schema is created at startup. To try the API, set `OXSUM_SIGNUP=open` and register:
+
+```bash
+curl -X POST localhost:3000/api/v1/auth/register \
+  -H 'content-type: application/json' \
+  -d '{"email":"you@example.com","password":"correct horse battery"}'
+# the response's data.apiKey.secret is your Bearer credential, shown once
+```
+
+The API reference is in [docs/api.md](docs/api.md).
 
 ## Status
 
-Under active development. The multi-tenant wallet core (top-up, hold/settle, inclusion proofs, tamper detection) is tested and working. The OpenAI-compatible gateway and the web dashboard are next; see docs for the plan.
+Under active development. The multi-tenant wallet core (top-up, hold/settle, inclusion proofs, tamper detection) and organization-scoped API key authentication are tested and working. The OpenAI-compatible gateway and the web dashboard are next; see docs for the plan.
 
 ## Documentation
 

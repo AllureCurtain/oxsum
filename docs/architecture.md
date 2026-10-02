@@ -8,15 +8,15 @@ Browser ──→ Leptos pages (admin dashboard, bill page, chat page) ──┐
 OpenAI client ──→ Gateway /v1/chat/completions ────────────────────┤  one process, one binary
 API callers ──→ axum /api/v1 ──────────────────────────────────────┤
                                                                    ▼
-                     oxsum-core (Wallet / Tenants)    ──→ upstream LLM (gateway relay)
+                     oxsum-core (Wallet / Tenants / Db)  ──→ upstream LLM (gateway relay)
                                                                    ▼
                      doubleentry (bookkeeping, Merkle log)
                                                                    ▼
-                     PostgreSQL: one ledger schema per organization, plus oxsum's own
-                     user, organization, key and session tables
+                     PostgreSQL: one ledger schema per organization, plus one `oxsum` schema
+                     holding users, organizations, memberships and API keys
 ```
 
-Only the axum API plus the core and doubleentry line exists today. The gateway, the Leptos pages and the user/organization tables are not built yet; the order is in TODO.md.
+The axum API, the core and doubleentry exist today, with oxsum's own identity tables in one `oxsum` schema. The gateway and the Leptos pages are not built yet; the order is in TODO.md.
 
 ## Modules
 
@@ -24,9 +24,11 @@ Only the axum API plus the core and doubleentry line exists today. The gateway, 
 | --- | --- | --- |
 | doubleentry | `crates/doubleentry` | Double-entry bookkeeping, balance limits, pending layer, Merkle inclusion and consistency proofs, period closing. Vendored, see docs/decisions.md |
 | Wallet | `crates/core/src/wallet.rs` | One tenant's wallet: top-up, hold, settle, balance, proof bundles. Built on the shared pool, never on a pool of its own |
-| Tenants | `crates/core/src/tenants.rs` | The process's one pool plus a cached ledger facade per tenant: a tenant costs a facade, not connections. See docs/decisions.md "all tenants share one connection pool" |
+| Tenants | `crates/core/src/tenants.rs` | Facades over the shared pool, cached per tenant: a tenant costs a facade, not connections. See docs/decisions.md "all tenants share one connection pool" |
+| Db | `crates/core/src/db.rs` | The process's one pool, plus oxsum's own tables: `migrate` creates the `oxsum` schema and applies `crates/core/migrations/` in order, each file and its recorded version in one transaction |
+| Identity | `crates/core/src/users.rs`, `orgs.rs`, `keys.rs` | Registration (user, personal organization, owner membership and first API key, one transaction), organizations and memberships, and API keys: mint, resolve, list, revoke. The credential names the organization |
 | proof | `crates/core/src/proof.rs` | Proof bundle structure and the client-side verify function, later called directly inside a Leptos component |
-| HTTP | `crates/server/src/` | Routing, Bearer auth, error mapping |
+| HTTP | `crates/server/src/` | Routing, API-key middleware, error mapping |
 | Gateway | `crates/gateway` (not yet created) | OpenAI-compatible proxy: relays upstream, freezes before the request, settles on usage. reqwest streaming passthrough, tiktoken-rs for fallback estimation, see docs/decisions.md |
 | Pages | `crates/web` (not yet created) | Leptos admin dashboard, bill page, chat page. SSR plus hydration, mounted through the official `leptos_axum`, one binary |
 
@@ -37,16 +39,17 @@ What exists today (`crates/doubleentry`, `crates/core`, `crates/server`) stays a
 ```
 crates/
   doubleentry/          Vendored ledger engine (only changed per the rules in docs/decisions.md)
-  core/                 Domain layer: wallet, tenants, proof, plus A-2's users, orgs, keys, sessions
+  core/                 Domain layer: wallet, tenants, proof, identity (users, orgs, keys)
     src/
       wallet.rs         exists
       tenants.rs        exists, shared-pool facade over many ledger facades
       proof.rs          exists
-      users.rs          A-2: registration, login checks, argon2 hashing
-      orgs.rs           A-2: organizations, memberships, roles, invitations
-      keys.rs           A-2: API key create, revoke, hash verification
-      sessions.rs       A-2: session table reads, writes and renewal
-    migrations/         A-2: oxsum's own tables (users/orgs/memberships/keys/sessions)
+      db.rs             exists: the one pool plus oxsum's own migration runner
+      users.rs          exists: registration, password hashing; login arrives with B-6
+      orgs.rs           exists: organizations, memberships, roles; invitations come later
+      keys.rs           exists: API key mint, resolve, list, revoke
+      sessions.rs       B-6: session table reads, writes and renewal
+    migrations/         exists: oxsum's own tables (users/orgs/memberships/keys)
                         Create-table SQL only, applied by oxsum's own migration runner;
                         ledger schemas stay owned by doubleentry's migrate, never mixed
   gateway/              B-4: /v1/chat/completions relay, hold/settle orchestration,
@@ -67,13 +70,13 @@ Principle: **domain logic belongs in core; gateway does protocol and orchestrati
 
 ## Auth and permissions
 
-- API: a single shared Bearer token (`OXSUM_API_TOKEN`) checked by middleware with a constant-time comparison. Planned to be replaced by organization-owned API keys.
+- API: an organization's API key in `Authorization: Bearer oxs-…`, resolved to its organization by middleware; handlers read the organization from the request, never from the path. The key's plaintext is stored nowhere: the database keeps its SHA-256 hash and a display prefix.
 - Web login: self-built session table (token hash, user id, expiry), cookie with HttpOnly, SameSite=Lax, Secure; password hashing with password-auth (argon2). Rationale in docs/decisions.md.
-- Between tenants: physical isolation, one schema per tenant, no filter columns in queries. The connection layer shares one pool; `SET LOCAL search_path` at the start of each transaction picks the tenant schema (mechanism in docs/decisions.md).
+- Between tenants: physical isolation, one schema per tenant, no filter columns in queries. The connection layer shares one pool; `SET LOCAL search_path` at the start of each transaction picks the tenant schema (mechanism in docs/decisions.md). oxsum's own tables are not in those schemas: they are schema-qualified (`oxsum.users`) in the one `oxsum` schema, so nothing about a request's organization can change which identity rows a statement sees.
 - Planned:
-  - A tenant is an organization. Signup comes with a personal organization; team organizations and multi-org membership follow.
-  - API keys belong to organizations and replace the shared token.
+  - Team organizations and multi-org membership: the schema holds many memberships per user already, the flow that creates one is B-6's.
   - Web login and API keys are two channels resolving to the same "current organization".
+  - Per-key sub-limits and last-used timestamps, see TODO.md.
   - See docs/decisions.md and TODO.md.
 
 ## Core data flows
@@ -98,10 +101,12 @@ Principle: **domain logic belongs in core; gateway does protocol and orchestrati
 
 ## Core entities
 
-Only relationships; table structure is authoritative in `crates/doubleentry/schema/postgres.sql`.
+Only relationships; the ledger's table structure is authoritative in `crates/doubleentry/schema/postgres.sql`, oxsum's own in `crates/core/migrations/`.
 
-- Tenant 1-to-1 ledger, 1 ledger = 1 schema `ledger_<tenant>`.
-- Planned (not built): users many-to-many organizations (via memberships, with roles), organization 1-to-1 tenant, organization 1-to-many API keys; user 1-to-many sessions (web login).
+- Organization 1-to-1 ledger, 1 ledger = 1 schema `ledger_<tenant_id>`, and an organization's tenant id is its own UUID without dashes.
+- User many-to-many organizations, via memberships carrying a role (owner, admin, member). Registration creates one of each.
+- Organization 1-to-many API keys; a key holds no balance itself, it is a credential resolving to its organization.
+- Planned (not built): user 1-to-many sessions (web login), organization 1-to-many invitations.
 - Every ledger has three fixed accounts:
   - `Liabilities:Wallet`: user balance, overdraft forbidden
   - `Assets:Cash`: money received from top-ups

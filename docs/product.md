@@ -36,14 +36,19 @@ The platform admin is not an organization role but a deployment-level identity; 
 
 - Login is email plus password; passwords are stored with argon2. v1 sends no email, so there is no email verification and no password recovery; the platform admin resets forgotten passwords.
 - Platform admins are created only from the server command line: `oxsum admin create --email ...`. Not "the first registrant becomes admin" — on a public instance, whoever registers first would own it.
-- Registration mode is deployment-configured:
+- Registration mode is deployment-configured (`OXSUM_SIGNUP`):
   - `invite` (default): registration only through invitation links
   - `open`: anyone can register
+  - Until invitation links exist, `invite` refuses self-registration outright (`403 FORBIDDEN`) and the operator creates accounts; the mode is not a half-built flow, it is the switch the flow will hang off.
+- Registration takes a password of at least 12 characters. Length is the only rule: with no email recovery, composition classes and expiry would cost users more than they buy.
+- Passwords are hashed before the database transaction opens, so a slow argon2 hash never holds a connection.
 - GitHub login is post-v1. It suits a GitHub-hosted piece, but deployers would have to configure an OAuth app; v1 gets email login solid first.
 
 ### Organizations
 
-- Signup creates the user, the personal organization and the owner membership in one transaction.
+- Signup creates the user, the personal organization, the owner membership and the first API key in one transaction, and returns that key's secret once.
+- The organization's ledger is not created at signup: it is created on first use, so an account that never spends costs nothing and a failed ledger migration cannot leave a half-registered user (docs/decisions.md).
+- The tenant id of an organization is its own UUID without dashes, so a ledger schema is `ledger_<32 hex characters>` and nothing has to be chosen, probed or made unique.
 - Personal organizations can invite members too. When the first person joins, the organization flips from `personal` to `team` automatically; the ledger does not migrate.
 - Users can create team organizations and join several. The current organization switches from the top-right corner.
 - Invitations: one link, valid 7 days, usable once. v1 sends no email; the inviter passes the link along themselves.
@@ -65,7 +70,7 @@ v1 has no payment integration; credit has exactly three sources, each recording 
 
 ## API keys
 
-- Keys belong to organizations and hold no money themselves. The creator is recorded for permissions and audit.
+- Keys belong to organizations and hold no money themselves. The creator is recorded for permissions and audit; a key minted through the API records no creator, because no person is acting there yet. Until roles are enforced, any active key of an organization may read it and mint or revoke its keys; role checks arrive with web login.
 - The plaintext shows once at creation. The database stores only the SHA-256 hash and a prefix; the dashboard uses the prefix to help users recognize keys.
 - Format: `oxs-` followed by 32 random bytes, so secret-scanning tools can recognize them.
 - Optional name and expiry. Revocation is permanent.
