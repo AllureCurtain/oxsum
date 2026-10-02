@@ -441,7 +441,7 @@ async fn migrating_twice_and_concurrently_is_safe() {
         task.await.unwrap().expect("concurrent migrations");
     }
 
-    // The four tables, once each, in oxsum's own schema — never in public.
+    // The tables, once each, in oxsum's own schema — never in public.
     let tables: Vec<String> = sqlx::query_scalar(
         "SELECT table_name::text FROM information_schema.tables \
          WHERE table_schema = 'oxsum' ORDER BY table_name",
@@ -454,6 +454,8 @@ async fn migrating_twice_and_concurrently_is_safe() {
         vec![
             "_migrations".to_owned(),
             "api_keys".to_owned(),
+            "channel_prices".to_owned(),
+            "channels".to_owned(),
             "memberships".to_owned(),
             "organizations".to_owned(),
             "users".to_owned(),
