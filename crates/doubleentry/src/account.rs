@@ -350,6 +350,32 @@ pub enum BalanceLimit {
     /// The rule for a liability that cannot be drawn beyond what was funded — a
     /// customer wallet, a prepayment, a reserve.
     NoDebitBalance,
+    /// An account drawn on through reservations: debits may never exceed credits,
+    /// **and** the pending layer may never carry a credit balance of its own.
+    ///
+    /// The rule for a liability whose outflows are reserved before they are charged
+    /// — a customer wallet, a deposit, an escrow — and it is
+    /// [`NoDebitBalance`](Self::NoDebitBalance) **plus** one more constraint.
+    ///
+    /// `NoDebitBalance` alone stops the account being drawn beyond what it holds,
+    /// and the fold in [`headroom_minor`](Self::headroom_minor) makes an outstanding
+    /// reservation consume room. What it cannot see is the *direction* of a pending
+    /// movement: a release credits the pending layer, and a pending credit grants no
+    /// room but costs none either, so releasing a reservation that was never made
+    /// raises what the account may draw on by exactly that much — an available
+    /// balance conjured out of a credit entry. This variant closes that: the pending
+    /// layer must stay on the debit side, so a release can only give back room that
+    /// a reservation first took.
+    ///
+    /// One variant rather than two limits, because an account carries one limit. The
+    /// headroom it reports is the tighter of the two rules, since they constrain
+    /// opposite directions: a reservation is bounded by the funds on hand, a release
+    /// by the reservations outstanding.
+    ///
+    /// **oxsum change (not upstream):** added for `Liabilities:Wallet`, where
+    /// `NoDebitBalance` let a settlement of an amount that was never held fabricate
+    /// available balance (oxsum issue #6).
+    FundedReservations,
 }
 
 impl BalanceLimit {
@@ -398,6 +424,18 @@ impl BalanceLimit {
             // Mirrored: the net must stay on the credit side, and a pending
             // *debit* net is the adverse one.
             Self::NoDebitBalance => Some(-(s + q.max(0))),
+            // Two rules, reported as the tighter of the two because they constrain
+            // opposite directions: the account may not be drawn past its funding
+            // (the `NoDebitBalance` fold), and the pending layer may not be a credit
+            // of its own (`q >= 0`). Permitted exactly when neither is negative, so
+            // the minimum answers both and the sign is the whole load-bearing part.
+            //
+            // oxsum change (not upstream): see the variant. Releasing a reservation
+            // that was never made is the pending credit this refuses.
+            Self::FundedReservations => {
+                let funded = -(s + q.max(0));
+                Some(funded.min(q))
+            }
         }
     }
 
@@ -422,6 +460,9 @@ impl BalanceLimit {
             Self::Unlimited => 0,
             Self::NoCreditBalance => 1,
             Self::NoDebitBalance => 2,
+            // A new value, so every encoding written before this variant existed
+            // still hashes to what it hashed to.
+            Self::FundedReservations => 3,
         }
     }
 }
@@ -432,6 +473,7 @@ impl std::fmt::Display for BalanceLimit {
             Self::Unlimited => "unlimited",
             Self::NoCreditBalance => "no credit balance",
             Self::NoDebitBalance => "no debit balance",
+            Self::FundedReservations => "funded reservations",
         })
     }
 }
@@ -1488,6 +1530,7 @@ mod tests {
             BalanceLimit::Unlimited,
             BalanceLimit::NoCreditBalance,
             BalanceLimit::NoDebitBalance,
+            BalanceLimit::FundedReservations,
         ] {
             assert!(
                 limit.permits(&heavy, &Balance::ZERO),
@@ -1499,6 +1542,7 @@ mod tests {
         assert!(BalanceLimit::Unlimited.permits(&overdrawn, &Balance::ZERO));
         assert!(!BalanceLimit::NoCreditBalance.permits(&overdrawn, &Balance::ZERO));
         assert!(BalanceLimit::NoDebitBalance.permits(&overdrawn, &Balance::ZERO));
+        assert!(BalanceLimit::FundedReservations.permits(&overdrawn, &Balance::ZERO));
     }
 
     #[test]
@@ -1546,6 +1590,48 @@ mod tests {
     }
 
     #[test]
+    fn a_release_cannot_invent_a_reservation() {
+        // A wallet funded with 100, drawn on through reservations.
+        let limit = BalanceLimit::FundedReservations;
+        let funded = bal(0, 100);
+        assert_eq!(limit.headroom_minor(&funded, &Balance::ZERO), Some(0));
+
+        // It behaves like `NoDebitBalance` where the two rules agree: a reservation
+        // within the funds is permitted, one past them is not.
+        assert!(limit.permits(&funded, &bal(30, 0)));
+        assert!(!limit.permits(&funded, &bal(110, 0)));
+
+        // And it refuses what `NoDebitBalance` happily accepted: a release with
+        // nothing reserved. The settled layer is untouched, so under the older rule
+        // the account was 100 further from its limit for free — the extra 10 was
+        // available balance made out of a credit entry, which is what oxsum's
+        // settlement did with an amount that was never held.
+        let unheld = bal(0, 10);
+        assert_eq!(
+            BalanceLimit::NoDebitBalance.headroom_minor(&funded, &unheld),
+            Some(100)
+        );
+        assert!(BalanceLimit::NoDebitBalance.permits(&funded, &unheld));
+        assert_eq!(limit.headroom_minor(&funded, &unheld), Some(-10));
+        assert!(!limit.permits(&funded, &unheld));
+
+        // Releasing exactly what is outstanding is the legitimate case, and it is
+        // still permitted: the room the reservation took comes back.
+        assert!(limit.permits(&funded, &bal(30, 30)));
+        assert_eq!(limit.headroom_minor(&funded, &bal(30, 30)), Some(0));
+
+        // Releasing one minor unit more than was reserved is not, however much the
+        // settled layer holds.
+        assert!(!limit.permits(&funded, &bal(30, 31)));
+        assert_eq!(limit.headroom_minor(&funded, &bal(30, 31)), Some(-1));
+        assert!(!limit.permits(&bal(0, 1_000_000), &bal(30, 31)));
+
+        // The tighter rule is the one reported, in both directions.
+        assert_eq!(limit.headroom_minor(&funded, &bal(70, 0)), Some(30));
+        assert_eq!(limit.headroom_minor(&bal(0, 100), &bal(0, 1)), Some(-1));
+    }
+
+    #[test]
     fn headroom_is_total_at_the_extremes() {
         // Every path is `i128` arithmetic over two `i64`s, so no balance exists
         // that this cannot answer for — including ones that would overflow if
@@ -1555,6 +1641,7 @@ mod tests {
             BalanceLimit::Unlimited,
             BalanceLimit::NoCreditBalance,
             BalanceLimit::NoDebitBalance,
+            BalanceLimit::FundedReservations,
         ] {
             let _ = limit.headroom_minor(&extreme, &extreme);
             let _ = limit.permits(&extreme, &extreme);

@@ -51,17 +51,19 @@ CREATE TABLE IF NOT EXISTS accounts (
     kind            TEXT,
     opened_on       DATE        NOT NULL,
     closed_on       DATE,
-    -- 'unlimited' | 'no_credit' | 'no_debit'. A rule about what may be booked
-    -- next, like the open window: 'no_credit' forbids the net going credit (an
-    -- asset that cannot be overdrawn), 'no_debit' forbids it going debit (a
-    -- liability that cannot be drawn beyond what was funded). Enforced inside
-    -- the append, because the check is against the balance the entry would
-    -- leave behind.
+    -- 'unlimited' | 'no_credit' | 'no_debit' | 'funded_reservations'. A rule about
+    -- what may be booked next, like the open window: 'no_credit' forbids the net
+    -- going credit (an asset that cannot be overdrawn), 'no_debit' forbids it going
+    -- debit (a liability that cannot be drawn beyond what was funded), and
+    -- 'funded_reservations' is 'no_debit' plus "the pending layer may not be a
+    -- credit of its own", which is what stops a release of a reservation that was
+    -- never made. Enforced inside the append, because the check is against the
+    -- balance the entry would leave behind.
     balance_limit   TEXT        NOT NULL DEFAULT 'unlimited',
 
     CONSTRAINT accounts_window CHECK (closed_on IS NULL OR closed_on >= opened_on),
     CONSTRAINT accounts_balance_limit CHECK (
-        balance_limit IN ('unlimited', 'no_credit', 'no_debit')
+        balance_limit IN ('unlimited', 'no_credit', 'no_debit', 'funded_reservations')
     ),
     CONSTRAINT accounts_kind CHECK (
         kind IS NULL
@@ -70,6 +72,30 @@ CREATE TABLE IF NOT EXISTS accounts (
     PRIMARY KEY (account_index),
     UNIQUE (path)
 );
+
+-- oxsum change (not upstream): `CREATE TABLE IF NOT EXISTS` above leaves the
+-- constraint of an accounts table that already exists exactly as it was, so a
+-- ledger created before 'funded_reservations' existed keeps a constraint that
+-- rejects it — and the next open of that ledger fails on the wallet's limit.
+--
+-- PostgreSQL has no `ADD CONSTRAINT IF NOT EXISTS`, and this file is re-applied
+-- on every migrate, so the widening is guarded: it takes the table lock only
+-- while the constraint is actually old. A fresh database creates the constraint
+-- with the new code in it and never enters the branch.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'accounts'::regclass
+          AND conname = 'accounts_balance_limit'
+          AND pg_get_constraintdef(oid) LIKE '%funded_reservations%'
+    ) THEN
+        ALTER TABLE accounts DROP CONSTRAINT IF EXISTS accounts_balance_limit;
+        ALTER TABLE accounts ADD CONSTRAINT accounts_balance_limit CHECK (
+            balance_limit IN ('unlimited', 'no_credit', 'no_debit', 'funded_reservations')
+        );
+    END IF;
+END $$;
 
 -- ── periods ─────────────────────────────────────────────────────────────────
 
