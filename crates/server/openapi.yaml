@@ -1,21 +1,24 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.3.0
+  version: 0.4.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
-    Two surfaces, deliberately different:
+    Three surfaces, deliberately different:
 
     - `/api/v1/*` is oxsum's own API: enveloped responses (`{"data": …}`), oxsum error codes, camelCase.
     - `/v1/*` is the OpenAI-compatible gateway: OpenAI's request and response shapes, OpenAI's error
       object, and everything the gateway does not understand is passed upstream unchanged, so an OpenAI
       SDK works by changing `base_url` only. A gateway request freezes credit before upstream is
       contacted and settles against the usage upstream reports.
+    - `/api/v1/admin/*` is the platform admin's surface: whoever deploys oxsum manages channels and
+      their prices with an operator token, not with an organization's API key.
 
     0.2.0 changed the auth model: an API key belongs to exactly one organization and decides whose
-    balance a request spends, so the ledger endpoints no longer name a tenant in the path. 0.3.0 adds
-    the gateway surface.
+    balance a request spends, so the ledger endpoints no longer name a tenant in the path. 0.3.0 added
+    the gateway surface. 0.4.0 added channel and price configuration: prices are append-only versions,
+    and a request is priced by the version in force when it starts.
 servers:
   - url: http://localhost:3000
 security:
@@ -232,12 +235,123 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/channels:
+    get:
+      summary: List the channels, with the current price version of each of their models
+      description: |
+        The platform admin's view. Only the last four characters of an upstream credential are ever
+        returned; the credential itself is sealed at rest and never leaves the server.
+
+        This is what is *in force*: `GET /api/v1/admin/channels/{channelName}/prices` is the history.
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: Every channel, oldest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/Channel" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Create a channel, or replace the connection of one that exists
+      description: |
+        The name is the identity: posting an existing name moves that channel to a new upstream address
+        or credential and leaves its prices exactly as they are. A credential is sealed with
+        `OXSUM_SECRET_KEY` before it is stored.
+
+        A deployment with no channels yet is seeded from the environment at startup instead
+        (`OXSUM_UPSTREAM_BASE_URL`, `OXSUM_UPSTREAM_API_KEY`, `OXSUM_MODELS`); this endpoint is for
+        everything after that.
+      security:
+        - adminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelRequest" }
+      responses:
+        "200":
+          description: The channel as it now stands
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/Channel" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/channels/{channelName}/prices:
+    get:
+      summary: Every price version of a channel, newest first
+      description: |
+        The history rather than the current state: a price change appends a version and never rewrites
+        one, so the version a settlement names is still here to be checked, however old the bill is.
+      security:
+        - adminToken: []
+      parameters: [{ $ref: "#/components/parameters/ChannelName" }]
+      responses:
+        "200":
+          description: Every version of every model of that channel, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/ModelPrice" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Append a price version for one of a channel's models
+      description: |
+        Appends; never overwrites. The version in force when a gateway request starts is the version
+        that prices that request and the one its settlement names, so a price change lands on later
+        requests and leaves in-flight turns and written bills untouched.
+
+        A model belongs to exactly one channel in v1 (docs/product.md), so pricing a model another
+        channel already serves is `CONFLICT`.
+      security:
+        - adminToken: []
+      parameters: [{ $ref: "#/components/parameters/ChannelName" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PriceRequest" }
+      responses:
+        "200":
+          description: The version that was written
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/PriceVersion" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /v1/models:
     get:
       summary: List the served models, in OpenAI's shape
       description: |
-        Only models with a configured price are listed: a model the gateway cannot price cannot be
-        frozen, so it cannot be served.
+        Only models with a price are listed: a model the gateway cannot price cannot be frozen, so it
+        cannot be served. `owned_by` is the channel that serves the model, and `created` is when the
+        version in force was written.
       responses:
         "200":
           description: The model list
@@ -257,8 +371,9 @@ paths:
         The request settles against that usage, capped at the freeze.
 
         Every response carries `x-oxsum-request-id`. The two ledger entries use `req-<id>:hold` and
-        `req-<id>:settle`, and the settlement's description carries the token counts and the prices
-        that produced the charge, so a bill can be verified down to the arithmetic.
+        `req-<id>:settle`, and the settlement's description carries the channel, the price version in
+        force when the request started, the token counts and the prices that produced the charge, so a
+        bill can be verified down to the arithmetic years later.
 
         Request content is text-only in v1: a message whose `content` is an array containing anything
         but text is refused with 400, because the input upper bound must be computable for the freeze
@@ -299,12 +414,25 @@ components:
       type: http
       scheme: bearer
       description: "An oxsum API key: `oxs-` followed by 32 random bytes, shown once at creation."
+    adminToken:
+      type: http
+      scheme: bearer
+      description: |
+        The operator token from `OXSUM_ADMIN_TOKEN`, at least 16 characters, compared in constant time.
+        It is not an API key and belongs to no organization: it is whoever deploys oxsum. A deployment
+        that sets no token has no admin surface at all.
   parameters:
     KeyId:
       name: keyId
       in: path
       required: true
       schema: { type: string, format: uuid }
+    ChannelName:
+      name: channelName
+      in: path
+      required: true
+      schema: { type: string, pattern: "^[A-Za-z0-9._-]{1,40}$" }
+      description: the channel's name, which is its identity
   headers:
     RequestId:
       description: "the id the ledger entries are keyed by: `req-<id>:hold` and `req-<id>:settle`"
@@ -361,6 +489,49 @@ components:
           required: [secret]
           properties:
             secret: { type: string, description: "the plaintext key; shown once and stored only as a SHA-256 hash" }
+    ChannelRequest:
+      type: object
+      required: [name, baseUrl, apiKey]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 40, pattern: "^[A-Za-z0-9._-]+$", description: the channel's identity; posting an existing name replaces its connection }
+        baseUrl: { type: string, format: uri, description: "where the OpenAI-compatible surface lives, http or https; `/chat/completions` is appended to it" }
+        apiKey: { type: string, minLength: 1, description: "the upstream credential; sealed with OXSUM_SECRET_KEY, only its last four characters readable afterwards" }
+    Channel:
+      type: object
+      required: [name, baseUrl, apiKeyLast4, createdAt, models]
+      properties:
+        name: { type: string }
+        baseUrl: { type: string }
+        apiKeyLast4: { type: string, description: "the last four characters of the stored credential, and nothing more of it" }
+        createdAt: { type: string, format: date-time }
+        models:
+          type: array
+          description: one entry per model, at its current version
+          items: { $ref: "#/components/schemas/ModelPrice" }
+    ModelPrice:
+      type: object
+      required: [model, version, inputPricePerMillion, outputPricePerMillion, maxOutputTokens, createdAt]
+      properties:
+        model: { type: string }
+        version: { type: integer, minimum: 1, description: "counted per model from 1; a settlement names the version that priced it" }
+        inputPricePerMillion: { type: integer, format: int64, minimum: 0, description: minor units per million input tokens }
+        outputPricePerMillion: { type: integer, format: int64, minimum: 0, description: minor units per million output tokens }
+        maxOutputTokens: { type: integer, format: int64, minimum: 1, description: "the most output the model may produce; also the ceiling a caller's max_tokens is clamped to" }
+        createdAt: { type: string, format: date-time, description: "when this version was written" }
+    PriceRequest:
+      type: object
+      required: [model, inputPricePerMillion, outputPricePerMillion, maxOutputTokens]
+      properties:
+        model: { type: string, minLength: 1, maxLength: 200 }
+        inputPricePerMillion: { type: integer, format: int64, minimum: 0 }
+        outputPricePerMillion: { type: integer, format: int64, minimum: 0 }
+        maxOutputTokens: { type: integer, format: int64, minimum: 1 }
+    PriceVersion:
+      type: object
+      required: [model, version]
+      properties:
+        model: { type: string }
+        version: { type: integer, minimum: 1, description: the version this change appended }
     AmountRequest:
       type: object
       required: [idempotencyKey, amountMinor]
