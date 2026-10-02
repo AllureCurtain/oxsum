@@ -17,6 +17,16 @@ docker compose up -d
 cargo build --workspace
 ```
 
+### Test residue in the development database
+
+The server integration tests (`crates/server/tests/gateway.rs` and `crates/server/tests/admin.rs`) write channels sealed with the tests' own key into the shared `oxsum` schema. Afterwards `cargo run -p oxsum-server` refuses to boot: a deployment that cannot open a stored credential fails at startup by design, instead of failing a request mid-relay. Clear the test-sealed rows before starting the server:
+
+```bash
+psql "$DATABASE_URL" -c "TRUNCATE oxsum.channel_prices, oxsum.channels;"
+```
+
+(`DATABASE_URL` comes from `.env` or the shell, as for the tests.) `TRUNCATE` is what the append-only trigger on `oxsum.channel_prices` leaves open: the trigger refuses row rewrites, not a table reset, so this does not weaken the price-history guarantee. Users, organizations, keys and ledgers are untouched; only channels and their prices are cleared. On a database with real channel configuration, dump it first — this is a development-database reset.
+
 ## Branch naming
 
 Each branch contains one issue or PR and uses lowercase ASCII in this form:

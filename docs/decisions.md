@@ -2,6 +2,24 @@
 
 New decisions go on top. Overturned decisions are never deleted; mark them "Superseded" and name the decision that replaces it.
 
+## 2026-10-02 Test-sealed channels are cleared with TRUNCATE, documented in the dev loop
+
+- Status: Adopted. Implemented 2026-10-02, closing issue #19.
+- Background: the gateway and admin integration tests write channels sealed with the tests' own key (`[7; 32]`) into the shared `oxsum` schema. A `cargo run -p oxsum-server` afterwards refuses to boot: `prepare` opens every stored credential at startup and names `OXSUM_SECRET_KEY` when one does not open, by design. The tests therefore leave the development database in a state the server rejects.
+- Decision:
+  - The dev loop documents the reset: `psql "$DATABASE_URL" -c "TRUNCATE oxsum.channel_prices, oxsum.channels;"` before `cargo run`, in docs/development.md.
+  - `TRUNCATE` is what the append-only trigger leaves open: the trigger fires on row-level `UPDATE`/`DELETE`, not on `TRUNCATE`, so the reset does not weaken the "a price version cannot be rewritten or deleted" guarantee — it clears the tables, it does not rewrite history.
+  - Users, organizations, keys and ledgers are untouched; only channels and their prices are cleared.
+- Why:
+  - Test-side cleanup is the infeasible alternative, not the smaller one: `DELETE` is blocked by the trigger plus `ON DELETE RESTRICT` (both deliberate product invariants), `TRUNCATE` in per-test teardown races the parallel tests sharing the schema, libtest has no after-all hook, and a separate test database is a bigger architectural change than the problem warrants.
+  - Keeping the startup refusal (rather than teaching the server to skip unopenable channels) is the point of the check: a deployment that cannot open its credentials must fail before serving, not per request.
+- Rejected:
+  - Deleting test channels in teardown: blocked by the append-only trigger by design; working around it would punch a hole in a product invariant for test tidiness.
+  - Sealing test channels with the dev `.env` key: makes tests depend on ambient configuration, and breaks the missing-key startup test, which needs channels the config cannot open.
+  - A server flag to clear channels: a new interface for what is a documented one-liner, and a footgun on a real deployment.
+- Implementation notes:
+  - Verified end-to-end: a gateway test leaves a `mock-*` channel, `cargo run` refuses with "a stored upstream credential does not open with OXSUM_SECRET_KEY", the documented `TRUNCATE` clears both tables, and the server boots with `/healthz` answering ok.
+
 ## 2026-10-02 The generative suite loads `.env` before reading `DATABASE_URL`
 
 - Status: Adopted. Implemented 2026-10-02, closing issue #18.
