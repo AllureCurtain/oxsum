@@ -1,0 +1,73 @@
+# Continuous integration: format, lints, and the full test suites.
+#
+# The test job runs against a real PostgreSQL 17 service container. doubleentry's own
+# Postgres conformance suite spins up its container through testcontainers, which works
+# because GitHub-hosted runners provide Docker (docs/development.md, "Continuous
+# integration").
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Reads rust-toolchain.toml, so the pinned toolchain (1.98) plus rustfmt
+      # and clippy are installed.
+      - uses: actions-rust-lang/rust-toolchain@v1
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/rust-toolchain@v1
+      # No database is needed to compile: the tree uses no sqlx::query! macros,
+      # so compilation never touches a live database.
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: oxsum
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/oxsum
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/rust-toolchain@v1
+      # The database tests skip without DATABASE_URL; here it is set, so they
+      # run for real.
+      - name: Run the workspace test suites
+        run: cargo test --workspace
+      # doubleentry's Postgres conformance suite: testcontainers starts its own
+      # container, which is why this suite cannot run on machines without Docker.
+      - name: Run doubleentry's Postgres conformance suite
+        run: cargo test -p doubleentry --features postgres --test postgres
