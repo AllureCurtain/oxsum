@@ -30,7 +30,10 @@ lib-features = ["hydrate"]
 oxsum-core = { path = "crates/core" }
 oxsum-verify = { path = "crates/verify" }
 oxsum-web = { path = "crates/web" }
-doubleentry = { path = "crates/doubleentry", features = ["postgres", "serde"] }
+# The `witness` feature enables doubleentry's witness module (tree-head notes and Ed25519
+# signing), which the operator uses to sign ledger heads. The module is used as a dependency;
+# `crates/doubleentry` itself is not modified.
+doubleentry = { path = "crates/doubleentry", features = ["postgres", "serde", "witness"] }
 
 axum = "0.8"
 # Sealing channel credentials at rest: AES-256-GCM, and the base64 the stored record uses.

@@ -10,6 +10,7 @@ mod billing;
 mod channels;
 mod db;
 mod error;
+mod heads;
 mod holds;
 mod keys;
 mod orgs;
@@ -25,8 +26,12 @@ pub use billing::{
 };
 pub use channels::{Channel, ModelPrice, SecretKey, Serving};
 pub use db::{Db, SCHEMA};
-pub use doubleentry::{EntryId, Hash};
+pub use doubleentry::{ConsistencyProof, EntryId, Hash, TreeHead};
 pub use error::WalletError;
+pub use heads::{
+    Consistency, HeadSigningKey, KeyPublication, SignedHead, origin_for, seed_from_base64,
+    sign_head, signing_key,
+};
 pub use holds::{DEFAULT_HOLD_TIMEOUT, OpenHold, SWEEP_INTERVAL, sweep_stale_holds};
 pub use keys::{ApiKey, CreatedApiKey};
 pub use orgs::{Kind, Member, Organization, Role};

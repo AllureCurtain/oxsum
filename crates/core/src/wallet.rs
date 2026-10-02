@@ -10,6 +10,7 @@ use time::Date;
 use time::macros::date;
 
 use crate::error::{WalletError, invalid};
+use crate::heads::{Consistency, HeadSigningKey, SignedHead, origin_for, sign_head};
 use crate::proof::ProofBundle;
 
 /// Money precision: 6 decimal places; 1 credit = 1_000_000 minor, fine enough for per-token pricing.
@@ -59,6 +60,9 @@ pub struct Wallet {
     revenue: AccountId,
     calendar: PeriodCalendar,
     policy: LedgerPolicy,
+    /// The validated tenant id this ledger belongs to: the identity its signed tree heads
+    /// are published under (`oxsum/ledgers/<tenant_id>`).
+    tenant_id: String,
 }
 
 /// Receipt of one posting. `content_hash` is what the user keeps to verify the bill later.
@@ -152,7 +156,14 @@ impl Wallet {
             registry,
             calendar: PeriodCalendar::new(),
             policy: LedgerPolicy::default(),
+            tenant_id: tenant_id.to_owned(),
         })
+    }
+
+    /// The tenant id this ledger belongs to: the identity its signed tree heads carry.
+    #[must_use]
+    pub fn tenant_id(&self) -> &str {
+        &self.tenant_id
     }
 
     /// Top-up: cash and wallet balance increase together.
@@ -339,6 +350,58 @@ impl Wallet {
     /// Number of entries in the log. With isolated ledgers, each tenant counts from zero.
     pub async fn log_size(&self) -> Result<u64, WalletError> {
         Ok(self.store.head().await?.size)
+    }
+
+    /// The current tree head, signed by the operator: what `GET /api/v1/log/head` serves.
+    ///
+    /// The note attests the head at signing time; the ledger keeps growing underneath, and a
+    /// later call signs a later head. Nothing is stored: the signature is recomputed from the
+    /// key, so rotating the key rotates every head without a migration.
+    pub async fn signed_head(&self, key: &HeadSigningKey) -> Result<SignedHead, WalletError> {
+        let origin = origin_for(&self.tenant_id).map_err(invalid)?;
+        let head = self.store.head().await?;
+        sign_head(key, &origin, head).map_err(invalid)
+    }
+
+    /// A consistency proof from an earlier size to the current head, with the new head signed:
+    /// what `GET /api/v1/log/consistency` serves.
+    ///
+    /// `from` must name a real head: at least 1 — every log extends the empty tree, so a
+    /// proof from size 0 would verify against any history at all and is refused — and at most
+    /// the current size. The old head is recomputed from the log, not taken from the caller,
+    /// so the two heads and the proof always agree with each other.
+    pub async fn consistency(
+        &self,
+        from: u64,
+        key: &HeadSigningKey,
+    ) -> Result<Consistency, WalletError> {
+        if from == 0 {
+            return Err(WalletError::InvalidInput(
+                "consistency proofs start at size 1: a proof from the empty tree would verify against any history".into(),
+            ));
+        }
+        let head = self.store.head().await?;
+        if from > head.size {
+            return Err(WalletError::InvalidInput(format!(
+                "cannot prove consistency from size {from} against a log of size {}",
+                head.size
+            )));
+        }
+        // The proof is built against the head just read, and the response signs that same
+        // head: a write landing between the two leaves the answer one entry behind the
+        // absolute latest, still a true statement about the head it attests.
+        let proof = self
+            .store
+            .prove_consistency_between(from, head.size)
+            .await
+            .map_err(invalid)?;
+        let old_head = self.store.head_at(from).await.map_err(invalid)?;
+        let origin = origin_for(&self.tenant_id).map_err(invalid)?;
+        Ok(Consistency {
+            signed: sign_head(key, &origin, head).map_err(invalid)?,
+            old_head,
+            proof,
+        })
     }
 
     /// The newest entries of the log, newest first, at most `limit`.

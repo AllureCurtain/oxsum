@@ -1,14 +1,15 @@
 use std::sync::Arc;
 
-use axum::extract::{Extension, Path, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::header::SET_COOKIE;
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router, middleware};
 use oxsum_core::{
-    ApiKey, CreatedApiKey, CreatedSession, NewUser, Organization, Principal, Registration, Role,
-    SESSION_COOKIE, Session, SessionPrincipal, Tenants, User, Wallet,
+    ApiKey, Consistency, CreatedApiKey, CreatedSession, HeadSigningKey, KeyPublication, NewUser,
+    Organization, Principal, Registration, Role, SESSION_COOKIE, Session, SessionPrincipal,
+    SignedHead, Tenants, User, Wallet, signing_key,
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -34,6 +35,8 @@ pub fn router(state: AppState) -> Router {
         .route("/settlements", post(settle))
         .route("/balance", get(balance))
         .route("/entries/{entry_id}/proof", get(proof))
+        .route("/log/head", get(log_head))
+        .route("/log/consistency", get(log_consistency))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_principal,
@@ -45,7 +48,9 @@ pub fn router(state: AppState) -> Router {
     let open = Router::new()
         .route("/auth/register", post(register))
         .route("/auth/login", post(login))
-        .route("/auth/logout", post(logout));
+        .route("/auth/logout", post(logout))
+        // The operator's tree-head verifying key: a public key, so no credential.
+        .route("/log/key", get(log_key));
 
     // The platform admin: an operator token, not an organization key, and its own middleware.
     let admin = crate::admin::router(state.clone());
@@ -347,4 +352,156 @@ async fn proof(
         Some(bundle) => ok(bundle),
         None => Err(ApiError::NotFound),
     }
+}
+
+/// A tree head as the API presents it: size plus the lowercase-hex root.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TreeHeadRes {
+    size: u64,
+    root: String,
+}
+
+impl From<oxsum_core::TreeHead> for TreeHeadRes {
+    fn from(head: oxsum_core::TreeHead) -> Self {
+        Self {
+            size: head.size,
+            root: head.root.to_hex(),
+        }
+    }
+}
+
+/// The operator's verifying key, as the API publishes it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VerifyingKeyRes {
+    key_name: String,
+    public_key: String,
+    key_hash: String,
+}
+
+impl VerifyingKeyRes {
+    fn of(key: &KeyPublication) -> Self {
+        use base64::Engine as _;
+        Self {
+            key_name: key.name.clone(),
+            public_key: base64::engine::general_purpose::STANDARD.encode(key.public_key),
+            key_hash: key.key_hash.iter().map(|b| format!("{b:02x}")).collect(),
+        }
+    }
+}
+
+/// A signed tree head: the note text, the head it attests, and the key that signed it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SignedTreeHeadRes {
+    note: String,
+    origin: String,
+    #[serde(flatten)]
+    key: VerifyingKeyRes,
+    size: u64,
+    root: String,
+}
+
+impl From<SignedHead> for SignedTreeHeadRes {
+    fn from(signed: SignedHead) -> Self {
+        Self {
+            note: signed.note,
+            origin: signed.origin,
+            key: VerifyingKeyRes::of(&signed.key),
+            size: signed.head.size,
+            root: signed.head.root.to_hex(),
+        }
+    }
+}
+
+/// A consistency proof between a held head and the current one, with the new head signed.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConsistencyRes {
+    note: String,
+    #[serde(flatten)]
+    key: VerifyingKeyRes,
+    old_head: TreeHeadRes,
+    head: TreeHeadRes,
+    proof: ConsistencyProofRes,
+}
+
+/// A consistency proof in doubleentry's order: the hashes that recompute the new root
+/// from the old one.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConsistencyProofRes {
+    old_size: u64,
+    new_size: u64,
+    path: Vec<String>,
+}
+
+impl From<Consistency> for ConsistencyRes {
+    fn from(c: Consistency) -> Self {
+        Self {
+            note: c.signed.note.clone(),
+            key: VerifyingKeyRes::of(&c.signed.key),
+            old_head: c.old_head.into(),
+            head: c.signed.head.into(),
+            proof: ConsistencyProofRes {
+                old_size: c.proof.old_size,
+                new_size: c.proof.new_size,
+                path: c.proof.path.iter().map(|h| h.to_hex()).collect(),
+            },
+        }
+    }
+}
+
+/// The operator's head-signing key for this request, or 503 when the deployment did not
+/// configure one.
+///
+/// Built per request from the seed: an Ed25519 keypair derive is cheap, and this keeps the
+/// key material in [`Config`]'s one place rather than threading a `SigningKey` — which is
+/// deliberately not `Clone` — through `AppState`.
+fn head_signing_key(state: &AppState) -> Result<HeadSigningKey, ApiError> {
+    let seed = state.config.head_signing_seed().ok_or_else(|| {
+        ApiError::ServiceUnavailable(
+            "tree head signing is not configured for this deployment".into(),
+        )
+    })?;
+    // The key name is a constant that satisfies the note rules; a failure here is not a
+    // caller error.
+    signing_key(seed).map_err(|_| ApiError::Internal)
+}
+
+/// The current tree head of the caller's ledger, signed by the operator.
+async fn log_head(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+) -> ApiResult<SignedTreeHeadRes> {
+    let key = head_signing_key(&state)?;
+    let w = wallet(&state.tenants, principal.organization()).await?;
+    ok(w.signed_head(&key).await?.into())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConsistencyQuery {
+    from: u64,
+}
+
+/// Prove the current head extends the head at `?from=`: the old head recomputed from the
+/// log, the new head signed, and the proof between them.
+async fn log_consistency(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Query(q): Query<ConsistencyQuery>,
+) -> ApiResult<ConsistencyRes> {
+    let key = head_signing_key(&state)?;
+    let w = wallet(&state.tenants, principal.organization()).await?;
+    ok(w.consistency(q.from, &key).await?.into())
+}
+
+/// The operator's tree-head verifying key. A public key, so no credential: fetching it from
+/// the server is convenience, and a verifier must have chosen it through a channel the
+/// operator does not control.
+async fn log_key(State(state): State<AppState>) -> ApiResult<VerifyingKeyRes> {
+    let key = head_signing_key(&state)?;
+    ok(VerifyingKeyRes::of(&KeyPublication::of(&key)))
 }

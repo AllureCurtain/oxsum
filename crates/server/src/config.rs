@@ -142,6 +142,7 @@ pub struct Config {
     gateway: Option<Gateway>,
     secret: Option<SecretKey>,
     admin_token: Option<String>,
+    head_signing_seed: Option<[u8; 32]>,
     hold_timeout: Duration,
     session_cookie_secure: bool,
 }
@@ -154,6 +155,7 @@ impl Config {
             gateway,
             secret: None,
             admin_token: None,
+            head_signing_seed: None,
             hold_timeout: DEFAULT_HOLD_TIMEOUT,
             session_cookie_secure: false,
         }
@@ -170,6 +172,14 @@ impl Config {
     #[must_use]
     pub fn with_admin_token(mut self, token: impl Into<String>) -> Self {
         self.admin_token = Some(token.into());
+        self
+    }
+
+    /// Sets the seed the operator signs tree heads with. Tests use this; the server reads
+    /// `OXSUM_HEAD_SIGNING_KEY`.
+    #[must_use]
+    pub fn with_head_signing_seed(mut self, seed: [u8; 32]) -> Self {
+        self.head_signing_seed = Some(seed);
         self
     }
 
@@ -196,6 +206,9 @@ impl Config {
             .map(|raw| SecretKey::parse(&raw))
             .transpose()?;
         let admin_token = var("OXSUM_ADMIN_TOKEN").map(admin_token_of).transpose()?;
+        let head_signing_seed = var("OXSUM_HEAD_SIGNING_KEY")
+            .map(head_signing_seed_of)
+            .transpose()?;
         let hold_timeout = var("OXSUM_HOLD_TIMEOUT")
             .map(hold_timeout_of)
             .transpose()?
@@ -209,6 +222,7 @@ impl Config {
             gateway: Gateway::from_env()?,
             secret,
             admin_token,
+            head_signing_seed,
             hold_timeout,
             session_cookie_secure,
         })
@@ -238,6 +252,13 @@ impl Config {
         self.admin_token.as_deref()
     }
 
+    /// The seed the operator signs tree heads with, or `None` when the deployment did not
+    /// configure one — in which case the `/api/v1/log` endpoints answer 503.
+    #[must_use]
+    pub(crate) fn head_signing_seed(&self) -> Option<[u8; 32]> {
+        self.head_signing_seed
+    }
+
     /// How long a hold may sit unsettled before the background sweeper releases it.
     #[must_use]
     pub fn hold_timeout(&self) -> Duration {
@@ -250,6 +271,15 @@ impl Config {
     pub(crate) fn session_cookie_secure(&self) -> bool {
         self.session_cookie_secure
     }
+}
+
+/// Reads `OXSUM_HEAD_SIGNING_KEY`: 32 bytes, base64 — the seed of the Ed25519 key the
+/// operator signs tree heads with.
+///
+/// A bad value is refused at startup rather than accepted quietly: a head signed by a
+/// key the operator cannot reproduce is a head nobody can verify.
+fn head_signing_seed_of(raw: String) -> Result<[u8; 32], String> {
+    oxsum_core::seed_from_base64(&raw)
 }
 
 /// A token worth putting in front of the admin surface: long enough that it is not worth guessing.

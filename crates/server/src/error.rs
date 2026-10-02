@@ -17,6 +17,8 @@ pub enum ApiError {
     NotFound,
     Conflict(String),
     InsufficientFunds,
+    /// A feature the deployment did not configure: the wallet works, this surface does not.
+    ServiceUnavailable(String),
     Internal,
 }
 
@@ -71,6 +73,9 @@ impl IntoResponse for ApiError {
                 "INSUFFICIENT_FUNDS",
                 "insufficient funds".into(),
             ),
+            Self::ServiceUnavailable(m) => {
+                (StatusCode::SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE", m)
+            }
             Self::Internal => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "INTERNAL_ERROR",
