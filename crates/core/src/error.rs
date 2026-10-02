@@ -7,6 +7,19 @@ pub enum WalletError {
     #[error("{0}")]
     InvalidInput(String),
 
+    /// No credential, or one that authenticates nothing. Deliberately one variant: whether
+    /// a key is missing, unknown, revoked or expired is not the caller's business.
+    #[error("unauthorized")]
+    Unauthenticated,
+
+    /// The caller is authenticated but may not do this.
+    #[error("{0}")]
+    Forbidden(String),
+
+    /// The value is already taken.
+    #[error("{0}")]
+    Conflict(String),
+
     /// The available balance cannot cover this hold or charge.
     #[error("insufficient funds")]
     InsufficientFunds,

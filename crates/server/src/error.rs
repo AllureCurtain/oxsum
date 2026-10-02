@@ -9,7 +9,9 @@ use serde_json::json;
 pub enum ApiError {
     Validation(String),
     Unauthorized,
+    Forbidden(String),
     NotFound,
+    Conflict(String),
     InsufficientFunds,
     Internal,
 }
@@ -18,6 +20,9 @@ impl From<WalletError> for ApiError {
     fn from(e: WalletError) -> Self {
         match e {
             WalletError::InvalidInput(m) => Self::Validation(m),
+            WalletError::Unauthenticated => Self::Unauthorized,
+            WalletError::Forbidden(m) => Self::Forbidden(m),
+            WalletError::Conflict(m) => Self::Conflict(m),
             WalletError::InsufficientFunds => Self::InsufficientFunds,
             // Storage details go to the logs only, never back to the caller.
             WalletError::Storage(err) => {
@@ -35,9 +40,13 @@ impl IntoResponse for ApiError {
             Self::Unauthorized => (
                 StatusCode::UNAUTHORIZED,
                 "UNAUTHORIZED",
-                "missing or invalid token".into(),
+                // One message for every way a key can fail: unknown, revoked, expired and
+                // missing are indistinguishable to the caller, on purpose.
+                "missing or invalid API key".into(),
             ),
+            Self::Forbidden(m) => (StatusCode::FORBIDDEN, "FORBIDDEN", m),
             Self::NotFound => (StatusCode::NOT_FOUND, "NOT_FOUND", "not found".into()),
+            Self::Conflict(m) => (StatusCode::CONFLICT, "CONFLICT", m),
             Self::InsufficientFunds => (
                 StatusCode::PAYMENT_REQUIRED,
                 "INSUFFICIENT_FUNDS",

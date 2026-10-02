@@ -1,28 +1,37 @@
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
-use axum::routing::{get, post};
+use axum::extract::{Extension, Path, State};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router, middleware};
-use oxsum_core::{Tenants, Wallet};
+use oxsum_core::{ApiKey, CreatedApiKey, NewUser, Organization, Registration, Tenants, Wallet};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
+use uuid::Uuid;
 
-use crate::auth::{ApiToken, require_token};
+use crate::auth::require_key;
 use crate::error::ApiError;
+use crate::{AppState, Signup};
 
-pub fn router(tenants: Tenants, token: ApiToken) -> Router {
-    let api = Router::new()
-        .route("/tenants/{tenant}/topups", post(top_up))
-        .route("/tenants/{tenant}/holds", post(hold))
-        .route("/tenants/{tenant}/settlements", post(settle))
-        .route("/tenants/{tenant}/balance", get(balance))
-        .route("/tenants/{tenant}/entries/{entry_id}/proof", get(proof))
-        .with_state(tenants)
-        .layer(middleware::from_fn_with_state(token, require_token));
+pub fn router(state: AppState) -> Router {
+    // Behind a key: everything that touches an organization, its ledger or its credentials.
+    let authenticated = Router::new()
+        .route("/org", get(organization))
+        .route("/org/keys", get(list_keys).post(create_key))
+        .route("/org/keys/{key_id}", delete(revoke_key))
+        .route("/topups", post(top_up))
+        .route("/holds", post(hold))
+        .route("/settlements", post(settle))
+        .route("/balance", get(balance))
+        .route("/entries/{entry_id}/proof", get(proof))
+        .layer(middleware::from_fn_with_state(state.clone(), require_key));
+
+    // No key: health, and signup while the deployment allows it.
+    let open = Router::new().route("/auth/register", post(register));
 
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
-        .nest("/api/v1", api)
+        .nest("/api/v1", open.merge(authenticated))
+        .with_state(state)
 }
 
 /// The uniform success envelope: { "data": ... }.
@@ -35,6 +44,23 @@ type ApiResult<T> = Result<Json<Data<T>>, ApiError>;
 
 fn ok<T>(data: T) -> ApiResult<T> {
     Ok(Json(Data { data }))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RegisterReq {
+    email: String,
+    password: String,
+    organization_name: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateKeyReq {
+    name: Option<String>,
+    /// RFC 3339; absent means a key that never expires.
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    expires_at: Option<OffsetDateTime>,
 }
 
 #[derive(Deserialize)]
@@ -58,8 +84,9 @@ struct BalanceRes {
     available_minor: i64,
 }
 
-async fn wallet(tenants: &Tenants, tenant: &str) -> Result<Arc<Wallet>, ApiError> {
-    Ok(tenants.get(tenant).await?)
+/// The ledger facade of the organization the credential belongs to.
+async fn wallet(tenants: &Tenants, organization: &Organization) -> Result<Arc<Wallet>, ApiError> {
+    Ok(tenants.get(&organization.tenant_id).await?)
 }
 
 /// The posting date is the server's current UTC date.
@@ -67,49 +94,110 @@ fn today() -> time::Date {
     OffsetDateTime::now_utc().date()
 }
 
+async fn register(
+    State(state): State<AppState>,
+    Json(r): Json<RegisterReq>,
+) -> ApiResult<Registration> {
+    if state.config.signup() != Signup::Open {
+        return Err(ApiError::Forbidden(
+            "this deployment registers by invitation only".into(),
+        ));
+    }
+    ok(state
+        .db
+        .register(NewUser {
+            email: r.email,
+            password: r.password,
+            organization_name: r.organization_name,
+        })
+        .await?)
+}
+
+async fn organization(Extension(organization): Extension<Organization>) -> ApiResult<Organization> {
+    ok(organization)
+}
+
+async fn create_key(
+    State(state): State<AppState>,
+    Extension(organization): Extension<Organization>,
+    body: Option<Json<CreateKeyReq>>,
+) -> ApiResult<CreatedApiKey> {
+    let (name, expires_at) = body.map_or((None, None), |Json(r)| (r.name, r.expires_at));
+    // `created_by` stays empty: a key is not a person and no user acts through it yet, so
+    // product.md's per-member rules attach when sessions make a user the acting principal.
+    ok(state
+        .db
+        .create_key(organization.id, name, expires_at, None)
+        .await?)
+}
+
+async fn list_keys(
+    State(state): State<AppState>,
+    Extension(organization): Extension<Organization>,
+) -> ApiResult<Vec<ApiKey>> {
+    ok(state.db.list_keys(organization.id).await?)
+}
+
+async fn revoke_key(
+    State(state): State<AppState>,
+    Extension(organization): Extension<Organization>,
+    Path(key_id): Path<Uuid>,
+) -> ApiResult<ApiKey> {
+    // A key id of another organization is not found, not forbidden: an id should not be
+    // probeable for existence.
+    match state.db.revoke_key(organization.id, key_id).await? {
+        Some(key) => ok(key),
+        None => Err(ApiError::NotFound),
+    }
+}
+
 async fn top_up(
-    State(t): State<Tenants>,
-    Path(tenant): Path<String>,
+    State(state): State<AppState>,
+    Extension(organization): Extension<Organization>,
     Json(r): Json<AmountReq>,
 ) -> ApiResult<oxsum_core::Receipt> {
-    let w = wallet(&t, &tenant).await?;
+    let w = wallet(&state.tenants, &organization).await?;
     ok(w.top_up(&r.idempotency_key, r.amount_minor, today())
         .await?)
 }
 
 async fn hold(
-    State(t): State<Tenants>,
-    Path(tenant): Path<String>,
+    State(state): State<AppState>,
+    Extension(organization): Extension<Organization>,
     Json(r): Json<AmountReq>,
 ) -> ApiResult<oxsum_core::Receipt> {
-    let w = wallet(&t, &tenant).await?;
+    let w = wallet(&state.tenants, &organization).await?;
     ok(w.hold(&r.idempotency_key, r.amount_minor, today()).await?)
 }
 
 async fn settle(
-    State(t): State<Tenants>,
-    Path(tenant): Path<String>,
+    State(state): State<AppState>,
+    Extension(organization): Extension<Organization>,
     Json(r): Json<SettleReq>,
 ) -> ApiResult<oxsum_core::Receipt> {
-    let w = wallet(&t, &tenant).await?;
+    let w = wallet(&state.tenants, &organization).await?;
     ok(
         w.settle(&r.idempotency_key, r.held_minor, r.actual_minor, today())
             .await?,
     )
 }
 
-async fn balance(State(t): State<Tenants>, Path(tenant): Path<String>) -> ApiResult<BalanceRes> {
-    let w = wallet(&t, &tenant).await?;
+async fn balance(
+    State(state): State<AppState>,
+    Extension(organization): Extension<Organization>,
+) -> ApiResult<BalanceRes> {
+    let w = wallet(&state.tenants, &organization).await?;
     ok(BalanceRes {
         available_minor: w.available().await?,
     })
 }
 
 async fn proof(
-    State(t): State<Tenants>,
-    Path((tenant, entry_id)): Path<(String, uuid::Uuid)>,
+    State(state): State<AppState>,
+    Extension(organization): Extension<Organization>,
+    Path(entry_id): Path<Uuid>,
 ) -> ApiResult<oxsum_core::ProofBundle> {
-    let w = wallet(&t, &tenant).await?;
+    let w = wallet(&state.tenants, &organization).await?;
     match w
         .receipt_proof(oxsum_core::EntryId::from_uuid(entry_id))
         .await?

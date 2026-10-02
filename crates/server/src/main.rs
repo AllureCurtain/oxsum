@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
-use oxsum_core::Tenants;
-use sqlx::postgres::PgPoolOptions;
+use oxsum_core::Db;
+use oxsum_server::Config;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -16,23 +16,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let database_url = required_env("DATABASE_URL")?;
-    let api_token = required_env("OXSUM_API_TOKEN")?;
     let addr: SocketAddr = std::env::var("OXSUM_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:3000".into())
         .parse()?;
+    let config = Config::from_env()?;
 
     // One pool for the whole database, shared by every tenant. Each PostgreSQL connection
     // is a backend process, so this number is the process's whole connection budget rather
     // than a per-tenant allowance; see docs/decisions.md, "all tenants share one connection
     // pool". Tenants are told apart by `search_path`, pinned per transaction, not by pool.
     let max_connections = pool_size()?;
-    let pool = PgPoolOptions::new()
-        .max_connections(max_connections)
-        .connect(&database_url)
-        .await?;
+    let db = Db::connect(&database_url, max_connections).await?;
     tracing::info!(%max_connections, "database pool ready");
 
-    let app = oxsum_server::app(Tenants::new(pool), api_token);
+    // oxsum's own tables (users, organizations, memberships, API keys) before serving: a
+    // registration that arrives first must find them.
+    db.migrate().await?;
+    tracing::info!("oxsum schema ready");
+
+    let app = oxsum_server::app(db, config);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "oxsum listening");
     axum::serve(listener, app)
