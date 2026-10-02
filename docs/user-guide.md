@@ -1,6 +1,6 @@
 # User guide
 
-For callers integrating with oxsum; no technical internals. Field details live in `crates/server/openapi.yaml`. Every API request except `GET /healthz` and `POST /api/v1/auth/register` carries `Authorization: Bearer <api-key>`, and the key decides which organization the request acts for — no request names a tenant.
+For callers integrating with oxsum; no technical internals. Field details live in `crates/server/openapi.yaml`. Every API request except `GET /healthz`, `POST /api/v1/auth/register`, `POST /api/v1/auth/login` and `POST /api/v1/auth/logout` carries a credential — `Authorization: Bearer <api-key>` or the session cookie — and the credential decides which organization the request acts for — no request names a tenant.
 
 ## Get an account and a key
 
@@ -14,6 +14,24 @@ Steps:
    - An existing address answers 409 `CONFLICT`.
    - Some deployments answer 403 `FORBIDDEN`: registration is by invitation there, and the operator hands out the key instead.
 2. Use `apiKey.secret` as the Bearer credential from then on.
+
+## Log in and out
+
+Purpose: act as yourself in a browser instead of as an API key.
+
+Steps:
+
+1. `POST /api/v1/auth/login` with `email` and `password`.
+   - The response carries `user`, `organization`, your `role` in it, and the `session`; a `Set-Cookie` header sets the `oxsum_session` cookie (`HttpOnly`, `SameSite=Lax`). Send it back with every request — a browser does this on its own.
+   - A wrong password and an unknown email both answer 401 `UNAUTHORIZED` with the same message, so neither reveals whether an account exists.
+2. `GET /api/v1/session` tells you who you are logged in as: the user, the organization, the role.
+3. `POST /api/v1/auth/logout` revokes the session and clears the cookie. It always answers 200 — logging out twice is not an error.
+
+Notes:
+
+- The session expires thirty days after login, and it stops working the moment your membership in the organization is gone.
+- Every `/api/v1` endpoint accepts the cookie wherever it accepts a Bearer key; the gateway (`/v1`) takes an API key only.
+- Members see and revoke only the keys they created; owners and admins see and revoke every key of the organization. Keys you mint while logged in record you as their creator.
 
 ## Keys
 

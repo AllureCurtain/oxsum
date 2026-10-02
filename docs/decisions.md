@@ -2,6 +2,39 @@
 
 New decisions go on top. Overturned decisions are never deleted; mark them "Superseded" and name the decision that replaces it.
 
+## 2026-10-03 Web login: a session is a second credential, and roles constrain sessions, not keys
+
+- Status: Adopted. Implemented 2026-10-03, closing issue #17 (TODO B-4).
+- Background: an API key names an organization and nothing else — a machine credential with no person behind it, which is why `api_keys.created_by` was always null and product.md's role table had a schema but no enforcement. This item makes a *user* a possible principal: a session table, a login, a logout, and role checks on the organization and key endpoints.
+- Decision:
+  - **Two credentials, one principal.** A request may carry `Authorization: Bearer oxs-…` or the session cookie; both resolve to a `Principal` — `Key` (the organization the key spends for) or `Session` (the user, the organization they act as, and their role in it). The middleware resolves once and hands the principal to the handler; nothing else in the request can name an organization.
+  - **Roles constrain sessions, not keys.** A key keeps acting as the whole organization — full authority, pre-session behaviour deliberately unchanged — while a user acts with the authority their role grants them: members list and revoke only the keys they created, owners and admins see and revoke all. The reason is what the credential *is*: a key is a machine credential the organization issued to itself, so there is no person to hold to a role; a session is a person, and a person can be a member. Constraining keys by role would require inventing a person behind a credential that has none.
+  - **The session table holds no usable credential.** The cookie value is `oxsess-` plus 32 random bytes; the database keeps only its SHA-256 hash (unique, so the lookup is one index probe), for the same reason `api_keys` keeps only key hashes: a key is 256 bits of machine randomness, so there is nothing to slow down with argon2, and every authenticated request pays for the lookup.
+  - **Resolution joins `memberships` on `(user_id, organization_id)`.** A session stops authenticating the moment its membership is gone — the row cannot outlive the authorization it names. No second invalidation mechanism, no session list to sweep.
+  - **Login is email + password, one failure for both.** An unknown email and a wrong password answer the same 401 with the same message ("invalid email or password"), and the unknown-email path still pays for one argon2 verification against a process-wide dummy hash, so neither timing nor wording reveals whether an account exists. The hash runs before any session row is written and outside any transaction, so a slow hash never holds a connection — the same rule registration follows.
+  - **The session acts as the user's oldest membership.** Invitation flows that create a second membership are a later item, so today this is always the personal organization from signup; switching between several arrives with the dashboard rather than as a login parameter nobody can yet use.
+  - **Thirty days, absolute.** `expires_at` is login plus thirty days, no sliding renewal in v1: a session that never expires is a credential that never dies, and sliding renewal is a second expiry policy to get right. `last_used_at` is touched on authentication at most once per five minutes, so the column stays meaningful without a write on every request.
+  - **The cookie is `HttpOnly`, `SameSite=Lax`, `Path=/`, and `Secure` when the deployment says so.** Lax, because the dashboard is same-site and Lax is what keeps the cookie off cross-site requests without breaking top-level navigation to it; `OXSUM_SESSION_COOKIE_SECURE` (default `false` for local http development) is what a deployment behind TLS must set. The endpoints stay JSON — the cookie is only the credential, not a page contract — so the same API serves the dashboard and any script holding a session.
+  - **An explicit bearer token wins over the cookie.** With no bearer credential at all the cookie is tried; a presented bearer is resolved as a key and never falls through. A wrong credential fails rather than getting a second chance, and the ambient cookie cannot override what the caller explicitly sent.
+  - **The cookie is never accepted on `/v1`.** The gateway's credential stays the API key alone: a logged-in browser must not be able to spend through the gateway by ambient authority, and the gateway's error shape stays OpenAI's.
+  - **Logout is an open route and always 200.** It revokes the session the cookie names (idempotent — twice is not an error) and clears the cookie with `Max-Age=0`. It sits outside the auth middleware precisely so that logging out twice answers 200 with no session at all.
+  - **A key that exists but is not the caller's answers 404, never 403.** The member naming a key they did not create gets the same answer as a key that does not exist — and the key stays live — because the scope is part of the lookup, not a check after it. The organization boundary already works this way, so ids cannot be probed.
+  - **`created_by` starts being set, and is exposed.** Keys minted through a session record the acting user; keys minted with an API key keep it null. The field is on the API response (nullable) so the rule is observable, not just a database column.
+- Why:
+  - **A hand-written session table rather than a token library.** The project already decided this for users and keys (docs/decisions.md, "users and login"): the table is four queries, the semantics (membership-bound, revocable, expiring) are the product's own, and a JWT would need a revocation list to support logout — at which point it is a session table with extra steps.
+  - **SHA-256 for session tokens, argon2 for passwords.** The same split as API keys versus passwords, for the same reason: what is being guessed decides the hash, not which hash is "better".
+  - **No session choice at login.** A `organizationId` parameter would be honest for multi-org users, but no flow creates a second membership yet, so it would be a parameter nothing can meaningfully vary today. The oldest-membership rule is recorded here so the dashboard item knows what it replaces.
+- Rejected:
+  - **Sliding expiry:** a second policy (idle timeout) beside the absolute one, with its own edge cases; the absolute expiry is the whole v1 story.
+  - **Roles on API keys:** there is no person behind a key to assign a role to; the pre-session "any active key may manage keys" stays exactly as it was.
+  - **A 403 for cross-member key access:** 404 keeps ids unprobeable, matching the organization boundary.
+  - **Session auth on `/v1`:** non-goal per the issue; the chat page (TODO C-11) is what will need it, and it gets its own contract then.
+  - **The Leptos login/logout pages:** `crates/web` does not exist until TODO B-5; a page written in the server crate now would be deleted there. This item delivers the endpoints those pages call.
+- Implementation notes:
+  - `crates/core/src/sessions.rs` holds the store, the token scheme and the `Principal`/`KeyScope` types; `crates/server/src/auth.rs` the two middlewares; `crates/server/src/routes.rs` the three endpoints and the cookie attributes; migration `0004_sessions` (the issue's `0003` was taken by #13's `0003_open_holds`).
+  - `crates/core/tests/sessions.rs` and `crates/server/tests/sessions.rs` cover the completion criteria: the cookie attributes, the indistinguishable 401s, session/membership/expiry/revocation invalidation, the member/owner key rules, `createdBy` on both mint paths, the gateway refusing the cookie, and the table dump authenticating nothing.
+  - `GET /api/v1/session` for a key principal is 404: a key names no session.
+
 ## 2026-10-02 Test-sealed channels are cleared with TRUNCATE, documented in the dev loop
 
 - Status: Adopted. Implemented 2026-10-02, closing issue #19.

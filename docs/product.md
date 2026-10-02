@@ -35,6 +35,8 @@ The platform admin is not an organization role but a deployment-level identity; 
 ### Registration and login
 
 - Login is email plus password; passwords are stored with argon2. v1 sends no email, so there is no email verification and no password recovery; the platform admin resets forgotten passwords.
+- A login mints a session: the response names the user, the organization and the role, and a cookie (`oxsum_session`, `HttpOnly`, `SameSite=Lax`, `Path=/`, plus `Secure` when the deployment is behind TLS) carries it from then on. The session acts as the user's organization in their role, expires thirty days after login, and stops authenticating the moment the user's membership in that organization is gone. Logging out revokes it. An unknown email and a wrong password answer the same 401 with the same message, so neither reveals whether an account exists.
+- Sessions and API keys are two credentials for the same organization: every `/api/v1` endpoint takes either (an explicit bearer token wins over the cookie), while the gateway (`/v1`) takes an API key only. Role rules apply to sessions; a key keeps acting as the whole organization.
 - Platform admins are created only from the server command line: `oxsum admin create --email ...`. Not "the first registrant becomes admin" — on a public instance, whoever registers first would own it.
 - Registration mode is deployment-configured (`OXSUM_SIGNUP`):
   - `invite` (default): registration only through invitation links
@@ -70,7 +72,7 @@ v1 has no payment integration; credit has exactly three sources, each recording 
 
 ## API keys
 
-- Keys belong to organizations and hold no money themselves. The creator is recorded for permissions and audit; a key minted through the API records no creator, because no person is acting there yet. Until roles are enforced, any active key of an organization may read it and mint or revoke its keys; role checks arrive with web login.
+- Keys belong to organizations and hold no money themselves. The creator is recorded for permissions and audit; a key minted through a session records who minted it, a key minted through the API records no creator, because no person is acting there. Members see and revoke only the keys they created; owners and admins see and revoke all of them.
 - The plaintext shows once at creation. The database stores only the SHA-256 hash and a prefix; the dashboard uses the prefix to help users recognize keys.
 - Format: `oxs-` followed by 32 random bytes, so secret-scanning tools can recognize them.
 - Optional name and expiry. Revocation is permanent.
