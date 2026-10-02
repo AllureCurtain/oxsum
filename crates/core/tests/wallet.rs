@@ -319,8 +319,15 @@ async fn concurrent_settlements_of_one_hold_cannot_both_release_it() {
         }
     }
     assert_eq!(released, 1);
-    // The winner released the whole hold and charged nothing, so the wallet is whole again.
-    assert_eq!(w.available().await.unwrap(), 10 * ONE);
+    // The winner released the whole hold; which of the two tasks won the race decides the
+    // charge (0 or ONE), so the balance is 10*ONE or 9*ONE. What the test pins down is that
+    // exactly one of them took effect — assuming the winner is always the first task spawned
+    // flakes under load.
+    let available = w.available().await.unwrap();
+    assert!(
+        available == 10 * ONE || available == 9 * ONE,
+        "one settlement took effect, so the balance is 10 or 9: {available}"
+    );
     assert_eq!(w.log_size().await.unwrap(), 3);
 }
 
