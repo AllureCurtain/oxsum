@@ -1,9 +1,9 @@
 use doubleentry::account::AccountRegistry;
 use doubleentry::storage::postgres::PostgresStore;
 use doubleentry::{
-    AccountId, Amount, BalanceKey, BalanceLimit, BalanceQuery, Balanced, Currency, Description,
-    Direction, Draft, Entry, EntryBatch, EntryId, Hash, IdempotencyKey, Layer, LedgerId,
-    LedgerPolicy, LedgerStore, PeriodCalendar, Posting, SealContext,
+    AccountId, Amount, BalanceKey, BalanceLimit, BalanceQuery, Balanced, Currency, Cursor,
+    Description, Direction, Draft, Entry, EntryBatch, EntryId, Hash, IdempotencyKey, Layer,
+    LedgerId, LedgerPolicy, LedgerStore, LogIndex, PeriodCalendar, Posting, SealContext,
 };
 use sqlx::PgPool;
 use time::Date;
@@ -66,6 +66,18 @@ pub struct Receipt {
     pub content_hash: Hash,
     /// false means an idempotent replay: nothing new was written.
     pub is_new: bool,
+}
+
+/// One ledger entry as the dashboard's transaction log shows it.
+#[derive(Debug, Clone)]
+pub struct LogEntry {
+    /// Position in the log.
+    pub index: u64,
+    pub id: String,
+    /// What the writer recorded: holds and settlements describe the request.
+    pub description: String,
+    /// The content hash the Merkle log commits to.
+    pub content_hash: String,
 }
 
 impl Wallet {
@@ -323,6 +335,40 @@ impl Wallet {
     /// Number of entries in the log. With isolated ledgers, each tenant counts from zero.
     pub async fn log_size(&self) -> Result<u64, WalletError> {
         Ok(self.store.head().await?.size)
+    }
+
+    /// The newest entries of the log, newest first, at most `limit`.
+    ///
+    /// What the dashboard's transaction log lists: the position, the id, the description
+    /// the writer recorded, and the content hash the Merkle log commits to. The proof
+    /// page (a later item) is what verifies one; this only lists them.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn recent_entries(&self, limit: usize) -> Result<Vec<LogEntry>, WalletError> {
+        let size = self.store.head().await?.size;
+        let start = size.saturating_sub(limit.clamp(1, 100) as u64);
+        let after = start.checked_sub(1).map(LogIndex::new);
+        let page = self
+            .store
+            .page(Cursor {
+                after,
+                limit: limit.clamp(1, 100),
+            })
+            .await?;
+        let mut entries: Vec<LogEntry> = page
+            .records
+            .into_iter()
+            .map(|stored| LogEntry {
+                index: stored.require_index().map(LogIndex::get).unwrap_or(u64::MAX),
+                id: stored.entry.id().to_string(),
+                description: stored.entry.description().as_str().to_owned(),
+                content_hash: stored.content_hash.to_string(),
+            })
+            .collect();
+        entries.reverse();
+        Ok(entries)
     }
 
     async fn wallet_net(&self, layer: Layer) -> Result<i64, WalletError> {
