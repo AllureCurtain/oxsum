@@ -45,6 +45,17 @@ pub struct ApiKey {
     pub expires_at: Option<OffsetDateTime>,
     #[serde(with = "time::serde::rfc3339::option")]
     pub revoked_at: Option<OffsetDateTime>,
+    /// The key's spend limit in minor units: settled charges plus outstanding holds
+    /// attributed to the key may not exceed it. `None` is unlimited.
+    pub spend_limit_minor: Option<i64>,
+}
+
+/// The credential behind a key-authenticated request: which key acted, and the spend
+/// limit in force for it. Carried on the principal so the hold path can enforce it.
+#[derive(Debug, Clone)]
+pub struct ActingKey {
+    pub key_id: Uuid,
+    pub spend_limit_minor: Option<i64>,
 }
 
 /// A key plus its secret, returned exactly once: at creation.
@@ -64,6 +75,7 @@ impl Db {
         name: Option<String>,
         expires_at: Option<OffsetDateTime>,
         created_by: Option<Uuid>,
+        spend_limit_minor: Option<i64>,
     ) -> Result<CreatedApiKey, WalletError> {
         let name = validate_name(name)?;
         if let Some(expires) = expires_at
@@ -73,20 +85,33 @@ impl Db {
                 "expiresAt must be in the future".into(),
             ));
         }
+        validate_limit(spend_limit_minor)?;
         let mut tx = self.pool().begin().await?;
-        let created = insert(&mut tx, organization_id, name, expires_at, created_by).await?;
+        let created = insert(
+            &mut tx,
+            organization_id,
+            name,
+            expires_at,
+            created_by,
+            spend_limit_minor,
+        )
+        .await?;
         tx.commit().await?;
         Ok(created)
     }
 
-    /// Resolves a presented secret to the organization it spends for.
+    /// Resolves a presented secret to the organization it spends for, and the key that acted.
     ///
     /// `None` covers every way a key can fail — unknown, revoked, expired — so a caller
     /// cannot tell them apart, and neither can anyone probing for valid keys.
-    pub async fn authenticate(&self, secret: &str) -> Result<Option<Organization>, WalletError> {
+    pub async fn authenticate(
+        &self,
+        secret: &str,
+    ) -> Result<Option<(Organization, ActingKey)>, WalletError> {
         let hash = hash_secret(secret);
         let row = sqlx::query(
-            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at \
+            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, \
+                    k.key_id, k.spend_limit_minor \
              FROM oxsum.api_keys k JOIN oxsum.organizations o USING (organization_id) \
              WHERE k.secret_hash = $1 \
                AND k.revoked_at IS NULL \
@@ -95,7 +120,62 @@ impl Db {
         .bind(hash.as_slice())
         .fetch_optional(self.pool())
         .await?;
-        row.as_ref().map(orgs::organization_from_row).transpose()
+        row.map(|row| {
+            use sqlx::Row;
+            let organization = orgs::organization_from_row(&row)?;
+            let key = ActingKey {
+                key_id: row.try_get("key_id")?,
+                spend_limit_minor: row.try_get("spend_limit_minor")?,
+            };
+            Ok((organization, key))
+        })
+        .transpose()
+    }
+
+    /// Sets or clears a key's spend limit. `None` means this organization has no such key —
+    /// which is also the answer for another organization's key id, and for a member naming a
+    /// key they did not create, so ids cannot be probed. The scope rules are the revoke's.
+    ///
+    /// # Errors
+    ///
+    /// A negative limit is [`WalletError::InvalidInput`]; storage failures surface as
+    /// [`WalletError`].
+    pub async fn update_key_limit(
+        &self,
+        organization_id: Uuid,
+        key_id: Uuid,
+        scope: KeyScope,
+        spend_limit_minor: Option<i64>,
+    ) -> Result<Option<ApiKey>, WalletError> {
+        validate_limit(spend_limit_minor)?;
+        // Like revoke: the scope is part of the lookup, not a check after it, so a member
+        // naming a key they did not create gets the same answer as a key that does not exist.
+        let row = match scope {
+            KeyScope::Own(user_id) => sqlx::query(
+                "UPDATE oxsum.api_keys SET spend_limit_minor = $4 \
+                 WHERE organization_id = $1 AND key_id = $2 AND created_by = $3 \
+                 RETURNING key_id, name, prefix, created_by, created_at, expires_at, \
+                           revoked_at, spend_limit_minor",
+            )
+            .bind(organization_id)
+            .bind(key_id)
+            .bind(user_id)
+            .bind(spend_limit_minor)
+            .fetch_optional(self.pool())
+            .await?,
+            KeyScope::Organization | KeyScope::All => sqlx::query(
+                "UPDATE oxsum.api_keys SET spend_limit_minor = $4 \
+                 WHERE organization_id = $1 AND key_id = $2 \
+                 RETURNING key_id, name, prefix, created_by, created_at, expires_at, \
+                           revoked_at, spend_limit_minor",
+            )
+            .bind(organization_id)
+            .bind(key_id)
+            .bind(spend_limit_minor)
+            .fetch_optional(self.pool())
+            .await?,
+        };
+        row.as_ref().map(key_from_row).transpose()
     }
 
     /// Every key of an organization the principal may see, newest first. Metadata only.
@@ -110,7 +190,8 @@ impl Db {
         let rows =
             match scope {
                 KeyScope::Own(user_id) => sqlx::query(
-                    "SELECT key_id, name, prefix, created_by, created_at, expires_at, revoked_at \
+                    "SELECT key_id, name, prefix, created_by, created_at, expires_at, revoked_at, \
+                            spend_limit_minor \
                      FROM oxsum.api_keys \
                      WHERE organization_id = $1 AND created_by = $2 \
                      ORDER BY created_at DESC, key_id",
@@ -120,7 +201,8 @@ impl Db {
                 .fetch_all(self.pool())
                 .await?,
                 KeyScope::Organization | KeyScope::All => sqlx::query(
-                    "SELECT key_id, name, prefix, created_by, created_at, expires_at, revoked_at \
+                    "SELECT key_id, name, prefix, created_by, created_at, expires_at, revoked_at, \
+                            spend_limit_minor \
                      FROM oxsum.api_keys \
                      WHERE organization_id = $1 \
                      ORDER BY created_at DESC, key_id",
@@ -151,7 +233,8 @@ impl Db {
                 sqlx::query(
                     "UPDATE oxsum.api_keys SET revoked_at = COALESCE(revoked_at, now()) \
                      WHERE organization_id = $1 AND key_id = $2 AND created_by = $3 \
-                     RETURNING key_id, name, prefix, created_by, created_at, expires_at, revoked_at",
+                     RETURNING key_id, name, prefix, created_by, created_at, expires_at, \
+                               revoked_at, spend_limit_minor",
                 )
                 .bind(organization_id)
                 .bind(key_id)
@@ -163,7 +246,8 @@ impl Db {
                 sqlx::query(
                     "UPDATE oxsum.api_keys SET revoked_at = COALESCE(revoked_at, now()) \
                      WHERE organization_id = $1 AND key_id = $2 \
-                     RETURNING key_id, name, prefix, created_by, created_at, expires_at, revoked_at",
+                     RETURNING key_id, name, prefix, created_by, created_at, expires_at, \
+                               revoked_at, spend_limit_minor",
                 )
                 .bind(organization_id)
                 .bind(key_id)
@@ -183,15 +267,18 @@ pub(crate) async fn insert(
     name: Option<String>,
     expires_at: Option<OffsetDateTime>,
     created_by: Option<Uuid>,
+    spend_limit_minor: Option<i64>,
 ) -> Result<CreatedApiKey, WalletError> {
     let secret = generate_secret();
     let prefix = secret.chars().take(PREFIX_CHARS).collect::<String>();
     let hash = hash_secret(&secret);
     let row = sqlx::query(
         "INSERT INTO oxsum.api_keys \
-             (key_id, organization_id, name, prefix, secret_hash, created_by, expires_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7) \
-         RETURNING key_id, name, prefix, created_by, created_at, expires_at, revoked_at",
+             (key_id, organization_id, name, prefix, secret_hash, created_by, expires_at, \
+              spend_limit_minor) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+         RETURNING key_id, name, prefix, created_by, created_at, expires_at, revoked_at, \
+                   spend_limit_minor",
     )
     .bind(Uuid::new_v4())
     .bind(organization_id)
@@ -200,6 +287,7 @@ pub(crate) async fn insert(
     .bind(hash.as_slice())
     .bind(created_by)
     .bind(expires_at)
+    .bind(spend_limit_minor)
     .fetch_one(&mut **tx)
     .await
     .map_err(|e| conflict_or_storage(e, "api_keys_secret_hash_key", "key collision"))?;
@@ -258,7 +346,18 @@ fn key_from_row(row: &sqlx::postgres::PgRow) -> Result<ApiKey, WalletError> {
         created_at: row.try_get("created_at")?,
         expires_at: row.try_get("expires_at")?,
         revoked_at: row.try_get("revoked_at")?,
+        spend_limit_minor: row.try_get("spend_limit_minor")?,
     })
+}
+
+/// A spend limit must be a non-negative amount in minor units; `None` clears it to unlimited.
+fn validate_limit(spend_limit_minor: Option<i64>) -> Result<(), WalletError> {
+    if spend_limit_minor.is_some_and(|limit| limit < 0) {
+        return Err(WalletError::InvalidInput(
+            "spendLimitMinor must be non-negative".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// A unique-constraint violation on `constraint` becomes the named conflict; every other

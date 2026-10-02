@@ -24,6 +24,7 @@ use uuid::Uuid;
 
 use crate::db::Db;
 use crate::error::WalletError;
+use crate::keys::ActingKey;
 use crate::orgs::{self, Organization, Role};
 use crate::users::User;
 
@@ -43,10 +44,18 @@ const LAST_USED_TOUCH: Duration = Duration::from_secs(5 * 60);
 #[derive(Debug, Clone)]
 pub enum Principal {
     /// A machine credential: acts as the organization, with the organization's full authority.
-    /// Pre-session behaviour, deliberately unchanged — a key is not a person.
-    Key(Organization),
+    /// Pre-session behaviour, deliberately unchanged — a key is not a person. Carries which
+    /// key acted, so the hold path can attribute spend to it and enforce its spend limit.
+    Key(KeyPrincipal),
     /// A person: the user, the organization they act as, and their role in it.
     Session(SessionPrincipal),
+}
+
+/// The organization a key acts as, plus the key that acted.
+#[derive(Debug, Clone)]
+pub struct KeyPrincipal {
+    pub organization: Organization,
+    pub key: ActingKey,
 }
 
 impl Principal {
@@ -54,8 +63,17 @@ impl Principal {
     #[must_use]
     pub fn organization(&self) -> &Organization {
         match self {
-            Self::Key(organization) => organization,
+            Self::Key(key) => &key.organization,
             Self::Session(session) => &session.organization,
+        }
+    }
+
+    /// The API key that acted, if the credential was a key rather than a session.
+    #[must_use]
+    pub fn acting_key(&self) -> Option<&ActingKey> {
+        match self {
+            Self::Key(key) => Some(&key.key),
+            Self::Session(_) => None,
         }
     }
 

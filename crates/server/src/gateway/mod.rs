@@ -16,7 +16,7 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router, middleware};
-use oxsum_core::{OpenHold, Organization, Serving, SettlementKind, hold_description};
+use oxsum_core::{ActingKey, OpenHold, Organization, Serving, SettlementKind, hold_description};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -107,6 +107,7 @@ async fn serving(state: &AppState, model: &str) -> Result<Option<Serving>, Gatew
 async fn chat(
     State(state): State<AppState>,
     Extension(organization): Extension<Organization>,
+    Extension(key): Extension<ActingKey>,
     body: Bytes,
 ) -> Response {
     // The id exists before anything else does, so even a malformed body answers with the header a
@@ -125,7 +126,7 @@ async fn chat(
             );
         }
     };
-    let response = match run(&state, &organization, body, &request_id).await {
+    let response = match run(&state, &organization, &key, body, &request_id).await {
         Ok(response) => response,
         Err(error) => error.into_response(),
     };
@@ -136,6 +137,7 @@ async fn chat(
 async fn run(
     state: &AppState,
     organization: &Organization,
+    key: &ActingKey,
     body: Value,
     request_id: &str,
 ) -> Result<Response, GatewayError> {
@@ -174,7 +176,10 @@ async fn run(
         tracing::error!(%error, "recording the open hold failed");
         return Err(error.into());
     }
-    if let Err(error) = wallet.hold(&hold_key, &description, freeze, today()).await {
+    if let Err(error) = wallet
+        .hold_for_key(key, &hold_key, &description, freeze, today())
+        .await
+    {
         // The hold was refused, so there is nothing for the sweeper to watch.
         if let Err(clear) = state.db.clear_open_hold(&hold_key).await {
             tracing::error!(%clear, "clearing a refused hold's watch row failed");
