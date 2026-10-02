@@ -23,8 +23,8 @@ Only the axum API plus the core and doubleentry line exists today. The gateway, 
 | Module | Location | Responsibility |
 | --- | --- | --- |
 | doubleentry | `crates/doubleentry` | Double-entry bookkeeping, balance limits, pending layer, Merkle inclusion and consistency proofs, period closing. Vendored, see docs/decisions.md |
-| Wallet | `crates/core/src/wallet.rs` | One tenant's wallet: top-up, hold, settle, balance, proof bundles |
-| Tenants | `crates/core/src/tenants.rs` | Opens tenant ledgers on demand and caches them. Planned to become a lightweight facade over one shared pool, see docs/decisions.md "all tenants share one connection pool" |
+| Wallet | `crates/core/src/wallet.rs` | One tenant's wallet: top-up, hold, settle, balance, proof bundles. Built on the shared pool, never on a pool of its own |
+| Tenants | `crates/core/src/tenants.rs` | The process's one pool plus a cached ledger facade per tenant: a tenant costs a facade, not connections. See docs/decisions.md "all tenants share one connection pool" |
 | proof | `crates/core/src/proof.rs` | Proof bundle structure and the client-side verify function, later called directly inside a Leptos component |
 | HTTP | `crates/server/src/` | Routing, Bearer auth, error mapping |
 | Gateway | `crates/gateway` (not yet created) | OpenAI-compatible proxy: relays upstream, freezes before the request, settles on usage. reqwest streaming passthrough, tiktoken-rs for fallback estimation, see docs/decisions.md |
@@ -40,7 +40,7 @@ crates/
   core/                 Domain layer: wallet, tenants, proof, plus A-2's users, orgs, keys, sessions
     src/
       wallet.rs         exists
-      tenants.rs        exists, A-1 turns it into a shared-pool facade
+      tenants.rs        exists, shared-pool facade over many ledger facades
       proof.rs          exists
       users.rs          A-2: registration, login checks, argon2 hashing
       orgs.rs           A-2: organizations, memberships, roles, invitations

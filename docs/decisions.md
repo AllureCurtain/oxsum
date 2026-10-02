@@ -4,7 +4,7 @@ New decisions go on top. Overturned decisions are never deleted; mark them "Supe
 
 ## 2026-10-01 All tenants share one connection pool: `SET LOCAL search_path` at the start of every transaction
 
-- Status: Adopted. Not yet implemented, see TODO.md A-1; this entry settles the mechanism first.
+- Status: Adopted. Implemented 2026-10-02; the two points the plan below left open were settled while implementing, see "Implementation notes".
 - Background: `Tenants` currently opens one `PgPool` per tenant (`PostgresStore::connect_with` pins `search_path` to the tenant schema via connection options), so connection count grows linearly with tenant count. Each PostgreSQL connection is a backend process; a few hundred tenants would exhaust the database.
 - Decision:
   - One `PgPool` for the whole database, fixed size (`max_connections` set per deployment); `Tenants` degrades from "open a pool" to "build a lightweight ledger facade per tenant id" and holds no connection resources.
@@ -24,6 +24,12 @@ New decisions go on top. Overturned decisions are never deleted; mark them "Supe
   - Prefix every SQL with `ledger_<tenant>.`: doubleentry has 55 `sqlx::query` sites; a full rewrite is error-prone, would make the upstream diff unrecognizable, and `search_path` is exactly the mechanism PostgreSQL provides for this.
   - Plain `SET` plus an `after_connect` reset hook: correctness depends on remembering to reset everywhere; one missed path cross-tenant-leaks. `SET LOCAL` does not depend on discipline.
 - Why the append lock is unaffected: all three write paths use `pg_advisory_xact_lock` (transaction-scoped, bound to the transaction by definition); the migrate-lock decision already switched `MIGRATE_LOCK` to per-ledger derived keys, so two ledgers on the shared pool contend on different locks and do not block each other.
+- Implementation notes (2026-10-02), where the plan met the code:
+  - One primitive, `PostgresStore::begin`, opens a transaction and issues `SET LOCAL search_path` as its first statement. Every statement the store makes opens its transaction through it, so read paths, write paths and `migrate` cannot drift apart, and the pin is a property of the code path rather than of remembering to reset. Read-only paths roll back, which is free and leaves nothing behind.
+  - The reference DDL (`crates/doubleentry/schema/postgres.sql`) carries its own `BEGIN;`/`COMMIT;`. A `SET LOCAL` issued before it would therefore land outside any transaction block and be **silently ignored** — PostgreSQL only warns (verified on local PostgreSQL 17) — leaving the tables to land wherever the pooled connection resolved. `execute_schema` opens the transaction itself, runs the DDL inside it, and closes it with `COMMIT`/`ROLLBACK` whichever way the DDL ends. Trusting the DDL's own wrapper instead would leave an open transaction on a pooled connection the day upstream drops it, which is the one failure mode a shared pool cannot absorb.
+  - `WrongSearchPath` keeps its name and stays in `migrate`, but no longer means "the pool is configured wrong": with a schema name the store quotes itself, it cannot fire. It is now an assertion that the pin took effect before any unqualified name was used. The test that used to provoke it (`a_misconfigured_search_path_is_refused`) was replaced by two tests of the new behaviour — a store on a pool that resolves elsewhere writes into its own schema and nothing into `public`, and two ledgers on one pool of one connection never see each other's rows.
+  - `connect_with` is kept and still works for a caller that wants a pool of its own; an externally owned pool goes through `new(pool, ledger).in_schema(schema)`, which no longer requires `search_path` in the connection options.
+  - The pool's size is the process's whole connection budget, not a per-tenant allowance: `OXSUM_DB_MAX_CONNECTIONS`, default 10.
 
 ## 2026-10-01 Gateway HTTP client and token estimation: reqwest + tiktoken-rs
 

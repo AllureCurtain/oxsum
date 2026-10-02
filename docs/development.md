@@ -43,6 +43,7 @@ Copy `.env.example` to `.env` and the server and the tests pick it up automatica
 | --- | --- |
 | `DATABASE_URL` | Each tenant gets a `ledger_<tenant>` schema in this database. Tests read it too; without it, oxsum's database tests skip automatically |
 | `OXSUM_API_TOKEN` | Required at startup; an empty value refuses to boot. Always replace it with a long random string when deploying |
+| `OXSUM_DB_MAX_CONNECTIONS` | Optional; size of the one pool every tenant shares (default 10). Each connection is a PostgreSQL backend process, so this is the process's whole budget rather than a per-tenant allowance. Stay below the database's own `max_connections` (PostgreSQL's default is 100) |
 | `OXSUM_ADDR` | Optional listen address; defaults to `127.0.0.1:3000` |
 | `RUST_LOG` | Optional `tracing-subscriber` filter; defaults to `info` |
 
