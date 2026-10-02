@@ -18,7 +18,8 @@ use crate::auth::{require_principal, session_cookie_value};
 use crate::error::ApiError;
 use crate::{AppState, Signup, today};
 
-/// The `/api/v1` surface, plus the two routes served outside it: health, and the gateway.
+/// The `/api/v1` surface, plus the routes served outside it: health, the gateway, the
+/// billing WebSocket, and the Leptos pages.
 pub fn router(state: AppState) -> Router {
     // Behind a credential: everything that touches an organization, its ledger or its
     // credentials. The credential is an API key or a session cookie; both resolve to a
@@ -49,12 +50,15 @@ pub fn router(state: AppState) -> Router {
     // The platform admin: an operator token, not an organization key, and its own middleware.
     let admin = crate::admin::router(state.clone());
 
-    Router::new()
+    let router: Router<AppState> = Router::new()
         .route("/healthz", get(|| async { "ok" }))
+        // Live billing progress for the dashboard: session-cookie auth, like the pages.
+        .route("/ws/billing", get(crate::ws::billing_ws))
         .nest("/api/v1", open.merge(authenticated).nest("/admin", admin))
         // The OpenAI-compatible surface, which brings its own auth and its own error format.
-        .nest("/v1", crate::gateway::router(state.clone()))
-        .with_state(state)
+        .nest("/v1", crate::gateway::router(state.clone()));
+    // The Leptos pages and their server functions, served by the same binary.
+    crate::web::mount(router, &state).with_state(state)
 }
 
 /// The uniform success envelope: { "data": ... }.

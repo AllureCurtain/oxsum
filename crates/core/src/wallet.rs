@@ -361,7 +361,10 @@ impl Wallet {
             .records
             .into_iter()
             .map(|stored| LogEntry {
-                index: stored.require_index().map(LogIndex::get).unwrap_or(u64::MAX),
+                index: stored
+                    .require_index()
+                    .map(LogIndex::get)
+                    .unwrap_or(u64::MAX),
                 id: stored.entry.id().to_string(),
                 description: stored.entry.description().as_str().to_owned(),
                 content_hash: stored.content_hash.to_string(),

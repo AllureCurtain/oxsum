@@ -26,7 +26,9 @@ use oxsum_core::{
     estimate_tokens,
 };
 use serde_json::Value;
+use tokio::sync::broadcast;
 
+use crate::billing::BillingEvent;
 use crate::today;
 
 /// How much forwarded text is kept for the local estimate.
@@ -35,6 +37,11 @@ use crate::today;
 /// output, and an undercount is the platform's cost rather than the user's (product.md): the
 /// alternative is holding a whole completion in memory to price it.
 const ESTIMATE_WINDOW: usize = 256 * 1024;
+
+/// A progress event goes out at most every this many forwarded answer characters.
+///
+/// The dashboard shows live turns; per-chunk events would be a push per upstream packet.
+const PROGRESS_EVERY_CHARS: usize = 1024;
 
 /// What a turn is charged for.
 #[derive(Debug, Clone, Copy)]
@@ -63,6 +70,12 @@ struct Plan {
     hold_key: String,
     /// The request id, as the description and the response header carry it.
     request: String,
+    /// The organization whose ledger holds the freeze, as its ledger tenant id: billing
+    /// events are filtered on it, so one organization's turns never reach another's
+    /// dashboard.
+    tenant_id: String,
+    /// Where billing progress goes: the dashboard's live holds section.
+    billing: broadcast::Sender<BillingEvent>,
     /// The channel that served the request, and the price version it was priced by. Both go into the
     /// settlement, so a bill says which version priced it and not only at what price.
     channel: String,
@@ -74,6 +87,9 @@ struct Plan {
     texts: Vec<String>,
     /// What upstream said and what it emitted, for the estimate.
     frames: Frames,
+    /// How many forwarded answer characters the last progress event covered: a new one
+    /// goes out every [`PROGRESS_EVERY_CHARS`].
+    progress_chars: usize,
     /// Set once upstream has ended and only the local write is left. A client that goes away then
     /// has not cut the turn short: the turn is billed as the finished turn it is.
     finished: bool,
@@ -132,6 +148,9 @@ impl Frames {
 
 impl Turn {
     /// Starts a turn that has already been frozen, priced by the channel and version it started on.
+    // Nine arguments because a turn needs the whole settlement context; splitting the
+    // constructor would just move the list somewhere else.
+    #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
         db: Db,
@@ -141,6 +160,8 @@ impl Turn {
         serving: &Serving,
         freeze: i64,
         texts: Vec<String>,
+        tenant_id: &str,
+        billing: broadcast::Sender<BillingEvent>,
     ) -> Self {
         Self {
             plan: Some(Plan {
@@ -148,6 +169,8 @@ impl Turn {
                 wallet,
                 hold_key: format!("req-{request_id}:hold"),
                 request: request_id.to_owned(),
+                tenant_id: tenant_id.to_owned(),
+                billing,
                 channel: serving.channel.clone(),
                 version: serving.version,
                 model: model.to_owned(),
@@ -156,6 +179,7 @@ impl Turn {
                 texts,
                 frames: Frames::default(),
                 finished: false,
+                progress_chars: 0,
             }),
         }
     }
@@ -184,12 +208,25 @@ impl Turn {
         }
     }
 
-    /// Reads one streamed chunk and reports whether it carried the stream's terminator.
+    /// Reads one streamed chunk, reports whether it carried the stream's terminator,
+    /// and publishes billing progress as the answer grows.
     pub fn observe(&mut self, chunk: &[u8]) -> bool {
-        match self.plan.as_mut() {
-            Some(plan) => plan.frames.observe(chunk),
-            None => false,
+        let Some(plan) = self.plan.as_mut() else {
+            return false;
+        };
+        let terminated = plan.frames.observe(chunk);
+        // Best-effort: a dashboard that is not listening misses a progress tick, and the
+        // settlement at the end still carries the final charge.
+        let output_chars = plan.frames.output.len();
+        if output_chars >= plan.progress_chars + PROGRESS_EVERY_CHARS {
+            plan.progress_chars = output_chars;
+            let _ = plan.billing.send(BillingEvent::TurnProgress {
+                tenant_id: plan.tenant_id.clone(),
+                request_id: plan.request.clone(),
+                output_chars,
+            });
         }
+        terminated
     }
 
     /// Notes that upstream has ended: the turn is finished, and only the local write is left. A
@@ -326,6 +363,16 @@ impl Plan {
             // sweeper retries what the turn could not finish.
             Err(_) => {}
         }
+        // The turn is over however the write went: the dashboard stops showing it live.
+        // Best-effort, like the progress ticks — the ledger, not this event, is the bill.
+        let _ = self.billing.send(BillingEvent::TurnSettled {
+            tenant_id: self.tenant_id.clone(),
+            request_id: self.request.clone(),
+            charged_minor: charged,
+            kind,
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+        });
         outcome
     }
 }

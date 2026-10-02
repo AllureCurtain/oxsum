@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/doubleentry", "crates/core", "crates/server"]
+members = ["crates/doubleentry", "crates/core", "crates/server", "crates/web"]
 default-members = ["crates/core", "crates/server"]
 
 [workspace.package]
@@ -10,8 +10,13 @@ rust-version = "1.98"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/AllureCurtain/oxsum"
 
+# cargo-leptos reads its `[package.metadata.leptos]` from `crates/web/Cargo.toml`.
+# `cargo leptos build` compiles the `oxsum` binary plus the WASM dashboard;
+# plain `cargo build` / `cargo test` are unaffected.
+
 [workspace.dependencies]
 oxsum-core = { path = "crates/core" }
+oxsum-web = { path = "crates/web" }
 doubleentry = { path = "crates/doubleentry", features = ["postgres", "serde"] }
 
 axum = "0.8"
@@ -19,6 +24,12 @@ axum = "0.8"
 aes-gcm = "0.10"
 base64 = "0.21"
 dotenvy = "0.15"
+# The dashboard: Leptos 0.8, server-side rendering plus browser hydration, mounted
+# through the official leptos_axum into the same binary (docs/decisions.md).
+leptos = "0.8.21"
+leptos_axum = "0.8.10"
+leptos_meta = "0.8.7"
+leptos_router = "0.8.16"
 password-auth = "1"
 proptest = "1"
 rand = "0.10"
@@ -53,6 +64,8 @@ uuid = { version = "1", features = ["v4", "v5"] }
 
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+futures-util = "0.3"
+tokio-tungstenite = "0.29"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
