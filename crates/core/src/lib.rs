@@ -32,7 +32,8 @@ pub use keys::{ApiKey, CreatedApiKey};
 pub use orgs::{Kind, Organization, Role};
 pub use proof::{ProofBundle, verify_bundle};
 pub use sessions::{
-    CreatedSession, KeyScope, Principal, Session, SessionPrincipal, SESSION_COOKIE, SESSION_LIFETIME,
+    CreatedSession, KeyScope, Principal, SESSION_COOKIE, SESSION_LIFETIME, Session,
+    SessionPrincipal,
 };
 pub use tenants::Tenants;
 pub use users::{NewUser, Registration, User};

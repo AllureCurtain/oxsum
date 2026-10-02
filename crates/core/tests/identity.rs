@@ -234,7 +234,11 @@ async fn a_revoked_key_stops_authenticating() {
     assert!(db.authenticate(&secret).await.unwrap().is_some());
 
     let revoked = db
-        .revoke_key(organization, registration.api_key.key.id, KeyScope::Organization)
+        .revoke_key(
+            organization,
+            registration.api_key.key.id,
+            KeyScope::Organization,
+        )
         .await
         .unwrap()
         .expect("the key exists");
@@ -243,7 +247,11 @@ async fn a_revoked_key_stops_authenticating() {
 
     // Revoking again is not an error, and does not move the timestamp.
     let again = db
-        .revoke_key(organization, registration.api_key.key.id, KeyScope::Organization)
+        .revoke_key(
+            organization,
+            registration.api_key.key.id,
+            KeyScope::Organization,
+        )
         .await
         .unwrap()
         .expect("the key still exists");
@@ -252,10 +260,14 @@ async fn a_revoked_key_stops_authenticating() {
     // Another organization's key id is simply not there.
     let other = db.register(signup("revoke_other")).await.unwrap();
     assert!(
-        db.revoke_key(other.organization.id, registration.api_key.key.id, KeyScope::Organization)
-            .await
-            .unwrap()
-            .is_none()
+        db.revoke_key(
+            other.organization.id,
+            registration.api_key.key.id,
+            KeyScope::Organization
+        )
+        .await
+        .unwrap()
+        .is_none()
     );
 }
 
@@ -403,7 +415,10 @@ async fn key_management_is_scoped_to_its_organization() {
     assert_ne!(second.secret, first.api_key.secret);
 
     // Newest first, metadata only: the list type has no secret field at all.
-    let keys = db.list_keys(organization, KeyScope::Organization).await.unwrap();
+    let keys = db
+        .list_keys(organization, KeyScope::Organization)
+        .await
+        .unwrap();
     assert_eq!(keys.len(), 2);
     assert_eq!(keys[0].id, second.key.id);
     assert_eq!(keys[1].id, first.api_key.key.id);
@@ -411,7 +426,10 @@ async fn key_management_is_scoped_to_its_organization() {
 
     // A different organization sees its own key and none of these.
     let other = db.register(signup("keys_other")).await.unwrap();
-    let other_keys = db.list_keys(other.organization.id, KeyScope::Organization).await.unwrap();
+    let other_keys = db
+        .list_keys(other.organization.id, KeyScope::Organization)
+        .await
+        .unwrap();
     assert_eq!(other_keys.len(), 1);
     assert_eq!(other_keys[0].id, other.api_key.key.id);
 

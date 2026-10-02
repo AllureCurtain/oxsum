@@ -8,7 +8,7 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router, middleware};
 use oxsum_core::{
     ApiKey, CreatedApiKey, CreatedSession, NewUser, Organization, Principal, Registration, Role,
-    Session, SessionPrincipal, Tenants, User, Wallet, SESSION_COOKIE,
+    SESSION_COOKIE, Session, SessionPrincipal, Tenants, User, Wallet,
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -179,8 +179,11 @@ async fn login(
     .into_response();
     response.headers_mut().insert(
         SET_COOKIE,
-        HeaderValue::from_str(&session_cookie(&token, state.config.session_cookie_secure()))
-            .map_err(|_| ApiError::Internal)?,
+        HeaderValue::from_str(&session_cookie(
+            &token,
+            state.config.session_cookie_secure(),
+        ))
+        .map_err(|_| ApiError::Internal)?,
     );
     Ok(response)
 }
