@@ -6,6 +6,7 @@
 //! filtering. oxsum's own tables (users, organizations, memberships, API keys) live in one
 //! `oxsum` schema, outside the ledgers; see [`Db`].
 
+mod billing;
 mod db;
 mod error;
 mod keys;
@@ -15,6 +16,10 @@ mod tenants;
 mod users;
 mod wallet;
 
+pub use billing::{
+    Price, PriceBook, Settlement, SettlementKind, Usage, estimate_tokens, hold_description,
+    input_upper_bound,
+};
 pub use db::{Db, SCHEMA};
 pub use doubleentry::{EntryId, Hash};
 pub use error::WalletError;
@@ -23,4 +28,4 @@ pub use orgs::{Kind, Organization, Role};
 pub use proof::{ProofBundle, verify_bundle};
 pub use tenants::Tenants;
 pub use users::{NewUser, Registration, User};
-pub use wallet::{Credits, Receipt, SCALE, Wallet};
+pub use wallet::{Credits, Receipt, SCALE, Wallet, entry_id_for};

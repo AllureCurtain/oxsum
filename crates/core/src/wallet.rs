@@ -1,9 +1,9 @@
 use doubleentry::account::AccountRegistry;
 use doubleentry::storage::postgres::PostgresStore;
 use doubleentry::{
-    AccountId, Amount, BalanceKey, BalanceLimit, BalanceQuery, Balanced, Currency, Draft, Entry,
-    EntryBatch, EntryId, Hash, IdempotencyKey, Layer, LedgerId, LedgerPolicy, LedgerStore,
-    PeriodCalendar, Posting, SealContext,
+    AccountId, Amount, BalanceKey, BalanceLimit, BalanceQuery, Balanced, Currency, Description,
+    Draft, Entry, EntryBatch, EntryId, Hash, IdempotencyKey, Layer, LedgerId, LedgerPolicy,
+    LedgerStore, PeriodCalendar, Posting, SealContext,
 };
 use sqlx::PgPool;
 use time::Date;
@@ -155,10 +155,21 @@ impl Wallet {
     /// The wallet's limit counts the pending layer, so concurrent holds cannot
     /// together exceed the balance. Refused with [`WalletError::InsufficientFunds`]
     /// when the balance cannot cover it.
-    pub async fn hold(&self, key: &str, minor: i64, on: Date) -> Result<Receipt, WalletError> {
+    ///
+    /// `description` is what the entry says it is, in the caller's words — for a gateway request, the
+    /// record built by [`crate::hold_description`]. An empty description records none; either way it
+    /// is part of the entry and covered by its content hash.
+    pub async fn hold(
+        &self,
+        key: &str,
+        description: &str,
+        minor: i64,
+        on: Date,
+    ) -> Result<Receipt, WalletError> {
         let amt = positive(minor)?;
         self.append(
             Entry::<Draft, SCALE>::new(entry_id_for(key), idem(key)?, on)
+                .with_description(description_of(description)?)
                 .post(Posting::debit(self.wallet, amt, currency()).in_layer(Layer::Pending))
                 .post(Posting::credit(self.revenue, amt, currency()).in_layer(Layer::Pending)),
         )
@@ -178,6 +189,12 @@ impl Wallet {
     /// in total, and two settlements cannot both release the same reservation — the check runs
     /// inside the append, against the balance the entry would leave behind.
     ///
+    /// `description` is what the entry says it is, in the caller's words — for a gateway turn, the
+    /// record built by [`crate::Settlement::description`], which carries the token counts and the
+    /// prices so a bill proves the arithmetic and not only the total. It must be derived from the
+    /// request alone: two settlements under one key with different descriptions are different
+    /// requests, and the ledger refuses the second.
+    ///
     /// What it does not do is pair one settlement with one hold: the reservation layer is
     /// checked in aggregate, so releasing more than the hold it names is permitted while other
     /// reservations cover the amount. No value can be fabricated that way — the total released
@@ -185,6 +202,7 @@ impl Wallet {
     pub async fn settle(
         &self,
         key: &str,
+        description: &str,
         held_minor: i64,
         actual_minor: i64,
         on: Date,
@@ -196,6 +214,7 @@ impl Wallet {
             ));
         }
         let mut draft = Entry::<Draft, SCALE>::new(entry_id_for(key), idem(key)?, on)
+            .with_description(description_of(description)?)
             .post(Posting::credit(self.wallet, held, currency()).in_layer(Layer::Pending))
             .post(Posting::debit(self.revenue, held, currency()).in_layer(Layer::Pending));
         if actual_minor > 0 {
@@ -341,8 +360,21 @@ fn idem(key: &str) -> Result<IdempotencyKey, WalletError> {
     IdempotencyKey::new(key.as_bytes().to_vec()).map_err(invalid)
 }
 
-/// Derives the EntryId deterministically from the idempotency key, so a retry always lands on the same entry.
-fn entry_id_for(key: &str) -> EntryId {
+/// The entry's description, validated by the ledger: it caps the length and refuses control
+/// characters, so a caller cannot smuggle either into a stored entry.
+fn description_of(text: &str) -> Result<Description, WalletError> {
+    Description::new(text.to_owned()).map_err(invalid)
+}
+
+/// Derives the EntryId deterministically from the idempotency key, so a retry always lands on the
+/// same entry.
+///
+/// Public because the derivation is part of the interface: a gateway response carries an
+/// `x-oxsum-request-id`, and the entries that request produced are `req-<id>:hold` and
+/// `req-<id>:settle` under this rule. A caller holding a request id can therefore name the entries
+/// it caused without asking the server which ones they were (docs/api.md).
+#[must_use]
+pub fn entry_id_for(key: &str) -> EntryId {
     EntryId::from_uuid(uuid::Uuid::new_v5(
         &uuid::Uuid::NAMESPACE_OID,
         key.as_bytes(),
