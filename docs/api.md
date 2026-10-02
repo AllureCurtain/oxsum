@@ -5,7 +5,7 @@ Field definitions for each endpoint are authoritative in `crates/server/openapi.
 ## Basics
 
 - Prefix: `/api/v1`. `/healthz` needs no auth and sits outside the prefix; so does `POST /api/v1/auth/register`, when the deployment allows signup at all.
-- Auth: `Authorization: Bearer oxs-…`, an organization's API key. The key decides which organization a request spends, so no endpoint takes a tenant from the caller. Unknown, revoked and expired keys are all `UNAUTHORIZED`, with no hint which it was.
+- Auth: two credentials, one principal. `Authorization: Bearer oxs-…` is an organization's API key; the `oxsum_session` cookie is a logged-in user's session (`POST /api/v1/auth/login`, `HttpOnly`, `SameSite=Lax`, `Path=/`, plus `Secure` when the deployment sets `OXSUM_SESSION_COOKIE_SECURE`). Both resolve to the organization the request acts for, so no endpoint takes a tenant from the caller; a session additionally carries the acting user and their role. An explicitly presented bearer token is resolved as a key and never falls through to the cookie. Unknown, revoked and expired credentials are all `UNAUTHORIZED`, with no hint which it was. The cookie is never accepted on `/v1`: the gateway takes an API key only.
 - Time: ISO 8601, UTC. The posting date is decided by the server.
 - Money: integers in minor units, 1 credit = 1_000_000. Field names end in `Minor`.
 - Field naming: camelCase for both requests and responses.
@@ -71,7 +71,7 @@ Failure:
 | code | HTTP | meaning |
 | --- | --- | --- |
 | `VALIDATION_ERROR` | 400 | request validation failed |
-| `UNAUTHORIZED` | 401 | key or operator token missing, malformed, unknown, revoked or expired |
+| `UNAUTHORIZED` | 401 | credential missing, malformed, unknown, revoked or expired — key, operator token or session alike — or a login with an unknown email or a wrong password |
 | `FORBIDDEN` | 403 | the caller may not do this; registration when signup is not open |
 | `INSUFFICIENT_FUNDS` | 402 | the wallet cannot cover it: a hold larger than the available balance |
 | `NOT_FOUND` | 404 | resource does not exist, or belongs to another organization; a settlement naming a hold that is not outstanding |
@@ -81,7 +81,8 @@ Failure:
 ## API keys
 
 - Format: `oxs-` followed by 32 random bytes, so secret scanners can recognize one. The plaintext is returned once, at creation; the database stores only its SHA-256 hash and a display prefix.
-- Keys belong to an organization and hold no money. `created_by` records the user who minted one, for the role rules product.md defines.
+- Keys belong to an organization and hold no money. `created_by` records the user who minted one, for the role rules product.md defines: a key minted through a session records its creator, a key minted with an API key records none.
+- Members see and revoke only the keys they created; owners and admins see and revoke every key of the organization. A key that exists but is not the caller's answers `NOT_FOUND`, never `FORBIDDEN`, so ids cannot be probed. An API key acting as the organization keeps its full authority: roles constrain sessions, not keys.
 - Revocation is permanent and idempotent; a key id of another organization is `NOT_FOUND`, never `FORBIDDEN`, so ids cannot be probed.
 - Expiry is optional. An expired key is refused exactly like a revoked one.
 - Until sessions arrive, any active key of an organization may create and revoke keys of that organization: a role check needs a user to be the acting principal, and users act through web login. The schema already records what the check needs.

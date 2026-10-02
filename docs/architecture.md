@@ -56,7 +56,8 @@ crates/
       users.rs          exists: registration, password hashing; login arrives with B-6
       orgs.rs           exists: organizations, memberships, roles; invitations come later
       keys.rs           exists: API key mint, resolve, list, revoke
-      sessions.rs       B-6: session table reads, writes and renewal
+      sessions.rs       exists: session table reads, writes and renewal; login, logout,
+                        and the Principal (key or session) the auth middleware resolves
     migrations/         exists: oxsum's own tables (users/orgs/memberships/keys, channels
                         and their price versions). Create-table SQL only, applied by oxsum's
                         own migration runner; ledger schemas stay owned by doubleentry's
@@ -80,12 +81,12 @@ Principle: **domain logic belongs in core; the gateway does protocol and orchest
 
 ## Auth and permissions
 
-- API: an organization's API key in `Authorization: Bearer oxs-…`, resolved to its organization by middleware; handlers read the organization from the request, never from the path. The key's plaintext is stored nowhere: the database keeps its SHA-256 hash and a display prefix.
-- Web login: self-built session table (token hash, user id, expiry), cookie with HttpOnly, SameSite=Lax, Secure; password hashing with password-auth (argon2). Rationale in docs/decisions.md.
+- API: an organization's API key in `Authorization: Bearer oxs-…`, or a session cookie from web login — both resolved to a principal (the organization, or the user plus their role in it) by middleware; handlers read the principal from the request, never from the path. Neither credential's plaintext is stored: the database keeps SHA-256 hashes and display prefixes.
+- Web login: self-built session table (token hash, user id, organization id, expiry, revocation), cookie with HttpOnly, SameSite=Lax, Secure when the deployment says so; password hashing with password-auth (argon2). A session dies with its membership. Rationale in docs/decisions.md.
+- Role rules: members list and revoke only the keys they created (anything else is 404), owners and admins see and revoke all; roles constrain sessions, not keys.
 - Between tenants: physical isolation, one schema per tenant, no filter columns in queries. The connection layer shares one pool; `SET LOCAL search_path` at the start of each transaction picks the tenant schema (mechanism in docs/decisions.md). oxsum's own tables are not in those schemas: they are schema-qualified (`oxsum.users`) in the one `oxsum` schema, so nothing about a request's organization can change which identity rows a statement sees.
 - Planned:
-  - Team organizations and multi-org membership: the schema holds many memberships per user already, the flow that creates one is B-6's.
-  - Web login and API keys are two channels resolving to the same "current organization".
+  - Team organizations and multi-org membership: the schema holds many memberships per user already, the flow that creates one comes later; a session acts as the oldest membership until the dashboard adds switching.
   - Per-key sub-limits and last-used timestamps, see TODO.md.
   - See docs/decisions.md and TODO.md.
 
@@ -125,7 +126,8 @@ Only relationships; the ledger's table structure is authoritative in `crates/dou
 - Organization 1-to-1 ledger, 1 ledger = 1 schema `ledger_<tenant_id>`, and an organization's tenant id is its own UUID without dashes.
 - User many-to-many organizations, via memberships carrying a role (owner, admin, member). Registration creates one of each.
 - Organization 1-to-many API keys; a key holds no balance itself, it is a credential resolving to its organization.
-- Planned (not built): user 1-to-many sessions (web login), organization 1-to-many invitations.
+- Planned (not built): organization 1-to-many invitations.
+- User 1-to-many sessions (web login): built; a session acts as the user's oldest membership until the dashboard adds switching.
 - Every ledger has three fixed accounts:
   - `Liabilities:Wallet`: user balance, overdraft forbidden
   - `Assets:Cash`: money received from top-ups
