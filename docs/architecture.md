@@ -85,10 +85,11 @@ Principle: **domain logic belongs in core; gateway does protocol and orchestrati
 
 1. Before relaying an LLM request, `POST holds` freezes an upper bound.
    - The wallet account books a debit in the pending layer; available balance drops accordingly.
-   - The wallet carries a `NoDebitBalance` limit; the limit check and the write happen in one database transaction, with the pending layer included in the calculation, so concurrent holds cannot overdraw.
+   - The wallet carries a `FundedReservations` limit; the limit check and the write happen in one database transaction, with the pending layer included in the calculation, so concurrent holds cannot overdraw.
 2. When the stream ends, `POST settlements` books one entry that does two things:
    - Books a reversal in the pending layer, releasing the hold
    - Charges actual usage in the settled layer, moving wallet → revenue
+   - The same limit checks the release, so the amount it gives back cannot exceed what holds reserved: settling an amount that was never held is refused rather than turning into available balance. The check is over the reserved total, not the individual hold — see docs/decisions.md.
 3. Each step carries its own `idempotencyKey`, so retries are safe.
 
 ### User bill verification

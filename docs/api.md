@@ -21,6 +21,12 @@ Every write endpoint requires an `idempotencyKey`:
 
 On timeout or network errors the client retries with the same key, never a new one.
 
+## Holds and settlements
+
+- A hold reserves part of the available balance. The settled balance is untouched until a settlement discharges the hold; the difference between the amount held and the amount charged goes back to the available balance.
+- `heldMinor` on a settlement is a claim about a hold this wallet took, and it is checked as one: the amount released may not exceed the holds outstanding, or the settlement is `INSUFFICIENT_FUNDS`. The check runs inside the append, so two settlements cannot both release the same hold.
+- The pairing is aggregate, not one-to-one: a settlement may name a hold smaller than the amount it releases while other holds cover the total. No value can be fabricated that way — the total released can never exceed the total held — but a client should settle the hold it took, for the amount it took it for.
+
 ## Response format
 
 Success:
@@ -42,7 +48,7 @@ Failure:
 | `VALIDATION_ERROR` | 400 | request validation failed |
 | `UNAUTHORIZED` | 401 | key missing, malformed, unknown, revoked or expired |
 | `FORBIDDEN` | 403 | the caller may not do this; registration when signup is not open |
-| `INSUFFICIENT_FUNDS` | 402 | available balance too low; hold or charge refused |
+| `INSUFFICIENT_FUNDS` | 402 | the wallet cannot cover it: a hold larger than the available balance, or a settlement releasing more than is held |
 | `NOT_FOUND` | 404 | resource does not exist, or belongs to another organization |
 | `CONFLICT` | 409 | the value is already taken, or a key was reused for a different request; registering an email that exists |
 | `INTERNAL_ERROR` | 500 | server error; details only in logs |
