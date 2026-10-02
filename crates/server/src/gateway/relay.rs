@@ -22,7 +22,8 @@ use std::sync::Arc;
 use axum::body::Bytes;
 use futures_core::Stream;
 use oxsum_core::{
-    Price, Receipt, Settlement, SettlementKind, Usage, Wallet, WalletError, estimate_tokens,
+    Price, Receipt, Serving, Settlement, SettlementKind, Usage, Wallet, WalletError,
+    estimate_tokens,
 };
 use serde_json::Value;
 
@@ -59,6 +60,10 @@ struct Plan {
     key: String,
     /// The request id, as the description and the response header carry it.
     request: String,
+    /// The channel that served the request, and the price version it was priced by. Both go into the
+    /// settlement, so a bill says which version priced it and not only at what price.
+    channel: String,
+    version: i64,
     model: String,
     price: Price,
     freeze: i64,
@@ -123,13 +128,13 @@ impl Frames {
 }
 
 impl Turn {
-    /// Starts a turn that has already been frozen.
+    /// Starts a turn that has already been frozen, priced by the channel and version it started on.
     #[must_use]
     pub fn new(
         wallet: Arc<Wallet>,
         request_id: &str,
         model: &str,
-        price: Price,
+        serving: &Serving,
         freeze: i64,
         texts: Vec<String>,
     ) -> Self {
@@ -138,8 +143,10 @@ impl Turn {
                 wallet,
                 key: format!("req-{request_id}:settle"),
                 request: request_id.to_owned(),
+                channel: serving.channel.clone(),
+                version: serving.version,
                 model: model.to_owned(),
-                price,
+                price: serving.price,
                 freeze,
                 texts,
                 frames: Frames::default(),
@@ -283,7 +290,9 @@ impl Plan {
         };
         let settlement = Settlement {
             request: &self.request,
+            channel: &self.channel,
             model: &self.model,
+            price_version: self.version,
             kind,
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,

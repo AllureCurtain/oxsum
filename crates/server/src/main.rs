@@ -29,11 +29,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = Db::connect(&database_url, max_connections).await?;
     tracing::info!(%max_connections, "database pool ready");
 
-    // oxsum's own tables (users, organizations, memberships, API keys) before serving: a
-    // registration that arrives first must find them.
+    // oxsum's own tables (users, organizations, memberships, API keys, channels and their prices)
+    // before serving: a registration that arrives first must find them.
     db.migrate().await?;
     tracing::info!("oxsum schema ready");
 
+    // Seeding the bootstrap channel and opening every stored channel credential happen before the
+    // listener: a deployment that cannot open its channels must not accept a request at all.
+    oxsum_server::prepare(&db, &config).await?;
     let app = oxsum_server::app(db, config);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "oxsum listening");

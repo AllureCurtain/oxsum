@@ -96,6 +96,12 @@ impl From<WalletError> for GatewayError {
                 tracing::error!(%error, "storage failure on the gateway path");
                 Self::Internal
             }
+            // A channel credential that does not open, or a key that is not there: the deployment is
+            // broken, and the caller can do nothing about it but is told so honestly.
+            WalletError::Misconfigured(detail) => {
+                tracing::error!(%detail, "this deployment is misconfigured");
+                Self::Internal
+            }
         }
     }
 }
