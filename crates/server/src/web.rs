@@ -16,12 +16,20 @@ use crate::AppState;
 /// Mounts the dashboard pages and their server functions into the router.
 ///
 /// `leptos_axum` renders the [`oxsum_web::Shell`] as the whole HTML document; the route
-/// list comes from [`oxsum_web::App`], the route tree inside that shell.
+/// list comes from [`oxsum_web::App`], the route tree inside that shell. The static
+/// bundle `cargo leptos build` writes to the site dir (`target/site`, `/pkg/*` inside
+/// it) is served too: without that route the shell references assets that answer 404
+/// and the pages render but never hydrate — the dashboard's live side and the
+/// in-browser `/verify` check stay dead, in the Docker image as in local development.
 pub fn mount(router: Router<AppState>, state: &AppState) -> Router<AppState> {
     let routes = generate_route_list(oxsum_web::App);
     let db = state.db.clone();
     let tenants = state.tenants.clone();
     let options = state.leptos_options.clone();
+    let router = router.route_service(
+        &leptos_axum::site_pkg_dir_service_route_path(&options),
+        leptos_axum::site_pkg_dir_service(&options),
+    );
     router.leptos_routes_with_context(
         state,
         routes,
