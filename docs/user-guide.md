@@ -90,6 +90,11 @@ How each turn is recorded, in the settlement entry's own words:
 | `upstream_unreachable` | Upstream could not be reached at all | Nothing; the whole freeze is released |
 | `capped` | Upstream's usage priced above the freeze | The freeze, and the excess is recorded as an anomaly |
 
+Every settlement also records which channel served the turn and which price version priced it
+(`priceVersion` beside the prices and the token counts). A version is never rewritten, so a price
+change affects later calls only: a bill written today can still be checked against the configuration
+it was written under, however often the price changes afterwards.
+
 ### By hand
 
 Purpose: reserve credit before the call, charge actual usage after it, refund the unspent rest.

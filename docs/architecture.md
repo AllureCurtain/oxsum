@@ -25,12 +25,14 @@ The axum API, the core and doubleentry exist today, with oxsum's own identity ta
 | doubleentry | `crates/doubleentry` | Double-entry bookkeeping, balance limits, pending layer, Merkle inclusion and consistency proofs, period closing. Vendored, see docs/decisions.md |
 | Wallet | `crates/core/src/wallet.rs` | One tenant's wallet: top-up, hold, settle, balance, proof bundles. Built on the shared pool, never on a pool of its own |
 | Pricing | `crates/core/src/billing.rs` | What a turn costs and what the ledger records: the input upper bound, the freeze, priced usage, the local `o200k_base` estimate, the settlement record, and the price book. No I/O, so it is the same arithmetic in a test and in a request |
+| Channels | `crates/core/src/channels.rs` | The channels and their prices: the append-only price versions, the resolution a request prices itself by (channel, version, price, upstream address), and the sealed upstream credential. Sealing is AES-256-GCM under `OXSUM_SECRET_KEY`, see docs/decisions.md |
 | Tenants | `crates/core/src/tenants.rs` | Facades over the shared pool, cached per tenant: a tenant costs a facade, not connections. See docs/decisions.md "all tenants share one connection pool" |
 | Db | `crates/core/src/db.rs` | The process's one pool, plus oxsum's own tables: `migrate` creates the `oxsum` schema and applies `crates/core/migrations/` in order, each file and its recorded version in one transaction |
 | Identity | `crates/core/src/users.rs`, `orgs.rs`, `keys.rs` | Registration (user, personal organization, owner membership and first API key, one transaction), organizations and memberships, and API keys: mint, resolve, list, revoke. The credential names the organization |
 | proof | `crates/core/src/proof.rs` | Proof bundle structure and the client-side verify function, later called directly inside a Leptos component |
 | HTTP | `crates/server/src/` | Routing, API-key middleware, error mapping |
-| Gateway | `crates/server/src/gateway/` | The OpenAI-compatible `/v1` surface: model list, chat completions, OpenAI-shaped errors, and the relay that freezes before upstream and settles however the turn ends. Its own auth middleware, because a refusal here has to look like OpenAI's. Pricing is in core, see docs/decisions.md |
+| Gateway | `crates/server/src/gateway/` | The OpenAI-compatible `/v1` surface: model list, chat completions, OpenAI-shaped errors, and the relay that freezes before upstream and settles however the turn ends. Its own auth middleware, because a refusal here has to look like OpenAI's. It resolves its channel and price version from the rows in `crates/core` once per request, and records both in the settlement. Pricing is in core, see docs/decisions.md |
+| Admin | `crates/server/src/admin.rs` | The platform admin's `/api/v1/admin` surface: channels and their price versions, behind `OXSUM_ADMIN_TOKEN` in a middleware of its own, because this is not an organization's credential. Store and rules are in core, see docs/decisions.md |
 | Pages | `crates/web` (not yet created) | Leptos admin dashboard, bill page, chat page. SSR plus hydration, mounted through the official `leptos_axum`, one binary |
 
 ## Directory plan
@@ -45,26 +47,29 @@ crates/
       wallet.rs         exists
       tenants.rs        exists, shared-pool facade over many ledger facades
       billing.rs        exists: the input upper bound, the freeze, priced usage, the local
-                        estimate, the settlement record, and the price book the gateway reads
+                        estimate, the settlement record, and the price book
+      channels.rs       exists: channels, append-only price versions, credential sealing, and
+                        the (channel, version, price, upstream) a request resolves once
       proof.rs          exists
       db.rs             exists: the one pool plus oxsum's own migration runner
       users.rs          exists: registration, password hashing; login arrives with B-6
       orgs.rs           exists: organizations, memberships, roles; invitations come later
       keys.rs           exists: API key mint, resolve, list, revoke
       sessions.rs       B-6: session table reads, writes and renewal
-    migrations/         exists: oxsum's own tables (users/orgs/memberships/keys)
-                        Create-table SQL only, applied by oxsum's own migration runner;
-                        ledger schemas stay owned by doubleentry's migrate, never mixed
-                        B-3: the channel and price-version tables join them
+    migrations/         exists: oxsum's own tables (users/orgs/memberships/keys, channels
+                        and their price versions). Create-table SQL only, applied by oxsum's
+                        own migration runner; ledger schemas stay owned by doubleentry's
+                        migrate, never mixed
   server/               HTTP assembly: axum Router, error mapping, auth middleware,
                         exposing core as /api/v1 and the gateway as /v1
     src/gateway/        exists: the /v1 surface — router, OpenAI error shape, request
                         parsing, the SSE relay, and the turn that owns its own settlement
+    src/admin.rs        exists: the platform admin's /api/v1/admin surface and its token
   web/                  B-5: Leptos pages, built with cargo-leptos,
                         server and browser code separated by feature
 ```
 
-Principle: **domain logic belongs in core; the gateway does protocol and orchestration only; server only assembles**. The litmus test — if the logic survives replacing the axum layer, it is in the right place. That is why the gateway is a module of the server crate rather than a crate of its own: everything it does is HTTP — routing, an OpenAI-shaped error body, request deserialization, and a relay whose lifetime is the response body's — while every number it charges by is computed in `crates/core/src/billing.rs`. Migrations follow the crate that owns the table (core's tables in `core/migrations/`, the price table too when B-3 gives it one), applied in dependency order at startup.
+Principle: **domain logic belongs in core; the gateway does protocol and orchestration only; server only assembles**. The litmus test — if the logic survives replacing the axum layer, it is in the right place. That is why the gateway is a module of the server crate rather than a crate of its own: everything it does is HTTP — routing, an OpenAI-shaped error body, request deserialization, and a relay whose lifetime is the response body's — while every number it charges by is computed in `crates/core/src/billing.rs` and every row it charges by is read through `crates/core/src/channels.rs`. Migrations follow the crate that owns the table (core's tables in `core/migrations/`), applied in dependency order at startup.
 
 ## Frontend/backend boundary
 
