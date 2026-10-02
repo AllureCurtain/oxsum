@@ -2246,6 +2246,9 @@ fn limit_code(limit: BalanceLimit) -> &'static str {
         BalanceLimit::Unlimited => "unlimited",
         BalanceLimit::NoCreditBalance => "no_credit",
         BalanceLimit::NoDebitBalance => "no_debit",
+        // oxsum change (not upstream): the code for the reservation rule oxsum's
+        // wallet needs. See the DDL for the constraint that admits it.
+        BalanceLimit::FundedReservations => "funded_reservations",
     }
 }
 
@@ -2255,6 +2258,7 @@ fn limit_from_code(code: &str) -> Option<BalanceLimit> {
         "unlimited" => Some(BalanceLimit::Unlimited),
         "no_credit" => Some(BalanceLimit::NoCreditBalance),
         "no_debit" => Some(BalanceLimit::NoDebitBalance),
+        "funded_reservations" => Some(BalanceLimit::FundedReservations),
         _ => None,
     }
 }

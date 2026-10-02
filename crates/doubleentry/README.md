@@ -208,6 +208,17 @@ reservation consumes room, an expected inflow grants none. Neither layer alone w
 checking only the settled one lets a hold step around the limit until the money moves, and
 checking each against its own zero forbids a cash box from reserving an outflow at all.
 
+`FundedReservations` is the rule for an account drawn on through reservations, and it is
+`NoDebitBalance` plus one more constraint: the **pending layer may not be a credit of its own**.
+The asymmetric fold cannot see the direction of a pending movement, so under `NoDebitBalance`
+alone a release of a reservation that was never made credits the pending layer and raises what
+the account may draw on, out of nothing. This variant refuses it, which is what makes a
+settlement of an amount that was never held impossible rather than merely discouraged.
+
+**oxsum change (not upstream):** `FundedReservations` and its stored code
+`funded_reservations` were added for oxsum's wallet account. The PostgreSQL DDL also widens the
+`accounts_balance_limit` constraint on an accounts table that already exists.
+
 → [Accounts](https://hupe1980.github.io/doubleentry/docs/accounts/)
 
 ---

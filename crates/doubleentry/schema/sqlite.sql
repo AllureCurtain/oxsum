@@ -45,8 +45,16 @@ CREATE TABLE IF NOT EXISTS ledger_meta (
 -- `balance_limit` is a rule about what may be booked next, like the open window:
 -- 'no_credit' forbids the net going credit (an asset that cannot be overdrawn),
 -- 'no_debit' forbids it going debit (a liability that cannot be drawn beyond
--- what was funded). The backend enforces it inside the append, because the check
--- is against the balance the entry would leave behind.
+-- what was funded), and 'funded_reservations' is 'no_debit' plus "the pending
+-- layer may not be a credit of its own", which is what stops a release of a
+-- reservation that was never made. The backend enforces it inside the append,
+-- because the check is against the balance the entry would leave behind.
+--
+-- oxsum change (not upstream): SQLite has no `ALTER TABLE ... DROP CONSTRAINT`, so
+-- unlike the PostgreSQL schema there is no idempotent statement that widens the
+-- constraint of an existing file. A database created before 'funded_reservations'
+-- existed keeps the old constraint and refuses the new code; rebuild it, or set the
+-- limit through a fresh database. oxsum itself uses PostgreSQL.
 
 CREATE TABLE IF NOT EXISTS accounts (
     account_index   INTEGER NOT NULL,
@@ -62,7 +70,7 @@ CREATE TABLE IF NOT EXISTS accounts (
         OR kind IN ('asset', 'liability', 'equity', 'income', 'expense')
     ),
     CONSTRAINT accounts_balance_limit CHECK (
-        balance_limit IN ('unlimited', 'no_credit', 'no_debit')
+        balance_limit IN ('unlimited', 'no_credit', 'no_debit', 'funded_reservations')
     ),
     PRIMARY KEY (account_index),
     UNIQUE (path)
