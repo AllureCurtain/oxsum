@@ -12,6 +12,7 @@ Field definitions for each endpoint are authoritative in `crates/server/openapi.
 - Organization tenant ids: 32 lowercase hex characters, the organization's UUID without dashes. The ledger lives in the schema `ledger_<tenantId>`. Clients only ever read this value; they never send it.
 - Idempotency keys: non-empty UTF-8 strings, at most 128 bytes.
 - `/v1/*` is a second surface with the same key: an OpenAI-compatible gateway, whose bodies and errors are OpenAI's rather than oxsum's. It is documented in its own section below.
+- `/api/v1/admin/*` is a third: the platform admin's surface, opened by `OXSUM_ADMIN_TOKEN` rather than by an API key. It answers in the same envelope and the same error codes as the rest of `/api/v1`, and is documented in its own section below.
 
 ## Idempotency
 
@@ -32,12 +33,24 @@ On timeout or network errors the client retries with the same key, never a new o
 
 Point an OpenAI client's `base_url` at `/v1` and everything else stays the client's own.
 
-- `GET /v1/models` lists the models this deployment serves — exactly those with a configured price.
+- `GET /v1/models` lists the models this deployment serves — exactly those with a price. `owned_by` is the channel that serves one, and `created` is when the version in force was written.
 - `POST /v1/chat/completions` relays one turn, streaming or not, and bills it. Fields the gateway does not act on are forwarded upstream unchanged, so a client that works against the provider works here. `max_tokens` is set to the output upper bound the freeze was computed for, `max_completion_tokens` is dropped, and `stream_options.include_usage` is forced on for a stream.
 - Errors are OpenAI's `{"error": {"message", "type", "param", "code"}}`, with oxsum's own code in `error.code`. Upstream's error object is passed through verbatim on a 502.
 - Every response carries `x-oxsum-request-id`. The entries a turn wrote are `req-<id>:hold` and `req-<id>:settle`, and `oxsum_core::entry_id_for` derives their ids, so the id in a header is enough to name the bill.
 - Text content only: an image or another content part is 400, because the freeze needs an input bound that cannot be undercounted.
-- How each turn ends is recorded in the settlement entry's description as its `kind`; docs/user-guide.md has the table.
+- How each turn ends is recorded in the settlement entry's description as its `kind`; docs/user-guide.md has the table. The same description carries the `channel` and the `priceVersion` that priced the turn, so the prices can be checked against the configuration afterwards.
+- A request is priced by the version in force when it starts. A price change during a turn reaches later requests only; the turn in flight settles at the version it began on.
+
+## Platform admin (`/api/v1/admin`)
+
+Whoever deploys oxsum, and nobody else: the credential is the operator token from `OXSUM_ADMIN_TOKEN`, sent as a bearer token, compared in constant time, and refused unless it is at least 16 characters when the server starts. An organization's API key does not open this surface, and this token does not open an organization's.
+
+- `GET /api/v1/admin/channels` — the channels, each with the current version of every model it serves. Only the last four characters of an upstream credential are ever returned.
+- `POST /api/v1/admin/channels` — create a channel (name, baseUrl, apiKey), or replace the connection of the channel that already has that name. Prices are untouched by a connection change.
+- `POST /api/v1/admin/channels/{channelName}/prices` — append a price version for a model, and answer the version that was written. `CONFLICT` when another channel already serves that model: in v1 one model belongs to one channel.
+- `GET /api/v1/admin/channels/{channelName}/prices` — every version of every model of that channel, newest first. This is the history, and it is what makes the `priceVersion` in an old settlement checkable.
+
+A deployment that sets no `OXSUM_ADMIN_TOKEN` has no admin surface: the routes exist and answer `UNAUTHORIZED`, rather than being open or absent.
 
 ## Response format
 
@@ -58,7 +71,7 @@ Failure:
 | code | HTTP | meaning |
 | --- | --- | --- |
 | `VALIDATION_ERROR` | 400 | request validation failed |
-| `UNAUTHORIZED` | 401 | key missing, malformed, unknown, revoked or expired |
+| `UNAUTHORIZED` | 401 | key or operator token missing, malformed, unknown, revoked or expired |
 | `FORBIDDEN` | 403 | the caller may not do this; registration when signup is not open |
 | `INSUFFICIENT_FUNDS` | 402 | the wallet cannot cover it: a hold larger than the available balance, or a settlement releasing more than is held |
 | `NOT_FOUND` | 404 | resource does not exist, or belongs to another organization |
