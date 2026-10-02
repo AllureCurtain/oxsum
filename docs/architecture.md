@@ -16,7 +16,7 @@ API callers ──→ axum /api/v1 ───────────────
                      holding users, organizations, memberships and API keys
 ```
 
-The axum API, the core, doubleentry and the gateway exist today, with oxsum's own identity tables in one `oxsum` schema. The Leptos pages are not built yet; the order is in TODO.md.
+The axum API, the core, doubleentry and the gateway exist today, with oxsum's own identity tables in one `oxsum` schema. The Leptos admin dashboard (TODO B-5) is built: the pages are served by the same binary; the bill page, verification page and chat page follow in TODO.md's order.
 
 ## Modules
 
@@ -34,7 +34,7 @@ The axum API, the core, doubleentry and the gateway exist today, with oxsum's ow
 | Gateway | `crates/server/src/gateway/` | The OpenAI-compatible `/v1` surface: model list, chat completions, OpenAI-shaped errors, and the relay that freezes before upstream and settles however the turn ends. Its own auth middleware, because a refusal here has to look like OpenAI's. It resolves its channel and price version from the rows in `crates/core` once per request, and records both in the settlement. Pricing is in core, see docs/decisions.md. It notes each hold in the sweeper's watch table before taking it, and clears the row when the turn settles |
 | Hold sweeper | `crates/core/src/holds.rs`, spawned in `crates/server/src/main.rs` | The background job that settles watched holds older than `OXSUM_HOLD_TIMEOUT` at 0 with kind `swept`, releasing the whole freeze. The watch table (`oxsum.open_holds`) is a finding aid only: the ledger stays the source of truth, and the derived settlement key is the atomic guard against a late settlement landing alongside the sweep. See docs/decisions.md |
 | Admin | `crates/server/src/admin.rs` | The platform admin's `/api/v1/admin` surface: channels and their price versions, behind `OXSUM_ADMIN_TOKEN` in a middleware of its own, because this is not an organization's credential. Store and rules are in core, see docs/decisions.md |
-| Pages | `crates/web` (not yet created) | Leptos admin dashboard, bill page, chat page. SSR plus hydration, mounted through the official `leptos_axum`, one binary |
+| Pages | `crates/web` | Leptos admin dashboard, bill page, chat page. SSR plus hydration, mounted through the official `leptos_axum`, one binary |
 
 ## Directory plan
 
@@ -67,8 +67,10 @@ crates/
     src/gateway/        exists: the /v1 surface — router, OpenAI error shape, request
                         parsing, the SSE relay, and the turn that owns its own settlement
     src/admin.rs        exists: the platform admin's /api/v1/admin surface and its token
-  web/                  B-5: Leptos pages, built with cargo-leptos,
-                        server and browser code separated by feature
+  web/                  The Leptos pages (B-5 done): `src/app.rs` the components,
+                        `src/api.rs` the server functions, `style/main.css` the tokens
+                        (see DESIGN.md); built with cargo-leptos, server and browser
+                        code separated by feature
 ```
 
 Principle: **domain logic belongs in core; the gateway does protocol and orchestration only; server only assembles**. The litmus test — if the logic survives replacing the axum layer, it is in the right place. That is why the gateway is a module of the server crate rather than a crate of its own: everything it does is HTTP — routing, an OpenAI-shaped error body, request deserialization, and a relay whose lifetime is the response body's — while every number it charges by is computed in `crates/core/src/billing.rs` and every row it charges by is read through `crates/core/src/channels.rs`. Migrations follow the crate that owns the table (core's tables in `core/migrations/`), applied in dependency order at startup.

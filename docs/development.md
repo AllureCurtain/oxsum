@@ -5,7 +5,7 @@
 - Rust 1.98: `rust-toolchain.toml` selects it automatically; rustup installs it on demand
 - Docker: runs local PostgreSQL 17, also used by doubleentry's Postgres tests
 - `wasm32-unknown-unknown` target: needed by the verification page and the Leptos browser build. `rustup target add wasm32-unknown-unknown --toolchain 1.98-x86_64-pc-windows-msvc` (or the platform equivalent). doubleentry is verified to compile for this target; uuid's randomness source is handled by a target dependency in `crates/doubleentry/Cargo.toml`
-- `cargo-leptos`: install once `crates/web` exists (`cargo install cargo-leptos`); it builds Leptos's server and WASM sides together. Not needed yet
+- `cargo-leptos`: builds the dashboard's server and WASM sides together (`cargo leptos build`, `cargo leptos serve`). Install once with `cargo install cargo-leptos`. Plain `cargo build` / `cargo test` do not need it: the `oxsum` binary serves the pages with server-side rendering either way, and only hydration (the live browser side) needs the WASM build
 
 On Windows with Git Bash, Git's own `/usr/bin/link` shadows MSVC's `link.exe` and linking fails with `link: missing operand`. Either build inside a VS Developer shell, or export the `vcvars64.bat` environment into the current shell first.
 
@@ -110,6 +110,8 @@ creates `ledger_<tenant_id>` on first use.
 | --- | --- |
 | Start the database | `docker compose up -d` |
 | Start the server | `cargo run -p oxsum-server` |
+| Build the dashboard (SSR + WASM) | `cargo leptos build` |
+| Run the server with the dashboard, rebuilding on change | `cargo leptos serve` |
 | All tests | `cargo test --workspace` (loads `DATABASE_URL` from `.env` or the shell) |
 | oxsum only | `cargo test -p oxsum-core -p oxsum-server` |
 | Generative sequences, quick run | `PROPTEST_CASES=50 cargo test -p oxsum-core --test generative` |
@@ -117,6 +119,25 @@ creates `ledger_<tenant_id>` on first use.
 | Verify doubleentry builds for the browser | `cargo build -p doubleentry --features serde --target wasm32-unknown-unknown` |
 | Format | `cargo fmt --all` |
 | Lint | `cargo clippy --workspace --all-targets` |
+
+## Web dashboard
+
+The dashboard lives in `crates/web` (Leptos 0.8): `/login` and `/logout` call the
+session endpoints from the browser, and `/dashboard` shows the organization, the
+members, the keys, the balance, the in-flight holds and the transaction log. Pages are
+served by the same `oxsum` binary through `leptos_axum`: server-side rendering calls
+`oxsum-core` directly, browser interactions go through server functions under `/_pages`
+(which are the page API, not part of `crates/server/openapi.yaml`).
+
+- `cargo leptos build` compiles the server and the WASM browser side together (the
+  styles in `crates/web/style/main.css` are bundled into `target/site/pkg/`).
+- `cargo leptos serve` runs the server and rebuilds on change.
+- `cargo run -p oxsum-server` also serves the pages (server-side rendered); the live
+  browser side needs the WASM build from `cargo leptos build` first.
+- In-flight gateway turns are pushed to the dashboard over `/ws/billing` (WebSocket,
+  session-cookie auth): a snapshot of the open holds on connect, then started, progress
+  and settled events as turns happen. The events come from a process-wide broadcast the
+  gateway publishes to — best-effort and in-memory; the watch table stays the record.
 
 ## Test strategy
 
