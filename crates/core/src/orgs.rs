@@ -43,9 +43,10 @@ impl Kind {
 ///
 /// Stored from the first membership so product.md's rules ("members manage their own keys,
 /// admins manage all") need no migration when sessions make a user the acting principal.
-/// Nothing enforces a role yet: an API key authenticates an organization, not a person, and
-/// enforcement arrives with web login.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Roles constrain sessions, not API keys: a key acts as the organization, while a user
+/// acts with the authority their role grants them (see [`crate::Principal::key_scope`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Role {
     Owner,
     Admin,
@@ -58,6 +59,15 @@ impl Role {
             Self::Owner => "owner",
             Self::Admin => "admin",
             Self::Member => "member",
+        }
+    }
+
+    pub(crate) fn parse(raw: &str) -> Result<Self, WalletError> {
+        match raw {
+            "owner" => Ok(Self::Owner),
+            "admin" => Ok(Self::Admin),
+            "member" => Ok(Self::Member),
+            other => Err(malformed("memberships.role", other)),
         }
     }
 }

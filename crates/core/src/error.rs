@@ -12,6 +12,11 @@ pub enum WalletError {
     #[error("unauthorized")]
     Unauthenticated,
 
+    /// A login with an unknown email or a wrong password. Deliberately one variant and one
+    /// message: the caller must not learn which of the two it was.
+    #[error("invalid email or password")]
+    InvalidCredentials,
+
     /// The caller is authenticated but may not do this.
     #[error("{0}")]
     Forbidden(String),

@@ -17,6 +17,7 @@ use uuid::Uuid;
 use crate::db::Db;
 use crate::error::WalletError;
 use crate::orgs::{self, Organization};
+use crate::sessions::KeyScope;
 
 /// Every secret starts with this, so secret scanners and users can recognize one.
 const SECRET_MARK: &str = "oxs-";
@@ -35,6 +36,9 @@ pub struct ApiKey {
     pub name: Option<String>,
     /// The leading characters of the secret, for recognizing a key in a list.
     pub prefix: String,
+    /// Who minted the key, for the per-member role rules. `None` for keys minted with an
+    /// API key, because no person acts there.
+    pub created_by: Option<Uuid>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339::option")]
@@ -94,36 +98,82 @@ impl Db {
         row.as_ref().map(orgs::organization_from_row).transpose()
     }
 
-    /// Every key of an organization, newest first. Metadata only.
-    pub async fn list_keys(&self, organization_id: Uuid) -> Result<Vec<ApiKey>, WalletError> {
-        let rows = sqlx::query(
-            "SELECT key_id, name, prefix, created_at, expires_at, revoked_at \
-             FROM oxsum.api_keys WHERE organization_id = $1 ORDER BY created_at DESC, key_id",
-        )
-        .bind(organization_id)
-        .fetch_all(self.pool())
-        .await?;
+    /// Every key of an organization the principal may see, newest first. Metadata only.
+    ///
+    /// A member sees only the keys they created; an owner, an admin, or an API key acting
+    /// as the organization sees every key of the organization.
+    pub async fn list_keys(
+        &self,
+        organization_id: Uuid,
+        scope: KeyScope,
+    ) -> Result<Vec<ApiKey>, WalletError> {
+        let rows = match scope {
+            KeyScope::Own(user_id) => {
+                sqlx::query(
+                    "SELECT key_id, name, prefix, created_by, created_at, expires_at, revoked_at \
+                     FROM oxsum.api_keys \
+                     WHERE organization_id = $1 AND created_by = $2 \
+                     ORDER BY created_at DESC, key_id",
+                )
+                .bind(organization_id)
+                .bind(user_id)
+                .fetch_all(self.pool())
+                .await?
+            }
+            KeyScope::Organization | KeyScope::All => {
+                sqlx::query(
+                    "SELECT key_id, name, prefix, created_by, created_at, expires_at, revoked_at \
+                     FROM oxsum.api_keys \
+                     WHERE organization_id = $1 \
+                     ORDER BY created_at DESC, key_id",
+                )
+                .bind(organization_id)
+                .fetch_all(self.pool())
+                .await?
+            }
+        };
         rows.iter().map(key_from_row).collect()
     }
 
     /// Revokes a key. `None` means this organization has no such key — which is also the
-    /// answer for another organization's key id, so ids cannot be probed.
+    /// answer for another organization's key id, and for a member naming a key they did not
+    /// create, so ids cannot be probed.
     ///
     /// Revoking twice is not an error: the first revocation's timestamp stands.
     pub async fn revoke_key(
         &self,
         organization_id: Uuid,
         key_id: Uuid,
+        scope: KeyScope,
     ) -> Result<Option<ApiKey>, WalletError> {
-        let row = sqlx::query(
-            "UPDATE oxsum.api_keys SET revoked_at = COALESCE(revoked_at, now()) \
-             WHERE organization_id = $1 AND key_id = $2 \
-             RETURNING key_id, name, prefix, created_at, expires_at, revoked_at",
-        )
-        .bind(organization_id)
-        .bind(key_id)
-        .fetch_optional(self.pool())
-        .await?;
+        // A member revoking a key they did not create gets the same answer as a key that
+        // does not exist — the key stays live — because the scope is part of the lookup,
+        // not a check after it.
+        let row = match scope {
+            KeyScope::Own(user_id) => {
+                sqlx::query(
+                    "UPDATE oxsum.api_keys SET revoked_at = COALESCE(revoked_at, now()) \
+                     WHERE organization_id = $1 AND key_id = $2 AND created_by = $3 \
+                     RETURNING key_id, name, prefix, created_by, created_at, expires_at, revoked_at",
+                )
+                .bind(organization_id)
+                .bind(key_id)
+                .bind(user_id)
+                .fetch_optional(self.pool())
+                .await?
+            }
+            KeyScope::Organization | KeyScope::All => {
+                sqlx::query(
+                    "UPDATE oxsum.api_keys SET revoked_at = COALESCE(revoked_at, now()) \
+                     WHERE organization_id = $1 AND key_id = $2 \
+                     RETURNING key_id, name, prefix, created_by, created_at, expires_at, revoked_at",
+                )
+                .bind(organization_id)
+                .bind(key_id)
+                .fetch_optional(self.pool())
+                .await?
+            }
+        };
         row.as_ref().map(key_from_row).transpose()
     }
 }
@@ -207,6 +257,7 @@ fn key_from_row(row: &sqlx::postgres::PgRow) -> Result<ApiKey, WalletError> {
         id: row.try_get("key_id")?,
         name: row.try_get("name")?,
         prefix: row.try_get("prefix")?,
+        created_by: row.try_get("created_by")?,
         created_at: row.try_get("created_at")?,
         expires_at: row.try_get("expires_at")?,
         revoked_at: row.try_get("revoked_at")?,
