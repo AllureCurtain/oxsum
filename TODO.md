@@ -12,24 +12,23 @@ Three phases, in order; the rationale is in docs/decisions.md under "wallet serv
 
 ### A. Wallet service
 
-1. One connection pool shared by all tenants (backend): the mechanism is settled, see docs/decisions.md "all tenants share one connection pool" — a single `PgPool` for the whole database, `SET LOCAL search_path` at the start of every transaction, doubleentry's storage layer funnels its query sites (marked `oxsum change`). Done when connection count no longer grows with tenant count, the isolation tests still pass, plus two new cases: two tenants on the shared pool cannot see each other's reads or writes, and one connection reused by two tenants in sequence does not leak.
-2. Users, organizations, API keys (backend): build the tables per docs/decisions.md "a tenant is an organization". Registration creates the user, personal organization and owner membership in one transaction; API keys belong to organizations and replace the single shared token. Done when two organizations under one user have isolated balances and a revoked key can no longer call in.
-3. Generative tests (backend): randomly generate sequences of top-ups, holds and settlements, check them against an in-memory model, verifying balance conservation, no negative balances, and that every proof validates. Done when the tests run 1000 cases in CI, all passing.
+1. Users, organizations, API keys (backend): build the tables per docs/decisions.md "a tenant is an organization". Registration creates the user, personal organization and owner membership in one transaction; API keys belong to organizations and replace the single shared token. Done when two organizations under one user have isolated balances and a revoked key can no longer call in.
+2. Generative tests (backend): randomly generate sequences of top-ups, holds and settlements, check them against an in-memory model, verifying balance conservation, no negative balances, and that every proof validates. Done when the tests run 1000 cases in CI, all passing.
 
 ### B. AI gateway
 
-4. Minimal gateway loop (backend): an OpenAI-compatible `/v1/chat/completions`, streaming and non-streaming, upstream first speaks the OpenAI-compatible format. Relay with reqwest streaming passthrough, local estimation with tiktoken-rs, see docs/decisions.md "gateway HTTP client and token estimation". Freeze an upper bound estimated from `max_tokens` when the request arrives, settle against the usage returned by upstream. How each case settles — client disconnect, upstream failure, missing usage — gets written into docs/user-guide.md. Done when the official OpenAI SDK works by only changing base_url, concurrent requests cannot overdraw, and every failure case has a test.
-5. Channel and model pricing configuration (backend): done when a price change only affects new requests and old bills stay untouched.
-6. Create `crates/web`, Leptos admin dashboard (full stack): server-side rendering plus browser hydration, mounted through the official `leptos_axum` into one binary with the API; built with `cargo-leptos`. Done when organizations, members, keys, balances, in-flight holds and the transaction log are all visible, and streaming billing progress is pushed over WebSocket in real time.
-7. Verification page (frontend): a Leptos component calling `oxsum_core::verify_bundle` directly; users paste a bundle and their contentHash and see the verdict. Done when changing any single number in the bundle flips the page to verification failure. doubleentry compiling to wasm32 is already verified (uuid's wasm32 randomness source solved with the `js` feature, see docs/decisions.md).
-8. Trustworthy tree heads (backend): sign heads based on doubleentry's witness module, plus consistency-proof endpoints. Done when a user holding an old head can verify the new head was appended onto it.
-9. Per-key sub-limits (backend): settle the implementation approach first, write it into docs/decisions.md. Done when concurrent requests cannot exceed a key's limit.
-10. Demo materials (full stack): a demo script connecting the OpenAI SDK to oxsum, plus a demo GIF in the README. Done when a reader who has never seen the project can follow the README alone and watch a billed request go through.
-11. Release: Dockerfile and GitHub Actions CI (fmt, clippy, tests with a PostgreSQL service). Done when CI is green on a fresh clone with no local setup, and the image runs against an external PostgreSQL.
+3. Minimal gateway loop (backend): an OpenAI-compatible `/v1/chat/completions`, streaming and non-streaming, upstream first speaks the OpenAI-compatible format. Relay with reqwest streaming passthrough, local estimation with tiktoken-rs, see docs/decisions.md "gateway HTTP client and token estimation". Freeze an upper bound estimated from `max_tokens` when the request arrives, settle against the usage returned by upstream. How each case settles — client disconnect, upstream failure, missing usage — gets written into docs/user-guide.md. Done when the official OpenAI SDK works by only changing base_url, concurrent requests cannot overdraw, and every failure case has a test.
+4. Channel and model pricing configuration (backend): done when a price change only affects new requests and old bills stay untouched.
+5. Create `crates/web`, Leptos admin dashboard (full stack): server-side rendering plus browser hydration, mounted through the official `leptos_axum` into one binary with the API; built with `cargo-leptos`. Done when organizations, members, keys, balances, in-flight holds and the transaction log are all visible, and streaming billing progress is pushed over WebSocket in real time.
+6. Verification page (frontend): a Leptos component calling `oxsum_core::verify_bundle` directly; users paste a bundle and their contentHash and see the verdict. Done when changing any single number in the bundle flips the page to verification failure. doubleentry compiling to wasm32 is already verified (uuid's wasm32 randomness source solved with the `js` feature, see docs/decisions.md).
+7. Trustworthy tree heads (backend): sign heads based on doubleentry's witness module, plus consistency-proof endpoints. Done when a user holding an old head can verify the new head was appended onto it.
+8. Per-key sub-limits (backend): settle the implementation approach first, write it into docs/decisions.md. Done when concurrent requests cannot exceed a key's limit.
+9. Demo materials (full stack): a demo script connecting the OpenAI SDK to oxsum, plus a demo GIF in the README. Done when a reader who has never seen the project can follow the README alone and watch a billed request go through.
+10. Release: Dockerfile and GitHub Actions CI (fmt, clippy, tests with a PostgreSQL service). Done when CI is green on a fresh clone with no local setup, and the image runs against an external PostgreSQL.
 
 ### C. Chat UI
 
-12. Leptos chat page (full stack): after login the user can top up, pick a model and chat, with each turn's billing visible in real time. Done when one browser session completes top-up → chat → proof verification without touching the API by hand.
+11. Leptos chat page (full stack): after login the user can top up, pick a model and chat, with each turn's billing visible in real time. Done when one browser session completes top-up → chat → proof verification without touching the API by hand.
 
 ## Blocked
 
@@ -37,6 +36,7 @@ Nothing.
 
 ## Recently completed
 
+- 2026-10-02 One connection pool shared by all tenants: `Tenants` holds a single `PgPool` and hands each tenant a cached ledger facade, doubleentry pins `SET LOCAL search_path` at the start of every transaction (`PostgresStore::begin`, marked `oxsum change`), the reference DDL is pinned inside a transaction opened for it, and three new tests cover two tenants on one pool, one connection reused by A then B then A, and a tenant costing no connection of its own
 - 2026-10-02 Finalized the documentation standard and branch naming convention: branches use `<type>/<kebab-case-description>`, while issue numbers stay in issue and PR metadata
 - 2026-10-02 Documentation and standard audit before the first commit: fixed `.env` loading, invalid OpenAPI YAML, incomplete guide paths and README links; added product.md rules and an AGENTS-only template; gave every TODO item a "Done when"; verified fmt, clippy, the wasm32 build, the OpenAPI parse and the full PostgreSQL-backed test suite
 - 2026-10-01 Settled the A-1 shared connection pool mechanism (transaction-scoped `SET LOCAL search_path`, lifecycle verified empirically) and the B-4 crate choices (reqwest + tiktoken-rs); phase-A design is closed
