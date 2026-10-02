@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.5.0
+  version: 0.6.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -20,7 +20,9 @@ info:
     the gateway surface. 0.4.0 added channel and price configuration: prices are append-only versions,
     and a request is priced by the version in force when it starts. 0.5.0 added web login: a session
     is a second credential next to the API key, carried in a cookie, and the role rules (owner, admin,
-    member) now constrain what a session principal may do with the organization's keys.
+    member) now constrain what a session principal may do with the organization's keys. 0.6.0 added
+    trustworthy tree heads: the operator signs each tenant's ledger head (a C2SP signed-note), and
+    `/api/v1/log/consistency` proves the current head extends a head the caller already holds.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie, except
     `/api/v1/auth/login`, `/api/v1/auth/logout` and `/api/v1/auth/register`, which take no
@@ -333,6 +335,96 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/log/head:
+    get:
+      summary: "The current tree head of the organization's ledger, signed by the operator"
+      description: |
+        The head of the append-only Merkle log this organization's ledger lives in, as a C2SP
+        signed-note (tlog-checkpoint) carrying the operator's Ed25519 note signature. The note text
+        is what the signature covers, byte for byte, so verify what you read, not what you
+        re-render: parse `note`, find the signature line whose selector is `keyHash`, check it
+        against `publicKey`, then check that the body carries `origin`, `size` and `root`.
+        The origin names this tenant's ledger (`oxsum/ledgers/<tenant_id>`); the operator signs
+        under the fixed key name `oxsum/tree-heads`. `publicKey` and `keyHash` are repeated here so
+        the note is self-describing; the same key is published at `GET /api/v1/log/key`.
+        A deployment with no `OXSUM_HEAD_SIGNING_KEY` answers 503.
+      responses:
+        "200":
+          description: The signed head
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/SignedTreeHead" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/log/consistency:
+    get:
+      summary: "Prove the current head extends a head the caller already holds"
+      description: |
+        For a user holding an old head: the current head as a signed note, the old head the log
+        recomputed at `from`, and the consistency proof between them. Verify the note signature
+        against the published key, then check the proof against the two heads — it answers true
+        only when the new tree is the old tree with entries appended. A second history at the
+        same size cannot produce a verifying proof, which is the guarantee this endpoint exists
+        for. A deployment with no `OXSUM_HEAD_SIGNING_KEY` answers 503.
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+          description: |
+            The tree size of the old head. Must be at least 1: every log extends the empty tree,
+            so a proof from size 0 would verify against any history at all and is refused (400)
+            rather than answered. Anything beyond the log's current size is 400 as well.
+      responses:
+        "200":
+          description: The signed new head, the old head, and the proof between them
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [note, keyName, publicKey, keyHash, oldHead, head, proof]
+                    properties:
+                      note: { type: string, description: "the complete C2SP signed-note text for the new head: body, blank line, signature lines" }
+                      keyName: { type: string, description: "the key name the operator signs under" }
+                      publicKey: { type: string, description: "the operator's Ed25519 verifying key, base64 of 32 bytes" }
+                      keyHash: { type: string, description: "the 4-byte selector this key's note signatures carry, lowercase hex" }
+                      oldHead: { $ref: "#/components/schemas/TreeHead" }
+                      head: { $ref: "#/components/schemas/TreeHead" }
+                      proof: { $ref: "#/components/schemas/ConsistencyProof" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/log/key:
+    get:
+      summary: "The operator's tree-head verifying key"
+      description: |
+        The public half of the key that signs tree heads. No credential: this is a public key.
+        Fetching it from the server is convenience — a verifier must have chosen this key through
+        a channel the operator does not control before the operator had anything to gain, or the
+        signature proves only that the server agrees with itself.
+      security: []
+      responses:
+        "200":
+          description: The verifying key
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/VerifyingKey" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /api/v1/admin/channels:
     get:
       summary: List the channels, with the current price version of each of their models
@@ -686,6 +778,37 @@ components:
         logIndex: { type: [integer, "null"], format: int64 }
         contentHash: { type: string, description: 32-byte hash, lowercase hex; keep it for verification }
         isNew: { type: boolean, description: false means an idempotent replay, nothing new was written }
+    TreeHead:
+      type: object
+      required: [size, root]
+      properties:
+        size: { type: integer, format: int64, description: "tree size: number of entries in the log" }
+        root: { type: string, description: 32-byte hash, lowercase hex }
+    VerifyingKey:
+      type: object
+      required: [keyName, publicKey, keyHash]
+      properties:
+        keyName: { type: string, description: "the key name the operator signs under" }
+        publicKey: { type: string, description: "the operator's Ed25519 verifying key, base64 of 32 bytes" }
+        keyHash: { type: string, description: "the 4-byte selector this key's note signatures carry, lowercase hex" }
+    SignedTreeHead:
+      type: object
+      required: [note, origin, keyName, publicKey, keyHash, size, root]
+      properties:
+        note: { type: string, description: "the complete C2SP signed-note text: body, blank line, signature lines" }
+        origin: { type: string, description: "the log this head belongs to: `oxsum/ledgers/<tenant_id>`" }
+        keyName: { type: string }
+        publicKey: { type: string, description: "the operator's Ed25519 verifying key, base64 of 32 bytes" }
+        keyHash: { type: string, description: "the 4-byte selector this key's note signatures carry, lowercase hex" }
+        size: { type: integer, format: int64, description: "tree size: number of entries in the log" }
+        root: { type: string, description: 32-byte hash, lowercase hex }
+    ConsistencyProof:
+      type: object
+      required: [oldSize, newSize, path]
+      properties:
+        oldSize: { type: integer, format: int64, description: "the tree size the proof starts at; never 0" }
+        newSize: { type: integer, format: int64, description: "the tree size the proof ends at" }
+        path: { type: array, items: { type: string }, description: "proof hashes, lowercase hex, in doubleentry's consistency-proof order" }
     Error:
       type: object
       required: [error]
@@ -696,7 +819,7 @@ components:
           properties:
             code:
               type: string
-              enum: [VALIDATION_ERROR, UNAUTHORIZED, FORBIDDEN, INSUFFICIENT_FUNDS, NOT_FOUND, CONFLICT, INTERNAL_ERROR]
+              enum: [VALIDATION_ERROR, UNAUTHORIZED, FORBIDDEN, INSUFFICIENT_FUNDS, NOT_FOUND, CONFLICT, INTERNAL_ERROR, SERVICE_UNAVAILABLE]
             message: { type: string }
             details: { type: array, items: {} }
     ChatCompletionRequest:
