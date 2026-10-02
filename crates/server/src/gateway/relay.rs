@@ -56,8 +56,8 @@ pub struct Turn {
 /// Everything a settlement needs, including the text the estimate is computed from.
 struct Plan {
     wallet: Arc<Wallet>,
-    /// `req-<id>:settle`.
-    key: String,
+    /// `req-<id>:hold`: the key the hold was taken under, which the settlement names.
+    hold_key: String,
     /// The request id, as the description and the response header carry it.
     request: String,
     /// The channel that served the request, and the price version it was priced by. Both go into the
@@ -141,7 +141,7 @@ impl Turn {
         Self {
             plan: Some(Plan {
                 wallet,
-                key: format!("req-{request_id}:settle"),
+                hold_key: format!("req-{request_id}:hold"),
                 request: request_id.to_owned(),
                 channel: serving.channel.clone(),
                 version: serving.version,
@@ -303,7 +303,7 @@ impl Plan {
         };
         let description = settlement.description()?;
         self.wallet
-            .settle(&self.key, &description, self.freeze, charged, today())
+            .settle(&self.hold_key, &description, charged, today())
             .await
     }
 }

@@ -92,6 +92,12 @@ impl From<WalletError> for GatewayError {
             WalletError::InsufficientFunds => {
                 Self::InsufficientFunds("the wallet cannot cover this request".to_owned())
             }
+            // The gateway settles the hold it took itself in this turn; a hold it cannot find
+            // is an internal inconsistency, not a caller error.
+            WalletError::HoldNotFound(key) => {
+                tracing::error!(%key, "gateway settled a hold the ledger does not have");
+                Self::Internal
+            }
             WalletError::Storage(error) => {
                 tracing::error!(%error, "storage failure on the gateway path");
                 Self::Internal

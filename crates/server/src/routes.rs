@@ -79,8 +79,7 @@ struct AmountReq {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SettleReq {
-    idempotency_key: String,
-    held_minor: i64,
+    hold_key: String,
     actual_minor: i64,
 }
 
@@ -180,14 +179,9 @@ async fn settle(
     Json(r): Json<SettleReq>,
 ) -> ApiResult<oxsum_core::Receipt> {
     let w = wallet(&state.tenants, &organization).await?;
-    ok(w.settle(
-        &r.idempotency_key,
-        "",
-        r.held_minor,
-        r.actual_minor,
-        today(),
-    )
-    .await?)
+    // No description: this endpoint takes a hold key, not a reason. The gateway, which knows what
+    // the hold is for, records one.
+    ok(w.settle(&r.hold_key, "", r.actual_minor, today()).await?)
 }
 
 async fn balance(

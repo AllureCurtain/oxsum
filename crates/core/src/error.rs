@@ -20,6 +20,11 @@ pub enum WalletError {
     #[error("{0}")]
     Conflict(String),
 
+    /// The settlement named a hold that is not outstanding: no entry under the key, or the
+    /// entry is not a hold. The HTTP layer answers 404.
+    #[error("{0}")]
+    HoldNotFound(String),
+
     /// The available balance cannot cover this hold or charge.
     #[error("insufficient funds")]
     InsufficientFunds,
