@@ -41,11 +41,21 @@ Copy `.env.example` to `.env` and the server and the tests pick it up automatica
 
 | Variable | Notes |
 | --- | --- |
-| `DATABASE_URL` | Each tenant gets a `ledger_<tenant>` schema in this database. Tests read it too; without it, oxsum's database tests skip automatically |
-| `OXSUM_API_TOKEN` | Required at startup; an empty value refuses to boot. Always replace it with a long random string when deploying |
+| `DATABASE_URL` | Each organization gets a `ledger_<tenant_id>` schema in this database, plus the shared `oxsum` schema for users, organizations and keys. Tests read it too; without it, oxsum's database tests skip automatically |
+| `OXSUM_SIGNUP` | Optional; `invite` (default) or `open`. `invite` refuses `POST /api/v1/auth/register` with 403, so a public instance cannot be signed up by whoever arrives first; `open` is what a demo or a private instance wants |
 | `OXSUM_DB_MAX_CONNECTIONS` | Optional; size of the one pool every tenant shares (default 10). Each connection is a PostgreSQL backend process, so this is the process's whole budget rather than a per-tenant allowance. Stay below the database's own `max_connections` (PostgreSQL's default is 100) |
 | `OXSUM_ADDR` | Optional listen address; defaults to `127.0.0.1:3000` |
 | `RUST_LOG` | Optional `tracing-subscriber` filter; defaults to `info` |
+
+There is no shared API token any more: every request carries an organization's API key, created
+by registration or by `POST /api/v1/org/keys`. The plaintext secret is returned exactly once.
+
+oxsum's own tables are migrated at startup, in the same process that serves requests: `Db::migrate`
+creates the `oxsum` schema and applies the files under `crates/core/migrations/` that have not run
+yet, each in one transaction together with its row in `oxsum._migrations`, under a database-wide
+advisory lock so two starting processes cannot race. A failed migration refuses to boot; there is no
+separate migrate command to remember. Ledger schemas are untouched by it: doubleentry's `migrate`
+creates `ledger_<tenant_id>` on first use.
 
 ## Commands
 
@@ -62,10 +72,10 @@ Copy `.env.example` to `.env` and the server and the tests pick it up automatica
 
 ## Test strategy
 
-- Unit tests: inside each module's `#[cfg(test)]`, covering pure logic such as tenant id validation and token comparison.
+- Unit tests: inside each module's `#[cfg(test)]`, covering pure logic such as tenant id validation and configuration parsing.
 - Integration tests:
-  - `crates/core/tests/` exercises the wallet's invariants on real PostgreSQL: isolation, concurrent no-overdraw, hold/settle, idempotency, tamper detection, restart recovery, concurrent migrate.
-  - `crates/server/tests/` covers the HTTP layer: auth, error format, full request chains.
+  - `crates/core/tests/` exercises the wallet's invariants on real PostgreSQL: isolation, concurrent no-overdraw, hold/settle, idempotency, tamper detection, restart recovery, concurrent migrate; `crates/core/tests/identity.rs` covers registration, organizations and API keys, including that the plaintext secret is nowhere in the database.
+  - `crates/server/tests/` covers the HTTP layer: key auth, error format, full request chains, and that one organization's key cannot reach another's ledger.
 - doubleentry's own tests: changing `crates/doubleentry` requires all of them passing, including its conformance suite.
 - Planned:
   - Generative tests: random operation sequences checked against an in-memory model

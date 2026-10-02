@@ -2,6 +2,34 @@
 
 New decisions go on top. Overturned decisions are never deleted; mark them "Superseded" and name the decision that replaces them.
 
+## 2026-10-02 oxsum's own tables live in one `oxsum` schema, and an organization's ledger is created on first use
+
+- Status: Adopted. Implemented 2026-10-02. Refines "a tenant is an organization" (which already put these tables outside the ledger schemas) and corrects one line of "users and login": registration no longer creates the ledger inside its transaction.
+- Background: the user, organization, membership and API key tables needed a home. The ledger tables already have a mechanism — one schema per organization, targeted by `SET LOCAL search_path` at the start of every transaction (see "all tenants share one connection pool") — which is exactly what oxsum's own tables must *not* share: `users` is global, an email is unique across the deployment, and a key resolves the organization rather than being scoped by it.
+- Decision:
+  - `users`, `organizations`, `memberships` and `api_keys` live in the single `oxsum` schema, created and versioned by oxsum's own runner: `Db::migrate` creates the schema, then applies the files under `crates/core/migrations/` that have no row in `oxsum._migrations`, each migration in one transaction together with that row, under a database-wide advisory lock.
+  - Every statement names the schema (`INSERT INTO oxsum.users …`). There is no second `search_path` pinning mechanism, and identity statements are not wrapped in the ledger's transaction-scoped pin.
+  - Registration writes user, personal organization, owner membership and first API key in one transaction. It does **not** create the ledger: `Tenants::get` creates `ledger_<tenant_id>` on first use, idempotently, inside the ledger's own advisory lock.
+  - `tenant_id` is the organization's UUID without dashes — 32 lowercase hex characters, which the ledger's existing tenant-id rule accepts unchanged, so nothing has to be chosen, probed for uniqueness or sanitized.
+  - API keys: `oxs-` plus 32 random bytes, hex-encoded. The database stores a SHA-256 hash (unique, so a lookup is one index probe) plus the first 12 characters as a display prefix, and never the plaintext, which is returned once at creation.
+- Why:
+  - One schema for identity, schema-qualified, is the smallest thing that works: the tables are few and always the same, and `oxsum.` in the SQL is explicit and greppable, unlike a pin that has to be issued correctly on every path. It also keeps one place to migrate, and no per-organization identity DDL.
+  - Cross-organization isolation is unaffected: balances, entries and proofs stay in per-organization ledger schemas, and identity rows are reached by the key lookup that produced the organization in the first place.
+  - Lazy ledger creation keeps registration inside tables that exist before any organization does. A ledger migration is a large DDL (an extension plus eleven tables); running it inside the registration transaction holds that transaction open and makes a retry depend on the ledger migration being idempotent. Created on first use, it is idempotent by construction, and a user who never tops up never costs a schema.
+  - SHA-256 for API keys, argon2 for passwords: a key is 256 bits of machine randomness, so there is nothing to brute-force, while every authenticated request pays for the lookup; a password is chosen by a human and short, so it gets the slow hash. Both choices are about what is being guessed, not about which hash is "better".
+- Rejected:
+  - Identity tables inside each ledger schema: N copies of `users`, and cross-organization email uniqueness becomes impossible.
+  - A separate identity database: a second pool and a two-phase commit to join what is one foreign key today.
+  - Pinning `search_path` per identity transaction as well: a second mechanism to get right, for tables that never vary by organization.
+  - Plaintext or argon2-hashed API keys: plaintext leaks on any dump; argon2 costs ~100 ms per API request for no gain over SHA-256 on a 256-bit random secret.
+  - Letting the caller pass a tenant id or organization slug in the path: the credential already names the organization, and a path segment the caller controls is one more thing to authorize. This is why the ledger endpoints lost `/tenants/{tenant}`.
+- Implementation notes:
+  - The migration runner clears `search_path` for the transaction it applies a migration in. The first version of `0001_identity.sql` used unqualified names and created its tables in `public` while recording the migration as applied — found by the suite, not by reading. With `search_path` empty, that mistake fails loudly instead, and a test asserts nothing named `users`/`organizations`/`memberships`/`api_keys` exists in `public`.
+  - A duplicate email surfaces as 409 `CONFLICT` by mapping the unique-constraint violation of `users_email_normalized_key`, not by checking first: two simultaneous registrations cannot both pass a check, and the loser would otherwise be a 500.
+  - Every way a key can fail — missing header, malformed, unknown, revoked, expired — answers the same 401 `UNAUTHORIZED` with the same message, so key state cannot be probed. A key id belonging to another organization answers 404, not 403, for the same reason.
+  - `Db::migrate` unlocks the advisory lock before returning the migration's own result, so a failed migration hands its connection back to the pool unlocked.
+  - Signup mode is deployment configuration, not domain state: `Config::from_env` reads `OXSUM_SIGNUP` (default `invite`) and the route refuses registration with 403 `FORBIDDEN` when it is not `open`.
+
 ## 2026-10-01 All tenants share one connection pool: `SET LOCAL search_path` at the start of every transaction
 
 - Status: Adopted. Implemented 2026-10-02; the two points the plan below left open were settled while implementing, see "Implementation notes".
@@ -72,7 +100,7 @@ New decisions go on top. Overturned decisions are never deleted; mark them "Supe
   - CSRF: mutating operations never use GET, plus an Origin-check middleware.
   - Email later via `lettre` (SMTP); GitHub login later via `oauth2` or `openidconnect`. Neither in v1.
 - Why:
-  - The user/org layer is tightly coupled to the ledger: registration creates user, personal organization and ledger in one transaction (see "a tenant is an organization"); removing a member has to deal with their keys. Off-the-shelf user libraries know nothing about "a ledger hanging under an organization".
+  - The user/org layer is tightly coupled to the ledger: registration creates user, personal organization and owner membership in one transaction (the ledger itself is created on first use, see "oxsum's own tables live in one `oxsum` schema" above; the tenant model is "a tenant is an organization"); removing a member has to deal with their keys. Off-the-shelf user libraries know nothing about "a ledger hanging under an organization".
   - Authorization engines like casbin or cedar are built for many, constantly-changing rules; here the configuration would outgrow the business code. This layer is exactly the business code worth showing in a portfolio piece.
   - The demo path is "docker compose up, one binary, and you can play"; adding a standalone identity service (Rauthy, Kanidm, Keycloak, Zitadel, etc.) lengthens the path and adds a deployment unit. Enterprise SSO later plugs in via `openidconnect` without redesign.
 - Rejected:
