@@ -699,6 +699,19 @@ fn next_case() -> u64 {
     CASE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+/// `DATABASE_URL` for the suite: the process environment wins, then `.env`
+/// (searched from the current directory upward, see docs/development.md).
+/// `None` means no database is configured and the suite skips, also per
+/// docs/development.md.
+fn database_url() -> Option<String> {
+    // Load `.env` first: the documented setup is `cp .env.example .env` with
+    // nothing exported, and reading the variable before this line is what let
+    // the suite pass vacuously (issue #18). This mirrors the `url()` helper
+    // in the other suites.
+    let _ = dotenvy::dotenv();
+    std::env::var("DATABASE_URL").ok()
+}
+
 /// The shared pool and tenant registry, or `None` when no database is configured.
 ///
 /// The eight ledgers are dropped and recreated once, before the first case: every run then starts
@@ -707,7 +720,7 @@ fn tenants() -> Option<&'static Tenants> {
     static TENANTS: OnceLock<Option<Tenants>> = OnceLock::new();
     TENANTS
         .get_or_init(|| {
-            let url = std::env::var("DATABASE_URL").ok()?;
+            let url = database_url()?;
             let pool = runtime()
                 .block_on(async {
                     PgPoolOptions::new()
@@ -748,6 +761,15 @@ proptest! {
     #[test]
     fn generated_sequences_match_the_model(ledger in 0..LEDGERS, raw in sequence()) {
         let Some(tenants) = tenants() else {
+            // Warn once, not once per case: a silent skip is what made the
+            // suite pass vacuously (issue #18).
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                eprintln!(
+                    "DATABASE_URL not set (neither in the environment nor in .env), skipping all {} generative cases",
+                    cases()
+                );
+            });
             return Ok(());
         };
         if let Err(failure) =
