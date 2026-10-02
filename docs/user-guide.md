@@ -33,6 +33,33 @@ Notes:
 - Every `/api/v1` endpoint accepts the cookie wherever it accepts a Bearer key; the gateway (`/v1`) takes an API key only.
 - Members see and revoke only the keys they created; owners and admins see and revoke every key of the organization. Keys you mint while logged in record you as their creator.
 
+## Dashboard
+
+Purpose: see and manage the organization in a browser instead of over the API.
+
+Open `/login` in a browser pointed at the server and log in with your email and
+password; `/dashboard` is the overview. `/logout` logs out.
+
+- **Overview**: the organization, who you are logged in as and in which role, the
+  available balance, the in-flight holds, and the newest ledger entries.
+- **In-flight holds** update live: a hold appears when a gateway turn starts freezing,
+  shows streaming progress while upstream answers, and leaves the list when the turn
+  settles. The stream behind it is a WebSocket at `/ws/billing` (session login, like
+  the pages); it carries only your organization's turns.
+- **API keys**: list, mint and revoke. The same role rules as the API apply: members
+  see and revoke only the keys they created, owners and admins see all. A freshly
+  minted secret is shown once — store it then, it is never shown again.
+- **Members**: everyone in the organization, with their roles.
+- **Transaction log**: the newest ledger entries, newest first: position, id,
+  description and content hash.
+
+Notes:
+
+- Amounts are in credits with six decimals; the ledger keeps them as integers.
+- The dashboard needs the browser build: serve it with `cargo leptos serve` (or
+  `cargo leptos build` once, then run the server). Without it the pages render but
+  the live updates do not run.
+
 ## Keys
 
 Purpose: several integrations, one organization, revocable separately.

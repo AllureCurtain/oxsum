@@ -1,6 +1,6 @@
 # Design rules
 
-No UI work has started yet. Once `crates/web` (Leptos) exists, the concrete token values live in `crates/web/src/styles/tokens.css`; this file only records usage rules. The rules below are settled now, so the token file gets filled in to match.
+No UI work has started yet. Once `crates/web` (Leptos) exists, the concrete token values live in `crates/web/style/main.css`; this file only records usage rules. The rules below are settled now, so the token file gets filled in to match.
 
 ## Colors
 
