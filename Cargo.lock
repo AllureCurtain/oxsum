@@ -2550,6 +2550,7 @@ dependencies = [
  "dotenvy",
  "doubleentry",
  "password-auth",
+ "proptest",
  "rand 0.10.3",
  "serde",
  "serde_json",
