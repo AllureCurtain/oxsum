@@ -339,7 +339,13 @@ async fn role_scopes_constrain_key_listing_and_revocation() {
     );
 
     let owner_key = db
-        .create_key(org, Some("owner-key".into()), None, Some(owner.user.id), None)
+        .create_key(
+            org,
+            Some("owner-key".into()),
+            None,
+            Some(owner.user.id),
+            None,
+        )
         .await
         .unwrap();
     let member_key = db

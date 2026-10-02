@@ -266,10 +266,9 @@ async fn create_key(
     Extension(principal): Extension<Principal>,
     body: Option<Json<CreateKeyReq>>,
 ) -> ApiResult<CreatedApiKey> {
-    let (name, expires_at, spend_limit_minor) =
-        body.map_or((None, None, None), |Json(r)| {
-            (r.name, r.expires_at, r.spend_limit_minor)
-        });
+    let (name, expires_at, spend_limit_minor) = body.map_or((None, None, None), |Json(r)| {
+        (r.name, r.expires_at, r.spend_limit_minor)
+    });
     // A key minted through a session records who minted it, for product.md's per-member
     // rules; a key minted with an API key records no creator, because no person acts there.
     ok(state
@@ -357,7 +356,9 @@ async fn hold(
         Some(key) => ok(w
             .hold_for_key(key, &r.idempotency_key, "", r.amount_minor, today())
             .await?),
-        None => ok(w.hold(&r.idempotency_key, "", r.amount_minor, today()).await?),
+        None => ok(w
+            .hold(&r.idempotency_key, "", r.amount_minor, today())
+            .await?),
     }
 }
 

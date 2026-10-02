@@ -19,7 +19,10 @@ pub enum ApiError {
     InsufficientFunds,
     /// The acting API key's spend limit is exhausted: settled charges plus outstanding
     /// holds attributed to the key would exceed it. A quota refusal, not a balance one.
-    KeyLimitExceeded { limit_minor: i64, committed_minor: i64 },
+    KeyLimitExceeded {
+        limit_minor: i64,
+        committed_minor: i64,
+    },
     /// A feature the deployment did not configure: the wallet works, this surface does not.
     ServiceUnavailable(String),
     Internal,

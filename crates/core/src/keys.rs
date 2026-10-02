@@ -151,29 +151,33 @@ impl Db {
         // Like revoke: the scope is part of the lookup, not a check after it, so a member
         // naming a key they did not create gets the same answer as a key that does not exist.
         let row = match scope {
-            KeyScope::Own(user_id) => sqlx::query(
-                "UPDATE oxsum.api_keys SET spend_limit_minor = $4 \
+            KeyScope::Own(user_id) => {
+                sqlx::query(
+                    "UPDATE oxsum.api_keys SET spend_limit_minor = $4 \
                  WHERE organization_id = $1 AND key_id = $2 AND created_by = $3 \
                  RETURNING key_id, name, prefix, created_by, created_at, expires_at, \
                            revoked_at, spend_limit_minor",
-            )
-            .bind(organization_id)
-            .bind(key_id)
-            .bind(user_id)
-            .bind(spend_limit_minor)
-            .fetch_optional(self.pool())
-            .await?,
-            KeyScope::Organization | KeyScope::All => sqlx::query(
-                "UPDATE oxsum.api_keys SET spend_limit_minor = $4 \
+                )
+                .bind(organization_id)
+                .bind(key_id)
+                .bind(user_id)
+                .bind(spend_limit_minor)
+                .fetch_optional(self.pool())
+                .await?
+            }
+            KeyScope::Organization | KeyScope::All => {
+                sqlx::query(
+                    "UPDATE oxsum.api_keys SET spend_limit_minor = $4 \
                  WHERE organization_id = $1 AND key_id = $2 \
                  RETURNING key_id, name, prefix, created_by, created_at, expires_at, \
                            revoked_at, spend_limit_minor",
-            )
-            .bind(organization_id)
-            .bind(key_id)
-            .bind(spend_limit_minor)
-            .fetch_optional(self.pool())
-            .await?,
+                )
+                .bind(organization_id)
+                .bind(key_id)
+                .bind(spend_limit_minor)
+                .fetch_optional(self.pool())
+                .await?
+            }
         };
         row.as_ref().map(key_from_row).transpose()
     }

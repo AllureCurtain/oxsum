@@ -125,7 +125,10 @@ async fn hold_for_key_enforces_the_limit() {
     };
     assert_eq!(limit, 10 * ONE);
     assert_eq!(committed, 6 * ONE);
-    assert_eq!(world.wallet.key_committed(&world.key.key_id).await.unwrap(), 6 * ONE);
+    assert_eq!(
+        world.wallet.key_committed(&world.key.key_id).await.unwrap(),
+        6 * ONE
+    );
     // Exactly at the limit still fits.
     world
         .wallet
@@ -157,7 +160,10 @@ async fn settled_spend_counts_toward_the_limit() {
         .unwrap();
     // Settles 2 of the 6: 4 return to the balance, 2 stay committed as the charge.
     world.wallet.settle("h1", "", 2 * ONE, D).await.unwrap();
-    assert_eq!(world.wallet.key_committed(&world.key.key_id).await.unwrap(), 2 * ONE);
+    assert_eq!(
+        world.wallet.key_committed(&world.key.key_id).await.unwrap(),
+        2 * ONE
+    );
 
     // 2 committed + 9 held would exceed 10.
     let err = world
@@ -257,9 +263,14 @@ async fn limit_changes_apply_to_later_holds() {
         "wrong error: {err:?}"
     );
     // Clearing it back to unlimited lets the hold through.
-    db.update_key_limit(organization_id, world.key.key_id, KeyScope::Organization, None)
-        .await
-        .unwrap();
+    db.update_key_limit(
+        organization_id,
+        world.key.key_id,
+        KeyScope::Organization,
+        None,
+    )
+    .await
+    .unwrap();
     world
         .wallet
         .hold_for_key(&world.key, "h3", "", ONE, D)
@@ -281,7 +292,10 @@ async fn unlimited_key_holds_freely_but_attributes() {
         .hold_for_key(&world.key, "h1", "", 6 * ONE, D)
         .await
         .unwrap();
-    assert_eq!(world.wallet.key_committed(&world.key.key_id).await.unwrap(), 6 * ONE);
+    assert_eq!(
+        world.wallet.key_committed(&world.key.key_id).await.unwrap(),
+        6 * ONE
+    );
 }
 
 /// The PATCH scope rules are the revoke's: a member may change only the keys they created.
@@ -295,10 +309,15 @@ async fn update_key_limit_scope_rules() {
 
     // A member naming a key they did not create gets the same answer as a missing key.
     assert!(
-        db.update_key_limit(organization_id, world.key.key_id, KeyScope::Own(other), Some(ONE))
-            .await
-            .unwrap()
-            .is_none()
+        db.update_key_limit(
+            organization_id,
+            world.key.key_id,
+            KeyScope::Own(other),
+            Some(ONE)
+        )
+        .await
+        .unwrap()
+        .is_none()
     );
     // The key is untouched.
     let (_, key) = db.authenticate(&world.secret).await.unwrap().unwrap();
