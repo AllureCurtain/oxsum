@@ -1,6 +1,25 @@
 # Technical decisions
 
-New decisions go on top. Overturned decisions are never deleted; mark them "Superseded" and name the decision that replaces them.
+New decisions go on top. Overturned decisions are never deleted; mark them "Superseded" and name the decision that replaces it.
+
+## 2026-10-02 A reused idempotency key is a conflict, mapped by the domain layer from the engine's refusal
+
+- Status: Adopted. Implemented 2026-10-02, closing issue #7. Corrects one line of the generative-test entry below, which left the mapping to this issue.
+- Background: the ledger refuses a key that an entry with different content already holds (`PostgresError::IdempotencyConflict`). The domain layer's `From<PostgresError>` mapped only `LimitBreached`, so this one fell into `Storage`, which the API deliberately answers as 500 `INTERNAL_ERROR` with the details kept in the logs. A caller that reused a key by mistake therefore got a server error, for a request it could fix itself — and every such mistake was logged as an incident.
+- Decision:
+  - `PostgresError::IdempotencyConflict` maps to `WalletError::Conflict`, which the HTTP layer answers 409 `CONFLICT`.
+  - The refusal classes each pick their own code: a breach of a balance limit is `INSUFFICIENT_FUNDS` (402), a reused key is `CONFLICT` (409), a bad argument is `VALIDATION_ERROR` (400). Everything else stays `Storage` and 500, which is the honest answer for a ledger that cannot be read or written.
+  - The message names the cause and not the ledger's internals: "idempotency key already used for a different request". The existing entry's id is not echoed back, and the caller does not need it — the same key with the original content still replays successfully.
+- Why:
+  - The distinction being made is *whose mistake it is*, and that is what decides the code: a caller who reused a key gets a 4xx it can act on, while a failing ledger gets a 500 that pages someone. Collapsing them makes both worse — the caller retries a request that will never succeed, and the logs fill with incidents that are not incidents.
+  - Mapping it in the domain layer rather than in the route layer keeps the HTTP layer's job what it is: `WalletError` in, code out. The engine's error type does not appear above `oxsum_core`.
+- Rejected:
+  - Answering 400 `VALIDATION_ERROR`: the request is well formed and the key is valid; it is the *combination* of key and content that conflicts, which is what 409 means.
+  - Answering 422 or a new code: no code in docs/api.md fits better than `CONFLICT`, and a code used once is a code every client has to special-case.
+  - Checking the key against stored entries before appending: a read-then-write races, two concurrent requests with the same key could both pass, and the engine already makes the check atomic inside the append.
+- Implementation notes:
+  - `crates/core/tests/wallet.rs` asserts the refusal is `Conflict`, that the refused attempts leave the balance, the log and the key's original entry untouched, and that a top-up and a hold under one key collide with each other. `crates/server/tests/api.rs` asserts 409, `CONFLICT`, a message that does not mention storage, and that the original request still replays with `isNew: false`.
+  - The generative model (`crates/core/tests/generative.rs`) reads a reused key as a refusal class rather than a `WalletError` variant, so it needed only its stale comment removed: the arm that accepted a storage-shaped refusal was deleted, which makes the oracle fail if the mapping ever regresses.
 
 ## 2026-10-02 Generative wallet sequences: proptest against an in-memory model, on eight shared ledgers
 
@@ -13,14 +32,14 @@ New decisions go on top. Overturned decisions are never deleted; mark them "Supe
   - `PROPTEST_CASES` sets the case count; the default is 1000, which is what TODO asks CI for.
 - Why:
   - Sharing ledgers is what makes 1000 cases affordable and repeatable. Creating a ledger is a DDL migration (an extension plus eleven tables); one per case would spend the whole run on schema creation and leave a thousand schemas behind. The delta is not a weaker assertion: the state at the start of a case cancels out of both sides of it, and the invariants (never negative, log size, proofs, idempotency) do not depend on where the case began.
-  - The oracle comes from the *intended* contract, not from what the implementation happens to do, which is the only way such a test can find anything. Where the implementation deviates today the deviation is named in the module docs and left to its issue, rather than written into the oracle as if it were correct: the generator currently settles only holds the ledger actually took (issue #6) and asserts only that a reused key is refused and changes nothing (issue #7).
+  - The oracle comes from the *intended* contract, not from what the implementation happens to do, which is the only way such a test can find anything. Where the implementation deviates the deviation is named in the module docs and left to its issue, rather than written into the oracle as if it were correct: the generator still settles only holds the ledger actually took, a restriction issue #6 lifts.
   - Keys are derived from the op index rather than generated as random strings, because the interesting operations reference earlier ones by name; a per-case prefix keeps two cases on one ledger from colliding in the ledger's idempotency space.
 - Rejected:
   - One ledger per case: the DDL cost above, and a test database that grows by a thousand schemas per run.
-  - Asserting on `WalletError` variants for the reused-key case: today the engine's refusal reaches the domain layer wrapped as a storage failure, and issue #7 changes that to `CONFLICT`. The model asserts the class — refused, nothing changed — so the remapping does not rewrite this test.
+  - Asserting on `WalletError` variants for the reused-key case: when this harness was written the engine's refusal reached the domain layer wrapped as a storage failure, and pinning that shape would have frozen a bug into the oracle. The model asserts the class instead — refused, nothing changed — so mapping the refusal to `CONFLICT` (issue #7) did not rewrite it.
   - A tamper check that flips a byte: it can land in a field name, and the verifier deliberately ignores fields it does not know so that a newer server can add one without breaking browsers that already shipped. The tamper check moves an amount instead, which the content hash covers.
 - Implementation notes:
-  - The generator found two things while it was being written, both filed rather than papered over: a settlement of an amount that was never held is accepted and fabricates available balance (issue #6, `Wallet::settle` reverses the `held` it is handed without looking the hold up), and a key reused with different content reaches the API as a 500 rather than a 409 (issue #7).
+  - The generator found two things while it was being written, both filed rather than papered over: a settlement of an amount that was never held is accepted and fabricates available balance (issue #6, `Wallet::settle` reverses the `held` it is handed without looking the hold up), and a key reused with different content reached the API as a 500 rather than a 409 (issue #7, since fixed: a reused key is mapped to `CONFLICT` and answers 409).
   - The first version shared ledgers without a per-case key prefix and failed immediately: case two's `op-0` collided with case one's entry. The seed, the shrunken input and the message came out of proptest and made it a two-minute fix.
   - A settlement cannot fail for lack of funds, which the oracle relies on: releasing a hold credits the pending layer, and `NoDebitBalance` folds the layers asymmetrically (a reservation consumes room, a release grants none), so the settled layer has to cover `actual` alone — and it does for any hold the wallet accepted, because a hold can only be taken against settled money that later settlements cannot take below it.
 

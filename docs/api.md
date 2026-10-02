@@ -17,7 +17,7 @@ Field definitions for each endpoint are authoritative in `crates/server/openapi.
 Every write endpoint requires an `idempotencyKey`:
 
 - Replaying the same key with the same content returns the original receipt with `isNew: false`; nothing is booked twice.
-- The same key with different content is an error; the original record is never overwritten.
+- The same key with different content is `CONFLICT`; the original record is never overwritten. "Different content" means a different amount, a different kind of write, or any other field the entry is built from.
 
 On timeout or network errors the client retries with the same key, never a new one.
 
@@ -44,7 +44,7 @@ Failure:
 | `FORBIDDEN` | 403 | the caller may not do this; registration when signup is not open |
 | `INSUFFICIENT_FUNDS` | 402 | available balance too low; hold or charge refused |
 | `NOT_FOUND` | 404 | resource does not exist, or belongs to another organization |
-| `CONFLICT` | 409 | the value is already taken; registering an email that exists |
+| `CONFLICT` | 409 | the value is already taken, or a key was reused for a different request; registering an email that exists |
 | `INTERNAL_ERROR` | 500 | server error; details only in logs |
 
 ## API keys
