@@ -24,9 +24,46 @@ curl -X POST localhost:3000/api/v1/auth/register \
 
 The API reference is in [docs/api.md](docs/api.md).
 
+## Demo
+
+`demo/demo.py` runs the whole flow end to end with the official OpenAI Python SDK pointed at oxsum — no real provider, no API key. The script starts a scripted mock upstream and an oxsum server itself, registers a demo user, tops up 100 credits, runs one billed chat turn, and prints the settlement entry's billing record and its inclusion proof:
+
+```bash
+pip install -r demo/requirements.txt
+docker compose up -d            # PostgreSQL, if it is not already running
+python3 demo/demo.py
+```
+
+Abridged transcript (ids and hashes differ per run):
+
+```
+== 1. Register and top up ==
+   registered demo-…@example.com (organization 'demo'); the API key is shown once
+   balance before top-up: 0 minor units
+   topped up 100000000 minor units (100 credits)
+   top-up entry: 7dcf20b9-…
+   content hash (keep for verification): 45b88ddd…
+   proof bundle: entry 7dcf20b9-…, tree head size 1, root 6c5b0d8b…
+
+== 2. One billed chat turn through the OpenAI SDK ==
+   balance before the turn: 100000000 minor units
+   upstream said: "Holds are oxsum's way of saying 'reserved'."
+   x-oxsum-request-id: fca1ed85-…
+
+== 3. The turn's settlement entry and its proof ==
+   hold key req-fca1ed85-…:hold -> settlement entry c055f9d6-…
+   billing record: {"request": "fca1ed85-…", "channel": "demo-…", "model": "demo-chat",
+     "priceVersion": 1, "kind": "usage", "inputTokens": 23, "outputTokens": 11,
+     "inputPrice": 1000000, "outputPrice": 1000000, "charged": 34, "freeze": 118}
+   proof bundle: tree head size 3, root b0e9ac48…
+   balance after the turn: 99999966 minor units (charged 34)
+```
+
+Both proof bundles are checkable on the `/verify` page against their content hashes — no trust in the server required. The demo prefers its own `oxsum_demo` database (created when the `DATABASE_URL` role may create databases) and otherwise uses `DATABASE_URL` directly. Recording this flow as a GIF is a manual step: record the terminal running `python3 demo/demo.py`.
+
 ## Status
 
-Under active development. The multi-tenant wallet core (top-up, hold/settle, inclusion proofs, tamper detection) and organization-scoped API key authentication are tested and working. The OpenAI-compatible gateway and the web dashboard are next; see docs for the plan.
+Under active development. The multi-tenant wallet core (top-up, hold/settle, inclusion proofs, tamper detection), organization-scoped API key authentication, the OpenAI-compatible gateway (freeze before the call, settle against upstream usage), and the web dashboard (login, balance, keys, holds, transaction log, bill verification) are tested and working. The Leptos chat page is next; see TODO.md for the plan.
 
 ## Documentation
 
