@@ -20,10 +20,16 @@ pub const SCHEMA: &str = "oxsum";
 /// version is applied once, in one transaction, and recorded in `oxsum._migrations` in the
 /// same transaction: a half-applied migration cannot exist, and a restart continues where
 /// it stopped.
-const MIGRATIONS: &[(&str, &str)] = &[(
-    "0001_identity",
-    include_str!("../migrations/0001_identity.sql"),
-)];
+const MIGRATIONS: &[(&str, &str)] = &[
+    (
+        "0001_identity",
+        include_str!("../migrations/0001_identity.sql"),
+    ),
+    (
+        "0002_channels",
+        include_str!("../migrations/0002_channels.sql"),
+    ),
+];
 
 /// Advisory-lock key serialising the migration runner across processes.
 ///
