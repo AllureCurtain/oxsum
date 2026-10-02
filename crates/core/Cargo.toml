@@ -21,6 +21,7 @@ thiserror.workspace = true
 tiktoken-rs.workspace = true
 time.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 url.workspace = true
 uuid.workspace = true
 

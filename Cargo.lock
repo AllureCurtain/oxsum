@@ -2620,6 +2620,7 @@ dependencies = [
  "tiktoken-rs",
  "time",
  "tokio",
+ "tracing",
  "url",
  "uuid",
 ]

@@ -192,6 +192,9 @@ pub enum SettlementKind {
     UpstreamUnreachable,
     /// Upstream's usage priced above the freeze. The freeze was charged and the excess is an anomaly.
     Capped,
+    /// The hold timed out with no settlement (e.g. the gateway crashed). Nothing was charged:
+    /// the sweeper released the whole freeze, and the record marks the anomaly for the admin page.
+    Swept,
 }
 
 /// What a settlement entry records, serialised into its description.
