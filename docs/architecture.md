@@ -24,12 +24,13 @@ The axum API, the core and doubleentry exist today, with oxsum's own identity ta
 | --- | --- | --- |
 | doubleentry | `crates/doubleentry` | Double-entry bookkeeping, balance limits, pending layer, Merkle inclusion and consistency proofs, period closing. Vendored, see docs/decisions.md |
 | Wallet | `crates/core/src/wallet.rs` | One tenant's wallet: top-up, hold, settle, balance, proof bundles. Built on the shared pool, never on a pool of its own |
+| Pricing | `crates/core/src/billing.rs` | What a turn costs and what the ledger records: the input upper bound, the freeze, priced usage, the local `o200k_base` estimate, the settlement record, and the price book. No I/O, so it is the same arithmetic in a test and in a request |
 | Tenants | `crates/core/src/tenants.rs` | Facades over the shared pool, cached per tenant: a tenant costs a facade, not connections. See docs/decisions.md "all tenants share one connection pool" |
 | Db | `crates/core/src/db.rs` | The process's one pool, plus oxsum's own tables: `migrate` creates the `oxsum` schema and applies `crates/core/migrations/` in order, each file and its recorded version in one transaction |
 | Identity | `crates/core/src/users.rs`, `orgs.rs`, `keys.rs` | Registration (user, personal organization, owner membership and first API key, one transaction), organizations and memberships, and API keys: mint, resolve, list, revoke. The credential names the organization |
 | proof | `crates/core/src/proof.rs` | Proof bundle structure and the client-side verify function, later called directly inside a Leptos component |
 | HTTP | `crates/server/src/` | Routing, API-key middleware, error mapping |
-| Gateway | `crates/gateway` (not yet created) | OpenAI-compatible proxy: relays upstream, freezes before the request, settles on usage. reqwest streaming passthrough, tiktoken-rs for fallback estimation, see docs/decisions.md |
+| Gateway | `crates/server/src/gateway/` | The OpenAI-compatible `/v1` surface: model list, chat completions, OpenAI-shaped errors, and the relay that freezes before upstream and settles however the turn ends. Its own auth middleware, because a refusal here has to look like OpenAI's. Pricing is in core, see docs/decisions.md |
 | Pages | `crates/web` (not yet created) | Leptos admin dashboard, bill page, chat page. SSR plus hydration, mounted through the official `leptos_axum`, one binary |
 
 ## Directory plan
@@ -39,10 +40,12 @@ What exists today (`crates/doubleentry`, `crates/core`, `crates/server`) stays a
 ```
 crates/
   doubleentry/          Vendored ledger engine (only changed per the rules in docs/decisions.md)
-  core/                 Domain layer: wallet, tenants, proof, identity (users, orgs, keys)
+  core/                 Domain layer: wallet, tenants, proof, identity (users, orgs, keys), pricing
     src/
       wallet.rs         exists
       tenants.rs        exists, shared-pool facade over many ledger facades
+      billing.rs        exists: the input upper bound, the freeze, priced usage, the local
+                        estimate, the settlement record, and the price book the gateway reads
       proof.rs          exists
       db.rs             exists: the one pool plus oxsum's own migration runner
       users.rs          exists: registration, password hashing; login arrives with B-6
@@ -52,15 +55,16 @@ crates/
     migrations/         exists: oxsum's own tables (users/orgs/memberships/keys)
                         Create-table SQL only, applied by oxsum's own migration runner;
                         ledger schemas stay owned by doubleentry's migrate, never mixed
-  gateway/              B-4: /v1/chat/completions relay, hold/settle orchestration,
-                        channels and price versions (the price table is oxsum's too, migration lives here)
+                        B-3: the channel and price-version tables join them
   server/               HTTP assembly: axum Router, error mapping, auth middleware,
-                        exposing core and gateway as /api/v1 and /v1
-  web/                  B-6: Leptos pages, built with cargo-leptos,
+                        exposing core as /api/v1 and the gateway as /v1
+    src/gateway/        exists: the /v1 surface — router, OpenAI error shape, request
+                        parsing, the SSE relay, and the turn that owns its own settlement
+  web/                  B-5: Leptos pages, built with cargo-leptos,
                         server and browser code separated by feature
 ```
 
-Principle: **domain logic belongs in core; gateway does protocol and orchestration only; server only assembles**. The litmus test — if the logic survives replacing the axum layer, it is in the right place. Migrations follow the crate that owns the table (core's tables in core/migrations, the price table in gateway), applied in dependency order at startup.
+Principle: **domain logic belongs in core; the gateway does protocol and orchestration only; server only assembles**. The litmus test — if the logic survives replacing the axum layer, it is in the right place. That is why the gateway is a module of the server crate rather than a crate of its own: everything it does is HTTP — routing, an OpenAI-shaped error body, request deserialization, and a relay whose lifetime is the response body's — while every number it charges by is computed in `crates/core/src/billing.rs`. Migrations follow the crate that owns the table (core's tables in `core/migrations/`, the price table too when B-3 gives it one), applied in dependency order at startup.
 
 ## Frontend/backend boundary
 
@@ -86,11 +90,13 @@ Principle: **domain logic belongs in core; gateway does protocol and orchestrati
 1. Before relaying an LLM request, `POST holds` freezes an upper bound.
    - The wallet account books a debit in the pending layer; available balance drops accordingly.
    - The wallet carries a `FundedReservations` limit; the limit check and the write happen in one database transaction, with the pending layer included in the calculation, so concurrent holds cannot overdraw.
+   - A gateway request does this itself, before it opens the upstream connection: the freeze is computed in `crates/core/src/billing.rs` from the request text and the output ceiling, and its refusal is answered as OpenAI's 402.
 2. When the stream ends, `POST settlements` books one entry that does two things:
    - Books a reversal in the pending layer, releasing the hold
    - Charges actual usage in the settled layer, moving wallet → revenue
    - The same limit checks the release, so the amount it gives back cannot exceed what holds reserved: settling an amount that was never held is refused rather than turning into available balance. The check is over the reserved total, not the individual hold — see docs/decisions.md.
-3. Each step carries its own `idempotencyKey`, so retries are safe.
+   - The gateway settles when the relayed stream ends, and the settlement is awaited before the stream closes, so a client that read a stream to its end reads a settled bill. The write runs in a task of its own, so a client that hangs up while it is being appended cannot cancel it; a client that hangs up before that cancels the upstream call and settles what had been forwarded from a local estimate.
+3. Each step carries its own `idempotencyKey`, so retries are safe. For a gateway turn the two keys are derived from the request id the response header carries: `req-<id>:hold` and `req-<id>:settle`.
 
 ### User bill verification
 

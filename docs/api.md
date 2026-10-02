@@ -11,6 +11,7 @@ Field definitions for each endpoint are authoritative in `crates/server/openapi.
 - Field naming: camelCase for both requests and responses.
 - Organization tenant ids: 32 lowercase hex characters, the organization's UUID without dashes. The ledger lives in the schema `ledger_<tenantId>`. Clients only ever read this value; they never send it.
 - Idempotency keys: non-empty UTF-8 strings, at most 128 bytes.
+- `/v1/*` is a second surface with the same key: an OpenAI-compatible gateway, whose bodies and errors are OpenAI's rather than oxsum's. It is documented in its own section below.
 
 ## Idempotency
 
@@ -26,6 +27,17 @@ On timeout or network errors the client retries with the same key, never a new o
 - A hold reserves part of the available balance. The settled balance is untouched until a settlement discharges the hold; the difference between the amount held and the amount charged goes back to the available balance.
 - `heldMinor` on a settlement is a claim about a hold this wallet took, and it is checked as one: the amount released may not exceed the holds outstanding, or the settlement is `INSUFFICIENT_FUNDS`. The check runs inside the append, so two settlements cannot both release the same hold.
 - The pairing is aggregate, not one-to-one: a settlement may name a hold smaller than the amount it releases while other holds cover the total. No value can be fabricated that way — the total released can never exceed the total held — but a client should settle the hold it took, for the amount it took it for.
+
+## OpenAI-compatible gateway (`/v1`)
+
+Point an OpenAI client's `base_url` at `/v1` and everything else stays the client's own.
+
+- `GET /v1/models` lists the models this deployment serves — exactly those with a configured price.
+- `POST /v1/chat/completions` relays one turn, streaming or not, and bills it. Fields the gateway does not act on are forwarded upstream unchanged, so a client that works against the provider works here. `max_tokens` is set to the output upper bound the freeze was computed for, `max_completion_tokens` is dropped, and `stream_options.include_usage` is forced on for a stream.
+- Errors are OpenAI's `{"error": {"message", "type", "param", "code"}}`, with oxsum's own code in `error.code`. Upstream's error object is passed through verbatim on a 502.
+- Every response carries `x-oxsum-request-id`. The entries a turn wrote are `req-<id>:hold` and `req-<id>:settle`, and `oxsum_core::entry_id_for` derives their ids, so the id in a header is enough to name the bill.
+- Text content only: an image or another content part is 400, because the freeze needs an input bound that cannot be undercounted.
+- How each turn ends is recorded in the settlement entry's description as its `kind`; docs/user-guide.md has the table.
 
 ## Response format
 

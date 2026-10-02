@@ -45,7 +45,26 @@ Copy `.env.example` to `.env` and the server and the tests pick it up automatica
 | `OXSUM_SIGNUP` | Optional; `invite` (default) or `open`. `invite` refuses `POST /api/v1/auth/register` with 403, so a public instance cannot be signed up by whoever arrives first; `open` is what a demo or a private instance wants |
 | `OXSUM_DB_MAX_CONNECTIONS` | Optional; size of the one pool every tenant shares (default 10). Each connection is a PostgreSQL backend process, so this is the process's whole budget rather than a per-tenant allowance. Stay below the database's own `max_connections` (PostgreSQL's default is 100) |
 | `OXSUM_ADDR` | Optional listen address; defaults to `127.0.0.1:3000` |
+| `OXSUM_UPSTREAM_BASE_URL`, `OXSUM_UPSTREAM_API_KEY`, `OXSUM_MODELS` | The gateway's one upstream channel, set together or not at all. With none of them the deployment serves the wallet only. `OXSUM_MODELS` is JSON: each model maps to `inputPricePerMillion`, `outputPricePerMillion` and `maxOutputTokens`, in minor units per million tokens. `maxOutputTokens` is the ceiling for a request that asks for none and the freeze is computed from it, so it must be the model's real limit rather than a safe guess. A malformed value, or a base URL that is not an http(s) URL, refuses to boot rather than serving a price it had to guess |
+| `OXSUM_UPSTREAM_NAME` | Optional; the channel's name, reported as `owned_by` in `GET /v1/models`. Defaults to `upstream` |
 | `RUST_LOG` | Optional `tracing-subscriber` filter; defaults to `info` |
+
+A gateway deployment is one channel and one price per model, both from the environment; TODO 3
+replaces the source with versioned rows managed from the admin dashboard, so old bills keep the
+prices they were written under. To try the loop against a real provider, set the three variables
+above and point an OpenAI SDK at `http://127.0.0.1:3000/v1`:
+
+```bash
+OXSUM_SIGNUP=open OXSUM_UPSTREAM_BASE_URL=https://api.deepseek.com/v1 \
+  OXSUM_UPSTREAM_API_KEY=sk-... \
+  OXSUM_MODELS='{"deepseek-chat":{"inputPricePerMillion":270000,"outputPricePerMillion":1100000,"maxOutputTokens":8192}}' \
+  cargo run -p oxsum-server
+```
+
+The gateway's own tests need no provider and no network: `crates/server/tests/gateway.rs` starts a
+scripted upstream on a free port inside the test process and selects its answer by model name, so a
+refusal, a 200 that is not JSON and a stream that never finishes are all ordinary cases. They still
+need `DATABASE_URL`, because every turn freezes and settles real credit.
 
 There is no shared API token any more: every request carries an organization's API key, created
 by registration or by `POST /api/v1/org/keys`. The plaintext secret is returned exactly once.
