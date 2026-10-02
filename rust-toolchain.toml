@@ -1,0 +1,5 @@
+[toolchain]
+# One pinned toolchain for reproducible builds: doubleentry's rust-version is 1.94
+# and Leptos 0.8's MSRV is below 1.98, so any recent stable would work; 1.98 is kept.
+channel = "1.98"
+components = ["rustfmt", "clippy"]

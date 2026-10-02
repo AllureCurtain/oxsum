@@ -1,0 +1,539 @@
+//! Golden vectors for the canonical encoding and the Merkle log.
+//!
+//! Hashes are only stable if the bytes behind them are. Nothing in the compiler
+//! stops a field being reordered, a length prefix being dropped, or a domain tag
+//! being edited — and every one of those silently changes every hash in every
+//! ledger ever written by this crate, while leaving the test suite green.
+//!
+//! These vectors are the tripwire. A change here is either a mistake, or a
+//! deliberate format revision.
+//!
+//! Ledgers exist that were written by earlier versions, so a deliberate revision
+//! means three things:
+//!
+//! 1. Regenerating these values — `just golden-emit` prints them.
+//! 2. **Bumping the encoding version in the domain tag** for whatever moved, so
+//!    two roots computed under different rules are not both labelled `v1`.
+//! 3. Recording in `CHANGELOG.md` what an existing ledger has to do.
+
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+
+use doubleentry::account::{AccountId, AccountRegistry};
+use doubleentry::balance::TrialBalance;
+use doubleentry::canonical::Canonical;
+use doubleentry::entry::{Draft, LedgerPolicy, SealContext};
+use doubleentry::merkle::ConsistencyProof;
+use doubleentry::merkle::{MerkleLog, empty_root, leaf_hash};
+use doubleentry::period::{LedgerId, PeriodCalendar, PeriodId};
+use doubleentry::seal::{PeriodCoverage, Seal, SealChain, SealChainError};
+use doubleentry::{
+    Amount, Balanced, Currency, Description, Dimensions, DocumentRef, Entry, EntryId, Hash,
+    IdempotencyKey, Label, Posting, Provenance,
+};
+use time::macros::date;
+use uuid::Uuid;
+
+type Eur = Amount<2>;
+
+fn label(s: &str) -> Label {
+    Label::new(s).expect("valid label")
+}
+
+/// A fixed leaf payload, derived without a clock or a random source.
+fn leaf(i: u64) -> Hash {
+    let mut bytes = [0u8; 32];
+    bytes[..8].copy_from_slice(&i.to_le_bytes());
+    Hash::from_bytes(bytes)
+}
+
+/// The reference entry.
+///
+/// Exercises every field that enters the canonical encoding: both directions,
+/// dimensions, provenance, a document reference, a reversal link, and a value
+/// date that differs from the booking date.
+fn reference_entry() -> Entry<Balanced, 2> {
+    let mut accounts = AccountRegistry::new();
+    let cash = accounts
+        .register_path("Assets:Cash", date!(2020 - 01 - 01))
+        .expect("registers");
+    let revenue = accounts
+        .register_path("Income:Sales", date!(2020 - 01 - 01))
+        .expect("registers");
+
+    let calendar = PeriodCalendar::new();
+    let policy = LedgerPolicy::default();
+    let ctx = SealContext {
+        accounts: &accounts,
+        calendar: &calendar,
+        policy: &policy,
+    };
+
+    let dimensions = Dimensions::none()
+        .with(label("activity"), label("Network"))
+        .expect("fits")
+        .with(label("segment"), label("Electricity"))
+        .expect("fits");
+
+    // A fixed identifier: excluded from the encoding, but pinned so the vector
+    // is reproducible end to end.
+    let id = EntryId::from_uuid(Uuid::from_bytes([0x11; 16]));
+    let original = EntryId::from_uuid(Uuid::from_bytes([0x22; 16]));
+
+    Entry::<Draft, 2>::new(
+        id,
+        IdempotencyKey::new(b"golden-vector-key".to_vec()).expect("valid"),
+        date!(2026 - 03 - 15),
+    )
+    .with_value_date(date!(2026 - 03 - 17))
+    .with_description(Description::new("reference entry").expect("valid"))
+    .with_provenance(
+        Provenance::none()
+            .with_actor("auditor")
+            .expect("valid")
+            .with_source("golden")
+            .expect("valid"),
+    )
+    .with_document(DocumentRef::new("INV-2026-0001", Hash::from_bytes([0x33; 32])).expect("valid"))
+    .reversing(original, date!(2026 - 02 - 01))
+    .post(Posting::debit(cash, Eur::from_minor(119_000), Currency::EUR).with_dimensions(dimensions))
+    .post(Posting::credit(
+        revenue,
+        Eur::from_minor(119_000),
+        Currency::EUR,
+    ))
+    .seal(&ctx)
+    .expect("balances")
+}
+
+#[test]
+fn canonical_encoding_of_the_reference_entry_is_unchanged() {
+    let encoded = reference_entry().to_canonical_bytes();
+    let hex: String = encoded.iter().map(|b| format!("{b:02x}")).collect();
+
+    let expected = concat!(
+        "021100000000000000676f6c64656e2d766563746f722d6b6579ea070000030fea0700",
+        "0003110f000000000000007265666572656e636520656e747279020000000000000000",
+        "00000000d8d00100000000004555520002000000000000000800000000000000616374",
+        "697669747907000000000000004e6574776f726b07000000000000007365676d656e74",
+        "0b00000000000000456c6563747269636974790100000001d8d0010000000000455552",
+        "0000000000000000000001070000000000000061756469746f72010600000000000000",
+        "676f6c64656e00010d00000000000000494e562d323032362d30303031013333333333",
+        "3333333333333333333333333333333333333333333333333333330122222222222222",
+        "22222222222222222201ea0700000201",
+    );
+    assert_eq!(
+        hex, expected,
+        "the canonical encoding of an entry changed; see this file's module docs"
+    );
+}
+
+#[test]
+fn the_reference_entry_content_hash_is_unchanged() {
+    assert_eq!(
+        reference_entry().content_hash().to_hex(),
+        "5bd373dc4d90adb1aa7e8c7f665fbf0a6eac43b6e8980272f93f41e17c8eac2c",
+        "the entry content hash changed; see this file's module docs"
+    );
+}
+
+/// The predecessor the reference seal chains onto.
+///
+/// A real seal over the first two leaves of [`reference_log`]. A seal carries a
+/// consistency proof from its predecessor's tree, so the vector pins that
+/// proof's encoding as well as the rest of the preimage — which a fabricated
+/// predecessor hash could not.
+fn reference_predecessor() -> Seal {
+    Seal::build::<2>(
+        LedgerId::new("golden-ledger").expect("valid"),
+        PeriodId::new("2026-02").expect("valid"),
+        PeriodCoverage::spanning(0, 1, 2),
+        &MerkleLog::from_leaves((0..2u64).map(leaf).collect()),
+        &TrialBalance::<2>::new(),
+        AccountRegistry::new().commitment(),
+        None,
+    )
+    .expect("builds")
+}
+
+/// The log the reference seals are taken over.
+fn reference_log() -> MerkleLog {
+    MerkleLog::from_leaves((0..4u64).map(leaf).collect())
+}
+
+/// The reference seal.
+///
+/// Built from fixed inputs rather than from a journal, so the vector pins the
+/// seal preimage itself and not the arithmetic that happened to produce it.
+fn reference_seal() -> Seal {
+    let mut tb = TrialBalance::<2>::new();
+    let mut accounts = AccountRegistry::new();
+    let cash = accounts
+        .register_path("Assets:Cash", date!(2020 - 01 - 01))
+        .expect("registers");
+    let revenue = accounts
+        .register_path("Income:Sales", date!(2020 - 01 - 01))
+        .expect("registers");
+    tb.apply(&Posting::debit(
+        cash,
+        Eur::from_minor(119_000),
+        Currency::EUR,
+    ))
+    .expect("fits");
+    tb.apply(&Posting::credit(
+        revenue,
+        Eur::from_minor(119_000),
+        Currency::EUR,
+    ))
+    .expect("fits");
+
+    Seal::build::<2>(
+        LedgerId::new("golden-ledger").expect("valid"),
+        PeriodId::new("2026-03").expect("valid"),
+        PeriodCoverage::spanning(0, 3, 4),
+        &reference_log(),
+        &tb,
+        // The registry the balances above are keyed on. Pinned through the seal
+        // hash, so a change to the account-binding encoding shows up here too.
+        accounts.commitment(),
+        Some(&reference_predecessor()),
+    )
+    .expect("builds")
+}
+
+/// The consistency proof a chained seal carries is part of its preimage.
+///
+/// Pinned separately from the seal hash so a change to the proof's canonical
+/// encoding is reported as what it is, rather than as an unexplained seal-hash
+/// drift. The encoding also has to survive a database round trip, which is what
+/// the decode half checks.
+#[test]
+fn the_reference_seals_consistency_proof_is_unchanged() {
+    let seal = reference_seal();
+    let proof = seal
+        .prev_consistency
+        .as_ref()
+        .expect("a chained seal carries one");
+    assert_eq!(proof.old_size, 2);
+    assert_eq!(proof.new_size, 4);
+    assert_eq!(
+        path_hex(&proof.path),
+        "90c8784125097b93c6fad57be10970c4d937e8e70171d23215c5a31372dfeb71",
+        "the consistency path a seal commits to changed"
+    );
+
+    let bytes = proof.to_canonical_bytes();
+    assert_eq!(
+        ConsistencyProof::from_canonical_bytes(&bytes).as_ref(),
+        Ok(proof),
+        "the encoding a backend stores has to decode back to the same proof"
+    );
+    assert!(
+        ConsistencyProof::from_canonical_bytes(&bytes[..bytes.len() - 1]).is_err(),
+        "a truncated encoding must be refused, not silently shortened"
+    );
+}
+
+/// The chain check that the seal hash alone cannot make.
+///
+/// The scenario is the one that matters: a seal has already been **published**,
+/// so it cannot be retracted, and the operator wants to rewrite history that
+/// falls before it and carry on sealing.
+///
+/// Every rule the chain had before consistency proofs is satisfiable in that
+/// position. The next seal can name the published one's hash, hash correctly to
+/// its own contents, grow its tree size, and grow its registry. What it cannot
+/// do is *prove* that its log extends the published one's — because it does not.
+#[test]
+fn a_chain_over_a_rewritten_history_is_refused() {
+    let ledger = LedgerId::new("golden-ledger").expect("valid");
+
+    // Published, and therefore fixed: an auditor holds this.
+    let published = reference_predecessor();
+    let chain = SealChain::from_seals(ledger.clone(), [published.clone(), reference_seal()])
+        .expect("the real chain verifies");
+    assert!(chain.verify().is_ok());
+    assert!(chain.verify_against_log(&reference_log()).is_ok());
+
+    // The books are rewritten underneath it: same sizes, different second leaf.
+    let mut rewritten = MerkleLog::new();
+    rewritten.append(leaf(0));
+    rewritten.append(leaf(9_999));
+    for i in 2..4u64 {
+        rewritten.append(leaf(i));
+    }
+    assert_eq!(rewritten.len(), reference_log().len());
+    assert_ne!(rewritten.root(), reference_log().root());
+
+    // The next seal cannot even be *built* against the published predecessor:
+    // the rewritten log has no prefix that is the published tree.
+    let attempt = Seal::build::<2>(
+        ledger.clone(),
+        PeriodId::new("2026-03").expect("valid"),
+        PeriodCoverage::spanning(0, 3, 4),
+        &rewritten,
+        &TrialBalance::<2>::new(),
+        AccountRegistry::new().commitment(),
+        Some(&published),
+    );
+    assert!(
+        matches!(attempt, Err(SealChainError::NotAPrefix { .. })),
+        "a seal that could never chain must not be constructible, got {attempt:?}"
+    );
+
+    // Nor by hand. This is what an attacker with write access produces: a real
+    // seal, re-pointed at a different predecessor and re-hashed, so it is
+    // internally perfect and names the published seal correctly.
+    let mut forged = reference_seal();
+    forged.tree_head = rewritten.head();
+    forged.prev_seal = Some(published.seal_hash);
+    forged.seal_hash = forged.compute_hash();
+    assert!(forged.is_self_consistent(), "re-hashed, as a forger would");
+    assert_eq!(forged.prev_seal, Some(published.seal_hash));
+    assert!(forged.tree_head.size >= published.tree_head.size);
+
+    let mut chain = SealChain::new(ledger);
+    chain.push(published).expect("the published seal stands");
+    assert!(
+        matches!(chain.push(forged), Err(SealChainError::NotAPrefix { .. })),
+        "every other rule passes; the consistency proof is what refuses this"
+    );
+}
+
+#[test]
+fn the_reference_seal_hash_is_unchanged() {
+    // A seal hash is what an auditor archives and what later verification is
+    // checked against. Changing its preimage invalidates every seal ever
+    // issued, so it is pinned separately from the entry encoding.
+    assert_eq!(
+        reference_seal().seal_hash.to_hex(),
+        "08a34f13c9fc43a1d7babb8053dc3d877a24b405b84f96c402b947a2b0b1cda8",
+        "the seal hash changed; see this file's module docs"
+    );
+}
+
+/// The registry the reference seal's balances hang off.
+fn reference_registry() -> AccountRegistry {
+    let mut accounts = AccountRegistry::new();
+    accounts
+        .register_path("Assets:Cash", date!(2020 - 01 - 01))
+        .expect("registers");
+    accounts
+        .register_path("Income:Sales", date!(2020 - 01 - 01))
+        .expect("registers");
+    accounts
+}
+
+#[test]
+fn the_account_binding_commitment_is_unchanged() {
+    // Pinned separately from the seal hash it feeds. A change to the account
+    // encoding — a field added, reordered, or dropped — moves every seal ever
+    // issued, and the seal vector alone would not say which half moved.
+    assert_eq!(
+        reference_registry().commitment().root.to_hex(),
+        "17d6ae22c9f6d6a0b3ab66b3d50146284cf7caa80057de0a6a8d088f103df22a",
+        "the account binding commitment changed; see this file\'s module docs"
+    );
+}
+
+#[test]
+fn master_data_does_not_move_the_binding_commitment() {
+    // The leaf covers the handle and the path — identity — and nothing else.
+    // A limit, a classification and an open window are master data: mutable by
+    // design, governing what may be booked next rather than what was booked
+    // already. Hashing them in would make every routine close or limit change
+    // retroactively invalidate every binding proof against every earlier seal.
+    let mut changed = reference_registry();
+    changed
+        .set_limit(
+            AccountId::from_index(0),
+            doubleentry::account::BalanceLimit::NoCreditBalance,
+        )
+        .expect("registered");
+    changed
+        .close(AccountId::from_index(0), date!(2026 - 06 - 30))
+        .expect("registered");
+    assert_eq!(changed.commitment(), reference_registry().commitment());
+}
+
+#[test]
+fn a_rebound_handle_moves_the_binding_commitment() {
+    // What the commitment *does* pin. Two registries over the same paths in a
+    // different order are not the same registry, because every posting row and
+    // every sealed balance names an account by its handle.
+    let mut swapped = AccountRegistry::new();
+    for path in ["Income:Sales", "Assets:Cash"] {
+        swapped
+            .register_path(path, date!(2020 - 01 - 01))
+            .expect("registers");
+    }
+    assert_ne!(swapped.commitment(), reference_registry().commitment());
+}
+
+#[test]
+fn a_document_reference_without_a_hash_encodes_differently() {
+    // The presence of the hash is part of the preimage, so an entry citing a
+    // document it cannot vouch for is not interchangeable with one that can.
+    let hashed = DocumentRef::new("INV-1", Hash::from_bytes([0x33; 32])).expect("valid");
+    let unverified = DocumentRef::unverified("INV-1").expect("valid");
+    assert!(hashed.is_verifiable());
+    assert!(!unverified.is_verifiable());
+    assert_ne!(
+        hashed.to_canonical_bytes(),
+        unverified.to_canonical_bytes(),
+        "an unhashed document reference must not encode as a hashed one"
+    );
+}
+
+#[test]
+fn merkle_constants_are_unchanged() {
+    assert_eq!(
+        empty_root().to_hex(),
+        "854ee3641f62b1063d0eee1b9a4f6f872b38625e3f4a090dd5a9e5c58d04ebf9"
+    );
+    assert_eq!(
+        leaf_hash(&leaf(0)).to_hex(),
+        "db5c7a5ad0a6c6654868caba0dafda6a794f4278cb5c4573728dc645d31dd632"
+    );
+}
+
+#[test]
+fn merkle_roots_for_known_sizes_are_unchanged() {
+    let expected = [
+        "db5c7a5ad0a6c6654868caba0dafda6a794f4278cb5c4573728dc645d31dd632",
+        "b8581ec29a5787add8ade15bdbb4f3e2412222c6600b1195f659dd82d43d25d4",
+        "4846c0dda0fe1aa609475f8287ac34a09d3f5e8d3a2812d275359f6977989d12",
+        "c8fdd4a2a60ada5bad1bd77a1a1407370e53db996cd109c3b578f21ee0040ffc",
+        "6bc34b2a6f4e608393c18d44b21493be394757cde46cb361caae9544fc95804b",
+        "c01bef11185172ec477ffab55f45d97ef5a789bcfbb6091792556fb5de13add0",
+    ];
+    let sizes = [1u64, 2, 3, 4, 5, 8];
+    for (size, want) in sizes.iter().zip(expected.iter()) {
+        let log = MerkleLog::from_leaves((0..*size).map(leaf).collect());
+        assert_eq!(log.root().to_hex(), *want, "root changed for size {size}");
+    }
+}
+
+/// The (index, size) pairs the proof vectors below are pinned at.
+///
+/// Chosen to cover both sides of a split and both shapes of tree: a perfect
+/// power of two, and the ragged sizes where the right-hand subtree is shorter
+/// than the left.
+const PROOF_CASES: [(u64, u64); 6] = [(0, 1), (0, 2), (1, 2), (2, 5), (4, 5), (3, 8)];
+
+/// The (old, new) size pairs the consistency vectors are pinned at.
+const CONSISTENCY_CASES: [(u64, u64); 6] = [(1, 2), (1, 3), (2, 5), (3, 5), (4, 8), (6, 8)];
+
+fn path_hex(path: &[Hash]) -> String {
+    path.iter().map(Hash::to_hex).collect::<Vec<_>>().join(",")
+}
+
+#[test]
+fn inclusion_proof_paths_are_unchanged() {
+    // The roots above do not pin these. Sibling *ordering* within a path, and
+    // the choice of which subtree is hashed first, can be changed without moving
+    // any root — and would silently invalidate every proof ever handed out while
+    // leaving `merkle_roots_for_known_sizes_are_unchanged` green. RFC 6962
+    // publishes proof vectors for the same reason.
+    let expected = [
+        "",
+        "7d2122b894a233239c5de911e07b30a0bbb667204efd5a32255a3c2b31cece9a",
+        "db5c7a5ad0a6c6654868caba0dafda6a794f4278cb5c4573728dc645d31dd632",
+        "c07ac0cab3da8178725a6d3006f43dd17ec3814841d1c3c1ff9aabd90be3cfe1,b8581ec29a5787add8ade15bdbb4f3e2412222c6600b1195f659dd82d43d25d4,18eaa5dfce2841d7b05dc6d03d0a1ec1fa89a9abfe7cc6d2d6348819fe2236f3",
+        "c8fdd4a2a60ada5bad1bd77a1a1407370e53db996cd109c3b578f21ee0040ffc",
+        "006f1d29e778d4bdb9569829beb868c27764f1e718141e43c10b7de691be5536,b8581ec29a5787add8ade15bdbb4f3e2412222c6600b1195f659dd82d43d25d4,43de91ecf42fde753cc9f45b556d6b75eafd6db2a16c54c871a4237267d81550",
+    ];
+    let log = MerkleLog::from_leaves((0..8u64).map(leaf).collect());
+    for ((index, size), want) in PROOF_CASES.iter().zip(expected.iter()) {
+        let proof = log.inclusion_proof_at(*index, *size).expect("in range");
+        assert_eq!(
+            path_hex(&proof.path),
+            *want,
+            "inclusion path changed for leaf {index} of {size}"
+        );
+        // A vector that does not verify is a vector transcribed wrong.
+        assert!(
+            proof.verify(&leaf(*index), &log.head_at(*size).expect("in range")),
+            "pinned inclusion proof for leaf {index} of {size} does not verify"
+        );
+    }
+}
+
+#[test]
+fn consistency_proof_paths_are_unchanged() {
+    let expected = [
+        "7d2122b894a233239c5de911e07b30a0bbb667204efd5a32255a3c2b31cece9a",
+        "7d2122b894a233239c5de911e07b30a0bbb667204efd5a32255a3c2b31cece9a,006f1d29e778d4bdb9569829beb868c27764f1e718141e43c10b7de691be5536",
+        "90c8784125097b93c6fad57be10970c4d937e8e70171d23215c5a31372dfeb71,18eaa5dfce2841d7b05dc6d03d0a1ec1fa89a9abfe7cc6d2d6348819fe2236f3",
+        "006f1d29e778d4bdb9569829beb868c27764f1e718141e43c10b7de691be5536,c07ac0cab3da8178725a6d3006f43dd17ec3814841d1c3c1ff9aabd90be3cfe1,b8581ec29a5787add8ade15bdbb4f3e2412222c6600b1195f659dd82d43d25d4,18eaa5dfce2841d7b05dc6d03d0a1ec1fa89a9abfe7cc6d2d6348819fe2236f3",
+        "43de91ecf42fde753cc9f45b556d6b75eafd6db2a16c54c871a4237267d81550",
+        "1fac1f67c7c2d7300ebc23ff3c54c4d4aea92b6a1bd72c705f17d7dbc08a1464,6b5600bb9556a72db14772cfb9abce2aefa159ecc7c576e9192bb61668811706,c8fdd4a2a60ada5bad1bd77a1a1407370e53db996cd109c3b578f21ee0040ffc",
+    ];
+    let log = MerkleLog::from_leaves((0..8u64).map(leaf).collect());
+    for ((old, new), want) in CONSISTENCY_CASES.iter().zip(expected.iter()) {
+        let proof = log.consistency_proof_between(*old, *new).expect("in range");
+        assert_eq!(
+            path_hex(&proof.path),
+            *want,
+            "consistency path changed from {old} to {new}"
+        );
+        assert!(
+            proof.verify(
+                &log.head_at(*old).expect("in range"),
+                &log.head_at(*new).expect("in range")
+            ),
+            "pinned consistency proof from {old} to {new} does not verify"
+        );
+    }
+}
+
+#[test]
+fn money_formatting_is_unchanged() {
+    // The decimal string is what gets serialised and what a scale-2 amount
+    // hashes as; a change here changes wire compatibility.
+    assert_eq!(Eur::from_minor(119_000).to_string(), "1190.00");
+    assert_eq!(Eur::from_minor(-5).to_string(), "-0.05");
+    assert_eq!(Eur::from_minor(0).to_string(), "0.00");
+    assert_eq!(Amount::<0>::from_minor(7).to_string(), "7");
+    assert_eq!(Amount::<5>::from_minor(123).to_string(), "0.00123");
+}
+
+#[test]
+#[ignore = "prints current values for regenerating the vectors above"]
+fn emit_vectors() {
+    let e = reference_entry();
+    let hex: String = e
+        .to_canonical_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    println!("ENCODING={hex}");
+    println!("ENTRY_HASH={}", e.content_hash().to_hex());
+    println!("SEAL_HASH={}", reference_seal().seal_hash.to_hex());
+    println!(
+        "SEAL_PREV_CONSISTENCY={}",
+        reference_seal()
+            .prev_consistency
+            .as_ref()
+            .map(|p| path_hex(&p.path))
+            .unwrap_or_default()
+    );
+    println!(
+        "ACCOUNTS_ROOT={}",
+        reference_registry().commitment().root.to_hex()
+    );
+    println!("EMPTY_ROOT={}", empty_root().to_hex());
+    println!("LEAF_ZERO={}", leaf_hash(&leaf(0)).to_hex());
+    for size in [1u64, 2, 3, 4, 5, 8] {
+        let log = MerkleLog::from_leaves((0..size).map(leaf).collect());
+        println!("ROOT_{size}={}", log.root().to_hex());
+    }
+    let log = MerkleLog::from_leaves((0..8u64).map(leaf).collect());
+    for (index, size) in PROOF_CASES {
+        let proof = log.inclusion_proof_at(index, size).expect("in range");
+        println!("INCLUSION_{index}_OF_{size}={}", path_hex(&proof.path));
+    }
+    for (old, new) in CONSISTENCY_CASES {
+        let proof = log.consistency_proof_between(old, new).expect("in range");
+        println!("CONSISTENCY_{old}_TO_{new}={}", path_hex(&proof.path));
+    }
+}

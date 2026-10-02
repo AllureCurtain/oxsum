@@ -1,0 +1,55 @@
+use axum::Json;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use oxsum_core::WalletError;
+use serde_json::json;
+
+/// HTTP-layer errors, formatted per docs/api.md.
+#[derive(Debug)]
+pub enum ApiError {
+    Validation(String),
+    Unauthorized,
+    NotFound,
+    InsufficientFunds,
+    Internal,
+}
+
+impl From<WalletError> for ApiError {
+    fn from(e: WalletError) -> Self {
+        match e {
+            WalletError::InvalidInput(m) => Self::Validation(m),
+            WalletError::InsufficientFunds => Self::InsufficientFunds,
+            // Storage details go to the logs only, never back to the caller.
+            WalletError::Storage(err) => {
+                tracing::error!(error = %err, "storage failure");
+                Self::Internal
+            }
+        }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let (status, code, message) = match self {
+            Self::Validation(m) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", m),
+            Self::Unauthorized => (
+                StatusCode::UNAUTHORIZED,
+                "UNAUTHORIZED",
+                "missing or invalid token".into(),
+            ),
+            Self::NotFound => (StatusCode::NOT_FOUND, "NOT_FOUND", "not found".into()),
+            Self::InsufficientFunds => (
+                StatusCode::PAYMENT_REQUIRED,
+                "INSUFFICIENT_FUNDS",
+                "insufficient funds".into(),
+            ),
+            Self::Internal => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+                "internal error".into(),
+            ),
+        };
+        let body = json!({ "error": { "code": code, "message": message, "details": [] } });
+        (status, Json(body)).into_response()
+    }
+}

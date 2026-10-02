@@ -1,0 +1,5 @@
+/target
+.env
+
+# git worktrees: one per PR, created under .worktrees/, never committed
+.worktrees/

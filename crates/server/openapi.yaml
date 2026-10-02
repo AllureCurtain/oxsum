@@ -1,0 +1,176 @@
+openapi: 3.1.0
+info:
+  title: oxsum API
+  version: 0.1.0
+  description: Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
+servers:
+  - url: http://localhost:3000
+security:
+  - bearer: []
+paths:
+  /healthz:
+    get:
+      summary: Health check
+      security: []
+      responses:
+        "200":
+          description: ok
+          content:
+            text/plain:
+              schema: { type: string, example: ok }
+  /api/v1/tenants/{tenant}/topups:
+    post:
+      summary: Top up credits
+      parameters: [{ $ref: "#/components/parameters/Tenant" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AmountRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/Receipt" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/tenants/{tenant}/holds:
+    post:
+      summary: Hold credits (before a streaming call starts)
+      parameters: [{ $ref: "#/components/parameters/Tenant" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AmountRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/Receipt" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "402": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/tenants/{tenant}/settlements:
+    post:
+      summary: "Settle a hold: release it and charge the actual usage"
+      parameters: [{ $ref: "#/components/parameters/Tenant" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SettleRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/Receipt" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/tenants/{tenant}/balance:
+    get:
+      summary: Available balance (settled minus unsettled holds)
+      parameters: [{ $ref: "#/components/parameters/Tenant" }]
+      responses:
+        "200":
+          description: The balance
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [availableMinor]
+                    properties:
+                      availableMinor: { type: integer, format: int64 }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/tenants/{tenant}/entries/{entryId}/proof:
+    get:
+      summary: "Bill proof bundle: entry source + inclusion proof + tree head"
+      parameters:
+        - { $ref: "#/components/parameters/Tenant" }
+        - name: entryId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The proof bundle. The internal shape of entry/head/proof follows doubleentry's serde encoding.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [entry, head, proof]
+                    properties:
+                      entry: { type: object }
+                      head:
+                        type: object
+                        properties:
+                          size: { type: integer, format: int64 }
+                          root: { type: string, description: 32-byte hash, lowercase hex }
+                      proof: { type: object }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+components:
+  securitySchemes:
+    bearer: { type: http, scheme: bearer }
+  parameters:
+    Tenant:
+      name: tenant
+      in: path
+      required: true
+      schema: { type: string, pattern: "^[a-z0-9_]{1,40}$" }
+  schemas:
+    AmountRequest:
+      type: object
+      required: [idempotencyKey, amountMinor]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 128, description: UTF-8 idempotency key; the server accepts at most 128 bytes }
+        amountMinor: { type: integer, format: int64, minimum: 1 }
+    SettleRequest:
+      type: object
+      required: [idempotencyKey, heldMinor, actualMinor]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 128, description: UTF-8 idempotency key; the server accepts at most 128 bytes }
+        heldMinor: { type: integer, format: int64, minimum: 1, description: the amount originally held }
+        actualMinor: { type: integer, format: int64, minimum: 0, description: actual usage, must not exceed heldMinor }
+    Receipt:
+      type: object
+      required: [entryId, contentHash, isNew]
+      properties:
+        entryId: { type: string, format: uuid }
+        logIndex: { type: [integer, "null"], format: int64 }
+        contentHash: { type: string, description: 32-byte hash, lowercase hex; keep it for verification }
+        isNew: { type: boolean, description: false means an idempotent replay, nothing new was written }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, details]
+          properties:
+            code:
+              type: string
+              enum: [VALIDATION_ERROR, UNAUTHORIZED, INSUFFICIENT_FUNDS, NOT_FOUND, INTERNAL_ERROR]
+            message: { type: string }
+            details: { type: array, items: {} }
+  responses:
+    Receipt:
+      description: The ledger receipt
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data]
+            properties:
+              data: { $ref: "#/components/schemas/Receipt" }
+    Error:
+      description: An error
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }

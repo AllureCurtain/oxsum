@@ -1,0 +1,26 @@
+[package]
+name = "oxsum-core"
+description = "oxsum domain layer: multi-tenant wallet, hold/settle, bill proofs."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+doubleentry.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+dotenvy.workspace = true
+tokio.workspace = true
+uuid.workspace = true
