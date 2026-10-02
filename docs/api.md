@@ -26,8 +26,8 @@ On timeout or network errors the client retries with the same key, never a new o
 ## Holds and settlements
 
 - A hold reserves part of the available balance. The settled balance is untouched until a settlement discharges the hold; the difference between the amount held and the amount charged goes back to the available balance.
-- `heldMinor` on a settlement is a claim about a hold this wallet took, and it is checked as one: the amount released may not exceed the holds outstanding, or the settlement is `INSUFFICIENT_FUNDS`. The check runs inside the append, so two settlements cannot both release the same hold.
-- The pairing is aggregate, not one-to-one: a settlement may name a hold smaller than the amount it releases while other holds cover the total. No value can be fabricated that way — the total released can never exceed the total held — but a client should settle the hold it took, for the amount it took it for.
+- A settlement names the hold it releases (`holdKey`): the server reads the hold's amount from the hold entry in the ledger, so there is no amount to assert. One hold settles at most once — the settlement entry's idempotency key is derived from the hold's key (`oxsum_core::settlement_key_for`), and the ledger's idempotency gate refuses a second settlement of the same hold with `CONFLICT`, inside the append. Retrying the identical settlement replays it.
+- Naming a hold that is not outstanding is `NOT_FOUND`, even when other holds would cover the amount. The wallet's limit still refuses a release the outstanding reservations cannot cover, as the backstop behind the pairing.
 
 ## OpenAI-compatible gateway (`/v1`)
 
@@ -36,7 +36,7 @@ Point an OpenAI client's `base_url` at `/v1` and everything else stays the clien
 - `GET /v1/models` lists the models this deployment serves — exactly those with a price. `owned_by` is the channel that serves one, and `created` is when the version in force was written.
 - `POST /v1/chat/completions` relays one turn, streaming or not, and bills it. Fields the gateway does not act on are forwarded upstream unchanged, so a client that works against the provider works here. `max_tokens` is set to the output upper bound the freeze was computed for, `max_completion_tokens` is dropped, and `stream_options.include_usage` is forced on for a stream.
 - Errors are OpenAI's `{"error": {"message", "type", "param", "code"}}`, with oxsum's own code in `error.code`. Upstream's error object is passed through verbatim on a 502.
-- Every response carries `x-oxsum-request-id`. The entries a turn wrote are `req-<id>:hold` and `req-<id>:settle`, and `oxsum_core::entry_id_for` derives their ids, so the id in a header is enough to name the bill.
+- Every response carries `x-oxsum-request-id`. The entries a turn wrote are `req-<id>:hold` and the settlement derived from it (`oxsum_core::settlement_key_for`), and `oxsum_core::entry_id_for` derives their ids, so the id in a header is enough to name the bill.
 - Text content only: an image or another content part is 400, because the freeze needs an input bound that cannot be undercounted.
 - How each turn ends is recorded in the settlement entry's description as its `kind`; docs/user-guide.md has the table. The same description carries the `channel` and the `priceVersion` that priced the turn, so the prices can be checked against the configuration afterwards.
 - A request is priced by the version in force when it starts. A price change during a turn reaches later requests only; the turn in flight settles at the version it began on.
@@ -73,9 +73,9 @@ Failure:
 | `VALIDATION_ERROR` | 400 | request validation failed |
 | `UNAUTHORIZED` | 401 | key or operator token missing, malformed, unknown, revoked or expired |
 | `FORBIDDEN` | 403 | the caller may not do this; registration when signup is not open |
-| `INSUFFICIENT_FUNDS` | 402 | the wallet cannot cover it: a hold larger than the available balance, or a settlement releasing more than is held |
-| `NOT_FOUND` | 404 | resource does not exist, or belongs to another organization |
-| `CONFLICT` | 409 | the value is already taken, or a key was reused for a different request; registering an email that exists |
+| `INSUFFICIENT_FUNDS` | 402 | the wallet cannot cover it: a hold larger than the available balance |
+| `NOT_FOUND` | 404 | resource does not exist, or belongs to another organization; a settlement naming a hold that is not outstanding |
+| `CONFLICT` | 409 | the value is already taken, or a key was reused for a different request; registering an email that exists; settling a hold that is already discharged |
 | `INTERNAL_ERROR` | 500 | server error; details only in logs |
 
 ## API keys

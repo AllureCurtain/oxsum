@@ -99,9 +99,9 @@ Principle: **domain logic belongs in core; the gateway does protocol and orchest
 2. When the stream ends, `POST settlements` books one entry that does two things:
    - Books a reversal in the pending layer, releasing the hold
    - Charges actual usage in the settled layer, moving wallet → revenue
-   - The same limit checks the release, so the amount it gives back cannot exceed what holds reserved: settling an amount that was never held is refused rather than turning into available balance. The check is over the reserved total, not the individual hold — see docs/decisions.md.
+   - The same limit checks the release as a backstop, so the amount it gives back cannot exceed what holds reserved. The pairing itself is one-to-one: a settlement names the hold it releases, and the hold's entry is the amount — see docs/decisions.md.
    - The gateway settles when the relayed stream ends, and the settlement is awaited before the stream closes, so a client that read a stream to its end reads a settled bill. The write runs in a task of its own, so a client that hangs up while it is being appended cannot cancel it; a client that hangs up before that cancels the upstream call and settles what had been forwarded from a local estimate.
-3. Each step carries its own `idempotencyKey`, so retries are safe. For a gateway turn the two keys are derived from the request id the response header carries: `req-<id>:hold` and `req-<id>:settle`.
+3. Each step carries its own `idempotencyKey`, so retries are safe. For a gateway turn the hold's key is derived from the request id the response header carries (`req-<id>:hold`), and the settlement's key is derived from the hold's (`oxsum_core::settlement_key_for`).
 
 ### User bill verification
 

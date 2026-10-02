@@ -383,3 +383,13 @@ New decisions go on top. Overturned decisions are never deleted; mark them "Supe
   - Selling verifiable bills to relay operators: a Merkle proof only shows records were not altered after the fact; it cannot prove the record was honest at write time.
   - A reconciliation service for AI spend against upstream bills: the recoverable amounts on the enterprise side are small, and relay operators' willingness to pay is low.
   - The research lives in three documents under `D:\Study\project`.
+
+## 2026-10-03 Settlement-hold pairing: contract change, not a holds table (issue #10)
+
+- Status: Adopted
+- Decision: a settlement names the hold it releases (`holdKey`); the server reads the hold's amount from the hold entry in the ledger, so the request carries no amount to assert. One hold settles at most once: the settlement entry's idempotency key is derived from the hold's key (`oxsum_core::settlement_key_for`), and the ledger's idempotency gate refuses a second, different settlement of the same hold with `Conflict` ("hold already settled"), inside the append. Retrying the identical settlement replays it. Naming a hold that is not outstanding is `WalletError::HoldNotFound`, answered 404; the gateway maps it to 500 because it settles the hold it just took, so a missing one is an internal inconsistency.
+- Why: the gateway already owns both halves of a turn — it takes the hold under `req-<id>:hold` and settles under a key it chose — so asking the client to re-supply the hold key costs nothing and removes the aggregate hole: a settlement can no longer release more than its own hold reserved while other holds cover the total. The ledger stays the source of truth (no `oxsum.holds` table, no second store to keep consistent), and the pairing rides the existing idempotency machinery instead of a new lock.
+- Rejected:
+  - An `oxsum.holds` table: a second source of truth for what the ledger already records; every write would need the table and the ledger to agree.
+  - A pre-check for "already settled" before the append: racy by construction, and unnecessary — the derived-key collision in the append is the check, and it is atomic.
+- Kept as backstop: the `funded_reservations` limit still refuses a pending credit the outstanding reservations cannot cover, behind the pairing.
