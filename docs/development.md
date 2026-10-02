@@ -146,6 +146,45 @@ served by the same `oxsum` binary through `leptos_axum`: server-side rendering c
   (`oxsum-verify`), shared through `oxsum-core` re-exports — `oxsum-core` itself cannot
   target wasm32 because sqlx-postgres needs OS sockets (docs/decisions.md).
 
+## Docker image
+
+The release image is built by the `Dockerfile` at the repo root: a multi-stage build of
+the whole workspace, including the Leptos dashboard.
+
+```bash
+docker build -t oxsum .
+docker run --rm -p 3000:3000 -e DATABASE_URL=postgresql://user:pass@dbhost/oxsum oxsum
+```
+
+- Builder: `rust:1.98-bookworm` (matches `rust-toolchain.toml`), with `cargo-leptos`
+  0.3.11 and the `wasm32-unknown-unknown` target. `cargo leptos build --release`
+  compiles the `oxsum` server binary and the WASM browser side together; the
+  dashboard's style is plain CSS, so no Node.js or npm is needed.
+- Runtime: `debian:bookworm-slim` plus `ca-certificates`. reqwest uses rustls, so no
+  OpenSSL is required. It carries the `oxsum` binary and `target/site` (the WASM
+  bundle, CSS and `index.html`), which the server finds through `LEPTOS_SITE_ROOT`
+  (`/app/site` in the image).
+- The image never bakes in `.env` (`.dockerignore` excludes it); `DATABASE_URL` points
+  at an external PostgreSQL and is supplied at `docker run`, along with the `OXSUM_*`
+  settings above. `OXSUM_ADDR` defaults to `0.0.0.0:3000` inside the image so the port
+  mapping works. The schema is migrated at startup, so there is no separate migrate step.
+
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every push to `main` and every pull request:
+
+- `fmt`: `cargo fmt --all --check`.
+- `clippy`: `cargo clippy --workspace --all-targets` with `-D warnings`. No database
+  is needed to compile: the tree uses no `sqlx::query!` macros, so compilation never
+  touches a live database.
+- `test`: `cargo test --workspace` against a `postgres:17-alpine` service container
+  (with `DATABASE_URL` set, so the database tests run for real instead of skipping),
+  then doubleentry's own Postgres conformance suite
+  (`cargo test -p doubleentry --features postgres --test postgres`), which starts its
+  own container through testcontainers. That last suite is why it runs in CI rather
+  than on every developer machine: GitHub-hosted runners provide Docker, so CI is the
+  one place the full gate is green.
+
 ## Test strategy
 
 - Unit tests: inside each module's `#[cfg(test)]`, covering pure logic such as tenant id validation and configuration parsing.
@@ -172,4 +211,7 @@ Before committing, confirm:
 
 ## Release
 
-Not decided yet, see TODO.md. The goal is a single binary plus a Docker image.
+The release is a single binary plus a Docker image (TODO.md B-10, closed 2026-10-03):
+`cargo leptos build --release` produces the `oxsum` binary and `target/site`, and the
+`Dockerfile` packages them into the image described above. CI
+(`.github/workflows/ci.yml`) is the green gate on a fresh clone.
