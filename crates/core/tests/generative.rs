@@ -45,7 +45,9 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use oxsum_core::{EntryId, Hash, Receipt, Tenants, Wallet, WalletError, verify_bundle};
+use oxsum_core::{
+    EntryId, Hash, Receipt, Tenants, Wallet, WalletError, settlement_key_for, verify_bundle,
+};
 use proptest::collection::vec;
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
@@ -112,12 +114,9 @@ enum Op {
     TopUp { key: String, amount: i64 },
     /// A hold under a key of its own.
     Hold { key: String, amount: i64 },
-    /// Settle the hold taken by op `which`, under a key of its own.
-    Settle {
-        key: String,
-        which: usize,
-        mode: Mode,
-    },
+    /// Settle the hold taken by op `which`. The settlement names the hold; its idempotency
+    /// key is derived from the hold's key, not a key of its own.
+    Settle { which: usize, mode: Mode },
     /// Re-issue op `which` byte for byte, under its key.
     Replay { which: usize },
     /// Re-use op `which`'s key with a different amount.
@@ -127,14 +126,25 @@ enum Op {
 /// One concrete wallet call. Two requests are the same request when their content matches, which
 /// is what idempotency is about.
 ///
-/// A settlement carries no reference to the hold it names: the wallet builds the same entry from
-/// `held` and `actual` whatever the caller had in mind, so a second settlement with the same pair
-/// under the same key *is* the same request, and the model says so.
+/// A settlement names the hold it releases: the hold's key selects the reservation, and the
+/// wallet reads the held amount from the hold entry. A second settlement naming the same hold
+/// with the same actual amount *is* the same request, and the model says so.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Request {
-    TopUp { amount: i64 },
-    Hold { amount: i64 },
-    Settle { held: i64, actual: i64 },
+    TopUp {
+        amount: i64,
+    },
+    Hold {
+        amount: i64,
+    },
+    Settle {
+        hold_key: String,
+        /// The hold's amount, read from the model the way the wallet reads it from the ledger.
+        /// A placeholder when the named op is not an outstanding hold; the model refuses the
+        /// call before the placeholder matters.
+        held: i64,
+        actual: i64,
+    },
 }
 
 impl Request {
@@ -148,7 +158,12 @@ impl Request {
             Request::Hold { amount } => Request::Hold {
                 amount: bumped(*amount, up),
             },
-            Request::Settle { held, actual } => Request::Settle {
+            Request::Settle {
+                hold_key,
+                held,
+                actual,
+            } => Request::Settle {
+                hold_key: hold_key.clone(),
                 held: *held,
                 actual: bumped_actual(*actual, *held, up),
             },
@@ -205,11 +220,7 @@ fn resolve(raw: &[Raw], case: u64) -> Vec<Op> {
                     amount: *amount,
                 },
                 Raw::Settle { back: b, mode } => match back(*b) {
-                    Some(which) => Op::Settle {
-                        key,
-                        which,
-                        mode: *mode,
-                    },
+                    Some(which) => Op::Settle { which, mode: *mode },
                     None => Op::TopUp { key, amount: ONE },
                 },
                 Raw::Replay { back: b } => match back(*b) {
@@ -275,14 +286,17 @@ enum Predicted {
     InsufficientFunds,
     /// A settlement whose actual amount is not within `0..=held`.
     InvalidInput,
+    /// A settlement naming a key that is not an outstanding hold.
+    HoldNotFound,
 }
 
-/// The four ways a call can be refused.
+/// The five ways a call can be refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Refusal {
     Conflict,
     InsufficientFunds,
     InvalidInput,
+    HoldNotFound,
 }
 
 impl Predicted {
@@ -291,6 +305,7 @@ impl Predicted {
             Predicted::Conflict => Some(Refusal::Conflict),
             Predicted::InsufficientFunds => Some(Refusal::InsufficientFunds),
             Predicted::InvalidInput => Some(Refusal::InvalidInput),
+            Predicted::HoldNotFound => Some(Refusal::HoldNotFound),
             Predicted::Writes | Predicted::Replays => None,
         }
     }
@@ -301,6 +316,7 @@ fn refusal_of(error: &WalletError) -> Option<Refusal> {
         WalletError::Conflict(_) => Some(Refusal::Conflict),
         WalletError::InsufficientFunds => Some(Refusal::InsufficientFunds),
         WalletError::InvalidInput(_) => Some(Refusal::InvalidInput),
+        WalletError::HoldNotFound(_) => Some(Refusal::HoldNotFound),
         // No arm for the engine's `IdempotencyConflict` wrapped as a storage failure: the
         // domain layer maps it to `Conflict`, so a caller seeing it as storage would be a
         // regression, and not one this model reads as a refusal.
@@ -344,16 +360,18 @@ impl Case<'_> {
     /// What the model expects of this call, before making it.
     fn predict(&self, key: &str, request: &Request) -> Predicted {
         // The wallet bounds a call's own argument before it consults the ledger, so an impossible
-        // amount is invalid input even when the key already holds an entry. The model has to read
-        // that first, in the same order: otherwise a replay of a refused settlement is predicted as
-        // a conflict as soon as some other call has written under that key. Only a settlement can
-        // be impossible here — the generator's amounts are positive, and a bumped amount stays so.
-        if let Request::Settle { held, actual } = request
-            && (*actual < 0 || actual > held)
+        // actual is invalid input even when the hold does not exist. The model has to read that
+        // first, in the same order.
+        if let Request::Settle { actual, .. } = request
+            && *actual < 0
         {
             return Predicted::InvalidInput;
         }
-        if let Some((prior, _)) = self.written.get(key) {
+        // A settlement's hold and bound checks run before its append, so its collision check waits
+        // for them below. Top-ups and holds collide on their key straight away.
+        if !matches!(request, Request::Settle { .. })
+            && let Some((prior, _)) = self.written.get(key)
+        {
             return if prior == request {
                 Predicted::Replays
             } else {
@@ -369,36 +387,61 @@ impl Case<'_> {
                     Predicted::Writes
                 }
             }
-            Request::Settle { held, .. } => {
-                if *held > self.reserved {
-                    // The release credits the pending layer, and the wallet's limit refuses a
-                    // pending credit the outstanding reservations cannot cover.
-                    Predicted::InsufficientFunds
-                } else {
-                    Predicted::Writes
+            Request::Settle {
+                hold_key, actual, ..
+            } => {
+                // The wallet reads the hold from the ledger: no entry under the key, or an entry
+                // that is not a hold, means there is nothing to release. A written settlement
+                // implies a written hold — the wallet only writes one after confirming the
+                // other — so the derived key cannot have collided when the hold is missing.
+                let outstanding = match self.written.get(hold_key) {
+                    Some((Request::Hold { amount }, _)) => *amount,
+                    _ => return Predicted::HoldNotFound,
+                };
+                // The bound is checked after the hold is read, and before the append: a second
+                // settlement that also overshoots is invalid input, not a conflict.
+                if *actual > outstanding {
+                    return Predicted::InvalidInput;
                 }
+                // The settlement's idempotency key is derived from the hold's; a second settlement
+                // collides there, inside the append.
+                if let Some((prior, _)) = self.written.get(key) {
+                    return if prior == request {
+                        Predicted::Replays
+                    } else {
+                        Predicted::Conflict
+                    };
+                }
+                // The settlement releases exactly what its hold reserved, which is still
+                // outstanding, so the wallet's limit cannot refuse it: the pairing is exact.
+                Predicted::Writes
             }
         }
     }
 
-    /// What this op asks for, and under which key. `None` means the case skipped it.
+    /// What this op asks for, and under which key. A settlement's key is derived from the
+    /// hold's key; the step records the derived key so replays and collisions find it.
     fn resolve(&self, op: &Op) -> (String, Option<Request>) {
         match op {
             Op::TopUp { key, amount } => (key.clone(), Some(Request::TopUp { amount: *amount })),
             Op::Hold { key, amount } => (key.clone(), Some(Request::Hold { amount: *amount })),
-            Op::Settle { key, which, mode } => {
-                // The amount the named op asked for, whether or not it was a hold and whether or
-                // not it was taken: settling a top-up's amount, or a hold the wallet refused, is
-                // exactly the claim about a reservation that does not exist that the limit is
-                // there to refuse.
-                let held = match self.steps[*which].request.as_ref() {
-                    Some(Request::TopUp { amount } | Request::Hold { amount }) => *amount,
-                    Some(Request::Settle { held, .. }) => *held,
-                    None => return (key.clone(), None),
+            Op::Settle { which, mode } => {
+                // The key of the op that took the hold — whether or not it was a hold, whether
+                // or not the wallet took it. Settling a top-up, a refused hold, or a settlement
+                // is exactly the naming of something that is not an outstanding hold.
+                let hold_key = self.steps[*which].key.clone();
+                // The hold's amount, the way the wallet reads it from the ledger: the amount the
+                // named op asked to hold, if the wallet wrote it. The placeholder never matters;
+                // the model refuses the call before it is used.
+                let held = match self.written.get(&hold_key) {
+                    Some((Request::Hold { amount }, _)) => *amount,
+                    _ => ONE,
                 };
+                let derived = settlement_key_for(&hold_key);
                 (
-                    key.clone(),
+                    derived,
                     Some(Request::Settle {
+                        hold_key,
                         held,
                         actual: mode.actual(held),
                     }),
@@ -445,7 +488,9 @@ impl Case<'_> {
                 match request {
                     Request::TopUp { amount } => self.settled += amount,
                     Request::Hold { amount } => self.reserved += amount,
-                    Request::Settle { held, actual } => {
+                    Request::Settle { held, actual, .. } => {
+                        // The settlement releases exactly what its hold reserved, and charges the
+                        // actual: the pairing the wallet enforces.
                         self.reserved -= held;
                         self.settled -= actual;
                     }
@@ -546,10 +591,13 @@ impl Case<'_> {
         let receipt = match &request {
             Request::TopUp { amount } => self.wallet.top_up(&key, *amount, DAY).await,
             Request::Hold { amount } => self.wallet.hold(&key, &because, *amount, DAY).await,
-            Request::Settle { held, actual } => {
-                self.wallet
-                    .settle(&key, &because, *held, *actual, DAY)
-                    .await
+            Request::Settle {
+                hold_key, actual, ..
+            } => {
+                // The settlement names the hold; the key is derived from it. The description is
+                // the derived key, so a replay is byte-identical and a collision is one of
+                // content.
+                self.wallet.settle(hold_key, &because, *actual, DAY).await
             }
         };
         let outcome = self.check(index, op, &key, &request, predicted, &receipt);

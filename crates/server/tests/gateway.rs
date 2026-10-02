@@ -251,7 +251,10 @@ impl World {
 
     /// What the settlement entry for a request says, once it is there.
     async fn settlement(&self, request_id: &str) -> Option<Value> {
-        let entry_id = oxsum_core::entry_id_for(&format!("req-{request_id}:settle"));
+        // The settlement names the hold, and its idempotency key — and so its entry id — is
+        // derived from the hold's key.
+        let hold_key = format!("req-{request_id}:hold");
+        let entry_id = oxsum_core::entry_id_for(&oxsum_core::settlement_key_for(&hold_key));
         let bundle = self
             .wallet()
             .await
