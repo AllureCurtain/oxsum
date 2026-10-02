@@ -22,10 +22,11 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use http_body_util::BodyExt;
 use oxsum_core::{Db, Tenants, input_upper_bound, sweep_stale_holds};
-use oxsum_server::{Config, Signup};
+use oxsum_server::{BillingEvent, Config, Signup};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use time::OffsetDateTime;
+use tokio::sync::broadcast;
 use tower::ServiceExt;
 
 /// The operator token the admin app in these tests is configured with.
@@ -227,6 +228,9 @@ struct World {
     channel: String,
     /// What its model names end in.
     suffix: String,
+    /// The broadcast sender the gateway publishes billing events to: tests subscribe to
+    /// assert what a turn publishes, without opening a dashboard socket.
+    billing: broadcast::Sender<BillingEvent>,
     #[allow(dead_code)]
     pool: PgPool,
 }
@@ -344,7 +348,7 @@ async fn world_for(url: &str, top_up: i64) -> World {
     oxsum_server::prepare(&db, &config)
         .await
         .expect("the deployment is prepared");
-    let app = oxsum_server::app(db, config);
+    let (app, billing) = oxsum_server::app_with_billing(db, config);
     let tenants = Tenants::new(pool.clone());
 
     let (registration, key) = register(&app).await;
@@ -370,6 +374,7 @@ async fn world_for(url: &str, top_up: i64) -> World {
         script,
         channel,
         suffix,
+        billing,
         pool,
     }
 }
@@ -577,6 +582,59 @@ async fn a_whole_answer_is_charged_from_upstreams_usage() {
     assert_eq!(wallet.settled().await.unwrap(), 1_000_000 - 12);
     let hold = world.hold(&id).await.expect("the hold is recorded");
     assert_eq!(hold["freeze"], expected_freeze(None));
+}
+
+/// A turn publishes its life to the billing broadcast: started when the hold is taken,
+/// settled when the charge is written. The dashboard's socket forwards these.
+#[tokio::test]
+async fn a_turn_publishes_its_billing_events() {
+    let world = world!(1_000_000);
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+    let mut events = world.billing.subscribe();
+
+    let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
+    let id = request_id(&response);
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let started = events.recv().await.expect("a started event arrives");
+    let BillingEvent::TurnStarted {
+        tenant_id,
+        request_id,
+        model,
+        freeze_minor,
+        ..
+    } = started
+    else {
+        panic!("the first event is the turn starting, got {started:?}");
+    };
+    assert_eq!(tenant_id, world.tenant_id);
+    assert_eq!(request_id, id);
+    assert_eq!(model, world.model("ok"));
+    assert_eq!(freeze_minor, expected_freeze(None));
+
+    let settled = events.recv().await.expect("a settled event arrives");
+    let BillingEvent::TurnSettled {
+        tenant_id,
+        request_id,
+        charged_minor,
+        input_tokens,
+        output_tokens,
+        ..
+    } = settled
+    else {
+        panic!("the second event is the turn settling, got {settled:?}");
+    };
+    assert_eq!(tenant_id, world.tenant_id);
+    assert_eq!(request_id, id);
+    // Ten input tokens and two output tokens, at one minor unit each.
+    assert_eq!(input_tokens, 10);
+    assert_eq!(output_tokens, 2);
+    assert_eq!(charged_minor, 12);
 }
 
 #[tokio::test]
