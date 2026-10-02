@@ -92,7 +92,7 @@ Principle: **domain logic belongs in core; the gateway does protocol and orchest
 - Between tenants: physical isolation, one schema per tenant, no filter columns in queries. The connection layer shares one pool; `SET LOCAL search_path` at the start of each transaction picks the tenant schema (mechanism in docs/decisions.md). oxsum's own tables are not in those schemas: they are schema-qualified (`oxsum.users`) in the one `oxsum` schema, so nothing about a request's organization can change which identity rows a statement sees.
 - Planned:
   - Team organizations and multi-org membership: the schema holds many memberships per user already, the flow that creates one comes later; a session acts as the oldest membership until the dashboard adds switching.
-  - Per-key sub-limits and last-used timestamps, see TODO.md.
+  - Last-used timestamps on API keys, see TODO.md.
   - See docs/decisions.md and TODO.md.
 
 ## Core data flows

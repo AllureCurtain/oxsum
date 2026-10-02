@@ -64,8 +64,9 @@ Notes:
 
 Purpose: several integrations, one organization, revocable separately.
 
-- `POST /api/v1/org/keys` mints another key, with an optional `name` and an optional RFC 3339 `expiresAt`. The secret comes back once.
-- `GET /api/v1/org/keys` lists the organization's keys: id, name, display prefix, timestamps. Never a secret.
+- `POST /api/v1/org/keys` mints another key, with an optional `name`, an optional RFC 3339 `expiresAt`, and an optional `spendLimitMinor`: the most the key may have committed — settled charges plus outstanding holds, in minor units. Null (the default) is unlimited. The secret comes back once.
+- `GET /api/v1/org/keys` lists the organization's keys: id, name, display prefix, timestamps, and the spend limit. Never a secret.
+- `PATCH /api/v1/org/keys/{keyId}` sets or clears the spend limit (`{"spendLimitMinor": 1000000}`, or `null` for unlimited), under the same role rules as revoking. A hold that would push the key past its limit is refused with 429 `KEY_LIMIT_EXCEEDED` — on the gateway too, where it looks like OpenAI's `insufficient_quota` — so concurrent requests cannot exceed it. A limit of 0 means the key can never hold.
 - `DELETE /api/v1/org/keys/{keyId}` revokes one. It stops working immediately; the rest keep working.
 - `GET /api/v1/org` describes the organization the credential belongs to.
 - A key that is unknown, revoked or expired all answer the same 401 `UNAUTHORIZED`, so a leaked key's state is not revealed by probing.
