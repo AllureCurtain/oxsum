@@ -22,7 +22,11 @@ info:
     is a second credential next to the API key, carried in a cookie, and the role rules (owner, admin,
     member) now constrain what a session principal may do with the organization's keys. 0.6.0 added
     trustworthy tree heads: the operator signs each tenant's ledger head (a C2SP signed-note), and
-    `/api/v1/log/consistency` proves the current head extends a head the caller already holds.
+    `/api/v1/log/consistency` proves the current head extends a head the caller already holds. 0.7.0
+    added per-key spend limits: `spendLimitMinor` caps what one key may have committed — settled
+    charges plus outstanding holds attributed to it — a key takes that limit at creation or through
+    `PATCH /api/v1/org/keys/{keyId}`, and a hold that would exceed it is refused with 429
+    `KEY_LIMIT_EXCEEDED` on `/api/v1` and `insufficient_quota` on the gateway.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie, except
     `/api/v1/auth/login`, `/api/v1/auth/logout` and `/api/v1/auth/register`, which take no
@@ -279,10 +283,17 @@ paths:
         "200": { $ref: "#/components/responses/Receipt" }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/holds:
     post:
       summary: Hold credits (before a streaming call starts)
+      description: |
+        A hold taken with an API key is checked against the key's spend limit when it has one:
+        when settled charges plus outstanding holds attributed to the key would exceed
+        `spendLimitMinor`, the hold is refused with 429 `KEY_LIMIT_EXCEEDED`, checked under a
+        per-key lock and atomic with the ledger append, so concurrent holds cannot together
+        exceed it. A session holds unattributed, with no limit to check.
       requestBody:
         required: true
         content:
@@ -293,6 +304,7 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "402": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/settlements:
@@ -632,6 +644,7 @@ paths:
         "402": { $ref: "#/components/responses/GatewayError" }
         "403": { $ref: "#/components/responses/GatewayError" }
         "409": { $ref: "#/components/responses/GatewayError" }
+        "429": { $ref: "#/components/responses/GatewayError" }
         "500": { $ref: "#/components/responses/GatewayError" }
         "502": { $ref: "#/components/responses/GatewayError" }
 components:
@@ -857,7 +870,7 @@ components:
           properties:
             code:
               type: string
-              enum: [VALIDATION_ERROR, UNAUTHORIZED, FORBIDDEN, INSUFFICIENT_FUNDS, NOT_FOUND, CONFLICT, INTERNAL_ERROR, SERVICE_UNAVAILABLE]
+              enum: [VALIDATION_ERROR, UNAUTHORIZED, FORBIDDEN, INSUFFICIENT_FUNDS, KEY_LIMIT_EXCEEDED, NOT_FOUND, CONFLICT, INTERNAL_ERROR, SERVICE_UNAVAILABLE]
             message: { type: string }
             details: { type: array, items: {} }
     ChatCompletionRequest:
@@ -872,18 +885,30 @@ components:
           type: array
           minItems: 1
           items: { $ref: "#/components/schemas/ChatMessage" }
-        stream: { type: boolean, default: false }
-        max_tokens: { type: integer, format: int64, minimum: 1, description: "the output upper bound the freeze uses; absent means the model's configured maximum" }
-        max_completion_tokens: { type: integer, format: int64, minimum: 1, description: "newer spelling of max_tokens; when both are present this one wins" }
+        stream: { type: [boolean, "null"], default: false, description: "absent or null counts as false; a stream is terminated by `data: [DONE]`" }
+        max_tokens: { type: [integer, "null"], format: int64, minimum: 1, description: "the output upper bound the freeze uses; absent or null means the model's configured maximum, and a value below 1 is 400" }
+        max_completion_tokens: { type: [integer, "null"], format: int64, minimum: 1, description: "newer spelling of max_tokens; when both are present this one wins, and null counts as absent" }
       additionalProperties: true
     ChatMessage:
       type: object
-      required: [role, content]
+      description: |
+        One message, as the gateway reads it. What it does not read — `role` included — is forwarded
+        upstream unchanged, and upstream is the authority on it. `content` is read, to compute the
+        input bound the freeze is computed for, and only text is accepted: a part of any other type
+        (an image, say) has no computable bound, so the request is refused with 400. An absent or
+        null `content` is accepted too — an assistant turn that only calls a tool carries no text and
+        contributes none to the bound.
       properties:
-        role: { type: string, enum: [system, developer, user, assistant, tool] }
+        role: { type: string, description: "sent upstream as written; the gateway accepts any role and validates none" }
         content:
-          type: string
-          description: "text only: a content array containing anything but text (an image) is refused with 400"
+          type: [string, array, "null"]
+          description: "text, an array of text parts, or absent/null. Anything else — a number, an object, a part whose `type` is not `text`, or a text part without a `text` string — is 400"
+          items:
+            type: object
+            required: [type, text]
+            properties:
+              type: { type: string, const: text }
+              text: { type: string }
         name: { type: string }
         tool_call_id: { type: string }
       additionalProperties: true
@@ -943,7 +968,9 @@ components:
               type: [string, "null"]
               description: >-
                 oxsum's own code: VALIDATION_ERROR, UNAUTHORIZED, FORBIDDEN, CONFLICT,
-                INSUFFICIENT_FUNDS, UPSTREAM_ERROR or INTERNAL_ERROR
+                INSUFFICIENT_FUNDS, KEY_LIMIT_EXCEEDED, UPSTREAM_ERROR or INTERNAL_ERROR.
+                A key past its spend limit arrives as 429 KEY_LIMIT_EXCEEDED with the
+                `insufficient_quota` type, the same type the 402 INSUFFICIENT_FUNDS refusal carries.
   responses:
     Receipt:
       description: The ledger receipt
