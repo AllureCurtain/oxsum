@@ -152,7 +152,7 @@ pub struct MembershipActor {
 impl MembershipActor {
     /// Refuses anyone but an owner or an admin. The first check of every membership write,
     /// so a member cannot reach one however the endpoint is written.
-    fn authorized(self) -> Result<Self, WalletError> {
+    pub(crate) fn authorized(self) -> Result<Self, WalletError> {
         match self.role {
             Role::Owner | Role::Admin => Ok(self),
             Role::Member => Err(WalletError::Forbidden(

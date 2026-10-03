@@ -19,10 +19,11 @@ use crate::admin::{
     AdminOrganizationsPage,
 };
 use crate::api::{
-    CreatedKeyView, DashboardData, EntryView, HoldView, KeyView, MemberView, MembersView, OrgView,
-    TransferView, add_member, change_member_role, create_key, create_team_org, get_bills,
-    get_dashboard, get_keys, get_log, get_members, get_requests, list_organizations, remove_member,
-    revoke_key, switch_organization, transfer_ownership,
+    CreatedKeyView, DashboardData, EntryView, HoldView, InvitationView, KeyView, MemberView,
+    MembersView, OrgView, TransferView, add_member, change_member_role, create_invitation,
+    create_key, create_team_org, get_bills, get_dashboard, get_keys, get_log, get_members,
+    get_requests, list_organizations, remove_member, revoke_key, switch_organization,
+    transfer_ownership,
 };
 use crate::bills::BillView;
 use crate::chat::ChatPage;
@@ -59,6 +60,8 @@ pub fn App() -> impl IntoView {
             <Routes fallback=|| view! { <NotFound/> }>
                 <Route path=path!("/") view=|| view! { <Redirect path="/dashboard"/> }/>
                 <Route path=path!("/login") view=LoginPage/>
+                // Public: the invitee follows a link an owner or admin handed them.
+                <Route path=path!("/register") view=RegisterPage/>
                 <Route path=path!("/logout") view=LogoutPage/>
                 // Public: anyone holding a bill and its content hash can verify it, no
                 // session needed. Verification runs in the browser, not on the server.
@@ -140,6 +143,69 @@ mod browser {
     /// Logs out through the session endpoint, which also clears the cookie.
     pub async fn logout() {
         let _ = Request::post("/api/v1/auth/logout").send().await;
+    }
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct RedeemBody<'a> {
+        token: &'a str,
+        email: &'a str,
+        password: &'a str,
+    }
+
+    /// The parts of a redeemed registration the page shows: where the account landed,
+    /// and its first API key — shown once, like every secret the API mints.
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct Redeemed {
+        pub organization: RedeemedOrganization,
+        pub api_key: RedeemedKey,
+    }
+
+    #[derive(serde::Deserialize)]
+    pub struct RedeemedOrganization {
+        pub name: String,
+    }
+
+    #[derive(serde::Deserialize)]
+    pub struct RedeemedKey {
+        pub secret: String,
+    }
+
+    /// The API's error envelope, read for its message so the form can repeat the
+    /// server's own words ("this invitation has already been used", and so on).
+    #[derive(serde::Deserialize)]
+    struct ErrorBody {
+        error: ErrorDetail,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct ErrorDetail {
+        message: String,
+    }
+
+    /// Registers through an invitation link: the token is the credential.
+    pub async fn redeem(token: &str, email: &str, password: &str) -> Result<Redeemed, String> {
+        let response = Request::post("/api/v1/invitations/redeem")
+            .json(&RedeemBody {
+                token,
+                email,
+                password,
+            })
+            .map_err(|_| "could not build the request".to_owned())?
+            .send()
+            .await
+            .map_err(|_| "the server could not be reached".to_owned())?;
+        if response.ok() {
+            return response
+                .json::<Redeemed>()
+                .await
+                .map_err(|_| "the server answered in an unexpected shape".to_owned());
+        }
+        match response.json::<ErrorBody>().await {
+            Ok(body) => Err(body.error.message),
+            Err(_) => Err("registration failed; try again.".to_owned()),
+        }
     }
 }
 
@@ -228,6 +294,114 @@ fn LoginPage() -> impl IntoView {
                 <button type="submit" prop:disabled=move || busy.get()>
                     {move || if busy.get() { "Logging in…" } else { "Log in" }}
                 </button>
+            </form>
+        </main>
+    }
+}
+
+/// Registers through an invitation link (`/register?invite=<token>`), then offers the
+/// way to the login page. The link carries the credential, so this page works without
+/// a session — in an `invite`-mode deployment it is the only way in.
+#[component]
+fn RegisterPage() -> impl IntoView {
+    let query = use_query_map();
+    let token = move || query.read().get("invite").unwrap_or_default();
+    let (email, set_email) = signal(String::new());
+    let (password, set_password) = signal(String::new());
+    let (error, set_error) = signal(Option::<String>::None);
+    let (busy, set_busy) = signal(false);
+    // The account once it exists: the organization it joined and its first API key.
+    // The secret is shown here and nowhere else, like every key the API mints.
+    #[cfg(feature = "hydrate")]
+    let (joined, set_joined) = signal(Option::<(String, String)>::None);
+
+    let submit = move |ev: web_sys::SubmitEvent| {
+        ev.prevent_default();
+        #[cfg(feature = "hydrate")]
+        {
+            let token = token();
+            leptos::task::spawn_local(async move {
+                set_busy.set(true);
+                set_error.set(None);
+                match browser::redeem(&token, &email.get_untracked(), &password.get_untracked())
+                    .await
+                {
+                    Ok(redeemed) => {
+                        set_joined.set(Some((redeemed.organization.name, redeemed.api_key.secret)))
+                    }
+                    Err(message) => {
+                        set_error.set(Some(message));
+                        set_busy.set(false);
+                    }
+                }
+            });
+        }
+        // SSR emits the inert form; the submit handler runs in the browser. `method`
+        // stays absent so a native submit can only ever `GET` this page — no password
+        // in the URL, the same reason as the login form.
+        #[cfg(not(feature = "hydrate"))]
+        let _ = (&set_busy, &set_error);
+    };
+
+    view! {
+        <main class="center">
+            <form class="card" method="post" on:submit=submit aria-label="Register">
+                <h1>"oxsum"</h1>
+                {move || {
+                    #[cfg(feature = "hydrate")]
+                    if let Some((organization, secret)) = joined.get() {
+                        return view! {
+                            <p class="success" role="status">
+                                "Your account is part of " {organization} "."
+                            </p>
+                            <p class="muted">
+                                "Your first API key — keep it, it is shown only once:"
+                            </p>
+                            <p><code>{secret}</code></p>
+                            <p><A href="/login">"Log in"</A></p>
+                        }
+                        .into_any();
+                    }
+                    if token().is_empty() {
+                        return view! {
+                            <p class="muted">"Register through an invitation link."</p>
+                            <p class="error" role="alert">
+                                "This link is missing its invitation token. Ask the person who invited you to send the whole link again."
+                            </p>
+                        }
+                        .into_any();
+                    }
+                    view! {
+                        <p class="muted">"You were invited to join an organization."</p>
+                        {move || error.get().map(|message| view! { <p class="error" role="alert">{message}</p> })}
+                        <label>
+                            "Email"
+                            <input
+                                type="email"
+                                name="email"
+                                autocomplete="username"
+                                required
+                                prop:value=move || email.get()
+                                on:input=move |ev| set_email.set(event_target_value(&ev))
+                            />
+                        </label>
+                        <label>
+                            "Password (at least 12 characters)"
+                            <input
+                                type="password"
+                                name="password"
+                                autocomplete="new-password"
+                                required
+                                prop:value=move || password.get()
+                                on:input=move |ev| set_password.set(event_target_value(&ev))
+                            />
+                        </label>
+                        <button type="submit" prop:disabled=move || busy.get()>
+                            {move || if busy.get() { "Registering…" } else { "Register" }}
+                        </button>
+                    }
+                    .into_any()
+                }}
             </form>
         </main>
     }
@@ -865,6 +1039,10 @@ fn MembersPage() -> impl IntoView {
         let user_id = user_id.clone();
         async move { transfer_ownership(user_id).await }
     });
+    let invite = Action::new(|_: &()| async move { create_invitation().await });
+    // The link just minted: shown once, with its expiry — the server keeps only its
+    // hash, so this page is the only place the token exists.
+    let (invitation, set_invitation) = signal(Option::<InvitationView>::None);
 
     // What each action did: the state it produced in words, or the server's refusal in its
     // own words. The table is re-read either way, so the page shows what is true now.
@@ -916,6 +1094,16 @@ fn MembersPage() -> impl IntoView {
         Some(Err(error)) => set_notice.set(Some(Notice::refused(error.to_string()))),
         None => {}
     });
+    Effect::new(move |_| match invite.value().get() {
+        Some(Ok(created)) => {
+            set_invitation.set(Some(created));
+            set_notice.set(Some(Notice::done(
+                "Invitation link created — pass it on, it works once within seven days.".to_owned(),
+            )));
+        }
+        Some(Err(error)) => set_notice.set(Some(Notice::refused(error.to_string()))),
+        None => {}
+    });
 
     view! {
         <section class="card" aria-label="Members">
@@ -928,7 +1116,7 @@ fn MembersPage() -> impl IntoView {
             <Suspense fallback=move || view! { <p class="muted">"Loading…"</p> }>
                 {move || members.get().map(|result| match result {
                     Ok(data) => view! {
-                        <Members data=data add=add remove=remove set_role=set_role transfer=transfer email=email/>
+                        <Members data=data add=add remove=remove set_role=set_role transfer=transfer invite=invite invitation=invitation email=email/>
                     }.into_any(),
                     Err(error) => view! { <p class="error" role="alert">{error.to_string()}</p> }.into_any(),
                 })}
@@ -977,6 +1165,20 @@ fn role_phrase(role: &str) -> &'static str {
     }
 }
 
+/// The URL the invitation link points at, on this deployment's own origin.
+/// SSR never reaches it — the link only exists after a click in the browser.
+fn invite_link(token: &str) -> String {
+    #[cfg(feature = "hydrate")]
+    {
+        let origin = leptos::web_sys::window()
+            .and_then(|window| window.location().origin().ok())
+            .unwrap_or_default();
+        return format!("{origin}/register?invite={token}");
+    }
+    #[cfg(not(feature = "hydrate"))]
+    format!("/register?invite={token}")
+}
+
 /// One row of the members table: the membership, and what the acting role may do with it.
 #[derive(Debug, Clone, PartialEq)]
 struct MemberRow {
@@ -997,6 +1199,8 @@ fn Members(
     remove: Action<String, Result<MemberView, ServerFnError>>,
     set_role: Action<(String, String), Result<MemberView, ServerFnError>>,
     transfer: Action<String, Result<TransferView, ServerFnError>>,
+    invite: Action<(), Result<InvitationView, ServerFnError>>,
+    invitation: ReadSignal<Option<InvitationView>>,
     email: RwSignal<String>,
 ) -> impl IntoView {
     let role = data.role.clone();
@@ -1049,8 +1253,24 @@ fn Members(
                 </button>
             </form>
             <p class="muted">
-                "The account must already exist: inviting people who have no account yet is not built (issue #59)."
+                "The account must already exist. For someone new, hand them an invitation link instead."
             </p>
+            <p class="row">
+                <button
+                    type="button"
+                    class="quiet"
+                    prop:disabled=move || invite.pending().get()
+                    on:click=move |_| drop(invite.dispatch(()))
+                >
+                    {move || if invite.pending().get() { "Creating…" } else { "Invite by link" }}
+                </button>
+            </p>
+            {move || invitation.get().map(|created| view! {
+                <p class="muted">
+                    "The link registers one account and expires on " {created.expires_at} ". It is shown only here:"
+                </p>
+                <p><code>{invite_link(&created.token)}</code></p>
+            })}
         })}
         {if rows.is_empty() {
             view! { <p class="muted">"No members."</p> }.into_any()

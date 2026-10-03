@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.13.0
+  version: 0.14.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -41,6 +41,9 @@ info:
     again, and the seal itself is the closing record. 0.13.0 adds team organizations: `GET`/`POST
     /api/v1/orgs` lists and creates the session user's organizations, and `POST
     /api/v1/session/organization` switches which organization the session acts as.
+    0.14.0 adds invitation links (`/api/v1/org/invitations`, `/api/v1/invitations/redeem`):
+    an owner or admin mints a one-use link, and the person holding it registers into the
+    organization — the only registration `OXSUM_SIGNUP=invite` allows.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie, except
     `/api/v1/auth/login`, `/api/v1/auth/logout` and `/api/v1/auth/register`, which take no
@@ -84,6 +87,37 @@ paths:
                   data: { $ref: "#/components/schemas/Registration" }
         "400": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/invitations/redeem:
+    post:
+      summary: Register through an invitation link
+      description: |
+        The one registration an `invite`-mode deployment allows — the link is the
+        credential, so no other authentication applies, whatever `OXSUM_SIGNUP` is.
+        The token names one live invitation: usable once, valid seven days from minting,
+        and unknown, spent and expired tokens are all `404 NOT_FOUND` — which is wrong
+        is the holder's business. The new account joins the invitation's organization as
+        a `member`, with the first API key minted for that organization; no personal
+        organization is created — that is what `auth/register` is for.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RedeemInvitationRequest" }
+      responses:
+        "200":
+          description: The new user and organization, plus the one API key secret
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/Registration" }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/auth/login:
@@ -370,14 +404,40 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/invitations:
+    post:
+      summary: Mint an invitation link
+      description: |
+        A link into this organization: `/register?invite=<token>` in the dashboard, or
+        `POST /api/v1/invitations/redeem` with the token, an email and a password. The
+        token is answered exactly once, here; the database keeps only its hash. An
+        invitation is valid seven days and works once. Owners and admins mint links;
+        a member is refused, and a person's action means a bearer API key is refused
+        too — a key is not a person.
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: The invitation, with the one time the token is visible
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/CreatedInvitation" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/members:
     post:
       summary: Add an existing account to the organization as a member
       description: |
-        "Invite" means here what it can mean today: the email names an account that already exists,
-        and that account becomes a member. Pending invitations for people who have no account yet —
-        invite links, tokens, email — are issue #59 and are not built; an unknown email is
-        `NOT_FOUND`, never a stored invitation.
+        The email names an account that already exists, and that account becomes a member.
+        Someone who has no account yet comes in through an invitation link instead:
+        `POST /api/v1/org/invitations` mints one and `POST /api/v1/invitations/redeem`
+        registers through it. An unknown email here is `NOT_FOUND`, never a stored
+        invitation.
 
         Only an owner or an admin may manage memberships, and only a logged-in person: an API key is
         not a person and names no role, so it is refused here too (docs/decisions.md, "membership
@@ -1073,6 +1133,22 @@ components:
       description: "the id the ledger entries are keyed by: `req-<id>:hold` and `req-<id>:settle`"
       schema: { type: string }
   schemas:
+    CreatedInvitation:
+      type: object
+      required: [id, token, expiresAt]
+      properties:
+        id: { type: string, format: uuid }
+        token:
+          type: string
+          description: "`oxi-` plus 32 random bytes — answered once; only its hash is stored"
+        expiresAt: { type: string, format: date-time, description: seven days from minting }
+    RedeemInvitationRequest:
+      type: object
+      required: [token, email, password]
+      properties:
+        token: { type: string, description: "the invitation link's token" }
+        email: { type: string, maxLength: 320 }
+        password: { type: string, minLength: 12, maxLength: 256 }
     RegisterRequest:
       type: object
       required: [email, password]
@@ -1185,8 +1261,9 @@ components:
           maxLength: 320
           description: |
             the email of an account that already exists; the comparison is case-insensitive. An
-            email no account holds is `NOT_FOUND` (pending invitations are issue #59), and one that
-            is already a member of this organization is `CONFLICT`.
+            email no account holds is `NOT_FOUND` — a person without an account is invited by link
+            (`POST /api/v1/org/invitations`) — and one that is already a member of this organization
+            is `CONFLICT`.
     ChangeMemberRoleRequest:
       type: object
       required: [role]

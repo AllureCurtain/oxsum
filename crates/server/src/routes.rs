@@ -7,9 +7,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router, middleware};
 use oxsum_core::{
-    ApiKey, Consistency, CreatedApiKey, CreatedSession, HeadSigningKey, KeyPublication, Member,
-    NewUser, Organization, Ownership, Principal, Registration, Role, SESSION_COOKIE, Session,
-    SessionPrincipal, SignedHead, Tenants, User, UserOrganization, Wallet, signing_key,
+    ApiKey, Consistency, CreatedApiKey, CreatedInvitation, CreatedSession, HeadSigningKey,
+    KeyPublication, Member, NewUser, Organization, Ownership, Principal, Registration, Role,
+    SESSION_COOKIE, Session, SessionPrincipal, SignedHead, Tenants, User, UserOrganization, Wallet,
+    signing_key,
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -30,6 +31,7 @@ pub fn router(state: AppState) -> Router {
         .route("/orgs", get(my_organizations).post(create_organization))
         .route("/org/keys", get(list_keys).post(create_key))
         .route("/org/keys/{key_id}", delete(revoke_key).patch(patch_key))
+        .route("/org/invitations", post(create_invitation))
         .route("/org/members", post(add_member))
         .route(
             "/org/members/{user_id}",
@@ -57,6 +59,9 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/register", post(register))
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
+        // Registration through an invitation link: the token is the credential, so it
+        // stays open in invite mode too — that mode exists for this.
+        .route("/invitations/redeem", post(redeem_invitation))
         // The operator's tree-head verifying key: a public key, so no credential.
         .route("/log/key", get(log_key));
 
@@ -347,6 +352,48 @@ async fn switch_organization(
     principal.organization = organization;
     principal.role = role;
     ok(SessionInfo::from(principal))
+}
+
+/// The body of `POST /api/v1/invitations/redeem`: the link's token plus the account
+/// to create.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RedeemReq {
+    token: String,
+    email: String,
+    password: String,
+}
+
+/// Mints an invitation link into the session's organization: the token is answered
+/// once, here. Owner or admin only — the same rule every membership write follows.
+async fn create_invitation(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+) -> ApiResult<CreatedInvitation> {
+    let actor = principal.membership_actor()?;
+    ok(state
+        .db
+        .create_invitation(actor, principal.organization().id)
+        .await?)
+}
+
+/// Registers through an invitation link. Open in every signup mode — an `invite`
+/// deployment's registrations all come through here.
+async fn redeem_invitation(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<RedeemReq>,
+) -> ApiResult<Registration> {
+    ok(state
+        .db
+        .redeem_invitation(
+            &request.token,
+            NewUser {
+                email: request.email,
+                password: request.password,
+                organization_name: None,
+            },
+        )
+        .await?)
 }
 
 async fn create_key(

@@ -125,6 +125,15 @@ pub struct TransferView {
     pub previous_owner: MemberView,
 }
 
+/// A freshly minted invitation link, as the members page shows it — once: the
+/// server keeps only the token's hash, so nothing can recall it after this answer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InvitationView {
+    pub token: String,
+    pub expires_at: String,
+}
+
 /// One organization the user belongs to, as the organization switcher shows it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -702,4 +711,20 @@ pub async fn switch_organization(organization_id: String) -> Result<(), ServerFn
         .await
         .map_err(|error| rule_error(error, "the organization could not be switched"))?;
     Ok(())
+}
+
+/// Mint an invitation link into the session's organization — the members page's
+/// "Invite by link" button. Owner or admin only, the same rule the REST endpoint and
+/// every membership write apply.
+#[server(prefix = "/_pages")]
+pub async fn create_invitation() -> Result<InvitationView, ServerFnError> {
+    let (db, _tenants, principal) = session_ctx().await?;
+    let created = db
+        .create_invitation(membership_actor(&principal), principal.organization.id)
+        .await
+        .map_err(|error| rule_error(error, "the invitation could not be created"))?;
+    Ok(InvitationView {
+        token: created.token,
+        expires_at: created.expires_at.to_string(),
+    })
 }
