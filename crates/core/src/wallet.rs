@@ -164,17 +164,16 @@ impl Wallet {
 
         // Account handles must be restored from storage on restart. Re-registering by
         // path could mint different handle numbers and mispoint historical entries.
+        // The three the wallet needs are registered wherever the store lacks them —
+        // a second opener can read while the first is still mid-bootstrap, and a read
+        // that finds some of them has to converge, not fail on the half it can see.
         let stored = store.accounts().await?;
-        let creating = stored.is_empty();
-        let mut registry = if creating {
-            let mut r = AccountRegistry::new();
-            r.register_path(WALLET, OPENED).map_err(invalid)?;
-            r.register_path(CASH, OPENED).map_err(invalid)?;
-            r.register_path(REVENUE, OPENED).map_err(invalid)?;
-            r
-        } else {
-            AccountRegistry::from_records(stored).map_err(invalid)?
-        };
+        let mut registry = AccountRegistry::from_records(stored).map_err(invalid)?;
+        for path in [WALLET, CASH, REVENUE] {
+            if find_account(&registry, path).is_err() {
+                registry.register_path(path, OPENED).map_err(invalid)?;
+            }
+        }
 
         // The wallet's limit is oxsum's rule about its own account, so it is applied on
         // every open rather than only where a ledger is created. `register_account`
@@ -188,21 +187,13 @@ impl Wallet {
             .is_none_or(|r| r.account.limit != WALLET_LIMIT);
         if weakened {
             registry.set_limit(wallet, WALLET_LIMIT).map_err(invalid)?;
-            let record = registry
-                .records()
-                .into_iter()
-                .find(|r| r.id == wallet)
-                .ok_or_else(|| WalletError::InvalidInput(format!("missing account {WALLET}")))?;
-            store.register_account(&record).await?;
         }
-        // A ledger that did not exist a moment ago has no rows at all, so the other two
-        // accounts are written once, with it.
-        if creating {
-            for record in registry.records() {
-                if record.id != wallet {
-                    store.register_account(&record).await?;
-                }
-            }
+        // The full account set is persisted on every open. `register_account` upserts —
+        // a record the store already holds is a no-op — and two opens racing a fresh
+        // ledger mint the same handles for the same missing paths, so they write the
+        // same rows and converge instead of one failing on a half-written bootstrap.
+        for record in registry.records() {
+            store.register_account(&record).await?;
         }
 
         Ok(Self {
