@@ -25,9 +25,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Reads rust-toolchain.toml, so the pinned toolchain (1.98) plus rustfmt
-      # and clippy are installed.
-      - uses: actions-rust-lang/rust-toolchain@v1
+      # The pinned toolchain (1.98) plus rustfmt and clippy, matching rust-toolchain.toml.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.98"
+          components: rustfmt, clippy
       - run: cargo fmt --all --check
 
   clippy:
@@ -35,7 +37,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rust-lang/rust-toolchain@v1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.98"
+          components: rustfmt, clippy
       # No database is needed to compile: the tree uses no sqlx::query! macros,
       # so compilation never touches a live database.
       - run: cargo clippy --workspace --all-targets -- -D warnings
@@ -62,7 +67,10 @@ jobs:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/oxsum
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rust-lang/rust-toolchain@v1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.98"
+          components: rustfmt, clippy
       # The database tests skip without DATABASE_URL; here it is set, so they
       # run for real.
       - name: Run the workspace test suites
