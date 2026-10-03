@@ -32,7 +32,7 @@ pub use heads::{
     Consistency, HeadSigningKey, KeyPublication, SignedHead, origin_for, seed_from_base64,
     sign_head, signing_key,
 };
-pub use holds::{DEFAULT_HOLD_TIMEOUT, OpenHold, SWEEP_INTERVAL, sweep_stale_holds};
+pub use holds::{DEFAULT_HOLD_TIMEOUT, InFlightHold, OpenHold, SWEEP_INTERVAL, sweep_stale_holds};
 pub use keys::{ActingKey, ApiKey, CreatedApiKey};
 pub use orgs::{AdminOrganization, Kind, Member, MembershipActor, Organization, Ownership, Role};
 pub use proof::{ProofBundle, verify_bundle};

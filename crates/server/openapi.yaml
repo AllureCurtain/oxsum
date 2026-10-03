@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.9.0
+  version: 0.10.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -736,7 +736,9 @@ paths:
         integer minor units, 1 credit = 1_000_000 minor, and reading one creates the organization's
         ledger if it does not exist yet, the same way the dashboard's overview does.
         Moving another organization's money — topping it up or adjusting it — is not this
-        endpoint and is planned under issue #60.
+        endpoint and is planned under issue #60. 0.10.0 added `GET /api/v1/admin/holds`: every
+    unsettled hold across all organizations, the in-flight requests the platform is holding
+    money for.
       security:
         - adminToken: []
       responses:
@@ -751,6 +753,32 @@ paths:
                   data:
                     type: array
                     items: { $ref: "#/components/schemas/AdminOrganization" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/holds:
+    get:
+      summary: List every unsettled hold, across all organizations
+      description: |
+        The in-flight requests the platform is holding money for: every watched hold,
+        newest first — the organization it belongs to, the request id, the model and
+        channel, the price version the turn froze at, the frozen amount and when the
+        hold opened. The list is the sweeper's watch table: a row whose hold already
+        settled is cleaned up rather than shown, so a hold listed here is one the
+        ledger still reserves.
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: Every unsettled hold, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/AdminHold" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /v1/models:
@@ -1036,6 +1064,17 @@ components:
         createdAt: { type: string, format: date-time }
         availableMinor: { type: integer, format: int64, description: settled minus unsettled holds }
         reservedMinor: { type: integer, format: int64, minimum: 0, description: the sum of the organization's outstanding holds }
+    AdminHold:
+      type: object
+      required: [organization, requestId, model, channel, priceVersion, freezeMinor, openedAt]
+      properties:
+        organization: { type: string, description: the name of the organization whose ledger holds the freeze }
+        requestId: { type: string, description: "the x-oxsum-request-id the turn was taken under" }
+        model: { type: string }
+        channel: { type: string }
+        priceVersion: { type: integer, minimum: 1, description: the version the turn froze at }
+        freezeMinor: { type: integer, format: int64, minimum: 1, description: what was frozen, in minor units }
+        openedAt: { type: string, format: date-time, description: when the hold was taken }
     AmountRequest:
       type: object
       required: [idempotencyKey, amountMinor]

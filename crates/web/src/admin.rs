@@ -85,6 +85,7 @@ pub fn AdminLayout() -> impl IntoView {
                 <div class="brand">"oxsum admin"</div>
                 <A href="/admin/channels">"Channels & prices"</A>
                 <A href="/admin/organizations">"Organizations"</A>
+                <A href="/admin/in-flight">"In-flight"</A>
                 <A href="/dashboard">"Dashboard"</A>
             </nav>
             <main class="content">
@@ -148,6 +149,19 @@ struct OrganizationView {
     created_at: String,
     available_minor: i64,
     reserved_minor: i64,
+}
+
+/// An unsettled hold as `GET /api/v1/admin/holds` returns it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InFlightHoldView {
+    organization: String,
+    request_id: String,
+    model: String,
+    channel: String,
+    price_version: i64,
+    freeze_minor: i64,
+    opened_at: String,
 }
 
 /// One model's price at a version, as the admin API returns it.
@@ -678,6 +692,87 @@ async fn load_organizations(token: AdminToken) -> Result<Vec<OrganizationView>, 
 
 #[cfg(not(feature = "hydrate"))]
 async fn load_organizations(_token: AdminToken) -> Result<Vec<OrganizationView>, String> {
+    Err(String::new())
+}
+
+/// The in-flight page: every hold the platform is currently reserving, across all
+/// organizations — what the sweeper watches and the ledgers still freeze.
+#[component]
+pub fn AdminInFlightPage() -> impl IntoView {
+    let token = admin_token();
+    let holds = LocalResource::new(move || async move { load_holds(token).await });
+
+    view! {
+        <h1>"In-flight requests"</h1>
+        <p class="muted">
+            "Every unsettled hold, globally and newest first. A hold that settled is              off the list — the ledger is the source of truth, and the sweeper clears              rows whose holds are gone. A hold older than the timeout is one the              sweeper is about to release as `swept`."
+        </p>
+        <Suspense fallback=move || view! { <p class="muted">"Loading…"</p> }>
+            {move || {
+                holds.get().map(|result| match result {
+                    Err(message) => view! { <p class="error" role="alert">{message}</p> }.into_any(),
+                    Ok(holds) if holds.is_empty() => view! {
+                        <p class="muted">"Nothing in flight."</p>
+                    }
+                    .into_any(),
+                    Ok(holds) => view! {
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>"Organization"</th>
+                                    <th>"Request"</th>
+                                    <th>"Model"</th>
+                                    <th>"Channel"</th>
+                                    <th>"Price"</th>
+                                    <th class="num">"Frozen"</th>
+                                    <th>"Opened"</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {holds
+                                    .into_iter()
+                                    .map(|hold| {
+                                        view! {
+                                            <tr>
+                                                <td>{hold.organization}</td>
+                                                <td class="mono">{hold.request_id}</td>
+                                                <td class="mono">{hold.model}</td>
+                                                <td>{hold.channel}</td>
+                                                <td class="mono">{"v"}{hold.price_version}</td>
+                                                <td class="mono num pending">
+                                                    {crate::app::credits(hold.freeze_minor)}
+                                                </td>
+                                                <td class="mono">{hold.opened_at}</td>
+                                            </tr>
+                                        }
+                                    })
+                                    .collect_view()}
+                            </tbody>
+                        </table>
+                    }
+                    .into_any(),
+                })
+            }}
+        </Suspense>
+    }
+}
+
+/// The resource's read. `LocalResource` only ever runs in the browser; the SSR body is
+/// a placeholder so the page compiles for the server too.
+#[cfg(feature = "hydrate")]
+async fn load_holds(token: AdminToken) -> Result<Vec<InFlightHoldView>, String> {
+    admin_call(
+        token,
+        browser::get(
+            &token.0.get_untracked().unwrap_or_default(),
+            "/api/v1/admin/holds",
+        ),
+    )
+    .await
+}
+
+#[cfg(not(feature = "hydrate"))]
+async fn load_holds(_token: AdminToken) -> Result<Vec<InFlightHoldView>, String> {
     Err(String::new())
 }
 

@@ -51,6 +51,7 @@ Whoever deploys oxsum, and nobody else: the credential is the operator token fro
 - `POST /api/v1/admin/channels/{channelName}/prices` — append a price version for a model, and answer the version that was written. `CONFLICT` when another channel already serves that model: in v1 one model belongs to one channel.
 - `GET /api/v1/admin/channels/{channelName}/prices` — every version of every model of that channel, newest first. This is the history, and it is what makes the `priceVersion` in an old settlement checkable.
 - `GET /api/v1/admin/organizations` — every organization, oldest first, with its kind, headcount and what its wallet shows (`availableMinor`, `reservedMinor`). Topping up or adjusting another organization is not this surface; it is #60.
+- `GET /api/v1/admin/holds` — every unsettled hold across all organizations, newest first: the in-flight requests the platform is holding money for, read off the sweeper's watch table.
 
 A deployment that sets no `OXSUM_ADMIN_TOKEN` has no admin surface: the routes exist and answer `UNAUTHORIZED`, rather than being open or absent.
 

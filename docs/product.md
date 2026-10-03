@@ -4,7 +4,7 @@ Status: finalized (2026-10-01), audited against the code (2026-10-03, issue #61)
 
 This document records product behavior: who can do what, and how every situation is billed. Technical implementation lives in architecture.md, technology rationale in decisions.md, progress in TODO.md.
 
-Every page and flow below carries a status: **shipped** means this repository does it today, **planned** means the text describes the vision and names the issue that will build it. A planned page or flow is not a smaller feature that happens to be missing; it is documented behavior that no code implements. The shipped dashboard pages are `crates/web/src/app.rs` (shell, login, logout, overview, API keys, members, transaction log, bills, requests, verification), `crates/web/src/chat.rs` (chat) and `crates/web/src/admin.rs` (the platform-admin pages, #57 — channels and organizations so far); the REST and gateway behavior they call is in `crates/server`. Issue #61 is the audit that added these statuses; the resolutions are recorded in docs/decisions.md.
+Every page and flow below carries a status: **shipped** means this repository does it today, **planned** means the text describes the vision and names the issue that will build it. A planned page or flow is not a smaller feature that happens to be missing; it is documented behavior that no code implements. The shipped dashboard pages are `crates/web/src/app.rs` (shell, login, logout, overview, API keys, members, transaction log, bills, requests, verification), `crates/web/src/chat.rs` (chat) and `crates/web/src/admin.rs` (the platform-admin pages, #57 — channels, organizations and in-flight so far); the REST and gateway behavior they call is in `crates/server`. Issue #61 is the audit that added these statuses; the resolutions are recorded in docs/decisions.md.
 
 ## One-liner
 
@@ -204,13 +204,13 @@ Verification proves: this record was not altered after being written, and histor
 
 ### Platform admin
 
-The platform admin surface is the `/api/v1/admin` REST API under the operator token (`OXSUM_ADMIN_TOKEN`), and the `/admin` pages drive it directly from the browser — the token is typed in once, kept in `localStorage` like the chat page's key and sent as `Authorization: Bearer` (docs/decisions.md). The channels and prices page is shipped; the channels and organizations pages are shipped; the remaining pages are planned under issue #57, and the adjustments and signup bonus the first row needs are #60.
+The platform admin surface is the `/api/v1/admin` REST API under the operator token (`OXSUM_ADMIN_TOKEN`), and the `/admin` pages drive it directly from the browser — the token is typed in once, kept in `localStorage` like the chat page's key and sent as `Authorization: Bearer` (docs/decisions.md). The channels and prices page is shipped; the channels, organizations and in-flight pages are shipped; the remaining pages are planned under issue #57, and the adjustments and signup bonus the first row needs are #60.
 
 | Page | Content | Status |
 | --- | --- | --- |
 | Organizations | Every organization's balance; top up, adjust | The list ships: `/admin/organizations` on `GET /api/v1/admin/organizations` — name, kind, headcount, available and frozen; topping up or adjusting one is #60 |
 | Channels & prices | Configure upstreams and model prices; view price version history | Shipped: `/admin/channels` on the `/api/v1/admin` endpoints — list, create or repoint a channel, append a price version, read a channel's whole history |
-| In-flight requests | Every unsettled hold, globally | Planned, #57 |
+| In-flight requests | Every unsettled hold, globally | Shipped: `/admin/in-flight` on `GET /api/v1/admin/holds` — the sweeper's watch table joined to the organizations |
 | Anomalies | Requests with settlement type `capped`, `estimated`, `client_cancelled` or `swept`, summarizable per channel to see where the platform loses money upstream | Planned, #57 |
 | Closing | Monthly closing; after closing, that month accepts no new entries and a closing record is produced | Planned, #57 |
 
@@ -234,7 +234,7 @@ The platform admin surface is the `/api/v1/admin` REST API under the operator to
 
 Everything this document describes but the code does not do yet, with the issue that tracks it:
 
-- The remaining platform-admin pages: in-flight requests, anomalies, closing — #57
+- The remaining platform-admin pages: anomalies, closing — #57
 - Team organizations and switching the acting organization — #58
 - Invitations: one link, seven days, usable once — #59
 - Platform-admin adjustments and the signup bonus — #60

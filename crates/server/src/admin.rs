@@ -17,7 +17,7 @@ use axum::middleware::Next;
 use axum::response::Response;
 use axum::routing::get;
 use axum::{Router, middleware};
-use oxsum_core::{Channel, Kind, ModelPrice, Price};
+use oxsum_core::{Channel, InFlightHold, Kind, ModelPrice, Price};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq as _;
 use time::OffsetDateTime;
@@ -33,6 +33,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/channels", get(list).post(set))
         .route("/channels/{name}/prices", get(history).post(append))
         .route("/organizations", get(organizations))
+        .route("/holds", get(holds))
         .layer(middleware::from_fn_with_state(state, require_admin))
 }
 
@@ -160,6 +161,15 @@ async fn organizations(State(state): State<AppState>) -> ApiResult<Vec<Organizat
         });
     }
     ok(answer)
+}
+
+/// Every unsettled hold across all organizations, newest first: the in-flight list.
+///
+/// The rows are the sweeper's watch table joined to the organizations they belong to;
+/// what the ledger still reserves is what the page shows, because a watch row whose
+/// hold already settled is deleted rather than listed.
+async fn holds(State(state): State<AppState>) -> ApiResult<Vec<InFlightHold>> {
+    ok(state.db.open_holds().await?)
 }
 
 /// Every version of every model of one channel, newest first.
