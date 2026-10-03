@@ -60,6 +60,38 @@ Notes:
   `cargo leptos build` once, then run the server). Without it the pages render but
   the live updates do not run.
 
+## Chat in the browser
+
+Purpose: top up, pick a model and chat without touching the API by hand, with each
+turn's billing visible in real time.
+
+Steps:
+
+1. Log in at `/login` and open **Chat** in the dashboard (`/dashboard/chat`).
+2. **Top up**: enter an amount in credits and submit. The page calls the top-up
+   endpoint with your login session; keep the content hash it shows — it is what
+   the top-up's bill verifies against later.
+3. **Chat key**: the gateway takes an API key, not the login session, so the page
+   needs one. **Mint a chat key** mints a key named `chat` and keeps it in this
+   browser — you never have to handle it. (Or paste a key you minted under API
+   keys.) The key lives in the browser's local storage: **Forget it** removes it
+   from this browser; revoking it under API keys kills it everywhere.
+4. **Model**: pick one of the models the deployment serves.
+5. Type a message and send. The answer streams in.
+
+Under each answer the turn's billing shows live: the frozen upper bound while the
+answer streams, then the settled charge — amount, settlement kind, token counts and
+the price version that priced it. **Verify this bill** opens `/verify` with the
+turn's proof bundle and content hash prefilled, and the check runs there, in your
+browser, as always.
+
+Notes:
+
+- The conversation is kept in the browser only; the server stores nothing. Reloading
+  the page restores the conversation and re-reads each turn's bill.
+- A 402 on send means the freeze does not fit your balance: top up, or pick a
+  cheaper moment. The gateway's message states the freeze and the balance.
+
 ## Keys
 
 Purpose: several integrations, one organization, revocable separately.

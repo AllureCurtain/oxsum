@@ -2,6 +2,22 @@
 
 New decisions go on top. Overturned decisions are never deleted; mark them "Superseded" and name the decision that replaces it.
 
+## 2026-10-03 Chat page: the browser chats with an API key, bills through a page server function (issue #39)
+
+- Status: Adopted. Implemented 2026-10-03, closing issue #39 (TODO C-11).
+- Decision: `/dashboard/chat` drives the existing API only — no new REST endpoints, no `openapi.yaml` change.
+  - **Top-up** goes to `POST /api/v1/topups` from the browser with the session cookie (the login page's pattern — the cookie is `HttpOnly`, so only a real endpoint call works). The amount is parsed to minor units without floating point, the same integer-only rule as the rest of the money path.
+  - **Chat goes through the gateway with an API key.** The cookie is never accepted on `/v1` (#17), so the page mints a key named `chat` through the existing `create_key` server function and keeps it in the browser's `localStorage` — the user never handles it by hand. Pasting a key from the keys page works too. This revises product.md's "no API key needed": what the user experiences is still "log in and chat", but the credential on the wire is a key, not the session.
+  - **Chat is streaming `POST /v1/chat/completions`**, parsed as SSE in the browser; the `x-oxsum-request-id` header names the turn before the first frame.
+  - **Billing is the existing `/ws/billing` socket**, now behind a shared client module (`crates/web/src/billing_socket.rs`) that delivers typed events to a caller-supplied handler — the dashboard's holds section and the chat page share it. Freeze on `turnStarted`, streaming progress on `turnProgress`, and on `turnSettled` the new `get_turn_bill` `/_pages` server function returns the settlement entry's proof bundle plus the parsed charge and the content hash.
+  - **Each settled turn links to `/verify?bundle=…&contentHash=…`**, which prefills both fields and runs the check on load (a page-level change, not an endpoint).
+  - **Conversations persist in `localStorage`**; the server keeps nothing (product.md). Restored turns re-fetch their bills — the entry ids are derivable from the request ids, so a reload loses nothing but the live socket state.
+- Why a server function for the bill, not a browser fetch of the proof endpoint: the bundle does not carry the entry's content hash (the entry serializes without it), and the browser cannot recompute it — the hash runs over the canonical entry bytes inside doubleentry (`digest` is crate-internal), and `crates/doubleentry` is untouched by rule. `get_turn_bill` (session-authenticated, page API under `/_pages` like the rest of the dashboard) derives the settlement entry id with `oxsum_core::settlement_key_for`/`entry_id_for`, builds the proof bundle server-side, and returns the parsed charge with the bundle JSON and the content hash for the `/verify` link.
+- Rejected:
+  - A session-authenticated chat relay endpoint: would punch a hole in #17's gateway auth model ("the cookie is never accepted on `/v1`") for page convenience.
+  - Deriving the settlement entry id in the browser and fetching the proof over REST: workable for the bundle, but leaves the page with no content hash for the verify link.
+  - Storing conversations server-side: product.md says the server keeps nothing, and there is no duty to store users' conversations.
+
 ## 2026-10-03 Per-key spend limits: committed spend, serialized per key (issue #32)
 
 - Status: Adopted. Implemented 2026-10-03, closing issue #32 (TODO B-8).
