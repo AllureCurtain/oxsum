@@ -249,6 +249,55 @@ impl Settlement<'_> {
     }
 }
 
+/// A settlement entry's description, read back into owned fields.
+///
+/// The reader of [`Settlement`], in the same module as the writer so the two shapes are
+/// one definition: the requests page lists a request out of its settlement entry, and the
+/// fields it shows (the model, the token counts, the charge) are the ones the entry's
+/// content hash covers. The round trip is pinned by
+/// `a_settlement_description_reads_back`.
+///
+/// A hold's own record does not parse into this type: it carries no channel, no token
+/// counts and no prices, and its `kind` (`"hold"`) is not a [`SettlementKind`]. A
+/// settlement written through the wallet API carries no description at all. Neither is a
+/// gateway request, so neither is read as one.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettlementRecord {
+    /// The request id from `x-oxsum-request-id`; the ledger keys are derived from it.
+    pub request: String,
+    /// The channel that served the request.
+    pub channel: String,
+    /// The model the caller asked for.
+    pub model: String,
+    /// The price version in force when the request started.
+    pub price_version: i64,
+    /// How this turn was priced, in the record's own spelling.
+    pub kind: SettlementKind,
+    /// Tokens billed as input.
+    pub input_tokens: i64,
+    /// Tokens billed as output.
+    pub output_tokens: i64,
+    /// Minor units per million input tokens at the time of the request.
+    pub input_price: i64,
+    /// Minor units per million output tokens at the time of the request.
+    pub output_price: i64,
+    /// What was charged, never more than `freeze`.
+    pub charged: i64,
+    /// What was frozen before the call.
+    pub freeze: i64,
+}
+
+impl SettlementRecord {
+    /// The record one entry's description carries, or `None` when the description is not a
+    /// settlement's — a hold's record, an empty description, or text from a writer that is
+    /// not this one.
+    #[must_use]
+    pub fn parse(description: &str) -> Option<Self> {
+        serde_json::from_str(description).ok()
+    }
+}
+
 /// What the hold entry records, so a bill can pair the freeze with the request that caused it.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -442,6 +491,69 @@ mod tests {
         // Within the ledger's limit, whatever the model is called.
         assert!(json.len() < 512);
         assert_eq!(json, settlement.description().unwrap());
+    }
+
+    /// The reader and the writer are one shape: what `Settlement::description` writes is
+    /// what `SettlementRecord::parse` reads, field for field. A field renamed on one side
+    /// only would silently drop requests off the requests page (issue #55).
+    #[test]
+    fn a_settlement_description_reads_back() {
+        let settlement = Settlement {
+            request: "abc",
+            channel: "deepseek",
+            model: "deepseek-chat",
+            price_version: 3,
+            kind: SettlementKind::Usage,
+            input_tokens: 116,
+            output_tokens: 100,
+            input_price: 1_000_000,
+            output_price: 2_000_000,
+            charged: 316,
+            freeze: 400,
+        };
+        let record = SettlementRecord::parse(&settlement.description().unwrap()).unwrap();
+        assert_eq!(record.request, "abc");
+        assert_eq!(record.channel, "deepseek");
+        assert_eq!(record.model, "deepseek-chat");
+        assert_eq!(record.price_version, 3);
+        assert_eq!(record.kind, SettlementKind::Usage);
+        assert_eq!(record.input_tokens, 116);
+        assert_eq!(record.output_tokens, 100);
+        assert_eq!(record.input_price, 1_000_000);
+        assert_eq!(record.output_price, 2_000_000);
+        assert_eq!(record.charged, 316);
+        assert_eq!(record.freeze, 400);
+
+        // Every settlement kind round-trips: the page shows the record's own word.
+        for kind in [
+            SettlementKind::Estimated,
+            SettlementKind::ClientCancelled,
+            SettlementKind::UpstreamError,
+            SettlementKind::UpstreamUnreachable,
+            SettlementKind::Capped,
+            SettlementKind::Swept,
+        ] {
+            let text = Settlement {
+                kind,
+                ..settlement.clone()
+            }
+            .description()
+            .unwrap();
+            assert_eq!(SettlementRecord::parse(&text).unwrap().kind, kind);
+        }
+    }
+
+    /// A hold's description is not a settlement's, and neither is text that is not a record
+    /// at all: the requests page must not read a freeze as a request.
+    #[test]
+    fn only_a_settlement_description_parses_as_a_record() {
+        assert!(SettlementRecord::parse(&hold_description("abc", "m", 400).unwrap()).is_none());
+        assert!(SettlementRecord::parse("").is_none());
+        assert!(SettlementRecord::parse("not json").is_none());
+        // A record missing the fields a request is billed by is not one either.
+        assert!(SettlementRecord::parse(r#"{"request":"abc","model":"m"}"#).is_none());
+        // An unknown settlement kind is not one this build can price.
+        assert!(SettlementRecord::parse(r#"{"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"teleported","inputTokens":1,"outputTokens":1,"inputPrice":1,"outputPrice":1,"charged":1,"freeze":1}"#).is_none());
     }
 
     #[test]

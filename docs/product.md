@@ -4,7 +4,7 @@ Status: finalized (2026-10-01), audited against the code (2026-10-03, issue #61)
 
 This document records product behavior: who can do what, and how every situation is billed. Technical implementation lives in architecture.md, technology rationale in decisions.md, progress in TODO.md.
 
-Every page and flow below carries a status: **shipped** means this repository does it today, **planned** means the text describes the vision and names the issue that will build it. A planned page or flow is not a smaller feature that happens to be missing; it is documented behavior that no code implements. The shipped dashboard pages are `crates/web/src/app.rs` (shell, login, logout, overview, API keys, members, transaction log, bills, verification) and `crates/web/src/chat.rs` (chat); the REST and gateway behavior they call is in `crates/server`. Issue #61 is the audit that added these statuses; the resolutions are recorded in docs/decisions.md.
+Every page and flow below carries a status: **shipped** means this repository does it today, **planned** means the text describes the vision and names the issue that will build it. A planned page or flow is not a smaller feature that happens to be missing; it is documented behavior that no code implements. The shipped dashboard pages are `crates/web/src/app.rs` (shell, login, logout, overview, API keys, members, transaction log, bills, requests, verification) and `crates/web/src/chat.rs` (chat); the REST and gateway behavior they call is in `crates/server`. Issue #61 is the audit that added these statuses; the resolutions are recorded in docs/decisions.md.
 
 ## One-liner
 
@@ -27,12 +27,12 @@ The piece must let a first-time visitor walk this path in minutes:
 | Platform admin | Whoever deploys oxsum | Manage channels and prices, top up or adjust any organization, view all anomalous requests, run monthly closings | Channels and prices are shipped (`/api/v1/admin`, operator token); topping up or adjusting another organization and the closings are planned (#57 pages, #60 adjustments and the signup bonus) |
 | Organization owner | Organization creator | Everything inside the organization, including transferring ownership | Keys, balance and the ledger are shipped; transferring ownership is planned (#56) |
 | Organization admin | Appointed by the owner | Invite and remove members, manage all keys, view the organization's full bill history | Managing all keys is shipped; inviting and removing is planned (#56); the bill history ships as the bills page — the organization's settled entries, exportable as CSV or JSON — which applies no member filter yet |
-| Organization member | Invited people | Create and revoke their own keys, view organization balance and their own request records | Their own keys and the balance are shipped; their own request records are planned (#55 requests page), the shipped bills page lists the whole organization's settled entries with no member filter (planned, #54), and so is being invited (#59) |
+| Organization member | Invited people | Create and revoke their own keys, view organization balance and their own request records | Their own keys, the balance and their own request records are shipped (the requests page, #55, shows the turns their own keys paid for); the shipped bills page lists the whole organization's settled entries with no member filter, and being invited is planned (#59) |
 | API caller | Programs holding a key | Call the gateway, spending the key's organization balance | Shipped |
 
 The platform admin is not an organization role but a deployment-level identity; users cannot apply for it.
 
-Two shipped pages are readable more widely than the "Who" column suggests. The transaction log page, the bills page and the members page take any live session (`get_log`, `get_bills` and `get_members` in `crates/web/src/api.rs`, none with a role check), so every member reads the organization's entries, its bills and the membership list; none of the three offers a management action. The role-scoped bill view is still planned (#54: the bills page shipped without a member filter), the requests page with #55, and membership management with #56.
+Two shipped pages are readable more widely than the "Who" column suggests. The transaction log page, the bills page and the members page take any live session (`get_log`, `get_bills` and `get_members` in `crates/web/src/api.rs`, none with a role check), so every member reads the organization's entries, its bills and the membership list; none of the three offers a management action. The requests page is scoped already: a member reads the requests their own keys paid for and nobody else's (`get_requests` filters the organization's ledger rows through the keys the session may see). The role-scoped bill view is still planned (#54: the bills page shipped without a member filter), and membership management with #56.
 
 ## Accounts and organizations
 
@@ -141,7 +141,7 @@ Two settled trade-offs:
 
 - One request maps to two entries: the freeze and the settlement. Idempotency keys: `req-<id>:hold`, and the settlement's key derived from it (`oxsum_core::settlement_key_for`).
 - The settlement entry's description carries a compact JSON: request id, model, input and output token counts, both prices, settlement type. The description is hashed into the entry, so what the user verifies is not just "how much was charged" but "by how many tokens at what price". The description caps at 512 characters — enough.
-- The full request state (in flight, settled, anomalous) will live in oxsum's own `requests` table — planned, not built; the requests page that reads it is issue #55. Until then, in-flight gateway holds are tracked in the sweeper's `oxsum.open_holds` watch table and the ledger stays the source of truth. Only what needs proving goes into the ledger.
+- The full request state (in flight, settled, anomalous) was going to live in oxsum's own `requests` table, which was never built. The requests page (#55) reads what already exists instead: each settled gateway request is a settlement entry whose description carries the model, the token counts and the prices, read back as `SettlementRecord` (`crates/core/src/billing.rs`) and listed by `Wallet::recent_requests`. In-flight gateway holds are the sweeper's `oxsum.open_holds` watch table, shown live on the overview, and the ledger stays the source of truth. Only what needs proving goes into the ledger. See docs/decisions.md, "the requests page reads the ledger".
 
 ## Bills and verification
 
@@ -154,8 +154,8 @@ Two settled trade-offs:
 
 The transaction log page is still what it was (`/dashboard/log`, `crates/web/src/app.rs`): the organization's newest ledger entries, newest first, each with its index, id, description (for a settled request, the compact JSON carrying model, token counts, prices and settlement type) and content hash. It lists twenty-five entries on the overview and a hundred on its own page, and it is readable by every member. It is not the bill page, and neither is the bills page yet:
 
-- Lists the organization's every transaction newest-first: top-ups, bonuses, adjustments, requests. A request row shows model, token counts, freeze, actual charge and settlement type. (Planned, #54 — the shipped bills page lists settled entries alone; the rest of the same facts are only inside the entry description.)
-- Members see only requests from their own keys plus organization-level top-ups. Owners and admins see everything. (Planned, #54 — the shipped bills page and the shipped transaction log both apply no member filter.)
+- Lists the organization's every transaction newest-first: top-ups, bonuses, adjustments, requests. A request row shows model, token counts, freeze, actual charge and settlement type. (Planned, #54 — the shipped bills page lists settled entries alone; the rest of the same facts are only inside the entry description and, for settled requests, on the requests page (#55).)
+- Members see only requests from their own keys plus organization-level top-ups. Owners and admins see everything. (Planned, #54 — the shipped bills page and the shipped transaction log both apply no member filter; the requests page scopes to the member's own keys.)
 - A row links to that entry's proof bundle, so a bill can be verified from the page. (Planned, #54 — the shipped page lists each entry's content hash and id, and the proof endpoint takes the id, but nothing on the bills page fetches the proof.)
 
 ### Browser verification
@@ -174,7 +174,7 @@ Verification proves: this record was not altered after being written, and histor
 | --- | --- | --- | --- |
 | Overview | Available balance, the frozen total and this month's spend; in-flight requests with their frozen upper bound and live streaming progress | All members | Shipped. The three figures are the overview's own integers (`DashboardData`, `crates/web/src/api.rs`), read from the organization's ledger: the frozen total is the wallet's reserved balance — the sum of the outstanding holds — and this month's spend is what settlements charged on or after the first of the current UTC month, so a top-up is not spend and an outstanding hold is not either. Progress is forwarded characters, not tokens (docs/decisions.md). |
 | Chat | Top up, pick a model and chat; each turn's billing live, with a verify-this-bill link | All members | Shipped (`crates/web/src/chat.rs`) |
-| Requests | Each request's status, usage and cost, filterable by key and model | All members; members see only their own | Planned, #55 |
+| Requests | The organization's settled gateway requests, newest first: booking date, request id, model, key, status (the settlement kind the bill records), input and output tokens, and the charge in credits. Filterable by key and by model, with the filters in the page's URL | All members; a member sees only the turns their own keys paid for | Shipped (`crates/web/src/app.rs`, `get_requests` in `crates/web/src/api.rs`, #55). Every row is read from the settlement entry the gateway wrote, so the numbers on it are the ones the entry's content hash covers; a turn still in flight has no settlement yet — the overview lists those live |
 | Bills | The organization's settled entries with the date booked, the charge in credits and the content hash, newest first; CSV and JSON export of the same list, carrying the charge as the ledger's integer | Every member, with no member filter yet | Shipped in part: the list and both exports ship (`crates/web/src/app.rs`, `/dashboard/bills`); the full transaction view, the member filter and the per-row proof link are planned, #54 |
 | API keys | Create, revoke | Members manage their own; admins manage all | Shipped |
 | Members | Everyone in the organization, with their role and join date. Invite, remove, change roles, transfer ownership are the documented additions | Read-only table: every member. Management: owners and admins | The read-only table is shipped and open to every member; invite, remove, change roles and transfer ownership are planned, #56 |
@@ -212,7 +212,6 @@ None of these pages exists. The platform admin surface today is the `/api/v1/adm
 
 Everything this document describes but the code does not do yet, with the issue that tracks it:
 
-- The requests page — #55
 - Membership management: invite, remove, change roles, transfer ownership — #56
 - The platform-admin pages: organizations, channels and prices, in-flight requests, anomalies, closing — #57
 - Team organizations and switching the acting organization — #58

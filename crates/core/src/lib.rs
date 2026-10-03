@@ -21,8 +21,8 @@ mod users;
 mod wallet;
 
 pub use billing::{
-    Price, PriceBook, Settlement, SettlementKind, Usage, estimate_tokens, hold_description,
-    input_upper_bound,
+    Price, PriceBook, Settlement, SettlementKind, SettlementRecord, Usage, estimate_tokens,
+    hold_description, input_upper_bound,
 };
 pub use channels::{Channel, ModelPrice, SecretKey, Serving};
 pub use db::{Db, SCHEMA};
@@ -43,5 +43,6 @@ pub use sessions::{
 pub use tenants::Tenants;
 pub use users::{NewUser, Registration, User};
 pub use wallet::{
-    Credits, LogEntry, Receipt, SCALE, SettledEntry, Wallet, entry_id_for, settlement_key_for,
+    Credits, LogEntry, Receipt, RequestEntry, SCALE, SettledEntry, Wallet, entry_id_for,
+    settlement_key_for,
 };

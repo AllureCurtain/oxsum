@@ -16,10 +16,11 @@ use leptos_router::path;
 
 use crate::api::{
     CreatedKeyView, DashboardData, EntryView, HoldView, KeyView, MemberView, create_key, get_bills,
-    get_dashboard, get_keys, get_log, get_members, revoke_key,
+    get_dashboard, get_keys, get_log, get_members, get_requests, revoke_key,
 };
 use crate::bills::BillView;
 use crate::chat::ChatPage;
+use crate::requests::{REQUESTS_PATH, RequestFilters, RequestView};
 
 /// The HTML shell: the document around the app. `leptos_axum` renders this as the
 /// whole response, so the `<head>` leptos_meta needs lives here, together with the
@@ -63,6 +64,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/keys") view=KeysPage/>
                     <Route path=path!("/members") view=MembersPage/>
                     <Route path=path!("/log") view=LogPage/>
+                    <Route path=path!("/requests") view=RequestsPage/>
                 </ParentRoute>
             </Routes>
         </Router>
@@ -271,6 +273,7 @@ fn DashboardLayout() -> impl IntoView {
                 <A href="/dashboard/keys">"API keys"</A>
                 <A href="/dashboard/members">"Members"</A>
                 <A href="/dashboard/log">"Transaction log"</A>
+                <A href="/dashboard/requests">"Requests"</A>
                 // Top-level and public, like /logout: verification needs no session.
                 <A href="/verify">"Verify a bill"</A>
                 <A href="/logout">"Log out"</A>
@@ -753,6 +756,189 @@ fn LogPage() -> impl IntoView {
                 })}
             </Suspense>
         </section>
+    }
+}
+
+/// The requests page: the organization's gateway requests, newest first, filterable by key
+/// and by model.
+///
+/// The filters are the URL's own query string (`?key=<prefix>&model=<name>`): the form is a
+/// plain `GET` to this page, and each row's key and model are links that set that one
+/// filter — so a filtered view can be linked and survives a reload, in a browser that
+/// hydrates and in one that does not.
+///
+/// A request is listed once it has settled, and its status is the settlement kind the bill
+/// records (`usage`, `estimated`, `capped`, …), beside the tokens it used and what it
+/// charged, rendered with the same credits formatting as every other amount. A turn still in
+/// flight has no settlement yet: the overview shows those live, with their frozen upper
+/// bound.
+#[component]
+fn RequestsPage() -> impl IntoView {
+    let query = use_query_map();
+    // Read once, from the URL: SSR and the browser agree on the filters, and a native `GET`
+    // re-renders this component with the new query string.
+    let filters = StoredValue::new(RequestFilters::new(
+        query.get().get("key").as_deref(),
+        query.get().get("model").as_deref(),
+    ));
+    let requests = Resource::new(
+        || (),
+        move |_| async move {
+            get_requests(
+                filters.get_value().key.clone(),
+                filters.get_value().model.clone(),
+            )
+            .await
+        },
+    );
+    view! {
+        <section class="card" aria-label="Requests">
+            <h1>"Requests"</h1>
+            <p class="muted">
+                "This organization's gateway requests, newest first: each settled turn's status, the tokens it used and what it charged in credits (1 credit = 1,000,000). Filter by key or by model — the filters are in the URL, so a filtered view can be linked and survives a reload."
+            </p>
+            <RequestFilterForm filters=filters.get_value()/>
+            <Suspense fallback=move || view! { <p class="muted">"Loading…"</p> }>
+                {move || requests.get().map(|result| match result {
+                    Ok(rows) => view! {
+                        <RequestTable
+                            requests=rows
+                            filters=filters.get_value()
+                            filtered=!filters.get_value().is_unfiltered()
+                        />
+                    }
+                        .into_any(),
+                    Err(error) => view! { <p class="error" role="alert">{error.to_string()}</p> }
+                        .into_any(),
+                })}
+            </Suspense>
+        </section>
+    }
+}
+
+/// The filter form: a plain `GET` to this page, so the submitted values land in the query
+/// string with no script of ours — a browser that never hydrates filters just as well —
+/// and the fields come back filled from the URL. "Clear" is a link to the unfiltered page.
+#[component]
+fn RequestFilterForm(filters: RequestFilters) -> impl IntoView {
+    let key = filters.key.clone().unwrap_or_default();
+    let model = filters.model.clone().unwrap_or_default();
+    let clear = (!filters.is_unfiltered()).then(|| {
+        view! {
+            <a href=REQUESTS_PATH>"Clear filters"</a>
+        }
+    });
+    view! {
+        <form class="row" method="get" action=REQUESTS_PATH aria-label="Filter requests">
+            <label>
+                "API key"
+                <input
+                    type="text"
+                    name="key"
+                    autocomplete="off"
+                    spellcheck="false"
+                    placeholder="oxs-…"
+                    value=key
+                />
+            </label>
+            <label>
+                "Model"
+                <input
+                    type="text"
+                    name="model"
+                    autocomplete="off"
+                    spellcheck="false"
+                    placeholder="deepseek-chat"
+                    value=model
+                />
+            </label>
+            <button type="submit">"Filter"</button>
+            {clear}
+        </form>
+    }
+}
+
+/// The requests, one row each: when the settlement was booked, the request id, the model
+/// and the key that name it, its status, the tokens it used and what it cost, rendered as
+/// credits like every other amount in the dashboard. The key and the model are links that
+/// add that filter to the URL, keeping whatever filter is already set. With nothing to show
+/// the table keeps its header and says why it is empty, so a filtered page is never mistaken
+/// for a broken one.
+#[component]
+fn RequestTable(
+    requests: Vec<RequestView>,
+    filters: RequestFilters,
+    filtered: bool,
+) -> impl IntoView {
+    view! {
+        <table>
+            <thead>
+                <tr>
+                    <th scope="col">"Booked on"</th>
+                    <th scope="col">"Request"</th>
+                    <th scope="col">"Model"</th>
+                    <th scope="col">"Key"</th>
+                    <th scope="col">"Status"</th>
+                    <th scope="col" class="num">"Input tokens"</th>
+                    <th scope="col" class="num">"Output tokens"</th>
+                    <th scope="col" class="num">"Cost (credits)"</th>
+                </tr>
+            </thead>
+            <tbody>
+                {if requests.is_empty() {
+                    view! {
+                        <tr>
+                            <td colspan="8" class="muted">
+                                {if filtered {
+                                    "No requests match these filters."
+                                } else {
+                                    "No requests yet."
+                                }}
+                            </td>
+                        </tr>
+                    }
+                        .into_any()
+                } else {
+                    view! {
+                        <For
+                            each=move || requests.clone()
+                            key=|request| request.request_id.clone()
+                            let(request)
+                        >
+                            <tr>
+                                <td class="mono">{request.booked_on.clone()}</td>
+                                <td class="mono">{request.request_id.clone()}</td>
+                                <td>
+                                    <a
+                                        href=filters.with_model(&request.model).href()
+                                        title="Filter by this model"
+                                    >
+                                        {request.model.clone()}
+                                    </a>
+                                </td>
+                                <td class="mono">
+                                    {match request.key_prefix.clone() {
+                                        Some(prefix) => {
+                                            let href = filters.with_key(&prefix).href();
+                                            view! {
+                                                <a href=href title="Filter by this key">{prefix}</a>
+                                            }
+                                                .into_any()
+                                        }
+                                        None => view! { "—" }.into_any(),
+                                    }}
+                                </td>
+                                <td>{request.status.clone()}</td>
+                                <td class="mono num">{request.input_tokens}</td>
+                                <td class="mono num">{request.output_tokens}</td>
+                                <td class="mono num">{credits(request.cost_minor)}</td>
+                            </tr>
+                        </For>
+                    }
+                        .into_any()
+                }}
+            </tbody>
+        </table>
     }
 }
 

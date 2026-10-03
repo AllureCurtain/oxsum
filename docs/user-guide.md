@@ -66,12 +66,25 @@ password; `/dashboard` is the overview. `/logout` logs out.
   where the page shows the same amount in credits. The server sends the file with
   `Content-Disposition: attachment`, so a browser saves it instead of opening it, and the
   same two URLs work with `curl` and your session cookie as well.
+- **Requests**: the organization's settled requests, newest first
+  (`/dashboard/requests`): when the settlement was booked, the request id (the
+  `x-oxsum-request-id` the gateway answered with), the model, the key that paid, the
+  status — how the turn was priced, in the bill's own words: `usage`, `estimated`,
+  `capped`, `client_cancelled`, `upstream_error`, `upstream_unreachable` or `swept` —
+  and the input and output tokens it used and what it charged in credits. The
+  filters live in the URL: `/dashboard/requests?key=<prefix>&model=<name>`. Type a
+  key's prefix (the keys page shows it) or a model name and press **Filter**, or click
+  a key or a model in a row to filter by that value and keep the other filter. A
+  filtered view is a link: it survives a reload and can be shared, and a filter that
+  matches nothing shows an empty table with a message rather than an error. A turn that
+  is still in flight has not settled yet, so it is not here — the overview shows those
+  live.
 
 Notes:
 
-- Amounts are in credits with six decimals on every page, the bills page included; the
-  ledger keeps them as integers, and the CSV and JSON exports carry the ledger's own
-  integers in minor units (`chargedMinor`, where 1 credit = 1,000,000).
+- Amounts are in credits with six decimals on every page, the bills and requests pages
+  included; the ledger keeps them as integers, and the CSV and JSON exports carry the
+  ledger's own integers in minor units (`chargedMinor`, where 1 credit = 1,000,000).
 - The dashboard needs the browser build: serve it with `cargo leptos serve` (or
   `cargo leptos build` once, then run the server). Without it the pages render but
   the live updates do not run.
