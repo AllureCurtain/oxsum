@@ -15,6 +15,10 @@ use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::bills::BillView;
+use crate::requests::RequestView;
+
+#[cfg(feature = "ssr")]
+use crate::requests::RequestFilters;
 
 #[cfg(feature = "ssr")]
 use axum::http::header::COOKIE;
@@ -277,6 +281,58 @@ pub async fn get_bills() -> Result<Vec<BillView>, ServerFnError> {
         .await
         .map_err(|_| ServerFnError::new("the bills could not be read"))?;
     Ok(bills.iter().map(BillView::from).collect())
+}
+
+/// The requests page: the organization's newest gateway requests with the usage and the
+/// cost the ledger's settlement records carry, filtered by key and by model (issue #55).
+///
+/// The rows are read out of the organization's own ledger ([`Wallet::recent_requests`]),
+/// so one organization can never list another's turn, and every number in a row is what
+/// the settlement entry's content hash covers: the model, the token counts and the charge
+/// all come from the record the gateway wrote when the turn settled.
+///
+/// The key filter names an API key by its display prefix, and a row's key is resolved
+/// through the keys this session may see (`key_scope`): a member reads their own
+/// requests' keys and nobody else's, the rule the keys page already applies. A request the
+/// ledger attributes to no key is organization history, which any credential of the
+/// organization may read.
+#[server(prefix = "/_pages")]
+pub async fn get_requests(
+    key: Option<String>,
+    model: Option<String>,
+) -> Result<Vec<RequestView>, ServerFnError> {
+    let (db, tenants, principal) = session_ctx().await?;
+    let organization = &principal.organization;
+    let wallet = tenants
+        .get(&organization.tenant_id)
+        .await
+        .map_err(|_| ServerFnError::new("the wallet could not be opened"))?;
+    let requests = wallet
+        .recent_requests(crate::requests::REQUESTS_LIMIT)
+        .await
+        .map_err(|_| ServerFnError::new("the requests could not be read"))?;
+    let keys = db
+        .list_keys(organization.id, key_scope(&principal))
+        .await
+        .map_err(|_| ServerFnError::new("the keys could not be read"))?;
+    let filters = RequestFilters::new(key.as_deref(), model.as_deref());
+    let rows = requests
+        .iter()
+        .filter_map(|request| {
+            let key = request
+                .key_id
+                .as_deref()
+                .and_then(|id| keys.iter().find(|key| key.id.as_simple().to_string() == id));
+            // Attributed to a key outside this session's scope — another member's key —
+            // is not this session's request to read.
+            if request.key_id.is_some() && key.is_none() {
+                return None;
+            }
+            let row = RequestView::new(request, key);
+            filters.matches(&row).then_some(row)
+        })
+        .collect();
+    Ok(rows)
 }
 
 /// What the session may do with the organization's keys: owners and admins see all,

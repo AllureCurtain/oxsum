@@ -13,6 +13,7 @@ use time::OffsetDateTime;
 use time::macros::date;
 use uuid::Uuid;
 
+use crate::billing::{SettlementKind, SettlementRecord};
 use crate::error::{WalletError, invalid};
 use crate::heads::{Consistency, HeadSigningKey, SignedHead, origin_for, sign_head};
 use crate::keys::ActingKey;
@@ -112,6 +113,38 @@ pub struct SettledEntry {
 /// entries — the hold and the settlement that releases it — so a page this size carries
 /// hundreds of bills, and a read stops as soon as it has enough.
 const BILLS_SCAN: usize = 512;
+
+/// Entries one requests read scans for settlement records, per page.
+///
+/// A gateway turn writes two entries — the hold and the settlement that releases it — and
+/// top-ups and hand-driven holds write more, so a scan this size carries a full page of
+/// requests even when other writes interleave. A read stops as soon as it has enough.
+const REQUESTS_SCAN: usize = 512;
+
+/// One gateway request as the dashboard's requests page lists it, read from the ledger's
+/// settlement entries: what the turn was, how it was priced, what it used, what it charged
+/// and which key paid it.
+#[derive(Debug, Clone)]
+pub struct RequestEntry {
+    /// The booking date: the server's UTC date when the settlement was written. The ledger
+    /// records no time of day.
+    pub booked_on: Date,
+    /// The request id from `x-oxsum-request-id`; the ledger keys are derived from it.
+    pub request_id: String,
+    /// The model the caller asked for.
+    pub model: String,
+    /// How the turn was priced, read back as the settlement record's kind.
+    pub kind: SettlementKind,
+    /// Tokens billed as input, as the settlement recorded them.
+    pub input_tokens: i64,
+    /// Tokens billed as output, as the settlement recorded them.
+    pub output_tokens: i64,
+    /// What the settlement charged, in minor units.
+    pub charged_minor: i64,
+    /// The API key that paid the turn, as its id in uuid simple form: the hold's provenance
+    /// actor, copied onto the settlement. `None` for a turn held without key attribution.
+    pub key_id: Option<String>,
+}
 
 impl Wallet {
     /// Opens a tenant's ledger on the shared pool, creating the ledger on first use.
@@ -770,6 +803,71 @@ impl Wallet {
             content_hash: r.content_hash,
             is_new: r.is_new,
         })
+    }
+
+    /// The newest gateway requests, newest first, at most `limit`.
+    ///
+    /// What the dashboard's requests page lists (issue #55): each settled turn's request
+    /// id, model, pricing kind, token counts, charge in minor units, booking date and the
+    /// key that paid it. The facts come out of the settlement entry's own description —
+    /// the record [`Settlement::description`] writes, covered by the entry's content hash
+    /// — so the page cannot show a number that the bill does not prove, and the kind is
+    /// read back as a [`SettlementKind`] rather than re-derived from the charge.
+    ///
+    /// A request appears once it has settled: a turn still in flight has no entry yet, and
+    /// the overview is where its hold is shown live. A settlement the wallet API wrote by
+    /// hand carries no record, and a hold or a top-up is not a request, so those entries
+    /// are skipped.
+    ///
+    /// The read walks back one page at a time and stops as soon as it has `limit`
+    /// requests, so a log full of top-ups costs no more than the entries above the last
+    /// request it returns.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn recent_requests(&self, limit: usize) -> Result<Vec<RequestEntry>, WalletError> {
+        let wanted = limit.clamp(1, 100);
+        let mut end = self.store.head().await?.size;
+        let mut requests = Vec::new();
+        while end > 0 && requests.len() < wanted {
+            let start = end.saturating_sub(REQUESTS_SCAN as u64);
+            let after = start.checked_sub(1).map(LogIndex::new);
+            let page = self
+                .store
+                .page(Cursor {
+                    after,
+                    limit: (end - start) as usize,
+                })
+                .await?;
+            // The store pages in log order; the page wants newest first.
+            for stored in page.records.iter().rev() {
+                let Some(record) = SettlementRecord::parse(stored.entry.description().as_str())
+                else {
+                    continue;
+                };
+                requests.push(RequestEntry {
+                    booked_on: stored.entry.booking_date(),
+                    request_id: record.request,
+                    model: record.model,
+                    kind: record.kind,
+                    input_tokens: record.input_tokens,
+                    output_tokens: record.output_tokens,
+                    charged_minor: record.charged,
+                    key_id: stored
+                        .entry
+                        .provenance()
+                        .actor
+                        .as_ref()
+                        .map(|actor| actor.as_str().to_owned()),
+                });
+                if requests.len() == wanted {
+                    break;
+                }
+            }
+            end = start;
+        }
+        Ok(requests)
     }
 }
 
