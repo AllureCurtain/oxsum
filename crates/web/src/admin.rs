@@ -87,6 +87,7 @@ pub fn AdminLayout() -> impl IntoView {
                 <A href="/admin/organizations">"Organizations"</A>
                 <A href="/admin/in-flight">"In-flight"</A>
                 <A href="/admin/anomalies">"Anomalies"</A>
+                <A href="/admin/closing">"Closing"</A>
                 <A href="/dashboard">"Dashboard"</A>
             </nav>
             <main class="content">
@@ -150,6 +151,19 @@ struct OrganizationView {
     created_at: String,
     available_minor: i64,
     reserved_minor: i64,
+}
+
+/// A closing record as `GET /api/v1/admin/closings` returns it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClosingView {
+    organization: String,
+    period: String,
+    entry_count: i64,
+    tree_size: i64,
+    tree_root: String,
+    trial_balance_root: String,
+    seal_hash: String,
 }
 
 /// An anomalous turn as `GET /api/v1/admin/anomalies` returns it.
@@ -928,6 +942,186 @@ async fn load_anomalies(token: AdminToken) -> Result<Vec<AnomalyView>, String> {
 #[cfg(not(feature = "hydrate"))]
 async fn load_anomalies(_token: AdminToken) -> Result<Vec<AnomalyView>, String> {
     Err(String::new())
+}
+
+/// The closing page: seal a finished month across every organization's ledger, and
+/// the closing records the ledgers hold — each a seal that commits to the log's
+/// tree head and the period's closing trial balance, chained onto the seal before
+/// it.
+#[component]
+pub fn AdminClosingPage() -> impl IntoView {
+    let token = admin_token();
+    let closings = LocalResource::new(move || async move { load_closings(token).await });
+    let notice = RwSignal::new(Option::<(String, &'static str)>::None);
+
+    view! {
+        <h1>"Closing"</h1>
+        <p class="muted">
+            "Closing a month seals it in every organization's ledger: no entry may \
+             carry a booking date in it again, and the seal — the log's tree head and \
+             the month's closing trial balance, chained onto the seal before it — is \
+             the closing record. Only a month that has fully ended can close."
+        </p>
+        {move || {
+            notice
+                .get()
+                .map(|(message, class)| view! { <p class=class role="status">{message}</p> })
+        }}
+        <ClosingForm closings=closings notice=notice/>
+        <Suspense fallback=move || view! { <p class="muted">"Loading…"</p> }>
+            {move || {
+                closings.get().map(|result| match result {
+                    Err(message) => view! { <p class="error" role="alert">{message}</p> }.into_any(),
+                    Ok(closings) if closings.is_empty() => view! {
+                        <p class="muted">"No month has been closed yet."</p>
+                    }
+                    .into_any(),
+                    Ok(closings) => view! {
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>"Month"</th>
+                                    <th>"Organization"</th>
+                                    <th class="num">"Entries"</th>
+                                    <th class="num">"Log size"</th>
+                                    <th>"Tree head"</th>
+                                    <th>"Trial balance"</th>
+                                    <th>"Seal"</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {closings
+                                    .into_iter()
+                                    .map(|closing| {
+                                        view! {
+                                            <tr>
+                                                <td class="mono">{closing.period}</td>
+                                                <td>{closing.organization}</td>
+                                                <td class="num">{closing.entry_count}</td>
+                                                <td class="num">{closing.tree_size}</td>
+                                                <td class="mono">{closing.tree_root}</td>
+                                                <td class="mono">{closing.trial_balance_root}</td>
+                                                <td class="mono">{closing.seal_hash}</td>
+                                            </tr>
+                                        }
+                                    })
+                                    .collect_view()}
+                            </tbody>
+                        </table>
+                    }
+                    .into_any()
+                })
+            }}
+        </Suspense>
+    }
+}
+
+/// The resource's read. `LocalResource` only ever runs in the browser; the SSR body is
+/// a placeholder so the page compiles for the server too.
+#[cfg(feature = "hydrate")]
+async fn load_closings(token: AdminToken) -> Result<Vec<ClosingView>, String> {
+    admin_call(
+        token,
+        browser::get(
+            &token.0.get_untracked().unwrap_or_default(),
+            "/api/v1/admin/closings",
+        ),
+    )
+    .await
+}
+
+#[cfg(not(feature = "hydrate"))]
+async fn load_closings(_token: AdminToken) -> Result<Vec<ClosingView>, String> {
+    Err(String::new())
+}
+
+/// The close-a-month form: `YYYY-MM`, validated client-side for shape only — the
+/// server refuses a month that has not fully ended, and re-closing one is
+/// idempotent.
+#[component]
+fn ClosingForm(
+    closings: LocalResource<Result<Vec<ClosingView>, String>>,
+    notice: RwSignal<Option<(String, &'static str)>>,
+) -> impl IntoView {
+    let token = admin_token();
+    let (month, set_month) = signal(String::new());
+    let (error, set_error) = signal(Option::<String>::None);
+    let (busy, set_busy) = signal(false);
+
+    let submit = move |ev: web_sys::SubmitEvent| {
+        ev.prevent_default();
+        #[cfg(feature = "hydrate")]
+        leptos::task::spawn_local(async move {
+            set_busy.set(true);
+            set_error.set(None);
+            notice.set(None);
+            let month = month.get_untracked();
+            if month.len() != 7
+                || month.as_bytes().get(4) != Some(&b'-')
+                || !month
+                    .chars()
+                    .enumerate()
+                    .all(|(i, c)| i == 4 || c.is_ascii_digit())
+            {
+                set_error.set(Some("The month is YYYY-MM.".to_owned()));
+                set_busy.set(false);
+                return;
+            }
+            #[derive(serde::Serialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Body {
+                month: String,
+            }
+            match admin_call(
+                token,
+                browser::post(
+                    &token.0.get_untracked().unwrap_or_default(),
+                    "/api/v1/admin/closings",
+                    &Body {
+                        month: month.clone(),
+                    },
+                ),
+            )
+            .await
+            {
+                Ok(answer) => {
+                    let count = answer.as_array().map(|rows| rows.len()).unwrap_or(0);
+                    notice.set(Some((
+                        format!("{month} closed — {count} closing record(s)."),
+                        "success",
+                    )));
+                    closings.refetch();
+                }
+                Err(message) => set_error.set(Some(message)),
+            }
+            set_busy.set(false);
+        });
+        #[cfg(not(feature = "hydrate"))]
+        let _ = (
+            month, set_month, set_error, set_busy, notice, closings, token.0,
+        );
+    };
+
+    view! {
+        <form class="row" method="post" on:submit=submit aria-label="Close a month">
+            <label>
+                "Month"
+                <input
+                    type="month"
+                    required
+                    on:input=move |ev| set_month.set(event_target_value(&ev))
+                />
+            </label>
+            <button type="submit" disabled=move || busy.get()>
+                {move || if busy.get() { "Closing…" } else { "Close month" }}
+            </button>
+        </form>
+        {move || {
+            error
+                .get()
+                .map(|message| view! { <p class="error" role="alert">{message}</p> })
+        }}
+    }
 }
 
 /// Browser-only calls to the admin endpoints, carrying the operator token.

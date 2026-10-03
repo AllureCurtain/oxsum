@@ -692,3 +692,148 @@ async fn the_anomalies_list_shows_the_turns_that_did_not_price_cleanly() {
     let (status, _) = call_with(&app, "GET", "/api/v1/admin/anomalies", None, Some(&key)).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
+
+/// `GET`/`POST /api/v1/admin/closings`: closing a month seals it in every
+/// organization's ledger — the seal is the closing record — and a sealed month
+/// accepts no new entries. Only a month that has fully ended can close, and
+/// closing one twice answers the same record.
+#[tokio::test]
+async fn closing_a_month_seals_it_everywhere() {
+    let (app, pool) = app_or_skip!();
+    let (id, key) = register(&app, "closing").await;
+
+    // The organization has something in its ledger to close over.
+    let (status, body) = call_with(
+        &app,
+        "POST",
+        "/api/v1/topups",
+        Some(json!({"idempotencyKey": fresh("topup-closing"), "amountMinor": 5_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // The month before today's always exists and has always fully ended.
+    let today = time::OffsetDateTime::now_utc().date();
+    let previous = today.replace_day(1).unwrap() - time::Duration::days(1);
+    let month = format!("{:04}-{:02}", previous.year(), u8::from(previous.month()));
+
+    // The month still running, and a malformed one, are refused.
+    let current = format!("{:04}-{:02}", today.year(), u8::from(today.month()));
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/admin/closings",
+        Some(json!({"month": current})),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "the running month cannot close"
+    );
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/admin/closings",
+        Some(json!({"month": "last month"})),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a malformed month is refused"
+    );
+
+    // Close last month: every organization answers its closing record.
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/admin/closings",
+        Some(json!({"month": &month})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let records = body["data"].as_array().expect("the closing records");
+    let record = records
+        .iter()
+        .find(|row| row["organization"].is_string())
+        .expect("each organization sealed the month");
+    assert_eq!(record["period"], month);
+    assert!(record["treeRoot"].is_string());
+    assert!(record["trialBalanceRoot"].is_string());
+    assert!(record["sealHash"].is_string());
+
+    // GET lists what the ledgers hold — the same record, newest first.
+    let (status, body) = call(&app, "GET", "/api/v1/admin/closings", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let closings = body["data"].as_array().expect("a list of closings");
+    assert!(
+        closings.iter().any(|row| row["period"] == month),
+        "the closed month is listed: {closings:?}"
+    );
+
+    // Closing it again answers the record again, not an error.
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/admin/closings",
+        Some(json!({"month": &month})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // And the month really is closed: an entry dated into it is refused by the
+    // ledger itself — the sealed watermark, not a route-layer convention.
+    let tenant_id: String =
+        sqlx::query_scalar("SELECT tenant_id FROM oxsum.organizations WHERE organization_id = $1")
+            .bind(uuid::Uuid::parse_str(&id).expect("a uuid"))
+            .fetch_one(&pool)
+            .await
+            .expect("the registered organization has a tenant");
+    let wallet = oxsum_core::Wallet::open(pool.clone(), &tenant_id)
+        .await
+        .expect("the organization's wallet opens");
+    let inside = previous;
+    let result = wallet.hold(&fresh("closed-month"), "", 1000, inside).await;
+    assert!(
+        result.is_err(),
+        "an entry dated into a sealed month is refused"
+    );
+    // The current month still takes entries.
+    let (status, body) = call_with(
+        &app,
+        "POST",
+        "/api/v1/topups",
+        Some(json!({"idempotencyKey": fresh("topup-after-close"), "amountMinor": 1_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the open month still writes: {body}"
+    );
+
+    // A wrong token and an organization's own credential stay out.
+    for body in [None, Some(json!({"month": &month}))] {
+        let (status, _) = call_with(
+            &app,
+            if body.is_some() { "POST" } else { "GET" },
+            "/api/v1/admin/closings",
+            body.clone(),
+            Some("not-the-token"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, _) = call_with(
+            &app,
+            if body.is_none() { "GET" } else { "POST" },
+            "/api/v1/admin/closings",
+            body.clone(),
+            Some(&key),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+}
