@@ -371,20 +371,18 @@ fn KeySetup(
         let _ = (key, set_models, set_model, set_models_state);
     };
 
-    let mint = {
-        let use_key = use_key.clone();
-        move |_| {
-            set_busy.set(true);
-            set_error.set(None);
-            leptos::task::spawn_local(async move {
-                // Named "chat": the key's name is what marks these turns in the records.
-                match create_key(Some("chat".to_owned())).await {
-                    Ok(created) => use_key(created.secret),
-                    Err(error) => set_error.set(Some(error.to_string())),
-                }
-                set_busy.set(false);
-            });
-        }
+    // `use_key` is `Copy` (it only captures signals), so both handlers share it.
+    let mint = move |_| {
+        set_busy.set(true);
+        set_error.set(None);
+        leptos::task::spawn_local(async move {
+            // Named "chat": the key's name is what marks these turns in the records.
+            match create_key(Some("chat".to_owned())).await {
+                Ok(created) => use_key(created.secret),
+                Err(error) => set_error.set(Some(error.to_string())),
+            }
+            set_busy.set(false);
+        });
     };
 
     let save_pasted = move |ev: web_sys::SubmitEvent| {
