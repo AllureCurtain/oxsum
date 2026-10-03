@@ -8,7 +8,7 @@ None.
 
 ## Next
 
-Three phases, in order; the rationale is in docs/decisions.md under "wallet service first, then AI gateway, then chat UI".
+All three phases are done — A, B and C closed, most recently C-11 (the chat page, issue #39). The rationale for the order is in docs/decisions.md under "wallet service first, then AI gateway, then chat UI".
 
 ### A. Wallet service
 
@@ -28,13 +28,17 @@ Closed. The wallet service is feature complete for this phase: holds and settlem
 
 ### C. Chat UI
 
-11. Leptos chat page (full stack): after login the user can top up, pick a model and chat, with each turn's billing visible in real time. Done when one browser session completes top-up → chat → proof verification without touching the API by hand.
+Closed. The chat page is built (issue #39): after login the user tops up, picks a model and chats, with each turn's billing visible in real time.
+
+11. Leptos chat page (full stack): **done**, see "Recently completed".
 
 ## Blocked
 
 Nothing.
 
 ## Recently completed
+
+- 2026-10-03 Chat page (issue #39): `/dashboard/chat` in the dashboard, behind the session guard. Top-up goes to `POST /api/v1/topups` from the browser with the session cookie; the chat goes through the gateway with an API key — the cookie is never accepted on `/v1` (#17) — so the page mints a key named `chat` through the existing `create_key` server function and keeps it in `localStorage`, and product.md's "no API key needed" is revised to match. The model comes from `GET /v1/models`; chat is streaming `POST /v1/chat/completions` parsed as SSE in the browser, named by the `x-oxsum-request-id` header. Billing is the existing `/ws/billing` socket behind a shared client module (`crates/web/src/billing_socket.rs`): freeze on `turnStarted`, progress on `turnProgress`, and on `turnSettled` the new `get_turn_bill` `/_pages` server function returns the settlement entry's proof bundle with the parsed charge and the content hash — the bundle alone does not carry the hash, and the browser cannot recompute it (doubleentry's digest is crate-internal, and `crates/doubleentry` is untouched by rule). Each settled turn links to `/verify?bundle=…&contentHash=…`, which prefills both fields and runs the check on load. Conversations persist in `localStorage`; the server keeps nothing. No new REST endpoints, no `openapi.yaml` change. Covered by `crates/server/tests/chat_flow.rs` (login → top-up → streaming chat turn through a scripted upstream → WS billing events → proof fetched and verified with `oxsum_verify::verify_bundle`); the literal one-browser-session walkthrough is a manual check for the owner, noted in the PR body. The decision is recorded in docs/decisions.md. This closes the last TODO item: phases A, B and C are all done.
 
 - 2026-10-03 The pages hydrate in a browser, because the wasm entry point exists (issue #46). The SSR shell's module script is `leptos_meta`'s: it imports the pkg module, awaits its default initialiser and then calls `mod.hydrate()`. `crates/web/src/lib.rs` never defined anything with that name, and wasm-bindgen only exports `#[wasm_bindgen]` items, so the bundle exported `initSync` and `default` and nothing else: a real browser loaded the wasm, threw `TypeError: mod.hydrate is not a function`, and left every page exactly as the server had rendered it — the login form did a native GET submit (observed putting the password in the query string, `/login?email=…&password=…`), the top-up form and the model picker did nothing, the chat page never streamed, the billing socket never opened and `/verify` never ran its check. The router-level tests could not see it: `crates/server/tests/dashboard.rs` pins what the pkg route answers, not what the browser does with it. The entry point is `leptos::mount::hydrate_body(App)` under `#[cfg(feature = "hydrate")]`, so the server build is untouched, and the login form now carries `method="post"` for the browser that never gets that far. Verified in the browser: no page error on `/login`, the form reaches `/dashboard` through its handler with no query string, and the dashboard reports `Live`. Surfaced — like issue #44 before it — by C-11's manual walkthrough, which is the only gate that runs the wasm at all.
 

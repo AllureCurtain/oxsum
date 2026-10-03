@@ -160,6 +160,7 @@ Verification proves: this record was not altered after being written, and histor
 | Page | Content | Who sees it |
 | --- | --- | --- |
 | Overview | Available balance, frozen amount, this month's spend; in-flight requests show live token progress | All members |
+| Chat | Top up, pick a model and chat; each turn's billing live, with a verify-this-bill link | All members |
 | Requests | Each request's status, usage and cost, filterable by key and model | All members; members see only their own |
 | Bills | See the section above | Same as above |
 | API keys | Create, revoke | Members manage their own; admins manage all |
@@ -177,9 +178,9 @@ Verification proves: this record was not altered after being written, and histor
 
 ## Phase C: chat page
 
-- Chat directly under the login session, no API key needed. Spends the current organization's balance; requests are marked "web chat" in the records.
+- The chat page lives in the dashboard (`/dashboard/chat`), behind the login session. Top-up runs on the session; the chat itself goes through the gateway, which takes an API key only (#17) — so the page mints a key named `chat` and keeps it in the browser's local storage. The user never handles it by hand, but there *is* a key on the wire: product.md's earlier "no API key needed" is revised to match.
 - Conversations live only in browser-local storage; the server keeps nothing. Simple to build, and no duty to store users' conversations.
-- Each AI reply shows that turn's charge underneath; clicking it opens the verification for that entry.
+- Each AI reply shows that turn's billing underneath: the frozen upper bound and streaming progress live, then the settled charge — amount, settlement kind, token counts, price version. "Verify this bill" opens `/verify` with the bundle and the content hash prefilled.
 
 ## Not in v1
 
