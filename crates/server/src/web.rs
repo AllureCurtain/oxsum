@@ -45,27 +45,44 @@ pub fn mount(router: Router<AppState>, state: &AppState) -> Router<AppState> {
 /// with environment overrides (what `cargo leptos serve` sets).
 ///
 /// `site-root` is a workspace-relative path — that is how `cargo leptos` reads it — but
-/// the pkg service resolves it against the process's working directory, so the resolved
+/// the pkg service resolves it against the process's working directory, so a relative
 /// value is made absolute here rather than depending on where the server was started
-/// (issue #44).
+/// (issue #44). An absolute value, which is what a deployment sets through
+/// `LEPTOS_SITE_ROOT`, is used as it is.
 ///
-/// Panics when the manifest lacks the section: that is a broken checkout, not a
-/// runtime failure, and nothing can be served without it.
+/// The manifest is a build-time path: the release image ships the binary without the
+/// checkout, so it is read only when it exists and the environment is authoritative
+/// otherwise. Requiring it made the image's server panic at startup, which its own gate
+/// caught (issue #49).
 pub fn options() -> leptos::config::LeptosOptions {
-    let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.toml");
-    match leptos::config::get_configuration(Some(manifest)) {
+    match leptos::config::get_configuration(source_manifest()) {
         Ok(conf) => {
             let mut options = conf.leptos_options;
-            let site_root = std::path::Path::new(&*options.site_root);
-            if site_root.is_relative() {
-                let resolved = workspace_root().join(site_root);
-                options.site_root = resolved.to_string_lossy().into_owned().into();
-            }
+            options.site_root = absolutise(&options.site_root, workspace_root()).into();
             options
         }
         Err(error) => {
             panic!("the workspace Cargo.toml carries [[workspace.metadata.leptos]]: {error}")
         }
+    }
+}
+
+/// The workspace manifest, when this binary runs from a checkout. `None` in the release
+/// image, where only the binary and the built site are present.
+fn source_manifest() -> Option<&'static str> {
+    let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.toml");
+    match std::path::Path::new(manifest).exists() {
+        true => Some(manifest),
+        false => None,
+    }
+}
+
+/// An absolute site root is kept; a relative one is resolved against `workspace`.
+fn absolutise(site_root: &str, workspace: &std::path::Path) -> String {
+    let path = std::path::Path::new(site_root);
+    match path.is_absolute() {
+        true => site_root.to_owned(),
+        false => workspace.join(path).to_string_lossy().into_owned(),
     }
 }
 
@@ -81,7 +98,7 @@ fn workspace_root() -> &'static std::path::Path {
 
 #[cfg(test)]
 mod tests {
-    use super::{options, workspace_root};
+    use super::{absolutise, options, source_manifest, workspace_root};
 
     /// The pkg service serves `<site-root>/pkg` relative to the process's working
     /// directory, so a relative site root would answer 404 under `cargo run` from
@@ -96,5 +113,38 @@ mod tests {
             "the site root is the workspace's built site, not the working directory"
         );
         assert_eq!(&*options.site_pkg_dir, "pkg");
+    }
+
+    /// A deployment names its site absolutely (`LEPTOS_SITE_ROOT=/app/site` in the release
+    /// image); that value must survive untouched, because there is no checkout to resolve
+    /// it against (issue #49). The spelled path is built from the workspace root so the
+    /// test means the same thing on every platform.
+    #[test]
+    fn an_absolute_site_root_is_used_as_it_is() {
+        let deployed = workspace_root().join("deployment-site");
+        let spelled = deployed.to_string_lossy().into_owned();
+        assert_eq!(absolutise(&spelled, workspace_root()), spelled);
+    }
+
+    /// A relative one, which is how the workspace manifest spells it, resolves against the
+    /// workspace instead of whatever the working directory happens to be (issue #44).
+    #[test]
+    fn a_relative_site_root_resolves_against_the_workspace() {
+        assert_eq!(
+            absolutise("target/site", std::path::Path::new("/srv/oxsum")),
+            std::path::Path::new("/srv/oxsum")
+                .join("target/site")
+                .to_string_lossy()
+        );
+    }
+
+    /// This test binary runs from a checkout, so the manifest is there; the release image
+    /// is the case where it is not.
+    #[test]
+    fn a_checkout_has_its_manifest() {
+        assert!(
+            source_manifest().is_some(),
+            "cargo test runs from the checkout"
+        );
     }
 }
