@@ -12,7 +12,10 @@ Steps:
    - The response carries `user`, `organization` and `apiKey.secret`. **The secret is shown once and cannot be retrieved again**; store it now.
    - A personal organization is created with you as its owner, named after the address's local part unless you chose a name.
    - An existing address answers 409 `CONFLICT`.
-   - Some deployments answer 403 `FORBIDDEN`: registration is by invitation there, and the operator hands out the key instead.
+   - Some deployments answer 403 `FORBIDDEN`: registration is by invitation there. An
+     owner or admin of the organization hands you a link (`/register?invite=…`); it
+     registers one account, expires seven days after it was minted, and cannot be
+     reused. The same page also serves `open` deployments for invitees who prefer it.
 2. Use `apiKey.secret` as the Bearer credential from then on.
 
 ## Log in and out
@@ -54,9 +57,12 @@ password; `/dashboard` is the overview. `/logout` logs out.
   minted secret is shown once — store it then, it is never shown again.
 - **Members**: everyone in the organization, with their role and join date. Every member
   sees the list. Owners and admins also manage it, from the controls on each row:
-  - **Add member**: enter the email of an account that already exists. Someone who has
-    not registered yet cannot be added — pending invitations are not built (#59) — and
-    the page says so when no account has that email. The new member starts as a member.
+  - **Add member**: enter the email of an account that already exists. The page says
+    so when no account has that email — for someone new, use the next control instead.
+    The new member starts as a member.
+  - **Invite by link**: mint a link for someone who has no account yet. Copy it and
+    hand it over yourself — v1 sends no email. The link registers one account into the
+    organization as a member, expires seven days after minting, and is shown once.
   - **Make admin** / **Make member**: change a member's role. This never grants
     ownership; see below.
   - **Remove**: take the membership away. The person's account and their own personal

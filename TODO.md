@@ -1,10 +1,10 @@
 # TODO
 
-Updated: 2026-10-03
+Updated: 2026-10-04
 
 ## In progress
 
-- Nothing is in flight; the open roadmap is #59 (invitations) and #60 (platform-admin adjustments and the signup bonus), and the bill page's browser-local tree head archive, which has no issue yet.
+- Nothing is in flight; the open roadmap is #60 (platform-admin adjustments and the signup bonus) and the bill page's browser-local tree head archive, which has no issue yet.
 
 ## Next
 
@@ -37,6 +37,8 @@ Closed. The chat page is built (issue #39): after login the user tops up, picks 
 Nothing.
 
 ## Recently completed
+
+- 2026-10-04 Invitation links (issue #59): an owner or admin mints one from the members page's "Invite by link" or `POST /api/v1/org/invitations` — the token (`oxi-` plus 32 random bytes) is answered once, and `oxsum.invitations` (migration `0006`) keeps only its SHA-256 hash, like `api_keys` and `sessions` before it. The invitee registers through `/register?invite=<token>` or `POST /api/v1/invitations/redeem`: one transaction validates the token `FOR UPDATE`, creates the user, adds the `member` membership, spends the link and mints the first API key — two people holding one link cannot both win, and spent, expired (seven days from minting) and unknown tokens are all the same `NOT_FOUND`. A bad email or password, or a taken one (`CONFLICT`), is refused before the link is spent so the link survives. An invited account gets no personal organization; the inviting one is its only membership, so login acts as it. `OXSUM_SIGNUP=invite` is now what it was always for: self-registration stays refused there and the link is the way in; `open` deployments accept both. Minting is a person's action — owner or admin session only, an API key is refused at the same door as every membership write. Contract `openapi.yaml` 0.14.0 first; `docs/product.md`, `docs/api.md`, `docs/user-guide.md` and `docs/decisions.md` updated in the same change. Pinned by `crates/server/tests/invitations.rs`: eight tests covering minting authorization (owner, admin, member, API key), the token's shape and seven-day life, redeeming into the organization with no personal one, once-only use including a two-at-once race, expiry, the unknown/spent/expired single refusal, and invite mode refusing self-registration while accepting the link.
 
 - 2026-10-04 Team organizations and the acting organization (issue #58): a user belongs to several organizations and chooses which one the session acts as. `GET /api/v1/orgs` lists the user's memberships with their roles (oldest first) and `POST /api/v1/orgs` creates a `team` organization — name trimmed, 1–80 characters — making the user its owner; `POST /api/v1/session/organization` switches the acting organization by updating `oxsum.sessions.organization_id`, the column authentication already joins on, so the choice survives reloads and new tabs and every organization-scoped read follows it. A non-membership target is `NOT_FOUND` whether or not the organization exists, and a bearer API key is refused all three endpoints — a key belongs to one organization, as membership management already holds. The dashboard offers the same switch in the top-right corner (`OrgSwitcher` in `crates/web/src/app.rs`): the select calls the switch and reloads, and "New" creates a team organization. The contract grew to `openapi.yaml` 0.13.0 before the implementation; `crates/server/tests/orgs.rs` pins creation and ownership, the ordering, the switch carrying the session through `GET /api/v1/session`, `GET /api/v1/org` and `get_dashboard`, switching back, the non-member 404, the key refusals and the name validation.
 
