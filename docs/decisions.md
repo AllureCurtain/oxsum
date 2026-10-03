@@ -656,3 +656,13 @@ New decisions go on top. Overturned decisions are never deleted; mark them "Supe
 - Rejected:
   - A hand-written JS bootstrap in the shell (import the wasm ourselves and call an entry point of our own naming): it replaces leptos's generated script, which is one more thing to keep in step with the framework, and buys nothing.
   - `console_error_panic_hook`: not a dependency today and not needed by this fix; a panic still surfaces as a failed wasm call.
+
+## 2026-10-03 The anomalies page reads the ledgers, not a new table (issue #57)
+
+- Status: Adopted
+- Decision: `GET /api/v1/admin/anomalies` and `/admin/anomalies` list the settled turns that did not price cleanly — `capped`, `estimated`, `client_cancelled`, `swept` — by reading each organization's own ledger back through `Wallet::recent_settlements` (`crates/core/src/wallet.rs`), which walks the log newest-first and parses every settlement description into the full `SettlementRecord`. `recent_requests` was refactored onto the same reader: the requests page and the anomalies page are two filters over one walk, so neither can drift from what the ledger holds. The per-channel summary the page shows is computed in the browser from the same rows.
+- Why: the anomaly records already exist — every gateway settlement description carries the channel, the price version, the prices, the token counts, the charge and the freeze, and that description is what the bill's proof covers. A second store of "anomalies" would have to be kept in step with facts the ledger already pins; reading the ledger means a row on the page is exactly what verification proves, which is the same choice as "the requests page reads the ledger" above. The `upstream_error` and `upstream_unreachable` kinds are not listed: they charged nothing, so no money is at risk, and the product question the page answers is where the platform loses money upstream.
+- Rejected:
+  - An `oxsum.anomalies` table written at settle time: a parallel store of ledger facts, one more thing to disagree with the books.
+  - Flagging `upstream_error`/`upstream_unreachable` rows too: they are failures, not anomalies in the sense this page exists for — nothing was charged, so nothing was lost.
+

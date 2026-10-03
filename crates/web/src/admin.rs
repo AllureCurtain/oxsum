@@ -86,6 +86,7 @@ pub fn AdminLayout() -> impl IntoView {
                 <A href="/admin/channels">"Channels & prices"</A>
                 <A href="/admin/organizations">"Organizations"</A>
                 <A href="/admin/in-flight">"In-flight"</A>
+                <A href="/admin/anomalies">"Anomalies"</A>
                 <A href="/dashboard">"Dashboard"</A>
             </nav>
             <main class="content">
@@ -149,6 +150,21 @@ struct OrganizationView {
     created_at: String,
     available_minor: i64,
     reserved_minor: i64,
+}
+
+/// An anomalous turn as `GET /api/v1/admin/anomalies` returns it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AnomalyView {
+    organization: String,
+    request_id: String,
+    model: String,
+    channel: String,
+    price_version: i64,
+    kind: String,
+    charged_minor: i64,
+    freeze_minor: i64,
+    booked_on: String,
 }
 
 /// An unsettled hold as `GET /api/v1/admin/holds` returns it.
@@ -773,6 +789,144 @@ async fn load_holds(token: AdminToken) -> Result<Vec<InFlightHoldView>, String> 
 
 #[cfg(not(feature = "hydrate"))]
 async fn load_holds(_token: AdminToken) -> Result<Vec<InFlightHoldView>, String> {
+    Err(String::new())
+}
+
+/// The anomalies page: the settled turns that did not price cleanly — `capped`,
+/// `estimated`, `client_cancelled`, `swept` — across all organizations, with a
+/// per-channel summary so where the platform loses money upstream is the first thing
+/// on the page.
+#[component]
+pub fn AdminAnomaliesPage() -> impl IntoView {
+    let token = admin_token();
+    let anomalies = LocalResource::new(move || async move { load_anomalies(token).await });
+
+    view! {
+        <h1>"Anomalies"</h1>
+        <p class="muted">
+            "The turns that did not price cleanly: an estimate where upstream reported \
+             nothing, a caller who left mid-stream, a charge that hit the freeze's \
+             ceiling, a hold the sweeper had to release. Every row is what that turn's \
+             bill proves — the records are the ledgers' own settlement descriptions."
+        </p>
+        <Suspense fallback=move || view! { <p class="muted">"Loading…"</p> }>
+            {move || {
+                anomalies.get().map(|result| match result {
+                    Err(message) => view! { <p class="error" role="alert">{message}</p> }.into_any(),
+                    Ok(anomalies) if anomalies.is_empty() => view! {
+                        <p class="muted">"No anomalies — every turn priced cleanly."</p>
+                    }
+                    .into_any(),
+                    Ok(anomalies) => {
+                        // Where the platform loses money, per channel: turns and the
+                        // charged total each.
+                        let mut channels: Vec<(String, u64, i64)> = Vec::new();
+                        for anomaly in &anomalies {
+                            match channels
+                                .iter_mut()
+                                .find(|(name, _, _)| name == &anomaly.channel)
+                            {
+                                Some((_, turns, charged)) => {
+                                    *turns += 1;
+                                    *charged += anomaly.charged_minor;
+                                }
+                                None => channels.push((
+                                    anomaly.channel.clone(),
+                                    1,
+                                    anomaly.charged_minor,
+                                )),
+                            }
+                        }
+                        view! {
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>"Channel"</th>
+                                        <th class="num">"Anomalous turns"</th>
+                                        <th class="num">"Charged"</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {channels
+                                        .into_iter()
+                                        .map(|(channel, turns, charged)| {
+                                            view! {
+                                                <tr>
+                                                    <td>{channel}</td>
+                                                    <td class="num">{turns}</td>
+                                                    <td class="mono num">{crate::app::credits(charged)}</td>
+                                                </tr>
+                                            }
+                                        })
+                                        .collect_view()}
+                                </tbody>
+                            </table>
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>"Organization"</th>
+                                        <th>"Request"</th>
+                                        <th>"Model"</th>
+                                        <th>"Channel"</th>
+                                        <th>"Kind"</th>
+                                        <th class="num">"Price"</th>
+                                        <th class="num">"Charged"</th>
+                                        <th class="num">"Frozen"</th>
+                                        <th>"Booked"</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {anomalies
+                                        .into_iter()
+                                        .map(|anomaly| {
+                                            view! {
+                                                <tr>
+                                                    <td>{anomaly.organization}</td>
+                                                    <td class="mono">{anomaly.request_id}</td>
+                                                    <td class="mono">{anomaly.model}</td>
+                                                    <td>{anomaly.channel}</td>
+                                                    <td class="mono">{anomaly.kind}</td>
+                                                    <td class="mono num">
+                                                        {"v"}{anomaly.price_version}
+                                                    </td>
+                                                    <td class="mono num">
+                                                        {crate::app::credits(anomaly.charged_minor)}
+                                                    </td>
+                                                    <td class="mono num">
+                                                        {crate::app::credits(anomaly.freeze_minor)}
+                                                    </td>
+                                                    <td class="mono">{anomaly.booked_on}</td>
+                                                </tr>
+                                            }
+                                        })
+                                        .collect_view()}
+                                </tbody>
+                            </table>
+                        }
+                        .into_any()
+                    }
+                })
+            }}
+        </Suspense>
+    }
+}
+
+/// The resource's read. `LocalResource` only ever runs in the browser; the SSR body is
+/// a placeholder so the page compiles for the server too.
+#[cfg(feature = "hydrate")]
+async fn load_anomalies(token: AdminToken) -> Result<Vec<AnomalyView>, String> {
+    admin_call(
+        token,
+        browser::get(
+            &token.0.get_untracked().unwrap_or_default(),
+            "/api/v1/admin/anomalies",
+        ),
+    )
+    .await
+}
+
+#[cfg(not(feature = "hydrate"))]
+async fn load_anomalies(_token: AdminToken) -> Result<Vec<AnomalyView>, String> {
     Err(String::new())
 }
 

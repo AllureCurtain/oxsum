@@ -827,10 +827,39 @@ impl Wallet {
     ///
     /// Storage failures surface as [`WalletError`].
     pub async fn recent_requests(&self, limit: usize) -> Result<Vec<RequestEntry>, WalletError> {
+        Ok(self
+            .recent_settlements(limit)
+            .await?
+            .into_iter()
+            .map(|turn| RequestEntry {
+                booked_on: turn.booked_on,
+                request_id: turn.record.request,
+                model: turn.record.model,
+                kind: turn.record.kind,
+                input_tokens: turn.record.input_tokens,
+                output_tokens: turn.record.output_tokens,
+                charged_minor: turn.record.charged,
+                key_id: turn.key_id,
+            })
+            .collect())
+    }
+
+    /// Each settled gateway turn's own [`SettlementRecord`], newest first, with its
+    /// booking date and the key that paid it: the platform admin's anomalies list and
+    /// the dashboard's requests page both read this (issue #57).
+    ///
+    /// Same contract as [`recent_requests`](Self::recent_requests): only entries whose
+    /// description is a settlement record count, and the walk stops once `limit` turns
+    /// are found.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn recent_settlements(&self, limit: usize) -> Result<Vec<SettledTurn>, WalletError> {
         let wanted = limit.clamp(1, 100);
         let mut end = self.store.head().await?.size;
-        let mut requests = Vec::new();
-        while end > 0 && requests.len() < wanted {
+        let mut turns = Vec::new();
+        while end > 0 && turns.len() < wanted {
             let start = end.saturating_sub(REQUESTS_SCAN as u64);
             let after = start.checked_sub(1).map(LogIndex::new);
             let page = self
@@ -846,14 +875,9 @@ impl Wallet {
                 else {
                     continue;
                 };
-                requests.push(RequestEntry {
+                turns.push(SettledTurn {
                     booked_on: stored.entry.booking_date(),
-                    request_id: record.request,
-                    model: record.model,
-                    kind: record.kind,
-                    input_tokens: record.input_tokens,
-                    output_tokens: record.output_tokens,
-                    charged_minor: record.charged,
+                    record,
                     key_id: stored
                         .entry
                         .provenance()
@@ -861,14 +885,29 @@ impl Wallet {
                         .as_ref()
                         .map(|actor| actor.as_str().to_owned()),
                 });
-                if requests.len() == wanted {
+                if turns.len() == wanted {
                     break;
                 }
             }
             end = start;
         }
-        Ok(requests)
+        Ok(turns)
     }
+}
+
+/// A settled gateway turn as the ledger recorded it, newest first: the settlement's
+/// own record, its booking date and the key that paid it.
+#[derive(Debug, Clone)]
+pub struct SettledTurn {
+    /// The booking date: the server's UTC date when the settlement was written.
+    pub booked_on: Date,
+    /// What the turn charged, in the settlement record's own fields — channel, price
+    /// version and freeze included, so the anomalies page can say where the platform
+    /// lost money upstream.
+    pub record: SettlementRecord,
+    /// The API key that paid the turn, as its id in uuid simple form: the hold's
+    /// provenance actor, copied onto the settlement.
+    pub key_id: Option<String>,
 }
 
 /// The handle of the account registered at `path`, or an error naming it.

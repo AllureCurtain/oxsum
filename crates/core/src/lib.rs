@@ -43,6 +43,6 @@ pub use sessions::{
 pub use tenants::Tenants;
 pub use users::{NewUser, Registration, User};
 pub use wallet::{
-    Credits, LogEntry, Receipt, RequestEntry, SCALE, SettledEntry, Wallet, entry_id_for,
-    settlement_key_for,
+    Credits, LogEntry, Receipt, RequestEntry, SCALE, SettledEntry, SettledTurn, Wallet,
+    entry_id_for, settlement_key_for,
 };
