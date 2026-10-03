@@ -199,9 +199,7 @@ toolchain comes from `dtolnay/rust-toolchain@stable` with `toolchain: "1.98"` (m
   - `crates/core/tests/generative.rs` generates random sequences of top-ups, holds, settlements, replays and key collisions and checks each step against an in-memory model of the wallet account's two layers: the outcome the model predicted, the available balance, that it never went negative, the log size, and a proof for every entry the case wrote (including that a changed amount stops verifying). 1000 cases by default, `PROPTEST_CASES` to narrow it locally; a failure prints its seed and the shortest failing sequence. Since settlement-hold pairing (issue #10) a settlement names the hold it releases, and the oracle predicts `HoldNotFound` for a settlement naming a key that is not an outstanding hold. The suite loads `.env` before reading `DATABASE_URL` (issue #18): with the variable only in `.env` it runs for real, and with no database anywhere it skips all cases with a warning rather than failing.
   - `crates/server/tests/` covers the HTTP layer: key auth, error format, full request chains, and that one organization's key cannot reach another's ledger; `crates/server/tests/sessions.rs` covers the login/logout/session endpoints, the cookie attributes, and the member/owner key rules over HTTP.
 - doubleentry's own tests: changing `crates/doubleentry` requires all of them passing, including its conformance suite.
-- Planned:
-  - E2E: the full top-up → call → verify flow
-  - See TODO.md
+- E2E: the full top-up → call → verify flow is covered. `crates/server/tests/chat_flow.rs` drives login, a top-up, one streaming chat turn through a scripted upstream, the billing events, and then fetches the settlement's proof bundle and verifies it with `oxsum_verify::verify_bundle`; `demo/demo.py` runs the same flow end to end with the official OpenAI SDK and prints both proof bundles for `/verify` to check. TODO.md carries the current status.
 
 ## Regression checklist
 

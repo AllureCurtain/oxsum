@@ -16,7 +16,7 @@ API callers ──→ axum /api/v1 ───────────────
                      holding users, organizations, memberships and API keys
 ```
 
-The axum API, the core, doubleentry and the gateway exist today, with oxsum's own identity tables in one `oxsum` schema. The Leptos admin dashboard (TODO B-5) is built: the pages are served by the same binary; the bill page, verification page and chat page follow in TODO.md's order.
+The axum API, the core, doubleentry and the gateway exist today, with oxsum's own identity tables in one `oxsum` schema. The Leptos pages are built too: the dashboard (TODO B-5), the bill page, the verification page and the chat page are all served by the same binary, so TODO.md's phases A, B and C are closed.
 
 ## Modules
 
@@ -29,7 +29,7 @@ The axum API, the core, doubleentry and the gateway exist today, with oxsum's ow
 | Tenants | `crates/core/src/tenants.rs` | Facades over the shared pool, cached per tenant: a tenant costs a facade, not connections. See docs/decisions.md "all tenants share one connection pool" |
 | Db | `crates/core/src/db.rs` | The process's one pool, plus oxsum's own tables: `migrate` creates the `oxsum` schema and applies `crates/core/migrations/` in order, each file and its recorded version in one transaction |
 | Identity | `crates/core/src/users.rs`, `orgs.rs`, `keys.rs` | Registration (user, personal organization, owner membership and first API key, one transaction), organizations and memberships, and API keys: mint, resolve, list, revoke. The credential names the organization |
-| proof | `crates/core/src/proof.rs` | Proof bundle structure and the client-side verify function, later called directly inside a Leptos component |
+| proof | `crates/verify/src/lib.rs`, re-exported by `crates/core/src/proof.rs` | Proof bundle structure and the client-side verify function, called directly inside the Leptos `/verify` page |
 | Tree heads | `crates/core/src/heads.rs`, `Wallet::{signed_head, consistency}` | The operator's signed tree heads: the per-tenant origin (`oxsum/ledgers/<tenant_id>`), the C2SP signed-note signed under `oxsum/tree-heads`, and the key publication. The seed is `OXSUM_HEAD_SIGNING_KEY`; signing is on demand and stateless. See docs/decisions.md |
 | HTTP | `crates/server/src/` | Routing, API-key middleware, error mapping |
 | Gateway | `crates/server/src/gateway/` | The OpenAI-compatible `/v1` surface: model list, chat completions, OpenAI-shaped errors, and the relay that freezes before upstream and settles however the turn ends. Its own auth middleware, because a refusal here has to look like OpenAI's. It resolves its channel and price version from the rows in `crates/core` once per request, and records both in the settlement. Pricing is in core, see docs/decisions.md. It notes each hold in the sweeper's watch table before taking it, and clears the row when the turn settles |
@@ -39,7 +39,7 @@ The axum API, the core, doubleentry and the gateway exist today, with oxsum's ow
 
 ## Directory plan
 
-What exists today (`crates/doubleentry`, `crates/core`, `crates/server`) stays as is. The rest is added phase by phase; names and ownership are settled here so no decision is needed while coding:
+What exists today (`crates/doubleentry`, `crates/core`, `crates/verify`, `crates/server`, `crates/web`) stays as is; names and ownership are settled here so no decision is needed while coding:
 
 ```
 crates/
@@ -65,6 +65,9 @@ crates/
                         and their price versions). Create-table SQL only, applied by oxsum's
                         own migration runner; ledger schemas stay owned by doubleentry's
                         migrate, never mixed
+  verify/               Pure verification shared with the browser: the proof bundle,
+                        verify_bundle and the money SCALE; wasm32-clean, re-exported by
+                        oxsum-core so one implementation serves the server and the page
   server/               HTTP assembly: axum Router, error mapping, auth middleware,
                         exposing core as /api/v1 and the gateway as /v1
     src/gateway/        exists: the /v1 surface — router, OpenAI error shape, request
@@ -121,7 +124,7 @@ Principle: **domain logic belongs in core; the gateway does protocol and orchest
 1. Every booking returns a `contentHash` in the receipt; users keep it.
 2. To verify, `GET entries/{id}/proof` returns the entry source, inclusion proof and tree head.
 3. The client recomputes the hash from the source, checks it against the saved `contentHash`, then links the hash to the tree head with the proof. A single flipped byte in the source fails verification.
-4. Not yet built: why the user should trust the tree head itself. Plan: witness signatures, or users archive old heads and apply consistency proofs.
+4. Why the user should trust the tree head itself: the operator signs each head (`GET /api/v1/log/head`), `GET /api/v1/log/key` publishes the verifying key, and `GET /api/v1/log/consistency?from=` proves that the current head extends one the user archived. Third-party witness cosignatures, which would remove the need to trust the operator's own key, are not built (see docs/decisions.md and the "Verifying the log's history" section of docs/user-guide.md).
 5. The whole verification chain runs in the browser (WASM after hydration); the server only hands out raw bundles and never takes part in the verdict.
 
 ## Core entities
