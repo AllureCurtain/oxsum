@@ -77,7 +77,7 @@ docker run --rm -p 3000:3000 \
 
 ## Status
 
-Under active development. The multi-tenant wallet core (top-up, hold/settle, inclusion proofs, tamper detection), organization-scoped API key authentication, the OpenAI-compatible gateway (freeze before the call, settle against upstream usage), and the web dashboard (login, balance, keys, holds, transaction log, bill verification) are tested and working. The Leptos chat page is next; see TODO.md for the plan.
+Under active development. The multi-tenant wallet core (top-up, hold/settle, inclusion proofs, tamper detection), organization-scoped API key authentication, the OpenAI-compatible gateway (freeze before the call, settle against upstream usage), and the web dashboard (login, balance, keys, holds, transaction log, bill verification and the chat page) are tested and working. That completes the plan in TODO.md: phases A, B and C are all closed.
 
 ## Documentation
 

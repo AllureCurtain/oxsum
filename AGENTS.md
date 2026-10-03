@@ -7,7 +7,7 @@ A verifiable AI credit wallet: users top up credits, each streaming LLM call fre
 - Language: Rust 1.98, full stack, see `rust-toolchain.toml`
 - Ledger core: doubleentry, vendored in `crates/doubleentry`
 - Backend: axum 0.8 + sqlx + PostgreSQL 17
-- Frontend: Leptos 0.8 (server-side rendering + browser hydration, `crates/web` not yet created); verification runs `oxsum_core::verify_bundle` directly inside a Leptos component
+- Frontend: Leptos 0.8 in `crates/web` (server-side rendering + browser hydration); verification runs `oxsum_core::verify_bundle` directly inside a Leptos component
 - Deployment: a single binary + PostgreSQL, database runs locally via Docker Compose
 
 ## Layout
@@ -15,7 +15,9 @@ A verifiable AI credit wallet: users top up credits, each streaming LLM call fre
 ```
 crates/doubleentry/  Vendored ledger engine. Change rules below under Hard rules
 crates/core/         Domain layer: multi-tenant wallet, hold/settle, bill proofs
+crates/verify/       Pure verification (ProofBundle, verify_bundle), wasm32-clean for the browser
 crates/server/       HTTP layer: routing, auth, error mapping, produces the oxsum binary. Conventions in crates/server/AGENTS.md
+crates/web/          Leptos pages (SSR + hydration), mounted into the same binary. UI rules in DESIGN.md
 docs/                Project documentation
 ```
 
