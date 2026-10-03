@@ -21,6 +21,14 @@ use crate::AppState;
 /// it) is served too: without that route the shell references assets that answer 404
 /// and the pages render but never hydrate — the dashboard's live side and the
 /// in-browser `/verify` check stay dead, in the Docker image as in local development.
+///
+/// A 404 is not the only way those pages stay inert: the *name* the markup asks for has
+/// to be the one the site holds. leptos's `HydrationScripts` appends `_bg` unless
+/// `LEPTOS_OUTPUT_NAME` was set while it was compiled, and cargo-leptos writes
+/// `pkg/oxsum.wasm`, so a server built by plain `cargo run` asked for a file no build
+/// writes (issue #65). `.cargo/config.toml` sets that variable for every cargo
+/// invocation in the workspace; `the_shell_asks_for_the_wasm_file_the_built_site_holds`
+/// in `crates/server/tests/dashboard.rs` pins the name.
 pub fn mount(router: Router<AppState>, state: &AppState) -> Router<AppState> {
     let routes = generate_route_list(oxsum_web::App);
     let db = state.db.clone();

@@ -63,6 +63,7 @@ Copy `.env.example` to `.env` and the server and the tests pick it up automatica
 | `OXSUM_HOLD_TIMEOUT` | Optional; how long a gateway hold may sit unsettled before the background sweeper releases it at 0 with settlement kind `swept` (recorded as an anomaly). A number of seconds with an optional `s`/`m`/`h` suffix; defaults to `30m`. Validated at startup: it must parse and be at least 60s. It must exceed the longest possible single request — anything older is abandoned by definition, so a hold that is old but whose request is still streaming cannot exist under a correct configuration. The sweeper passes every 60s |
 | `OXSUM_SESSION_COOKIE_SECURE` | Optional; whether the session cookie carries the `Secure` attribute: `true` or `false`, default `false`. A deployment behind TLS must set it to `true`, or browsers will not send the cookie back over https; `false` is what makes local http development work. Anything else refuses to start |
 | `RUST_LOG` | Optional `tracing-subscriber` filter; defaults to `info` |
+| `LEPTOS_OUTPUT_NAME` | Build-time, not a server setting, and deliberately not in `.env.example`: it is set in `.cargo/config.toml` for every cargo invocation in the workspace, because leptos reads it with `option_env!` *while it is compiled* and the shell it compiles into the server is what names the wasm module the browser loads. See "Web dashboard" |
 
 A deployment's channels and their prices live in the database, and the environment only seeds a
 database that has none. Prices are append-only versions: `POST /api/v1/admin/channels/{name}/prices`
@@ -141,6 +142,21 @@ served by the same `oxsum` binary through `leptos_axum`: server-side rendering c
   side works under plain `cargo run` too (issue #44). Without a build, the pages render and
   never hydrate — no top-up form, no chat, no bill verification — so run `cargo leptos
   build` first.
+- The shell's markup names the files the build writes. leptos decides the wasm file name
+  when *leptos is compiled*: `HydrationScripts` appends `_bg` unless `LEPTOS_OUTPUT_NAME`
+  is set, which only cargo-leptos did. The module the site holds is `pkg/oxsum.wasm`
+  (wasm-bindgen emits `oxsum_bg.wasm`, and cargo-leptos renames it to the name
+  `HydrationScripts` computes for `output-name`). With the variable unset, a server built
+  by plain `cargo run` asked for `/pkg/oxsum_bg.wasm`, which no build writes: the import
+  404'd and every page stayed as inert as the server had rendered it (issue #65).
+  `.cargo/config.toml` sets `LEPTOS_OUTPUT_NAME` for every cargo invocation in this
+  workspace, so however the server was built it asks for `pkg/oxsum.wasm`; only the
+  variable's presence matters to leptos, and `cargo leptos build` sets the same one. This
+  is pinned by `the_shell_asks_for_the_wasm_file_the_built_site_holds` in
+  `crates/server/tests/dashboard.rs`, which runs in the ordinary
+  `cargo test -p oxsum-server` gate: its test binary is a plain-cargo build, so it checks
+  what `cargo run` renders, and when `target/site` exists it also fetches the module the
+  markup names and requires 200.
 - In-flight gateway turns are pushed to the dashboard over `/ws/billing` (WebSocket,
   session-cookie auth): a snapshot of the open holds on connect, then started, progress
   and settled events as turns happen. The events come from a process-wide broadcast the
@@ -267,7 +283,7 @@ is diagnosable from its own log rather than by re-running it.
 - Integration tests:
   - `crates/core/tests/` exercises the wallet's invariants on real PostgreSQL: isolation, concurrent no-overdraw, hold/settle, idempotency, tamper detection, restart recovery, concurrent migrate; `crates/core/tests/identity.rs` covers registration, organizations and API keys, including that the plaintext secret is nowhere in the database; `crates/core/tests/sessions.rs` covers login, session authentication, logout and the key role scopes, including that the plaintext token is nowhere in the database and that a session dies with its membership.
   - `crates/core/tests/generative.rs` generates random sequences of top-ups, holds, settlements, replays and key collisions and checks each step against an in-memory model of the wallet account's two layers: the outcome the model predicted, the available balance, that it never went negative, the log size, and a proof for every entry the case wrote (including that a changed amount stops verifying). 1000 cases by default, `PROPTEST_CASES` to narrow it locally; a failure prints its seed and the shortest failing sequence. Since settlement-hold pairing (issue #10) a settlement names the hold it releases, and the oracle predicts `HoldNotFound` for a settlement naming a key that is not an outstanding hold. The suite loads `.env` before reading `DATABASE_URL` (issue #18): with the variable only in `.env` it runs for real, and with no database anywhere it skips all cases with a warning rather than failing.
-  - `crates/server/tests/` covers the HTTP layer: key auth, error format, full request chains, and that one organization's key cannot reach another's ledger; `crates/server/tests/sessions.rs` covers the login/logout/session endpoints, the cookie attributes, and the member/owner key rules over HTTP.
+  - `crates/server/tests/` covers the HTTP layer: key auth, error format, full request chains, and that one organization's key cannot reach another's ledger; `crates/server/tests/sessions.rs` covers the login/logout/session endpoints, the cookie attributes, and the member/owner key rules over HTTP. `crates/server/tests/dashboard.rs` covers the pages' own contract: the pages render server-side, the pkg bundle is served from the real site root, the billing socket refuses an unknown session, and the shell's markup asks for the wasm module the built site holds (`pkg/oxsum.wasm`, the name cargo-leptos writes — issue #65).
 - doubleentry's own tests: changing `crates/doubleentry` requires all of them passing, including its conformance suite.
 - E2E: the full top-up → call → verify flow is covered. `crates/server/tests/chat_flow.rs` drives login, a top-up, one streaming chat turn through a scripted upstream, the billing events, and then fetches the settlement's proof bundle and verifies it with `oxsum_verify::verify_bundle`; `demo/demo.py` runs the same flow end to end with the official OpenAI SDK and prints both proof bundles for `/verify` to check. TODO.md carries the current status.
 
