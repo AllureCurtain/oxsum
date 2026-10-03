@@ -108,8 +108,9 @@ impl Db {
 /// Trims and sanity-checks an address: one `@`, something on each side, no whitespace.
 ///
 /// v1 sends no email, so this only has to stop obvious mistakes and keep the unique index
-/// meaningful; it is not an address validator.
-fn validate_email(raw: &str) -> Result<String, WalletError> {
+/// meaningful; it is not an address validator. Shared with membership management, where the
+/// same address is looked up in `users.email_normalized`.
+pub(crate) fn validate_email(raw: &str) -> Result<String, WalletError> {
     let email = raw.trim();
     if email.is_empty() || email.len() > MAX_EMAIL || email.chars().any(char::is_whitespace) {
         return Err(WalletError::InvalidInput(

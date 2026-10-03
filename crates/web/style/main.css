@@ -280,6 +280,20 @@ form.row label {
     flex: 1;
 }
 
+/* The members table's row actions: several small controls in one cell. The same compact size
+   the danger button uses, laid out on the 4px grid, wrapping on a narrow screen. */
+.actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+}
+
+.actions button {
+    padding: 4px 8px;
+    font-size: 12px;
+}
+
 /* The freshly minted secret: shown once, impossible to miss. */
 
 .secret {

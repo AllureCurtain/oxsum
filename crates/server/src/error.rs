@@ -17,7 +17,9 @@ pub enum ApiError {
     /// wrong words here.
     InvalidCredentials,
     Forbidden(String),
-    NotFound,
+    /// Nothing to answer with, or nothing the caller's organization has. The message says
+    /// which, because the caller was authorized to ask (docs/api.md, membership management).
+    NotFound(String),
     Conflict(String),
     InsufficientFunds,
     /// The acting API key's spend limit is exhausted: settled charges plus outstanding
@@ -31,6 +33,14 @@ pub enum ApiError {
     Internal,
 }
 
+impl ApiError {
+    /// A resource the caller named that this organization does not have. One answer for
+    /// "never existed" and "not yours", so an id cannot be probed.
+    pub(crate) fn not_found() -> Self {
+        Self::NotFound("not found".into())
+    }
+}
+
 impl From<WalletError> for ApiError {
     fn from(e: WalletError) -> Self {
         match e {
@@ -39,7 +49,10 @@ impl From<WalletError> for ApiError {
             WalletError::InvalidCredentials => Self::InvalidCredentials,
             WalletError::Forbidden(m) => Self::Forbidden(m),
             WalletError::Conflict(m) => Self::Conflict(m),
-            WalletError::HoldNotFound(_) => Self::NotFound,
+            WalletError::HoldNotFound(_) => Self::NotFound("not found".into()),
+            // A resource the caller named and does not have (an unknown account, a user who
+            // is not a member): the message is about their own organization, so it is shown.
+            WalletError::NotFound(message) => Self::NotFound(message),
             WalletError::InsufficientFunds => Self::InsufficientFunds,
             WalletError::KeyLimitExceeded {
                 limit_minor,
@@ -95,7 +108,7 @@ impl IntoResponse for ApiError {
                 "invalid email or password".into(),
             ),
             Self::Forbidden(m) => (StatusCode::FORBIDDEN, "FORBIDDEN", m),
-            Self::NotFound => (StatusCode::NOT_FOUND, "NOT_FOUND", "not found".into()),
+            Self::NotFound(m) => (StatusCode::NOT_FOUND, "NOT_FOUND", m),
             Self::Conflict(m) => (StatusCode::CONFLICT, "CONFLICT", m),
             Self::InsufficientFunds => (
                 StatusCode::PAYMENT_REQUIRED,

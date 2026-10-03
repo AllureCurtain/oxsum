@@ -30,6 +30,13 @@ pub enum WalletError {
     #[error("{0}")]
     HoldNotFound(String),
 
+    /// A resource the caller named does not exist, or is not one the caller's organization
+    /// has: an email no account holds, a user who is not a member. The HTTP layer answers
+    /// 404 with the message, which is safe to show — the caller is already authorized to
+    /// manage memberships and needs to know which of the two it was.
+    #[error("{0}")]
+    NotFound(String),
+
     /// The available balance cannot cover this hold or charge.
     #[error("insufficient funds")]
     InsufficientFunds,

@@ -15,8 +15,9 @@ use leptos_router::hooks::{use_navigate, use_query_map};
 use leptos_router::path;
 
 use crate::api::{
-    CreatedKeyView, DashboardData, EntryView, HoldView, KeyView, MemberView, create_key, get_bills,
-    get_dashboard, get_keys, get_log, get_members, get_requests, revoke_key,
+    CreatedKeyView, DashboardData, EntryView, HoldView, KeyView, MemberView, MembersView,
+    TransferView, add_member, change_member_role, create_key, get_bills, get_dashboard, get_keys,
+    get_log, get_members, get_requests, remove_member, revoke_key, transfer_ownership,
 };
 use crate::bills::BillView;
 use crate::chat::ChatPage;
@@ -694,16 +695,107 @@ fn KeyTable(
     }
 }
 
-/// The members page: everyone in the organization, with their roles.
+/// The members page: everyone in the organization, with their roles, and — for the roles
+/// allowed to use them — the four management actions.
+///
+/// Any member may read the list (docs/decisions.md); only an owner or an admin manages
+/// memberships, and the controls are rendered only where the server would accept the call:
+/// the core refuses an admin on an owner's row and refuses to remove or demote the
+/// organization's last owner (crates/core/src/orgs.rs), and the table shows no control for
+/// either. A hidden button is a call the server would have refused anyway — the page never
+/// offers what would fail, and never pretends an action worked: every attempt answers in
+/// words, the server's own when it failed.
 #[component]
 fn MembersPage() -> impl IntoView {
     let members = Resource::new(|| (), |_| async { get_members().await });
+    let (notice, set_notice) = signal(Option::<Notice>::None);
+    // The add form's field: passed down as a signal, so a successful add clears it without
+    // the form being rebuilt.
+    let email = RwSignal::new(String::new());
+
+    // The four actions, each one call to a page server function. The rules are the core's,
+    // the same ones the REST endpoints apply.
+    let add = Action::new(|email: &String| {
+        let email = email.clone();
+        async move { add_member(email).await }
+    });
+    let remove = Action::new(|user_id: &String| {
+        let user_id = user_id.clone();
+        async move { remove_member(user_id).await }
+    });
+    let set_role = Action::new(|(user_id, role): &(String, String)| {
+        let (user_id, role) = (user_id.clone(), role.clone());
+        async move { change_member_role(user_id, role).await }
+    });
+    let transfer = Action::new(|user_id: &String| {
+        let user_id = user_id.clone();
+        async move { transfer_ownership(user_id).await }
+    });
+
+    // What each action did: the state it produced in words, or the server's refusal in its
+    // own words. The table is re-read either way, so the page shows what is true now.
+    Effect::new(move |_| match add.value().get() {
+        Some(Ok(member)) => {
+            set_notice.set(Some(Notice::done(format!(
+                "{} is now a member.",
+                member.email
+            ))));
+            email.set(String::new());
+            members.refetch();
+        }
+        Some(Err(error)) => set_notice.set(Some(Notice::refused(error.to_string()))),
+        None => {}
+    });
+    Effect::new(move |_| match remove.value().get() {
+        Some(Ok(member)) => {
+            set_notice.set(Some(Notice::done(format!(
+                "{} is no longer a member.",
+                member.email
+            ))));
+            members.refetch();
+        }
+        Some(Err(error)) => set_notice.set(Some(Notice::refused(error.to_string()))),
+        None => {}
+    });
+    Effect::new(move |_| match set_role.value().get() {
+        Some(Ok(member)) => {
+            set_notice.set(Some(Notice::done(format!(
+                "{} is now {}.",
+                member.email,
+                role_phrase(&member.role)
+            ))));
+            members.refetch();
+        }
+        Some(Err(error)) => set_notice.set(Some(Notice::refused(error.to_string()))),
+        None => {}
+    });
+    Effect::new(move |_| match transfer.value().get() {
+        Some(Ok(ownership)) => {
+            set_notice.set(Some(Notice::done(format!(
+                "{} now owns the organization; {} is {}.",
+                ownership.owner.email,
+                ownership.previous_owner.email,
+                role_phrase(&ownership.previous_owner.role)
+            ))));
+            members.refetch();
+        }
+        Some(Err(error)) => set_notice.set(Some(Notice::refused(error.to_string()))),
+        None => {}
+    });
+
     view! {
         <section class="card" aria-label="Members">
             <h1>"Members"</h1>
+            {move || notice.get().map(|notice| {
+                let class = if notice.refused { "error" } else { "success" };
+                let role = if notice.refused { "alert" } else { "status" };
+                view! { <p class=class role=role>{notice.message}</p> }
+            })}
             <Suspense fallback=move || view! { <p class="muted">"Loading…"</p> }>
                 {move || members.get().map(|result| match result {
-                    Ok(members) => view! { <MemberTable members=members/> }.into_any(),
+                    Ok(data) => view! {
+                        <Members data=data add=add remove=remove set_role=set_role transfer=transfer email=email/>
+                    }.into_any(),
                     Err(error) => view! { <p class="error" role="alert">{error.to_string()}</p> }.into_any(),
                 })}
             </Suspense>
@@ -711,10 +803,122 @@ fn MembersPage() -> impl IntoView {
     }
 }
 
+/// The outcome of the last membership action, in words.
+///
+/// The sentence carries the meaning; the class only emphasises it, so the page never relies
+/// on colour alone (DESIGN.md).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Notice {
+    refused: bool,
+    message: String,
+}
+
+impl Notice {
+    fn done(message: String) -> Self {
+        Self {
+            refused: false,
+            message,
+        }
+    }
+
+    fn refused(message: String) -> Self {
+        Self {
+            refused: true,
+            message,
+        }
+    }
+}
+
+/// The roles, as the table shows them and as the controls compare them.
+const ROLE_OWNER: &str = "owner";
+const ROLE_ADMIN: &str = "admin";
+const ROLE_MEMBER: &str = "member";
+
+/// A role as a sentence says it: "a member", "an admin", "the owner".
+fn role_phrase(role: &str) -> &'static str {
+    match role {
+        ROLE_OWNER => "the owner",
+        ROLE_ADMIN => "an admin",
+        _ => "a member",
+    }
+}
+
+/// One row of the members table: the membership, and what the acting role may do with it.
+#[derive(Debug, Clone, PartialEq)]
+struct MemberRow {
+    member: MemberView,
+    /// The role may be changed and the member removed: an owner or an admin acting on a row
+    /// that is neither an owner's (for an admin) nor the organization's last owner.
+    manageable: bool,
+    /// Ownership may be transferred to this member: only an owner may, and only to someone
+    /// who is not already the owner.
+    transferable: bool,
+}
+
+/// The members card's body: the add form, the table, and the per-row controls.
 #[component]
-fn MemberTable(#[prop(into)] members: Vec<MemberView>) -> impl IntoView {
+fn Members(
+    data: MembersView,
+    add: Action<String, Result<MemberView, ServerFnError>>,
+    remove: Action<String, Result<MemberView, ServerFnError>>,
+    set_role: Action<(String, String), Result<MemberView, ServerFnError>>,
+    transfer: Action<String, Result<TransferView, ServerFnError>>,
+    email: RwSignal<String>,
+) -> impl IntoView {
+    let role = data.role.clone();
+    let manages = role == ROLE_OWNER || role == ROLE_ADMIN;
+    let owner_count = data
+        .members
+        .iter()
+        .filter(|member| member.role == ROLE_OWNER)
+        .count();
+    // The conditions are the core's own: an admin may not touch an owner, and the last owner
+    // is neither removed nor demoted. Computed once per render, so the row says what the
+    // server would say.
+    let rows: Vec<MemberRow> = data
+        .members
+        .iter()
+        .map(|member| {
+            let last_owner = member.role == ROLE_OWNER && owner_count <= 1;
+            let admin_on_owner = role == ROLE_ADMIN && member.role == ROLE_OWNER;
+            MemberRow {
+                member: member.clone(),
+                manageable: manages && !last_owner && !admin_on_owner,
+                transferable: role == ROLE_OWNER && member.role != ROLE_OWNER,
+            }
+        })
+        .collect();
+    let owner_rows = role == ROLE_OWNER;
     view! {
-        {if members.is_empty() {
+        {manages.then(|| view! {
+            <form
+                class="row"
+                aria-label="Add a member"
+                on:submit=move |ev: web_sys::SubmitEvent| {
+                    ev.prevent_default();
+                    // The handle is dropped: the Action itself reports the outcome.
+                    drop(add.dispatch(email.get_untracked()));
+                }
+            >
+                <label>
+                    "Email of an existing account"
+                    <input
+                        type="email"
+                        name="member-email"
+                        required=true
+                        prop:value=move || email.get()
+                        on:input=move |ev| email.set(event_target_value(&ev))
+                    />
+                </label>
+                <button type="submit" prop:disabled=move || add.pending().get()>
+                    {move || if add.pending().get() { "Adding…" } else { "Add member" }}
+                </button>
+            </form>
+            <p class="muted">
+                "The account must already exist: inviting people who have no account yet is not built (issue #59)."
+            </p>
+        })}
+        {if rows.is_empty() {
             view! { <p class="muted">"No members."</p> }.into_any()
         } else {
             view! {
@@ -724,18 +928,76 @@ fn MemberTable(#[prop(into)] members: Vec<MemberView>) -> impl IntoView {
                             <th scope="col">"Email"</th>
                             <th scope="col">"Role"</th>
                             <th scope="col">"Joined"</th>
+                            {manages.then(|| view! {
+                                <th scope="col"><span class="visually-hidden">"Actions"</span></th>
+                            })}
                         </tr>
                     </thead>
                     <tbody>
-                        <For each=move || members.clone() key=|member| member.email.clone() let(member)>
-                            <tr>
-                                <td>{member.email.clone()}</td>
-                                <td>{member.role.clone()}</td>
-                                <td class="mono">{member.joined_at.clone()}</td>
-                            </tr>
+                        <For each=move || rows.clone() key=|row| row.member.user_id.clone() let(row)>
+                            {
+                                let member = row.member.clone();
+                                let manage_id = member.user_id.clone();
+                                let remove_id = member.user_id.clone();
+                                let transfer_id = member.user_id.clone();
+                                let remove_label = format!("Remove {}", member.email);
+                                let transfer_label = format!("Transfer ownership to {}", member.email);
+                                let demote = member.role == ROLE_ADMIN;
+                                view! {
+                                    <tr>
+                                        <td>{member.email.clone()}</td>
+                                        <td>{member.role.clone()}</td>
+                                        <td class="mono">{member.joined_at.clone()}</td>
+                                        {manages.then(|| view! {
+                                            <td>
+                                                <div class="actions">
+                                                    {row.manageable.then(|| view! {
+                                                        {if demote {
+                                                            view! {
+                                                                <button
+                                                                    on:click=move |_| drop(set_role.dispatch((manage_id.clone(), ROLE_MEMBER.to_owned())))
+                                                                    prop:disabled=move || set_role.pending().get()
+                                                                >"Make member"</button>
+                                                            }.into_any()
+                                                        } else {
+                                                            view! {
+                                                                <button
+                                                                    on:click=move |_| drop(set_role.dispatch((manage_id.clone(), ROLE_ADMIN.to_owned())))
+                                                                    prop:disabled=move || set_role.pending().get()
+                                                                >"Make admin"</button>
+                                                            }.into_any()
+                                                        }}
+                                                        <button
+                                                            class="danger"
+                                                            aria-label=remove_label
+                                                            on:click=move |_| drop(remove.dispatch(remove_id.clone()))
+                                                            prop:disabled=move || remove.pending().get()
+                                                        >"Remove"</button>
+                                                    })}
+                                                    {row.transferable.then(|| view! {
+                                                        <button
+                                                            aria-label=transfer_label
+                                                            on:click=move |_| drop(transfer.dispatch(transfer_id.clone()))
+                                                            prop:disabled=move || transfer.pending().get()
+                                                        >"Make owner"</button>
+                                                    })}
+                                                    {(!row.manageable && !row.transferable).then(|| view! {
+                                                        <span class="muted">"—"</span>
+                                                    })}
+                                                </div>
+                                            </td>
+                                        })}
+                                    </tr>
+                                }
+                            }
                         </For>
                     </tbody>
                 </table>
+                {owner_rows.then(|| view! {
+                    <p class="muted">
+                        "An organization has exactly one owner: transferring ownership makes the previous owner an admin."
+                    </p>
+                })}
             }
                 .into_any()
         }}

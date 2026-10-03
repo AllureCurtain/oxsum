@@ -25,7 +25,7 @@ use uuid::Uuid;
 use crate::db::Db;
 use crate::error::WalletError;
 use crate::keys::ActingKey;
-use crate::orgs::{self, Organization, Role};
+use crate::orgs::{self, MembershipActor, Organization, Role};
 use crate::users::User;
 
 /// The session cookie's name. Carried in `openapi.yaml` as the `sessionCookie` scheme.
@@ -98,6 +98,31 @@ impl Principal {
                 Role::Owner | Role::Admin => KeyScope::All,
                 Role::Member => KeyScope::Own(session.user.id),
             },
+        }
+    }
+
+    /// Who manages the organization's memberships, if this credential may at all.
+    ///
+    /// The one place a key does *not* act with the organization's full authority: managing
+    /// members is a person's action, and a key is not a person and names no role. A session
+    /// carries the person and their role, and the rules in `crates/core/src/orgs.rs` refuse a
+    /// member; a key is refused here, before any rule is reached (docs/decisions.md,
+    /// "membership management is a person's action").
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::Forbidden`] for an API key.
+    pub fn membership_actor(&self) -> Result<MembershipActor, WalletError> {
+        match self {
+            Self::Key(_) => Err(WalletError::Forbidden(
+                "managing members needs a logged-in owner or admin: an API key is not a person \
+                 and names no role"
+                    .into(),
+            )),
+            Self::Session(session) => Ok(MembershipActor {
+                user_id: session.user.id,
+                role: session.role,
+            }),
         }
     }
 }

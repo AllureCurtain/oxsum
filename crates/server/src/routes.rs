@@ -7,9 +7,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router, middleware};
 use oxsum_core::{
-    ApiKey, Consistency, CreatedApiKey, CreatedSession, HeadSigningKey, KeyPublication, NewUser,
-    Organization, Principal, Registration, Role, SESSION_COOKIE, Session, SessionPrincipal,
-    SignedHead, Tenants, User, Wallet, signing_key,
+    ApiKey, Consistency, CreatedApiKey, CreatedSession, HeadSigningKey, KeyPublication, Member,
+    NewUser, Organization, Ownership, Principal, Registration, Role, SESSION_COOKIE, Session,
+    SessionPrincipal, SignedHead, Tenants, User, Wallet, signing_key,
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -29,6 +29,12 @@ pub fn router(state: AppState) -> Router {
         .route("/org", get(organization))
         .route("/org/keys", get(list_keys).post(create_key))
         .route("/org/keys/{key_id}", delete(revoke_key).patch(patch_key))
+        .route("/org/members", post(add_member))
+        .route(
+            "/org/members/{user_id}",
+            delete(remove_member).patch(change_member_role),
+        )
+        .route("/org/ownership", post(transfer_ownership))
         .route("/session", get(session))
         .route("/topups", post(top_up))
         .route("/holds", post(hold))
@@ -260,7 +266,7 @@ fn clear_session_cookie(secure: bool) -> String {
 async fn session(Extension(principal): Extension<Principal>) -> ApiResult<SessionInfo> {
     match principal {
         Principal::Session(principal) => ok(SessionInfo::from(principal)),
-        Principal::Key(_) => Err(ApiError::NotFound),
+        Principal::Key(_) => Err(ApiError::not_found()),
     }
 }
 
@@ -313,7 +319,7 @@ async fn revoke_key(
         .await?
     {
         Some(key) => ok(key),
-        None => Err(ApiError::NotFound),
+        None => Err(ApiError::not_found()),
     }
 }
 
@@ -336,10 +342,109 @@ async fn patch_key(
         .await?
     {
         Some(key) => ok(key),
-        None => Err(ApiError::NotFound),
+        None => Err(ApiError::not_found()),
     }
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddMemberReq {
+    email: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChangeMemberRoleReq {
+    role: AssignableRole,
+}
+
+/// The roles a membership may be changed to.
+///
+/// `owner` is deliberately not a value: ownership is a single seat moved by
+/// `POST /api/v1/org/ownership`, so no request body reaches this surface able to promote
+/// anyone — the refusal is in the contract rather than in a branch (crates/server/openapi.yaml).
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum AssignableRole {
+    Admin,
+    Member,
+}
+
+impl From<AssignableRole> for Role {
+    fn from(role: AssignableRole) -> Self {
+        match role {
+            AssignableRole::Admin => Self::Admin,
+            AssignableRole::Member => Self::Member,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TransferOwnershipReq {
+    user_id: Uuid,
+}
+
+/// Adds an existing account to the organization as a member.
+///
+/// The acting role is checked here and in the domain layer (crates/core/src/orgs.rs): a
+/// membership write needs a session in the owner or admin role, so an API key is refused by
+/// `membership_actor` before the request reaches a rule.
+async fn add_member(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    ApiJson(r): ApiJson<AddMemberReq>,
+) -> ApiResult<Member> {
+    let actor = principal.membership_actor()?;
+    ok(state
+        .db
+        .add_member(principal.organization().id, actor, &r.email)
+        .await?)
+}
+
+async fn remove_member(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(user_id): Path<Uuid>,
+) -> ApiResult<Member> {
+    let actor = principal.membership_actor()?;
+    ok(state
+        .db
+        .remove_member(principal.organization().id, actor, user_id)
+        .await?)
+}
+
+async fn change_member_role(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(user_id): Path<Uuid>,
+    ApiJson(r): ApiJson<ChangeMemberRoleReq>,
+) -> ApiResult<Member> {
+    let actor = principal.membership_actor()?;
+    ok(state
+        .db
+        .change_member_role(
+            principal.organization().id,
+            actor,
+            user_id,
+            Role::from(r.role),
+        )
+        .await?)
+}
+
+async fn transfer_ownership(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    ApiJson(r): ApiJson<TransferOwnershipReq>,
+) -> ApiResult<Ownership> {
+    let actor = principal.membership_actor()?;
+    ok(state
+        .db
+        .transfer_ownership(principal.organization().id, actor, r.user_id)
+        .await?)
+}
+
+/// Top up the acting organization's wallet.
 async fn top_up(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
@@ -401,7 +506,7 @@ async fn proof(
         .await?
     {
         Some(bundle) => ok(bundle),
-        None => Err(ApiError::NotFound),
+        None => Err(ApiError::not_found()),
     }
 }
 

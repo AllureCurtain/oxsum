@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.7.0
+  version: 0.8.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -26,7 +26,13 @@ info:
     added per-key spend limits: `spendLimitMinor` caps what one key may have committed — settled
     charges plus outstanding holds attributed to it — a key takes that limit at creation or through
     `PATCH /api/v1/org/keys/{keyId}`, and a hold that would exceed it is refused with 429
-    `KEY_LIMIT_EXCEEDED` on `/api/v1` and `insufficient_quota` on the gateway.
+    `KEY_LIMIT_EXCEEDED` on `/api/v1` and `insufficient_quota` on the gateway. 0.8.0 added membership
+    management: an owner or an admin may add an existing account by email, remove a member, change a
+    member's role and transfer ownership (`/api/v1/org/members`, `/api/v1/org/members/{userId}`,
+    `/api/v1/org/ownership`). Membership management is a person's action: an API key names no role and
+    is refused there, which is the one place a key does not act with the organization's full
+    authority. Invitations for people who have no account yet are issue #59 and are not part of this
+    contract.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie, except
     `/api/v1/auth/login`, `/api/v1/auth/logout` and `/api/v1/auth/register`, which take no
@@ -270,6 +276,141 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/members:
+    post:
+      summary: Add an existing account to the organization as a member
+      description: |
+        "Invite" means here what it can mean today: the email names an account that already exists,
+        and that account becomes a member. Pending invitations for people who have no account yet —
+        invite links, tokens, email — are issue #59 and are not built; an unknown email is
+        `NOT_FOUND`, never a stored invitation.
+
+        Only an owner or an admin may manage memberships, and only a logged-in person: an API key is
+        not a person and names no role, so it is refused here too (docs/decisions.md, "membership
+        management is a person's action"). A member is refused. A new membership's role is always
+        `member`; ownership is never granted here, and only `POST /api/v1/org/ownership` can move
+        the owner seat.
+
+        Adding the second person to a personal organization flips its kind to `team`; the ledger
+        does not move. An account that is already a member is `CONFLICT`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AddMemberRequest" }
+      responses:
+        "200":
+          description: The new membership
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/Member" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/members/{userId}:
+    parameters: [{ $ref: "#/components/parameters/UserId" }]
+    patch:
+      summary: Change a member's role
+      description: |
+        `role` is `admin` or `member`, and there is deliberately no `owner` value: ownership is a
+        single seat, moved by `POST /api/v1/org/ownership`, so no role change can promote anyone to
+        owner (a body naming `owner` is `VALIDATION_ERROR`, not a promotion). Only an owner or an
+        admin, and only a session: an API key or a member is refused.
+
+        An admin may not change an owner's role (403 `FORBIDDEN`) — an admin manages members, not
+        the owner — and the last owner of an organization cannot be demoted (409 `CONFLICT`): an
+        organization always has an owner. Setting the role a member already has answers the
+        membership unchanged, so a retry is not an error. A user id that is not a member of the
+        caller's organization is `NOT_FOUND`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChangeMemberRoleRequest" }
+      responses:
+        "200":
+          description: The membership with its new role
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/Member" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    delete:
+      summary: Remove a member from the organization
+      description: |
+        The membership row is deleted; the user and their personal organization are untouched. Only
+        an owner or an admin, and only a session: an API key or a member is refused. An admin may
+        not remove an owner (403 `FORBIDDEN`), and the last owner cannot be removed (409
+        `CONFLICT`) — transfer ownership first. Removing a user who is not a member of the caller's
+        organization is `NOT_FOUND`, so a second removal is not a silent success.
+
+        Removing the person a session acts for ends that session: resolution joins `memberships`,
+        so a session cannot outlive the membership it names.
+      responses:
+        "200":
+          description: The membership that was removed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/Member" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/ownership:
+    post:
+      summary: Transfer ownership of the organization
+      description: |
+        The one way to become the owner, and the only way an owner stops being one: the named member
+        is promoted to `owner` and the transferring owner becomes an `admin`, in one transaction, so
+        the organization has exactly one owner before and after. Only an owner may call this
+        (403 `FORBIDDEN` for an admin, a member or an API key), and the target must be a member of
+        the same organization: an owner cannot transfer ownership to themselves (`CONFLICT`) or to a
+        user who is not a member (`NOT_FOUND`).
+
+        The owner seat is never left empty: the last owner can neither be removed nor demoted, and
+        this endpoint moves the seat rather than creating a second one.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TransferOwnershipRequest" }
+      responses:
+        "200":
+          description: The new owner and the previous owner, now an admin
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/Ownership" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/topups:
     post:
@@ -676,6 +817,12 @@ components:
       in: path
       required: true
       schema: { type: string, format: uuid }
+    UserId:
+      name: userId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+      description: the id of the user whose membership this is, as a member's `userId`
     ChannelName:
       name: channelName
       in: path
@@ -766,6 +913,46 @@ components:
           required: [secret]
           properties:
             secret: { type: string, description: "the plaintext key; shown once and stored only as a SHA-256 hash" }
+    Member:
+      type: object
+      required: [userId, email, role, joinedAt]
+      properties:
+        userId: { type: string, format: uuid, description: "the user's id, which the membership endpoints address a member by" }
+        email: { type: string }
+        role: { type: string, enum: [owner, admin, member], description: "the member's role in this organization; a platform admin is a deployment identity, not a role here" }
+        joinedAt: { type: string, format: date-time, description: when the membership was created }
+    AddMemberRequest:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          maxLength: 320
+          description: |
+            the email of an account that already exists; the comparison is case-insensitive. An
+            email no account holds is `NOT_FOUND` (pending invitations are issue #59), and one that
+            is already a member of this organization is `CONFLICT`.
+    ChangeMemberRoleRequest:
+      type: object
+      required: [role]
+      properties:
+        role:
+          type: string
+          enum: [admin, member]
+          description: |
+            the member's new role. `owner` is not a value here on purpose: ownership is a single
+            seat moved by `POST /api/v1/org/ownership`, so this endpoint cannot promote anyone.
+    TransferOwnershipRequest:
+      type: object
+      required: [userId]
+      properties:
+        userId: { type: string, format: uuid, description: "the member who becomes the owner; they are an admin or a member of this organization" }
+    Ownership:
+      type: object
+      required: [owner, previousOwner]
+      properties:
+        owner: { $ref: "#/components/schemas/Member", description: "the new owner, in the owner role" }
+        previousOwner: { $ref: "#/components/schemas/Member", description: "the owner who transferred it, now an admin" }
     ChannelRequest:
       type: object
       required: [name, baseUrl, apiKey]
