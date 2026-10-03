@@ -44,14 +44,57 @@ pub fn mount(router: Router<AppState>, state: &AppState) -> Router<AppState> {
 /// The Leptos options, from the workspace `Cargo.toml`'s `[[workspace.metadata.leptos]]`
 /// with environment overrides (what `cargo leptos serve` sets).
 ///
+/// `site-root` is a workspace-relative path — that is how `cargo leptos` reads it — but
+/// the pkg service resolves it against the process's working directory, so the resolved
+/// value is made absolute here rather than depending on where the server was started
+/// (issue #44).
+///
 /// Panics when the manifest lacks the section: that is a broken checkout, not a
 /// runtime failure, and nothing can be served without it.
 pub fn options() -> leptos::config::LeptosOptions {
     let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.toml");
     match leptos::config::get_configuration(Some(manifest)) {
-        Ok(conf) => conf.leptos_options,
+        Ok(conf) => {
+            let mut options = conf.leptos_options;
+            let site_root = std::path::Path::new(&*options.site_root);
+            if site_root.is_relative() {
+                let resolved = workspace_root().join(site_root);
+                options.site_root = resolved.to_string_lossy().into_owned().into();
+            }
+            options
+        }
         Err(error) => {
             panic!("the workspace Cargo.toml carries [[workspace.metadata.leptos]]: {error}")
         }
+    }
+}
+
+/// The workspace root: this crate sits at `<root>/crates/server`, and the workspace
+/// `Cargo.toml` was found the same way above.
+fn workspace_root() -> &'static std::path::Path {
+    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    match crate_dir.parent().and_then(std::path::Path::parent) {
+        Some(root) => root,
+        None => panic!("crates/server sits under the workspace root"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{options, workspace_root};
+
+    /// The pkg service serves `<site-root>/pkg` relative to the process's working
+    /// directory, so a relative site root would answer 404 under `cargo run` from
+    /// anywhere but the workspace root. The real options must name the workspace's built
+    /// site whatever the working directory is (issue #44).
+    #[test]
+    fn the_real_options_name_the_workspace_site() {
+        let options = options();
+        assert_eq!(
+            std::path::Path::new(&*options.site_root),
+            workspace_root().join("target/site"),
+            "the site root is the workspace's built site, not the working directory"
+        );
+        assert_eq!(&*options.site_pkg_dir, "pkg");
     }
 }
