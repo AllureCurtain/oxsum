@@ -8,8 +8,12 @@
 
 mod api;
 mod app;
+// The module itself is browser-only (`hydrate`); see its inner `#![cfg]`.
+mod billing_socket;
+mod chat;
 
 pub use app::{App, Shell};
+pub use chat::ChatPage;
 
 /// The browser entry point.
 ///
