@@ -935,8 +935,8 @@ mod browser {
         let reader: ReadableStreamDefaultReader = stream.get_reader().unchecked_into();
         let decoder =
             TextDecoder::new().map_err(|_| "the text decoder would not start".to_owned())?;
-        let mut decode_options = TextDecodeOptions::new();
-        decode_options.stream(true);
+        let decode_options = TextDecodeOptions::new();
+        decode_options.set_stream(true);
         let mut pending = String::new();
         loop {
             let chunk = JsFuture::from(reader.read())
