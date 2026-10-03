@@ -14,14 +14,22 @@ FROM rust:1.98-bookworm AS builder
 
 WORKDIR /app
 
-# The Leptos browser side compiles to WASM; cargo-leptos drives that build.
-RUN rustup target add wasm32-unknown-unknown \
-    && cargo install cargo-leptos --version 0.3.11
+# cargo-leptos drives the WASM build. Install it before the checkout so the layer
+# survives source edits.
+RUN cargo install cargo-leptos --version 0.3.11
 
 COPY . .
 # The server binary lands in target/release/<bin-exe-name> (here: oxsum); the site
 # (WASM bundle, CSS, index.html) lands in target/site.
-RUN cargo leptos build --release \
+#
+# The wasm target is added here, after the checkout, and never before it:
+# rust-toolchain.toml pins the channel, and rustup installs a target for the
+# toolchain it resolves at the moment it runs. Adding it before COPY installed it
+# for the image's default toolchain while the build used the pinned one, so the
+# build failed with "can't find crate for `core`" (the release image gate caught
+# it; issue #49).
+RUN rustup target add wasm32-unknown-unknown \
+    && cargo leptos build --release \
     && test -x /app/target/release/oxsum \
     && test -d /app/target/site/pkg
 
