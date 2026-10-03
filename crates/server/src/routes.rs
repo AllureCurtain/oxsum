@@ -16,7 +16,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::auth::{require_principal, session_cookie_value};
-use crate::error::ApiError;
+use crate::error::{ApiError, ApiJson};
 use crate::{AppState, Signup, today};
 
 /// The `/api/v1` surface, plus the routes served outside it: health, the gateway, the
@@ -167,7 +167,7 @@ async fn wallet(tenants: &Tenants, organization: &Organization) -> Result<Arc<Wa
 
 async fn register(
     State(state): State<AppState>,
-    Json(r): Json<RegisterReq>,
+    ApiJson(r): ApiJson<RegisterReq>,
 ) -> ApiResult<Registration> {
     if state.config.signup() != Signup::Open {
         return Err(ApiError::Forbidden(
@@ -190,7 +190,7 @@ async fn register(
 /// reveals whether an account exists.
 async fn login(
     State(state): State<AppState>,
-    Json(r): Json<LoginReq>,
+    ApiJson(r): ApiJson<LoginReq>,
 ) -> Result<Response, ApiError> {
     let CreatedSession { principal, token } = state.db.login(&r.email, &r.password).await?;
     let mut response = Json(Data {
@@ -264,9 +264,9 @@ async fn organization(Extension(principal): Extension<Principal>) -> ApiResult<O
 async fn create_key(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
-    body: Option<Json<CreateKeyReq>>,
+    body: Option<ApiJson<CreateKeyReq>>,
 ) -> ApiResult<CreatedApiKey> {
-    let (name, expires_at, spend_limit_minor) = body.map_or((None, None, None), |Json(r)| {
+    let (name, expires_at, spend_limit_minor) = body.map_or((None, None, None), |ApiJson(r)| {
         (r.name, r.expires_at, r.spend_limit_minor)
     });
     // A key minted through a session records who minted it, for product.md's per-member
@@ -314,7 +314,7 @@ async fn patch_key(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
     Path(key_id): Path<Uuid>,
-    Json(r): Json<UpdateKeyLimitReq>,
+    ApiJson(r): ApiJson<UpdateKeyLimitReq>,
 ) -> ApiResult<ApiKey> {
     // The scope rules are the revoke's: a member may change only the keys they created,
     // and any other key id answers 404 with the key untouched, so ids cannot be probed.
@@ -336,7 +336,7 @@ async fn patch_key(
 async fn top_up(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
-    Json(r): Json<AmountReq>,
+    ApiJson(r): ApiJson<AmountReq>,
 ) -> ApiResult<oxsum_core::Receipt> {
     let w = wallet(&state.tenants, principal.organization()).await?;
     ok(w.top_up(&r.idempotency_key, r.amount_minor, today())
@@ -346,7 +346,7 @@ async fn top_up(
 async fn hold(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
-    Json(r): Json<AmountReq>,
+    ApiJson(r): ApiJson<AmountReq>,
 ) -> ApiResult<oxsum_core::Receipt> {
     let w = wallet(&state.tenants, principal.organization()).await?;
     // No description: this endpoint takes an amount, not a reason. The gateway, which knows what the
@@ -365,7 +365,7 @@ async fn hold(
 async fn settle(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
-    Json(r): Json<SettleReq>,
+    ApiJson(r): ApiJson<SettleReq>,
 ) -> ApiResult<oxsum_core::Receipt> {
     let w = wallet(&state.tenants, principal.organization()).await?;
     // No description: this endpoint takes a hold key, not a reason. The gateway, which knows what

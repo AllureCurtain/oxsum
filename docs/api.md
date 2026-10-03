@@ -77,6 +77,8 @@ Failure:
 { "error": { "code": "VALIDATION_ERROR", "message": "caller-facing explanation", "details": [] } }
 ```
 
+Every failure on the envelope's surface is this shape, including a request body the server cannot read: a missing or wrong `content-type`, a body that is not JSON, and JSON that does not match the endpoint's request type are all `VALIDATION_ERROR`, which is the 400 every body-taking path documents. `/v1` is the exception, and its own section says so.
+
 ## Error codes
 
 | code | HTTP | meaning |
