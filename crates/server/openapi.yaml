@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.12.0
+  version: 0.13.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -38,7 +38,9 @@ info:
     0.10.0 added `GET /api/v1/admin/holds`, 0.11.0 `GET /api/v1/admin/anomalies`, and 0.12.0
     `GET`/`POST /api/v1/admin/closings`: the monthly closing, which seals a `YYYY-MM` period in
     every organization's ledger — after a month is sealed, no entry may carry a booking date in it
-    again, and the seal itself is the closing record.
+    again, and the seal itself is the closing record. 0.13.0 adds team organizations: `GET`/`POST
+    /api/v1/orgs` lists and creates the session user's organizations, and `POST
+    /api/v1/session/organization` switches which organization the session acts as.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie, except
     `/api/v1/auth/login`, `/api/v1/auth/logout` and `/api/v1/auth/register`, which take no
@@ -164,6 +166,91 @@ paths:
                   data: { $ref: "#/components/schemas/SessionInfo" }
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/session/organization:
+    post:
+      summary: Switch the organization the session acts as
+      description: |
+        Carries the session's acting organization — the choice the dashboard's switcher makes.
+        `organizationId` must name an organization the user is a member of; any other value, a real
+        organization the user does not belong to included, answers `404` so memberships cannot be
+        probed. The session row is updated, so the choice survives reloads and new tabs alike, and
+        every organization-scoped read follows it. A person's action: an API key already *is* an
+        organization and cannot act as another, so it is refused (403).
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SwitchOrganizationRequest" }
+      responses:
+        "200":
+          description: The session, now acting as the chosen organization
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/SessionInfo" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/orgs:
+    get:
+      summary: The organizations the session's user belongs to
+      description: |
+        Every organization the logged-in user is a member of, oldest membership first, each with
+        the role the user holds in it — the list the organization switcher offers. A person's list:
+        an API key belongs to one organization and names no member, so it is refused (403).
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: The user's organizations with their roles
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/UserOrganization" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Create a team organization
+      description: |
+        Creates a `team` organization — its own ledger, its own keys, its own balance — and makes
+        the session's user its owner. There is deliberately no `personal` kind to create: a personal
+        organization is exactly what signup makes. A person's action: an API key has no user to own
+        the new organization, so it is refused (403). The session keeps acting as the organization
+        it had; switching to the new one is `POST /api/v1/session/organization`.
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateOrganizationRequest" }
+      responses:
+        "200":
+          description: The created organization
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/Organization" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org:
     get:
@@ -1020,6 +1107,22 @@ components:
         createdAt: { type: string, format: date-time }
         expiresAt: { type: string, format: date-time, description: "absolute expiry: thirty days after login, no sliding renewal in v1" }
         lastUsedAt: { type: string, format: date-time, description: "the last authenticated request; touched at most once per five minutes" }
+    UserOrganization:
+      type: object
+      required: [organization, role]
+      properties:
+        organization: { $ref: "#/components/schemas/Organization" }
+        role: { type: string, enum: [owner, admin, member], description: "the role the session's user holds in this organization" }
+    CreateOrganizationRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 80, description: "the new team organization's name" }
+    SwitchOrganizationRequest:
+      type: object
+      required: [organizationId]
+      properties:
+        organizationId: { type: string, format: uuid, description: "must be an organization the session's user is a member of" }
     SessionInfo:
       type: object
       required: [user, organization, role, session]
