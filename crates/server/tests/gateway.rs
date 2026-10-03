@@ -490,6 +490,12 @@ fn request_id(response: &Response) -> String {
 /// Serialises the test sweepers across test binaries: production runs one sweeper, so the tests
 /// take an advisory lock around aging and sweeping, and no two test sweepers run at once. Shared
 /// with `sweep.rs`, which takes the same lock.
+///
+/// The lock orders sweepers; it says nothing about the rows they find. `oxsum.open_holds` is
+/// shared with every other world and every other run against this database, and
+/// [`sweep_stale_holds`] counts every world's rows — a row another world left stale is resolved
+/// here too, which is the sweeper working rather than a failure. A test therefore asserts on the
+/// row it owns, never on the count (issue #34).
 const SWEEP_LOCK: i64 = i64::from_be_bytes(*b"oxsumswp");
 
 /// Takes the sweep lock, returning the connection that holds it. A previous test that failed
@@ -1156,11 +1162,22 @@ async fn a_stalled_turn_is_swept_when_its_hold_times_out() {
     )
     .await
     .expect("sweeps");
-    assert_eq!(resolved, 1);
+    // Not `== 1`: the count is every world's rows, and one another world left behind is this
+    // pass's to resolve as well. What this test owns is checked below.
+    assert!(resolved >= 1, "the sweep resolved nothing at all");
 
     let record = world.settlement_within(&id).await;
     assert_eq!(record["kind"], "swept");
     assert_eq!(record["charged"], 0);
+    // The row this turn was watched under is gone: the sweep took it with the hold it released.
+    let rows = db
+        .stale_open_holds(OffsetDateTime::now_utc() + Duration::from_secs(3600))
+        .await
+        .expect("lists the watch rows");
+    assert!(
+        !rows.iter().any(|row| row.request_id == id),
+        "the swept hold is still watched"
+    );
     assert_eq!(wallet.reserved().await.expect("reserved"), 0);
     assert_eq!(wallet.available().await.expect("available"), 1_000_000);
     unlock_sweeper(sweeper).await;
