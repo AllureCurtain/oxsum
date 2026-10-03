@@ -26,7 +26,7 @@ pub use billing::{
 };
 pub use channels::{Channel, ModelPrice, SecretKey, Serving};
 pub use db::{Db, SCHEMA};
-pub use doubleentry::{ConsistencyProof, EntryId, Hash, TreeHead};
+pub use doubleentry::{ConsistencyProof, EntryId, Hash, Seal, TreeHead};
 pub use error::WalletError;
 pub use heads::{
     Consistency, HeadSigningKey, KeyPublication, SignedHead, origin_for, seed_from_base64,

@@ -17,10 +17,11 @@ use axum::middleware::Next;
 use axum::response::Response;
 use axum::routing::get;
 use axum::{Router, middleware};
-use oxsum_core::{Channel, InFlightHold, Kind, ModelPrice, Price, SettlementKind};
+use oxsum_core::{Channel, InFlightHold, Kind, ModelPrice, Price, Seal, SettlementKind};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq as _;
 use time::OffsetDateTime;
+use time::{Date, Month};
 use uuid::Uuid;
 
 use crate::AppState;
@@ -35,6 +36,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/organizations", get(organizations))
         .route("/holds", get(holds))
         .route("/anomalies", get(anomalies))
+        .route("/closings", get(closings).post(close_month))
         .layer(middleware::from_fn_with_state(state, require_admin))
 }
 
@@ -227,6 +229,90 @@ async fn anomalies(State(state): State<AppState>) -> ApiResult<Vec<AnomalyRes>> 
     // days newest first.
     answer.sort_by(|a, b| b.booked_on.cmp(&a.booked_on));
     ok(answer)
+}
+
+/// One organization's closing record for a sealed period, as the closings endpoint
+/// answers it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClosingRes {
+    organization: String,
+    /// The sealed period, `YYYY-MM`.
+    period: String,
+    /// How many of the ledger's entries the period contains.
+    entry_count: i64,
+    /// The log's size at the moment of sealing.
+    tree_size: i64,
+    /// The log's tree head at sealing, hex — what the month committed to.
+    tree_root: String,
+    /// The Merkle root over the period's closing trial balance, hex.
+    trial_balance_root: String,
+    /// The seal's own hash, hex; it chains onto the seal before it.
+    seal_hash: String,
+}
+
+impl ClosingRes {
+    fn of(organization: &str, seal: &Seal) -> Self {
+        ClosingRes {
+            organization: organization.to_owned(),
+            period: seal.period.to_string(),
+            entry_count: seal.entry_count as i64,
+            tree_size: seal.tree_head.size as i64,
+            tree_root: seal.tree_head.root.to_string(),
+            trial_balance_root: seal.trial_balance.root.to_string(),
+            seal_hash: seal.seal_hash.to_string(),
+        }
+    }
+}
+
+/// Every sealed month across all organizations, newest first: the closing records.
+async fn closings(State(state): State<AppState>) -> ApiResult<Vec<ClosingRes>> {
+    let mut answer = Vec::new();
+    for organization in state.db.organizations().await? {
+        let wallet = state.tenants.get(&organization.tenant_id).await?;
+        for seal in wallet.seals().await? {
+            answer.push(ClosingRes::of(&organization.name, &seal));
+        }
+    }
+    // Period ids sort as the months do (`YYYY-MM`), so newest first is a string sort.
+    answer.sort_by(|a, b| b.period.cmp(&a.period));
+    ok(answer)
+}
+
+/// The month to close, `YYYY-MM`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CloseReq {
+    month: String,
+}
+
+/// Closes one month across every organization's ledger and answers each closing
+/// record — the seal it appended.
+///
+/// The month must have fully ended, which `Wallet::close_month` enforces; closing
+/// an already-sealed month answers the record it holds, so the call is idempotent.
+async fn close_month(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<CloseReq>,
+) -> ApiResult<Vec<ClosingRes>> {
+    let first = parse_month(&request.month)?;
+    let mut answer = Vec::new();
+    for organization in state.db.organizations().await? {
+        let wallet = state.tenants.get(&organization.tenant_id).await?;
+        let seal = wallet.close_month(first).await?;
+        answer.push(ClosingRes::of(&organization.name, &seal));
+    }
+    ok(answer)
+}
+
+/// `YYYY-MM` as the month's first day. A malformed month is a validation failure,
+/// not an empty result.
+fn parse_month(month: &str) -> Result<Date, ApiError> {
+    let bad = || ApiError::Validation("month must be YYYY-MM".into());
+    let (year, month) = month.split_once('-').ok_or_else(bad)?;
+    let year = year.parse::<i32>().map_err(|_| bad())?;
+    let month = Month::try_from(month.parse::<u8>().map_err(|_| bad())?).map_err(|_| bad())?;
+    Date::from_calendar_date(year, month, 1).map_err(|_| bad())
 }
 
 /// Every version of every model of one channel, newest first.

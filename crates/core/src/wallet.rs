@@ -3,8 +3,8 @@ use doubleentry::storage::postgres::PostgresStore;
 use doubleentry::{
     AccountId, Amount, BalanceKey, BalanceLimit, BalanceQuery, Balanced, Currency, Cursor,
     Description, Direction, Draft, Entry, EntryBatch, EntryId, Hash, IdempotencyKey, Layer,
-    LedgerId, LedgerPolicy, LedgerStore, LogIndex, PeriodCalendar, Posting, Provenance,
-    SealContext, StoredEntry,
+    LedgerId, LedgerPolicy, LedgerStore, LogIndex, Period, PeriodId, PeriodState, Posting,
+    Provenance, Seal, SealContext, StoredEntry,
 };
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
@@ -64,7 +64,6 @@ pub struct Wallet {
     wallet: AccountId,
     cash: AccountId,
     revenue: AccountId,
-    calendar: PeriodCalendar,
     policy: LedgerPolicy,
     /// The validated tenant id this ledger belongs to: the identity its signed tree heads
     /// are published under (`oxsum/ledgers/<tenant_id>`).
@@ -212,7 +211,7 @@ impl Wallet {
             revenue: find_account(&registry, REVENUE)?,
             store,
             registry,
-            calendar: PeriodCalendar::new(),
+
             policy: LedgerPolicy::default(),
             tenant_id: tenant_id.to_owned(),
         })
@@ -311,13 +310,15 @@ impl Wallet {
             // Keys are never deleted; a missing row means the credential died mid-request.
             return Err(WalletError::Unauthenticated);
         };
-        let entry = self.seal(
-            Entry::<Draft, SCALE>::new(entry_id_for(idem_key), idem(idem_key)?, on)
-                .with_description(description_of(description)?)
-                .with_provenance(actor)
-                .post(Posting::debit(self.wallet, amt, currency()).in_layer(Layer::Pending))
-                .post(Posting::credit(self.revenue, amt, currency()).in_layer(Layer::Pending)),
-        )?;
+        let entry = self
+            .seal(
+                Entry::<Draft, SCALE>::new(entry_id_for(idem_key), idem(idem_key)?, on)
+                    .with_description(description_of(description)?)
+                    .with_provenance(actor)
+                    .post(Posting::debit(self.wallet, amt, currency()).in_layer(Layer::Pending))
+                    .post(Posting::credit(self.revenue, amt, currency()).in_layer(Layer::Pending)),
+            )
+            .await?;
         // An identical retry replays instead of spending again: the limit guards new spend,
         // so a replay answers before the check. A different request under a reused key falls
         // through to the engine's idempotency gate, which names the conflict — also past the
@@ -527,6 +528,85 @@ impl Wallet {
             .replace_day(1)
             .map_err(invalid)?;
         self.settled_spend_since(first).await
+    }
+
+    /// Closes a month: defines the `YYYY-MM` period covering `first`'s month if the
+    /// ledger does not know it, stops new postings into it and seals it — the seal
+    /// the store appends is the month's closing record, chained onto the seals
+    /// before it. From then on every write whose booking date falls in the month is
+    /// refused at seal time (see [`Wallet::seal`]), which is product.md's "after
+    /// closing, that month accepts no new entries" made structural rather than
+    /// conventional.
+    ///
+    /// `first` must be the month's first day — the period id, `YYYY-MM`, is what
+    /// callers and the admin page both say. Only a month that has fully ended can
+    /// be closed: one that still contains the server's current UTC date would
+    /// refuse the very next request the gateway writes, so it is rejected here.
+    ///
+    /// Closing an already-sealed month answers its existing record: the call is
+    /// idempotent, because the admin page's button and a retried request must
+    /// agree with what the seals table already holds.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::InvalidInput`] for a `first` that is not a month's first day
+    /// or a month that has not ended; storage failures surface as
+    /// [`WalletError::Storage`].
+    pub async fn close_month(&self, first: Date) -> Result<Seal, WalletError> {
+        if first.day() != 1 {
+            return Err(invalid("the month's first day"));
+        }
+        let last = first
+            .replace_day(first.month().length(first.year()))
+            .map_err(invalid)?;
+        if last >= OffsetDateTime::now_utc().date() {
+            return Err(invalid("only a month that has fully ended can be closed"));
+        }
+        let period = PeriodId::new(format!(
+            "{:04}-{:02}",
+            first.year(),
+            u8::from(first.month())
+        ))
+        .map_err(invalid)?;
+
+        match self.store.calendar().await?.get(&period).map(|p| p.state) {
+            // Already closed: answer the record rather than a conflict — a repeat
+            // click and a retry must say the same thing.
+            Some(PeriodState::Sealed) => {
+                return self
+                    .store
+                    .seals()
+                    .await?
+                    .into_iter()
+                    .find(|seal| seal.period == period)
+                    .ok_or_else(|| invalid("a sealed period with no seal"));
+            }
+            Some(PeriodState::Closing) => {}
+            Some(PeriodState::Open) => {
+                self.store
+                    .transition_period(&period, PeriodState::Closing)
+                    .await?;
+            }
+            None => {
+                self.store
+                    .define_period(&Period::new(period.clone(), first, last).map_err(invalid)?)
+                    .await?;
+                self.store
+                    .transition_period(&period, PeriodState::Closing)
+                    .await?;
+            }
+        }
+        self.store.seal_period(&period).await.map_err(Into::into)
+    }
+
+    /// The seals this ledger holds, in chain order — the closing records the admin's
+    /// closing page lists.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError::Storage`].
+    pub async fn seals(&self) -> Result<Vec<Seal>, WalletError> {
+        self.store.seals().await.map_err(Into::into)
     }
 
     /// The amount of the hold taken under `hold_key`, read from the hold entry in the ledger,
@@ -776,18 +856,27 @@ impl Wallet {
         Ok(b.credits.to_minor() - b.debits.to_minor())
     }
 
-    fn seal(&self, draft: Entry<Draft, SCALE>) -> Result<Entry<Balanced, SCALE>, WalletError> {
+    /// Seals a draft against the ledger's *current* calendar — read back from
+    /// storage on every write, not held from `open`, so a month the operator closes
+    /// stops new postings dated into it on the very next call rather than after a
+    /// restart. This is where "a sealed month accepts no new entries" is enforced:
+    /// `Entry::seal` refuses a booking date the calendar's sealed watermark covers.
+    async fn seal(
+        &self,
+        draft: Entry<Draft, SCALE>,
+    ) -> Result<Entry<Balanced, SCALE>, WalletError> {
+        let calendar = self.store.calendar().await?;
         draft
             .seal(&SealContext {
                 accounts: &self.registry,
-                calendar: &self.calendar,
+                calendar: &calendar,
                 policy: &self.policy,
             })
             .map_err(invalid)
     }
 
     async fn append(&self, draft: Entry<Draft, SCALE>) -> Result<Receipt, WalletError> {
-        let entry = self.seal(draft)?;
+        let entry = self.seal(draft).await?;
         self.append_sealed(entry).await
     }
 

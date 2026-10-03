@@ -666,3 +666,13 @@ New decisions go on top. Overturned decisions are never deleted; mark them "Supe
   - An `oxsum.anomalies` table written at settle time: a parallel store of ledger facts, one more thing to disagree with the books.
   - Flagging `upstream_error`/`upstream_unreachable` rows too: they are failures, not anomalies in the sense this page exists for — nothing was charged, so nothing was lost.
 
+
+## 2026-10-03 Monthly closing is doubleentry's period seal (issue #57)
+
+- Status: Adopted
+- Decision: `POST /api/v1/admin/closings` closes a `YYYY-MM` month in every organization's ledger via `Wallet::close_month` (`crates/core/src/wallet.rs`), which defines the period if needed, transitions it to closing and calls the store's `seal_period` — the vendored engine's own machinery, unused until now. The seal it appends *is* the closing record product.md asks for: it commits to the log's tree head, the period's entry count and the closing trial balance, and chains onto the seal before it, so the closing history is itself tamper-evident. "The month accepts no new entries" is enforced by the engine's sealed watermark, checked in `Entry::seal`; for that check to see a seal made after the wallet opened, `Wallet::seal` now reads the calendar from storage on every write instead of holding the empty one from `open`.
+- Why: the promise "after closing, that month accepts no new entries" has to be structural, not a route-layer convention — every write path (`top_up`, `hold`, `hold_for_key`, `settle`, the sweeper) already funnels through the one `seal`, so the watermark check there covers all of them at once. The alternative, an oxsum-side `closed_months` table checked in routes, would both duplicate the engine's state and leave the wallet API able to write into a closed month.
+- Rejected:
+  - Year-end closing entries (`doubleentry::closing_postings`): they zero single-period accounts into equity; oxsum's months are review checkpoints, not balance resets — the wallet's balances must carry across a close.
+  - Sealing only months with entries: an empty ledger's month still gets a record, and the watermark over its dates is what makes "closed" mean anything.
+  - An `oxsum.closings` table beside the seals: the seals table already is the record; a second store can only disagree with it.

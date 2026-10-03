@@ -4,7 +4,7 @@ Status: finalized (2026-10-01), audited against the code (2026-10-03, issue #61)
 
 This document records product behavior: who can do what, and how every situation is billed. Technical implementation lives in architecture.md, technology rationale in decisions.md, progress in TODO.md.
 
-Every page and flow below carries a status: **shipped** means this repository does it today, **planned** means the text describes the vision and names the issue that will build it. A planned page or flow is not a smaller feature that happens to be missing; it is documented behavior that no code implements. The shipped dashboard pages are `crates/web/src/app.rs` (shell, login, logout, overview, API keys, members, transaction log, bills, requests, verification), `crates/web/src/chat.rs` (chat) and `crates/web/src/admin.rs` (the platform-admin pages, #57 — channels, organizations, in-flight and anomalies so far); the REST and gateway behavior they call is in `crates/server`. Issue #61 is the audit that added these statuses; the resolutions are recorded in docs/decisions.md.
+Every page and flow below carries a status: **shipped** means this repository does it today, **planned** means the text describes the vision and names the issue that will build it. A planned page or flow is not a smaller feature that happens to be missing; it is documented behavior that no code implements. The shipped dashboard pages are `crates/web/src/app.rs` (shell, login, logout, overview, API keys, members, transaction log, bills, requests, verification), `crates/web/src/chat.rs` (chat) and `crates/web/src/admin.rs` (the platform-admin pages, #57); the REST and gateway behavior they call is in `crates/server`. Issue #61 is the audit that added these statuses; the resolutions are recorded in docs/decisions.md.
 
 ## One-liner
 
@@ -15,7 +15,7 @@ An OpenAI-compatible AI gateway. Users point base_url at oxsum and keep using an
 The piece must let a first-time visitor walk this path in minutes:
 
 1. `docker compose up`, create the platform admin from the command line.
-2. The admin configures one upstream channel (say DeepSeek) on the channels and prices page (`/admin/channels`, or `/api/v1/admin` with the operator token — the closing page is still planned, #57) and tops up an organization through its own credential (`POST /api/v1/topups`, the chat page's top-up form).
+2. The admin configures one upstream channel (say DeepSeek) on the channels and prices page (`/admin/channels`, or `/api/v1/admin` with the operator token) and tops up an organization through its own credential (`POST /api/v1/topups`, the chat page's top-up form).
 3. Create an API key, change base_url in any OpenAI SDK or ChatBox, and start chatting.
 4. The dashboard shows each in-flight freeze with its streaming progress live, and the newest settled entries below it.
 5. Open `/verify` — linked from every settled chat turn with both fields prefilled — and browser-local verification passes; change one number in the bundle and it fails. The bills page (`/dashboard/bills`) lists each settled entry with its content hash and exports the list as CSV or JSON; fetching an entry's proof bundle from that page is planned, #54.
@@ -24,7 +24,7 @@ The piece must let a first-time visitor walk this path in minutes:
 
 | Role | Who | Can do | Status |
 | --- | --- | --- | --- |
-| Platform admin | Whoever deploys oxsum | Manage channels and prices, top up or adjust any organization, view all anomalous requests, run monthly closings | Channels and prices are shipped — the `/api/v1/admin` endpoints and the `/admin/channels` page, under the operator token; the closing page, topping up or adjusting another organization and the closings are planned (#57, #60 adjustments and the signup bonus) |
+| Platform admin | Whoever deploys oxsum | Manage channels and prices, top up or adjust any organization, view all anomalous requests, run monthly closings | Channels and prices are shipped — the `/api/v1/admin` endpoints and the `/admin/channels` page, under the operator token; topping up or adjusting another organization and the signup bonus are planned (#60) |
 | Organization owner | Organization creator | Everything inside the organization, including transferring ownership | Shipped: keys, balance, the ledger, and membership management with the ownership transfer |
 | Organization admin | Appointed by the owner | Invite and remove members, manage all keys, view the organization's full bill history | Shipped: managing all keys, and inviting, removing and re-roling members (but not the owner's own membership); the bill history ships as the bills page — the organization's settled entries, exportable as CSV or JSON — which applies no member filter yet |
 | Organization member | People an owner or admin added | Create and revoke their own keys, view organization balance and their own request records | Their own keys, the balance and their own request records are shipped (the requests page, #55, shows the turns their own keys paid for); the shipped bills page lists the whole organization's settled entries with no member filter, and being invited is planned (#59) |
@@ -41,7 +41,7 @@ Two shipped pages are readable more widely than the "Who" column suggests. The t
 - Login is email plus password; passwords are stored with argon2. v1 sends no email, so there is no email verification and no password recovery. The platform admin resets forgotten passwords by hand today — there is no operator endpoint for it, and none is planned in an issue yet.
 - A login mints a session: the response names the user, the organization and the role, and a cookie (`oxsum_session`, `HttpOnly`, `SameSite=Lax`, `Path=/`, plus `Secure` when the deployment is behind TLS) carries it from then on. The session acts as the user's organization in their role, expires thirty days after login, and stops authenticating the moment the user's membership in that organization is gone. Logging out revokes it. An unknown email and a wrong password answer the same 401 with the same message, so neither reveals whether an account exists.
 - Sessions and API keys are two credentials for the same organization: every `/api/v1` endpoint takes either (an explicit bearer token wins over the cookie), while the gateway (`/v1`) takes an API key only. Role rules apply to sessions; a key keeps acting as the whole organization.
-- The platform admin is whoever deploys oxsum: the operator token `OXSUM_ADMIN_TOKEN` opens `/api/v1/admin`, and there is no platform-admin user — see docs/decisions.md ("an operator token rather than a session"). The `/admin` pages open with the same token: channels and prices, organizations, in-flight requests and anomalies are shipped; the closing page is planned, #57. Not "the first registrant becomes admin" — on a public instance, whoever registers first would own it.
+- The platform admin is whoever deploys oxsum: the operator token `OXSUM_ADMIN_TOKEN` opens `/api/v1/admin`, and there is no platform-admin user — see docs/decisions.md ("an operator token rather than a session"). The `/admin` pages open with the same token: channels and prices, organizations, in-flight requests, anomalies and closing are all shipped. Not "the first registrant becomes admin" — on a public instance, whoever registers first would own it.
 - Registration mode is deployment-configured (`OXSUM_SIGNUP`):
   - `invite` (default): registration only through invitation links
   - `open`: anyone can register
@@ -204,7 +204,7 @@ Verification proves: this record was not altered after being written, and histor
 
 ### Platform admin
 
-The platform admin surface is the `/api/v1/admin` REST API under the operator token (`OXSUM_ADMIN_TOKEN`), and the `/admin` pages drive it directly from the browser — the token is typed in once, kept in `localStorage` like the chat page's key and sent as `Authorization: Bearer` (docs/decisions.md). The channels and prices, organizations, in-flight and anomalies pages are shipped; the closing page is planned under issue #57, and the adjustments and signup bonus the first row needs are #60.
+The platform admin surface is the `/api/v1/admin` REST API under the operator token (`OXSUM_ADMIN_TOKEN`), and the `/admin` pages drive it directly from the browser — the token is typed in once, kept in `localStorage` like the chat page's key and sent as `Authorization: Bearer` (docs/decisions.md). All five pages are shipped, and the adjustments and signup bonus the first row needs are #60.
 
 | Page | Content | Status |
 | --- | --- | --- |
@@ -213,7 +213,7 @@ The platform admin surface is the `/api/v1/admin` REST API under the operator to
 | In-flight requests | Every unsettled hold, globally | Shipped: `/admin/in-flight` on `GET /api/v1/admin/holds` — the sweeper's watch table joined to the organizations |
 | Anomalies | The settled turns that did not price cleanly, summarized per channel | Shipped: `/admin/anomalies` on `GET /api/v1/admin/anomalies` — the `capped`, `estimated`, `client_cancelled` and `swept` settlement records, read back from the ledgers themselves, with a per-channel count and charged total |
 | Anomalies | Requests with settlement type `capped`, `estimated`, `client_cancelled` or `swept`, summarizable per channel to see where the platform loses money upstream | Planned, #57 |
-| Closing | Monthly closing; after closing, that month accepts no new entries and a closing record is produced | Planned, #57 |
+| Closing | Monthly closing; after closing, that month accepts no new entries and a closing record is produced | Shipped: `/admin/closing` on `GET`/`POST /api/v1/admin/closings` — closing seals the `YYYY-MM` period in every organization's ledger (doubleentry's period seals: the log's tree head, the closing trial balance, chained onto the seal before it), and the sealed watermark then refuses any entry dated into the month |
 
 ## Phase C: chat page (shipped)
 
@@ -235,7 +235,6 @@ The platform admin surface is the `/api/v1/admin` REST API under the operator to
 
 Everything this document describes but the code does not do yet, with the issue that tracks it:
 
-- The remaining platform-admin page: closing — #57
 - Team organizations and switching the acting organization — #58
 - Invitations: one link, seven days, usable once — #59
 - Platform-admin adjustments and the signup bonus — #60
