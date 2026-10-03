@@ -134,8 +134,12 @@ served by the same `oxsum` binary through `leptos_axum`: server-side rendering c
 - `cargo leptos build` compiles the server and the WASM browser side together (the
   styles in `crates/web/style/main.css` are bundled into `target/site/pkg/`).
 - `cargo leptos serve` runs the server and rebuilds on change.
-- `cargo run -p oxsum-server` also serves the pages (server-side rendered); the live
-  browser side needs the WASM build from `cargo leptos build` first.
+- `cargo run -p oxsum-server` also serves the pages (server-side rendered), and serves the
+  bundle that `cargo leptos build` wrote: the site root is the workspace's `target/site`,
+  resolved by the server rather than taken from the working directory, so the live browser
+  side works under plain `cargo run` too (issue #44). Without a build, the pages render and
+  never hydrate — no top-up form, no chat, no bill verification — so run `cargo leptos
+  build` first.
 - In-flight gateway turns are pushed to the dashboard over `/ws/billing` (WebSocket,
   session-cookie auth): a snapshot of the open holds on connect, then started, progress
   and settled events as turns happen. The events come from a process-wide broadcast the
