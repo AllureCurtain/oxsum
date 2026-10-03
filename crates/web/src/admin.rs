@@ -991,13 +991,20 @@ mod browser {
             return Err(failure(response).await);
         }
         response
-            .json()
+            .json::<Envelope<T>>()
             .await
+            .map(|envelope| envelope.data)
             .map_err(|_| FetchError::Failed("the answer could not be read".to_owned()))
     }
 
-    /// POSTs a JSON body and answers what it answered, unparsed: a price append carries
-    /// the new `version`, a channel save the channel itself.
+    /// The success envelope every `/api/v1` answer wears: `{ "data": ... }`.
+    #[derive(Deserialize)]
+    struct Envelope<T> {
+        data: T,
+    }
+
+    /// POSTs a JSON body and answers what it answered inside the envelope, unparsed:
+    /// a price append carries the new `version`, a channel save the channel itself.
     pub async fn post<B: Serialize>(
         token: &str,
         path: &str,
@@ -1014,8 +1021,9 @@ mod browser {
             return Err(failure(response).await);
         }
         response
-            .json()
+            .json::<Envelope<serde_json::Value>>()
             .await
+            .map(|envelope| envelope.data)
             .map_err(|_| FetchError::Failed("the answer could not be read".to_owned()))
     }
 }
