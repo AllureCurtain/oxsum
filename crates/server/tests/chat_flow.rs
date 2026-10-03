@@ -41,7 +41,9 @@ async fn upstream() -> Response {
             "data: {\"choices\":[{\"delta\":{\"content\":\"lorem ipsum dolor sit amet \"}}],\"usage\":null}\n\n",
         );
     }
-    frames.push_str("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}\n\n");
+    frames.push_str(
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}\n\n",
+    );
     frames.push_str("data: [DONE]\n\n");
     (
         StatusCode::OK,
