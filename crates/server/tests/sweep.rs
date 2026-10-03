@@ -127,7 +127,12 @@ async fn settlement_record(wallet: &Arc<Wallet>, hold_key: &str) -> Option<Value
 
 /// Serialises the test sweepers across test binaries: production runs one sweeper, so the
 /// tests take an advisory lock around aging and sweeping, and no two test sweepers run at once.
-/// Without it, one binary's sweep would resolve another's aged rows and the counts would flake.
+///
+/// The lock orders sweepers; it says nothing about the rows they find. `oxsum.open_holds` is
+/// shared with every other world and every other run against this database, and
+/// [`sweep_stale_holds`] counts every world's rows — a row another world left stale is resolved
+/// here too, which is the sweeper working rather than a failure. A test therefore asserts on the
+/// row it owns, never on the count (issue #34).
 const SWEEP_LOCK: i64 = i64::from_be_bytes(*b"oxsumswp");
 
 /// Takes the sweep lock, returning the connection that holds it. A previous test that failed
@@ -221,7 +226,9 @@ async fn a_stale_hold_is_swept_at_zero_and_recorded_as_an_anomaly() {
     let resolved = sweep_stale_holds(&world.db, &world.tenants, stale_cutoff(), D)
         .await
         .expect("sweeps");
-    assert_eq!(resolved, 1);
+    // This world's row is among those resolved. The count may also cover stale rows other worlds
+    // left behind, which is correct, so it is not asserted exactly.
+    assert!(resolved >= 1, "the sweep resolved nothing at all");
 
     // The whole freeze is released...
     assert_eq!(world.wallet.reserved().await.unwrap(), 0);
@@ -237,7 +244,8 @@ async fn a_stale_hold_is_swept_at_zero_and_recorded_as_an_anomaly() {
     assert_eq!(record["outputTokens"], 0);
     assert_eq!(record["freeze"], freeze);
     assert_eq!(record["request"], request_id);
-    // A second pass finds nothing: the row is gone.
+    // A second pass finds nothing: the row is gone, and nothing can have aged a new one — only a
+    // test ages rows, and this one still holds the sweep lock.
     let resolved = sweep_stale_holds(&world.db, &world.tenants, stale_cutoff(), D)
         .await
         .expect("sweeps again");
@@ -254,11 +262,12 @@ async fn a_hold_younger_than_the_timeout_is_not_swept() {
     let (hold_key, request_id, watch) = watch(&world.tenant, 2, freeze);
     take_hold(&world, &hold_key, &request_id, &watch, freeze).await;
 
-    // The row is seconds old: younger than the timeout, so the sweep leaves it alone.
-    let resolved = sweep_stale_holds(&world.db, &world.tenants, stale_cutoff(), D)
+    // The row is seconds old: younger than the timeout, so the sweep leaves it alone. The count is
+    // not what says so — it spans every world, and an older world's row is this pass's to resolve —
+    // the state of this world's row is.
+    sweep_stale_holds(&world.db, &world.tenants, stale_cutoff(), D)
         .await
         .expect("sweeps");
-    assert_eq!(resolved, 0);
     // Untouched: still reserved, no settlement, still watched for a later pass.
     assert_eq!(world.wallet.reserved().await.unwrap(), freeze);
     assert!(settlement_record(&world.wallet, &hold_key).await.is_none());
@@ -289,7 +298,8 @@ async fn a_watch_row_without_a_hold_is_cleaned_up_without_a_write() {
     let resolved = sweep_stale_holds(&world.db, &world.tenants, stale_cutoff(), D)
         .await
         .expect("sweeps");
-    assert_eq!(resolved, 1);
+    // This world's row is among those resolved, whatever else the shared table held.
+    assert!(resolved >= 1, "the sweep resolved nothing at all");
     // No settlement was written for a hold that never existed...
     assert!(settlement_record(&world.wallet, &hold_key).await.is_none());
     assert_eq!(
@@ -324,7 +334,11 @@ async fn the_sweeper_and_a_late_settlement_cannot_both_take_effect() {
             sweep_stale_holds(&world.db, &world.tenants, stale_cutoff(), D),
             wallet.settle(&key, &late, charge, D),
         );
-        assert_eq!(swept.expect("the sweep runs"), 1);
+        // The sweep resolves this round's row, among whatever else the shared table held.
+        assert!(
+            swept.expect("the sweep runs") >= 1,
+            "the sweep resolved nothing at all"
+        );
 
         // Exactly one settlement exists, and it is either the sweep's or the turn's.
         let record = settlement_record(&world.wallet, &hold_key)
