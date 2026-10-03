@@ -15,9 +15,10 @@ use leptos_router::hooks::{use_navigate, use_query_map};
 use leptos_router::path;
 
 use crate::api::{
-    CreatedKeyView, DashboardData, EntryView, HoldView, KeyView, MemberView, create_key,
+    CreatedKeyView, DashboardData, EntryView, HoldView, KeyView, MemberView, create_key, get_bills,
     get_dashboard, get_keys, get_log, get_members, revoke_key,
 };
+use crate::bills::BillView;
 use crate::chat::ChatPage;
 
 /// The HTML shell: the document around the app. `leptos_axum` renders this as the
@@ -58,6 +59,7 @@ pub fn App() -> impl IntoView {
                 <ParentRoute path=path!("/dashboard") view=DashboardLayout>
                     <Route path=path!("/") view=OverviewPage/>
                     <Route path=path!("/chat") view=ChatPage/>
+                    <Route path=path!("/bills") view=BillsPage/>
                     <Route path=path!("/keys") view=KeysPage/>
                     <Route path=path!("/members") view=MembersPage/>
                     <Route path=path!("/log") view=LogPage/>
@@ -265,6 +267,7 @@ fn DashboardLayout() -> impl IntoView {
                 <div class="brand">"oxsum"</div>
                 <A href="/dashboard">"Overview"</A>
                 <A href="/dashboard/chat">"Chat"</A>
+                <A href="/dashboard/bills">"Bills"</A>
                 <A href="/dashboard/keys">"API keys"</A>
                 <A href="/dashboard/members">"Members"</A>
                 <A href="/dashboard/log">"Transaction log"</A>
@@ -470,6 +473,77 @@ fn EntryTable(#[prop(into)] entries: Vec<EntryView>) -> impl IntoView {
                                 <td class="mono">{entry.id.clone()}</td>
                                 <td>{entry.description.clone()}</td>
                                 <td class="mono">{entry.content_hash.clone()}</td>
+                            </tr>
+                        </For>
+                    </tbody>
+                </table>
+            }
+                .into_any()
+        }}
+    }
+}
+
+/// The bills page: the organization's settled entries, newest first, each with the
+/// content hash its proof verifies against — and the two exports, which carry the same
+/// rows.
+///
+/// The exports are links rather than buttons: `GET /dashboard/bills/export.csv` answers
+/// with `Content-Disposition: attachment`, so the browser saves the file without any
+/// script of ours, and a command-line client can fetch it the same way
+/// (docs/decisions.md). The charge is the ledger's integer in both files and travels
+/// through the row type unformatted; the table renders that same integer with the
+/// dashboard's [`credits()`], so the page and the files cannot disagree about an amount.
+#[component]
+fn BillsPage() -> impl IntoView {
+    let bills = Resource::new(|| (), |_| async { get_bills().await });
+    view! {
+        <section class="card" aria-label="Bills">
+            <h1>"Bills"</h1>
+            <p class="muted">
+                "This organization's settled entries, newest first: when each was booked, what it charged in credits, and the content hash its proof verifies against. The two downloads carry the same rows, with the charge as the ledger's integer in minor units."
+            </p>
+            <p>
+                <a href="/dashboard/bills/export.csv">"Download CSV"</a>
+                " · "
+                <a href="/dashboard/bills/export.json">"Download JSON"</a>
+            </p>
+            <Suspense fallback=move || view! { <p class="muted">"Loading…"</p> }>
+                {move || bills.get().map(|result| match result {
+                    Ok(bills) => view! { <BillTable bills=bills/> }.into_any(),
+                    Err(error) => view! { <p class="error" role="alert">{error.to_string()}</p> }.into_any(),
+                })}
+            </Suspense>
+        </section>
+    }
+}
+
+/// The settled entries: booked on, entry id, cost in credits, content hash. The columns
+/// are the exports' fields, in the same order; the charge is the one column rendered for
+/// a reader rather than for a machine, so it goes through [`credits()`] like every other
+/// amount in the dashboard.
+#[component]
+fn BillTable(#[prop(into)] bills: Vec<BillView>) -> impl IntoView {
+    view! {
+        {if bills.is_empty() {
+            view! { <p class="muted">"No settled entries yet."</p> }.into_any()
+        } else {
+            view! {
+                <table>
+                    <thead>
+                        <tr>
+                            <th scope="col">"Booked on"</th>
+                            <th scope="col">"Entry"</th>
+                            <th scope="col" class="num">"Cost (credits)"</th>
+                            <th scope="col">"Content hash"</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <For each=move || bills.clone() key=|bill| bill.entry_id.clone() let(bill)>
+                            <tr>
+                                <td class="mono">{bill.booked_on.clone()}</td>
+                                <td class="mono">{bill.entry_id.clone()}</td>
+                                <td class="mono num">{credits(bill.charged_minor)}</td>
+                                <td class="mono">{bill.content_hash.clone()}</td>
                             </tr>
                         </For>
                     </tbody>

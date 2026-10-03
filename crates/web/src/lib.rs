@@ -11,6 +11,9 @@ mod app;
 // The module itself is browser-only (`hydrate`); see its inner `#![cfg]`.
 mod billing_socket;
 mod chat;
+// Public: the bills page's row shape and the CSV/JSON exports built from it, which the
+// server's download routes answer with as well.
+pub mod bills;
 
 pub use app::{App, Shell};
 pub use chat::ChatPage;

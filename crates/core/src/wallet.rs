@@ -4,7 +4,7 @@ use doubleentry::{
     AccountId, Amount, BalanceKey, BalanceLimit, BalanceQuery, Balanced, Currency, Cursor,
     Description, Direction, Draft, Entry, EntryBatch, EntryId, Hash, IdempotencyKey, Layer,
     LedgerId, LedgerPolicy, LedgerStore, LogIndex, PeriodCalendar, Posting, Provenance,
-    SealContext,
+    SealContext, StoredEntry,
 };
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
@@ -92,6 +92,26 @@ pub struct LogEntry {
     /// The content hash the Merkle log commits to.
     pub content_hash: String,
 }
+
+/// One settled entry as the bills page lists it and its exports carry it.
+#[derive(Debug, Clone)]
+pub struct SettledEntry {
+    pub id: String,
+    /// The booking date: the server's UTC date when the entry was written. The ledger
+    /// records no time of day.
+    pub booked_on: Date,
+    /// What the entry charged, in minor units, read from the ledger's own postings; 0 for
+    /// the settlements that charge nothing.
+    pub charged_minor: i64,
+    /// The content hash the Merkle log commits to, and that the entry's proof verifies
+    /// against.
+    pub content_hash: String,
+}
+
+/// Entries one bills read scans for settlements, per page. A gateway turn writes two
+/// entries — the hold and the settlement that releases it — so a page this size carries
+/// hundreds of bills, and a read stops as soon as it has enough.
+const BILLS_SCAN: usize = 512;
 
 impl Wallet {
     /// Opens a tenant's ledger on the shared pool, creating the ledger on first use.
@@ -625,6 +645,86 @@ impl Wallet {
             .collect();
         entries.reverse();
         Ok(entries)
+    }
+
+    /// The newest settled entries, newest first, at most `limit`.
+    ///
+    /// What the dashboard's bills page lists and its CSV and JSON exports carry: the id,
+    /// the booking date, the charge in minor units and the content hash.
+    ///
+    /// A settled entry is one that *released a hold*, and the ledger says which those are:
+    /// [`Wallet::settle`] always credits the wallet account in the pending layer — the
+    /// mirror of the pending debit a hold takes — and no other write does. The entry's
+    /// description cannot answer this: the wallet API's settlements record none
+    /// (`POST /api/v1/settlements`, whose whole input is the hold key and the actual), so
+    /// identifying settlements by their description would silently omit them.
+    ///
+    /// The charge is the entry's net debit on the wallet account in the *settled* layer,
+    /// i.e. what the books hold; it is 0 for the settlement kinds that charge nothing (an
+    /// upstream error, an unreachable upstream, a swept hold).
+    ///
+    /// The read walks back one page at a time and stops as soon as it has `limit` bills, so
+    /// a busy log costs no more than the entries above the last one it returns.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn settled_entries(&self, limit: usize) -> Result<Vec<SettledEntry>, WalletError> {
+        let wanted = limit.clamp(1, 100);
+        let mut end = self.store.head().await?.size;
+        let mut bills = Vec::new();
+        while end > 0 && bills.len() < wanted {
+            let start = end.saturating_sub(BILLS_SCAN as u64);
+            let after = start.checked_sub(1).map(LogIndex::new);
+            let page = self
+                .store
+                .page(Cursor {
+                    after,
+                    limit: (end - start) as usize,
+                })
+                .await?;
+            // The store pages in log order; the page wants newest first.
+            for stored in page.records.iter().rev() {
+                if self.is_settlement(stored) {
+                    bills.push(SettledEntry {
+                        id: stored.entry.id().to_string(),
+                        booked_on: stored.entry.booking_date(),
+                        charged_minor: self.settled_charge(stored),
+                        content_hash: stored.content_hash.to_string(),
+                    });
+                    if bills.len() == wanted {
+                        break;
+                    }
+                }
+            }
+            end = start;
+        }
+        Ok(bills)
+    }
+
+    /// True when the entry settled a hold: the pending-layer credit on the wallet account
+    /// that [`Wallet::settle`] writes for every settlement, whatever it charges.
+    fn is_settlement(&self, stored: &StoredEntry<SCALE>) -> bool {
+        stored.entry.postings().iter().any(|p| {
+            p.account == self.wallet
+                && p.layer == Layer::Pending
+                && p.direction == Direction::Credit
+        })
+    }
+
+    /// What the entry charged: the wallet account's net debit in the settled layer, in
+    /// minor units. Nothing at all for a settlement that charged nothing.
+    fn settled_charge(&self, stored: &StoredEntry<SCALE>) -> i64 {
+        stored
+            .entry
+            .postings()
+            .iter()
+            .filter(|p| p.account == self.wallet && p.layer == Layer::Settled)
+            .map(|p| match p.direction {
+                Direction::Debit => p.amount.to_minor(),
+                Direction::Credit => -p.amount.to_minor(),
+            })
+            .sum()
     }
 
     async fn wallet_net(&self, layer: Layer) -> Result<i64, WalletError> {

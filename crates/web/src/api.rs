@@ -14,6 +14,8 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::bills::BillView;
+
 #[cfg(feature = "ssr")]
 use axum::http::header::COOKIE;
 #[cfg(feature = "ssr")]
@@ -255,6 +257,26 @@ pub async fn get_log() -> Result<Vec<EntryView>, ServerFnError> {
         .await
         .map_err(|_| ServerFnError::new("the transaction log could not be read"))?;
     Ok(entries.iter().map(EntryView::from).collect())
+}
+
+/// The bills page: the organization's settled entries, newest first, each with the
+/// content hash its proof verifies against.
+///
+/// The same read, the same limit and so the same rows as the two exports
+/// (`crates/server/src/bills.rs`): the page and the files it offers cannot disagree
+/// about what was billed.
+#[server(prefix = "/_pages")]
+pub async fn get_bills() -> Result<Vec<BillView>, ServerFnError> {
+    let (_db, tenants, principal) = session_ctx().await?;
+    let wallet = tenants
+        .get(&principal.organization.tenant_id)
+        .await
+        .map_err(|_| ServerFnError::new("the wallet could not be opened"))?;
+    let bills = wallet
+        .settled_entries(crate::bills::BILLS_LIMIT)
+        .await
+        .map_err(|_| ServerFnError::new("the bills could not be read"))?;
+    Ok(bills.iter().map(BillView::from).collect())
 }
 
 /// What the session may do with the organization's keys: owners and admins see all,

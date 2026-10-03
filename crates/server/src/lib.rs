@@ -3,6 +3,7 @@
 mod admin;
 mod auth;
 mod billing;
+mod bills;
 mod config;
 mod error;
 mod gateway;

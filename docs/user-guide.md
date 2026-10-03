@@ -55,10 +55,23 @@ password; `/dashboard` is the overview. `/logout` logs out.
 - **Members**: everyone in the organization, with their roles.
 - **Transaction log**: the newest ledger entries, newest first: position, id,
   description and content hash.
+- **Bills**: the organization's settled entries, newest first, at `/dashboard/bills`:
+  the date each was booked, its id, what it charged in credits under **Cost (credits)**,
+  and the content hash its proof verifies against. Only entries that released a hold are
+  listed — a top-up, or a hold that has not settled yet, is not a bill.
+- **Export**: **Download CSV** and **Download JSON** on the bills page save that same
+  list as a file. Both carry the same fields and the same rows as the table — `bookedOn`,
+  `entryId`, `chargedMinor`, `contentHash` — so an archived record can be checked against
+  the ledger later; the charge is the ledger's integer in minor units in both files,
+  where the page shows the same amount in credits. The server sends the file with
+  `Content-Disposition: attachment`, so a browser saves it instead of opening it, and the
+  same two URLs work with `curl` and your session cookie as well.
 
 Notes:
 
-- Amounts are in credits with six decimals; the ledger keeps them as integers.
+- Amounts are in credits with six decimals on every page, the bills page included; the
+  ledger keeps them as integers, and the CSV and JSON exports carry the ledger's own
+  integers in minor units (`chargedMinor`, where 1 credit = 1,000,000).
 - The dashboard needs the browser build: serve it with `cargo leptos serve` (or
   `cargo leptos build` once, then run the server). Without it the pages render but
   the live updates do not run.
