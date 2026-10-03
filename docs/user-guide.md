@@ -277,3 +277,5 @@ Steps:
 4. "Append price" on a channel's card appends a new version for one model. Prices are append-only — a change is `v{n+1}`, never a rewrite — and "Show history" reads every version the channel has ever had, newest first. That history is what a bill's `priceVersion` is checked against later.
 
 Note: a request resolves its price when it starts and carries the version to its settlement, so a price change lands on later requests only; in-flight turns and old bills are untouched.
+
+The organizations page (`/admin/organizations`) lists every organization the ledger holds money for — its name, kind (personal or team), headcount, and what its wallet shows: the available balance and the frozen sum of its outstanding holds. It reads only; topping up or adjusting another organization's balance is not built yet (#60).

@@ -14,7 +14,7 @@ use leptos_router::components::{A, Outlet, ParentRoute, Redirect, Route, Router,
 use leptos_router::hooks::{use_navigate, use_query_map};
 use leptos_router::path;
 
-use crate::admin::{AdminChannelsPage, AdminLayout};
+use crate::admin::{AdminChannelsPage, AdminLayout, AdminOrganizationsPage};
 use crate::api::{
     CreatedKeyView, DashboardData, EntryView, HoldView, KeyView, MemberView, MembersView,
     TransferView, add_member, change_member_role, create_key, get_bills, get_dashboard, get_keys,
@@ -64,6 +64,7 @@ pub fn App() -> impl IntoView {
                 <ParentRoute path=path!("/admin") view=AdminLayout>
                     <Route path=path!("/") view=|| view! { <Redirect path="/admin/channels"/> }/>
                     <Route path=path!("/channels") view=AdminChannelsPage/>
+                    <Route path=path!("/organizations") view=AdminOrganizationsPage/>
                 </ParentRoute>
                 <ParentRoute path=path!("/dashboard") view=DashboardLayout>
                     <Route path=path!("/") view=OverviewPage/>
@@ -295,7 +296,7 @@ fn DashboardLayout() -> impl IntoView {
 
 /// Formats minor units as credits with six decimals, without floating point: money is
 /// integers all the way down, including on the way to the screen.
-fn credits(minor: i64) -> String {
+pub(crate) fn credits(minor: i64) -> String {
     let sign = if minor < 0 { "-" } else { "" };
     let abs = minor.unsigned_abs();
     format!("{sign}{}.{:06}", abs / 1_000_000, abs % 1_000_000)

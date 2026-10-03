@@ -17,9 +17,11 @@ use axum::middleware::Next;
 use axum::response::Response;
 use axum::routing::get;
 use axum::{Router, middleware};
-use oxsum_core::{Channel, ModelPrice, Price};
+use oxsum_core::{Channel, Kind, ModelPrice, Price};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq as _;
+use time::OffsetDateTime;
+use uuid::Uuid;
 
 use crate::AppState;
 use crate::error::{ApiError, ApiJson};
@@ -30,6 +32,7 @@ pub fn router(state: AppState) -> Router<AppState> {
     Router::new()
         .route("/channels", get(list).post(set))
         .route("/channels/{name}/prices", get(history).post(append))
+        .route("/organizations", get(organizations))
         .layer(middleware::from_fn_with_state(state, require_admin))
 }
 
@@ -118,6 +121,45 @@ async fn append(
         model: request.model,
         version,
     })
+}
+
+/// An organization as the organizations endpoint answers it: identity, kind, headcount,
+/// and what its wallet shows.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OrganizationRes {
+    id: Uuid,
+    name: String,
+    kind: Kind,
+    members: i64,
+    #[serde(with = "time::serde::rfc3339")]
+    created_at: OffsetDateTime,
+    /// Settled minus unsettled holds.
+    available_minor: i64,
+    /// The sum of the organization's outstanding holds; 0 when it holds nothing.
+    reserved_minor: i64,
+}
+
+/// Every organization, oldest first, with its balance.
+///
+/// The list is the identity table's; the money is read per organization through the
+/// wallet, which creates the ledger of one that has never moved — the same laziness
+/// the dashboard's overview has.
+async fn organizations(State(state): State<AppState>) -> ApiResult<Vec<OrganizationRes>> {
+    let mut answer = Vec::new();
+    for organization in state.db.organizations().await? {
+        let wallet = state.tenants.get(&organization.tenant_id).await?;
+        answer.push(OrganizationRes {
+            id: organization.id,
+            name: organization.name,
+            kind: organization.kind,
+            members: organization.members,
+            created_at: organization.created_at,
+            available_minor: wallet.available().await?,
+            reserved_minor: wallet.reserved().await?,
+        });
+    }
+    ok(answer)
 }
 
 /// Every version of every model of one channel, newest first.

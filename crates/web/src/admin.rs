@@ -84,6 +84,7 @@ pub fn AdminLayout() -> impl IntoView {
             <nav class="sidenav" aria-label="Platform admin">
                 <div class="brand">"oxsum admin"</div>
                 <A href="/admin/channels">"Channels & prices"</A>
+                <A href="/admin/organizations">"Organizations"</A>
                 <A href="/dashboard">"Dashboard"</A>
             </nav>
             <main class="content">
@@ -135,6 +136,18 @@ struct ChannelView {
     api_key_last4: String,
     created_at: String,
     models: Vec<ModelPriceView>,
+}
+
+/// An organization as `GET /api/v1/admin/organizations` returns it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OrganizationView {
+    name: String,
+    kind: String,
+    members: i64,
+    created_at: String,
+    available_minor: i64,
+    reserved_minor: i64,
 }
 
 /// One model's price at a version, as the admin API returns it.
@@ -584,6 +597,88 @@ fn ChannelForm(
             }}
         </section>
     }
+}
+
+/// The organizations page: every organization, its headcount, and what its wallet
+/// shows. Money moves on a different surface — top-ups and adjustments are #60 — so
+/// this page reads and never writes.
+#[component]
+pub fn AdminOrganizationsPage() -> impl IntoView {
+    let token = admin_token();
+    let organizations = LocalResource::new(move || async move { load_organizations(token).await });
+
+    view! {
+        <h1>"Organizations"</h1>
+        <p class="muted">
+            "Every organization the ledger holds money for, oldest first. Available is              settled minus unsettled holds; frozen is the sum of the organization's              outstanding holds. Topping up or adjusting one is planned (#60)."
+        </p>
+        <Suspense fallback=move || view! { <p class="muted">"Loading…"</p> }>
+            {move || {
+                organizations.get().map(|result| match result {
+                    Err(message) => view! { <p class="error" role="alert">{message}</p> }.into_any(),
+                    Ok(organizations) if organizations.is_empty() => view! {
+                        <p class="muted">"No organizations yet."</p>
+                    }
+                    .into_any(),
+                    Ok(organizations) => view! {
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>"Name"</th>
+                                    <th>"Kind"</th>
+                                    <th class="num">"Members"</th>
+                                    <th class="num">"Available"</th>
+                                    <th class="num">"Frozen"</th>
+                                    <th>"Created"</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {organizations
+                                    .into_iter()
+                                    .map(|organization| {
+                                        view! {
+                                            <tr>
+                                                <td>{organization.name}</td>
+                                                <td>{organization.kind}</td>
+                                                <td class="num">{organization.members}</td>
+                                                <td class="mono num">
+                                                    {crate::app::credits(organization.available_minor)}
+                                                </td>
+                                                <td class="mono num pending">
+                                                    {crate::app::credits(organization.reserved_minor)}
+                                                </td>
+                                                <td class="mono">{organization.created_at}</td>
+                                            </tr>
+                                        }
+                                    })
+                                    .collect_view()}
+                            </tbody>
+                        </table>
+                    }
+                    .into_any(),
+                })
+            }}
+        </Suspense>
+    }
+}
+
+/// The resource's read. `LocalResource` only ever runs in the browser; the SSR body is
+/// a placeholder so the page compiles for the server too.
+#[cfg(feature = "hydrate")]
+async fn load_organizations(token: AdminToken) -> Result<Vec<OrganizationView>, String> {
+    admin_call(
+        token,
+        browser::get(
+            &token.0.get_untracked().unwrap_or_default(),
+            "/api/v1/admin/organizations",
+        ),
+    )
+    .await
+}
+
+#[cfg(not(feature = "hydrate"))]
+async fn load_organizations(_token: AdminToken) -> Result<Vec<OrganizationView>, String> {
+    Err(String::new())
 }
 
 /// Browser-only calls to the admin endpoints, carrying the operator token.

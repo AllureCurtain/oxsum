@@ -394,7 +394,11 @@ async fn get_raw(app: &Router, path: &str) -> (StatusCode, String) {
         .uri(path)
         .body(Body::empty())
         .expect("the test's own request");
-    let response = app.clone().oneshot(request).await.expect("the router answers");
+    let response = app
+        .clone()
+        .oneshot(request)
+        .await
+        .expect("the router answers");
     let status = response.status();
     let bytes = response
         .into_body()
@@ -412,7 +416,11 @@ async fn get_raw(app: &Router, path: &str) -> (StatusCode, String) {
 async fn the_admin_pages_render_the_token_gate() {
     let (app, _pool) = app_or_skip!();
     let (status, html) = get_raw(&app, "/admin/channels").await;
-    assert_eq!(status, StatusCode::OK, "GET /admin/channels answered {status}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "GET /admin/channels answered {status}"
+    );
     assert!(
         html.contains("Platform admin"),
         "GET /admin/channels renders the gate: {html}"
@@ -425,5 +433,85 @@ async fn the_admin_pages_render_the_token_gate() {
     // `/admin` lands on the channels page — by a redirect or by the rendered gate,
     // whichever the router emits; a 404 is the wrong answer either way.
     let (status, _) = get_raw(&app, "/admin").await;
-    assert!(status.is_success() || status.is_redirection(), "GET /admin answered {status}");
+    assert!(
+        status.is_success() || status.is_redirection(),
+        "GET /admin answered {status}"
+    );
+}
+
+/// Registers an account so a personal organization exists to list; answers its id and
+/// the API key the signup minted, which is a credential of the organization — never of
+/// the platform.
+async fn register(app: &Router, name: &str) -> (String, String) {
+    let (status, body) = call_with(
+        app,
+        "POST",
+        "/api/v1/auth/register",
+        Some(json!({
+            "email": format!("{name}_{}@example.com", &uuid::Uuid::new_v4().simple().to_string()[..8]),
+            "password": "correct horse battery",
+        })),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    (
+        body["data"]["organization"]["id"]
+            .as_str()
+            .expect("an organization id")
+            .to_owned(),
+        body["data"]["apiKey"]["secret"]
+            .as_str()
+            .expect("the minted key")
+            .to_owned(),
+    )
+}
+
+/// `GET /api/v1/admin/organizations` lists every organization with its balance, under
+/// the operator token only: an organization's own key — a credential with all of the
+/// organization's authority — is not the platform's.
+#[tokio::test]
+async fn the_organizations_list_shows_every_organization_with_its_balance() {
+    let (app, _pool) = app_or_skip!();
+    let (id, key) = register(&app, "orgview").await;
+
+    // The organization tops itself up through its own credential, the way the chat
+    // page does — the admin surface has no top-up yet (#60).
+    let (status, body) = call_with(
+        &app,
+        "POST",
+        "/api/v1/topups",
+        Some(json!({"idempotencyKey": "topup-orgview-1", "amountMinor": 7_500_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = call(&app, "GET", "/api/v1/admin/organizations", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let organizations = body["data"].as_array().expect("a list of organizations");
+    let org = organizations
+        .iter()
+        .find(|org| org["id"] == id)
+        .expect("the registered organization is listed");
+    assert_eq!(org["kind"], "personal");
+    assert_eq!(org["members"], 1);
+    assert_eq!(
+        org["availableMinor"], 7_500_000,
+        "the top-up settled: {org}"
+    );
+    assert_eq!(org["reservedMinor"], 0);
+
+    // Neither a wrong token nor an organization's own credential opens the list.
+    let (status, _) = call_with(
+        &app,
+        "GET",
+        "/api/v1/admin/organizations",
+        None,
+        Some("not-the-token"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = call_with(&app, "GET", "/api/v1/admin/organizations", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }

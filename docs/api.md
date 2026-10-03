@@ -50,6 +50,7 @@ Whoever deploys oxsum, and nobody else: the credential is the operator token fro
 - `POST /api/v1/admin/channels` — create a channel (name, baseUrl, apiKey), or replace the connection of the channel that already has that name. Prices are untouched by a connection change.
 - `POST /api/v1/admin/channels/{channelName}/prices` — append a price version for a model, and answer the version that was written. `CONFLICT` when another channel already serves that model: in v1 one model belongs to one channel.
 - `GET /api/v1/admin/channels/{channelName}/prices` — every version of every model of that channel, newest first. This is the history, and it is what makes the `priceVersion` in an old settlement checkable.
+- `GET /api/v1/admin/organizations` — every organization, oldest first, with its kind, headcount and what its wallet shows (`availableMinor`, `reservedMinor`). Topping up or adjusting another organization is not this surface; it is #60.
 
 A deployment that sets no `OXSUM_ADMIN_TOKEN` has no admin surface: the routes exist and answer `UNAUTHORIZED`, rather than being open or absent.
 
