@@ -112,6 +112,12 @@ impl From<WalletError> for GatewayError {
                 tracing::error!(%key, "gateway settled a hold the ledger does not have");
                 Self::Internal
             }
+            // Membership management is not on this surface and never names anything a
+            // gateway request looks up; reaching here would be a wiring mistake.
+            WalletError::NotFound(message) => {
+                tracing::error!(%message, "gateway path resolved a resource that is not there");
+                Self::Internal
+            }
             WalletError::Storage(error) => {
                 tracing::error!(%error, "storage failure on the gateway path");
                 Self::Internal

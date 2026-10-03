@@ -26,8 +26,8 @@ use axum::http::header::COOKIE;
 use axum::http::request::Parts;
 #[cfg(feature = "ssr")]
 use oxsum_core::{
-    ApiKey, Db, KeyScope, Kind, LogEntry, Member, OpenHold, Role, SessionPrincipal, Tenants,
-    WalletError,
+    ApiKey, Db, KeyScope, Kind, LogEntry, Member, MembershipActor, OpenHold, Role,
+    SessionPrincipal, Tenants, WalletError,
 };
 
 /// What the dashboard overview shows: the organization and who acts for it, the balance,
@@ -97,13 +97,32 @@ pub struct CreatedKeyView {
     pub secret: String,
 }
 
-/// One membership, as the members page shows it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// One membership, as the members page shows it and addresses it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MemberView {
+    /// The user's id: what a management action names, as the REST endpoints do.
+    pub user_id: String,
     pub email: String,
     pub role: String,
     pub joined_at: String,
+}
+
+/// The members page's data: the acting role, which decides the controls the page renders,
+/// and the organization's members.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MembersView {
+    pub role: String,
+    pub members: Vec<MemberView>,
+}
+
+/// The ownership after a transfer, as the members page reports it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferView {
+    pub owner: MemberView,
+    pub previous_owner: MemberView,
 }
 
 #[cfg(feature = "ssr")]
@@ -150,15 +169,21 @@ impl From<&ApiKey> for KeyView {
 impl From<&Member> for MemberView {
     fn from(member: &Member) -> Self {
         Self {
+            user_id: member.user_id.to_string(),
             email: member.email.clone(),
-            role: match member.role {
-                Role::Owner => "owner",
-                Role::Admin => "admin",
-                Role::Member => "member",
-            }
-            .to_owned(),
+            role: role_name(member.role).to_owned(),
             joined_at: member.joined_at.to_string(),
         }
+    }
+}
+
+/// A role as the page shows and compares it: the same lowercase words the contract uses.
+#[cfg(feature = "ssr")]
+fn role_name(role: Role) -> &'static str {
+    match role {
+        Role::Owner => "owner",
+        Role::Admin => "admin",
+        Role::Member => "member",
     }
 }
 
@@ -403,14 +428,135 @@ pub async fn revoke_key(key_id: String) -> Result<(), ServerFnError> {
 }
 
 /// The members page: everyone in the organization, with their roles.
+///
+/// Readable by any member of the organization: reading who is in it is not a management
+/// action (docs/decisions.md, "any member may read the member list"). The session resolves
+/// against `memberships`, so this only ever reads the list of an organization the caller is
+/// in — there is no organization for a caller to name. The acting role comes back with the
+/// list, because it decides which controls the page renders.
 #[server(prefix = "/_pages")]
-pub async fn get_members() -> Result<Vec<MemberView>, ServerFnError> {
+pub async fn get_members() -> Result<MembersView, ServerFnError> {
     let (db, _tenants, principal) = session_ctx().await?;
     let members = db
         .members(principal.organization.id)
         .await
         .map_err(|_| ServerFnError::new("the members could not be read"))?;
-    Ok(members.iter().map(MemberView::from).collect())
+    Ok(MembersView {
+        role: role_name(principal.role).to_owned(),
+        members: members.iter().map(MemberView::from).collect(),
+    })
+}
+
+/// Who the session is for the membership rules: the person, and their role.
+///
+/// The same thing `Principal::membership_actor` builds on the REST surface, and the same
+/// rules apply (crates/core/src/orgs.rs): an owner or an admin manages, a member is refused
+/// there. A session is always a person, so no API-key case exists here.
+#[cfg(feature = "ssr")]
+fn membership_actor(principal: &SessionPrincipal) -> MembershipActor {
+    MembershipActor {
+        user_id: principal.user.id,
+        role: principal.role,
+    }
+}
+
+/// A refused management action, in the words the rule used.
+///
+/// Every failure the rules can produce is the caller's to read — who may not do what, which
+/// member does not exist, which is the last owner — so the page can state it instead of
+/// showing a generic failure (DESIGN.md: a failure says what went wrong). Storage failures
+/// stay out of the response.
+#[cfg(feature = "ssr")]
+fn membership_error(error: WalletError, fallback: &'static str) -> ServerFnError {
+    match error {
+        WalletError::InvalidInput(message)
+        | WalletError::Forbidden(message)
+        | WalletError::Conflict(message)
+        | WalletError::NotFound(message) => ServerFnError::new(message),
+        _ => ServerFnError::new(fallback),
+    }
+}
+
+/// Adds an existing account to the organization as a member, by email.
+///
+/// "Invite" means what it can mean today: the account must already exist. Pending
+/// invitations for people who have no account yet are issue #59, so an unknown email is
+/// refused in words and nothing is stored.
+#[server(prefix = "/_pages")]
+pub async fn add_member(email: String) -> Result<MemberView, ServerFnError> {
+    let (db, _tenants, principal) = session_ctx().await?;
+    let member = db
+        .add_member(
+            principal.organization.id,
+            membership_actor(&principal),
+            &email,
+        )
+        .await
+        .map_err(|error| membership_error(error, "the member could not be added"))?;
+    Ok(MemberView::from(&member))
+}
+
+/// Removes a member from the organization. The person and their own organization stay.
+#[server(prefix = "/_pages")]
+pub async fn remove_member(user_id: String) -> Result<MemberView, ServerFnError> {
+    let (db, _tenants, principal) = session_ctx().await?;
+    let id = member_id(&user_id)?;
+    let member = db
+        .remove_member(principal.organization.id, membership_actor(&principal), id)
+        .await
+        .map_err(|error| membership_error(error, "the member could not be removed"))?;
+    Ok(MemberView::from(&member))
+}
+
+/// Changes a member's role. `owner` is refused by the core: ownership is transferred with
+/// [`transfer_ownership`], never assigned, so this cannot promote anyone.
+#[server(prefix = "/_pages")]
+pub async fn change_member_role(
+    user_id: String,
+    role: String,
+) -> Result<MemberView, ServerFnError> {
+    let (db, _tenants, principal) = session_ctx().await?;
+    let id = member_id(&user_id)?;
+    // The page sends the words the table shows; anything else is not a role the page offers.
+    let role = match role.as_str() {
+        "admin" => Role::Admin,
+        "member" => Role::Member,
+        _ => return Err(ServerFnError::new("role must be admin or member")),
+    };
+    let member = db
+        .change_member_role(
+            principal.organization.id,
+            membership_actor(&principal),
+            id,
+            role,
+        )
+        .await
+        .map_err(|error| membership_error(error, "the role could not be changed"))?;
+    Ok(MemberView::from(&member))
+}
+
+/// Transfers ownership to a member: they become the owner and the acting owner an admin, so
+/// the organization keeps exactly one owner. Only an owner may call this.
+#[server(prefix = "/_pages")]
+pub async fn transfer_ownership(user_id: String) -> Result<TransferView, ServerFnError> {
+    let (db, _tenants, principal) = session_ctx().await?;
+    let id = member_id(&user_id)?;
+    let ownership = db
+        .transfer_ownership(principal.organization.id, membership_actor(&principal), id)
+        .await
+        .map_err(|error| membership_error(error, "ownership could not be transferred"))?;
+    Ok(TransferView {
+        owner: MemberView::from(&ownership.owner),
+        previous_owner: MemberView::from(&ownership.previous_owner),
+    })
+}
+
+/// A member id as the page sends it: the `userId` of a row.
+#[cfg(feature = "ssr")]
+fn member_id(user_id: &str) -> Result<uuid::Uuid, ServerFnError> {
+    user_id
+        .parse::<uuid::Uuid>()
+        .map_err(|_| ServerFnError::new("not a member id"))
 }
 
 /// One settled chat turn's bill, as the chat page shows it.

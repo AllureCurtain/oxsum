@@ -16,7 +16,7 @@ Field definitions for each endpoint are authoritative in `crates/server/openapi.
 
 ## Idempotency
 
-Every write endpoint requires an `idempotencyKey`:
+Every write to the ledger requires an `idempotencyKey` (holds, settlements, top-ups). Writes that are not ledger entries — API keys, memberships — do not take one: creating a key twice creates two keys, and adding a member who is already one is `CONFLICT` rather than a replay.
 
 - Replaying the same key with the same content returns the original receipt with `isNew: false`; nothing is booked twice.
 - The same key with different content is `CONFLICT`; the original record is never overwritten. "Different content" means a different amount, a different kind of write, or any other field the entry is built from.
@@ -102,6 +102,45 @@ Every failure on the envelope's surface is this shape, including a request body 
 - Expiry is optional. An expired key is refused exactly like a revoked one.
 - Since web login (TODO B-4, issue #17), role checks are enforced: members create and revoke only the keys they created; owners and admins see and revoke every key of the organization. A key acting as the organization keeps its full authority — roles constrain sessions, not keys.
 - A key may carry a spend limit (`spendLimitMinor`, minor units; null is unlimited), set at creation or with `PATCH /api/v1/org/keys/{keyId}` under the revoke scope rules. The limit caps the key's committed spend — settled charges plus outstanding holds attributed to it. A hold that would push past it is refused with 429 `KEY_LIMIT_EXCEEDED`, atomically with the ledger append, so concurrent requests cannot exceed it. The gateway answers the same refusal as `insufficient_quota` in its OpenAI error shape. Sessions carry no limit.
+
+## Membership management
+
+A tenant is an organization and its memberships carry a role (owner, admin, member). Managing them is a *person's* action: these four endpoints require the session cookie and refuse a bearer API key, because a key is not a person and names no role. This is the one place a key does not act with the organization's full authority (docs/decisions.md, "membership management is a person's action"). The rules are enforced in `crates/core/src/orgs.rs`, so the members page's server functions refuse exactly what these endpoints refuse.
+
+- `POST /api/v1/org/members` — add an existing account to the organization as a member. Body `{"email": "…"}`, compared case-insensitively against `users.email_normalized`; the new role is always `member`. Answers the `Member` (`userId`, `email`, `role`, `joinedAt`). "Invite" here means this: pending invitations for people who have no account yet are issue #59, so an unknown email is `NOT_FOUND` rather than a stored invitation, and no `invitations` table exists.
+- `PATCH /api/v1/org/members/{userId}` — change a member's role. Body `{"role": "admin"|"member"}`; `owner` is not a value of that field, so no request body can promote anyone to owner. Answers the updated `Member`.
+- `DELETE /api/v1/org/members/{userId}` — remove the membership. The user and their personal organization are untouched. Answers the `Member` that was removed.
+- `POST /api/v1/org/ownership` — transfer ownership. Body `{"userId": "…"}`. The named member becomes `owner` and the transferring owner becomes an `admin`, in one transaction, so the organization has exactly one owner before and after. Answers `{"owner": Member, "previousOwner": Member}`.
+
+### Who may do what
+
+| Acting credential | add | remove | change role | transfer ownership |
+| --- | --- | --- | --- | --- |
+| Session, `owner` | yes | yes, except the last owner | yes, except the last owner | yes |
+| Session, `admin` | yes | only members and admins | only members and admins | no, 403 |
+| Session, `member` | no, 403 | no, 403 | no, 403 | no, 403 |
+| API key (bearer) | no, 403 | no, 403 | no, 403 | no, 403 |
+
+- **The last owner is protected.** An organization always has at least one owner: the sole owner cannot be removed or demoted (`CONFLICT`), whichever endpoint is asked, so ownership has to be transferred first. `POST /api/v1/org/ownership` moves the seat — it never creates a second owner — and the previous owner stays an admin, so they can still manage members.
+- **An admin may not touch an owner.** An admin removing or re-rolling an owner is `FORBIDDEN`, not `CONFLICT`: the refusal is about the admin's authority, not about the owner count.
+- **No role change grants ownership.** The only path to `owner` is the ownership endpoint, so an admin cannot promote anyone (including themselves) to owner by any route.
+- **The acting role is checked before the target is looked at.** A caller who may not perform an action is refused `FORBIDDEN` whatever they name, so an admin's ownership transfer naming an account that is not even a member answers 403, not 404. Within the allowed roles, naming a non-member is 404.
+- **Any member may read the list.** Reading who is in the organization is not a management action, and the members page's `get_members` server function (`crates/web/src/api.rs`) is reachable by any live session; the session resolves through `memberships`, so a session can only ever read the list of an organization it is a member of (docs/decisions.md, issue #61).
+- Adding the second person to a `personal` organization flips its `kind` to `team`; the ledger does not move and nothing flips back when a member is removed.
+
+### Statuses
+
+| situation | status | code |
+| --- | --- | --- |
+| not a session in the owner or admin role (member, or any API key) | 403 | `FORBIDDEN` |
+| an admin acting on an owner | 403 | `FORBIDDEN` |
+| an admin transferring ownership | 403 | `FORBIDDEN` |
+| unknown account (the email names nobody) | 404 | `NOT_FOUND` |
+| target is not a member of the caller's organization | 404 | `NOT_FOUND` |
+| the add email is already a member | 409 | `CONFLICT` |
+| the last owner cannot be removed or demoted | 409 | `CONFLICT` |
+| ownership transferred to the current owner | 409 | `CONFLICT` |
+| a body naming `owner`, or one that is not the request type | 400 | `VALIDATION_ERROR` |
 
 ## Pagination
 

@@ -25,14 +25,14 @@ The piece must let a first-time visitor walk this path in minutes:
 | Role | Who | Can do | Status |
 | --- | --- | --- | --- |
 | Platform admin | Whoever deploys oxsum | Manage channels and prices, top up or adjust any organization, view all anomalous requests, run monthly closings | Channels and prices are shipped (`/api/v1/admin`, operator token); topping up or adjusting another organization and the closings are planned (#57 pages, #60 adjustments and the signup bonus) |
-| Organization owner | Organization creator | Everything inside the organization, including transferring ownership | Keys, balance and the ledger are shipped; transferring ownership is planned (#56) |
-| Organization admin | Appointed by the owner | Invite and remove members, manage all keys, view the organization's full bill history | Managing all keys is shipped; inviting and removing is planned (#56); the bill history ships as the bills page — the organization's settled entries, exportable as CSV or JSON — which applies no member filter yet |
-| Organization member | Invited people | Create and revoke their own keys, view organization balance and their own request records | Their own keys, the balance and their own request records are shipped (the requests page, #55, shows the turns their own keys paid for); the shipped bills page lists the whole organization's settled entries with no member filter, and being invited is planned (#59) |
+| Organization owner | Organization creator | Everything inside the organization, including transferring ownership | Shipped: keys, balance, the ledger, and membership management with the ownership transfer |
+| Organization admin | Appointed by the owner | Invite and remove members, manage all keys, view the organization's full bill history | Shipped: managing all keys, and inviting, removing and re-roling members (but not the owner's own membership); the bill history ships as the bills page — the organization's settled entries, exportable as CSV or JSON — which applies no member filter yet |
+| Organization member | People an owner or admin added | Create and revoke their own keys, view organization balance and their own request records | Their own keys, the balance and their own request records are shipped (the requests page, #55, shows the turns their own keys paid for); the shipped bills page lists the whole organization's settled entries with no member filter, and being invited is planned (#59) |
 | API caller | Programs holding a key | Call the gateway, spending the key's organization balance | Shipped |
 
 The platform admin is not an organization role but a deployment-level identity; users cannot apply for it.
 
-Two shipped pages are readable more widely than the "Who" column suggests. The transaction log page, the bills page and the members page take any live session (`get_log`, `get_bills` and `get_members` in `crates/web/src/api.rs`, none with a role check), so every member reads the organization's entries, its bills and the membership list; none of the three offers a management action. The requests page is scoped already: a member reads the requests their own keys paid for and nobody else's (`get_requests` filters the organization's ledger rows through the keys the session may see). The role-scoped bill view is still planned (#54: the bills page shipped without a member filter), and membership management with #56.
+Two shipped pages are readable more widely than the "Who" column suggests. The transaction log page, the bills page and the members page take any live session (`get_log`, `get_bills` and `get_members` in `crates/web/src/api.rs`, none with a role check), so every member reads the organization's entries, its bills and the membership list. Reading who is in the organization is not a management action; the page's management actions — add a member, remove one, change a role, transfer ownership — are restricted to owners and admins. The requests page is scoped already: a member reads the requests their own keys paid for and nobody else's (`get_requests` filters the organization's ledger rows through the keys the session may see). The role-scoped bill view is still planned (#54: the bills page shipped without a member filter).
 
 ## Accounts and organizations
 
@@ -55,11 +55,33 @@ Two shipped pages are readable more widely than the "Who" column suggests. The t
 - Shipped: signup creates the user, the personal organization, the owner membership and the first API key in one transaction, and returns that key's secret once.
 - Shipped: the organization's ledger is not created at signup — it is created on first use, so an account that never spends costs nothing and a failed ledger migration cannot leave a half-registered user (docs/decisions.md).
 - Shipped: the tenant id of an organization is its own UUID without dashes, so a ledger schema is `ledger_<32 hex characters>` and nothing has to be chosen, probed or made unique.
-- Planned, #59: personal organizations can invite members too. When the first person joins, the organization flips from `personal` to `team` automatically; the ledger does not migrate. Nothing flips today: signup is the only code path that inserts a membership, so every organization still has exactly one member.
+- Shipped: a second person makes the organization a team. When the first membership other than the creator's is added, the organization flips from `personal` to `team`, one way; the ledger does not migrate, because it belongs to the organization, not to the person.
 - Planned, #58: users can create team organizations and join several. The current organization switches from the top-right corner. There is no way to create a second organization or to switch, and the dashboard always acts as the session's own organization.
-- Planned, #59: invitations: one link, valid 7 days, usable once. v1 sends no email; the inviter passes the link along themselves. The registration mode that reads them (`OXSUM_SIGNUP=invite`) is shipped; the links are not.
-- Planned, #56: an owner cannot leave directly; ownership must transfer first. Today nobody can leave an organization at all — there is no leave and no transfer action.
+- Planned, #59: invitations: one link, valid 7 days, usable once. v1 sends no email; the inviter passes the link along themselves. The registration mode that reads them (`OXSUM_SIGNUP=invite`) is shipped; the links are not. **Membership management is not invitations**: adding a member means adding an account that already exists, and an email nobody has registered is refused (#56 shrank to that; the pending-invitation flow is #59).
+- Shipped: an owner cannot leave directly; ownership must transfer first. There is no leave action at all — removing yourself is the owner removing a member, and for the organization's last owner that is refused. See "Membership management" below.
 - v1 does not support deleting organizations. The ledger is append-only; deleting an organization would orphan its billing history.
+
+### Membership management (shipped)
+
+An organization is a set of memberships, each one an account plus a role. Four actions change that set, from the members page or from `/api/v1/org/members` and `/api/v1/org/ownership`:
+
+- **Add a member**: by email, and only for an account that already exists — the person registers first, then an owner or admin adds them. A newly added member is always a `member`; the response is the membership, so the page can show who was added.
+- **Remove a member**: the membership goes, the account and its own personal organization stay. Naming someone who is not a member is a 404, so removing twice cannot look like it worked.
+- **Change a role**: between `admin` and `member`. Promoting to `owner` is not a request the API can express — ownership is transferred, never assigned, so an organization always has exactly one owner.
+- **Transfer ownership**: the target becomes the owner and the acting owner becomes an admin, in one transaction. The owner seat is never empty and never doubled.
+
+Who may do what, and the gaps that are closed on purpose:
+
+| Actor | Add, remove, change a role | Transfer ownership |
+| --- | --- | --- |
+| Owner | Yes, including on other admins | Yes — to any other member; to themselves is a conflict |
+| Admin | Yes, except on the owner's own membership (403) | No (403) |
+| Member | No (403): a member may read the list, not change it | No (403) |
+| API key | No (403), even the owner's own key: a key is not a person and names no role | No (403) |
+
+- The last owner cannot be removed or demoted: that would leave an organization nobody owns. The answer is a 409 saying ownership has to be transferred first. In practice the only reachable case is the sole owner acting on themselves, since admins may not touch an owner at all.
+- Every new endpoint checks the acting role in the server, and so does the page: no control is rendered that the server would refuse, and a refusal is shown in the server's own words rather than silently swallowed. (docs/decisions.md, "membership management is a person's action".)
+
 
 ## Where credit comes from
 
@@ -177,7 +199,7 @@ Verification proves: this record was not altered after being written, and histor
 | Requests | The organization's settled gateway requests, newest first: booking date, request id, model, key, status (the settlement kind the bill records), input and output tokens, and the charge in credits. Filterable by key and by model, with the filters in the page's URL | All members; a member sees only the turns their own keys paid for | Shipped (`crates/web/src/app.rs`, `get_requests` in `crates/web/src/api.rs`, #55). Every row is read from the settlement entry the gateway wrote, so the numbers on it are the ones the entry's content hash covers; a turn still in flight has no settlement yet — the overview lists those live |
 | Bills | The organization's settled entries with the date booked, the charge in credits and the content hash, newest first; CSV and JSON export of the same list, carrying the charge as the ledger's integer | Every member, with no member filter yet | Shipped in part: the list and both exports ship (`crates/web/src/app.rs`, `/dashboard/bills`); the full transaction view, the member filter and the per-row proof link are planned, #54 |
 | API keys | Create, revoke | Members manage their own; admins manage all | Shipped |
-| Members | Everyone in the organization, with their role and join date. Invite, remove, change roles, transfer ownership are the documented additions | Read-only table: every member. Management: owners and admins | The read-only table is shipped and open to every member; invite, remove, change roles and transfer ownership are planned, #56 |
+| Members | Everyone in the organization, with their role and join date; add a member by email, remove one, change a role, transfer ownership | The table: every member. The four actions: owners and admins, with the controls rendered only for them | Shipped (`crates/web/src/app.rs`, `POST /api/v1/org/members`, `PATCH`/`DELETE /api/v1/org/members/{userId}`, `POST /api/v1/org/ownership`). An add names an existing account: pending invitations are #59 |
 | Transaction log | The organization's newest ledger entries with their content hashes | All members | Shipped, but not part of the original spec; the bills page is now the settled, exportable view of the same ledger |
 
 ### Platform admin
@@ -212,7 +234,6 @@ None of these pages exists. The platform admin surface today is the `/api/v1/adm
 
 Everything this document describes but the code does not do yet, with the issue that tracks it:
 
-- Membership management: invite, remove, change roles, transfer ownership — #56
 - The platform-admin pages: organizations, channels and prices, in-flight requests, anomalies, closing — #57
 - Team organizations and switching the acting organization — #58
 - Invitations: one link, seven days, usable once — #59

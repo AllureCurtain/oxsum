@@ -106,7 +106,7 @@ async fn append(
     // An unknown channel is not found, rather than a validation failure: the request is well formed
     // and names something that is not there.
     if state.db.channel_prices(&name).await?.is_none() {
-        return Err(ApiError::NotFound);
+        return Err(ApiError::not_found());
     }
     let price = Price {
         input_per_million: request.input_price_per_million,
@@ -129,7 +129,7 @@ async fn history(
 ) -> ApiResult<Vec<ModelPrice>> {
     match state.db.channel_prices(&name).await? {
         Some(prices) => ok(prices),
-        None => Err(ApiError::NotFound),
+        None => Err(ApiError::not_found()),
     }
 }
 

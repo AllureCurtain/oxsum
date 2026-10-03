@@ -52,7 +52,21 @@ password; `/dashboard` is the overview. `/logout` logs out.
 - **API keys**: list, mint and revoke. The same role rules as the API apply: members
   see and revoke only the keys they created, owners and admins see all. A freshly
   minted secret is shown once — store it then, it is never shown again.
-- **Members**: everyone in the organization, with their roles.
+- **Members**: everyone in the organization, with their role and join date. Every member
+  sees the list. Owners and admins also manage it, from the controls on each row:
+  - **Add member**: enter the email of an account that already exists. Someone who has
+    not registered yet cannot be added — pending invitations are not built (#59) — and
+    the page says so when no account has that email. The new member starts as a member.
+  - **Make admin** / **Make member**: change a member's role. This never grants
+    ownership; see below.
+  - **Remove**: take the membership away. The person's account and their own personal
+    organization stay, and if they were logged in, that session stops working.
+  - **Make owner**: transfer ownership. You become an admin and the member you chose
+    becomes the owner, in one step — the organization always has exactly one owner.
+    Only an owner sees this control.
+  - What you are not offered, you cannot do: an admin has no controls on the owner's own
+    row, and nobody can remove or demote the last owner — transfer ownership first. A
+    refused action says why, in words.
 - **Transaction log**: the newest ledger entries, newest first: position, id,
   description and content hash.
 - **Bills**: the organization's settled entries, newest first, at `/dashboard/bills`:
