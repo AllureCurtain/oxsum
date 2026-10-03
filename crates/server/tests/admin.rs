@@ -515,3 +515,62 @@ async fn the_organizations_list_shows_every_organization_with_its_balance() {
     let (status, _) = call_with(&app, "GET", "/api/v1/admin/organizations", None, Some(&key)).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
+
+/// `GET /api/v1/admin/holds` lists every unsettled hold globally, named by the
+/// organization whose ledger reserves it — the in-flight page's source.
+#[tokio::test]
+async fn the_holds_list_shows_what_the_platform_is_reserving() {
+    let (app, pool) = app_or_skip!();
+    let (id, _key) = register(&app, "inflight").await;
+
+    // The tenant id the ledger knows the organization by, and a hold watched for it —
+    // the gateway's own write path, done by hand.
+    let tenant_id: String =
+        sqlx::query_scalar("SELECT tenant_id FROM oxsum.organizations WHERE organization_id = $1")
+            .bind(uuid::Uuid::parse_str(&id).unwrap())
+            .fetch_one(&pool)
+            .await
+            .expect("the organization's tenant id");
+    let request = fresh("req");
+    let hold_key = format!("{request}:hold");
+    sqlx::query(
+        "INSERT INTO oxsum.open_holds \
+         (hold_key, tenant_id, request_id, model, channel, price_version, \
+          input_price, output_price, freeze_minor) \
+         VALUES ($1, $2, $3, $4, $5, 1, 0, 0, 1234)",
+    )
+    .bind(&hold_key)
+    .bind(&tenant_id)
+    .bind(&request)
+    .bind("model-x")
+    .bind("chan-y")
+    .execute(&pool)
+    .await
+    .expect("a watched hold");
+
+    let (status, body) = call(&app, "GET", "/api/v1/admin/holds", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let holds = body["data"].as_array().expect("a list of holds");
+    let hold = holds
+        .iter()
+        .find(|hold| hold["requestId"] == request)
+        .expect("the hold is listed");
+    assert_eq!(hold["model"], "model-x");
+    assert_eq!(hold["channel"], "chan-y");
+    assert_eq!(hold["priceVersion"], 1);
+    assert_eq!(hold["freezeMinor"], 1234);
+    assert!(
+        hold["openedAt"].is_string(),
+        "when the hold opened is listed: {hold}"
+    );
+    assert_ne!(
+        hold["organization"], tenant_id,
+        "the organization is named, not keyed: {hold}"
+    );
+
+    sqlx::query("DELETE FROM oxsum.open_holds WHERE hold_key = $1")
+        .bind(&hold_key)
+        .execute(&pool)
+        .await
+        .expect("the test's hold is cleaned up");
+}

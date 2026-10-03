@@ -128,6 +128,65 @@ impl Db {
         .await?;
         rows.iter().map(open_hold_from_row).collect()
     }
+
+    /// Every watched hold, across all organizations, newest first: the platform admin's
+    /// in-flight list.
+    ///
+    /// The ledger stays the source of truth — the sweeper deletes a row whose hold is
+    /// gone — so a hold listed here is one the ledger still reserves. An organization
+    /// that was deleted is impossible (the membership schema forbids it), but a watch
+    /// row predating its organization join survives as an unnamed organization rather
+    /// than vanishing.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn open_holds(&self) -> Result<Vec<InFlightHold>, WalletError> {
+        let rows = sqlx::query(
+            "SELECT h.request_id, h.model, h.channel, h.price_version, h.freeze_minor, \
+             h.opened_at, coalesce(o.name, h.tenant_id) AS organization \
+             FROM oxsum.open_holds h \
+             LEFT JOIN oxsum.organizations o ON o.tenant_id = h.tenant_id \
+             ORDER BY h.opened_at DESC",
+        )
+        .fetch_all(self.pool())
+        .await?;
+        let mut holds = Vec::with_capacity(rows.len());
+        for row in &rows {
+            holds.push(InFlightHold {
+                organization: row.try_get("organization")?,
+                request_id: row.try_get("request_id")?,
+                model: row.try_get("model")?,
+                channel: row.try_get("channel")?,
+                price_version: row.try_get("price_version")?,
+                freeze_minor: row.try_get("freeze_minor")?,
+                opened_at: row.try_get("opened_at")?,
+            });
+        }
+        Ok(holds)
+    }
+}
+
+/// A watched hold as the platform admin lists it: the hold row joined to the
+/// organization it belongs to, with when it opened — the one timestamp the sweeper's
+/// own [`OpenHold`] does not carry, because a retried sweep rebuilds a settlement from
+/// the row alone and needs no clock.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InFlightHold {
+    /// The organization's name, resolved through its `tenant_id`.
+    pub organization: String,
+    /// From the `x-oxsum-request-id` header.
+    pub request_id: String,
+    pub model: String,
+    pub channel: String,
+    /// The price version in force when the turn started.
+    pub price_version: i64,
+    /// What was frozen, in minor units.
+    pub freeze_minor: i64,
+    /// When the hold was taken; how stale it is is the admin's first question.
+    #[serde(with = "time::serde::rfc3339")]
+    pub opened_at: OffsetDateTime,
 }
 
 /// Maps one `oxsum.open_holds` row to [`OpenHold`].
