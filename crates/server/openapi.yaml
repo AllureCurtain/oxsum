@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.10.0
+  version: 0.11.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -738,7 +738,9 @@ paths:
         Moving another organization's money — topping it up or adjusting it — is not this
         endpoint and is planned under issue #60. 0.10.0 added `GET /api/v1/admin/holds`: every
     unsettled hold across all organizations, the in-flight requests the platform is holding
-    money for.
+    money for. 0.11.0 added `GET /api/v1/admin/anomalies`: the settled turns priced
+    `capped`, `estimated`, `client_cancelled` or `swept` — where the platform lost money
+    upstream or a turn went wrong — read back from each organization's ledger.
       security:
         - adminToken: []
       responses:
@@ -779,6 +781,32 @@ paths:
                   data:
                     type: array
                     items: { $ref: "#/components/schemas/AdminHold" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/anomalies:
+    get:
+      summary: The settled turns that did not price cleanly, across all organizations
+      description: |
+        Every settlement whose kind is `capped`, `estimated`, `client_cancelled` or
+        `swept`, newest first — the turns where usage was never reported, the caller
+        left mid-stream, the upstream price ran over the freeze, or the sweeper had to
+        release a hold nobody settled. The records are the settlement descriptions the
+        ledgers themselves hold, so every row is exactly what its bill proves; a
+        hand-driven settlement carries no record and is not listed.
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: The anomalous turns, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/AdminAnomaly" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /v1/models:
@@ -1075,6 +1103,19 @@ components:
         priceVersion: { type: integer, minimum: 1, description: the version the turn froze at }
         freezeMinor: { type: integer, format: int64, minimum: 1, description: what was frozen, in minor units }
         openedAt: { type: string, format: date-time, description: when the hold was taken }
+    AdminAnomaly:
+      type: object
+      required: [organization, requestId, model, channel, priceVersion, kind, chargedMinor, freezeMinor, bookedOn]
+      properties:
+        organization: { type: string, description: the organization whose ledger recorded the turn }
+        requestId: { type: string }
+        model: { type: string }
+        channel: { type: string, description: the channel that served the turn }
+        priceVersion: { type: integer, minimum: 1 }
+        kind: { type: string, enum: [capped, estimated, client_cancelled, swept], description: how the turn was priced; the anomalous kinds }
+        chargedMinor: { type: integer, format: int64, minimum: 0, description: what the settlement charged, in minor units }
+        freezeMinor: { type: integer, format: int64, minimum: 1, description: what had been frozen, in minor units }
+        bookedOn: { type: string, format: date, description: the settlement's booking date }
     AmountRequest:
       type: object
       required: [idempotencyKey, amountMinor]

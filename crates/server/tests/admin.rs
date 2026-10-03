@@ -574,3 +574,121 @@ async fn the_holds_list_shows_what_the_platform_is_reserving() {
         .await
         .expect("the test's hold is cleaned up");
 }
+
+/// `GET /api/v1/admin/anomalies` lists the settled turns that did not price cleanly —
+/// `capped`, `estimated`, `client_cancelled`, `swept` — read back out of each
+/// organization's own ledger, so a normal usage settlement and an upstream error do not
+/// appear, and the rows carry what an operator needs to find where money leaks
+/// upstream.
+#[tokio::test]
+async fn the_anomalies_list_shows_the_turns_that_did_not_price_cleanly() {
+    let (app, pool) = app_or_skip!();
+    let (id, key) = register(&app, "anomaly").await;
+    let tenant_id: String =
+        sqlx::query_scalar("SELECT tenant_id FROM oxsum.organizations WHERE organization_id = $1")
+            .bind(uuid::Uuid::parse_str(&id).expect("a uuid"))
+            .fetch_one(&pool)
+            .await
+            .expect("the registered organization has a tenant");
+    let wallet = oxsum_core::Wallet::open(pool.clone(), &tenant_id)
+        .await
+        .expect("the organization's wallet opens");
+    let today = time::OffsetDateTime::now_utc().date();
+    let topup = fresh("topup-anomaly");
+    wallet
+        .top_up(&topup, 10_000_000, today)
+        .await
+        .expect("a top-up to settle against");
+
+    // One settlement of each kind. The requests written anomalously are the ones the
+    // endpoint must list; `usage` and `upstream_error` are the clean turns it must not.
+    let kinds = [
+        ("usage", "usage-ok"),
+        ("upstream_error", "upstream-err"),
+        ("capped", "anomaly-capped"),
+        ("estimated", "anomaly-estimated"),
+        ("client_cancelled", "anomaly-cancelled"),
+        ("swept", "anomaly-swept"),
+    ];
+    for (kind, request) in kinds {
+        let hold_key = fresh(request);
+        wallet
+            .hold(&hold_key, "", 900_000, today)
+            .await
+            .expect("a hold settles");
+        let description = oxsum_core::Settlement {
+            request,
+            channel: "chan-y",
+            model: "model-x",
+            price_version: 2,
+            kind: serde_json::from_str::<oxsum_core::SettlementKind>(&format!("\"{kind}\""))
+                .expect("a settlement kind"),
+            input_tokens: 10,
+            output_tokens: 20,
+            input_price: 1_000,
+            output_price: 2_000,
+            charged: 60,
+            freeze: 900_000,
+        }
+        .description()
+        .expect("the settlement record serializes");
+        wallet
+            .settle(&hold_key, &description, 60, today)
+            .await
+            .expect("the turn settles");
+    }
+
+    let (status, body) = call(&app, "GET", "/api/v1/admin/anomalies", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let anomalies = body["data"].as_array().expect("a list of anomalies");
+
+    for request in [
+        "anomaly-capped",
+        "anomaly-estimated",
+        "anomaly-cancelled",
+        "anomaly-swept",
+    ] {
+        let row = anomalies
+            .iter()
+            .find(|row| row["requestId"] == request)
+            .unwrap_or_else(|| panic!("{request} is listed: {anomalies:?}"));
+        assert_eq!(row["channel"], "chan-y");
+        assert_eq!(row["model"], "model-x");
+        assert_eq!(row["priceVersion"], 2);
+        assert_eq!(row["chargedMinor"], 60);
+        assert_eq!(row["freezeMinor"], 900_000);
+        assert!(row["bookedOn"].is_string(), "the booking date: {row}");
+        assert_ne!(
+            row["organization"], tenant_id,
+            "the organization is named, not keyed: {row}"
+        );
+    }
+    assert_eq!(
+        anomalies
+            .iter()
+            .find(|row| row["requestId"] == "anomaly-capped")
+            .unwrap()["kind"],
+        "capped",
+    );
+
+    // Clean turns never appear: no `usage`, no upstream error.
+    for request in ["usage-ok", "upstream-err"] {
+        assert!(
+            !anomalies.iter().any(|row| row["requestId"] == request),
+            "{request} is not an anomaly"
+        );
+    }
+
+    // A wrong token and an organization's own credential stay out.
+    let (status, _) = call_with(
+        &app,
+        "GET",
+        "/api/v1/admin/anomalies",
+        None,
+        Some("not-the-token"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = call_with(&app, "GET", "/api/v1/admin/anomalies", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}

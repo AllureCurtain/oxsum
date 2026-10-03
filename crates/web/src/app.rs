@@ -14,7 +14,9 @@ use leptos_router::components::{A, Outlet, ParentRoute, Redirect, Route, Router,
 use leptos_router::hooks::{use_navigate, use_query_map};
 use leptos_router::path;
 
-use crate::admin::{AdminChannelsPage, AdminInFlightPage, AdminLayout, AdminOrganizationsPage};
+use crate::admin::{
+    AdminAnomaliesPage, AdminChannelsPage, AdminInFlightPage, AdminLayout, AdminOrganizationsPage,
+};
 use crate::api::{
     CreatedKeyView, DashboardData, EntryView, HoldView, KeyView, MemberView, MembersView,
     TransferView, add_member, change_member_role, create_key, get_bills, get_dashboard, get_keys,
@@ -66,6 +68,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/channels") view=AdminChannelsPage/>
                     <Route path=path!("/organizations") view=AdminOrganizationsPage/>
                     <Route path=path!("/in-flight") view=AdminInFlightPage/>
+                    <Route path=path!("/anomalies") view=AdminAnomaliesPage/>
                 </ParentRoute>
                 <ParentRoute path=path!("/dashboard") view=DashboardLayout>
                     <Route path=path!("/") view=OverviewPage/>

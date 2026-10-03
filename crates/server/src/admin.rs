@@ -17,7 +17,7 @@ use axum::middleware::Next;
 use axum::response::Response;
 use axum::routing::get;
 use axum::{Router, middleware};
-use oxsum_core::{Channel, InFlightHold, Kind, ModelPrice, Price};
+use oxsum_core::{Channel, InFlightHold, Kind, ModelPrice, Price, SettlementKind};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq as _;
 use time::OffsetDateTime;
@@ -34,6 +34,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/channels/{name}/prices", get(history).post(append))
         .route("/organizations", get(organizations))
         .route("/holds", get(holds))
+        .route("/anomalies", get(anomalies))
         .layer(middleware::from_fn_with_state(state, require_admin))
 }
 
@@ -170,6 +171,62 @@ async fn organizations(State(state): State<AppState>) -> ApiResult<Vec<Organizat
 /// hold already settled is deleted rather than listed.
 async fn holds(State(state): State<AppState>) -> ApiResult<Vec<InFlightHold>> {
     ok(state.db.open_holds().await?)
+}
+
+/// The settlement kinds an admin reviews: the turns where usage was never reported, the
+/// caller left mid-stream, the charge hit the freeze's ceiling, or the sweeper had to
+/// release a hold nobody settled.
+const ANOMALOUS: &[SettlementKind] = &[
+    SettlementKind::Capped,
+    SettlementKind::Estimated,
+    SettlementKind::ClientCancelled,
+    SettlementKind::Swept,
+];
+
+/// One anomalous turn, as the anomalies endpoint answers it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AnomalyRes {
+    organization: String,
+    request_id: String,
+    model: String,
+    channel: String,
+    price_version: i64,
+    kind: SettlementKind,
+    charged_minor: i64,
+    freeze_minor: i64,
+    /// The settlement's booking date, `YYYY-MM-DD`.
+    booked_on: String,
+}
+
+/// The settled turns that did not price cleanly, across all organizations, newest
+/// first — read back from each ledger's own settlement records, so every row is
+/// exactly what that turn's bill proves.
+async fn anomalies(State(state): State<AppState>) -> ApiResult<Vec<AnomalyRes>> {
+    let mut answer = Vec::new();
+    for organization in state.db.organizations().await? {
+        let wallet = state.tenants.get(&organization.tenant_id).await?;
+        for turn in wallet.recent_settlements(100).await? {
+            if !ANOMALOUS.contains(&turn.record.kind) {
+                continue;
+            }
+            answer.push(AnomalyRes {
+                organization: organization.name.clone(),
+                request_id: turn.record.request,
+                model: turn.record.model,
+                channel: turn.record.channel,
+                price_version: turn.record.price_version,
+                kind: turn.record.kind,
+                charged_minor: turn.record.charged,
+                freeze_minor: turn.record.freeze,
+                booked_on: turn.booked_on.to_string(),
+            });
+        }
+    }
+    // Booking dates are days, so within one day the per-ledger order stands; across
+    // days newest first.
+    answer.sort_by(|a, b| b.booked_on.cmp(&a.booked_on));
+    ok(answer)
 }
 
 /// Every version of every model of one channel, newest first.
