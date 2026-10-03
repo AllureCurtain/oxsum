@@ -676,3 +676,13 @@ New decisions go on top. Overturned decisions are never deleted; mark them "Supe
   - Year-end closing entries (`doubleentry::closing_postings`): they zero single-period accounts into equity; oxsum's months are review checkpoints, not balance resets — the wallet's balances must carry across a close.
   - Sealing only months with entries: an empty ledger's month still gets a record, and the watermark over its dates is what makes "closed" mean anything.
   - An `oxsum.closings` table beside the seals: the seals table already is the record; a second store can only disagree with it.
+
+## 2026-10-04 The acting organization lives on the session row (issue #58)
+
+- Status: Adopted
+- Decision: a session acts as exactly one organization, the one `oxsum.sessions.organization_id` names. Login sets it to the user's oldest membership (the behaviour that already existed); `POST /api/v1/session/organization` updates the same column after proving a membership in the target, and authentication resolves user, organization and role from the stored pair on every request. The dashboard switcher calls the same switch and then reloads: a reload re-reads every page through the session, so nothing on the page has to know the organization changed.
+- Why: the column was already there — session authentication already joins `sessions` to `memberships` through it — so the switch needed no new state, only a write. Storing the choice anywhere else (a cookie the server cannot trust, a per-request header, a per-page parameter) would split "which organization acts" across two places; one row on the session is the single answer, and it is what makes a switch survive reloads and new tabs without being askable cross-organization. The membership check is done at switch time, not per request beyond the join authentication already runs — a removed member's session still stops authenticating, because the join finds nothing.
+- Rejected:
+  - A second session-per-organization or a re-login: heavier machinery for a field the session already carries, and it would leave stale sessions naming organizations the user left.
+  - Acting organization in the request (header or query parameter): every caller would carry it, the dashboard's server functions would all grow an argument, and a hand-made request could name any organization — the check would have to run everywhere anyway.
+  - Client-side state (a cookie the server reads): the server must not trust a client-writable organization id; the choice would have to be re-validated per request against memberships regardless, which is the session row's join with extra steps.

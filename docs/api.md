@@ -108,6 +108,14 @@ Every failure on the envelope's surface is this shape, including a request body 
 - Since web login (TODO B-4, issue #17), role checks are enforced: members create and revoke only the keys they created; owners and admins see and revoke every key of the organization. A key acting as the organization keeps its full authority — roles constrain sessions, not keys.
 - A key may carry a spend limit (`spendLimitMinor`, minor units; null is unlimited), set at creation or with `PATCH /api/v1/org/keys/{keyId}` under the revoke scope rules. The limit caps the key's committed spend — settled charges plus outstanding holds attributed to it. A hold that would push past it is refused with 429 `KEY_LIMIT_EXCEEDED`, atomically with the ledger append, so concurrent requests cannot exceed it. The gateway answers the same refusal as `insufficient_quota` in its OpenAI error shape. Sessions carry no limit.
 
+## Organizations of a user
+
+A user belongs to one organization per membership, and a session acts as exactly one of them — the one the session row names, the oldest membership until it is switched. These three endpoints are a person's actions: they take the session cookie only and refuse a bearer API key, because a key belongs to one organization and names no user — the same rule membership management follows.
+
+- `GET /api/v1/orgs` — every organization the session's user is a member of, oldest membership first, each as `{"organization": Organization, "role": "owner"|"admin"|"member"}`. This is the list the dashboard's switcher offers.
+- `POST /api/v1/orgs` — create a `team` organization. Body `{"name": "…"}`, trimmed, 1–80 characters; the user becomes its owner. There is no `personal` kind to create — a personal organization is exactly what signup makes. The session keeps acting as the organization it had.
+- `POST /api/v1/session/organization` — switch the acting organization. Body `{"organizationId": "…"}` naming a membership; anything else is `NOT_FOUND`, so the answer never says whether an organization exists. The session row is updated: every request after this one, and every reload, acts as the chosen organization. Answers the `SessionInfo` now in force.
+
 ## Membership management
 
 A tenant is an organization and its memberships carry a role (owner, admin, member). Managing them is a *person's* action: these four endpoints require the session cookie and refuse a bearer API key, because a key is not a person and names no role. This is the one place a key does not act with the organization's full authority (docs/decisions.md, "membership management is a person's action"). The rules are enforced in `crates/core/src/orgs.rs`, so the members page's server functions refuse exactly what these endpoints refuse.

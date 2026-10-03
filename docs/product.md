@@ -56,7 +56,8 @@ Two shipped pages are readable more widely than the "Who" column suggests. The t
 - Shipped: the organization's ledger is not created at signup — it is created on first use, so an account that never spends costs nothing and a failed ledger migration cannot leave a half-registered user (docs/decisions.md).
 - Shipped: the tenant id of an organization is its own UUID without dashes, so a ledger schema is `ledger_<32 hex characters>` and nothing has to be chosen, probed or made unique.
 - Shipped: a second person makes the organization a team. When the first membership other than the creator's is added, the organization flips from `personal` to `team`, one way; the ledger does not migrate, because it belongs to the organization, not to the person.
-- Planned, #58: users can create team organizations and join several. The current organization switches from the top-right corner. There is no way to create a second organization or to switch, and the dashboard always acts as the session's own organization.
+- Shipped: a user belongs to several organizations. `POST /api/v1/orgs` creates a `team` organization — its own ledger, its own keys, its own balance — with the user as its owner, and `GET /api/v1/orgs` lists every organization they are a member of, oldest membership first, with the role they hold.
+- Shipped: the acting organization is the session's choice, switched from the dashboard's top-right corner or `POST /api/v1/session/organization`. The choice lives on the session row, so it survives reloads and carries every request the cookie makes: the overview, keys, members, bills, requests and the transaction log all scope to it. Switching names a membership, nothing else — an organization the user is not a member of answers `NOT_FOUND`, so the endpoint does not say whether it exists. An API key cannot list, create or switch: a key belongs to exactly one organization.
 - Planned, #59: invitations: one link, valid 7 days, usable once. v1 sends no email; the inviter passes the link along themselves. The registration mode that reads them (`OXSUM_SIGNUP=invite`) is shipped; the links are not. **Membership management is not invitations**: adding a member means adding an account that already exists, and an email nobody has registered is refused (#56 shrank to that; the pending-invitation flow is #59).
 - Shipped: an owner cannot leave directly; ownership must transfer first. There is no leave action at all — removing yourself is the owner removing a member, and for the organization's last owner that is refused. See "Membership management" below.
 - v1 does not support deleting organizations. The ledger is append-only; deleting an organization would orphan its billing history.
@@ -235,7 +236,6 @@ The platform admin surface is the `/api/v1/admin` REST API under the operator to
 
 Everything this document describes but the code does not do yet, with the issue that tracks it:
 
-- Team organizations and switching the acting organization — #58
 - Invitations: one link, seven days, usable once — #59
 - Platform-admin adjustments and the signup bonus — #60
 - The bill page's browser-local tree head archive with automatic consistency proofs — no issue filed yet

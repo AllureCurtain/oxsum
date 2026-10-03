@@ -94,6 +94,15 @@ password; `/dashboard` is the overview. `/logout` logs out.
   is still in flight has not settled yet, so it is not here — the overview shows those
   live.
 
+- **Organization**: the top-right corner of every dashboard page names the
+  organization the session acts as. Choosing another one from the select switches it —
+  the page reloads, and every page then shows that organization's balance, keys,
+  members, bills and requests. **New** opens a small form that creates a team
+  organization with you as its owner; it joins the list, and switching to it is one
+  more selection. A fresh login acts as your oldest membership until you choose
+  otherwise, and the choice is stored with the session: it survives reloads and new
+  tabs, and another browser's session is not moved.
+
 Notes:
 
 - Amounts are in credits with six decimals on every page, the bills and requests pages
