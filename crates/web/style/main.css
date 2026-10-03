@@ -205,6 +205,7 @@ label {
 input[type="email"],
 input[type="password"],
 input[type="text"],
+select,
 textarea {
     display: block;
     width: 100%;
@@ -213,6 +214,8 @@ textarea {
     font-size: 14px;
     border: 1px solid var(--border);
     border-radius: 4px;
+    background: var(--surface);
+    color: var(--text);
 }
 
 textarea {
@@ -222,6 +225,7 @@ textarea {
 }
 
 input:focus-visible,
+select:focus-visible,
 textarea:focus-visible,
 button:focus-visible,
 a:focus-visible {
@@ -297,6 +301,75 @@ form.row label {
     overflow: hidden;
     clip: rect(0 0 0 0);
     white-space: nowrap;
+}
+
+/* The chat page */
+
+.section-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.section-head h2 {
+    margin: 0;
+}
+
+.chat-log {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+.turn {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+}
+
+.turn .who {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-muted);
+    margin: 0 0 4px;
+}
+
+.turn p {
+    margin: 4px 0;
+}
+
+.turn.user {
+    background: var(--background);
+}
+
+.turn .answer {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.bill {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.bill .pending {
+    color: var(--pending);
+}
+
+.composer {
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+}
+
+.composer label {
+    margin: 0;
+    flex: 1;
 }
 
 @media (max-width: 640px) {

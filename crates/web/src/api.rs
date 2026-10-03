@@ -313,3 +313,86 @@ pub async fn get_members() -> Result<Vec<MemberView>, ServerFnError> {
         .map_err(|_| ServerFnError::new("the members could not be read"))?;
     Ok(members.iter().map(MemberView::from).collect())
 }
+
+/// One settled chat turn's bill, as the chat page shows it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnBill {
+    pub request_id: String,
+    pub model: String,
+    pub charged_minor: i64,
+    /// The settlement kind, in the record's own words (`usage`, `estimated`, …).
+    pub kind: String,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub price_version: i64,
+    pub freeze_minor: i64,
+    /// The content hash the bill verifies against, recomputed from the entry — the
+    /// same value `verify_bundle` checks.
+    pub content_hash: String,
+    /// The proof bundle JSON, as `/verify` pastes it.
+    pub bundle_json: String,
+}
+
+/// The bill for one settled chat turn: the settlement entry's proof bundle plus the
+/// charge read out of it. Answers `None` while the turn has not settled.
+///
+/// The request id is the gateway's (`x-oxsum-request-id`): it is kept to the id's
+/// own alphabet, so it can only name a gateway hold key — and the wallet is the
+/// session's organization's, so one organization can never read another's bills.
+#[server(prefix = "/_pages")]
+pub async fn get_turn_bill(request_id: String) -> Result<Option<TurnBill>, ServerFnError> {
+    /// What the settlement entry records, as the gateway wrote it (`billing.rs`).
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct SettlementRecord {
+        model: String,
+        kind: String,
+        input_tokens: i64,
+        output_tokens: i64,
+        price_version: i64,
+        charged: i64,
+        freeze: i64,
+    }
+
+    let (_db, tenants, principal) = session_ctx().await?;
+    if request_id.is_empty()
+        || request_id.len() > 64
+        || !request_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return Err(ServerFnError::new("not a request id"));
+    }
+    let wallet = tenants
+        .get(&principal.organization.tenant_id)
+        .await
+        .map_err(|_| ServerFnError::new("the wallet could not be opened"))?;
+    // The entry id is caller-computable (docs/api.md): the hold the gateway took is
+    // `req-<id>:hold`, and the settlement's key — and so its entry id — derives from it.
+    let hold_key = format!("req-{request_id}:hold");
+    let entry_id = oxsum_core::entry_id_for(&oxsum_core::settlement_key_for(&hold_key));
+    let bundle = wallet
+        .receipt_proof(entry_id)
+        .await
+        .map_err(|_| ServerFnError::new("the bill could not be read"))?;
+    let Some(bundle) = bundle else {
+        return Ok(None);
+    };
+    let record: SettlementRecord = serde_json::from_str(bundle.entry.description().as_str())
+        .map_err(|_| ServerFnError::new("the bill did not parse"))?;
+    let bundle_json =
+        serde_json::to_string(&bundle).map_err(|_| ServerFnError::new("the bill did not parse"))?;
+    Ok(Some(TurnBill {
+        request_id,
+        model: record.model,
+        charged_minor: record.charged,
+        kind: record.kind,
+        input_tokens: record.input_tokens,
+        output_tokens: record.output_tokens,
+        price_version: record.price_version,
+        freeze_minor: record.freeze,
+        content_hash: bundle.entry.content_hash().to_string(),
+        bundle_json,
+    }))
+}

@@ -3277,6 +3277,7 @@ dependencies = [
  "leptos_router",
  "oxsum-core",
  "oxsum-verify",
+ "percent-encoding",
  "serde",
  "serde_json",
  "uuid",

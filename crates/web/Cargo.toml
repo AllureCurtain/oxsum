@@ -51,7 +51,15 @@ web-sys = { version = "0.3", features = [
     "MessageEvent",
     "Window",
     "Location",
+    "Storage",
+    "ReadableStream",
+    "ReadableStreamDefaultReader",
+    "TextDecoder",
+    "TextDecodeOptions",
 ] }
+# Percent-encoding for the /verify links the chat page builds (bundle + content hash
+# as query parameters).
+percent-encoding = "2"
 
 [lints]
 workspace = true

@@ -11,13 +11,14 @@ use leptos::hydration::HydrationScripts;
 use leptos::prelude::*;
 use leptos_meta::{Stylesheet, Title, provide_meta_context};
 use leptos_router::components::{A, Outlet, ParentRoute, Redirect, Route, Router, Routes};
-use leptos_router::hooks::use_navigate;
+use leptos_router::hooks::{use_navigate, use_query_map};
 use leptos_router::path;
 
 use crate::api::{
     CreatedKeyView, DashboardData, EntryView, HoldView, KeyView, MemberView, create_key,
     get_dashboard, get_keys, get_log, get_members, revoke_key,
 };
+use crate::chat::ChatPage;
 
 /// The HTML shell: the document around the app. `leptos_axum` renders this as the
 /// whole response, so the `<head>` leptos_meta needs lives here, together with the
@@ -56,6 +57,7 @@ pub fn App() -> impl IntoView {
                 <Route path=path!("/verify") view=VerifyPage/>
                 <ParentRoute path=path!("/dashboard") view=DashboardLayout>
                     <Route path=path!("/") view=OverviewPage/>
+                    <Route path=path!("/chat") view=ChatPage/>
                     <Route path=path!("/keys") view=KeysPage/>
                     <Route path=path!("/members") view=MembersPage/>
                     <Route path=path!("/log") view=LogPage/>
@@ -262,6 +264,7 @@ fn DashboardLayout() -> impl IntoView {
             <nav class="sidenav" aria-label="Dashboard">
                 <div class="brand">"oxsum"</div>
                 <A href="/dashboard">"Overview"</A>
+                <A href="/dashboard/chat">"Chat"</A>
                 <A href="/dashboard/keys">"API keys"</A>
                 <A href="/dashboard/members">"Members"</A>
                 <A href="/dashboard/log">"Transaction log"</A>
@@ -688,16 +691,22 @@ enum VerifyOutcome {
 /// Verification runs entirely in the browser — [`oxsum_verify::verify_bundle`] is
 /// the same code the server runs, compiled to WASM — so a passed check does not
 /// depend on trusting this server, and the bundle never leaves the browser.
+///
+/// The chat page links here with both halves prefilled (`?bundle=…&contentHash=…`);
+/// the check then runs on load.
 #[component]
 fn VerifyPage() -> impl IntoView {
-    let (bundle, set_bundle) = signal(String::new());
-    let (content_hash, set_content_hash) = signal(String::new());
+    let query = use_query_map();
+    // Prefilled from the query string by the chat page's "verify this bill" links.
+    // Read once, from the URL: SSR and hydration agree on the values.
+    let (bundle, set_bundle) = signal(query.get().get("bundle").unwrap_or_default());
+    let (content_hash, set_content_hash) =
+        signal(query.get().get("contentHash").unwrap_or_default());
     let (outcome, set_outcome) = signal(Option::<VerifyOutcome>::None);
 
     let ready = move || !(bundle.get().trim().is_empty() || content_hash.get().trim().is_empty());
 
-    let verify = move |ev: web_sys::SubmitEvent| {
-        ev.prevent_default();
+    let run = move || {
         let outcome = match oxsum_verify::Hash::parse_hex(content_hash.get_untracked().trim()) {
             Err(_) => VerifyOutcome::BadHash,
             Ok(expected) => match oxsum_verify::verify_bundle(&bundle.get_untracked(), &expected) {
@@ -707,6 +716,20 @@ fn VerifyPage() -> impl IntoView {
             },
         };
         set_outcome.set(Some(outcome));
+    };
+
+    // A prefilled link runs the check on load instead of waiting for a click.
+    let auto_ran = StoredValue::new(false);
+    Effect::new(move |_| {
+        if !auto_ran.get_value() && ready() {
+            auto_ran.set_value(true);
+            run();
+        }
+    });
+
+    let verify = move |ev: web_sys::SubmitEvent| {
+        ev.prevent_default();
+        run();
     };
 
     view! {
