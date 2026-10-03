@@ -167,7 +167,7 @@ Verification proves: this record was not altered after being written, and histor
 
 | Page | Content | Who sees it | Status |
 | --- | --- | --- | --- |
-| Overview | Available balance; in-flight requests with their frozen upper bound and live streaming progress | All members | Shipped. It shows the available balance only — there is no frozen total and no this month's spend — and progress is forwarded characters, not tokens (docs/decisions.md). The frozen total and the month's spend remain the documented vision; nothing implements them today. |
+| Overview | Available balance, the frozen total and this month's spend; in-flight requests with their frozen upper bound and live streaming progress | All members | Shipped. The three figures are the overview's own integers (`DashboardData`, `crates/web/src/api.rs`), read from the organization's ledger: the frozen total is the wallet's reserved balance — the sum of the outstanding holds — and this month's spend is what settlements charged on or after the first of the current UTC month, so a top-up is not spend and an outstanding hold is not either. Progress is forwarded characters, not tokens (docs/decisions.md). |
 | Chat | Top up, pick a model and chat; each turn's billing live, with a verify-this-bill link | All members | Shipped (`crates/web/src/chat.rs`) |
 | Requests | Each request's status, usage and cost, filterable by key and model | All members; members see only their own | Planned, #55 |
 | Bills | See the section above | Same as above | Planned, #54 |

@@ -41,7 +41,10 @@ Open `/login` in a browser pointed at the server and log in with your email and
 password; `/dashboard` is the overview. `/logout` logs out.
 
 - **Overview**: the organization, who you are logged in as and in which role, the
-  available balance, the in-flight holds, and the newest ledger entries.
+  available balance, the frozen total (everything the organization's outstanding holds
+  have reserved), this month's spend (what settlements have charged since the first day
+  of the current month — the server's UTC month), the in-flight holds, and the newest
+  ledger entries.
 - **In-flight holds** update live: a hold appears when a gateway turn starts freezing,
   shows streaming progress while upstream answers, and leaves the list when the turn
   settles. The stream behind it is a WebSocket at `/ws/billing` (session login, like

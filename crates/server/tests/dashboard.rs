@@ -152,6 +152,33 @@ async fn logged_in(app: &Router, name: &str) -> (String, String) {
     (tenant_id, cookie)
 }
 
+/// The overview payload, the way the page's own code asks for it: the
+/// `/_pages/get_dashboard` server function, with the session cookie, answered as
+/// `DashboardData` JSON.
+///
+/// Leptos suffixes a server function's URL with a hash of the crate and module it was
+/// declared in, so the path is read from the same registry the router registers its
+/// server-function routes from rather than hard-coded — that hash carries the absolute
+/// path of the checkout.
+async fn dashboard(app: &Router, cookie: &str) -> Value {
+    let (path, method) = leptos::server_fn::axum::server_fn_paths()
+        .find(|(path, _)| path.starts_with("/_pages/get_dashboard"))
+        .expect("the dashboard's overview server function is registered");
+    // No arguments to send: the function takes none, and the codec is the URL-encoded
+    // body, so the body is empty and the cookie is the credential.
+    let req = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header("cookie", format!("oxsum_session={cookie}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    serde_json::from_slice(&bytes).expect("the dashboard answers JSON")
+}
+
 /// The dashboard socket refuses a request with no session: a probe learns nothing.
 #[tokio::test]
 async fn billing_socket_refuses_a_missing_session() {
@@ -198,6 +225,78 @@ async fn the_dashboard_shell_is_served() {
     let (app, _db, _billing) = app_or_skip!();
     let res = call(&app, "GET", "/dashboard", None, None).await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+}
+
+/// An organization that has moved no money owes nothing and holds nothing: the frozen
+/// total and this month's spend are 0, not an error. The ledger is created on this first
+/// read and has no postings at all.
+#[tokio::test]
+async fn a_new_organization_has_nothing_frozen_and_no_spend() {
+    let (app, _db, _billing) = app_or_skip!();
+    let (_tenant_id, cookie) = logged_in(&app, "untouched").await;
+    let data = dashboard(&app, &cookie).await;
+    assert_eq!(data["availableMinor"], 0, "{data}");
+    assert_eq!(data["frozenMinor"], 0, "{data}");
+    assert_eq!(data["monthSpendMinor"], 0, "{data}");
+}
+
+/// The overview's two figures, pinned as integers in minor units: the frozen total is what
+/// the outstanding hold reserved, and this month's spend is what the settled charge
+/// booked. The top-up is neither — it credits the wallet — and the hold that was settled
+/// no longer counts as frozen.
+#[tokio::test]
+async fn the_dashboard_shows_the_frozen_total_and_this_months_spend() {
+    let (app, _db, _billing) = app_or_skip!();
+    let (_tenant_id, cookie) = logged_in(&app, "totals").await;
+
+    // Fund the wallet: 5 credits in. Every `/api/v1` endpoint takes the session cookie as
+    // well as an API key, so the moves below need no second credential.
+    let res = call(
+        &app,
+        "POST",
+        "/api/v1/topups",
+        Some(json!({"idempotencyKey": "t1", "amountMinor": 5_000_000})),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+
+    // One hold left outstanding: 1 credit frozen.
+    let res = call(
+        &app,
+        "POST",
+        "/api/v1/holds",
+        Some(json!({"idempotencyKey": "h1", "amountMinor": 1_000_000})),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+
+    // A second hold, settled for less than it froze: 0.5 credit charged.
+    let res = call(
+        &app,
+        "POST",
+        "/api/v1/holds",
+        Some(json!({"idempotencyKey": "h2", "amountMinor": 2_000_000})),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    let res = call(
+        &app,
+        "POST",
+        "/api/v1/settlements",
+        Some(json!({"holdKey": "h2", "actualMinor": 500_000})),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+
+    let data = dashboard(&app, &cookie).await;
+    // 5 credits topped up, 1 still frozen, 0.5 charged: 5 - 1 - 0.5 = 3.5 available.
+    assert_eq!(data["availableMinor"], 3_500_000, "{data}");
+    assert_eq!(data["frozenMinor"], 1_000_000, "{data}");
+    assert_eq!(data["monthSpendMinor"], 500_000, "{data}");
 }
 
 /// The static bundle is served from the site root: `cargo leptos build` writes the

@@ -25,7 +25,7 @@ use oxsum_core::{
 };
 
 /// What the dashboard overview shows: the organization and who acts for it, the balance,
-/// the in-flight holds, and the newest log entries.
+/// the frozen total, this month's spend, the in-flight holds, and the newest log entries.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DashboardData {
@@ -34,6 +34,14 @@ pub struct DashboardData {
     pub user_email: String,
     pub role: String,
     pub available_minor: i64,
+    /// The organization's frozen total: the sum of its outstanding holds, in minor units.
+    /// The wallet's reserved (pending-layer) balance, so an organization holding nothing
+    /// reads 0.
+    pub frozen_minor: i64,
+    /// What settled against the wallet since the first instant of the current UTC month,
+    /// in minor units. The settled-layer debits, so top-ups are not spend; a month with
+    /// nothing charged reads 0.
+    pub month_spend_minor: i64,
     pub holds: Vec<HoldView>,
     pub entries: Vec<EntryView>,
 }
@@ -180,7 +188,8 @@ fn session_cookie(parts: &Parts) -> Option<String> {
     })
 }
 
-/// The dashboard overview: organization, session, balance, in-flight holds, newest entries.
+/// The dashboard overview: organization, session, balance, frozen total, this month's
+/// spend, in-flight holds and newest entries.
 #[server(prefix = "/_pages")]
 pub async fn get_dashboard() -> Result<DashboardData, ServerFnError> {
     let (db, tenants, principal) = session_ctx().await?;
@@ -193,6 +202,16 @@ pub async fn get_dashboard() -> Result<DashboardData, ServerFnError> {
         .available()
         .await
         .map_err(|_| ServerFnError::new("the balance could not be read"))?;
+    // The frozen total is the ledger's own answer (the pending layer, which is what holds
+    // reserve), so it cannot drift from what the holds actually reserved.
+    let frozen_minor = wallet
+        .reserved()
+        .await
+        .map_err(|_| ServerFnError::new("the frozen total could not be read"))?;
+    let month_spend_minor = wallet
+        .month_spend()
+        .await
+        .map_err(|_| ServerFnError::new("this month's spend could not be read"))?;
     let holds = db
         .open_holds_for_tenant(&org.tenant_id)
         .await
@@ -216,6 +235,8 @@ pub async fn get_dashboard() -> Result<DashboardData, ServerFnError> {
         }
         .to_owned(),
         available_minor,
+        frozen_minor,
+        month_spend_minor,
         holds: holds.iter().map(HoldView::from).collect(),
         entries: entries.iter().map(EntryView::from).collect(),
     })

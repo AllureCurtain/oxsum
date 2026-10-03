@@ -287,8 +287,8 @@ fn credits(minor: i64) -> String {
     format!("{sign}{}.{:06}", abs / 1_000_000, abs % 1_000_000)
 }
 
-/// The overview: who is logged in, the balance, the in-flight holds (live), and the
-/// newest log entries.
+/// The overview: who is logged in, the balance with the frozen total and this month's
+/// spend, the in-flight holds (live), and the newest log entries.
 #[component]
 fn OverviewPage() -> impl IntoView {
     let dashboard = Resource::new(|| (), |_| async { get_dashboard().await });
@@ -311,6 +311,8 @@ fn OverviewPage() -> impl IntoView {
     }
 }
 
+/// The overview card: who is logged in, the available balance, the frozen total, this
+/// month's spend. The in-flight holds and the newest entries follow it.
 #[component]
 fn Overview(data: DashboardData) -> impl IntoView {
     view! {
@@ -322,6 +324,14 @@ fn Overview(data: DashboardData) -> impl IntoView {
             <p class="balance">
                 <span class="muted">"Available balance"</span>
                 <strong class="mono">{credits(data.available_minor)}</strong>
+            </p>
+            <p class="balance">
+                <span class="muted">"Frozen by outstanding holds"</span>
+                <strong class="mono pending">{credits(data.frozen_minor)}</strong>
+            </p>
+            <p class="balance">
+                <span class="muted">"Spent this month"</span>
+                <strong class="mono">{credits(data.month_spend_minor)}</strong>
             </p>
         </section>
         <HoldsSection initial=data.holds.clone()/>
