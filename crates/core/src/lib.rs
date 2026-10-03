@@ -12,6 +12,7 @@ mod db;
 mod error;
 mod heads;
 mod holds;
+mod invitations;
 mod keys;
 mod orgs;
 mod proof;
@@ -33,6 +34,7 @@ pub use heads::{
     sign_head, signing_key,
 };
 pub use holds::{DEFAULT_HOLD_TIMEOUT, InFlightHold, OpenHold, SWEEP_INTERVAL, sweep_stale_holds};
+pub use invitations::CreatedInvitation;
 pub use keys::{ActingKey, ApiKey, CreatedApiKey};
 pub use orgs::{
     AdminOrganization, Kind, Member, MembershipActor, Organization, Ownership, Role,

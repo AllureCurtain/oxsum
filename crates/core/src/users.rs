@@ -128,7 +128,7 @@ pub(crate) fn validate_email(raw: &str) -> Result<String, WalletError> {
     Ok(email.to_owned())
 }
 
-fn validate_password(password: &str) -> Result<(), WalletError> {
+pub(crate) fn validate_password(password: &str) -> Result<(), WalletError> {
     // Characters on both ends, matching the limits openapi.yaml states: a user counting
     // characters should not be told they pass and then be refused.
     let length = password.chars().count();
