@@ -16,13 +16,13 @@ use axum::http::header::AUTHORIZATION;
 use axum::middleware::Next;
 use axum::response::Response;
 use axum::routing::get;
-use axum::{Json, Router, middleware};
+use axum::{Router, middleware};
 use oxsum_core::{Channel, ModelPrice, Price};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq as _;
 
 use crate::AppState;
-use crate::error::ApiError;
+use crate::error::{ApiError, ApiJson};
 use crate::routes::{ApiResult, ok};
 
 /// The `/api/v1/admin` surface. Nested by [`crate::routes`], which supplies the state.
@@ -69,7 +69,10 @@ async fn list(State(state): State<AppState>) -> ApiResult<Vec<Channel>> {
 /// Creates a channel, or replaces the connection of a channel that already exists.
 ///
 /// Its prices are untouched: a connection moves, a price history stays where it is.
-async fn set(State(state): State<AppState>, Json(request): Json<ChannelReq>) -> ApiResult<Channel> {
+async fn set(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<ChannelReq>,
+) -> ApiResult<Channel> {
     // A deployment with no sealing key cannot store a credential, and saying so beats storing one in
     // the clear. In practice this cannot happen: `prepare` refuses to start without the key once
     // channels exist, and a channel that was just created needs it too.
@@ -98,7 +101,7 @@ async fn set(State(state): State<AppState>, Json(request): Json<ChannelReq>) -> 
 async fn append(
     State(state): State<AppState>,
     Path(name): Path<String>,
-    Json(request): Json<PriceReq>,
+    ApiJson(request): ApiJson<PriceReq>,
 ) -> ApiResult<VersionRes> {
     // An unknown channel is not found, rather than a validation failure: the request is well formed
     // and names something that is not there.

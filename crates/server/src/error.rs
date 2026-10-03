@@ -1,7 +1,10 @@
 use axum::Json;
+use axum::extract::rejection::JsonRejection;
+use axum::extract::{FromRequest, OptionalFromRequest, Request};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use oxsum_core::WalletError;
+use serde::de::DeserializeOwned;
 use serde_json::json;
 
 /// HTTP-layer errors, formatted per docs/api.md.
@@ -60,6 +63,19 @@ impl From<WalletError> for ApiError {
     }
 }
 
+/// Every way axum's own [`Json`] extractor can refuse a body is the caller's mistake, so it gets the
+/// envelope's 400 rather than axum's plain-text answer: a missing or wrong `content-type` (415), a
+/// body that is not JSON (400) and a body that is JSON but not this shape (422) are one status here,
+/// which is the one the contract declares (issue #51).
+impl From<JsonRejection> for ApiError {
+    fn from(rejection: JsonRejection) -> Self {
+        // axum's text names what was wrong with the body — "Expected request with
+        // `Content-Type: application/json`", "Failed to parse the request body as JSON: EOF while
+        // parsing a value at line 1 column 10" — which is exactly what a caller needs to hear.
+        Self::Validation(rejection.body_text())
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, code, message) = match self {
@@ -107,5 +123,47 @@ impl IntoResponse for ApiError {
         };
         let body = json!({ "error": { "code": code, "message": message, "details": [] } });
         (status, Json(body)).into_response()
+    }
+}
+
+/// The JSON body of an `/api/v1` request: [`Json`], with axum's rejection replaced by [`ApiError`].
+///
+/// Use this instead of `Json` for every request body on the envelope's surface, so that a body this
+/// deployment cannot read is answered in the format the surface documents throughout (issue #51).
+/// Responses keep `Json`; only extraction differs.
+///
+/// `Option<ApiJson<T>>` is the optional-body form and keeps axum's rule: a request that sends no
+/// `content-type` at all is a request with no body, while one that names a type other than JSON is a
+/// rejection. That is what makes `POST /api/v1/org/keys` without a body still mint a plain key.
+pub(crate) struct ApiJson<T>(pub(crate) T);
+
+impl<T, S> FromRequest<S> for ApiJson<T>
+where
+    T: DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request(request: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let Json(value) = <Json<T> as FromRequest<S>>::from_request(request, state).await?;
+        Ok(Self(value))
+    }
+}
+
+impl<T, S> OptionalFromRequest<S> for ApiJson<T>
+where
+    T: DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request(request: Request, state: &S) -> Result<Option<Self>, Self::Rejection> {
+        // axum's own optional extraction decides what "no body" means, and it is only the
+        // rejection that changes.
+        match <Json<T> as OptionalFromRequest<S>>::from_request(request, state).await {
+            Ok(Some(Json(value))) => Ok(Some(Self(value))),
+            Ok(None) => Ok(None),
+            Err(rejection) => Err(rejection.into()),
+        }
     }
 }
