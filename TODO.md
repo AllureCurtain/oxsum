@@ -4,7 +4,7 @@ Updated: 2026-10-03
 
 ## In progress
 
-- The platform-admin pages (issue #57): the channels and prices page is shipping; organizations, in-flight requests, anomalies and closing remain.
+- The platform-admin pages (issue #57): channels & prices and organizations are shipping; in-flight requests, anomalies and closing remain.
 
 ## Next
 

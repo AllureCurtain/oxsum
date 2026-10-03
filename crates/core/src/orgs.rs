@@ -94,6 +94,20 @@ pub struct Organization {
     pub created_at: OffsetDateTime,
 }
 
+/// An organization as the platform admin lists it: identity, kind, headcount, and the
+/// tenant id its ledger answers to. The tenant id is internal — it is how the wallet
+/// is opened, not something an answer reports.
+#[derive(Debug, Clone)]
+pub struct AdminOrganization {
+    pub id: Uuid,
+    pub name: String,
+    pub tenant_id: String,
+    pub kind: Kind,
+    /// How many people belong: a personal organization is normally one, a team's more.
+    pub members: i64,
+    pub created_at: OffsetDateTime,
+}
+
 /// One membership as the dashboard lists it: who holds it, in which role, since when.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -151,6 +165,36 @@ fn assignable(role: Role) -> Result<Role, WalletError> {
 }
 
 impl Db {
+    /// Every organization, oldest first, with its headcount: what the platform admin's
+    /// organizations page lists. Balances are read per organization through the wallet
+    /// by the caller — this is the identity list, not the money.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn organizations(&self) -> Result<Vec<AdminOrganization>, WalletError> {
+        let rows = sqlx::query(
+            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, \
+             count(m.user_id) AS members \
+             FROM oxsum.organizations o LEFT JOIN oxsum.memberships m USING (organization_id) \
+             GROUP BY o.organization_id ORDER BY o.created_at",
+        )
+        .fetch_all(self.pool())
+        .await?;
+        let mut organizations = Vec::with_capacity(rows.len());
+        for row in &rows {
+            organizations.push(AdminOrganization {
+                id: row.try_get("organization_id")?,
+                name: row.try_get("name")?,
+                tenant_id: row.try_get("tenant_id")?,
+                kind: Kind::parse(&row.try_get::<String, _>("kind")?)?,
+                members: row.try_get("members")?,
+                created_at: row.try_get("created_at")?,
+            });
+        }
+        Ok(organizations)
+    }
+
     /// The members of an organization, oldest first: what the dashboard's members page
     /// lists. Invitations do not exist yet, so today this is everyone the organization
     /// has.

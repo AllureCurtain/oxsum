@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.8.0
+  version: 0.9.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -32,7 +32,9 @@ info:
     `/api/v1/org/ownership`). Membership management is a person's action: an API key names no role and
     is refused there, which is the one place a key does not act with the organization's full
     authority. Invitations for people who have no account yet are issue #59 and are not part of this
-    contract.
+    contract. 0.9.0 widened the platform-admin surface past channels: `GET /api/v1/admin/organizations`
+    lists every organization with its balance, so the deployment can see whom the ledger holds money
+    for. Adjusting or topping up another organization is still not in the contract (issue #60).
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie, except
     `/api/v1/auth/login`, `/api/v1/auth/logout` and `/api/v1/auth/register`, which take no
@@ -724,6 +726,33 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/organizations:
+    get:
+      summary: List every organization, with its balance
+      description: |
+        The platform admin's view of whom the ledger holds money for: every organization, oldest
+        first, with its kind, its headcount and what its wallet shows — `availableMinor` (settled
+        minus unsettled holds) and `reservedMinor` (the sum of its outstanding holds). Balances are
+        integer minor units, 1 credit = 1_000_000 minor, and reading one creates the organization's
+        ledger if it does not exist yet, the same way the dashboard's overview does.
+        Moving another organization's money — topping it up or adjusting it — is not this
+        endpoint and is planned under issue #60.
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: Every organization, oldest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/AdminOrganization" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /v1/models:
     get:
       summary: List the served models, in OpenAI's shape
@@ -996,6 +1025,17 @@ components:
       properties:
         model: { type: string }
         version: { type: integer, minimum: 1, description: the version this change appended }
+    AdminOrganization:
+      type: object
+      required: [id, name, kind, members, createdAt, availableMinor, reservedMinor]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        kind: { type: string, enum: [personal, team] }
+        members: { type: integer, format: int64, minimum: 0, description: how many people belong to the organization }
+        createdAt: { type: string, format: date-time }
+        availableMinor: { type: integer, format: int64, description: settled minus unsettled holds }
+        reservedMinor: { type: integer, format: int64, minimum: 0, description: the sum of the organization's outstanding holds }
     AmountRequest:
       type: object
       required: [idempotencyKey, amountMinor]
