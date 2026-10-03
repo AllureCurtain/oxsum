@@ -791,10 +791,17 @@ fn database_url() -> Option<String> {
     std::env::var("DATABASE_URL").ok()
 }
 
+/// The ledger of the deterministic regression case. Not one of the eight the generated cases
+/// share: that case needs a starting balance of its own, and the shared ones carry the residue of
+/// whichever cases ran before.
+const REGRESSION_LEDGER: &str = "generative_regression";
+
 /// The shared pool and tenant registry, or `None` when no database is configured.
 ///
 /// The eight ledgers are dropped and recreated once, before the first case: every run then starts
-/// from an empty ledger, and a run leaves eight schemas behind rather than a thousand.
+/// from an empty ledger, and a run leaves eight schemas behind rather than a thousand. The
+/// regression ledger is dropped here too — the case needs a balance it can predict, and it is
+/// created again on first use ([`Tenants::get`]).
 fn tenants() -> Option<&'static Tenants> {
     static TENANTS: OnceLock<Option<Tenants>> = OnceLock::new();
     TENANTS
@@ -809,14 +816,14 @@ fn tenants() -> Option<&'static Tenants> {
                 })
                 .expect("connecting to the database");
             runtime().block_on(async {
-                for ledger in 0..LEDGERS {
-                    sqlx::query(&format!(
-                        "DROP SCHEMA IF EXISTS ledger_{} CASCADE",
-                        tenant_id(ledger)
-                    ))
-                    .execute(&pool)
-                    .await
-                    .expect("dropping a stale ledger");
+                for ledger in (0..LEDGERS)
+                    .map(tenant_id)
+                    .chain([REGRESSION_LEDGER.to_owned()])
+                {
+                    sqlx::query(&format!("DROP SCHEMA IF EXISTS ledger_{ledger} CASCADE"))
+                        .execute(&pool)
+                        .await
+                        .expect("dropping a stale ledger");
                 }
             });
             let tenants = Tenants::new(pool);
@@ -856,6 +863,63 @@ proptest! {
         {
             return Err(TestCaseError::fail(failure));
         }
+    }
+}
+
+/// A settlement releases the hold the ledger holds, not the one its request was built with
+/// (issue #41).
+///
+/// The counterexample that took CI down: a hold refused for insufficient funds leaves its key
+/// free, so a collision can later write a hold there, and a replay of a settlement that was
+/// refused *before* that hold existed then succeeds — releasing the entry the ledger holds while
+/// the model subtracted the placeholder it had recorded in the request.
+///
+/// It is pinned here rather than by a proptest seed because it needs a ledger whose balance sits
+/// inside a band: enough for the collided hold, not enough for the first one. The seed CI saved
+/// carries the sequence but not the balance the shared ledger happened to have, so replaying it
+/// against a fresh database passes.
+#[test]
+fn a_settlement_releases_the_hold_the_ledger_holds() {
+    let Some(tenants) = tenants() else {
+        // Same warn-once honesty as the generated cases (issue #18).
+        eprintln!(
+            "DATABASE_URL not set (neither in the environment nor in .env), skipping the regression case"
+        );
+        return;
+    };
+    // The balance band, in the order the case reaches it: the first hold is refused, the top-up
+    // funds the account past the collided hold, and the collided hold writes because the first
+    // one never did.
+    let raw = [
+        Raw::Hold(1_911_017),
+        Raw::TopUp(1_148_977),
+        Raw::Settle {
+            back: 142,
+            mode: Mode::Full,
+        },
+        Raw::Settle {
+            back: 167,
+            mode: Mode::Zero,
+        },
+        Raw::Collide {
+            back: 251,
+            up: true,
+        },
+        Raw::Replay { back: 86 },
+    ];
+    let failure = runtime().block_on(async {
+        let wallet = tenants
+            .get(REGRESSION_LEDGER)
+            .await
+            .expect("opening the regression ledger");
+        wallet
+            .top_up("regression-fund", ONE, DAY)
+            .await
+            .expect("funding the regression ledger");
+        check_case(tenants, REGRESSION_LEDGER, 0, &raw).await
+    });
+    if let Err(failure) = failure {
+        panic!("the model and the wallet disagreed: {failure}");
     }
 }
 
