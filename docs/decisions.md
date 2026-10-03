@@ -2,6 +2,20 @@
 
 New decisions go on top. Overturned decisions are never deleted; mark them "Superseded" and name the decision that replaces it.
 
+## 2026-10-03 product.md honesty: the shipped behaviour wins in three places (issue #61)
+
+- Status: Adopted. Implemented 2026-10-03, closing issue #61.
+- Background: an audit of docs/product.md against the code found the document describing a larger product than the one that exists — five platform-admin pages, a bills page with exports, a requests page, membership management, team organizations, invitations, the signup bonus and a browser-local tree-head archive, none of which is built. Each of those now has its own issue (#54 the bills page, #55 the requests page, #56 membership management, #57 the platform-admin pages, #58 team organizations and switching, #59 invitations, #60 adjustments and the signup bonus), except the tree-head archive, which has none yet; docs/product.md marks them all as planned. This entry records the three places where the document contradicted behaviour that *is* built; those statements now describe the code.
+- Decision:
+  - **Self-service top-up on the session is the v1 behaviour.** `POST /api/v1/topups` sits in the `authenticated` router (`crates/server/src/routes.rs`), behind the same credential check as every other organization endpoint: a session cookie or an API key may credit its own organization's balance, and the handler takes an amount and an idempotency key with no description, so no reason is recorded. The chat page's top-up form (`crates/web/src/chat.rs`) is exactly this call, which is why it works with no operator in the loop.
+  - **The member list is readable by every member; management is planned.** `get_members` (`crates/web/src/api.rs`) authenticates the session and returns the organization's members with no role check, and the page renders a read-only table (`crates/web/src/app.rs`): reading who is in the organization is not a management action. Invite, remove, change roles and transfer ownership are planned under #56, and those actions will carry their own role checks.
+  - **The overview shows money and characters, not tokens.** It shows the available balance, each in-flight request's frozen upper bound and live progress in forwarded characters (`crates/web/src/app.rs`); there is no frozen total and no month-to-date spend on the page, and both stay planned with the overview. Tokens cannot be a live number: upstream reports usage only in the final chunk of a streaming response, so before settlement the page would be presenting an estimate as a measurement. Characters are what has actually arrived.
+- Rejected:
+  - **Admin-gated top-ups with a required reason** (the operator token plus a description on every credit, product.md's original credit-source table): it would make the chat page's top-up button depend on an operator, and it demands a reason where there is none — the organization is moving its own money in. A reason belongs on an operator's change, which is the shape the planned adjustments (#60) will take.
+  - **Gating the member list to owners and admins**: it would add a role rule to a read-only page whose management actions do not exist yet (#56), and the shipped transaction log is already readable by every member.
+  - **Printing live token progress on the overview**: upstream sends usage only with the final chunk, so any live token count would be an estimate shown as a measurement; if the overview ever shows tokens, it will be at settlement.
+- Implementation notes: documentation only — `docs/product.md` (every page and flow marked shipped or planned, and the three statements corrected), `TODO.md` (the planned items as phase D under Next; this change under Recently completed). No code, no `openapi.yaml`.
+
 ## 2026-10-03 Chat page: the browser chats with an API key, bills through a page server function (issue #39)
 
 - Status: Adopted. Implemented 2026-10-03, closing issue #39 (TODO C-11).
