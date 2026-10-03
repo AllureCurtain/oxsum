@@ -1,0 +1,17 @@
+# leptos decides the wasm module's name when *leptos* is compiled: `HydrationScripts`
+# appends `_bg` unless `LEPTOS_OUTPUT_NAME` is set, and the shell that names the bundle is
+# compiled into the server. Only `cargo leptos build`/`serve` set that variable, so a
+# server built by plain `cargo run -p oxsum-server` — the command docs/development.md
+# documents — asked for `/pkg/oxsum_bg.wasm`, while the site cargo-leptos writes holds
+# `pkg/oxsum.wasm` (wasm-bindgen emits `oxsum_bg.wasm`, and cargo-leptos renames it to the
+# name `HydrationScripts` computes for `output-name`). The module import 404'd and every
+# page stayed exactly as the server had rendered it (issue #65).
+#
+# Setting the variable for every cargo invocation in this workspace makes the markup name
+# the file the built site holds, whichever way the server was built. Only the variable's
+# presence matters to leptos — the name in the URL still comes from `output-name` in
+# [[workspace.metadata.leptos]] — so the value is not a second place to keep in step, and
+# `cargo leptos build` sets the same one. Cargo tracks `option_env!` reads, so an existing
+# build is rebuilt when the value changes.
+[env]
+LEPTOS_OUTPUT_NAME = "oxsum"

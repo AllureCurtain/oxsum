@@ -20,6 +20,16 @@ use tower::ServiceExt;
 
 const PASSWORD: &str = "correct horse battery";
 
+/// The wasm-bindgen glue and the wasm module, relative to the site root: the names
+/// `cargo leptos build` writes into `<site-root>/pkg`, taken from `output-name` in
+/// `[[workspace.metadata.leptos]]`.
+///
+/// wasm-bindgen emits `oxsum_bg.wasm` and cargo-leptos 0.3.11 renames it to
+/// `oxsum.wasm` ("for backward compatibility with leptos' `HydrationScripts`"), which is
+/// the name the shell's markup must ask for (issue #65).
+const GLUE: &str = "pkg/oxsum.js";
+const WASM: &str = "pkg/oxsum.wasm";
+
 /// An app over a real database with oxsum's tables migrated, plus the broadcast sender
 /// the gateway publishes billing events to.
 async fn online_app(url: &str) -> (Router, Db, broadcast::Sender<BillingEvent>) {
@@ -218,6 +228,88 @@ async fn the_pkg_bundle_is_served_from_the_site_root() {
     assert_eq!(res.status(), StatusCode::OK);
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(&bytes[..], b"bundle-bytes");
+}
+
+/// One GET whose body is kept as bytes: the server-rendered pages are HTML, and
+/// `/pkg/*` is not text at all, so `call`'s JSON body does not fit.
+async fn get_raw(app: &Router, path: &str) -> (StatusCode, Vec<u8>) {
+    let req = Request::builder()
+        .uri(path)
+        .body(Body::empty())
+        .expect("the request is valid");
+    let res = app.clone().oneshot(req).await.expect("the app answers");
+    let status = res.status();
+    let bytes = res
+        .into_body()
+        .collect()
+        .await
+        .expect("the body is readable")
+        .to_bytes()
+        .to_vec();
+    (status, bytes)
+}
+
+/// The workspace root: this crate sits at `<root>/crates/server`.
+fn workspace_root() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("crates/server sits under the workspace root")
+        .to_path_buf()
+}
+
+/// The shell's markup asks for the wasm module the built site holds, under the name
+/// `cargo leptos build` writes it.
+///
+/// leptos decides that name when *leptos* is compiled: `HydrationScripts` appends `_bg`
+/// unless `LEPTOS_OUTPUT_NAME` is set (`leptos-0.8.21/src/hydration/mod.rs`), and only
+/// `cargo leptos build`/`serve` used to set it — for the server half as well as the wasm
+/// half. A server built by plain `cargo run -p oxsum-server`, the command
+/// `docs/development.md` documents, therefore asked for `/pkg/oxsum_bg.wasm`, while the
+/// site holds `pkg/oxsum.wasm`: the import 404'd and every page stayed exactly as the
+/// server had rendered it (issue #65). `.cargo/config.toml` sets `LEPTOS_OUTPUT_NAME` for
+/// every cargo invocation in the workspace, and this test binary is such a build — which
+/// is what makes this assertion cover the command a developer actually runs.
+#[tokio::test]
+async fn the_shell_asks_for_the_wasm_file_the_built_site_holds() {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .connect_lazy("postgres://unused")
+        .expect("the placeholder URL parses");
+    let app = oxsum_server::app(Db::from_pool(pool), Config::new(Signup::Open, None));
+
+    let (status, body) = get_raw(&app, "/login").await;
+    assert_eq!(status, StatusCode::OK, "GET /login answered {status}");
+    let html = String::from_utf8_lossy(&body).into_owned();
+
+    // The `_bg` suffix is leptos's compile-time fallback: the file it names is not in the
+    // site, so this is the assertion that fails when the name drifts back (issue #65).
+    assert!(
+        !html.contains("_bg.wasm"),
+        "GET /login asks for a `_bg` wasm module: leptos appends that suffix when \
+         LEPTOS_OUTPUT_NAME is unset while it is compiled, and it is compiled into this \
+         server. The built site holds {WASM} instead, so the file the markup names \
+         answers 404 and the page never hydrates (issue #65)"
+    );
+    for asset in [GLUE, WASM] {
+        assert!(
+            html.contains(asset),
+            "GET /login never references {asset}, so the browser has nothing to load"
+        );
+    }
+
+    // With a site on disk — `cargo leptos build` writes it to the workspace's `target/site`,
+    // which is the site root the server resolves (`site-root` in the workspace Cargo.toml) —
+    // the markup names a file the pkg route really serves: the browser's entire contract,
+    // in one more request.
+    if workspace_root().join("target/site").join(WASM).exists() {
+        let (status, body) = get_raw(&app, &format!("/{WASM}")).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "/{WASM} is in the built site, but the pkg route answered {status}"
+        );
+        assert!(!body.is_empty(), "/{WASM} answered 200 with an empty body");
+    }
 }
 
 /// A logged-in socket gets a snapshot of the in-flight holds first, then its
