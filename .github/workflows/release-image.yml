@@ -1,0 +1,181 @@
+# The release image gate: `Dockerfile` is the only release artifact, and no gate built
+# it — ci.yml uses Docker only for doubleentry's testcontainers suite. The last real
+# check of the image predated the site root fix (#44) and the hydration fix (#46), and
+# both of those regressions are invisible to the router-level tests but obvious over
+# HTTP, so this workflow builds the image and runs it against a real database.
+#
+# The database is a service container, exactly as in ci.yml (`postgres:17-alpine`, same
+# credentials, same health check). Its port is published on the runner's own loopback,
+# which a container on Docker's default bridge cannot reach, so the application
+# container runs with `--network host` — the GitHub-hosted runner is Linux — and
+# DATABASE_URL names 127.0.0.1:5432, the address the service is published on. Host
+# networking also puts the server's own 0.0.0.0:3000 (the image's OXSUM_ADDR) on the
+# runner, which is where the checks below poll.
+
+name: Release image
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    name: build and smoke-test
+    runs-on: ubuntu-latest
+    # `cargo leptos build --release` compiles the whole workspace plus the WASM side:
+    # a hung build should fail long before the default six hours are up.
+    timeout-minutes: 90
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: oxsum
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@v4
+      # The release build (Leptos, wasm-bindgen, wasm-opt) and its BuildKit cache are
+      # big; ci.yml frees the same space for the same reason, "No space left on device"
+      # from a compiler.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h
+      # The buildx `docker-container` driver is what makes the cache export below
+      # possible: the default `docker` driver cannot export cache.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Build the release image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          # The image is only ever smoke-tested here, never published: `load` puts it
+          # in the runner's own daemon for the steps below.
+          load: true
+          tags: oxsum:ci
+          # Without the Actions cache every rebuild is another 20-40 minute release
+          # compile; with it the Rust and WASM layers are reused.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # The service container's health check normally gates the steps, but the server
+      # migrates at startup and refuses to boot against a database it cannot reach, so
+      # the wait is explicit and bounded instead of assumed.
+      - name: Wait for PostgreSQL
+        run: |
+          for attempt in $(seq 1 30); do
+            if docker run --rm --network host postgres:17-alpine \
+                 pg_isready --host 127.0.0.1 --port 5432 --username postgres --dbname oxsum; then
+              echo "PostgreSQL answered after ${attempt} attempt(s)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "PostgreSQL never answered on 127.0.0.1:5432"
+          docker ps --all
+          exit 1
+      # --network host and DATABASE_URL match each other, see the note at the top of
+      # the file. The image migrates the schema at startup, so there is no migrate step.
+      - name: Run the image against the database
+        run: |
+          docker run --detach --name oxsum --network host \
+            --env DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/oxsum \
+            oxsum:ci
+          docker ps
+      - name: Wait for the server
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent --show-error --output /dev/null http://127.0.0.1:3000/healthz; then
+              echo "the server answered /healthz after ${attempt} attempt(s)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "the server never answered http://127.0.0.1:3000/healthz"
+          docker logs oxsum || true
+          exit 1
+      # Every probe below is failure-safe (they never abort the script), so the step
+      # reports all of them and then dumps the container logs before failing: a red
+      # run has to be diagnosable without re-running it.
+      - name: Smoke-test the release image
+        run: |
+          base=http://127.0.0.1:3000
+          failed=0
+
+          status() {
+            curl --silent --output /dev/null --write-out '%{http_code}' "$base$1" || true
+          }
+
+          expect_status() {
+            local path=$1 expected=$2 label=${3:-$1} actual
+            actual=$(status "$path")
+            if [ "$actual" = "$expected" ]; then
+              echo "ok       $label -> $actual"
+            else
+              echo "FAILED   $label -> $actual (expected $expected)"
+              failed=1
+            fi
+          }
+
+          expect_body() {
+            local path=$1 pattern=$2 label=$3 body
+            body=$(curl --silent "$base$path" || true)
+            if grep --quiet --extended-regexp "$pattern" <<<"$body"; then
+              echo "ok       $path carries $label"
+            else
+              echo "FAILED   $path does not carry $label (pattern: $pattern)"
+              failed=1
+            fi
+          }
+
+          # The wallet is up and its schema migrated: the server migrates before it
+          # starts serving, and refuses to boot at all if the database is unreachable.
+          expect_status /healthz 200
+
+          # The static bundle is served from the site root the image sets
+          # (LEPTOS_SITE_ROOT=/app/site). A 404 here is the regression that once
+          # shipped: every page rendered, and none of them hydrated. cargo-leptos
+          # 0.3.11 renames wasm-bindgen's `oxsum_bg.wasm` to `oxsum.wasm`
+          # (cargo-leptos src/compile/front.rs), so the WASM file is oxsum.wasm.
+          expect_status /pkg/oxsum.js 200
+          expect_status /pkg/oxsum.wasm 200
+
+          # The shell has to name the WASM it loads, and that file has to be served.
+          wasm=$(
+            curl --silent "$base/login" \
+              | grep --only-matching --extended-regexp '/pkg/[A-Za-z0-9_.-]+\.wasm' \
+              | head --lines=1 || true
+          )
+          if [ -z "$wasm" ]; then
+            echo "FAILED   /login names no /pkg/*.wasm for the browser to load"
+            failed=1
+          else
+            expect_status "$wasm" 200 "the WASM /login loads"
+          fi
+
+          # The hydration script and the no-JS POST form: without the script the login
+          # form falls back to a native GET submit, which puts the password in the
+          # query string (#46).
+          expect_body /login 'mod\.hydrate\(\)' 'the Leptos hydration script'
+          expect_body /login '<form[^>]*method="post"' 'the login form with method="post"'
+
+          if [ "$failed" -ne 0 ]; then
+            echo "----- docker logs oxsum -----"
+            docker logs oxsum || true
+            exit 1
+          fi
+          echo "the release image serves the wallet, the login page and its bundle"
