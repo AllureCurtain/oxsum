@@ -10,3 +10,17 @@ mod api;
 mod app;
 
 pub use app::{App, Shell};
+
+/// The browser entry point.
+///
+/// The SSR shell's module script imports the wasm module, awaits its default initialiser
+/// and then calls `hydrate` — leptos's own convention, emitted by `leptos_meta`'s
+/// hydration script. Without this export the import throws
+/// (`mod.hydrate is not a function`) right after the wasm has loaded, and every page stays
+/// as inert as the server rendered it: no login handler, no top-up, no chat, no billing
+/// socket, no proof check (issue #46).
+#[cfg(feature = "hydrate")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn hydrate() {
+    leptos::mount::hydrate_body(App);
+}
