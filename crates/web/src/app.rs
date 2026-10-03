@@ -19,9 +19,10 @@ use crate::admin::{
     AdminOrganizationsPage,
 };
 use crate::api::{
-    CreatedKeyView, DashboardData, EntryView, HoldView, KeyView, MemberView, MembersView,
-    TransferView, add_member, change_member_role, create_key, get_bills, get_dashboard, get_keys,
-    get_log, get_members, get_requests, remove_member, revoke_key, transfer_ownership,
+    CreatedKeyView, DashboardData, EntryView, HoldView, KeyView, MemberView, MembersView, OrgView,
+    TransferView, add_member, change_member_role, create_key, create_team_org, get_bills,
+    get_dashboard, get_keys, get_log, get_members, get_requests, list_organizations, remove_member,
+    revoke_key, switch_organization, transfer_ownership,
 };
 use crate::bills::BillView;
 use crate::chat::ChatPage;
@@ -294,6 +295,7 @@ fn DashboardLayout() -> impl IntoView {
                 <A href="/logout">"Log out"</A>
             </nav>
             <main class="content">
+                <OrgSwitcher/>
                 <Outlet/>
             </main>
         </div>
@@ -306,6 +308,124 @@ pub(crate) fn credits(minor: i64) -> String {
     let sign = if minor < 0 { "-" } else { "" };
     let abs = minor.unsigned_abs();
     format!("{sign}{}.{:06}", abs / 1_000_000, abs % 1_000_000)
+}
+
+/// Reloads the page: after the acting organization switches or a new one is created,
+/// every page's data is read fresh against the session's new organization — a reload is
+/// how the whole dashboard follows at once.
+fn reload() {
+    #[cfg(feature = "hydrate")]
+    if let Some(window) = web_sys::window() {
+        let _ = window.location().reload();
+    }
+}
+
+/// The acting organization, top right as product.md places it: the select switches
+/// between the organizations the user belongs to, and "New" makes a team organization
+/// with the user as its owner.
+///
+/// A switch updates the session row, so it survives a reload — and the reload is what
+/// applies it here, re-reading every page against the new organization. An unreadable
+/// list renders nothing rather than an error row: the dashboard's own guard already
+/// reports a dead session.
+#[component]
+fn OrgSwitcher() -> impl IntoView {
+    let organizations = Resource::new(|| (), |_| async { list_organizations().await });
+    let (creating, set_creating) = signal(false);
+    let (name, set_name) = signal(String::new());
+    let (busy, set_busy) = signal(false);
+    let (error, set_error) = signal(Option::<String>::None);
+
+    let switch = move |ev: web_sys::Event| {
+        let organization_id = event_target_value(&ev);
+        leptos::task::spawn_local(async move {
+            if switch_organization(organization_id).await.is_ok() {
+                reload();
+            }
+        });
+    };
+
+    let create = move |ev: web_sys::SubmitEvent| {
+        ev.prevent_default();
+        set_busy.set(true);
+        set_error.set(None);
+        let name = name.get();
+        leptos::task::spawn_local(async move {
+            match create_team_org(name).await {
+                Ok(()) => reload(),
+                Err(err) => {
+                    set_busy.set(false);
+                    set_error.set(Some(err.to_string()));
+                }
+            }
+        });
+    };
+
+    view! {
+        <div class="topbar">
+            <Suspense>
+                {move || {
+                    organizations.get().and_then(Result::ok).map(|(orgs, active)| {
+                        view! {
+                            <label class="org-switch">
+                                "Organization"
+                                <select
+                                    prop:value=active.clone()
+                                    on:change=switch
+                                >
+                                    {orgs
+                                        .iter()
+                                        .map(|org: &OrgView| {
+                                            view! {
+                                                <option value=org.id.clone() selected=org.id == active>
+                                                    {format!("{} ({})", org.name, org.kind)}
+                                                </option>
+                                            }
+                                        })
+                                        .collect_view()}
+                                </select>
+                            </label>
+                            <button
+                                type="button"
+                                class="quiet"
+                                on:click=move |_| set_creating.update(|c| *c = !*c)
+                            >
+                                {move || if creating.get() { "Cancel" } else { "New" }}
+                            </button>
+                        }
+                    })
+                }}
+            </Suspense>
+        </div>
+        {move || {
+            creating.get().then(|| {
+                view! {
+                    <form class="card org-create" method="post" on:submit=create aria-label="New organization">
+                        <h2>"New team organization"</h2>
+                        {move || {
+                            error
+                                .get()
+                                .map(|message| view! { <p class="error" role="alert">{message}</p> })
+                        }}
+                        <label>
+                            "Name"
+                            <input
+                                type="text"
+                                name="name"
+                                maxlength="80"
+                                required
+                                prop:value=move || name.get()
+                                on:input=move |ev| set_name.set(event_target_value(&ev))
+                            />
+                        </label>
+                        <button type="submit" prop:disabled=move || busy.get()>
+                            {move || if busy.get() { "Creating…" } else { "Create" }}
+                        </button>
+                    </form>
+                }
+            })
+        }}
+    }
 }
 
 /// The overview: who is logged in, the balance with the frozen total and this month's

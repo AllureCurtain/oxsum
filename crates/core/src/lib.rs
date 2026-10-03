@@ -34,7 +34,10 @@ pub use heads::{
 };
 pub use holds::{DEFAULT_HOLD_TIMEOUT, InFlightHold, OpenHold, SWEEP_INTERVAL, sweep_stale_holds};
 pub use keys::{ActingKey, ApiKey, CreatedApiKey};
-pub use orgs::{AdminOrganization, Kind, Member, MembershipActor, Organization, Ownership, Role};
+pub use orgs::{
+    AdminOrganization, Kind, Member, MembershipActor, Organization, Ownership, Role,
+    UserOrganization,
+};
 pub use proof::{ProofBundle, verify_bundle};
 pub use sessions::{
     CreatedSession, KeyPrincipal, KeyScope, Principal, SESSION_COOKIE, SESSION_LIFETIME, Session,

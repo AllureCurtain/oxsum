@@ -119,6 +119,15 @@ pub struct Member {
     pub joined_at: OffsetDateTime,
 }
 
+/// An organization the user belongs to, with their role in it: the organization
+/// switcher's list.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserOrganization {
+    pub organization: Organization,
+    pub role: Role,
+}
+
 /// The ownership after a transfer: the new owner, and the owner who transferred it.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -193,6 +202,63 @@ impl Db {
             });
         }
         Ok(organizations)
+    }
+
+    /// Every organization `user_id` belongs to, oldest membership first, with the
+    /// role they hold — the list the organization switcher offers.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn organizations_of(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Vec<UserOrganization>, WalletError> {
+        let rows = sqlx::query(
+            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, m.role              FROM oxsum.memberships m JOIN oxsum.organizations o USING (organization_id)              WHERE m.user_id = $1 ORDER BY m.created_at, m.organization_id",
+        )
+        .bind(user_id)
+        .fetch_all(self.pool())
+        .await?;
+        let mut organizations = Vec::with_capacity(rows.len());
+        for row in &rows {
+            organizations.push(UserOrganization {
+                organization: organization_from_row(row)?,
+                role: Role::parse(&row.try_get::<String, _>("role")?)?,
+            });
+        }
+        Ok(organizations)
+    }
+
+    /// Creates a `team` organization — its own tenant id, its own ledger — and makes
+    /// `user_id` its owner, in one transaction.
+    ///
+    /// The kind is fixed: a `personal` organization is exactly what signup makes, so
+    /// no caller chooses it. The same name rule signup applies holds here.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::InvalidInput`] for an empty or overlong name; storage failures
+    /// surface as [`WalletError`].
+    pub async fn create_team_organization(
+        &self,
+        user_id: Uuid,
+        name: &str,
+    ) -> Result<Organization, WalletError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(WalletError::InvalidInput("name must not be empty".into()));
+        }
+        if name.chars().count() > 80 {
+            return Err(WalletError::InvalidInput(
+                "name must be at most 80 characters".into(),
+            ));
+        }
+        let mut tx = self.pool().begin().await?;
+        let organization = insert(&mut tx, Uuid::new_v4(), name, Kind::Team).await?;
+        add_member(&mut tx, organization.id, user_id, Role::Owner).await?;
+        tx.commit().await?;
+        Ok(organization)
     }
 
     /// The members of an organization, oldest first: what the dashboard's members page
