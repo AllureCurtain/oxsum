@@ -1128,8 +1128,8 @@ fn ClosingForm(
 #[cfg(feature = "hydrate")]
 mod browser {
     use gloo_net::http::Request;
-    use serde::Serialize;
     use serde::de::DeserializeOwned;
+    use serde::{Deserialize, Serialize};
 
     const TOKEN_STORAGE: &str = "oxsum-admin-token";
 
