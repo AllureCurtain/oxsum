@@ -30,6 +30,14 @@
 //!   settlement stays invalid input instead of becoming a conflict. The model reads it in that
 //!   order because the wallet does; a version that read the key first mispredicted exactly that
 //!   replay, once a collision had written under the key.
+//! - **A settlement releases the hold the ledger holds**, read when the call arrives rather than
+//!   carried in the request. A hold refused for insufficient funds leaves its key free, so a
+//!   collision can write a hold there later; a settlement that was refused before that hold
+//!   existed, replayed afterwards, then releases *that* hold in full. The module used to subtract
+//!   the placeholder it had recorded in the request instead — a counterexample that took CI down
+//!   (issue #41, pinned by `a_settlement_releases_the_hold_the_ledger_holds`). For the same
+//!   reason the placeholder is not part of the request's identity: the wallet compares the hold,
+//!   the actual and the description, so the model compares those three and nothing else.
 //! - **A key reused with different content is refused**, and the model only asserts that: that it
 //!   changes nothing and reports an error. The domain layer maps the engine's refusal to
 //!   `CONFLICT`, so the refusal arrives as a conflict, but the model reads all three classes the
@@ -127,8 +135,11 @@ enum Op {
 /// is what idempotency is about.
 ///
 /// A settlement names the hold it releases: the hold's key selects the reservation, and the
-/// wallet reads the held amount from the hold entry. A second settlement naming the same hold
-/// with the same actual amount *is* the same request, and the model says so.
+/// wallet reads the held amount from the hold entry, at the moment of the call. That amount is
+/// therefore *not* part of the request — the wallet compares the hold, the actual and the
+/// description, so a second settlement naming the same hold with the same actual amount *is* the
+/// same request however much that hold has become since. The model reads the release the same way
+/// ([`Case::held_now`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Request {
     TopUp {
@@ -139,10 +150,10 @@ enum Request {
     },
     Settle {
         hold_key: String,
-        /// The hold's amount, read from the model the way the wallet reads it from the ledger.
-        /// A placeholder when the named op is not an outstanding hold; the model refuses the
-        /// call before the placeholder matters.
-        held: i64,
+        /// The charge, computed when the request was built, from the amount the named key held
+        /// *then*. A settlement built before that key held anything is a placeholder's worth of
+        /// actual; the model refuses such a call before it reaches the wallet, and a replay of it
+        /// later carries the same actual, which is what the caller would send.
         actual: i64,
     },
 }
@@ -150,7 +161,12 @@ enum Request {
 impl Request {
     /// The same call with a different amount: close to the original, always valid, and never
     /// equal to it, so a collision is always a collision of content rather than an argument error.
-    fn perturbed(&self, up: bool) -> Self {
+    ///
+    /// `held` bounds the perturbed actual of a settlement and is the amount the named key holds
+    /// *now* — the request's own actual may have been computed before that hold existed, and a
+    /// perturbed actual above the real hold would be invalid input rather than the conflict this
+    /// op is about.
+    fn perturbed(&self, up: bool, held: i64) -> Self {
         match self {
             Request::TopUp { amount } => Request::TopUp {
                 amount: bumped(*amount, up),
@@ -158,14 +174,9 @@ impl Request {
             Request::Hold { amount } => Request::Hold {
                 amount: bumped(*amount, up),
             },
-            Request::Settle {
-                hold_key,
-                held,
-                actual,
-            } => Request::Settle {
+            Request::Settle { hold_key, actual } => Request::Settle {
                 hold_key: hold_key.clone(),
-                held: *held,
-                actual: bumped_actual(*actual, *held, up),
+                actual: bumped_actual(*actual, held, up),
             },
         }
     }
@@ -394,9 +405,8 @@ impl Case<'_> {
                 // that is not a hold, means there is nothing to release. A written settlement
                 // implies a written hold — the wallet only writes one after confirming the
                 // other — so the derived key cannot have collided when the hold is missing.
-                let outstanding = match self.written.get(hold_key) {
-                    Some((Request::Hold { amount }, _)) => *amount,
-                    _ => return Predicted::HoldNotFound,
+                let Some(outstanding) = self.held_now(hold_key) else {
+                    return Predicted::HoldNotFound;
                 };
                 // The bound is checked after the hold is read, and before the append: a second
                 // settlement that also overshoots is invalid input, not a conflict.
@@ -430,19 +440,15 @@ impl Case<'_> {
                 // or not the wallet took it. Settling a top-up, a refused hold, or a settlement
                 // is exactly the naming of something that is not an outstanding hold.
                 let hold_key = self.steps[*which].key.clone();
-                // The hold's amount, the way the wallet reads it from the ledger: the amount the
-                // named op asked to hold, if the wallet wrote it. The placeholder never matters;
-                // the model refuses the call before it is used.
-                let held = match self.written.get(&hold_key) {
-                    Some((Request::Hold { amount }, _)) => *amount,
-                    _ => ONE,
-                };
+                // What the hold is worth now, the way the wallet reads it from the ledger. A
+                // placeholder when the named op is not an outstanding hold: the model refuses the
+                // call before it is used, and a later replay of it re-reads the release.
+                let held = self.held_now(&hold_key).unwrap_or(ONE);
                 let derived = settlement_key_for(&hold_key);
                 (
                     derived,
                     Some(Request::Settle {
                         hold_key,
-                        held,
                         actual: mode.actual(held),
                     }),
                 )
@@ -455,11 +461,29 @@ impl Case<'_> {
             ),
             Op::Collide { which, up } => {
                 let previous = &self.steps[*which];
+                // A settlement's perturbed actual is bounded by what the named key holds now, not
+                // by what it held when the request was built.
+                let held = match &previous.request {
+                    Some(Request::Settle { hold_key, .. }) => {
+                        self.held_now(hold_key).unwrap_or(ONE)
+                    }
+                    _ => ONE,
+                };
                 (
                     previous.key.clone(),
-                    previous.request.clone().map(|r| r.perturbed(*up)),
+                    previous.request.clone().map(|r| r.perturbed(*up, held)),
                 )
             }
+        }
+    }
+
+    /// What the wallet holds under `key`, as the model knows it: the amount of the entry written
+    /// under that key, which is exactly what the wallet reads out of the ledger. `None` when the
+    /// key names no outstanding hold.
+    fn held_now(&self, key: &str) -> Option<i64> {
+        match self.written.get(key) {
+            Some((Request::Hold { amount }, _)) => Some(*amount),
+            _ => None,
         }
     }
 
@@ -488,9 +512,16 @@ impl Case<'_> {
                 match request {
                     Request::TopUp { amount } => self.settled += amount,
                     Request::Hold { amount } => self.reserved += amount,
-                    Request::Settle { held, actual, .. } => {
+                    Request::Settle { hold_key, actual } => {
                         // The settlement releases exactly what its hold reserved, and charges the
-                        // actual: the pairing the wallet enforces.
+                        // actual: the pairing the wallet enforces. The release is the entry the
+                        // hold's key holds *now* — `predict` allowed the call on that same amount,
+                        // and it is not the amount the request was built with (issue #41).
+                        let Some(held) = self.held_now(hold_key) else {
+                            return Err(context(
+                                "a settlement wrote while the model held nothing under its key",
+                            ));
+                        };
                         self.reserved -= held;
                         self.settled -= actual;
                     }
