@@ -23,7 +23,7 @@ The axum API, the core, doubleentry and the gateway exist today, with oxsum's ow
 | Module | Location | Responsibility |
 | --- | --- | --- |
 | doubleentry | `crates/doubleentry` | Double-entry bookkeeping, balance limits, pending layer, Merkle inclusion and consistency proofs, period closing. Vendored, see docs/decisions.md |
-| Wallet | `crates/core/src/wallet.rs` | One tenant's wallet: top-up, hold, settle, balance, proof bundles. Built on the shared pool, never on a pool of its own |
+| Wallet | `crates/core/src/wallet.rs` | One tenant's wallet: top-up, hold, settle, balance, proof bundles, and the settled entries the bills page lists and exports (`settled_entries`). Built on the shared pool, never on a pool of its own |
 | Pricing | `crates/core/src/billing.rs` | What a turn costs and what the ledger records: the input upper bound, the freeze, priced usage, the local `o200k_base` estimate, the settlement record, and the price book. No I/O, so it is the same arithmetic in a test and in a request |
 | Channels | `crates/core/src/channels.rs` | The channels and their prices: the append-only price versions, the resolution a request prices itself by (channel, version, price, upstream address), and the sealed upstream credential. Sealing is AES-256-GCM under `OXSUM_SECRET_KEY`, see docs/decisions.md |
 | Tenants | `crates/core/src/tenants.rs` | Facades over the shared pool, cached per tenant: a tenant costs a facade, not connections. See docs/decisions.md "all tenants share one connection pool" |
@@ -31,11 +31,11 @@ The axum API, the core, doubleentry and the gateway exist today, with oxsum's ow
 | Identity | `crates/core/src/users.rs`, `orgs.rs`, `keys.rs` | Registration (user, personal organization, owner membership and first API key, one transaction), organizations and memberships, and API keys: mint, resolve, list, revoke. The credential names the organization |
 | proof | `crates/verify/src/lib.rs`, re-exported by `crates/core/src/proof.rs` | Proof bundle structure and the client-side verify function, called directly inside the Leptos `/verify` page |
 | Tree heads | `crates/core/src/heads.rs`, `Wallet::{signed_head, consistency}` | The operator's signed tree heads: the per-tenant origin (`oxsum/ledgers/<tenant_id>`), the C2SP signed-note signed under `oxsum/tree-heads`, and the key publication. The seed is `OXSUM_HEAD_SIGNING_KEY`; signing is on demand and stateless. See docs/decisions.md |
-| HTTP | `crates/server/src/` | Routing, API-key middleware, error mapping |
+| HTTP | `crates/server/src/` | Routing, API-key middleware, error mapping, and the dashboard's own routes outside `/api/v1` (the billing WebSocket and the bills export) |
 | Gateway | `crates/server/src/gateway/` | The OpenAI-compatible `/v1` surface: model list, chat completions, OpenAI-shaped errors, and the relay that freezes before upstream and settles however the turn ends. Its own auth middleware, because a refusal here has to look like OpenAI's. It resolves its channel and price version from the rows in `crates/core` once per request, and records both in the settlement. Pricing is in core, see docs/decisions.md. It notes each hold in the sweeper's watch table before taking it, and clears the row when the turn settles |
 | Hold sweeper | `crates/core/src/holds.rs`, spawned in `crates/server/src/main.rs` | The background job that settles watched holds older than `OXSUM_HOLD_TIMEOUT` at 0 with kind `swept`, releasing the whole freeze. The watch table (`oxsum.open_holds`) is a finding aid only: the ledger stays the source of truth, and the derived settlement key is the atomic guard against a late settlement landing alongside the sweep. See docs/decisions.md |
 | Admin | `crates/server/src/admin.rs` | The platform admin's `/api/v1/admin` surface: channels and their price versions, behind `OXSUM_ADMIN_TOKEN` in a middleware of its own, because this is not an organization's credential. Store and rules are in core, see docs/decisions.md |
-| Pages | `crates/web` | Leptos admin dashboard, bill page, chat page. SSR plus hydration, mounted through the official `leptos_axum`, one binary |
+| Pages | `crates/web` | Leptos admin dashboard, bills page (`/dashboard/bills`), chat page, verification page. SSR plus hydration, mounted through the official `leptos_axum`, one binary; the CSV and JSON export beside the bills page is a page route of the server's, because a download has to be a response (docs/decisions.md) |
 
 ## Directory plan
 
@@ -73,10 +73,13 @@ crates/
     src/gateway/        exists: the /v1 surface — router, OpenAI error shape, request
                         parsing, the SSE relay, and the turn that owns its own settlement
     src/admin.rs        exists: the platform admin's /api/v1/admin surface and its token
+    src/bills.rs        exists: the bills export — the dashboard's two GET routes that
+                        answer the page's list as CSV and JSON (issue #54)
   web/                  The Leptos pages (B-5 done): `src/app.rs` the components,
-                        `src/api.rs` the server functions, `style/main.css` the tokens
-                        (see DESIGN.md); built with cargo-leptos, server and browser
-                        code separated by feature
+                        `src/api.rs` the server functions, `src/bills.rs` the bills row
+                        shape and the two exports built from it, `style/main.css` the
+                        tokens (see DESIGN.md); built with cargo-leptos, server and
+                        browser code separated by feature
 ```
 
 Principle: **domain logic belongs in core; the gateway does protocol and orchestration only; server only assembles**. The litmus test — if the logic survives replacing the axum layer, it is in the right place. That is why the gateway is a module of the server crate rather than a crate of its own: everything it does is HTTP — routing, an OpenAI-shaped error body, request deserialization, and a relay whose lifetime is the response body's — while every number it charges by is computed in `crates/core/src/billing.rs` and every row it charges by is read through `crates/core/src/channels.rs`. Migrations follow the crate that owns the table (core's tables in `core/migrations/`), applied in dependency order at startup.
@@ -84,7 +87,7 @@ Principle: **domain logic belongs in core; the gateway does protocol and orchest
 ## Frontend/backend boundary
 
 - External callers use REST/JSON; the contract is `crates/server/openapi.yaml`.
-- Leptos pages live in the same process as the server: SSR calls `oxsum-core` directly, and browser interactions call server code through server functions, with no hand-written page API.
+- Leptos pages live in the same process as the server: SSR calls `oxsum-core` directly, and browser interactions call server code through server functions, with no hand-written page API. The two exports beside the bills page are the exception: `GET /dashboard/bills/export.csv` and `.json` are routes of the server's own, answered with `Content-Disposition: attachment`, because a download has to be a response rather than a server function's return value (docs/decisions.md).
 - The verification page runs in the browser on hydrated WASM, calling `oxsum_core::verify_bundle` directly — the same code the server runs. doubleentry is verified to compile for `wasm32-unknown-unknown` (uuid's wasm32 randomness source solved with the `js` feature, see docs/decisions.md).
 
 ## Auth and permissions

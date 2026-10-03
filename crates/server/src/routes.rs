@@ -20,7 +20,7 @@ use crate::error::{ApiError, ApiJson};
 use crate::{AppState, Signup, today};
 
 /// The `/api/v1` surface, plus the routes served outside it: health, the gateway, the
-/// billing WebSocket, and the Leptos pages.
+/// billing WebSocket, the bills export and the Leptos pages.
 pub fn router(state: AppState) -> Router {
     // Behind a credential: everything that touches an organization, its ledger or its
     // credentials. The credential is an API key or a session cookie; both resolve to a
@@ -59,6 +59,13 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(|| async { "ok" }))
         // Live billing progress for the dashboard: session-cookie auth, like the pages.
         .route("/ws/billing", get(crate::ws::billing_ws))
+        // The bills export: the page's table as a file the browser saves, on the
+        // dashboard's own surface (the session cookie), not `/api/v1` (docs/decisions.md).
+        .route("/dashboard/bills/export.csv", get(crate::bills::export_csv))
+        .route(
+            "/dashboard/bills/export.json",
+            get(crate::bills::export_json),
+        )
         .nest("/api/v1", open.merge(authenticated).nest("/admin", admin))
         // The OpenAI-compatible surface, which brings its own auth and its own error format.
         .nest("/v1", crate::gateway::router(state.clone()));

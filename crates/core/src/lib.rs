@@ -42,4 +42,6 @@ pub use sessions::{
 };
 pub use tenants::Tenants;
 pub use users::{NewUser, Registration, User};
-pub use wallet::{Credits, LogEntry, Receipt, SCALE, Wallet, entry_id_for, settlement_key_for};
+pub use wallet::{
+    Credits, LogEntry, Receipt, SCALE, SettledEntry, Wallet, entry_id_for, settlement_key_for,
+};

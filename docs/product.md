@@ -4,7 +4,7 @@ Status: finalized (2026-10-01), audited against the code (2026-10-03, issue #61)
 
 This document records product behavior: who can do what, and how every situation is billed. Technical implementation lives in architecture.md, technology rationale in decisions.md, progress in TODO.md.
 
-Every page and flow below carries a status: **shipped** means this repository does it today, **planned** means the text describes the vision and names the issue that will build it. A planned page or flow is not a smaller feature that happens to be missing; it is documented behavior that no code implements. The shipped dashboard pages are `crates/web/src/app.rs` (shell, login, logout, overview, API keys, members, transaction log, verification) and `crates/web/src/chat.rs` (chat); the REST and gateway behavior they call is in `crates/server`. Issue #61 is the audit that added these statuses; the resolutions are recorded in docs/decisions.md.
+Every page and flow below carries a status: **shipped** means this repository does it today, **planned** means the text describes the vision and names the issue that will build it. A planned page or flow is not a smaller feature that happens to be missing; it is documented behavior that no code implements. The shipped dashboard pages are `crates/web/src/app.rs` (shell, login, logout, overview, API keys, members, transaction log, bills, verification) and `crates/web/src/chat.rs` (chat); the REST and gateway behavior they call is in `crates/server`. Issue #61 is the audit that added these statuses; the resolutions are recorded in docs/decisions.md.
 
 ## One-liner
 
@@ -18,7 +18,7 @@ The piece must let a first-time visitor walk this path in minutes:
 2. The admin configures one upstream channel (say DeepSeek) at `/api/v1/admin` with the operator token — the admin *pages* are planned, #57 — and tops up an organization through its own credential (`POST /api/v1/topups`, the chat page's top-up form).
 3. Create an API key, change base_url in any OpenAI SDK or ChatBox, and start chatting.
 4. The dashboard shows each in-flight freeze with its streaming progress live, and the newest settled entries below it.
-5. Open `/verify` — linked from every settled chat turn with both fields prefilled — and browser-local verification passes; change one number in the bundle and it fails. Clicking an entry on a bill page is planned, #54.
+5. Open `/verify` — linked from every settled chat turn with both fields prefilled — and browser-local verification passes; change one number in the bundle and it fails. The bills page (`/dashboard/bills`) lists each settled entry with its content hash and exports the list as CSV or JSON; fetching an entry's proof bundle from that page is planned, #54.
 
 ## Roles
 
@@ -26,13 +26,13 @@ The piece must let a first-time visitor walk this path in minutes:
 | --- | --- | --- | --- |
 | Platform admin | Whoever deploys oxsum | Manage channels and prices, top up or adjust any organization, view all anomalous requests, run monthly closings | Channels and prices are shipped (`/api/v1/admin`, operator token); topping up or adjusting another organization and the closings are planned (#57 pages, #60 adjustments and the signup bonus) |
 | Organization owner | Organization creator | Everything inside the organization, including transferring ownership | Keys, balance and the ledger are shipped; transferring ownership is planned (#56) |
-| Organization admin | Appointed by the owner | Invite and remove members, manage all keys, view the organization's full bill history | Managing all keys is shipped; inviting and removing is planned (#56); the bill history ships in part, as the unfiltered transaction log page (the newest hundred entries) |
-| Organization member | Invited people | Create and revoke their own keys, view organization balance and their own request records | Their own keys and the balance are shipped; their own request records are planned (#55 requests page, #54 bill page), and so is being invited (#59) |
+| Organization admin | Appointed by the owner | Invite and remove members, manage all keys, view the organization's full bill history | Managing all keys is shipped; inviting and removing is planned (#56); the bill history ships as the bills page — the organization's settled entries, exportable as CSV or JSON — which applies no member filter yet |
+| Organization member | Invited people | Create and revoke their own keys, view organization balance and their own request records | Their own keys and the balance are shipped; their own request records are planned (#55 requests page), the shipped bills page lists the whole organization's settled entries with no member filter (planned, #54), and so is being invited (#59) |
 | API caller | Programs holding a key | Call the gateway, spending the key's organization balance | Shipped |
 
 The platform admin is not an organization role but a deployment-level identity; users cannot apply for it.
 
-Two shipped pages are readable more widely than the "Who" column suggests. The transaction log page and the members page take any live session (`get_log` and `get_members` in `crates/web/src/api.rs`, neither with a role check), so every member reads the organization's entries and the membership list; neither page offers a management action. Role-scoped bill and request views are planned with their pages (#54, #55), and membership management with #56.
+Two shipped pages are readable more widely than the "Who" column suggests. The transaction log page, the bills page and the members page take any live session (`get_log`, `get_bills` and `get_members` in `crates/web/src/api.rs`, none with a role check), so every member reads the organization's entries, its bills and the membership list; none of the three offers a management action. The role-scoped bill view is still planned (#54: the bills page shipped without a member filter), the requests page with #55, and membership management with #56.
 
 ## Accounts and organizations
 
@@ -130,7 +130,7 @@ When relaying a streaming request, the gateway always writes `stream_options.inc
 - Local estimation: count input and forwarded output with tiktoken's `o200k_base`; the result never exceeds the freeze. The bill is explicitly marked "estimated".
 - The user never pays more than the freeze — that is the gateway's promise. Underestimates, missing usage and upstream overcharges are the platform's cost.
 - The hold timeout defaults to 30 minutes and must exceed the longest possible single request. A background job sweeps timed-out holds. The sweeper and normal settlement share the same idempotency key, so both cannot succeed; whichever lands first wins.
-- Every response carries an `x-oxsum-request-id` header; users use it to find the matching entry in the transaction log (the bill page that would link it is planned, #54).
+- Every response carries an `x-oxsum-request-id` header; users use it to find the matching entry in the transaction log (whose descriptions carry it). The bills page lists settled entries by date, charge and content hash, not by request id, so a row that links the two is planned, #54.
 
 Two settled trade-offs:
 
@@ -145,13 +145,18 @@ Two settled trade-offs:
 
 ## Bills and verification
 
-### Bill page (planned, #54)
+### Bills page (shipped in part; the rest is #54)
 
-What ships today is the transaction log page in the dashboard (`/dashboard/log`, `crates/web/src/app.rs`): the organization's newest ledger entries, newest first, each with its index, id, description (for a settled request, the compact JSON carrying model, token counts, prices and settlement type) and content hash. It lists twenty-five entries on the overview and a hundred on its own page, and it is readable by every member. It is not the bill page:
+`/dashboard/bills` (`crates/web/src/app.rs`) lists the organization's settled entries, newest first, each with the date it was booked, its id, what it charged in credits and the content hash its proof verifies against. A settled entry is one that released a hold — a gateway turn, or a hold and a settlement driven through the wallet API by hand. Top-ups and holds that have not settled are not bills and are not listed. The page is readable by every member. (Shipped.)
 
-- Lists the organization's every transaction newest-first: top-ups, bonuses, adjustments, requests. A request row shows model, token counts, freeze, actual charge and settlement type. (Planned, #54 — today the same facts are only inside the entry description, and there is no page for a whole history.)
-- Members see only requests from their own keys plus organization-level top-ups. Owners and admins see everything. (Planned, #54 — the shipped transaction log applies no member filter.)
-- CSV and JSON export. Exports carry each entry's contentHash so users can archive them. (Planned, #54 — there is no export.)
+- CSV and JSON export: `GET /dashboard/bills/export.csv` and `GET /dashboard/bills/export.json` answer the page's own list as a file, with `Content-Disposition: attachment`, so a browser saves it and a command-line client fetches the same bytes with the same session cookie. Both files carry the same fields and the same rows — `bookedOn`, `entryId`, `chargedMinor` and `contentHash` — so a record can be archived and checked against the ledger later; the charge is the ledger's integer in minor units in both files, where the page renders the same amount in credits, and the CSV is RFC 4180. (Shipped.)
+- The page and both exports carry the newest hundred settled entries; nothing paginates yet, like every other list in the product. (Shipped.)
+
+The transaction log page is still what it was (`/dashboard/log`, `crates/web/src/app.rs`): the organization's newest ledger entries, newest first, each with its index, id, description (for a settled request, the compact JSON carrying model, token counts, prices and settlement type) and content hash. It lists twenty-five entries on the overview and a hundred on its own page, and it is readable by every member. It is not the bill page, and neither is the bills page yet:
+
+- Lists the organization's every transaction newest-first: top-ups, bonuses, adjustments, requests. A request row shows model, token counts, freeze, actual charge and settlement type. (Planned, #54 — the shipped bills page lists settled entries alone; the rest of the same facts are only inside the entry description.)
+- Members see only requests from their own keys plus organization-level top-ups. Owners and admins see everything. (Planned, #54 — the shipped bills page and the shipped transaction log both apply no member filter.)
+- A row links to that entry's proof bundle, so a bill can be verified from the page. (Planned, #54 — the shipped page lists each entry's content hash and id, and the proof endpoint takes the id, but nothing on the bills page fetches the proof.)
 
 ### Browser verification
 
@@ -170,10 +175,10 @@ Verification proves: this record was not altered after being written, and histor
 | Overview | Available balance, the frozen total and this month's spend; in-flight requests with their frozen upper bound and live streaming progress | All members | Shipped. The three figures are the overview's own integers (`DashboardData`, `crates/web/src/api.rs`), read from the organization's ledger: the frozen total is the wallet's reserved balance — the sum of the outstanding holds — and this month's spend is what settlements charged on or after the first of the current UTC month, so a top-up is not spend and an outstanding hold is not either. Progress is forwarded characters, not tokens (docs/decisions.md). |
 | Chat | Top up, pick a model and chat; each turn's billing live, with a verify-this-bill link | All members | Shipped (`crates/web/src/chat.rs`) |
 | Requests | Each request's status, usage and cost, filterable by key and model | All members; members see only their own | Planned, #55 |
-| Bills | See the section above | Same as above | Planned, #54 |
+| Bills | The organization's settled entries with the date booked, the charge in credits and the content hash, newest first; CSV and JSON export of the same list, carrying the charge as the ledger's integer | Every member, with no member filter yet | Shipped in part: the list and both exports ship (`crates/web/src/app.rs`, `/dashboard/bills`); the full transaction view, the member filter and the per-row proof link are planned, #54 |
 | API keys | Create, revoke | Members manage their own; admins manage all | Shipped |
 | Members | Everyone in the organization, with their role and join date. Invite, remove, change roles, transfer ownership are the documented additions | Read-only table: every member. Management: owners and admins | The read-only table is shipped and open to every member; invite, remove, change roles and transfer ownership are planned, #56 |
-| Transaction log | The organization's newest ledger entries with their content hashes | All members | Shipped, but not part of the original spec; it is what stands in for the bill page today |
+| Transaction log | The organization's newest ledger entries with their content hashes | All members | Shipped, but not part of the original spec; the bills page is now the settled, exportable view of the same ledger |
 
 ### Platform admin
 
@@ -207,7 +212,6 @@ None of these pages exists. The platform admin surface today is the `/api/v1/adm
 
 Everything this document describes but the code does not do yet, with the issue that tracks it:
 
-- The bills page, with per-request rows, member scoping, CSV and JSON export — #54
 - The requests page — #55
 - Membership management: invite, remove, change roles, transfer ownership — #56
 - The platform-admin pages: organizations, channels and prices, in-flight requests, anomalies, closing — #57
