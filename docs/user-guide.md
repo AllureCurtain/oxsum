@@ -262,3 +262,18 @@ Note: verification proves "this record has not been altered since it was written
 Purpose: confirm the ledger you see today is the ledger you saw last week, with entries appended and nothing rewritten.
 
 The operator signs the head of your organization's log. Save the signed head from `GET /api/v1/log/head` (the `note` text and the `size`/`root` it carries) alongside your records. Later, `GET /api/v1/log/consistency?from=<that size>` returns the new signed head and the proof between them. Check the note's signature against the operator's key (published at `GET /api/v1/log/key` — get the key through a channel the operator does not control the first time, or the signature proves only that the server agrees with itself), then check the proof against the two heads. It passes only when the new log is the old log with entries appended: a second history at a size the operator already signed for cannot produce it.
+
+## Platform admin
+
+Purpose: manage the deployment itself — the upstream channels the gateway relays to and the price each model charges.
+
+The admin pages are not part of the dashboard: they open with the deployment's operator token (`OXSUM_ADMIN_TOKEN`), not with a login, and they are reachable only in a deployment that configured one.
+
+Steps:
+
+1. Open `/admin` in the browser and enter the operator token. The page proves it against the real surface before remembering it — a refused token is reported, not stored — and keeps it in the browser's `localStorage`, the same place the chat page's key lives. A `401` on any later call forgets it and asks again.
+2. The channels and prices page (`/admin/channels`) lists every channel: its name, upstream address, the last four characters of its upstream key (the only part ever read back), and the current version of each model's price — input and output per million tokens, and the output cap a freeze is sized by.
+3. "Add or repoint a channel" writes a channel: a name that already exists is repointed to the new address and key, and its price history stays where it is.
+4. "Append price" on a channel's card appends a new version for one model. Prices are append-only — a change is `v{n+1}`, never a rewrite — and "Show history" reads every version the channel has ever had, newest first. That history is what a bill's `priceVersion` is checked against later.
+
+Note: a request resolves its price when it starts and carries the version to its settlement, so a price change lands on later requests only; in-flight turns and old bills are untouched.

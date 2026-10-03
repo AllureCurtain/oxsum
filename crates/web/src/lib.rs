@@ -6,6 +6,8 @@
 //! runs the server functions against `oxsum-core` directly; `hydrate` runs the same
 //! components in the browser.
 
+// The platform-admin pages: the operator token's surface (issue #57).
+mod admin;
 mod api;
 mod app;
 // The module itself is browser-only (`hydrate`); see its inner `#![cfg]`.
