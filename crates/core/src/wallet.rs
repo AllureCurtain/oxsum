@@ -9,6 +9,7 @@ use doubleentry::{
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use time::Date;
+use time::OffsetDateTime;
 use time::macros::date;
 use uuid::Uuid;
 
@@ -432,6 +433,47 @@ impl Wallet {
     /// makes this the ceiling on what a settlement may release.
     pub async fn reserved(&self) -> Result<i64, WalletError> {
         Ok(-self.wallet_net(Layer::Pending).await?)
+    }
+
+    /// Credits the wallet has been charged on or after `from`, in minor units: the
+    /// settled-layer debits on the wallet account, which is what a settlement books when it
+    /// charges actual usage.
+    ///
+    /// The gross debits, not the layer's net: a top-up credits the same layer, and
+    /// subtracting the credits would read a month of top-ups as negative spend. Holds live
+    /// in the pending layer, so an outstanding hold is not spend either. A window in which
+    /// nothing settled is an empty sum: zero, not an error.
+    pub async fn settled_spend_since(&self, from: Date) -> Result<i64, WalletError> {
+        let b = self
+            .store
+            .balance(
+                BalanceKey {
+                    account: self.wallet,
+                    currency: currency(),
+                    layer: Layer::Settled,
+                },
+                BalanceQuery::all().from(from),
+            )
+            .await?;
+        // The wallet is a liability, so a charge debits it.
+        Ok(b.debits.to_minor())
+    }
+
+    /// What the current UTC month has charged the wallet, in minor units — the dashboard's
+    /// "spent this month".
+    ///
+    /// The month is the ledger's own. Entries carry whole days and every write is dated with
+    /// the server's current UTC date (`today` in `crates/server/src/lib.rs`), so the first
+    /// instant of the month is its first day as a booking date, and the window is inclusive
+    /// of that day.
+    pub async fn month_spend(&self) -> Result<i64, WalletError> {
+        // The first of any month exists, so this cannot fail; it is mapped rather than
+        // unwrapped because a panic on the way out of the domain layer is not an option.
+        let first = OffsetDateTime::now_utc()
+            .date()
+            .replace_day(1)
+            .map_err(invalid)?;
+        self.settled_spend_since(first).await
     }
 
     /// The amount of the hold taken under `hold_key`, read from the hold entry in the ledger,

@@ -148,6 +148,12 @@ body {
     font-size: 20px;
 }
 
+/* An amount frozen by an outstanding hold, in the pending token. The label beside it says
+   what the figure is, so the colour is never the only signal (DESIGN.md). */
+.balance .pending {
+    color: var(--pending);
+}
+
 table {
     width: 100%;
     border-collapse: collapse;
