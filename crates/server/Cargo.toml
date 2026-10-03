@@ -47,6 +47,9 @@ leptos_axum.workspace = true
 dotenvy.workspace = true
 futures-util.workspace = true
 http-body-util.workspace = true
+# `browser_contract.rs` matches the served HTML and the wasm glue with targeted patterns,
+# rather than a substring that a rename would keep satisfying.
+regex.workspace = true
 tokio-tungstenite.workspace = true
 tower.workspace = true
 uuid.workspace = true

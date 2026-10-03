@@ -53,6 +53,9 @@ leptos_router = "0.8.16"
 password-auth = "1"
 proptest = "1"
 rand = "0.10"
+# The browser-contract test matches the served HTML and the wasm glue with targeted
+# patterns, rather than a substring that a rename would keep satisfying.
+regex = "1"
 sha2 = "0.11"
 # The operator token on the admin surface is compared in constant time, so a wrong guess learns
 # nothing from how long the comparison took.

@@ -113,6 +113,7 @@ creates `ledger_<tenant_id>` on first use.
 | Start the server | `cargo run -p oxsum-server` |
 | Build the dashboard (SSR + WASM) | `cargo leptos build` |
 | Run the server with the dashboard, rebuilding on change | `cargo leptos serve` |
+| Check the built site against the browser contract | `OXSUM_SITE_DIR=target/site cargo test -p oxsum-server --test browser_contract -- --ignored --nocapture` (after `cargo leptos build`, see "Browser contract") |
 | All tests | `cargo test --workspace` (loads `DATABASE_URL` from `.env` or the shell) |
 | oxsum only | `cargo test -p oxsum-core -p oxsum-server` |
 | Run the end-to-end demo | `python3 demo/demo.py` (needs `pip install -r demo/requirements.txt`; starts its own mock upstream and server) |
@@ -190,6 +191,46 @@ toolchain comes from `dtolnay/rust-toolchain@stable` with `toolchain: "1.98"` (m
   own container through testcontainers. That last suite is why it runs in CI rather
   than on every developer machine: GitHub-hosted runners provide Docker, so CI is the
   one place the full gate is green.
+- `browser`: the browser contract gate. It adds the `wasm32-unknown-unknown` target,
+  installs `cargo-leptos` 0.3.11 (the version the Dockerfile pins), runs
+  `cargo leptos build`, and then runs the ignored `browser_contract` test with
+  `OXSUM_SITE_DIR=target/site`. No PostgreSQL service: the routes it checks are answered
+  without a database.
+
+Every job is independent, so `browser` runs in parallel with the other three.
+
+## Browser contract
+
+`crates/server/tests/browser_contract.rs` is the one suite that checks the built site
+rather than a router. It is `#[ignore]`d, so `cargo test --workspace` stays green on a
+machine that never ran `cargo leptos build`; CI runs it explicitly, and it fails with a
+clear message when `OXSUM_SITE_DIR` is unset rather than skipping.
+
+```bash
+cargo leptos build
+OXSUM_SITE_DIR=target/site cargo test -p oxsum-server --test browser_contract -- --ignored --nocapture
+```
+
+A relative `OXSUM_SITE_DIR` resolves against the workspace root — where `cargo leptos
+build` writes `target/site`, and what `site-root` in the workspace `Cargo.toml` is
+relative to. It needs no database. The checks are the contract the two defects of
+2026-10-03 broke, and both are visible from the built site and the served HTML, without a
+browser:
+
+- the site holds the browser bundle: `pkg/oxsum.js` (the wasm-bindgen glue) and
+  `pkg/oxsum.wasm` (the module; wasm-bindgen emits `oxsum_bg.wasm`, and cargo-leptos
+  0.3.11 renames it to the name `HydrationScripts` computes). A missing, failed or
+  half-finished build fails here.
+- the server, built with the project's real Leptos options, serves both over HTTP with
+  200. A site root resolved against the working directory answers 404 and leaves every
+  page as inert as the server rendered it (issue #44).
+- `GET /login` carries leptos's hydration script, preloads `/pkg/oxsum.js`, and renders
+  the login form with `method="post"`, so a browser that never hydrates does not submit
+  the credentials in the query string (issue #46).
+- the glue exports `hydrate`, the entry point the generated HTML calls once the wasm has
+  loaded: `import("/pkg/oxsum.js").then(mod => mod.default({module_or_path:
+  "/pkg/oxsum.wasm"}).then(() => mod.hydrate()))`. Without that export the import throws
+  `mod.hydrate is not a function` and nothing on any page works (issue #46).
 
 ## Test strategy
 
