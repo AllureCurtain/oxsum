@@ -166,14 +166,18 @@ fn LoginPage() -> impl IntoView {
                 }
             });
         }
-        // SSR only emits the inert form; the submit handler runs in the browser.
+        // SSR only emits the inert form; the submit handler runs in the browser. The
+        // method is for the case where the handler never arrives — a browser without the
+        // wasm, or a failed hydration: a native submit must not put the password in the
+        // URL, and `GET /login` is the only thing a form without a method would do
+        // (issue #46).
         #[cfg(not(feature = "hydrate"))]
         let _ = (&navigate, &set_busy, &set_error);
     };
 
     view! {
         <main class="center">
-            <form class="card" on:submit=submit aria-label="Log in">
+            <form class="card" method="post" on:submit=submit aria-label="Log in">
                 <h1>"oxsum"</h1>
                 <p class="muted">"Log in to the dashboard."</p>
                 {move || error.get().map(|message| view! { <p class="error" role="alert">{message}</p> })}
