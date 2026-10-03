@@ -25,6 +25,10 @@ bin-exe-name = "oxsum"
 style-file = "crates/web/style/main.css"
 # The WASM build turns the web crate's default (ssr) features off and enables hydrate.
 lib-features = ["hydrate"]
+# Declared rather than left to leptos's own default, which is `.`: the pkg service resolves
+# `site-root` against the process's working directory, so `.` serves the checkout, every
+# `/pkg/*` asset the shell references 404s and the pages never hydrate (issue #44).
+site-root = "target/site"
 
 [workspace.dependencies]
 oxsum-core = { path = "crates/core" }
