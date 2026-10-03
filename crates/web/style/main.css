@@ -109,6 +109,45 @@ body {
     max-width: 1024px;
 }
 
+/* The acting organization, top right: the switcher's select and the button that opens
+   the create form. Compact — the line is furniture, not a page section. */
+.topbar {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.topbar .org-switch {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    font-weight: 400;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.topbar .org-switch select {
+    width: auto;
+    min-width: 160px;
+    margin-top: 0;
+}
+
+/* The secondary action next to the select: no fill, so it reads as furniture. */
+button.quiet {
+    background: none;
+    color: var(--primary);
+    border-color: var(--border);
+    padding: 4px 8px;
+    font-size: 12px;
+}
+
+button.quiet:hover {
+    background: var(--background);
+}
+
 .center {
     min-height: 100vh;
     display: flex;

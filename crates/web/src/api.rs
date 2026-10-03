@@ -125,6 +125,18 @@ pub struct TransferView {
     pub previous_owner: MemberView,
 }
 
+/// One organization the user belongs to, as the organization switcher shows it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrgView {
+    /// The organization's id: what a switch names, as the REST endpoint does.
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    /// The role the user holds in this organization.
+    pub role: String,
+}
+
 #[cfg(feature = "ssr")]
 impl From<&OpenHold> for HoldView {
     fn from(hold: &OpenHold) -> Self {
@@ -460,14 +472,14 @@ fn membership_actor(principal: &SessionPrincipal) -> MembershipActor {
     }
 }
 
-/// A refused management action, in the words the rule used.
+/// A refused organization or membership action, in the words the rule used.
 ///
 /// Every failure the rules can produce is the caller's to read — who may not do what, which
 /// member does not exist, which is the last owner — so the page can state it instead of
 /// showing a generic failure (DESIGN.md: a failure says what went wrong). Storage failures
 /// stay out of the response.
 #[cfg(feature = "ssr")]
-fn membership_error(error: WalletError, fallback: &'static str) -> ServerFnError {
+fn rule_error(error: WalletError, fallback: &'static str) -> ServerFnError {
     match error {
         WalletError::InvalidInput(message)
         | WalletError::Forbidden(message)
@@ -492,7 +504,7 @@ pub async fn add_member(email: String) -> Result<MemberView, ServerFnError> {
             &email,
         )
         .await
-        .map_err(|error| membership_error(error, "the member could not be added"))?;
+        .map_err(|error| rule_error(error, "the member could not be added"))?;
     Ok(MemberView::from(&member))
 }
 
@@ -504,7 +516,7 @@ pub async fn remove_member(user_id: String) -> Result<MemberView, ServerFnError>
     let member = db
         .remove_member(principal.organization.id, membership_actor(&principal), id)
         .await
-        .map_err(|error| membership_error(error, "the member could not be removed"))?;
+        .map_err(|error| rule_error(error, "the member could not be removed"))?;
     Ok(MemberView::from(&member))
 }
 
@@ -531,7 +543,7 @@ pub async fn change_member_role(
             role,
         )
         .await
-        .map_err(|error| membership_error(error, "the role could not be changed"))?;
+        .map_err(|error| rule_error(error, "the role could not be changed"))?;
     Ok(MemberView::from(&member))
 }
 
@@ -544,7 +556,7 @@ pub async fn transfer_ownership(user_id: String) -> Result<TransferView, ServerF
     let ownership = db
         .transfer_ownership(principal.organization.id, membership_actor(&principal), id)
         .await
-        .map_err(|error| membership_error(error, "ownership could not be transferred"))?;
+        .map_err(|error| rule_error(error, "ownership could not be transferred"))?;
     Ok(TransferView {
         owner: MemberView::from(&ownership.owner),
         previous_owner: MemberView::from(&ownership.previous_owner),
@@ -640,4 +652,54 @@ pub async fn get_turn_bill(request_id: String) -> Result<Option<TurnBill>, Serve
         content_hash: bundle.entry.content_hash().to_string(),
         bundle_json,
     }))
+}
+
+/// The organization switcher's list: every organization the session's user belongs
+/// to, and which one the session acts as now.
+#[server(prefix = "/_pages")]
+pub async fn list_organizations() -> Result<(Vec<OrgView>, String), ServerFnError> {
+    let (db, _tenants, principal) = session_ctx().await?;
+    let organizations = db
+        .organizations_of(principal.user.id)
+        .await
+        .map_err(|_| ServerFnError::new("the organizations could not be read"))?;
+    let views = organizations
+        .iter()
+        .map(|entry| OrgView {
+            id: entry.organization.id.to_string(),
+            name: entry.organization.name.clone(),
+            kind: match entry.organization.kind {
+                Kind::Personal => "personal",
+                Kind::Team => "team",
+            }
+            .to_owned(),
+            role: role_name(entry.role).to_owned(),
+        })
+        .collect();
+    Ok((views, principal.organization.id.to_string()))
+}
+
+/// Create a team organization: the session's user becomes its owner. The session
+/// keeps acting as the organization it had — switching is a separate action.
+#[server(prefix = "/_pages")]
+pub async fn create_team_org(name: String) -> Result<(), ServerFnError> {
+    let (db, _tenants, principal) = session_ctx().await?;
+    db.create_team_organization(principal.user.id, &name)
+        .await
+        .map_err(|error| rule_error(error, "the organization could not be created"))?;
+    Ok(())
+}
+
+/// Switch the organization the session acts as. The session row is updated, so
+/// the dashboard reload that follows reads the new organization everywhere.
+#[server(prefix = "/_pages")]
+pub async fn switch_organization(organization_id: String) -> Result<(), ServerFnError> {
+    let (db, _tenants, principal) = session_ctx().await?;
+    let organization_id = organization_id
+        .parse::<uuid::Uuid>()
+        .map_err(|_| ServerFnError::new("not an organization id"))?;
+    db.switch_organization(principal.session.id, principal.user.id, organization_id)
+        .await
+        .map_err(|error| rule_error(error, "the organization could not be switched"))?;
+    Ok(())
 }

@@ -9,7 +9,7 @@ use axum::{Json, Router, middleware};
 use oxsum_core::{
     ApiKey, Consistency, CreatedApiKey, CreatedSession, HeadSigningKey, KeyPublication, Member,
     NewUser, Organization, Ownership, Principal, Registration, Role, SESSION_COOKIE, Session,
-    SessionPrincipal, SignedHead, Tenants, User, Wallet, signing_key,
+    SessionPrincipal, SignedHead, Tenants, User, UserOrganization, Wallet, signing_key,
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -27,6 +27,7 @@ pub fn router(state: AppState) -> Router {
     // principal.
     let authenticated = Router::new()
         .route("/org", get(organization))
+        .route("/orgs", get(my_organizations).post(create_organization))
         .route("/org/keys", get(list_keys).post(create_key))
         .route("/org/keys/{key_id}", delete(revoke_key).patch(patch_key))
         .route("/org/members", post(add_member))
@@ -36,6 +37,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/org/ownership", post(transfer_ownership))
         .route("/session", get(session))
+        .route("/session/organization", post(switch_organization))
         .route("/topups", post(top_up))
         .route("/holds", post(hold))
         .route("/settlements", post(settle))
@@ -272,6 +274,79 @@ async fn session(Extension(principal): Extension<Principal>) -> ApiResult<Sessio
 
 async fn organization(Extension(principal): Extension<Principal>) -> ApiResult<Organization> {
     ok(principal.organization().clone())
+}
+
+/// Who may act on memberships of *several* organizations: a person, never a key.
+///
+/// Listing, creating and switching between organizations are all a person's actions —
+/// an API key belongs to exactly one organization and has no user to hold a second
+/// membership, so it is refused the same way membership management refuses it
+/// (docs/decisions.md, "membership management is a person's action").
+fn person(principal: Principal) -> Result<SessionPrincipal, ApiError> {
+    match principal {
+        Principal::Session(principal) => Ok(principal),
+        Principal::Key(_) => Err(ApiError::Forbidden(
+            "organizations are a person's business: an API key belongs to one".into(),
+        )),
+    }
+}
+
+/// Every organization the session's user belongs to, with their role — the
+/// switcher's list.
+async fn my_organizations(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+) -> ApiResult<Vec<UserOrganization>> {
+    let principal = person(principal)?;
+    ok(state.db.organizations_of(principal.user.id).await?)
+}
+
+/// The body of `POST /api/v1/orgs`.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CreateOrgReq {
+    name: String,
+}
+
+/// Creates a team organization and makes the session's user its owner.
+async fn create_organization(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    ApiJson(request): ApiJson<CreateOrgReq>,
+) -> ApiResult<Organization> {
+    let principal = person(principal)?;
+    ok(state
+        .db
+        .create_team_organization(principal.user.id, &request.name)
+        .await?)
+}
+
+/// The body of `POST /api/v1/session/organization`.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SwitchOrgReq {
+    organization_id: Uuid,
+}
+
+/// Switches the acting organization: the session row is updated, so the choice
+/// carries every request the cookie makes from now on.
+async fn switch_organization(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    ApiJson(request): ApiJson<SwitchOrgReq>,
+) -> ApiResult<SessionInfo> {
+    let mut principal = person(principal)?;
+    let (organization, role) = state
+        .db
+        .switch_organization(
+            principal.session.id,
+            principal.user.id,
+            request.organization_id,
+        )
+        .await?;
+    principal.organization = organization;
+    principal.role = role;
+    ok(SessionInfo::from(principal))
 }
 
 async fn create_key(

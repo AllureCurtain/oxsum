@@ -320,6 +320,47 @@ impl Db {
         .await?;
         Ok(())
     }
+
+    /// Switches the organization `session_id` acts as: the session row is updated, so
+    /// the choice survives reloads, new tabs and every request after this one.
+    ///
+    /// The target must be an organization `user_id` is a member of — the membership
+    /// supplies both the proof and the role the session now holds. A missing
+    /// membership is [`WalletError::NotFound`] whatever the cause, so the answer does
+    /// not say whether the organization exists at all.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::NotFound`] when the user is not a member of the named
+    /// organization; storage failures surface as [`WalletError`].
+    pub async fn switch_organization(
+        &self,
+        session_id: Uuid,
+        user_id: Uuid,
+        organization_id: Uuid,
+    ) -> Result<(Organization, Role), WalletError> {
+        let row = sqlx::query(
+            "SELECT m.role, o.organization_id, o.name, o.tenant_id, o.kind, o.created_at              FROM oxsum.memberships m JOIN oxsum.organizations o USING (organization_id)              WHERE m.user_id = $1 AND m.organization_id = $2",
+        )
+        .bind(user_id)
+        .bind(organization_id)
+        .fetch_optional(self.pool())
+        .await?;
+        let Some(row) = row else {
+            return Err(WalletError::NotFound("not found".into()));
+        };
+        let organization = orgs::organization_from_row(&row)?;
+        let role = Role::parse(&row.try_get::<String, _>("role")?)?;
+        sqlx::query(
+            "UPDATE oxsum.sessions SET organization_id = $1              WHERE session_id = $2 AND user_id = $3 AND revoked_at IS NULL",
+        )
+        .bind(organization_id)
+        .bind(session_id)
+        .bind(user_id)
+        .execute(self.pool())
+        .await?;
+        Ok((organization, role))
+    }
 }
 
 /// Refreshes `last_used_at`, at most once per [`LAST_USED_TOUCH`]: the column records when
