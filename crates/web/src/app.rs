@@ -336,7 +336,56 @@ fn Overview(data: DashboardData) -> impl IntoView {
 fn HoldsSection(#[prop(into)] initial: Vec<HoldView>) -> impl IntoView {
     let (holds, set_holds) = signal(initial);
     #[cfg(feature = "hydrate")]
-    billing_socket::watch(set_holds);
+    crate::billing_socket::watch(move |event| {
+        use crate::billing_socket::BillingEvent;
+        match event {
+            BillingEvent::Snapshot { holds: snapshot } => set_holds.set(
+                snapshot
+                    .into_iter()
+                    .map(|hold| HoldView {
+                        request_id: hold.request_id,
+                        model: hold.model,
+                        channel: hold.channel,
+                        price_version: hold.price_version,
+                        freeze_minor: hold.freeze_minor,
+                        output_chars: 0,
+                    })
+                    .collect(),
+            ),
+            BillingEvent::TurnStarted {
+                request_id,
+                model,
+                channel,
+                freeze_minor,
+            } => set_holds.update(|holds| {
+                if !holds.iter().any(|hold| hold.request_id == request_id) {
+                    holds.insert(
+                        0,
+                        HoldView {
+                            request_id,
+                            model,
+                            channel,
+                            price_version: 0,
+                            freeze_minor,
+                            output_chars: 0,
+                        },
+                    );
+                }
+            }),
+            BillingEvent::TurnProgress {
+                request_id,
+                output_chars,
+            } => set_holds.update(|holds| {
+                if let Some(hold) = holds.iter_mut().find(|hold| hold.request_id == request_id) {
+                    hold.output_chars = output_chars;
+                }
+            }),
+            // A settled turn leaves the in-flight list: its charge is in the log.
+            BillingEvent::TurnSettled { request_id } => {
+                set_holds.update(|holds| holds.retain(|hold| hold.request_id != request_id));
+            }
+        }
+    });
     // The signal is only written from the browser; on the server it is read-only.
     #[cfg(not(feature = "hydrate"))]
     let _ = set_holds;
@@ -381,130 +430,6 @@ fn HoldsSection(#[prop(into)] initial: Vec<HoldView>) -> impl IntoView {
                 }
             }}
         </section>
-    }
-}
-
-/// The billing WebSocket: snapshot first, then live turn events. Browser-only.
-#[cfg(feature = "hydrate")]
-mod billing_socket {
-    use leptos::prelude::*;
-    use serde::Deserialize;
-    use wasm_bindgen::JsCast;
-    use wasm_bindgen::closure::Closure;
-    use web_sys::{MessageEvent, WebSocket};
-
-    use crate::api::HoldView;
-
-    /// One message from `/ws/billing`.
-    #[derive(Debug, Deserialize)]
-    #[serde(tag = "type", rename_all = "camelCase")]
-    enum BillingMessage {
-        #[serde(rename_all = "camelCase")]
-        Snapshot { holds: Vec<SnapshotHold> },
-        #[serde(rename_all = "camelCase")]
-        TurnStarted {
-            request_id: String,
-            model: String,
-            channel: String,
-            freeze_minor: i64,
-        },
-        #[serde(rename_all = "camelCase")]
-        TurnProgress {
-            request_id: String,
-            output_chars: usize,
-        },
-        #[serde(rename_all = "camelCase")]
-        TurnSettled { request_id: String },
-    }
-
-    /// A hold as the snapshot carries it: the server's `OpenHold`, camelCased.
-    #[derive(Debug, Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct SnapshotHold {
-        request_id: String,
-        model: String,
-        channel: String,
-        price_version: i64,
-        freeze_minor: i64,
-    }
-
-    /// Opens the socket and applies every message to the holds signal. The socket lives
-    /// as long as the section; closing it on cleanup.
-    pub fn watch(set_holds: WriteSignal<Vec<HoldView>>) {
-        let socket = StoredValue::new(None::<WebSocket>);
-        Effect::new(move |_| {
-            let Ok(ws) = WebSocket::new("/ws/billing") else {
-                return;
-            };
-            let onmessage = Closure::wrap(Box::new(move |event: MessageEvent| {
-                if let Some(text) = event.data().as_string() {
-                    apply(&text, set_holds);
-                }
-            }) as Box<dyn FnMut(MessageEvent)>);
-            ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
-            // The closure outlives this effect: it is only dropped with the page.
-            onmessage.forget();
-            socket.set_value(Some(ws));
-        });
-        on_cleanup(move || {
-            if let Some(ws) = socket.get_value() {
-                let _ = ws.close();
-            }
-        });
-    }
-
-    /// Folds one socket message into the holds list.
-    fn apply(text: &str, set_holds: WriteSignal<Vec<HoldView>>) {
-        let Ok(message) = serde_json::from_str::<BillingMessage>(text) else {
-            return;
-        };
-        match message {
-            BillingMessage::Snapshot { holds } => set_holds.set(
-                holds
-                    .into_iter()
-                    .map(|hold| HoldView {
-                        request_id: hold.request_id,
-                        model: hold.model,
-                        channel: hold.channel,
-                        price_version: hold.price_version,
-                        freeze_minor: hold.freeze_minor,
-                        output_chars: 0,
-                    })
-                    .collect(),
-            ),
-            BillingMessage::TurnStarted {
-                request_id,
-                model,
-                channel,
-                freeze_minor,
-            } => set_holds.update(|holds| {
-                if !holds.iter().any(|hold| hold.request_id == request_id) {
-                    holds.insert(
-                        0,
-                        HoldView {
-                            request_id,
-                            model,
-                            channel,
-                            price_version: 0,
-                            freeze_minor,
-                            output_chars: 0,
-                        },
-                    );
-                }
-            }),
-            BillingMessage::TurnProgress {
-                request_id,
-                output_chars,
-            } => set_holds.update(|holds| {
-                if let Some(hold) = holds.iter_mut().find(|hold| hold.request_id == request_id) {
-                    hold.output_chars = output_chars;
-                }
-            }),
-            // A settled turn leaves the in-flight list: its charge is in the log.
-            BillingMessage::TurnSettled { request_id } => {
-                set_holds.update(|holds| holds.retain(|hold| hold.request_id != request_id));
-            }
-        }
     }
 }
 
