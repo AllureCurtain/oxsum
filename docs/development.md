@@ -174,6 +174,10 @@ docker run --rm -p 3000:3000 -e DATABASE_URL=postgresql://user:pass@dbhost/oxsum
   settings above. `OXSUM_ADDR` defaults to `0.0.0.0:3000` inside the image so the port
   mapping works. The schema is migrated at startup, so there is no separate migrate step.
 
+Every pull request builds this image and smoke-tests it over HTTP against a real
+PostgreSQL, see "Continuous integration" below: the image is the only release
+artifact, and nothing else in the gates runs it.
+
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on every push to `main` and every pull request. The
@@ -232,6 +236,31 @@ browser:
   "/pkg/oxsum.wasm"}).then(() => mod.hydrate()))`. Without that export the import throws
   `mod.hydrate is not a function` and nothing on any page works (issue #46).
 
+A second workflow, `.github/workflows/release-image.yml`, gates the release image
+itself: it runs on every pull request, on pushes to `main` and on `workflow_dispatch`.
+It builds the `Dockerfile` with `docker/build-push-action` (`load: true`, so the image
+lands in the runner's own daemon and is never published) and
+`cache-from`/`cache-to` of `type=gha`, so a rebuild after a one-line change reuses the
+Rust and WASM layers instead of paying for another 20-40 minute release compile. The
+built image is then run with `--network host` against the same `postgres:17-alpine`
+service container: the runner is Linux, and the service publishes its port on the
+runner's loopback, so `DATABASE_URL` names `127.0.0.1:5432` to match that choice. The
+workflow waits for `pg_isready`, then polls `http://127.0.0.1:3000/healthz` in a
+bounded retry loop and asserts that:
+
+- `/healthz` answers 200. The image migrates at startup and refuses to boot at all
+  against a database it cannot reach, so a 200 also means the schema is in place.
+- `/pkg/oxsum.js` and `/pkg/oxsum.wasm` answer 200 (`cargo-leptos` renames
+  wasm-bindgen's `oxsum_bg.wasm` to `oxsum.wasm`, and it is the name the shell's
+  module preload uses). A 404 here is the site root regression of issue #44: the
+  pages render and none of them hydrate.
+- `/login` carries the Leptos hydration script (`mod.hydrate()`) and a
+  `<form ... method="post"` form. Without the script the login form falls back to a
+  native GET submit, which puts the password in the query string (issue #46).
+
+When an assertion fails the step prints `docker logs` and exits non-zero, so a red run
+is diagnosable from its own log rather than by re-running it.
+
 ## Test strategy
 
 - Unit tests: inside each module's `#[cfg(test)]`, covering pure logic such as tenant id validation and configuration parsing.
@@ -259,4 +288,7 @@ Before committing, confirm:
 The release is a single binary plus a Docker image (TODO.md B-10, closed 2026-10-03):
 `cargo leptos build --release` produces the `oxsum` binary and `target/site`, and the
 `Dockerfile` packages them into the image described above. CI
-(`.github/workflows/ci.yml`) is the green gate on a fresh clone.
+(`.github/workflows/ci.yml`) is the green gate on a fresh clone, and every pull request
+also builds the image and runs it against PostgreSQL
+(`.github/workflows/release-image.yml`, issue #49), so the artifact a release ships is
+checked long before the release is cut.
