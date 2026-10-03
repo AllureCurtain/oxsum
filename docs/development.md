@@ -171,7 +171,9 @@ docker run --rm -p 3000:3000 -e DATABASE_URL=postgresql://user:pass@dbhost/oxsum
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs on every push to `main` and every pull request:
+`.github/workflows/ci.yml` runs on every push to `main` and every pull request. The
+toolchain comes from `dtolnay/rust-toolchain@stable` with `toolchain: "1.98"` (matching
+`rust-toolchain.toml`) and the `rustfmt, clippy` components:
 
 - `fmt`: `cargo fmt --all --check`.
 - `clippy`: `cargo clippy --workspace --all-targets` with `-D warnings`. No database
