@@ -2,6 +2,18 @@
 
 New decisions go on top. Overturned decisions are never deleted; mark them "Superseded" and name the decision that replaces it.
 
+## 2026-10-03 The admin pages carry the operator token, not a session (issue #57)
+
+- Status: Adopted. First page shipped 2026-10-03 (channels and prices); the remaining pages land under #57.
+- Background: docs/product.md lists five platform-admin pages. The dashboard's pages are session pages — a cookie, server functions, role checks — and none of that fits the platform admin, whose credential is `OXSUM_ADMIN_TOKEN`: an operator token, not a person and not a member of anything. A page behind the session would invent a login the role does not have.
+- Decision: `/admin` is its own surface. The token is typed into a gate form once, proven against a real call (`GET /api/v1/admin/channels`) before it is remembered, kept in `localStorage` beside the chat page's key, and sent as `Authorization: Bearer` on direct browser `fetch`es to the admin endpoints — the same calls a `curl` makes. A `401` forgets the token and reopens the gate, which is also what a deployment with no `OXSUM_ADMIN_TOKEN` looks like from the page: every call refused. SSR renders the gate and the page skeletons; the data always arrives with the browser, because the server never holds the token.
+- Why: the endpoints already exist and were built to be driven ("the endpoints are the ones the dashboard will drive"); a parallel set of server functions taking `token` as an argument would re-implement the admin middleware's check a second time and put the credential through the server-function codec for no gain. `localStorage` rather than a cookie keeps the token out of every unrelated request the browser makes — including the dashboard's — and out of the server's reach entirely.
+- Rejected:
+  - **A server function per endpoint taking the token as a parameter**: the functions would do nothing but forward to the same checks, and every call would put the token through an extra hop it does not need. The pages it adds are duplicates of routes that already answer.
+  - **A session or a cookie for the operator**: the platform admin is whoever deploys oxsum, and modelling them as a user was rejected when the token was chosen — a cookie would smuggle that identity system back in, HttpOnly or not.
+  - **Reading the token from `?token=`**: a credential in a URL lands in browser history and any referer that follows it; the form keeps it out of both.
+- Implementation notes: `crates/web/src/admin.rs` holds the layout (nav plus the gate), the channels and prices page, and the hydrate-only fetch module that attaches the token; `crates/server/tests/admin.rs` pins the served gate. The endpoints themselves are unchanged — no contract entry, because the page is a client of the contract, not a new term in it.
+
 ## 2026-10-03 Membership management is a person's action (issue #56)
 
 - Status: Adopted. Implemented 2026-10-03, closing issue #56.

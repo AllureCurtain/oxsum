@@ -14,6 +14,7 @@ use leptos_router::components::{A, Outlet, ParentRoute, Redirect, Route, Router,
 use leptos_router::hooks::{use_navigate, use_query_map};
 use leptos_router::path;
 
+use crate::admin::{AdminChannelsPage, AdminLayout};
 use crate::api::{
     CreatedKeyView, DashboardData, EntryView, HoldView, KeyView, MemberView, MembersView,
     TransferView, add_member, change_member_role, create_key, get_bills, get_dashboard, get_keys,
@@ -58,6 +59,12 @@ pub fn App() -> impl IntoView {
                 // Public: anyone holding a bill and its content hash can verify it, no
                 // session needed. Verification runs in the browser, not on the server.
                 <Route path=path!("/verify") view=VerifyPage/>
+                // The deployment's surface: the operator token gates it in the browser,
+                // and the admin endpoints refuse what the gate missed (issue #57).
+                <ParentRoute path=path!("/admin") view=AdminLayout>
+                    <Route path=path!("/") view=|| view! { <Redirect path="/admin/channels"/> }/>
+                    <Route path=path!("/channels") view=AdminChannelsPage/>
+                </ParentRoute>
                 <ParentRoute path=path!("/dashboard") view=DashboardLayout>
                     <Route path=path!("/") view=OverviewPage/>
                     <Route path=path!("/chat") view=ChatPage/>

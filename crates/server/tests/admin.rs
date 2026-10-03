@@ -385,3 +385,45 @@ async fn what_could_not_be_used_is_refused_in_oxsums_shape() {
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["error"]["code"], "CONFLICT");
 }
+
+/// One GET whose body is kept as bytes: the server-rendered pages are HTML, and the
+/// error envelope's `serde_json` parse would drop what this test asserts on.
+async fn get_raw(app: &Router, path: &str) -> (StatusCode, String) {
+    let request = Request::builder()
+        .method("GET")
+        .uri(path)
+        .body(Body::empty())
+        .expect("the test's own request");
+    let response = app.clone().oneshot(request).await.expect("the router answers");
+    let status = response.status();
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("collects the body")
+        .to_bytes();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// The platform-admin pages are served by the same binary: the token gate is what SSR
+/// renders (the credential is never the server's to hold), and it asks for the operator
+/// token rather than a login — no session enters this surface.
+#[tokio::test]
+async fn the_admin_pages_render_the_token_gate() {
+    let (app, _pool) = app_or_skip!();
+    let (status, html) = get_raw(&app, "/admin/channels").await;
+    assert_eq!(status, StatusCode::OK, "GET /admin/channels answered {status}");
+    assert!(
+        html.contains("Platform admin"),
+        "GET /admin/channels renders the gate: {html}"
+    );
+    assert!(
+        html.contains("Operator token"),
+        "GET /admin/channels asks for the operator token: {html}"
+    );
+
+    // `/admin` lands on the channels page — by a redirect or by the rendered gate,
+    // whichever the router emits; a 404 is the wrong answer either way.
+    let (status, _) = get_raw(&app, "/admin").await;
+    assert!(status.is_success() || status.is_redirection(), "GET /admin answered {status}");
+}

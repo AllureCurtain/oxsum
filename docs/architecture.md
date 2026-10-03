@@ -87,7 +87,7 @@ Principle: **domain logic belongs in core; the gateway does protocol and orchest
 ## Frontend/backend boundary
 
 - External callers use REST/JSON; the contract is `crates/server/openapi.yaml`.
-- Leptos pages live in the same process as the server: SSR calls `oxsum-core` directly, and browser interactions call server code through server functions, with no hand-written page API. The two exports beside the bills page are the exception: `GET /dashboard/bills/export.csv` and `.json` are routes of the server's own, answered with `Content-Disposition: attachment`, because a download has to be a response rather than a server function's return value (docs/decisions.md).
+- Leptos pages live in the same process as the server: SSR calls `oxsum-core` directly, and browser interactions call server code through server functions, with no hand-written page API. Two kinds of call are the exception: the bills page's exports (`GET /dashboard/bills/export.csv` and `.json`) are routes of the server's own, because a download has to be a response rather than a server function's return value; and the platform-admin pages call `/api/v1/admin/*` straight from the browser with the operator token, because that bearer credential is the deployment's — it is not a session, and no server function could authorize with it (docs/decisions.md).
 - The verification page runs in the browser on hydrated WASM, calling `oxsum_core::verify_bundle` directly — the same code the server runs. doubleentry is verified to compile for `wasm32-unknown-unknown` (uuid's wasm32 randomness source solved with the `js` feature, see docs/decisions.md).
 
 ## Auth and permissions
