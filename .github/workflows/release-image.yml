@@ -15,9 +15,11 @@
 name: Release image
 
 on:
+  # The image gate runs on main and by hand. PRs are covered by the CI browser job,
+  # which builds the same site the image packages; building a Docker image for every
+  # PR push duplicated that compile for no extra signal.
   push:
     branches: [main]
-  pull_request:
   workflow_dispatch:
 
 concurrency:

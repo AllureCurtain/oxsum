@@ -41,6 +41,7 @@ jobs:
         with:
           toolchain: "1.98"
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
       # No database is needed to compile: the tree uses no sqlx::query! macros,
       # so compilation never touches a live database.
       - run: cargo clippy --workspace --all-targets -- -D warnings
@@ -79,6 +80,9 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           sudo docker image prune --all --force
           df -h
+      # The registry, index and target dir: the workspace's dependency tree is the
+      # expensive part of every run, and it only changes with the lockfile.
+      - uses: Swatinem/rust-cache@v2
       # The database tests skip without DATABASE_URL; here it is set, so they
       # run for real.
       - name: Run the workspace test suites
@@ -111,13 +115,20 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           sudo docker image prune --all --force
           df -h
+      - uses: Swatinem/rust-cache@v2
       # The browser half of the workspace only compiles for this target.
       - name: Add the wasm target
         run: rustup target add wasm32-unknown-unknown
       # The version the Dockerfile pins: the layout of `target/site` is part of what this
-      # gate checks, so it must not drift with whatever is newest.
+      # gate checks, so it must not drift with whatever is newest. The binary is cached —
+      # `cargo install` compiles it from source, which is ~10 minutes of every run.
+      - name: Cache cargo-leptos
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-leptos
+          key: cargo-leptos-0.3.11-${{ runner.os }}
       - name: Install cargo-leptos
-        run: cargo install cargo-leptos --version 0.3.11
+        run: command -v cargo-leptos >/dev/null || cargo install cargo-leptos --version 0.3.11
       - name: Build the site
         run: cargo leptos build
       # `browser_contract` is `#[ignore]`d so that `cargo test --workspace` stays green on a
