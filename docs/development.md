@@ -213,12 +213,16 @@ toolchain comes from `dtolnay/rust-toolchain@stable` with `toolchain: "1.98"` (m
   than on every developer machine: GitHub-hosted runners provide Docker, so CI is the
   one place the full gate is green.
 - `browser`: the browser contract gate. It adds the `wasm32-unknown-unknown` target,
-  installs `cargo-leptos` 0.3.11 (the version the Dockerfile pins), runs
-  `cargo leptos build`, and then runs the ignored `browser_contract` test with
-  `OXSUM_SITE_DIR=target/site`. No PostgreSQL service: the routes it checks are answered
-  without a database.
+  installs `cargo-leptos` 0.3.11 (the version the Dockerfile pins; the binary is
+  cached by `actions/cache`, so only the first run after the pin changes compiles
+  it), runs `cargo leptos build`, and then runs the ignored `browser_contract` test
+  with `OXSUM_SITE_DIR=target/site`. No PostgreSQL service: the routes it checks are
+  answered without a database.
 
-Every job is independent, so `browser` runs in parallel with the other three.
+The compile jobs cache the cargo registry and `target/` through
+`Swatinem/rust-cache`, so a run that touches one crate does not recompile the
+dependency tree. Every job is independent, so `browser` runs in parallel with the
+other three.
 
 ## Browser contract
 
@@ -254,7 +258,9 @@ browser:
   `mod.hydrate is not a function` and nothing on any page works (issue #46).
 
 A second workflow, `.github/workflows/release-image.yml`, gates the release image
-itself: it runs on every pull request, on pushes to `main` and on `workflow_dispatch`.
+itself: it runs on pushes to `main` and on `workflow_dispatch` — not on pull
+requests, where the `browser` job already compiles the same site the image
+packages, and a Docker build per push duplicated it for no extra signal.
 It builds the `Dockerfile` with `docker/build-push-action` (`load: true`, so the image
 lands in the runner's own daemon and is never published) and
 `cache-from`/`cache-to` of `type=gha`, so a rebuild after a one-line change reuses the
