@@ -161,7 +161,7 @@ A tenant is an organization and its memberships carry a role (owner, admin, memb
 
 ## Pagination
 
-No list endpoints paginate yet. `GET /api/v1/org/keys` returns an organization's keys in full, which is bounded and small. When a genuinely unbounded list arrives, use cursor pagination with `?cursor=<opaque>&limit=20`, limit capped at 100. The ledger log paginates by position, not page/offset.
+`GET /api/v1/admin/organizations` paginates (issue #93): `?limit=` caps a page at 100 rows (the default), and a page that is not the last answers `nextCursor` — an opaque string the next call echoes back as `?cursor=`; absent means the list is done. A cursor is a keyset bound, never a page/offset: a malformed one answers `400 VALIDATION_ERROR`. The dashboard's own lists paginate the same way — the bills, transaction-log and requests pages walk their ledgers with the log index as `?before=` — and bounded lists (`GET /api/v1/org/keys`, holds, anomalies, closings) answer in full.
 
 ## Change process
 
