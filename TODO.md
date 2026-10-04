@@ -4,7 +4,7 @@ Updated: 2026-10-04
 
 ## In progress
 
-- Nothing is in flight; the open roadmap's last item is the bill page's browser-local tree head archive, which has no issue yet.
+- Four follow-ups are filed: #90 (the bills page's remaining scope from #54), #91 (platform-admin password reset), #92 (the browser-local tree head archive — the roadmap's last planned item), #93 (list pagination). #94 (witness-signed tree heads) was closed on filing: the backend half shipped as B-7, and the remaining browser-side signature check folds into #92.
 
 ## Next
 
@@ -37,6 +37,8 @@ Closed. The chat page is built (issue #39): after login the user tops up, picks 
 Nothing.
 
 ## Recently completed
+
+- 2026-10-04 Platform-admin password reset (issue #91): `POST /api/v1/admin/users/{userId}/password-reset` sets a new password (signup's length rule, in core) and revokes every session the user held in the same transaction — the only recovery path v1 has, since no email is sent. Answers `sessionsRevoked`; an unknown user is 404 under the operator token. Covered by `crates/server/tests/admin.rs`: reset, old password dead, sessions gone, new password in, unknown user 404, org key 401.
 
 - 2026-10-04 Platform-admin adjustments and the signup bonus (issue #60): `POST /api/v1/admin/organizations/{organizationId}/adjustments` books a signed amount into the named organization's wallet under the operator token — a required `reason` becomes the entry's description, so "why" is part of what a bill's proof covers — and `/admin/organizations` gained a per-row adjust form (a signed amount in credits, a leading `-` deducts). The ledger gained a fourth fixed account, `Equity:Adjustments`: grants debit it, deductions credit it, so operator money stays off the cash and revenue lines, and the wallet's `FundedReservations` limit refuses a deduction the balance cannot carry with the same `402` a hold gets — under concurrency, not as a read-then-write check. The idempotency key makes a retried call the same entry. `OXSUM_SIGNUP_BONUS_MINOR` (default 0) books "signup bonus" into a new organization's wallet at self-registration; an invited account joins an existing organization and is granted nothing, and at zero registration still opens no ledger. Contract `openapi.yaml` 0.15.0 first; `docs/product.md`, `docs/api.md`, `docs/architecture.md`, `docs/user-guide.md`, `docs/development.md`, `docs/decisions.md`, `.env.example` and this file updated in the same change. Pinned by `crates/server/tests/admin.rs`: grant/deduct/available-after, the overdraft refusal, the validation refusals and 404, idempotent replay, the operator-token-only door, and the bonus landing at registration.
 
