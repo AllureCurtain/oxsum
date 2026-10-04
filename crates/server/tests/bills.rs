@@ -426,8 +426,9 @@ async fn seed_request(
 async fn bills(app: &Router, cookie: &str) -> Vec<Value> {
     let (status, body) = page_call(app, "get_bills", "", Some(cookie)).await;
     assert_eq!(status, StatusCode::OK, "the bills read answers: {body}");
-    body.as_array()
-        .expect("the payload is a list of rows")
+    body["rows"]
+        .as_array()
+        .expect("the payload is a page of rows")
         .clone()
 }
 

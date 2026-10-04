@@ -71,8 +71,8 @@ const FIELDS: [&str; 6] = [
     "contentHash",
 ];
 
-/// How many transactions the page lists and the exports carry: one list, so an export
-/// is the page's own table as a file. The ledger read behind it is bounded either way.
+/// How many transactions one page lists (issue #93): the pager walks the rest, and
+/// the exports — an archive, not a page — walk the same read to the log's start.
 pub const BILLS_LIMIT: usize = 100;
 
 /// One transaction, as the page's server function and the export routes read it from

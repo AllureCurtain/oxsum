@@ -70,6 +70,17 @@ pub struct HoldView {
     pub output_chars: usize,
 }
 
+/// One page of a list the dashboard walks (issue #93): the rows, and where the
+/// next page resumes — `None` at the list's end. The cursor is the ledger's own
+/// log index; a page's rows are what that slice holds after the session's scoping,
+/// so a filtered page can be short and still have more history below it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageView<T> {
+    pub rows: Vec<T>,
+    pub next_cursor: Option<u64>,
+}
+
 /// One ledger entry, as the transaction log shows it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -298,19 +309,23 @@ pub async fn get_dashboard() -> Result<DashboardData, ServerFnError> {
     })
 }
 
-/// The transaction log page: the newest entries, newest first.
+/// The transaction log page: the newest entries, newest first, one page at a time
+/// — `before` resumes an earlier page's `nextCursor` (issue #93).
 #[server(prefix = "/_pages")]
-pub async fn get_log() -> Result<Vec<EntryView>, ServerFnError> {
+pub async fn get_log(before: Option<u64>) -> Result<PageView<EntryView>, ServerFnError> {
     let (_db, tenants, principal) = session_ctx().await?;
     let wallet = tenants
         .get(&principal.organization.tenant_id)
         .await
         .map_err(|_| ServerFnError::new("the wallet could not be opened"))?;
-    let entries = wallet
-        .recent_entries(100)
+    let page = wallet
+        .entries_page(before, 100)
         .await
         .map_err(|_| ServerFnError::new("the transaction log could not be read"))?;
-    Ok(entries.iter().map(EntryView::from).collect())
+    Ok(PageView {
+        rows: page.rows.iter().map(EntryView::from).collect(),
+        next_cursor: page.next_cursor,
+    })
 }
 
 /// The bills page: the organization's transactions, newest first — top-ups,
@@ -322,35 +337,42 @@ pub async fn get_log() -> Result<Vec<EntryView>, ServerFnError> {
 /// the same ledger: the entry's provenance actor names the paying key, and a key
 /// outside this session's scope drops the row, the way `get_requests` filters.
 ///
-/// The same read, the same limit and so the same rows as the two exports
-/// (`crates/server/src/bills.rs`): the page and the files it offers cannot disagree
-/// about what was billed.
+/// The page walks the ledger's own cursor — `before` resumes an earlier page's
+/// `nextCursor` (issue #93) — while the exports (`crates/server/src/bills.rs`)
+/// walk the same pages to their end: the page shows slices of what the files
+/// archive whole, so the two cannot disagree about what was billed. A member's
+/// page can be short against a full cursor, since the scoping is applied after
+/// the page is cut — "load more" keeps walking.
 #[server(prefix = "/_pages")]
-pub async fn get_bills() -> Result<Vec<BillView>, ServerFnError> {
+pub async fn get_bills(before: Option<u64>) -> Result<PageView<BillView>, ServerFnError> {
     let (db, tenants, principal) = session_ctx().await?;
     let organization = &principal.organization;
     let wallet = tenants
         .get(&organization.tenant_id)
         .await
         .map_err(|_| ServerFnError::new("the wallet could not be opened"))?;
-    let transactions = wallet
-        .recent_transactions(crate::bills::BILLS_LIMIT)
+    let page = wallet
+        .transactions_page(before, crate::bills::BILLS_LIMIT)
         .await
         .map_err(|_| ServerFnError::new("the bills could not be read"))?;
     let keys = db
         .list_keys(organization.id, key_scope(&principal))
         .await
         .map_err(|_| ServerFnError::new("the keys could not be read"))?;
-    Ok(transactions
-        .iter()
-        .filter(|tx| match tx.key_id.as_deref() {
-            // Attributed to a key outside this session's scope — another member's
-            // spend — is not this session's transaction to read.
-            Some(id) => keys.iter().any(|key| key.id.as_simple().to_string() == id),
-            None => true,
-        })
-        .map(BillView::from)
-        .collect())
+    Ok(PageView {
+        rows: page
+            .rows
+            .iter()
+            .filter(|tx| match tx.key_id.as_deref() {
+                // Attributed to a key outside this session's scope — another member's
+                // spend — is not this session's transaction to read.
+                Some(id) => keys.iter().any(|key| key.id.as_simple().to_string() == id),
+                None => true,
+            })
+            .map(BillView::from)
+            .collect(),
+        next_cursor: page.next_cursor,
+    })
 }
 
 /// The proof bundle for one entry of the session's organization, as `/verify` pastes
@@ -474,15 +496,16 @@ pub async fn get_log_consistency(from: u64) -> Result<Option<ConsistencyView>, S
 pub async fn get_requests(
     key: Option<String>,
     model: Option<String>,
-) -> Result<Vec<RequestView>, ServerFnError> {
+    before: Option<u64>,
+) -> Result<PageView<RequestView>, ServerFnError> {
     let (db, tenants, principal) = session_ctx().await?;
     let organization = &principal.organization;
     let wallet = tenants
         .get(&organization.tenant_id)
         .await
         .map_err(|_| ServerFnError::new("the wallet could not be opened"))?;
-    let requests = wallet
-        .recent_requests(crate::requests::REQUESTS_LIMIT)
+    let page = wallet
+        .requests_page(before, crate::requests::REQUESTS_LIMIT)
         .await
         .map_err(|_| ServerFnError::new("the requests could not be read"))?;
     let keys = db
@@ -490,7 +513,8 @@ pub async fn get_requests(
         .await
         .map_err(|_| ServerFnError::new("the keys could not be read"))?;
     let filters = RequestFilters::new(key.as_deref(), model.as_deref());
-    let rows = requests
+    let rows = page
+        .rows
         .iter()
         .filter_map(|request| {
             let key = request
@@ -506,7 +530,10 @@ pub async fn get_requests(
             filters.matches(&row).then_some(row)
         })
         .collect();
-    Ok(rows)
+    Ok(PageView {
+        rows,
+        next_cursor: page.next_cursor,
+    })
 }
 
 /// What the session may do with the organization's keys: owners and admins see all,

@@ -18,7 +18,7 @@ use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use oxsum_core::{KeyScope, Role};
-use oxsum_web::bills::{BILLS_LIMIT, BillView, csv, json};
+use oxsum_web::bills::{BillView, csv, json};
 
 use crate::AppState;
 use crate::auth::session_cookie_value;
@@ -53,9 +53,9 @@ pub async fn export_json(State(state): State<AppState>, headers: HeaderMap) -> R
     }
 }
 
-/// The session's organization's settled entries, as the page's table shows them: the same
-/// read and the same limit, so an export cannot list a different set of bills than the
-/// page it was downloaded from. The `Err` is why it could not, and what to answer.
+/// The session's organization's transactions, every one: an export archives the
+/// organization's whole history, so the read walks the ledger's pages to their end
+/// (issue #93). The `Err` is why it could not, and what to answer.
 async fn rows(state: &AppState, headers: &HeaderMap) -> Result<Vec<BillView>, Refusal> {
     let Some(token) = session_cookie_value(headers) else {
         return Err(Refusal::unauthorized());
@@ -77,13 +77,22 @@ async fn rows(state: &AppState, headers: &HeaderMap) -> Result<Vec<BillView>, Re
             tracing::error!(%error, "the wallet could not be opened");
             Refusal::internal("the wallet could not be opened")
         })?;
-    let transactions = wallet
-        .recent_transactions(BILLS_LIMIT)
-        .await
-        .map_err(|error| {
-            tracing::error!(%error, "the bills could not be read");
-            Refusal::internal("the bills could not be read")
-        })?;
+    let mut transactions = Vec::new();
+    let mut before = None;
+    loop {
+        let page = wallet
+            .transactions_page(before, 100)
+            .await
+            .map_err(|error| {
+                tracing::error!(%error, "the bills could not be read");
+                Refusal::internal("the bills could not be read")
+            })?;
+        before = page.next_cursor;
+        transactions.extend(page.rows);
+        if before.is_none() {
+            break;
+        }
+    }
     // The page's own scoping, the requests page's rule: a member reads only what
     // their own keys paid plus the key-less organization history — top-ups and
     // adjustments — while owners and admins read everything. The export carries the

@@ -633,3 +633,153 @@ async fn a_gateway_settlement_names_its_key_and_its_record() {
     assert_eq!(parsed.charged, 77);
     assert_eq!(parsed.freeze, 5 * ONE);
 }
+
+/// A walk over the transaction pages returns the same rows as the first-page read
+/// covers and then keeps going — newest first, every row exactly once, and the
+/// cursor naming where each next page resumes until the log's start ends it
+/// (issue #93).
+#[tokio::test]
+async fn transaction_pages_walk_the_log_without_gaps_or_repeats() {
+    let url = db_or_skip!();
+    let w = Wallet::open(pool(&url).await, &fresh("txpage"))
+        .await
+        .unwrap();
+    w.top_up("t1", 10 * ONE, D).await.unwrap();
+    w.adjust("g1", "welcome", 2 * ONE, D).await.unwrap();
+    w.hold("h1", "", 3 * ONE, D).await.unwrap();
+    w.settle("h1", "", 1_234, D).await.unwrap();
+    w.adjust("d1", "clawback", -ONE, D).await.unwrap();
+    w.hold("h2", "", ONE, D).await.unwrap();
+    w.settle("h2", "", ONE, D).await.unwrap();
+
+    let all = w.recent_transactions(100).await.unwrap();
+    assert_eq!(all.len(), 5, "the top-up, two adjustments, two settlements");
+
+    let mut walked = Vec::new();
+    let mut cursors = Vec::new();
+    let mut before = None;
+    loop {
+        let page = w.transactions_page(before, 2).await.unwrap();
+        assert!(page.rows.len() <= 2, "the page honors its limit");
+        for tx in &page.rows {
+            assert!(
+                !walked.iter().any(|seen: &String| seen == &tx.id),
+                "no row twice"
+            );
+            walked.push(tx.id.clone());
+        }
+        match page.next_cursor {
+            Some(cursor) => {
+                assert!(cursors.last().is_none_or(|&c| cursor < c), "strictly older");
+                cursors.push(cursor);
+            }
+            None => break,
+        }
+        before = page.next_cursor;
+    }
+    let expect: Vec<String> = all.iter().map(|tx| tx.id.clone()).collect();
+    assert_eq!(walked, expect, "the walk covers the whole list, in order");
+
+    // A page resumed mid-walk starts strictly below its cursor.
+    let tail = w
+        .transactions_page(cursors.first().copied(), 100)
+        .await
+        .unwrap();
+    assert_eq!(tail.rows.len(), expect.len() - 2);
+    assert_eq!(
+        tail.rows.first().map(|tx| tx.id.as_str()),
+        expect.get(2).map(String::as_str)
+    );
+}
+
+/// Entries page the same way: `before` bounds the page below it, and a walk with a
+/// one-row page sees every index exactly once.
+#[tokio::test]
+async fn entry_pages_walk_the_log_without_gaps_or_repeats() {
+    let url = db_or_skip!();
+    let w = Wallet::open(pool(&url).await, &fresh("logpage"))
+        .await
+        .unwrap();
+    w.top_up("t1", ONE, D).await.unwrap();
+    w.top_up("t2", ONE, D).await.unwrap();
+    w.top_up("t3", ONE, D).await.unwrap();
+
+    let mut indices = Vec::new();
+    let mut before = None;
+    loop {
+        let page = w.entries_page(before, 1).await.unwrap();
+        assert_eq!(page.rows.len(), 1);
+        indices.extend(page.rows.iter().map(|entry| entry.index));
+        match page.next_cursor {
+            Some(cursor) => before = Some(cursor),
+            None => break,
+        }
+    }
+    // Newest first, one index each, contiguous: [2, 1, 0].
+    assert_eq!(
+        indices,
+        [2, 1, 0],
+        "every index, once, newest first: {indices:?}"
+    );
+
+    // Appending while a cursor is held does not disturb the walk below it.
+    let page = w.entries_page(None, 1).await.unwrap();
+    let cursor = page.next_cursor.unwrap();
+    w.top_up("t4", ONE, D).await.unwrap();
+    let resumed = w.entries_page(Some(cursor), 100).await.unwrap();
+    assert_eq!(
+        resumed.rows.iter().map(|e| e.index).collect::<Vec<_>>(),
+        [1, 0],
+        "the held cursor still names the same boundary"
+    );
+}
+
+/// The requests pages walk settled gateway turns the same way, and a hold that is
+/// not a settlement record does not count against the page.
+#[tokio::test]
+async fn request_pages_walk_only_settled_turns() {
+    let url = db_or_skip!();
+    let w = Wallet::open(pool(&url).await, &fresh("reqpage"))
+        .await
+        .unwrap();
+    w.top_up("t1", 100 * ONE, D).await.unwrap();
+    for i in 0..3 {
+        let request = format!("req-{i}");
+        w.hold(&format!("{request}:h"), &format!("{request}:hold"), ONE, D)
+            .await
+            .unwrap();
+        let record = Settlement {
+            request: &request,
+            channel: "chan",
+            model: "m",
+            price_version: 1,
+            kind: SettlementKind::Usage,
+            input_tokens: 1,
+            output_tokens: 2,
+            input_price: 1_000,
+            output_price: 2_000,
+            charged: ONE,
+            freeze: ONE,
+        };
+        w.settle(
+            &format!("{request}:h"),
+            &record.description().unwrap(),
+            ONE,
+            D,
+        )
+        .await
+        .unwrap();
+    }
+
+    let mut requests = Vec::new();
+    let mut before = None;
+    loop {
+        let page = w.requests_page(before, 2).await.unwrap();
+        requests.extend(page.rows.iter().map(|r| r.request_id.clone()));
+        match page.next_cursor {
+            Some(cursor) => before = Some(cursor),
+            None => break,
+        }
+    }
+    assert_eq!(requests, ["req-2", "req-1", "req-0"]);
+}

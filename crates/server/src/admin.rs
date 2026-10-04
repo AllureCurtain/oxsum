@@ -11,7 +11,7 @@
 //! lands on later requests and leaves in-flight turns and old bills where they are. Web sessions
 //! (TODO item 4) and the dashboard (TODO item 5) drive these same endpoints.
 
-use axum::extract::{Path, Request, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::header::AUTHORIZATION;
 use axum::middleware::Next;
 use axum::response::Response;
@@ -149,16 +149,48 @@ struct OrganizationRes {
     reserved_minor: i64,
 }
 
-/// Every organization, oldest first, with its balance.
+/// The organizations query string: the page size, and where the walk resumes — an
+/// earlier answer's `nextCursor`, echoed verbatim (issue #93).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OrganizationsQuery {
+    limit: Option<usize>,
+    cursor: Option<String>,
+}
+
+/// One page of organizations, as the endpoint answers it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OrganizationsPageRes {
+    organizations: Vec<OrganizationRes>,
+    /// The cursor the next page asks with; absent at the list's end.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_cursor: Option<String>,
+}
+
+/// The organizations, oldest first, with their balances — one page at a time.
 ///
 /// The list is the identity table's; the money is read per organization through the
 /// wallet, which creates the ledger of one that has never moved — the same laziness
-/// the dashboard's overview has.
-async fn organizations(State(state): State<AppState>) -> ApiResult<Vec<OrganizationRes>> {
-    let mut answer = Vec::new();
-    for organization in state.db.organizations().await? {
+/// the dashboard's overview has. The list paginates so a long table does not grow a
+/// response without bound: `nextCursor` names where the walk resumes.
+async fn organizations(
+    State(state): State<AppState>,
+    Query(query): Query<OrganizationsQuery>,
+) -> ApiResult<OrganizationsPageRes> {
+    let after = query
+        .cursor
+        .as_deref()
+        .map(decode_organization_cursor)
+        .transpose()?;
+    let page = state
+        .db
+        .organizations_page(after, query.limit.unwrap_or(100))
+        .await?;
+    let mut organizations = Vec::with_capacity(page.rows.len());
+    for organization in page.rows {
         let wallet = state.tenants.get(&organization.tenant_id).await?;
-        answer.push(OrganizationRes {
+        organizations.push(OrganizationRes {
             id: organization.id,
             name: organization.name,
             kind: organization.kind,
@@ -168,7 +200,27 @@ async fn organizations(State(state): State<AppState>) -> ApiResult<Vec<Organizat
             reserved_minor: wallet.reserved().await?,
         });
     }
-    ok(answer)
+    ok(OrganizationsPageRes {
+        organizations,
+        next_cursor: page.next_cursor.map(encode_organization_cursor),
+    })
+}
+
+/// The organizations cursor, encoded: `<unix nanos>:<organization id>`. The pair is
+/// the keyset `Db::organizations_page` orders by — `created_at` alone cannot order
+/// two organizations registered in the same instant — and the string is opaque to
+/// the caller: echoed, never constructed (issue #93).
+fn encode_organization_cursor((created_at, id): (OffsetDateTime, Uuid)) -> String {
+    format!("{}:{}", created_at.unix_timestamp_nanos(), id)
+}
+
+fn decode_organization_cursor(text: &str) -> Result<(OffsetDateTime, Uuid), ApiError> {
+    let bad = || ApiError::Validation("a malformed organizations cursor".into());
+    let (nanos, id) = text.split_once(':').ok_or_else(bad)?;
+    let nanos = nanos.parse::<i128>().map_err(|_| bad())?;
+    let created_at = OffsetDateTime::from_unix_timestamp_nanos(nanos).map_err(|_| bad())?;
+    let id = Uuid::parse_str(id).map_err(|_| bad())?;
+    Ok((created_at, id))
 }
 
 /// The body of `POST …/adjustments`: a signed amount, the reason it moved, and the

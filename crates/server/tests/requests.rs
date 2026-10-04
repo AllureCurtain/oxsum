@@ -311,10 +311,9 @@ async fn requests(
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK, "the server function answers");
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    serde_json::from_slice::<Value>(&bytes)
-        .expect("the requests answer JSON")
+    serde_json::from_slice::<Value>(&bytes).expect("the requests answer JSON")["rows"]
         .as_array()
-        .expect("the payload is a list of rows")
+        .expect("the payload is a page of rows")
         .clone()
 }
 

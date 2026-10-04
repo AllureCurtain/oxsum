@@ -154,6 +154,16 @@ struct OrganizationView {
     reserved_minor: i64,
 }
 
+/// One page of organizations, as the endpoint answers it (issue #93): the rows and
+/// where the walk resumes — `None` at the list's end. The cursor is opaque: echoed
+/// back verbatim, never constructed.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OrganizationsPageView {
+    organizations: Vec<OrganizationView>,
+    next_cursor: Option<String>,
+}
+
 /// A closing record as `GET /api/v1/admin/closings` returns it.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -650,8 +660,36 @@ fn ChannelForm(
 #[component]
 pub fn AdminOrganizationsPage() -> impl IntoView {
     let token = admin_token();
-    let organizations = LocalResource::new(move || async move { load_organizations(token).await });
+    let organizations =
+        LocalResource::new(move || async move { load_organizations(token, None).await });
     let notice = RwSignal::new(Option::<(String, &'static str)>::None);
+    // The pages the walk already loaded past the first, and where it resumes:
+    // "Load more" appends, an adjustment's refetch starts the walk over (issue #93).
+    let extra = RwSignal::new(Vec::<OrganizationView>::new());
+    let resumed = RwSignal::new(Option::<String>::None);
+    let more_busy = RwSignal::new(false);
+    let more_error = RwSignal::new(Option::<String>::None);
+    let on_adjusted = Callback::new(move |_: ()| {
+        extra.set(Vec::new());
+        resumed.set(None);
+        organizations.refetch();
+    });
+    let load_more = move |cursor: String| {
+        let _ = cursor;
+        #[cfg(feature = "hydrate")]
+        leptos::task::spawn_local(async move {
+            more_busy.set(true);
+            more_error.set(None);
+            match load_organizations(token, Some(cursor)).await {
+                Ok(page) => {
+                    resumed.set(page.next_cursor.clone());
+                    extra.update(|rows| rows.extend(page.organizations));
+                }
+                Err(message) => more_error.set(Some(message)),
+            }
+            more_busy.set(false);
+        });
+    };
 
     view! {
         <h1>"Organizations"</h1>
@@ -667,54 +705,88 @@ pub fn AdminOrganizationsPage() -> impl IntoView {
             {move || {
                 organizations.get().map(|result| match result {
                     Err(message) => view! { <p class="error" role="alert">{message}</p> }.into_any(),
-                    Ok(rows) if rows.is_empty() => view! {
-                        <p class="muted">"No organizations yet."</p>
-                    }
-                    .into_any(),
-                    Ok(rows) => view! {
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>"Name"</th>
-                                    <th>"Kind"</th>
-                                    <th class="num">"Members"</th>
-                                    <th class="num">"Available"</th>
-                                    <th class="num">"Frozen"</th>
-                                    <th>"Created"</th>
-                                    <th>"Adjust"</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {rows
-                                    .into_iter()
-                                    .map(|organization| {
-                                        view! {
+                    Ok(page) => {
+                        let mut rows = page.organizations.clone();
+                        rows.extend(extra.get());
+                        // The walk's resume point: the first page's own cursor until
+                        // a page has been appended, the appended pages' after.
+                        let next = if extra.get().is_empty() {
+                            page.next_cursor.clone()
+                        } else {
+                            resumed.get()
+                        };
+                        view! {
+                            {if rows.is_empty() {
+                                view! { <p class="muted">"No organizations yet."</p> }.into_any()
+                            } else {
+                                view! {
+                                    <table>
+                                        <thead>
                                             <tr>
-                                                <td>{organization.name.clone()}</td>
-                                                <td>{organization.kind.clone()}</td>
-                                                <td class="num">{organization.members}</td>
-                                                <td class="mono num">
-                                                    {crate::app::credits(organization.available_minor)}
-                                                </td>
-                                                <td class="mono num pending">
-                                                    {crate::app::credits(organization.reserved_minor)}
-                                                </td>
-                                                <td class="mono">{organization.created_at.clone()}</td>
-                                                <td>
-                                                    <AdjustForm
-                                                        organization=organization
-                                                        organizations=organizations
-                                                        notice=notice
-                                                    />
-                                                </td>
+                                                <th>"Name"</th>
+                                                <th>"Kind"</th>
+                                                <th class="num">"Members"</th>
+                                                <th class="num">"Available"</th>
+                                                <th class="num">"Frozen"</th>
+                                                <th>"Created"</th>
+                                                <th>"Adjust"</th>
                                             </tr>
-                                        }
-                                    })
-                                    .collect_view()}
-                            </tbody>
-                        </table>
+                                        </thead>
+                                        <tbody>
+                                            {rows
+                                                .into_iter()
+                                                .map(|organization| {
+                                                    view! {
+                                                        <tr>
+                                                            <td>{organization.name.clone()}</td>
+                                                            <td>{organization.kind.clone()}</td>
+                                                            <td class="num">{organization.members}</td>
+                                                            <td class="mono num">
+                                                                {crate::app::credits(organization.available_minor)}
+                                                            </td>
+                                                            <td class="mono num pending">
+                                                                {crate::app::credits(organization.reserved_minor)}
+                                                            </td>
+                                                            <td class="mono">{organization.created_at.clone()}</td>
+                                                            <td>
+                                                                <AdjustForm
+                                                                    organization=organization
+                                                                    on_adjusted=on_adjusted
+                                                                    notice=notice
+                                                                />
+                                                            </td>
+                                                        </tr>
+                                                    }
+                                                })
+                                                .collect_view()}
+                                        </tbody>
+                                    </table>
+                                }
+                                    .into_any()
+                            }}
+                            {next.map(|cursor| {
+                                view! {
+                                    <p>
+                                        <button
+                                            type="button"
+                                            prop:disabled=move || more_busy.get()
+                                            on:click=move |_| load_more(cursor.clone())
+                                        >
+                                            {move || {
+                                                if more_busy.get() { "Loading…" } else { "Load more" }
+                                            }}
+                                        </button>
+                                    </p>
+                                }
+                            })}
+                            {move || {
+                                more_error
+                                    .get()
+                                    .map(|message| view! { <p class="error" role="alert">{message}</p> })
+                            }}
+                        }
+                            .into_any()
                     }
-                    .into_any(),
                 })
             }}
         </Suspense>
@@ -738,7 +810,7 @@ fn parse_signed_credits(text: &str) -> Result<i64, ()> {
 #[component]
 fn AdjustForm(
     organization: OrganizationView,
-    organizations: LocalResource<Result<Vec<OrganizationView>, String>>,
+    on_adjusted: Callback<()>,
     notice: RwSignal<Option<(String, &'static str)>>,
 ) -> impl IntoView {
     let token = admin_token();
@@ -810,7 +882,7 @@ fn AdjustForm(
                         )));
                         set_amount.set(String::new());
                         set_reason.set(String::new());
-                        organizations.refetch();
+                        on_adjusted.run(());
                     }
                     Err(message) => set_error.set(Some(message)),
                 }
@@ -820,7 +892,7 @@ fn AdjustForm(
         #[cfg(not(feature = "hydrate"))]
         let _ = (
             organization.id.as_str(),
-            &organizations,
+            on_adjusted,
             &token,
             notice,
             amount,
@@ -867,19 +939,26 @@ fn AdjustForm(
 /// The resource's read. `LocalResource` only ever runs in the browser; the SSR body is
 /// a placeholder so the page compiles for the server too.
 #[cfg(feature = "hydrate")]
-async fn load_organizations(token: AdminToken) -> Result<Vec<OrganizationView>, String> {
+async fn load_organizations(
+    token: AdminToken,
+    cursor: Option<String>,
+) -> Result<OrganizationsPageView, String> {
+    let path = match cursor {
+        Some(cursor) => format!("/api/v1/admin/organizations?cursor={cursor}"),
+        None => "/api/v1/admin/organizations".to_owned(),
+    };
     admin_call(
         token,
-        browser::get(
-            &token.0.get_untracked().unwrap_or_default(),
-            "/api/v1/admin/organizations",
-        ),
+        browser::get(&token.0.get_untracked().unwrap_or_default(), &path),
     )
     .await
 }
 
 #[cfg(not(feature = "hydrate"))]
-async fn load_organizations(_token: AdminToken) -> Result<Vec<OrganizationView>, String> {
+async fn load_organizations(
+    _token: AdminToken,
+    _cursor: Option<String>,
+) -> Result<OrganizationsPageView, String> {
     Err(String::new())
 }
 

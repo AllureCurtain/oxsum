@@ -73,8 +73,9 @@ password; `/dashboard` is the overview. `/logout` logs out.
   - What you are not offered, you cannot do: an admin has no controls on the owner's own
     row, and nobody can remove or demote the last owner — transfer ownership first. A
     refused action says why, in words.
-- **Transaction log**: the newest ledger entries, newest first: position, id,
-  description and content hash.
+- **Transaction log**: the ledger entries, newest first: position, id,
+  description and content hash — a hundred at a time, with **Older** and **Newest**
+  links under the table walking further back.
 - **Bills**: the organization's transactions, newest first, at `/dashboard/bills`:
   top-ups, adjustments and settled requests, each with the date it was booked, its
   kind, what it was (a settled request shows its request id, model, token counts,
@@ -82,12 +83,15 @@ password; `/dashboard` is the overview. `/logout` logs out.
   amount in credits — money in reads `+`, a charge reads `-` — and the content hash
   its proof verifies against. A hold that has not settled bills nothing yet and is
   not listed. A member sees the transactions their own keys paid plus the shared
-  organization history; owners and admins see everything.
+  organization history; owners and admins see everything. The list pages a hundred
+  at a time — **Older** and **Newest** under the table — and the position lives in
+  the URL, so an older page is a link.
 - **Verify a row**: every row's **verify** link opens `/verify` with the entry named;
   the page fetches that entry's proof bundle itself — inside your session and its
   scope — and runs the check on load.
-- **Export**: **Download CSV** and **Download JSON** on the bills page save that same
-  list as a file. Both carry the same fields and the same rows as the table — `bookedOn`,
+- **Export**: **Download CSV** and **Download JSON** on the bills page save the
+  organization's whole history as a file — every transaction, not just the page on
+  screen. Both carry the same fields — `bookedOn`,
   `entryId`, `kind`, `amountMinor`, `description`, `contentHash`, plus the settled
   turn's parsed `request` in the JSON — so an archived record can be checked against
   the ledger later; the amount is the ledger's signed integer in minor units in both
@@ -114,9 +118,10 @@ password; `/dashboard` is the overview. `/logout` logs out.
   key's prefix (the keys page shows it) or a model name and press **Filter**, or click
   a key or a model in a row to filter by that value and keep the other filter. A
   filtered view is a link: it survives a reload and can be shared, and a filter that
-  matches nothing shows an empty table with a message rather than an error. A turn that
-  is still in flight has not settled yet, so it is not here — the overview shows those
-  live.
+  matches nothing shows an empty table with a message rather than an error. The list
+  pages a hundred at a time — **Older** and **Newest** under the table, keeping the
+  filters in the link. A turn that is still in flight has not settled yet, so it is
+  not here — the overview shows those live.
 
 - **Organization**: the top-right corner of every dashboard page names the
   organization the session acts as. Choosing another one from the select switches it —

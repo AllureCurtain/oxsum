@@ -20,6 +20,7 @@ use uuid::Uuid;
 use crate::db::Db;
 use crate::error::WalletError;
 use crate::keys::conflict_or_storage;
+use crate::wallet::ListPage;
 
 /// Whether an organization is one person's or a team's. product.md: a personal
 /// organization flips to `team` when its first member joins; the ledger does not move.
@@ -173,6 +174,18 @@ fn assignable(role: Role) -> Result<Role, WalletError> {
     }
 }
 
+/// One `AdminOrganization` out of the shared `SELECT` both organization lists run.
+fn admin_organization(row: &sqlx::postgres::PgRow) -> Result<AdminOrganization, WalletError> {
+    Ok(AdminOrganization {
+        id: row.try_get("organization_id")?,
+        name: row.try_get("name")?,
+        tenant_id: row.try_get("tenant_id")?,
+        kind: Kind::parse(&row.try_get::<String, _>("kind")?)?,
+        members: row.try_get("members")?,
+        created_at: row.try_get("created_at")?,
+    })
+}
+
 impl Db {
     /// Every organization, oldest first, with its headcount: what the platform admin's
     /// organizations page lists. Balances are read per organization through the wallet
@@ -192,16 +205,57 @@ impl Db {
         .await?;
         let mut organizations = Vec::with_capacity(rows.len());
         for row in &rows {
-            organizations.push(AdminOrganization {
-                id: row.try_get("organization_id")?,
-                name: row.try_get("name")?,
-                tenant_id: row.try_get("tenant_id")?,
-                kind: Kind::parse(&row.try_get::<String, _>("kind")?)?,
-                members: row.try_get("members")?,
-                created_at: row.try_get("created_at")?,
-            });
+            organizations.push(admin_organization(row)?);
         }
         Ok(organizations)
+    }
+
+    /// The organizations, page by page, oldest first (issue #93): at most `limit`
+    /// rows, with `next_cursor` naming the keyset `after` resumes at — `None` at
+    /// the table's end.
+    ///
+    /// `after` is `(created_at, organization_id)`, the last row of the previous
+    /// page: `created_at` alone cannot order this list — two registrations in the
+    /// same instant would share it — so the id breaks the tie and every row comes
+    /// back exactly once.
+    ///
+    /// One row past `limit` is fetched to learn whether more remain, so an exactly
+    /// full last page does not answer a cursor that resolves to nothing.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn organizations_page(
+        &self,
+        after: Option<(OffsetDateTime, Uuid)>,
+        limit: usize,
+    ) -> Result<ListPage<AdminOrganization, (OffsetDateTime, Uuid)>, WalletError> {
+        let (created_at, id) = after.unzip();
+        let wanted = limit.clamp(1, 100) as i64;
+        let rows = sqlx::query(
+            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, \
+             count(m.user_id) AS members \
+             FROM oxsum.organizations o LEFT JOIN oxsum.memberships m USING (organization_id) \
+             WHERE $1::timestamptz IS NULL OR o.created_at > $1 \
+                OR (o.created_at = $1 AND o.organization_id > $2) \
+             GROUP BY o.organization_id ORDER BY o.created_at, o.organization_id LIMIT $3",
+        )
+        .bind(created_at)
+        .bind(id)
+        .bind(wanted + 1)
+        .fetch_all(self.pool())
+        .await?;
+        let mut organizations = Vec::with_capacity(rows.len().min(wanted as usize));
+        for row in rows.iter().take(wanted as usize) {
+            organizations.push(admin_organization(row)?);
+        }
+        let next_cursor = (rows.len() as i64 > wanted)
+            .then(|| organizations.last().map(|o| (o.created_at, o.id)))
+            .flatten();
+        Ok(ListPage {
+            rows: organizations,
+            next_cursor,
+        })
     }
 
     /// One organization by id, for the platform admin — `NOT_FOUND` whether the id
