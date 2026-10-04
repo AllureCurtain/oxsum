@@ -103,6 +103,36 @@ impl Db {
             api_key,
         })
     }
+
+    /// Resets a user's password and revokes every session they hold, in one
+    /// transaction — the only recovery path v1 has, since no email is sent. The
+    /// platform admin calls this; an unknown user is `NotFound`. Returns the
+    /// sessions the reset revoked, so the caller can report what died with it.
+    pub async fn reset_password(&self, user_id: Uuid, password: &str) -> Result<u64, WalletError> {
+        validate_password(password)?;
+        // Hashing runs before the transaction opens, same as register: argon2 is
+        // deliberately slow and must not hold a connection.
+        let password_hash = generate_hash(password);
+
+        let mut tx = self.pool().begin().await?;
+        let updated = sqlx::query("UPDATE oxsum.users SET password_hash = $1 WHERE user_id = $2")
+            .bind(&password_hash)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+        if updated.rows_affected() == 0 {
+            return Err(WalletError::NotFound("no such user".into()));
+        }
+        let revoked = sqlx::query(
+            "UPDATE oxsum.sessions SET revoked_at = COALESCE(revoked_at, now()) \
+             WHERE user_id = $1 AND revoked_at IS NULL",
+        )
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(revoked.rows_affected())
+    }
 }
 
 /// Trims and sanity-checks an address: one `@`, something on each side, no whitespace.
