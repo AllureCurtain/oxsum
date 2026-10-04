@@ -476,6 +476,7 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "api_keys".to_owned(),
             "channel_prices".to_owned(),
             "channels".to_owned(),
+            "invitations".to_owned(),
             "memberships".to_owned(),
             "open_holds".to_owned(),
             "organizations".to_owned(),
