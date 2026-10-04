@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.15.0
+  version: 0.16.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -1063,6 +1063,41 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/users/{userId}/password-reset:
+    post:
+      summary: Reset a user's password
+      description: |
+        Sets a new password for the named user and revokes every session that
+        user holds, so the old credential dies with the reset — the only
+        recovery path v1 has, since no email is sent. An unknown user is 404;
+        the admin token already authorizes the call, so the code can say which
+        of the two it was.
+      security:
+        - adminToken: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PasswordResetRequest" }
+      responses:
+        "200":
+          description: The reset, with the sessions it revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/PasswordReset" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /v1/models:
     get:
       summary: List the served models, in OpenAI's shape
@@ -1386,6 +1421,21 @@ components:
           minLength: 1
           maxLength: 200
           description: a retry writes no second entry; the same key replays the same adjustment
+    PasswordResetRequest:
+      type: object
+      required: [newPassword]
+      properties:
+        newPassword:
+          type: string
+          minLength: 12
+          maxLength: 256
+          description: the replacement password; the same rule signup applies
+    PasswordReset:
+      type: object
+      required: [userId, sessionsRevoked]
+      properties:
+        userId: { type: string, format: uuid, description: the account the password now belongs to }
+        sessionsRevoked: { type: integer, minimum: 0, description: live sessions the reset revoked }
     AdminAdjustment:
       type: object
       required: [entryId, organizationId, amountMinor, reason, availableMinor]
