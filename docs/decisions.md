@@ -706,3 +706,9 @@ The signup bonus is the same mechanism turned on by configuration: `OXSUM_SIGNUP
 ## Password reset revokes the user's sessions with it
 
 `POST /api/v1/admin/users/{userId}/password-reset` (issue #91) changes the hash and revokes every live session in the same transaction. The alternative — let sessions ride until expiry — leaves a possibly-compromised credential valid for up to thirty days, which is exactly what a recovery path exists to end. The endpoint answers the revoked count so the operator sees what the reset killed, and an unknown user is 404 rather than a silent no-op.
+
+## The tree-head archive lives in the browser, checked by WASM
+
+The bills page keeps each organization's signed tree head in the browser's `localStorage` as `size:root` under a key derived from the log's origin (`oxsum.tree-head.oxsum/ledgers/<tenant>`) — issue #92. The alternatives were rejected: server-side storage would make the server the witness of its own log, which is precisely what the archive exists to catch; and asking users to save heads by hand (the flow `docs/user-guide.md` still documents as the manual path) is a duty no one performs. `localStorage` survives restarts, is origin-scoped and needs nothing installed; its loss is graceful — a missing or unreadable archive reads as a first visit, recording a fresh signed head rather than alarming.
+
+The check itself never trusts a stored or served value: the head's signature verifies before it is archived, the consistency proof must anchor the archived head exactly (a proof from anywhere else proves nothing), and a failed check never overwrites the archive. That pushed the signature verification into `oxsum-verify` — the crate that must compile to `wasm32-unknown-unknown` — so its doubleentry dependency gained the `witness` feature: Ed25519 verification is pure Rust and wasm-clean, and the feature pulls no network or OS dependencies in.
