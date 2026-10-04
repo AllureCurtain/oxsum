@@ -38,6 +38,7 @@ pub fn router(state: AppState) -> Router<AppState> {
             "/organizations/{organization_id}/adjustments",
             post(adjust_organization),
         )
+        .route("/users/{user_id}/password-reset", post(reset_password))
         .route("/holds", get(holds))
         .route("/anomalies", get(anomalies))
         .route("/closings", get(closings).post(close_month))
@@ -220,6 +221,40 @@ async fn adjust_organization(
         amount_minor: request.amount_minor,
         reason: request.reason,
         available_minor: wallet.available().await?,
+    })
+}
+
+/// The body of `POST …/password-reset`: the replacement password. The same
+/// length rule signup applies runs in core.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PasswordResetReq {
+    new_password: String,
+}
+
+/// The reset as the endpoint answers it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PasswordResetRes {
+    user_id: Uuid,
+    /// Live sessions the reset revoked alongside the password change.
+    sessions_revoked: u64,
+}
+
+/// Sets a new password for the named user and revokes every session they hold —
+/// the only recovery path v1 has, since no email is sent.
+async fn reset_password(
+    State(state): State<AppState>,
+    Path(user_id): Path<Uuid>,
+    ApiJson(request): ApiJson<PasswordResetReq>,
+) -> ApiResult<PasswordResetRes> {
+    let sessions_revoked = state
+        .db
+        .reset_password(user_id, &request.new_password)
+        .await?;
+    ok(PasswordResetRes {
+        user_id,
+        sessions_revoked,
     })
 }
 
