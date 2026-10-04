@@ -182,8 +182,8 @@ The transaction log page is still what it was (`/dashboard/log`, `crates/web/src
 ### Browser verification
 
 - Shipped: every entry verifies locally in the browser. The verification logic is the WASM build of `verify_bundle` — the same code the server runs. The public `/verify` page (`crates/web/src/app.rs`) takes a proof bundle and a content hash and runs the check in the browser; the chat page links to it with both fields prefilled after every settled turn.
-- Planned (#92): each visit to the bill page stores the tree heads seen into browser-local storage. On the next visit, consistency proofs are fetched automatically to confirm the log only ever appended — history was not rewritten. The user does nothing. The consistency endpoint it would call is shipped (`GET /api/v1/log/consistency?from=`, TODO B-7); the browser-local archive that calls it is not.
-- Witness-signed tree heads follow later (#94), so multiple users see the same log.
+- Shipped (#92): each visit to the bills page archives the organization's signed tree head in the browser's `localStorage`, keyed by the log's origin, after verifying the operator's signature on it. On a later visit, when the log has grown, the page fetches the consistency proof (`GET /api/v1/log/consistency?from=` through the session's server function) and verifies it plus the new head's signature in the browser — a one-line status reports the ledger append-only, a shrunk or rewritten log reports the failure in words and the archive is never overwritten on a failed check. The user does nothing. The public endpoint it mirrors is shipped (`GET /api/v1/log/consistency?from=`, B-7); the check also covers what #94 had left open: the operator's signature on the head is verified in the browser on every visit.
+- Third-party witness cosignatures — witnesses beyond the operator attesting the same head — are not built; the signed-note wire format already admits them.
 
 Verification proves: this record was not altered after being written, and history was not rewritten. It does not prove: upstream really returned that many tokens. The page states this sentence verbatim, without inflating it. (Shipped.)
 
@@ -233,4 +233,4 @@ The platform admin surface is the `/api/v1/admin` REST API under the operator to
 
 Everything this document describes but the code does not do yet, with the issue that tracks it:
 
-- The bill page's browser-local tree head archive with automatic consistency proofs — no issue filed yet
+- Pagination for the lists that hard-truncate today: bills and both exports at 100 rows, the transaction log at 100 (25 on the overview), requests and the admin lists at their caps — issue #93

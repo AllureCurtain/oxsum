@@ -94,6 +94,16 @@ password; `/dashboard` is the overview. `/logout` logs out.
   files, where the page shows the same amount in credits. The server sends the file with
   `Content-Disposition: attachment`, so a browser saves it instead of opening it, and the
   same two URLs work with `curl` and your session cookie as well.
+- **Append-only archive**: the page keeps the organization's signed tree head in your
+  browser's `localStorage` — automatically, nothing to do. Every visit verifies the
+  operator's signature on the head the server serves; when the log has grown, the page
+  fetches the consistency proof itself and checks that today's ledger still contains
+  the head it archived, and a one-line status above the table says so in words. If the
+  history ever stopped extending what was archived, the page would say the archive
+  check failed rather than show a verdict — and the stored head is never overwritten
+  on a failed check, so the discrepancy stays detectable. (Requires the deployment to
+  sign heads — `OXSUM_HEAD_SIGNING_KEY`; without it the line says the check is
+  unavailable.)
 - **Requests**: the organization's settled requests, newest first
   (`/dashboard/requests`): when the settlement was booked, the request id (the
   `x-oxsum-request-id` the gateway answered with), the model, the key that paid, the
@@ -283,6 +293,8 @@ Note: verification proves "this record has not been altered since it was written
 ## Verifying the log's history
 
 Purpose: confirm the ledger you see today is the ledger you saw last week, with entries appended and nothing rewritten.
+
+The bills page does this check automatically on every visit (see "Append-only archive" above): it archives the signed head locally and verifies the consistency proof in the browser. What follows is the same check done by hand — useful for an independent audit, or for keeping the archive somewhere other than the browser.
 
 The operator signs the head of your organization's log. Save the signed head from `GET /api/v1/log/head` (the `note` text and the `size`/`root` it carries) alongside your records. Later, `GET /api/v1/log/consistency?from=<that size>` returns the new signed head and the proof between them. Check the note's signature against the operator's key (published at `GET /api/v1/log/key` — get the key through a channel the operator does not control the first time, or the signature proves only that the server agrees with itself), then check the proof against the two heads. It passes only when the new log is the old log with entries appended: a second history at a size the operator already signed for cannot produce it.
 
