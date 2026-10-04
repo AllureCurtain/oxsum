@@ -197,7 +197,8 @@ artifact, and nothing else in the gates runs it.
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs on every push to `main` and every pull request. The
+`.github/workflows/ci.yml` runs on every push to `main` and every pull request that
+touches more than documentation (`paths-ignore` skips `docs/**` and `*.md`). The
 toolchain comes from `dtolnay/rust-toolchain@stable` with `toolchain: "1.98"` (matching
 `rust-toolchain.toml`) and the `rustfmt, clippy` components:
 
@@ -206,12 +207,14 @@ toolchain comes from `dtolnay/rust-toolchain@stable` with `toolchain: "1.98"` (m
   is needed to compile: the tree uses no `sqlx::query!` macros, so compilation never
   touches a live database.
 - `test`: `cargo test --workspace` against a `postgres:17-alpine` service container
-  (with `DATABASE_URL` set, so the database tests run for real instead of skipping),
-  then doubleentry's own Postgres conformance suite
+  (with `DATABASE_URL` set, so the database tests run for real instead of skipping).
+  doubleentry's own Postgres conformance suite
   (`cargo test -p doubleentry --features postgres --test postgres`), which starts its
-  own container through testcontainers. That last suite is why it runs in CI rather
-  than on every developer machine: GitHub-hosted runners provide Docker, so CI is the
-  one place the full gate is green.
+  own container through testcontainers, runs only when the run touches the vendored
+  engine, the migration list or `Cargo.lock` — the crate is vendored and otherwise
+  unchanged, so running it on every push bought several minutes for no signal.
+  Docker makes it the one suite that cannot run on a plain developer machine, which
+  is why the conditional lives in CI rather than a local gate.
 - `browser`: the browser contract gate. It adds the `wasm32-unknown-unknown` target,
   installs `cargo-leptos` 0.3.11 (the version the Dockerfile pins; the binary is
   cached by `actions/cache`, so only the first run after the pin changes compiles
@@ -222,7 +225,20 @@ toolchain comes from `dtolnay/rust-toolchain@stable` with `toolchain: "1.98"` (m
 The compile jobs cache the cargo registry and `target/` through
 `Swatinem/rust-cache`, so a run that touches one crate does not recompile the
 dependency tree. Every job is independent, so `browser` runs in parallel with the
-other three.
+other three. `main` requires all four checks to pass — a pull request cannot merge
+while any of them is red.
+
+`wasm32-unknown-unknown` is a second compile target, and `cargo check`/`cargo clippy`
+never build it: `oxsum-web` code that only exists under `feature = "hydrate"` (event
+handlers, `web_sys` calls) compiles nowhere in the usual local gate. Before pushing
+a change to `crates/web`, check the browser side the same way the `browser` job does:
+
+```bash
+cargo check -p oxsum-web --target wasm32-unknown-unknown --no-default-features --features hydrate
+```
+
+(The `--no-default-features` matters: without it `ssr` stays enabled and pulls `axum`
+and `mio` into a target that cannot compile them.)
 
 ## Browser contract
 

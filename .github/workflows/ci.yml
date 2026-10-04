@@ -10,7 +10,9 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore: ['docs/**', '**.md']
   pull_request:
+    paths-ignore: ['docs/**', '**.md']
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -67,7 +69,10 @@ jobs:
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/oxsum
     steps:
+      # Full history: the ledger-engine gate below diffs the push/PR base against HEAD.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.98"
@@ -87,9 +92,25 @@ jobs:
       # run for real.
       - name: Run the workspace test suites
         run: cargo test --workspace
-      # doubleentry's Postgres conformance suite: testcontainers starts its own
-      # container, which is why this suite cannot run on machines without Docker.
+      # doubleentry's Postgres conformance suite spins up testcontainers for several
+      # minutes. doubleentry is vendored and almost never changes, so the suite runs
+      # only when the engine, the lockfile or the database migration list changed —
+      # the push diff is `before`..HEAD, the pull_request diff base..HEAD.
+      - name: Does the run touch the ledger engine
+        id: ledger
+        run: |
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          # An unresolvable base (force-push, first commit) errs on the side of
+          # running the suite.
+          if [ "${base#0000000}" != "$base" ] || ! git cat-file -e "$base" 2>/dev/null; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          elif git diff --name-only "$base" HEAD | grep -qE '^(crates/doubleentry/|crates/core/migrations/|Cargo\.lock)'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Run doubleentry's Postgres conformance suite
+        if: steps.ledger.outputs.changed == 'true'
         run: cargo test -p doubleentry --features postgres --test postgres
 
   # The browser contract gate. No other job builds the site, so nothing else notices a
