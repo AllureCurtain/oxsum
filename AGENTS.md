@@ -32,6 +32,18 @@ cargo test --workspace                    # all tests (loads .env when present)
 cargo fmt --all && cargo clippy --workspace --all-targets
 ```
 
+## Before pushing
+
+Never push after running only the tests the change touched — a green targeted suite has let regressions reach main twice (a hardcoded table list, a wasm-only compile error). The full local gate is:
+
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets
+cargo test --workspace
+# plus, whenever crates/web changes, the wasm half that plain cargo never compiles:
+cargo check -p oxsum-web --target wasm32-unknown-unknown --no-default-features --features hydrate
+```
+
 ## Development process
 
 Issue-driven, one PR per minimal feature; once `main` exists, all task development happens in git worktrees:
