@@ -750,67 +750,73 @@ fn AdjustForm(
     let submit = move |ev: web_sys::SubmitEvent| {
         ev.prevent_default();
         #[cfg(feature = "hydrate")]
-        leptos::task::spawn_local(async move {
-            set_busy.set(true);
-            set_error.set(None);
-            notice.set(None);
-            // A leading minus deducts; parse_credits keeps money in integers.
-            let amount_minor = match parse_signed_credits(&amount.get_untracked()) {
-                Ok(minor) if minor != 0 => minor,
-                _ => {
-                    set_error.set(Some("Enter a nonzero amount like 10 or -2.50.".to_owned()));
+        {
+            // The handler must stay FnMut: the async block takes clones, not
+            // `organization` itself.
+            let organization_id = organization.id.clone();
+            let organization_name = organization.name.clone();
+            leptos::task::spawn_local(async move {
+                set_busy.set(true);
+                set_error.set(None);
+                notice.set(None);
+                // A leading minus deducts; parse_credits keeps money in integers.
+                let amount_minor = match parse_signed_credits(&amount.get_untracked()) {
+                    Ok(minor) if minor != 0 => minor,
+                    _ => {
+                        set_error.set(Some("Enter a nonzero amount like 10 or -2.50.".to_owned()));
+                        set_busy.set(false);
+                        return;
+                    }
+                };
+                if reason.get_untracked().trim().is_empty() {
+                    set_error.set(Some("An adjustment needs a reason.".to_owned()));
                     set_busy.set(false);
                     return;
                 }
-            };
-            if reason.get_untracked().trim().is_empty() {
-                set_error.set(Some("An adjustment needs a reason.".to_owned()));
-                set_busy.set(false);
-                return;
-            }
-            #[derive(serde::Serialize)]
-            #[serde(rename_all = "camelCase")]
-            struct Body {
-                amount_minor: i64,
-                reason: String,
-                idempotency_key: String,
-            }
-            let body = Body {
-                amount_minor,
-                reason: reason.get_untracked(),
-                // Fresh per submit: a retried *call* replays, a second click is a second
-                // adjustment.
-                idempotency_key: uuid::Uuid::new_v4().to_string(),
-            };
-            let path = format!(
-                "/api/v1/admin/organizations/{}/adjustments",
-                organization.id
-            );
-            match admin_call(
-                token,
-                browser::post(&token.0.get_untracked().unwrap_or_default(), &path, &body),
-            )
-            .await
-            {
-                Ok(answer) => {
-                    let name = organization.name.clone();
-                    let available = answer
-                        .get("availableMinor")
-                        .and_then(|v| v.as_i64())
-                        .map(crate::app::credits)
-                        .unwrap_or_default();
-                    notice.set(Some((
-                        format!("Adjusted {name}; it now holds {available} available."),
-                        "success",
-                    )));
-                    set_amount.set(String::new());
-                    set_reason.set(String::new());
-                    organizations.refetch();
+                #[derive(serde::Serialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Body {
+                    amount_minor: i64,
+                    reason: String,
+                    idempotency_key: String,
                 }
-                Err(message) => set_error.set(Some(message)),
-            }
-            set_busy.set(false);
-        });
+                let body = Body {
+                    amount_minor,
+                    reason: reason.get_untracked(),
+                    // Fresh per submit: a retried *call* replays, a second click is a second
+                    // adjustment.
+                    idempotency_key: uuid::Uuid::new_v4().to_string(),
+                };
+                let path = format!(
+                    "/api/v1/admin/organizations/{}/adjustments",
+                    organization_id
+                );
+                match admin_call(
+                    token,
+                    browser::post(&token.0.get_untracked().unwrap_or_default(), &path, &body),
+                )
+                .await
+                {
+                    Ok(answer) => {
+                        let name = organization_name;
+                        let available = answer
+                            .get("availableMinor")
+                            .and_then(|v| v.as_i64())
+                            .map(crate::app::credits)
+                            .unwrap_or_default();
+                        notice.set(Some((
+                            format!("Adjusted {name}; it now holds {available} available."),
+                            "success",
+                        )));
+                        set_amount.set(String::new());
+                        set_reason.set(String::new());
+                        organizations.refetch();
+                    }
+                    Err(message) => set_error.set(Some(message)),
+                }
+                set_busy.set(false);
+            });
+        }
         #[cfg(not(feature = "hydrate"))]
         let _ = (
             organization.id.as_str(),
