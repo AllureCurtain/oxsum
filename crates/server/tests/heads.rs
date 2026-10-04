@@ -370,3 +370,147 @@ async fn the_head_endpoints_answer_503_without_a_seed() {
         );
     }
 }
+
+/// Logs in and returns the session cookie the page server functions authenticate by.
+async fn session_cookie(app: &Router, email: &str) -> String {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/login")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({"email": email, "password": "correct horse battery"}).to_string(),
+        ))
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    res.headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .strip_prefix("oxsum_session=")
+        .expect("the session cookie")
+        .to_owned()
+}
+
+/// Registers a fresh organization and returns its first API key plus a session cookie.
+async fn key_and_session(app: &Router, name: &str) -> (String, String) {
+    let email = format!(
+        "{name}_{}@example.com",
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    );
+    let (status, body) = call(
+        app,
+        "POST",
+        "/api/v1/auth/register",
+        Some(json!({"email": email, "password": "correct horse battery"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "registration failed: {body}");
+    let key = body["data"]["apiKey"]["secret"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    (key, session_cookie(app, &email).await)
+}
+
+/// One server function of the pages, called the way its own code calls it: the
+/// URL-encoded body of the function's arguments, with the session cookie. The path is
+/// read from leptos's registry because the route carries a hash of the declaring module.
+async fn page_call(
+    app: &Router,
+    name: &str,
+    body: &str,
+    cookie: Option<&str>,
+) -> (StatusCode, Value) {
+    let (path, method) = leptos::server_fn::axum::server_fn_paths()
+        .find(|(path, _)| path.starts_with(&format!("/_pages/{name}")))
+        .unwrap_or_else(|| panic!("the {name} server function is registered"));
+    let mut req = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("content-type", "application/x-www-form-urlencoded");
+    if let Some(cookie) = cookie {
+        req = req.header("cookie", format!("oxsum_session={cookie}"));
+    }
+    let res = app
+        .clone()
+        .oneshot(req.body(Body::from(body.to_owned())).unwrap())
+        .await
+        .unwrap();
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, value)
+}
+
+#[tokio::test]
+async fn the_bills_page_functions_serve_the_head_and_the_proof() {
+    let (app, _pool) = app_or_skip!(Some(SEED));
+    let (key, cookie) = key_and_session(&app, "heads-pages").await;
+    top_up(&app, &key, 1_000_000).await;
+
+    // get_log_head: the same signed head the API serves, session-scoped.
+    let (status, head) = page_call(&app, "get_log_head", "", Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK, "{head}");
+    assert_eq!(head["size"].as_u64().unwrap(), 1);
+    assert!(
+        head["origin"]
+            .as_str()
+            .unwrap()
+            .starts_with("oxsum/ledgers/")
+    );
+    assert_eq!(head["key"]["keyName"].as_str().unwrap(), "oxsum/tree-heads");
+    assert_eq!(head["key"]["publicKey"].as_str().unwrap().len(), 64);
+    assert_eq!(head["key"]["keyHash"].as_str().unwrap().len(), 8);
+    assert!(
+        SignedTreeHead::parse(head["note"].as_str().unwrap()).is_ok(),
+        "the note parses"
+    );
+
+    // The log grows; get_log_consistency proves the archived head is still inside it.
+    top_up(&app, &key, 2_000_000).await;
+    let (status, proof) = page_call(&app, "get_log_consistency", "from=1", Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK, "{proof}");
+    assert_eq!(proof["oldHead"]["size"].as_u64().unwrap(), 1);
+    assert_eq!(proof["oldHead"]["root"].as_str().unwrap(), head["root"]);
+    assert_eq!(proof["signed"]["size"].as_u64().unwrap(), 2);
+    assert_eq!(proof["proof"]["oldSize"].as_u64().unwrap(), 1);
+    assert_eq!(proof["proof"]["newSize"].as_u64().unwrap(), 2);
+}
+
+#[tokio::test]
+async fn without_a_seed_the_page_functions_answer_null() {
+    let (app, _pool) = app_or_skip!(None);
+    let (key, cookie) = key_and_session(&app, "heads-nopage").await;
+    top_up(&app, &key, 1_000_000).await;
+
+    // The page degrades instead of failing: null, where the API answers 503.
+    for (name, body) in [("get_log_head", ""), ("get_log_consistency", "from=1")] {
+        let (status, answer) = page_call(&app, name, body, Some(&cookie)).await;
+        assert_eq!(status, StatusCode::OK, "{name}: {answer}");
+        assert!(answer.is_null(), "{name} answers no head: {answer}");
+    }
+}
+
+#[tokio::test]
+async fn the_page_functions_need_a_session() {
+    let (app, _pool) = app_or_skip!(Some(SEED));
+    // An API key is not a session: the dashboard's surface does not answer to it.
+    for (name, body) in [("get_log_head", ""), ("get_log_consistency", "from=1")] {
+        let (status, _) = page_call(&app, name, body, None).await;
+        assert!(
+            matches!(
+                status,
+                StatusCode::BAD_REQUEST
+                    | StatusCode::UNAUTHORIZED
+                    | StatusCode::INTERNAL_SERVER_ERROR
+            ),
+            "{name} without a session is refused: {status}"
+        );
+    }
+}
