@@ -17,9 +17,11 @@ name: Release image
 on:
   # The image gate runs on main and by hand. PRs are covered by the CI browser job,
   # which builds the same site the image packages; building a Docker image for every
-  # PR push duplicated that compile for no extra signal.
+  # PR push duplicated that compile for no extra signal. A docs-only push does not
+  # change the artifact, so it does not rebuild it.
   push:
     branches: [main]
+    paths-ignore: ['docs/**', '**.md']
   workflow_dispatch:
 
 concurrency:
