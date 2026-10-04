@@ -168,7 +168,31 @@ impl Wallet {
         validate_tenant_id(tenant_id)?;
         let ledger = LedgerId::new(format!("tenant-{tenant_id}")).map_err(invalid)?;
         let schema = format!("ledger_{tenant_id}");
-        let store = PostgresStore::<SCALE>::new(pool, ledger).in_schema(&schema);
+        let store = PostgresStore::<SCALE>::new(pool.clone(), ledger).in_schema(&schema);
+        // Two opens of one fresh tenant race `migrate`'s `CREATE SCHEMA IF NOT
+        // EXISTS` — Postgres' IF NOT EXISTS is not atomic: both pass the existence
+        // check and the loser fails pg_namespace's unique index (23505 — plain
+        // CREATE SCHEMA reports 42P06 only when the row is already committed, so
+        // the in-flight race surfaces as a unique violation), and `Tenants::get`
+        // only serializes opens inside one process. Create the schema here and
+        // treat either "already exists" answer as the other opener having won; the
+        // rest of `migrate` already runs under the store's own locks, and its
+        // IF NOT EXISTS sees the committed schema. Holding an advisory lock across
+        // migrate would pin a pooled connection while migrate waits for more of
+        // the same pool — a starvation deadlock on a small pool.
+        match sqlx::query(&format!(
+            "CREATE SCHEMA \"{}\"",
+            schema.replace('"', "\"\"")
+        ))
+        .execute(&pool)
+        .await
+        {
+            Err(sqlx::Error::Database(e))
+                if e.code().as_deref() == Some("42P06")
+                    || (e.code().as_deref() == Some("23505")
+                        && e.constraint() == Some("pg_namespace_nspname_index")) => {}
+            r => r.map(|_| ())?,
+        }
         store.migrate().await?;
 
         // Account handles must be restored from storage on restart. Re-registering by
