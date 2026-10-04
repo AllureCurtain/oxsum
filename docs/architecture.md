@@ -139,10 +139,11 @@ Only relationships; the ledger's table structure is authoritative in `crates/dou
 - Organization 1-to-many API keys; a key holds no balance itself, it is a credential resolving to its organization.
 - Planned (not built): organization 1-to-many invitations.
 - User 1-to-many sessions (web login): built; a session acts as the user's oldest membership until the dashboard adds switching.
-- Every ledger has three fixed accounts:
+- Every ledger has four fixed accounts:
   - `Liabilities:Wallet`: user balance, overdraft forbidden
   - `Assets:Cash`: money received from top-ups
   - `Income:Usage`: revenue recognized on settlement
+  - `Equity:Adjustments`: operator-side money that is neither cash nor usage revenue — admin adjustments and the signup bonus draw on it, so grants and deductions stay out of the income line
 - One entry has many postings. Each posting sits in the settled or the pending layer, and the entry must balance within each layer.
 - The Merkle log's leaves are the entries' content hashes.
 
