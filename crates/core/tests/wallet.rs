@@ -10,7 +10,10 @@
 
 use std::sync::Arc;
 
-use oxsum_core::{Tenants, Wallet, WalletError, verify_bundle};
+use oxsum_core::{
+    Settlement, SettlementKind, Tenants, TransactionKind, Wallet, WalletError, hold_description,
+    verify_bundle,
+};
 use sqlx::PgPool;
 use time::macros::date;
 
@@ -512,4 +515,121 @@ async fn one_tenants_first_open_converges_under_concurrency() {
             }
         }
     }
+}
+
+/// The bills page's transaction view lists top-ups, adjustments and settled requests
+/// — each signed by what it moved on the wallet's settled balance, newest first — and
+/// skips the holds that bill nothing yet (issue #90).
+#[tokio::test]
+async fn recent_transactions_lists_every_movement_but_holds() {
+    let url = db_or_skip!();
+    let w = Wallet::open(pool(&url).await, &fresh("txview"))
+        .await
+        .unwrap();
+    w.top_up("t1", 10 * ONE, D).await.unwrap();
+    w.adjust("g1", "welcome", 2 * ONE, D).await.unwrap();
+    w.hold("h1", "", 3 * ONE, D).await.unwrap();
+    w.settle("h1", "", 1_234, D).await.unwrap();
+    w.adjust("d1", "clawback", -ONE, D).await.unwrap();
+
+    let txs = w.recent_transactions(100).await.unwrap();
+    let kinds: Vec<TransactionKind> = txs.iter().map(|tx| tx.kind).collect();
+    assert_eq!(
+        kinds,
+        [
+            TransactionKind::Adjustment,
+            TransactionKind::Settlement,
+            TransactionKind::Adjustment,
+            TransactionKind::TopUp,
+        ],
+        "newest first, the hold skipped: {txs:?}"
+    );
+    let amounts: Vec<i64> = txs.iter().map(|tx| tx.amount_minor).collect();
+    assert_eq!(
+        amounts,
+        [-ONE, -1_234, 2 * ONE, 10 * ONE],
+        "the signed effect on the settled balance"
+    );
+    assert_eq!(txs[1].description, "", "a hand-written settlement's words");
+    assert!(
+        txs.iter()
+            .all(|tx| tx.record.is_none() && tx.key_id.is_none()),
+        "nothing here is a gateway turn or key-attributed"
+    );
+    for tx in &txs {
+        assert_eq!(tx.booked_on, D);
+        assert!(!tx.content_hash.is_empty() && !tx.id.is_empty());
+    }
+}
+
+/// A settled gateway turn attributes to the key that paid and carries the settlement
+/// record its description holds, so the row shows exactly what the bill proves.
+#[tokio::test]
+async fn a_gateway_settlement_names_its_key_and_its_record() {
+    let url = db_or_skip!();
+    let pool = pool(&url).await;
+    // `hold_for_key` re-reads the key row inside its limit check, so the key is a real
+    // one: a registered organization's first key, authenticated the way the server does.
+    let db = oxsum_core::Db::from_pool(pool.clone());
+    db.migrate().await.unwrap();
+    let registration = db
+        .register(oxsum_core::NewUser {
+            email: format!(
+                "txgw_{}@example.com",
+                &uuid::Uuid::new_v4().simple().to_string()[..8]
+            ),
+            password: "correct horse battery staple".to_owned(),
+            organization_name: None,
+        })
+        .await
+        .unwrap();
+    let (_organization, key) = db
+        .authenticate(&registration.api_key.secret)
+        .await
+        .unwrap()
+        .unwrap();
+    let w = Wallet::open(pool, &registration.organization.tenant_id)
+        .await
+        .unwrap();
+    w.top_up("t1", 10 * ONE, D).await.unwrap();
+    w.hold_for_key(
+        &key,
+        "req-9:hold",
+        &hold_description("req-9", "model-x", 5 * ONE).unwrap(),
+        5 * ONE,
+        D,
+    )
+    .await
+    .unwrap();
+    let record = Settlement {
+        request: "req-9",
+        channel: "chan",
+        model: "model-x",
+        price_version: 1,
+        kind: SettlementKind::Usage,
+        input_tokens: 11,
+        output_tokens: 22,
+        input_price: 1_000,
+        output_price: 2_000,
+        charged: 77,
+        freeze: 5 * ONE,
+    };
+    w.settle("req-9:hold", &record.description().unwrap(), 77, D)
+        .await
+        .unwrap();
+
+    let txs = w.recent_transactions(10).await.unwrap();
+    assert_eq!(txs.len(), 2, "the settlement and the top-up: {txs:?}");
+    let settlement = &txs[0];
+    assert_eq!(settlement.kind, TransactionKind::Settlement);
+    assert_eq!(settlement.amount_minor, -77);
+    assert_eq!(
+        settlement.key_id.as_deref(),
+        Some(key.key_id.as_simple().to_string().as_str()),
+        "the paying key, as the requests page's filter matches it"
+    );
+    let parsed = settlement.record.as_ref().expect("the record parses back");
+    assert_eq!(parsed.request, "req-9");
+    assert_eq!(parsed.charged, 77);
+    assert_eq!(parsed.freeze, 5 * ONE);
 }
