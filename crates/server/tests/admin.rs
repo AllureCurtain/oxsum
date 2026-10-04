@@ -487,13 +487,27 @@ async fn the_organizations_list_shows_every_organization_with_its_balance() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
-    let (status, body) = call(&app, "GET", "/api/v1/admin/organizations", None).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let organizations = body["data"].as_array().expect("a list of organizations");
-    let org = organizations
-        .iter()
-        .find(|org| org["id"] == id)
-        .expect("the registered organization is listed");
+    // The list is oldest-first pages: a brand-new organization is the last row, so
+    // the read walks the cursor to it (issue #93).
+    let mut org = None;
+    let mut cursor: Option<String> = None;
+    while org.is_none() {
+        let path = match &cursor {
+            Some(c) => format!("/api/v1/admin/organizations?cursor={c}"),
+            None => "/api/v1/admin/organizations".to_owned(),
+        };
+        let (status, body) = call(&app, "GET", &path, None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let organizations = body["data"]["organizations"]
+            .as_array()
+            .expect("a list of organizations");
+        org = organizations.iter().find(|org| org["id"] == id).cloned();
+        match body["data"]["nextCursor"].as_str() {
+            Some(next) => cursor = Some(next.to_owned()),
+            None => break,
+        }
+    }
+    let org = org.expect("the registered organization is listed");
     assert_eq!(org["kind"], "personal");
     assert_eq!(org["members"], 1);
     assert_eq!(
@@ -514,6 +528,58 @@ async fn the_organizations_list_shows_every_organization_with_its_balance() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     let (status, _) = call_with(&app, "GET", "/api/v1/admin/organizations", None, Some(&key)).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+/// `GET /api/v1/admin/organizations` paginates (issue #93): `limit` caps the page,
+/// `nextCursor` resumes where it ended — echoed verbatim — and a cursor that was
+/// never issued is a validation error, not a server error.
+#[tokio::test]
+async fn the_organizations_list_paginates_oldest_first() {
+    let (app, _pool) = app_or_skip!();
+    register(&app, "orgpage").await;
+
+    let mut seen = Vec::new();
+    let mut cursor: Option<String> = None;
+    // Walk three pages deep at most: the shared database's tail is unbounded, and
+    // ordering and resume are what the walk asserts.
+    for _ in 0..3 {
+        let path = match &cursor {
+            Some(c) => format!("/api/v1/admin/organizations?limit=1&cursor={c}"),
+            None => "/api/v1/admin/organizations?limit=1".to_owned(),
+        };
+        let (status, body) = call(&app, "GET", &path, None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let organizations = body["data"]["organizations"]
+            .as_array()
+            .expect("a page of organizations");
+        assert_eq!(organizations.len(), 1, "the page honors its limit: {body}");
+        seen.push(
+            organizations[0]["id"]
+                .as_str()
+                .expect("an organization id")
+                .to_owned(),
+        );
+        match body["data"]["nextCursor"].as_str() {
+            Some(next) => cursor = Some(next.to_owned()),
+            None => break,
+        }
+    }
+    assert!(seen.len() >= 2, "at least two organizations were paged");
+    assert_eq!(
+        seen.iter().collect::<std::collections::HashSet<_>>().len(),
+        seen.len(),
+        "no organization twice: {seen:?}"
+    );
+
+    let (status, body) = call(
+        &app,
+        "GET",
+        "/api/v1/admin/organizations?cursor=not-a-cursor",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
 }
 
 /// `GET /api/v1/admin/holds` lists every unsettled hold globally, named by the

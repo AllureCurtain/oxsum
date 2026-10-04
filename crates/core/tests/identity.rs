@@ -498,3 +498,43 @@ async fn migrating_twice_and_concurrently_is_safe() {
     .unwrap();
     assert_eq!(stray, 0, "oxsum's tables exist outside the oxsum schema");
 }
+
+/// The organizations list pages by `(created_at, organization_id)` (issue #93): a
+/// walk sees every organization exactly once, ordered, and the cursor is the
+/// keyset bound — two organizations that share a timestamp still sort by id.
+#[tokio::test]
+async fn organization_pages_walk_the_table_without_gaps_or_repeats() {
+    let url = db_or_skip!();
+    let db = db(&url).await;
+    // Three organizations whose pages this test can name, on a table the shared
+    // database may already fill.
+    for name in ["a", "b", "c"] {
+        db.register(signup(&format!("orgpage_{name}")))
+            .await
+            .unwrap();
+    }
+
+    let mut seen: Vec<uuid::Uuid> = Vec::new();
+    let mut last_key: Option<(time::OffsetDateTime, uuid::Uuid)> = None;
+    let mut before = None;
+    loop {
+        let page = db.organizations_page(before, 2).await.unwrap();
+        assert!(page.rows.len() <= 2, "the page honors its limit");
+        for organization in &page.rows {
+            let key = (organization.created_at, organization.id);
+            assert!(
+                last_key.is_none_or(|past| key > past),
+                "oldest first, strictly ordered"
+            );
+            last_key = Some(key);
+            assert!(!seen.contains(&organization.id), "no organization twice");
+            seen.push(organization.id);
+        }
+        match page.next_cursor {
+            Some(cursor) => before = Some(cursor),
+            None => break,
+        }
+    }
+    // The three registered here are somewhere in the walk.
+    assert!(seen.len() >= 3);
+}
