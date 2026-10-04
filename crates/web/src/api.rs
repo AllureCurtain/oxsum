@@ -309,24 +309,82 @@ pub async fn get_log() -> Result<Vec<EntryView>, ServerFnError> {
     Ok(entries.iter().map(EntryView::from).collect())
 }
 
-/// The bills page: the organization's settled entries, newest first, each with the
-/// content hash its proof verifies against.
+/// The bills page: the organization's transactions, newest first — top-ups,
+/// adjustments and settled requests (issue #90).
+///
+/// A member reads only what their own keys paid plus the organization's shared
+/// history — top-ups and adjustments carry no key, so every member sees them — and
+/// owners and admins read everything. That is the requests page's rule applied to
+/// the same ledger: the entry's provenance actor names the paying key, and a key
+/// outside this session's scope drops the row, the way `get_requests` filters.
 ///
 /// The same read, the same limit and so the same rows as the two exports
 /// (`crates/server/src/bills.rs`): the page and the files it offers cannot disagree
 /// about what was billed.
 #[server(prefix = "/_pages")]
 pub async fn get_bills() -> Result<Vec<BillView>, ServerFnError> {
-    let (_db, tenants, principal) = session_ctx().await?;
+    let (db, tenants, principal) = session_ctx().await?;
+    let organization = &principal.organization;
+    let wallet = tenants
+        .get(&organization.tenant_id)
+        .await
+        .map_err(|_| ServerFnError::new("the wallet could not be opened"))?;
+    let transactions = wallet
+        .recent_transactions(crate::bills::BILLS_LIMIT)
+        .await
+        .map_err(|_| ServerFnError::new("the bills could not be read"))?;
+    let keys = db
+        .list_keys(organization.id, key_scope(&principal))
+        .await
+        .map_err(|_| ServerFnError::new("the keys could not be read"))?;
+    Ok(transactions
+        .iter()
+        .filter(|tx| match tx.key_id.as_deref() {
+            // Attributed to a key outside this session's scope — another member's
+            // spend — is not this session's transaction to read.
+            Some(id) => keys.iter().any(|key| key.id.as_simple().to_string() == id),
+            None => true,
+        })
+        .map(BillView::from)
+        .collect())
+}
+
+/// The proof bundle for one entry of the session's organization, as `/verify` pastes
+/// it — what the bills page's per-row verify links fetch through `?entry=` (issue
+/// #90).
+///
+/// The bundle comes out of the session's own tenant schema, so an entry of another
+/// organization is simply absent. The page's scoping applies the same way: an entry
+/// attributed to a key outside this session's scope answers "no such entry" — a
+/// member cannot pull another member's bill by guessing its id, and the refusal
+/// names nothing.
+#[server(prefix = "/_pages")]
+pub async fn get_entry_bundle(entry_id: String) -> Result<String, ServerFnError> {
+    let (db, tenants, principal) = session_ctx().await?;
+    let entry =
+        uuid::Uuid::parse_str(&entry_id).map_err(|_| ServerFnError::new("not an entry id"))?;
     let wallet = tenants
         .get(&principal.organization.tenant_id)
         .await
         .map_err(|_| ServerFnError::new("the wallet could not be opened"))?;
-    let bills = wallet
-        .settled_entries(crate::bills::BILLS_LIMIT)
+    let bundle = wallet
+        .receipt_proof(oxsum_core::EntryId::from_uuid(entry))
         .await
-        .map_err(|_| ServerFnError::new("the bills could not be read"))?;
-    Ok(bills.iter().map(BillView::from).collect())
+        .map_err(|_| ServerFnError::new("the proof could not be read"))?
+        .ok_or_else(|| ServerFnError::new("no such entry"))?;
+    if let Some(actor) = bundle.entry.provenance().actor.as_ref() {
+        let keys = db
+            .list_keys(principal.organization.id, key_scope(&principal))
+            .await
+            .map_err(|_| ServerFnError::new("the keys could not be read"))?;
+        if !keys
+            .iter()
+            .any(|key| key.id.as_simple().to_string() == actor.as_str())
+        {
+            return Err(ServerFnError::new("no such entry"));
+        }
+    }
+    serde_json::to_string(&bundle).map_err(|_| ServerFnError::new("the proof did not parse"))
 }
 
 /// The requests page: the organization's newest gateway requests with the usage and the

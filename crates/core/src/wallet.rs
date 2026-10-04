@@ -117,6 +117,54 @@ pub struct SettledEntry {
     pub content_hash: String,
 }
 
+/// Which of the bills page's kinds a ledger entry is (issue #90).
+///
+/// A hold is deliberately not a kind: a freeze in flight is the overview's in-flight
+/// list, and an entry that only reserved money bills nothing yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransactionKind {
+    /// Money in: `Assets:Cash` posted against the wallet.
+    TopUp,
+    /// An operator grant or deduction, or the signup bonus: `Equity:Adjustments`.
+    Adjustment,
+    /// A hold released — a settled gateway turn, or a settlement written through the
+    /// wallet API by hand. The charge is what the wallet's settled layer lost.
+    Settlement,
+}
+
+/// One ledger entry as the bills page's full transaction view lists it (issue #90):
+/// top-ups, bonuses and adjustments, and settled requests — every movement the page
+/// names, newest first.
+#[derive(Debug, Clone)]
+pub struct TransactionEntry {
+    /// The entry's id in the ledger: what the proof endpoint takes.
+    pub id: String,
+    /// Position in the log.
+    pub index: u64,
+    /// The booking date: the server's UTC date when the entry was written. The ledger
+    /// records no time of day.
+    pub booked_on: Date,
+    /// What the writer recorded: a settlement record for a gateway turn, a reason for
+    /// a top-up or an adjustment.
+    pub description: String,
+    /// The content hash the Merkle log commits to, and that the entry's proof verifies
+    /// against.
+    pub content_hash: String,
+    /// The entry's effect on the wallet's settled balance, signed: a top-up or a grant
+    /// reads positive, a deduction or a settled charge negative, a zero-charge
+    /// settlement zero.
+    pub amount_minor: i64,
+    /// Which of the page's kinds this entry is.
+    pub kind: TransactionKind,
+    /// The key that paid, where the entry attributes one: the provenance actor, as its
+    /// id in uuid simple form. Top-ups and adjustments carry none — they are
+    /// organization history any member may read.
+    pub key_id: Option<String>,
+    /// The settled turn's own record, when the entry is a gateway settlement; `None`
+    /// for a settlement written by hand and for every other kind.
+    pub record: Option<SettlementRecord>,
+}
+
 /// Entries one bills read scans for settlements, per page. A gateway turn writes two
 /// entries — the hold and the settlement that releases it — so a page this size carries
 /// hundreds of bills, and a read stops as soon as it has enough.
@@ -882,6 +930,133 @@ impl Wallet {
             end = start;
         }
         Ok(bills)
+    }
+
+    /// The organization's transactions as the bills page lists them, newest first,
+    /// at most `limit`: top-ups, adjustments — the signup bonus among them — and
+    /// settled requests (issue #90).
+    ///
+    /// Each entry carries its kind, its signed effect on the wallet's settled
+    /// balance, the key that paid where the entry attributes one, and — for a
+    /// settled gateway turn — the settlement record the entry's own description
+    /// holds, so a row shows exactly what the bill's content hash covers. A hold
+    /// bills nothing yet and is skipped; the overview's in-flight list is where
+    /// it shows.
+    ///
+    /// The read walks back one page at a time and stops as soon as it has `limit`
+    /// transactions, so a long log costs no more than the entries above the oldest
+    /// one it returns.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn recent_transactions(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<TransactionEntry>, WalletError> {
+        let wanted = limit.clamp(1, 100);
+        let mut end = self.store.head().await?.size;
+        let mut out = Vec::new();
+        while end > 0 && out.len() < wanted {
+            let start = end.saturating_sub(BILLS_SCAN as u64);
+            let after = start.checked_sub(1).map(LogIndex::new);
+            let page = self
+                .store
+                .page(Cursor {
+                    after,
+                    limit: (end - start) as usize,
+                })
+                .await?;
+            // The store pages in log order; the page wants newest first.
+            for stored in page.records.iter().rev() {
+                let Some(kind) = self.classify(stored) else {
+                    continue;
+                };
+                out.push(TransactionEntry {
+                    id: stored.entry.id().to_string(),
+                    index: stored
+                        .require_index()
+                        .map(LogIndex::get)
+                        .unwrap_or(u64::MAX),
+                    booked_on: stored.entry.booking_date(),
+                    description: stored.entry.description().as_str().to_owned(),
+                    content_hash: stored.content_hash.to_string(),
+                    amount_minor: self.settled_effect(stored),
+                    kind,
+                    key_id: stored
+                        .entry
+                        .provenance()
+                        .actor
+                        .as_ref()
+                        .map(|actor| actor.as_str().to_owned()),
+                    record: (kind == TransactionKind::Settlement)
+                        .then(|| SettlementRecord::parse(stored.entry.description().as_str()))
+                        .flatten(),
+                });
+                if out.len() == wanted {
+                    break;
+                }
+            }
+            end = start;
+        }
+        Ok(out)
+    }
+
+    /// Which of the bills page's kinds an entry is, or `None` for an entry the page does
+    /// not list: a hold, which bills nothing yet.
+    ///
+    /// The postings decide, never the description: a settlement is the pending-layer
+    /// credit that releases the reserve, a top-up posts `Assets:Cash`, an adjustment
+    /// posts `Equity:Adjustments` — each exactly once, because those are the only
+    /// writers these accounts have.
+    fn classify(&self, stored: &StoredEntry<SCALE>) -> Option<TransactionKind> {
+        let mut pending_credit = false;
+        let mut pending_debit = false;
+        let mut cash = false;
+        let mut adjustments = false;
+        for p in stored.entry.postings() {
+            if p.account == self.wallet {
+                match (p.layer, p.direction) {
+                    (Layer::Pending, Direction::Credit) => pending_credit = true,
+                    (Layer::Pending, Direction::Debit) => pending_debit = true,
+                    _ => {}
+                }
+            } else if p.account == self.cash {
+                cash = true;
+            } else if p.account == self.adjustments {
+                adjustments = true;
+            }
+        }
+        if pending_credit {
+            return Some(TransactionKind::Settlement);
+        }
+        if pending_debit {
+            return None;
+        }
+        if cash {
+            return Some(TransactionKind::TopUp);
+        }
+        if adjustments {
+            return Some(TransactionKind::Adjustment);
+        }
+        None
+    }
+
+    /// The entry's effect on the wallet's settled balance, signed: credits add,
+    /// debits take. A top-up or a grant reads positive, a deduction or a settled
+    /// charge negative, and a settlement that charged nothing reads zero — the
+    /// pending-layer release it also writes is not a movement of settled money.
+    fn settled_effect(&self, stored: &StoredEntry<SCALE>) -> i64 {
+        stored
+            .entry
+            .postings()
+            .iter()
+            .filter(|p| p.account == self.wallet && p.layer == Layer::Settled)
+            .map(|p| match p.direction {
+                Direction::Credit => p.amount.to_minor(),
+                Direction::Debit => -p.amount.to_minor(),
+            })
+            .sum()
     }
 
     /// True when the entry settled a hold: the pending-layer credit on the wallet account
