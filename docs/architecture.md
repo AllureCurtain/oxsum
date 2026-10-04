@@ -23,7 +23,7 @@ The axum API, the core, doubleentry and the gateway exist today, with oxsum's ow
 | Module | Location | Responsibility |
 | --- | --- | --- |
 | doubleentry | `crates/doubleentry` | Double-entry bookkeeping, balance limits, pending layer, Merkle inclusion and consistency proofs, period closing. Vendored, see docs/decisions.md |
-| Wallet | `crates/core/src/wallet.rs` | One tenant's wallet: top-up, hold, settle, balance, proof bundles, and the settled entries the bills page lists and exports (`settled_entries`). Built on the shared pool, never on a pool of its own |
+| Wallet | `crates/core/src/wallet.rs` | One tenant's wallet: top-up, hold, settle, balance, proof bundles, and the transactions the bills page lists and exports (`recent_transactions`). Built on the shared pool, never on a pool of its own |
 | Pricing | `crates/core/src/billing.rs` | What a turn costs and what the ledger records: the input upper bound, the freeze, priced usage, the local `o200k_base` estimate, the settlement record, and the price book. No I/O, so it is the same arithmetic in a test and in a request |
 | Channels | `crates/core/src/channels.rs` | The channels and their prices: the append-only price versions, the resolution a request prices itself by (channel, version, price, upstream address), and the sealed upstream credential. Sealing is AES-256-GCM under `OXSUM_SECRET_KEY`, see docs/decisions.md |
 | Tenants | `crates/core/src/tenants.rs` | Facades over the shared pool, cached per tenant: a tenant costs a facade, not connections. See docs/decisions.md "all tenants share one connection pool" |

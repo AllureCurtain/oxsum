@@ -75,15 +75,23 @@ password; `/dashboard` is the overview. `/logout` logs out.
     refused action says why, in words.
 - **Transaction log**: the newest ledger entries, newest first: position, id,
   description and content hash.
-- **Bills**: the organization's settled entries, newest first, at `/dashboard/bills`:
-  the date each was booked, its id, what it charged in credits under **Cost (credits)**,
-  and the content hash its proof verifies against. Only entries that released a hold are
-  listed — a top-up, or a hold that has not settled yet, is not a bill.
+- **Bills**: the organization's transactions, newest first, at `/dashboard/bills`:
+  top-ups, adjustments and settled requests, each with the date it was booked, its
+  kind, what it was (a settled request shows its request id, model, token counts,
+  freeze and settlement kind; a top-up or an adjustment shows its reason), the signed
+  amount in credits — money in reads `+`, a charge reads `-` — and the content hash
+  its proof verifies against. A hold that has not settled bills nothing yet and is
+  not listed. A member sees the transactions their own keys paid plus the shared
+  organization history; owners and admins see everything.
+- **Verify a row**: every row's **verify** link opens `/verify` with the entry named;
+  the page fetches that entry's proof bundle itself — inside your session and its
+  scope — and runs the check on load.
 - **Export**: **Download CSV** and **Download JSON** on the bills page save that same
   list as a file. Both carry the same fields and the same rows as the table — `bookedOn`,
-  `entryId`, `chargedMinor`, `contentHash` — so an archived record can be checked against
-  the ledger later; the charge is the ledger's integer in minor units in both files,
-  where the page shows the same amount in credits. The server sends the file with
+  `entryId`, `kind`, `amountMinor`, `description`, `contentHash`, plus the settled
+  turn's parsed `request` in the JSON — so an archived record can be checked against
+  the ledger later; the amount is the ledger's signed integer in minor units in both
+  files, where the page shows the same amount in credits. The server sends the file with
   `Content-Disposition: attachment`, so a browser saves it instead of opening it, and the
   same two URLs work with `curl` and your session cookie as well.
 - **Requests**: the organization's settled requests, newest first
@@ -113,7 +121,7 @@ Notes:
 
 - Amounts are in credits with six decimals on every page, the bills and requests pages
   included; the ledger keeps them as integers, and the CSV and JSON exports carry the
-  ledger's own integers in minor units (`chargedMinor`, where 1 credit = 1,000,000).
+  ledger's own integers in minor units (`amountMinor`, signed, where 1 credit = 1,000,000).
 - The dashboard needs the browser build: serve it with `cargo leptos serve` (or
   `cargo leptos build` once, then run the server). Without it the pages render but
   the live updates do not run.
