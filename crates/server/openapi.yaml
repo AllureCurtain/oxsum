@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.16.0
+  version: 0.17.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -46,7 +46,11 @@ info:
     organization — the only registration `OXSUM_SIGNUP=invite` allows. 0.15.0 gives the platform admin
     the write half of the organizations list: `POST
     /api/v1/admin/organizations/{organizationId}/adjustments` books a signed amount with a
-    required reason into that organization's ledger.
+    required reason into that organization's ledger. 0.16.0 added `POST
+    /api/v1/admin/users/{userId}/password-reset`: the operator's recovery path, which revokes the
+    user's sessions with the change. 0.17.0 paginates the one admin list that can grow
+    unboundedly — `GET /api/v1/admin/organizations` takes `cursor`/`limit` and answers
+    `nextCursor`.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie, except
     `/api/v1/auth/login`, `/api/v1/auth/logout` and `/api/v1/auth/register`, which take no
@@ -884,18 +888,28 @@ paths:
     get:
       summary: List every organization, with its balance
       description: |
-        The platform admin's view of whom the ledger holds money for: every organization, oldest
-        first, with its kind, its headcount and what its wallet shows — `availableMinor` (settled
-        minus unsettled holds) and `reservedMinor` (the sum of its outstanding holds). Balances are
-        integer minor units, 1 credit = 1_000_000 minor, and reading one creates the organization's
-        ledger if it does not exist yet, the same way the dashboard's overview does.
-        Moving an organization's money is `POST
-        /api/v1/admin/organizations/{organizationId}/adjustments`.
+        The platform admin's view of whom the ledger holds money for: organizations, oldest
+        first, with their kind, their headcount and what their wallet shows — `availableMinor`
+        (settled minus unsettled holds) and `reservedMinor` (the sum of its outstanding holds).
+        Balances are integer minor units, 1 credit = 1_000_000 minor, and reading one creates
+        the organization's ledger if it does not exist yet, the same way the dashboard's
+        overview does. The list paginates: `limit` caps a page at 100 rows, and a full page
+        answers `nextCursor`, which the next call echoes back as `cursor` — opaque, never
+        constructed by hand; absent means the list is done. Moving an organization's money is
+        `POST /api/v1/admin/organizations/{organizationId}/adjustments`.
       security:
         - adminToken: []
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 100 }
+        - name: cursor
+          in: query
+          description: An earlier answer's `nextCursor`, echoed verbatim.
+          schema: { type: string }
       responses:
         "200":
-          description: Every organization, oldest first
+          description: One page of organizations, oldest first
           content:
             application/json:
               schema:
@@ -903,8 +917,16 @@ paths:
                 required: [data]
                 properties:
                   data:
-                    type: array
-                    items: { $ref: "#/components/schemas/AdminOrganization" }
+                    type: object
+                    required: [organizations]
+                    properties:
+                      organizations:
+                        type: array
+                        items: { $ref: "#/components/schemas/AdminOrganization" }
+                      nextCursor:
+                        type: string
+                        description: The cursor the next page asks with; absent at the list's end.
+        "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/admin/organizations/{organizationId}/adjustments:
