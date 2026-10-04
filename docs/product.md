@@ -24,7 +24,7 @@ The piece must let a first-time visitor walk this path in minutes:
 
 | Role | Who | Can do | Status |
 | --- | --- | --- | --- |
-| Platform admin | Whoever deploys oxsum | Manage channels and prices, top up or adjust any organization, view all anomalous requests, run monthly closings | Channels and prices are shipped — the `/api/v1/admin` endpoints and the `/admin/channels` page, under the operator token; topping up or adjusting another organization and the signup bonus are planned (#60) |
+| Platform admin | Whoever deploys oxsum | Manage channels and prices, top up or adjust any organization, view all anomalous requests, run monthly closings | Channels and prices are shipped — the `/api/v1/admin` endpoints and the `/admin/channels` page, under the operator token; so are adjusting any organization's balance and the signup bonus |
 | Organization owner | Organization creator | Everything inside the organization, including transferring ownership | Shipped: keys, balance, the ledger, and membership management with the ownership transfer |
 | Organization admin | Appointed by the owner | Invite and remove members, manage all keys, view the organization's full bill history | Shipped: managing all keys, inviting by link or by adding an existing account, removing and re-roling members (but not the owner's own membership); the bill history ships as the bills page — the organization's settled entries, exportable as CSV or JSON — which applies no member filter yet |
 | Organization member | People an owner or admin added | Create and revoke their own keys, view organization balance and their own request records | Their own keys, the balance and their own request records are shipped (the requests page, #55, shows the turns their own keys paid for); the shipped bills page lists the whole organization's settled entries with no member filter |
@@ -91,11 +91,11 @@ v1 has no payment integration. Credit has three designed sources; the table says
 | Source | Who | Notes |
 | --- | --- | --- |
 | Top-up | Any credential of the organization — session or API key | **Shipped.** `POST /api/v1/topups` sits behind the same credential check as every other organization endpoint (`crates/server/src/routes.rs`, the `authenticated` router), so a logged-in user self-tops-up; the chat page's top-up button is exactly this call (`crates/web/src/chat.rs`). The request carries an amount and an idempotency key and **no reason**: the endpoint takes no description. Admin-gated top-ups with a required reason are the rejected alternative in docs/decisions.md. |
-| Signup bonus | Automatic | **Planned, #60.** Amount configured by the deployer, default 0. Nothing is credited today: registration writes no ledger entry at all. |
-| Adjustment | Platform admin | **Planned, #60.** Can add or subtract; reason required. A deduction cannot push available balance negative. No admin endpoint for it exists — `/api/v1/admin` is read-only so far. |
+| Signup bonus | Automatic | **Shipped** (issue #60). `OXSUM_SIGNUP_BONUS_MINOR`, default 0: self-registration credits the new organization's wallet with the amount, booked as an adjustment carrying "signup bonus" as its reason — an invitation's redeem joins an existing organization and grants nothing. At 0, registration still writes no ledger entry. |
+| Adjustment | Platform admin | **Shipped** (issue #60). `POST /api/v1/admin/organizations/{organizationId}/adjustments`, and an "Adjust" form on each row of `/admin/organizations`. Positive grants, negative deducts; the reason is required and becomes the entry's description, covered by its proof. A deduction that would push the balance below what the wallet holds is the ledger's own no-overdraft refusal — `402 INSUFFICIENT_FUNDS`. |
 
 - The unit is credit, 1 credit = 1_000_000 minor. What a credit maps to in real money is the deployer's choice; oxsum does not care. (Shipped.)
-- When adjustments ship (#60), they never modify history; they book a new entry. The original entry and its proof stay valid.
+- Adjustments never modify history; they book a new entry. The original entry and its proof stay valid.
 
 ## API keys (shipped)
 
@@ -205,11 +205,11 @@ Verification proves: this record was not altered after being written, and histor
 
 ### Platform admin
 
-The platform admin surface is the `/api/v1/admin` REST API under the operator token (`OXSUM_ADMIN_TOKEN`), and the `/admin` pages drive it directly from the browser — the token is typed in once, kept in `localStorage` like the chat page's key and sent as `Authorization: Bearer` (docs/decisions.md). All five pages are shipped, and the adjustments and signup bonus the first row needs are #60.
+The platform admin surface is the `/api/v1/admin` REST API under the operator token (`OXSUM_ADMIN_TOKEN`), and the `/admin` pages drive it directly from the browser — the token is typed in once, kept in `localStorage` like the chat page's key and sent as `Authorization: Bearer` (docs/decisions.md). All five pages are shipped, and so are the adjustments and signup bonus the first row needs.
 
 | Page | Content | Status |
 | --- | --- | --- |
-| Organizations | Every organization's balance; top up, adjust | The list ships: `/admin/organizations` on `GET /api/v1/admin/organizations` — name, kind, headcount, available and frozen; topping up or adjusting one is #60 |
+| Organizations | Every organization's balance; top up, adjust | Shipped: the list plus a per-row adjust form — `GET /api/v1/admin/organizations` for the table, `POST …/{organizationId}/adjustments` for the write |
 | Channels & prices | Configure upstreams and model prices; view price version history | Shipped: `/admin/channels` on the `/api/v1/admin` endpoints — list, create or repoint a channel, append a price version, read a channel's whole history |
 | In-flight requests | Every unsettled hold, globally | Shipped: `/admin/in-flight` on `GET /api/v1/admin/holds` — the sweeper's watch table joined to the organizations |
 | Anomalies | The settled turns that did not price cleanly, summarized per channel | Shipped: `/admin/anomalies` on `GET /api/v1/admin/anomalies` — the `capped`, `estimated`, `client_cancelled` and `swept` settlement records, read back from the ledgers themselves, with a per-channel count and charged total |
@@ -236,5 +236,4 @@ The platform admin surface is the `/api/v1/admin` REST API under the operator to
 
 Everything this document describes but the code does not do yet, with the issue that tracks it:
 
-- Platform-admin adjustments and the signup bonus — #60
 - The bill page's browser-local tree head archive with automatic consistency proofs — no issue filed yet
