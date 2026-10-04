@@ -1001,3 +1001,116 @@ async fn the_signup_bonus_credits_a_new_organization_at_registration() {
         "the bonus landed"
     );
 }
+
+/// `POST /api/v1/admin/users/{userId}/password-reset` sets a new password and
+/// revokes every session the user held — the only recovery path v1 has, since
+/// no email is sent. The organization's own credential cannot reach it.
+#[tokio::test]
+async fn a_password_reset_changes_the_password_and_kills_the_sessions() {
+    let (app, pool) = app_or_skip!();
+
+    let (status, body) = call_with(
+        &app,
+        "POST",
+        "/api/v1/auth/register",
+        Some(json!({
+            "email": format!("pwreset_{}@example.com", &uuid::Uuid::new_v4().simple().to_string()[..8]),
+            "password": "correct horse battery",
+        })),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let user_id = body["data"]["user"]["id"].as_str().unwrap().to_owned();
+    let email = body["data"]["user"]["email"].as_str().unwrap().to_owned();
+
+    // One live session for the reset to kill.
+    let (status, body) = call_with(
+        &app,
+        "POST",
+        "/api/v1/auth/login",
+        Some(json!({"email": email, "password": "correct horse battery"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // An unknown user is 404 — the operator token already authorizes the call.
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!(
+            "/api/v1/admin/users/{}/password-reset",
+            uuid::Uuid::new_v4()
+        ),
+        Some(json!({"newPassword": "a fresh passphrase"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+
+    // The organization's own key — a credential with all of the organization's
+    // authority — is not the platform's.
+    let (_, key) = register(&app, "pwreset-nope").await;
+    let (status, _) = call_with(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/users/{user_id}/password-reset"),
+        Some(json!({"newPassword": "a fresh passphrase"})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // The reset: password changed, the live session revoked.
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/users/{user_id}/password-reset"),
+        Some(json!({"newPassword": "a fresh passphrase"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["data"]["sessionsRevoked"], 1,
+        "the one live session died with it"
+    );
+
+    let (status, _) = call_with(
+        &app,
+        "POST",
+        "/api/v1/auth/login",
+        Some(json!({"email": email, "password": "correct horse battery"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "the old password is dead");
+
+    let live: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM oxsum.sessions WHERE user_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(uuid::Uuid::parse_str(&user_id).unwrap())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(live, 0, "no session survived the reset");
+
+    let (status, body) = call_with(
+        &app,
+        "POST",
+        "/api/v1/auth/login",
+        Some(json!({"email": email, "password": "a fresh passphrase"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // The signup rule still gates what the endpoint accepts.
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/users/{user_id}/password-reset"),
+        Some(json!({"newPassword": "short"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
