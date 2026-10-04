@@ -825,6 +825,7 @@ fn BillsPage() -> impl IntoView {
                 " · "
                 <a href="/dashboard/bills/export.json">"Download JSON"</a>
             </p>
+            <HeadArchive/>
             <Suspense fallback=move || view! { <p class="muted">"Loading…"</p> }>
                 {move || bills.get().map(|result| match result {
                     Ok(bills) => view! { <BillTable bills=bills/> }.into_any(),
@@ -921,6 +922,173 @@ fn BillTable(#[prop(into)] bills: Vec<BillView>) -> impl IntoView {
                 </table>
             }
                 .into_any()
+        }}
+    }
+}
+
+/// What the archive check found, rendered as one line above the bills table.
+// Most variants are only constructed in the browser, where the check actually runs.
+#[cfg_attr(not(feature = "hydrate"), allow(dead_code))]
+#[derive(Clone)]
+enum ArchiveStatus {
+    /// Still running.
+    Checking,
+    /// This deployment signs no heads: no archive to keep.
+    NotConfigured,
+    /// The head or proof could not be fetched or parsed.
+    Unavailable(String),
+    /// First visit: the signed head was verified and stored.
+    Recorded(u64),
+    /// The archived head is the served head; the signature re-verified.
+    Unchanged(u64),
+    /// The log grew and the consistency proof plus signature verified.
+    Verified {
+        /// The archived head's size.
+        from: u64,
+        /// The served head's size.
+        to: u64,
+    },
+    /// The served log does not extend the archive: history may have been rewritten.
+    Failed(String),
+}
+
+/// The archive check itself, browser-only: it reads and writes `localStorage`.
+///
+/// Trust order, matching `oxsum_verify`: the served head's signature is checked before
+/// anything is stored; when the log has grown, the consistency proof must anchor the
+/// *archived* head — not just any older head — before the new one replaces it. A
+/// failure never overwrites the archive, so a rewritten history stays detectable on
+/// the next visit too.
+#[cfg(feature = "hydrate")]
+async fn check_head_archive() -> ArchiveStatus {
+    use crate::api::{get_log_consistency, get_log_head};
+    use crate::heads::{ArchiveStep, archive, decide};
+    let served = match get_log_head().await {
+        Ok(Some(head)) => head,
+        Ok(None) => return ArchiveStatus::NotConfigured,
+        Err(error) => return ArchiveStatus::Unavailable(error.to_string()),
+    };
+    let Some(head) = served.head() else {
+        return ArchiveStatus::Unavailable("the served head did not parse".to_owned());
+    };
+    if let Err(error) = oxsum_verify::verify_signed_head(
+        &served.note,
+        &head,
+        &served.origin,
+        &served.published_key(),
+    ) {
+        return ArchiveStatus::Failed(error.to_string());
+    }
+    let held = archive::read(&served.origin);
+    match decide(held, &head) {
+        ArchiveStep::Record => {
+            archive::write(&served.origin, &head);
+            ArchiveStatus::Recorded(head.size)
+        }
+        ArchiveStep::Unchanged => ArchiveStatus::Unchanged(head.size),
+        ArchiveStep::Shrank => ArchiveStatus::Failed(format!(
+            "the served log is shorter (size {}) than the archived head",
+            head.size
+        )),
+        ArchiveStep::Forked => ArchiveStatus::Failed(
+            "the served head at the archived size has a different root".to_owned(),
+        ),
+        ArchiveStep::Grow { from } => {
+            // `held` is `Some` here: `decide` only picks Grow when an archive exists.
+            let Some(held) = held else {
+                return ArchiveStatus::Unavailable(
+                    "the archived head disappeared mid-check".to_owned(),
+                );
+            };
+            let consistency = match get_log_consistency(from).await {
+                Ok(Some(c)) => c,
+                Ok(None) => return ArchiveStatus::NotConfigured,
+                Err(error) => return ArchiveStatus::Unavailable(error.to_string()),
+            };
+            let (Some(old), Some(new), Some(proof)) = (
+                consistency.old_head.head(),
+                consistency.signed.head(),
+                consistency.consistency_proof(),
+            ) else {
+                return ArchiveStatus::Unavailable(
+                    "the consistency proof did not parse".to_owned(),
+                );
+            };
+            match oxsum_verify::verify_consistency(
+                &held,
+                &old,
+                &proof,
+                &consistency.signed.note,
+                &new,
+                &consistency.signed.origin,
+                &consistency.signed.published_key(),
+            ) {
+                Ok(()) => {
+                    archive::write(&consistency.signed.origin, &new);
+                    ArchiveStatus::Verified {
+                        from: held.size,
+                        to: new.size,
+                    }
+                }
+                Err(error) => ArchiveStatus::Failed(error.to_string()),
+            }
+        }
+    }
+}
+
+/// The ledger's append-only check: one status line, in words rather than a color —
+/// the verdict is never something styling alone carries.
+#[component]
+#[cfg_attr(not(feature = "hydrate"), allow(unused_variables))]
+fn HeadArchive() -> impl IntoView {
+    let (status, set_status) = signal(ArchiveStatus::Checking);
+    #[cfg(feature = "hydrate")]
+    Effect::new(move |_| {
+        leptos::task::spawn_local(async move {
+            set_status.set(check_head_archive().await);
+        });
+    });
+    view! {
+        {move || match status.get() {
+            ArchiveStatus::Checking => view! {
+                <p class="muted">"Checking the archived ledger head…"</p>
+            }.into_any(),
+            ArchiveStatus::NotConfigured => view! {
+                <p class="muted">
+                    "This deployment does not sign ledger heads, so the append-only check is unavailable."
+                </p>
+            }.into_any(),
+            ArchiveStatus::Unavailable(why) => view! {
+                <p class="muted">
+                    "The archived-head check could not run: "{why}
+                </p>
+            }.into_any(),
+            ArchiveStatus::Recorded(size) => view! {
+                <p class="muted">
+                    {format!(
+                        "Ledger head archived at size {size} — verified against the operator's signature. Later visits prove the log only grows."
+                    )}
+                </p>
+            }.into_any(),
+            ArchiveStatus::Unchanged(size) => view! {
+                <p class="muted">
+                    {format!("Ledger head unchanged since the last visit (size {size}); signature verified.")}
+                </p>
+            }.into_any(),
+            ArchiveStatus::Verified { from, to } => view! {
+                <p class="muted">
+                    {format!(
+                        "Ledger verified append-only in this browser: entries {from} → {to}, signature and consistency proof checked."
+                    )}
+                </p>
+            }.into_any(),
+            ArchiveStatus::Failed(why) => view! {
+                <p class="error" role="alert">
+                    <strong>"Ledger archive check failed: "</strong>
+                    {why}
+                    " — the history behind these bills may have been rewritten."
+                </p>
+            }.into_any(),
         }}
     }
 }

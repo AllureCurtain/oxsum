@@ -21,6 +21,9 @@ mod chat;
 // Public: the bills page's row shape and the CSV/JSON exports built from it, which the
 // server's download routes answer with as well.
 pub mod bills;
+// Public: the tree-head archive's view types and its server-side `HeadSeed`, which the
+// server provides into the server functions' context (issue #92).
+pub mod heads;
 // The requests page's row shape and its filters, which the page and its server function
 // share (issue #55).
 mod requests;

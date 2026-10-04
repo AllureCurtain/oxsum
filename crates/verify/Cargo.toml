@@ -13,7 +13,7 @@ publish = false
 # wasm32-unknown-unknown. The verifier only needs the serde transport impls;
 # on native targets the `postgres` feature is unified back in through
 # oxsum-core, which also depends on this crate.
-doubleentry = { path = "../doubleentry", default-features = false, features = ["serde"] }
+doubleentry = { path = "../doubleentry", default-features = false, features = ["serde", "witness"] }
 serde.workspace = true
 serde_json.workspace = true
 

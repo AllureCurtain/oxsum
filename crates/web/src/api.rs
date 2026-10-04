@@ -18,7 +18,11 @@ use crate::bills::BillView;
 use crate::requests::RequestView;
 
 #[cfg(feature = "ssr")]
+use crate::heads::HeadSeed;
+#[cfg(feature = "ssr")]
 use crate::requests::RequestFilters;
+
+use crate::heads::{ConsistencyView, SignedHeadView};
 
 #[cfg(feature = "ssr")]
 use axum::http::header::COOKIE;
@@ -26,7 +30,7 @@ use axum::http::header::COOKIE;
 use axum::http::request::Parts;
 #[cfg(feature = "ssr")]
 use oxsum_core::{
-    ApiKey, Db, KeyScope, Kind, LogEntry, Member, MembershipActor, OpenHold, Role,
+    ApiKey, Db, HeadSigningKey, KeyScope, Kind, LogEntry, Member, MembershipActor, OpenHold, Role,
     SessionPrincipal, Tenants, WalletError,
 };
 
@@ -385,6 +389,72 @@ pub async fn get_entry_bundle(entry_id: String) -> Result<String, ServerFnError>
         }
     }
     serde_json::to_string(&bundle).map_err(|_| ServerFnError::new("the proof did not parse"))
+}
+
+/// The deployment's head-signing key, or `None` when it signs no heads.
+///
+/// The seed travels through context (`crates/server/src/web.rs` provides it) the same
+/// way the database and the tenants do, because `HeadSigningKey` is deliberately not
+/// `Clone` — the 32-byte seed is what is shareable, and the derive is cheap enough to
+/// run per call.
+#[cfg(feature = "ssr")]
+fn head_signing_key() -> Result<Option<HeadSigningKey>, ServerFnError> {
+    let Some(HeadSeed(Some(seed))) = use_context::<HeadSeed>() else {
+        return Ok(None);
+    };
+    oxsum_core::signing_key(seed)
+        .map(Some)
+        .map_err(|_| ServerFnError::new("the head signing key is misconfigured"))
+}
+
+/// The session's organization's current ledger head, signed by the operator (issue
+/// #92).
+///
+/// `None` — not an error — when this deployment signs no heads
+/// (`OXSUM_HEAD_SIGNING_KEY` unset), the same absence the public `/api/v1/log/head`
+/// answers 503 with. The bills page then reports the archive check as not configured
+/// rather than failed. The head belongs to the session's own tenant, so one
+/// organization can never read another's.
+#[server(prefix = "/_pages")]
+pub async fn get_log_head() -> Result<Option<SignedHeadView>, ServerFnError> {
+    let (_db, tenants, principal) = session_ctx().await?;
+    let Some(key) = head_signing_key()? else {
+        return Ok(None);
+    };
+    let wallet = tenants
+        .get(&principal.organization.tenant_id)
+        .await
+        .map_err(|_| ServerFnError::new("the wallet could not be opened"))?;
+    Ok(Some(
+        wallet
+            .signed_head(&key)
+            .await
+            .map_err(|_| ServerFnError::new("the ledger head could not be read"))?
+            .into(),
+    ))
+}
+
+/// The consistency proof the archive check asks for: from the archived head's size to
+/// the current head, with the new head signed (issue #92).
+///
+/// `None` under the same rule as [`get_log_head`]. `from` must name a real head — at
+/// least 1, at most the current size; a caller asking otherwise gets the wallet's own
+/// message back.
+#[server(prefix = "/_pages")]
+pub async fn get_log_consistency(from: u64) -> Result<Option<ConsistencyView>, ServerFnError> {
+    let (_db, tenants, principal) = session_ctx().await?;
+    let Some(key) = head_signing_key()? else {
+        return Ok(None);
+    };
+    let wallet = tenants
+        .get(&principal.organization.tenant_id)
+        .await
+        .map_err(|_| ServerFnError::new("the wallet could not be opened"))?;
+    let consistency = wallet
+        .consistency(from, &key)
+        .await
+        .map_err(|e| rule_error(e, "the consistency proof could not be built"))?;
+    Ok(Some(consistency.into()))
 }
 
 /// The requests page: the organization's newest gateway requests with the usage and the
