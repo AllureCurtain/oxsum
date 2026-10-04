@@ -202,6 +202,30 @@ pub struct RequestEntry {
     pub key_id: Option<String>,
 }
 
+/// One slice of a list that walks the log backward, newest first (issue #93).
+///
+/// The cursor is the log's own index: `before` bounds a page to entries older than it,
+/// and `next_cursor` names where the next page resumes — `None` when the read reached
+/// the log's start. New entries always land above every cursor, so a walk sees every
+/// entry exactly once, whatever was appended while it walked.
+pub struct ListPage<T, C = u64> {
+    /// The page's rows, newest first.
+    pub rows: Vec<T>,
+    /// Where the next page resumes — `None` when the list's start was reached and the
+    /// walk is done.
+    pub next_cursor: Option<C>,
+}
+
+impl<T, C> ListPage<T, C> {
+    /// The same page with each row mapped: the cursor is position, not content.
+    pub fn map<U>(self, f: impl FnMut(T) -> U) -> ListPage<U, C> {
+        ListPage {
+            rows: self.rows.into_iter().map(f).collect(),
+            next_cursor: self.next_cursor,
+        }
+    }
+}
+
 impl Wallet {
     /// Opens a tenant's ledger on the shared pool, creating the ledger on first use.
     ///
@@ -850,20 +874,26 @@ impl Wallet {
     ///
     /// Storage failures surface as [`WalletError`].
     pub async fn recent_entries(&self, limit: usize) -> Result<Vec<LogEntry>, WalletError> {
-        let size = self.store.head().await?.size;
-        let start = size.saturating_sub(limit.clamp(1, 100) as u64);
-        let after = start.checked_sub(1).map(LogIndex::new);
-        let page = self
-            .store
-            .page(Cursor {
-                after,
-                limit: limit.clamp(1, 100),
-            })
-            .await?;
-        let mut entries: Vec<LogEntry> = page
-            .records
-            .into_iter()
-            .map(|stored| LogEntry {
+        Ok(self.entries_page(None, limit).await?.rows)
+    }
+
+    /// The transaction log, one page at a time (issue #93): `before` bounds the page
+    /// to entries with a smaller log index — the ledger's own cursor — and the
+    /// answer's `next_cursor` resumes there, `None` at the log's start.
+    ///
+    /// Same rows as [`recent_entries`](Self::recent_entries), which reads the first
+    /// page.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn entries_page(
+        &self,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Result<ListPage<LogEntry>, WalletError> {
+        self.scan_back(before, limit.clamp(1, 100), 100, &mut |stored| {
+            Some(LogEntry {
                 index: stored
                     .require_index()
                     .map(LogIndex::get)
@@ -872,9 +902,8 @@ impl Wallet {
                 description: stored.entry.description().as_str().to_owned(),
                 content_hash: stored.content_hash.to_string(),
             })
-            .collect();
-        entries.reverse();
-        Ok(entries)
+        })
+        .await
     }
 
     /// The newest settled entries, newest first, at most `limit`.
@@ -900,36 +929,31 @@ impl Wallet {
     ///
     /// Storage failures surface as [`WalletError`].
     pub async fn settled_entries(&self, limit: usize) -> Result<Vec<SettledEntry>, WalletError> {
-        let wanted = limit.clamp(1, 100);
-        let mut end = self.store.head().await?.size;
-        let mut bills = Vec::new();
-        while end > 0 && bills.len() < wanted {
-            let start = end.saturating_sub(BILLS_SCAN as u64);
-            let after = start.checked_sub(1).map(LogIndex::new);
-            let page = self
-                .store
-                .page(Cursor {
-                    after,
-                    limit: (end - start) as usize,
-                })
-                .await?;
-            // The store pages in log order; the page wants newest first.
-            for stored in page.records.iter().rev() {
-                if self.is_settlement(stored) {
-                    bills.push(SettledEntry {
-                        id: stored.entry.id().to_string(),
-                        booked_on: stored.entry.booking_date(),
-                        charged_minor: self.settled_charge(stored),
-                        content_hash: stored.content_hash.to_string(),
-                    });
-                    if bills.len() == wanted {
-                        break;
-                    }
-                }
-            }
-            end = start;
-        }
-        Ok(bills)
+        Ok(self.settled_entries_page(None, limit).await?.rows)
+    }
+
+    /// The settled entries, one page at a time (issue #93): same rows as
+    /// [`settled_entries`](Self::settled_entries), which reads the first page.
+    /// `before` bounds the page to entries with a smaller log index and the answer's
+    /// `next_cursor` resumes there.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn settled_entries_page(
+        &self,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Result<ListPage<SettledEntry>, WalletError> {
+        self.scan_back(before, limit.clamp(1, 100), BILLS_SCAN, &mut |stored| {
+            self.is_settlement(stored).then(|| SettledEntry {
+                id: stored.entry.id().to_string(),
+                booked_on: stored.entry.booking_date(),
+                charged_minor: self.settled_charge(stored),
+                content_hash: stored.content_hash.to_string(),
+            })
+        })
+        .await
     }
 
     /// The organization's transactions as the bills page lists them, newest first,
@@ -954,52 +978,48 @@ impl Wallet {
         &self,
         limit: usize,
     ) -> Result<Vec<TransactionEntry>, WalletError> {
-        let wanted = limit.clamp(1, 100);
-        let mut end = self.store.head().await?.size;
-        let mut out = Vec::new();
-        while end > 0 && out.len() < wanted {
-            let start = end.saturating_sub(BILLS_SCAN as u64);
-            let after = start.checked_sub(1).map(LogIndex::new);
-            let page = self
-                .store
-                .page(Cursor {
-                    after,
-                    limit: (end - start) as usize,
-                })
-                .await?;
-            // The store pages in log order; the page wants newest first.
-            for stored in page.records.iter().rev() {
-                let Some(kind) = self.classify(stored) else {
-                    continue;
-                };
-                out.push(TransactionEntry {
-                    id: stored.entry.id().to_string(),
-                    index: stored
-                        .require_index()
-                        .map(LogIndex::get)
-                        .unwrap_or(u64::MAX),
-                    booked_on: stored.entry.booking_date(),
-                    description: stored.entry.description().as_str().to_owned(),
-                    content_hash: stored.content_hash.to_string(),
-                    amount_minor: self.settled_effect(stored),
-                    kind,
-                    key_id: stored
-                        .entry
-                        .provenance()
-                        .actor
-                        .as_ref()
-                        .map(|actor| actor.as_str().to_owned()),
-                    record: (kind == TransactionKind::Settlement)
-                        .then(|| SettlementRecord::parse(stored.entry.description().as_str()))
-                        .flatten(),
-                });
-                if out.len() == wanted {
-                    break;
-                }
-            }
-            end = start;
-        }
-        Ok(out)
+        Ok(self.transactions_page(None, limit).await?.rows)
+    }
+
+    /// The organization's transactions, one page at a time (issue #93): same rows as
+    /// [`recent_transactions`](Self::recent_transactions), which reads the first page.
+    /// `before` bounds the page to entries with a smaller log index and the answer's
+    /// `next_cursor` resumes there — the bills page's older rows and the CSV and JSON
+    /// exports, which now list *every* transaction, walk these pages.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn transactions_page(
+        &self,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Result<ListPage<TransactionEntry>, WalletError> {
+        self.scan_back(before, limit.clamp(1, 100), BILLS_SCAN, &mut |stored| {
+            let kind = self.classify(stored)?;
+            Some(TransactionEntry {
+                id: stored.entry.id().to_string(),
+                index: stored
+                    .require_index()
+                    .map(LogIndex::get)
+                    .unwrap_or(u64::MAX),
+                booked_on: stored.entry.booking_date(),
+                description: stored.entry.description().as_str().to_owned(),
+                content_hash: stored.content_hash.to_string(),
+                amount_minor: self.settled_effect(stored),
+                kind,
+                key_id: stored
+                    .entry
+                    .provenance()
+                    .actor
+                    .as_ref()
+                    .map(|actor| actor.as_str().to_owned()),
+                record: (kind == TransactionKind::Settlement)
+                    .then(|| SettlementRecord::parse(stored.entry.description().as_str()))
+                    .flatten(),
+            })
+        })
+        .await
     }
 
     /// Which of the bills page's kinds an entry is, or `None` for an entry the page does
@@ -1160,10 +1180,25 @@ impl Wallet {
     ///
     /// Storage failures surface as [`WalletError`].
     pub async fn recent_requests(&self, limit: usize) -> Result<Vec<RequestEntry>, WalletError> {
+        Ok(self.requests_page(None, limit).await?.rows)
+    }
+
+    /// The settled gateway requests, one page at a time (issue #93): same rows as
+    /// [`recent_requests`](Self::recent_requests), which reads the first page.
+    /// `before` bounds the page to entries with a smaller log index and the answer's
+    /// `next_cursor` resumes there.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn requests_page(
+        &self,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Result<ListPage<RequestEntry>, WalletError> {
         Ok(self
-            .recent_settlements(limit)
+            .settlements_page(before, limit)
             .await?
-            .into_iter()
             .map(|turn| RequestEntry {
                 booked_on: turn.booked_on,
                 request_id: turn.record.request,
@@ -1173,8 +1208,7 @@ impl Wallet {
                 output_tokens: turn.record.output_tokens,
                 charged_minor: turn.record.charged,
                 key_id: turn.key_id,
-            })
-            .collect())
+            }))
     }
 
     /// Each settled gateway turn's own [`SettlementRecord`], newest first, with its
@@ -1189,11 +1223,54 @@ impl Wallet {
     ///
     /// Storage failures surface as [`WalletError`].
     pub async fn recent_settlements(&self, limit: usize) -> Result<Vec<SettledTurn>, WalletError> {
-        let wanted = limit.clamp(1, 100);
-        let mut end = self.store.head().await?.size;
-        let mut turns = Vec::new();
-        while end > 0 && turns.len() < wanted {
-            let start = end.saturating_sub(REQUESTS_SCAN as u64);
+        Ok(self.settlements_page(None, limit).await?.rows)
+    }
+
+    /// The settled gateway turns' own records, one page at a time (issue #93): same
+    /// rows as [`recent_settlements`](Self::recent_settlements), which reads the first
+    /// page.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn settlements_page(
+        &self,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Result<ListPage<SettledTurn>, WalletError> {
+        self.scan_back(before, limit.clamp(1, 100), REQUESTS_SCAN, &mut |stored| {
+            let record = SettlementRecord::parse(stored.entry.description().as_str())?;
+            Some(SettledTurn {
+                booked_on: stored.entry.booking_date(),
+                record,
+                key_id: stored
+                    .entry
+                    .provenance()
+                    .actor
+                    .as_ref()
+                    .map(|actor| actor.as_str().to_owned()),
+            })
+        })
+        .await
+    }
+
+    /// The walk every backward list shares: one store page at a time, the store's
+    /// own log order reversed for the answer, at most `wanted` rows `keep`
+    /// recognizes. `before` bounds the walk to indices below it — `None` reads the
+    /// head; the resume point is the smallest index the walk left unvisited,
+    /// `None` when index 0 was scanned (issue #93).
+    async fn scan_back<T>(
+        &self,
+        before: Option<u64>,
+        wanted: usize,
+        window: usize,
+        keep: &mut impl FnMut(&StoredEntry<SCALE>) -> Option<T>,
+    ) -> Result<ListPage<T>, WalletError> {
+        let size = self.store.head().await?.size;
+        let mut end = before.unwrap_or(size).min(size);
+        let mut rows = Vec::new();
+        while end > 0 && rows.len() < wanted {
+            let start = end.saturating_sub(window as u64);
             let after = start.checked_sub(1).map(LogIndex::new);
             let page = self
                 .store
@@ -1202,29 +1279,25 @@ impl Wallet {
                     limit: (end - start) as usize,
                 })
                 .await?;
+            let mut visited = start;
             // The store pages in log order; the page wants newest first.
             for stored in page.records.iter().rev() {
-                let Some(record) = SettlementRecord::parse(stored.entry.description().as_str())
-                else {
-                    continue;
-                };
-                turns.push(SettledTurn {
-                    booked_on: stored.entry.booking_date(),
-                    record,
-                    key_id: stored
-                        .entry
-                        .provenance()
-                        .actor
-                        .as_ref()
-                        .map(|actor| actor.as_str().to_owned()),
-                });
-                if turns.len() == wanted {
-                    break;
+                if let Some(row) = keep(stored) {
+                    rows.push(row);
+                    if rows.len() == wanted {
+                        // Unvisited indices are now [0, stored.index): resume below
+                        // the row that filled the page, so no entry is skipped.
+                        visited = stored.require_index().map_err(invalid)?.get();
+                        break;
+                    }
                 }
             }
-            end = start;
+            end = visited;
         }
-        Ok(turns)
+        Ok(ListPage {
+            rows,
+            next_cursor: (end > 0).then_some(end),
+        })
     }
 }
 

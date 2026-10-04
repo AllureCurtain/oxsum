@@ -795,6 +795,34 @@ fn EntryTable(#[prop(into)] entries: Vec<EntryView>) -> impl IntoView {
     }
 }
 
+/// The `before` bound a list page's URL carries: the log index the page resumes
+/// below (issue #93). A missing or unparsable value reads as the first page — a
+/// hand-edited query degrades to the newest slice rather than an error.
+fn page_position(query: &leptos_router::params::ParamsMap) -> Option<u64> {
+    query
+        .get("before")
+        .and_then(|value| value.parse::<u64>().ok())
+}
+
+/// A ledger list's pager (issue #93): "older" resumes the walk where this page's
+/// `nextCursor` pointed, "newest" back at the first page. The position is the URL's
+/// own `before` parameter — a plain link, the way the filter form's `GET` is — so a
+/// browser that never hydrates turns pages the same way one that does, and a middle
+/// page is a link that survives a reload.
+#[component]
+fn Pager(older_href: Option<String>, newest_href: Option<String>) -> impl IntoView {
+    (older_href.is_some() || newest_href.is_some()).then(|| {
+        view! {
+            <p class="pager">
+                {newest_href.map(|href| {
+                    view! { <a href=href>"Newest"</a>" · " }
+                })}
+                {older_href.map(|href| view! { <a href=href>"Older"</a> })}
+            </p>
+        }
+    })
+}
+
 /// The bills page: every transaction, newest first — top-ups, adjustments and settled
 /// requests — each with what it moved, in credits, and the content hash its proof
 /// verifies against. Every row links to `/verify` with its entry named, so a bill
@@ -813,7 +841,14 @@ fn EntryTable(#[prop(into)] entries: Vec<EntryView>) -> impl IntoView {
 /// amount.
 #[component]
 fn BillsPage() -> impl IntoView {
-    let bills = Resource::new(|| (), |_| async { get_bills().await });
+    let query = use_query_map();
+    // Read once, from the URL: SSR and the browser agree on the position, and the
+    // pager's plain links re-render this component with the new query string.
+    let before = StoredValue::new(page_position(&query.get_untracked()));
+    let bills = Resource::new(
+        || (),
+        move |_| async move { get_bills(before.get_value()).await },
+    );
     view! {
         <section class="card" aria-label="Bills">
             <h1>"Bills"</h1>
@@ -828,7 +863,18 @@ fn BillsPage() -> impl IntoView {
             <HeadArchive/>
             <Suspense fallback=move || view! { <p class="muted">"Loading…"</p> }>
                 {move || bills.get().map(|result| match result {
-                    Ok(bills) => view! { <BillTable bills=bills/> }.into_any(),
+                    Ok(page) => view! {
+                        <BillTable bills=page.rows/>
+                        <Pager
+                            older_href=page.next_cursor.map(|cursor| {
+                                format!("/dashboard/bills?before={cursor}")
+                            })
+                            newest_href=before
+                                .get_value()
+                                .map(|_| "/dashboard/bills".to_owned())
+                        />
+                    }
+                        .into_any(),
                     Err(error) => view! { <p class="error" role="alert">{error.to_string()}</p> }.into_any(),
                 })}
             </Suspense>
@@ -1588,13 +1634,27 @@ fn Members(
 /// The transaction log page: the newest entries, newest first.
 #[component]
 fn LogPage() -> impl IntoView {
-    let log = Resource::new(|| (), |_| async { get_log().await });
+    let query = use_query_map();
+    let before = StoredValue::new(page_position(&query.get_untracked()));
+    let log = Resource::new(
+        || (),
+        move |_| async move { get_log(before.get_value()).await },
+    );
     view! {
         <section class="card" aria-label="Transaction log">
             <h1>"Transaction log"</h1>
             <Suspense fallback=move || view! { <p class="muted">"Loading…"</p> }>
                 {move || log.get().map(|result| match result {
-                    Ok(entries) => view! { <EntryTable entries=entries/> }.into_any(),
+                    Ok(page) => view! {
+                        <EntryTable entries=page.rows/>
+                        <Pager
+                            older_href=page.next_cursor.map(|cursor| {
+                                format!("/dashboard/log?before={cursor}")
+                            })
+                            newest_href=before.get_value().map(|_| "/dashboard/log".to_owned())
+                        />
+                    }
+                        .into_any(),
                     Err(error) => view! { <p class="error" role="alert">{error.to_string()}</p> }.into_any(),
                 })}
             </Suspense>
@@ -1624,12 +1684,14 @@ fn RequestsPage() -> impl IntoView {
         query.get().get("key").as_deref(),
         query.get().get("model").as_deref(),
     ));
+    let before = StoredValue::new(page_position(&query.get_untracked()));
     let requests = Resource::new(
         || (),
         move |_| async move {
             get_requests(
                 filters.get_value().key.clone(),
                 filters.get_value().model.clone(),
+                before.get_value(),
             )
             .await
         },
@@ -1643,11 +1705,19 @@ fn RequestsPage() -> impl IntoView {
             <RequestFilterForm filters=filters.get_value()/>
             <Suspense fallback=move || view! { <p class="muted">"Loading…"</p> }>
                 {move || requests.get().map(|result| match result {
-                    Ok(rows) => view! {
+                    Ok(page) => view! {
                         <RequestTable
-                            requests=rows
+                            requests=page.rows
                             filters=filters.get_value()
                             filtered=!filters.get_value().is_unfiltered()
+                        />
+                        <Pager
+                            older_href=page.next_cursor.map(|cursor| {
+                                filters.get_value().href_before(cursor)
+                            })
+                            newest_href=before
+                                .get_value()
+                                .map(|_| filters.get_value().href())
                         />
                     }
                         .into_any(),

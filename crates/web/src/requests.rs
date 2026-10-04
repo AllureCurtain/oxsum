@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 /// The requests page's path: the filter form's action and the base of every link here.
 pub const REQUESTS_PATH: &str = "/dashboard/requests";
 
-/// How many requests the page lists. The ledger read behind it is bounded either way.
+/// How many requests one page lists (issue #93). The pager walks the rest; the
+/// ledger read behind it is bounded either way.
 #[cfg(feature = "ssr")]
 pub const REQUESTS_LIMIT: usize = 100;
 
@@ -164,6 +165,18 @@ impl RequestFilters {
             true => REQUESTS_PATH.to_owned(),
             false => format!("{REQUESTS_PATH}?{}", query.join("&")),
         }
+    }
+
+    /// These filters plus a `before` bound, as the pager's "older" link carries them
+    /// (issue #93): the position moves with the filters kept. A filter link drops
+    /// `before` instead — a different filtered list has no page to resume — and a
+    /// resubmitted form writes `key`/`model` only, so filtering always restarts at
+    /// the newest page.
+    #[must_use]
+    pub fn href_before(&self, before: u64) -> String {
+        let href = self.href();
+        let join = if href.contains('?') { "&" } else { "?" };
+        format!("{href}{join}before={before}")
     }
 }
 
