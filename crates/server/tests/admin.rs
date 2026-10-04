@@ -476,7 +476,7 @@ async fn the_organizations_list_shows_every_organization_with_its_balance() {
     let (id, key) = register(&app, "orgview").await;
 
     // The organization tops itself up through its own credential, the way the chat
-    // page does — the admin surface has no top-up yet (#60).
+    // page does — an admin's way into another organization's money is an adjustment.
     let (status, body) = call_with(
         &app,
         "POST",
@@ -836,4 +836,168 @@ async fn closing_a_month_seals_it_everywhere() {
         .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
+}
+
+/// `POST /api/v1/admin/organizations/{id}/adjustments` books a signed amount with a
+/// required reason: a grant raises the balance, a deduction lowers it, and a
+/// deduction beyond what the wallet holds is the ledger's own no-overdraft refusal —
+/// 402, the same one a hold gets.
+#[tokio::test]
+async fn an_adjustment_grants_and_deducts_with_a_reason() {
+    let (app, _pool) = app_or_skip!();
+    let (org, key) = register(&app, "adjust").await;
+    let path = format!("/api/v1/admin/organizations/{org}/adjustments");
+
+    // Grant.
+    let (status, body) = call(
+        &app,
+        "POST",
+        &path,
+        Some(json!({
+            "amountMinor": 5_000_000,
+            "reason": "goodwill credit",
+            "idempotencyKey": "adj-grant-1",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["amountMinor"], 5_000_000);
+    assert_eq!(body["data"]["reason"], "goodwill credit");
+    assert_eq!(body["data"]["availableMinor"], 5_000_000);
+    assert_eq!(body["data"]["organizationId"].as_str(), Some(org.as_str()));
+    assert!(
+        body["data"]["entryId"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()),
+        "the booked entry's id"
+    );
+
+    // Deduct.
+    let (status, body) = call(
+        &app,
+        "POST",
+        &path,
+        Some(json!({
+            "amountMinor": -2_000_000,
+            "reason": "billing correction",
+            "idempotencyKey": "adj-deduct-1",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["availableMinor"], 3_000_000);
+
+    // A deduction deeper than the balance is refused by the wallet's limit, and the
+    // reason lands in the organization's own log — the entry the grant wrote.
+    let (status, body) = call(
+        &app,
+        "POST",
+        &path,
+        Some(json!({
+            "amountMinor": -4_000_000,
+            "reason": "too deep",
+            "idempotencyKey": "adj-deep-1",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "{body}");
+    assert_eq!(body["error"]["code"], "INSUFFICIENT_FUNDS");
+
+    // The organization's own read agrees.
+    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["availableMinor"], 3_000_000);
+}
+
+/// Zero is not an adjustment, an empty reason is not a reason, and an unknown
+/// organization is not found — the envelope codes say which.
+#[tokio::test]
+async fn an_adjustment_needs_a_reason_a_nonzero_amount_and_a_real_organization() {
+    let (app, _pool) = app_or_skip!();
+    let (org, _key) = register(&app, "adjustbad").await;
+    let path = format!("/api/v1/admin/organizations/{org}/adjustments");
+
+    for body in [
+        json!({"amountMinor": 0, "reason": "nothing", "idempotencyKey": "adj-bad-0"}),
+        json!({"amountMinor": 1_000_000, "reason": "   ", "idempotencyKey": "adj-bad-1"}),
+        json!({"amountMinor": 1_000_000, "reason": "no key"}),
+    ] {
+        let (status, body) = call(&app, "POST", &path, Some(body)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+    }
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!(
+            "/api/v1/admin/organizations/{}/adjustments",
+            uuid::Uuid::new_v4()
+        ),
+        Some(json!({"amountMinor": 1, "reason": "nobody", "idempotencyKey": "adj-bad-2"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+}
+
+/// A retried adjustment is the same entry — the idempotency key, not a new write —
+/// and only the operator token reaches the endpoint at all.
+#[tokio::test]
+async fn an_adjustment_replays_and_refuses_every_credential_but_the_operators() {
+    let (app, _pool) = app_or_skip!();
+    let (org, key) = register(&app, "adjustidem").await;
+    let path = format!("/api/v1/admin/organizations/{org}/adjustments");
+    let request = json!({
+        "amountMinor": 1_000_000,
+        "reason": "launch credit",
+        "idempotencyKey": "adj-idem-1",
+    });
+
+    let (status, first) = call(&app, "POST", &path, Some(request.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    let (status, second) = call(&app, "POST", &path, Some(request)).await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    assert_eq!(first["data"]["entryId"], second["data"]["entryId"]);
+    assert_eq!(
+        second["data"]["availableMinor"], 1_000_000,
+        "no second write"
+    );
+
+    for token in [None, Some("not-the-token"), Some(key.as_str())] {
+        let (status, _) = call_with(&app, "POST", &path, None, token).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{token:?}");
+    }
+}
+
+/// `OXSUM_SIGNUP_BONUS_MINOR` credits a new organization's wallet at registration;
+/// at zero — the default — registration writes no ledger entry, so the balance is 0.
+#[tokio::test]
+async fn the_signup_bonus_credits_a_new_organization_at_registration() {
+    let Some(u) = url() else {
+        eprintln!("DATABASE_URL not set, skipping");
+        return;
+    };
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&u)
+        .await
+        .expect("connects to PostgreSQL");
+    let db = Db::from_pool(pool);
+    db.migrate().await.expect("migrates");
+    let config = Config::new(Signup::Open, None)
+        .with_secret(secret())
+        .with_admin_token(TOKEN)
+        .with_signup_bonus(2_000_000);
+    oxsum_server::prepare(&db, &config)
+        .await
+        .expect("the deployment is prepared");
+    let app = oxsum_server::app(db, config);
+
+    let (_org, key) = register(&app, "bonus").await;
+    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["data"]["availableMinor"], 2_000_000,
+        "the bonus landed"
+    );
 }
