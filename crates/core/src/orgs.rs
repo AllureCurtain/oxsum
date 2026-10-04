@@ -204,6 +204,31 @@ impl Db {
         Ok(organizations)
     }
 
+    /// One organization by id, for the platform admin — `NOT_FOUND` whether the id
+    /// never existed or was never an organization.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::NotFound`] when no organization carries the id; storage
+    /// failures surface as [`WalletError`].
+    pub async fn organization_by_id(&self, id: Uuid) -> Result<AdminOrganization, WalletError> {
+        let row = sqlx::query(
+            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at,              count(m.user_id) AS members              FROM oxsum.organizations o LEFT JOIN oxsum.memberships m USING (organization_id)              WHERE o.organization_id = $1 GROUP BY o.organization_id",
+        )
+        .bind(id)
+        .fetch_optional(self.pool())
+        .await?
+        .ok_or_else(|| WalletError::NotFound("the organization is not known".into()))?;
+        Ok(AdminOrganization {
+            id: row.try_get("organization_id")?,
+            name: row.try_get("name")?,
+            tenant_id: row.try_get("tenant_id")?,
+            kind: Kind::parse(&row.try_get::<String, _>("kind")?)?,
+            members: row.try_get("members")?,
+            created_at: row.try_get("created_at")?,
+        })
+    }
+
     /// Every organization `user_id` belongs to, oldest membership first, with the
     /// role they hold — the list the organization switcher offers.
     ///

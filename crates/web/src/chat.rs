@@ -67,7 +67,7 @@ fn credits(minor: i64) -> String {
 /// Parses a credit amount like `10` or `10.50` into minor units, without floating
 /// point: money is integers all the way down, including on the way in.
 #[cfg_attr(not(feature = "hydrate"), allow(dead_code))]
-fn parse_credits(text: &str) -> Result<i64, ()> {
+pub(crate) fn parse_credits(text: &str) -> Result<i64, ()> {
     let text = text.trim();
     let (whole, frac) = match text.split_once('.') {
         Some((whole, frac)) => (whole, frac),

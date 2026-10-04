@@ -145,6 +145,7 @@ pub struct Config {
     head_signing_seed: Option<[u8; 32]>,
     hold_timeout: Duration,
     session_cookie_secure: bool,
+    signup_bonus_minor: i64,
 }
 
 impl Config {
@@ -158,6 +159,7 @@ impl Config {
             head_signing_seed: None,
             hold_timeout: DEFAULT_HOLD_TIMEOUT,
             session_cookie_secure: false,
+            signup_bonus_minor: 0,
         }
     }
 
@@ -180,6 +182,14 @@ impl Config {
     #[must_use]
     pub fn with_head_signing_seed(mut self, seed: [u8; 32]) -> Self {
         self.head_signing_seed = Some(seed);
+        self
+    }
+
+    /// Sets the signup bonus, in minor units. Tests use this; the server reads
+    /// `OXSUM_SIGNUP_BONUS_MINOR`.
+    #[must_use]
+    pub fn with_signup_bonus(mut self, minor: i64) -> Self {
+        self.signup_bonus_minor = minor;
         self
     }
 
@@ -217,6 +227,10 @@ impl Config {
             .map(session_cookie_secure_of)
             .transpose()?
             .unwrap_or(false);
+        let signup_bonus_minor = var("OXSUM_SIGNUP_BONUS_MINOR")
+            .map(signup_bonus_of)
+            .transpose()?
+            .unwrap_or(0);
         Ok(Self {
             signup,
             gateway: Gateway::from_env()?,
@@ -225,6 +239,7 @@ impl Config {
             head_signing_seed,
             hold_timeout,
             session_cookie_secure,
+            signup_bonus_minor,
         })
     }
 
@@ -271,6 +286,13 @@ impl Config {
     pub(crate) fn session_cookie_secure(&self) -> bool {
         self.session_cookie_secure
     }
+
+    /// The signup bonus in minor units, granted to a new organization's wallet at
+    /// registration — 0 (the default) credits nothing and leaves the ledger lazy.
+    #[must_use]
+    pub(crate) fn signup_bonus_minor(&self) -> i64 {
+        self.signup_bonus_minor
+    }
 }
 
 /// Reads `OXSUM_HEAD_SIGNING_KEY`: 32 bytes, base64 — the seed of the Ed25519 key the
@@ -309,6 +331,21 @@ fn session_cookie_secure_of(raw: String) -> Result<bool, String> {
         "false" | "0" => Ok(false),
         other => Err(format!(
             "OXSUM_SESSION_COOKIE_SECURE must be true or false, got {other:?}"
+        )),
+    }
+}
+
+/// Parses `OXSUM_SIGNUP_BONUS_MINOR`: the credits a new organization starts with, in minor
+/// units.
+///
+/// A non-negative integer, and absent or `0` grants nothing — the default keeps registration
+/// from touching the ledger at all. A negative or unparsable value refuses to start rather
+/// than quietly grant or charge the wrong thing.
+fn signup_bonus_of(raw: String) -> Result<i64, String> {
+    match raw.trim().parse::<i64>() {
+        Ok(minor) if minor >= 0 => Ok(minor),
+        _ => Err(format!(
+            "OXSUM_SIGNUP_BONUS_MINOR must be a non-negative integer of minor units, got {raw:?}"
         )),
     }
 }

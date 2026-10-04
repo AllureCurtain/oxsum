@@ -194,14 +194,40 @@ async fn register(
             "this deployment registers by invitation only".into(),
         ));
     }
-    ok(state
+    let registration = state
         .db
         .register(NewUser {
             email: r.email,
             password: r.password,
             organization_name: r.organization_name,
         })
-        .await?)
+        .await?;
+    grant_signup_bonus(&state, &registration).await?;
+    ok(registration)
+}
+
+/// The signup bonus: `OXSUM_SIGNUP_BONUS_MINOR` credits a brand-new organization's
+/// wallet, booked as an adjustment with the registration itself as its reason. Only
+/// self-registration grants one — an invitation's redeem joins an existing
+/// organization and creates nothing to endow. Idempotent under the organization's
+/// id, and a nonzero bonus is what makes registration the ledger's first use
+/// rather than the first paid request.
+async fn grant_signup_bonus(state: &AppState, registration: &Registration) -> Result<(), ApiError> {
+    let bonus = state.config.signup_bonus_minor();
+    if bonus == 0 {
+        return Ok(());
+    }
+    let organization = &registration.organization;
+    let wallet = state.tenants.get(&organization.tenant_id).await?;
+    wallet
+        .adjust(
+            &format!("signup-bonus:{}", organization.id),
+            "signup bonus",
+            bonus,
+            today(),
+        )
+        .await?;
+    Ok(())
 }
 
 /// Logs in: verifies the password, mints a session, and answers it in a cookie.

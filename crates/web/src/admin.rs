@@ -145,6 +145,7 @@ struct ChannelView {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OrganizationView {
+    id: String,
     name: String,
     kind: String,
     members: i64,
@@ -650,21 +651,27 @@ fn ChannelForm(
 pub fn AdminOrganizationsPage() -> impl IntoView {
     let token = admin_token();
     let organizations = LocalResource::new(move || async move { load_organizations(token).await });
+    let notice = RwSignal::new(Option::<(String, &'static str)>::None);
 
     view! {
         <h1>"Organizations"</h1>
         <p class="muted">
-            "Every organization the ledger holds money for, oldest first. Available is              settled minus unsettled holds; frozen is the sum of the organization's              outstanding holds. Topping up or adjusting one is planned (#60)."
+            "Every organization the ledger holds money for, oldest first. Available is              settled minus unsettled holds; frozen is the sum of the organization's              outstanding holds. An adjustment is a signed amount in credits — a minus              sign deducts — and it needs a reason, which the entry carries."
         </p>
+        {move || {
+            notice
+                .get()
+                .map(|(message, class)| view! { <p class=class role="status">{message}</p> })
+        }}
         <Suspense fallback=move || view! { <p class="muted">"Loading…"</p> }>
             {move || {
                 organizations.get().map(|result| match result {
                     Err(message) => view! { <p class="error" role="alert">{message}</p> }.into_any(),
-                    Ok(organizations) if organizations.is_empty() => view! {
+                    Ok(rows) if rows.is_empty() => view! {
                         <p class="muted">"No organizations yet."</p>
                     }
                     .into_any(),
-                    Ok(organizations) => view! {
+                    Ok(rows) => view! {
                         <table>
                             <thead>
                                 <tr>
@@ -674,16 +681,17 @@ pub fn AdminOrganizationsPage() -> impl IntoView {
                                     <th class="num">"Available"</th>
                                     <th class="num">"Frozen"</th>
                                     <th>"Created"</th>
+                                    <th>"Adjust"</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                {organizations
+                                {rows
                                     .into_iter()
                                     .map(|organization| {
                                         view! {
                                             <tr>
-                                                <td>{organization.name}</td>
-                                                <td>{organization.kind}</td>
+                                                <td>{organization.name.clone()}</td>
+                                                <td>{organization.kind.clone()}</td>
                                                 <td class="num">{organization.members}</td>
                                                 <td class="mono num">
                                                     {crate::app::credits(organization.available_minor)}
@@ -691,7 +699,14 @@ pub fn AdminOrganizationsPage() -> impl IntoView {
                                                 <td class="mono num pending">
                                                     {crate::app::credits(organization.reserved_minor)}
                                                 </td>
-                                                <td class="mono">{organization.created_at}</td>
+                                                <td class="mono">{organization.created_at.clone()}</td>
+                                                <td>
+                                                    <AdjustForm
+                                                        organization=organization
+                                                        organizations=organizations
+                                                        notice=notice
+                                                    />
+                                                </td>
                                             </tr>
                                         }
                                     })
@@ -703,6 +718,143 @@ pub fn AdminOrganizationsPage() -> impl IntoView {
                 })
             }}
         </Suspense>
+    }
+}
+
+/// A credit amount like `10` or `-2.50`: `parse_credits` handles the magnitude and a
+/// leading `-` makes it a deduction — kept out of `parse_credits` itself, because a
+/// negative top-up is not a thing the chat page should accept.
+#[cfg_attr(not(feature = "hydrate"), allow(dead_code))]
+fn parse_signed_credits(text: &str) -> Result<i64, ()> {
+    match text.trim().strip_prefix('-') {
+        Some(rest) => crate::chat::parse_credits(rest).and_then(|m| m.checked_neg().ok_or(())),
+        None => crate::chat::parse_credits(text),
+    }
+}
+
+/// One row's adjust form: a signed amount in credits and the reason the money moved.
+/// The reason is required because it becomes the entry's description — part of what
+/// a bill's proof covers.
+#[component]
+fn AdjustForm(
+    organization: OrganizationView,
+    organizations: LocalResource<Result<Vec<OrganizationView>, String>>,
+    notice: RwSignal<Option<(String, &'static str)>>,
+) -> impl IntoView {
+    let token = admin_token();
+    let (amount, set_amount) = signal(String::new());
+    let (reason, set_reason) = signal(String::new());
+    let (error, set_error) = signal(Option::<String>::None);
+    let (busy, set_busy) = signal(false);
+
+    let submit = move |ev: web_sys::SubmitEvent| {
+        ev.prevent_default();
+        #[cfg(feature = "hydrate")]
+        leptos::task::spawn_local(async move {
+            set_busy.set(true);
+            set_error.set(None);
+            notice.set(None);
+            // A leading minus deducts; parse_credits keeps money in integers.
+            let amount_minor = match parse_signed_credits(&amount.get_untracked()) {
+                Ok(minor) if minor != 0 => minor,
+                _ => {
+                    set_error.set(Some("Enter a nonzero amount like 10 or -2.50.".to_owned()));
+                    set_busy.set(false);
+                    return;
+                }
+            };
+            if reason.get_untracked().trim().is_empty() {
+                set_error.set(Some("An adjustment needs a reason.".to_owned()));
+                set_busy.set(false);
+                return;
+            }
+            #[derive(serde::Serialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Body {
+                amount_minor: i64,
+                reason: String,
+                idempotency_key: String,
+            }
+            let body = Body {
+                amount_minor,
+                reason: reason.get_untracked(),
+                // Fresh per submit: a retried *call* replays, a second click is a second
+                // adjustment.
+                idempotency_key: uuid::Uuid::new_v4().to_string(),
+            };
+            let path = format!(
+                "/api/v1/admin/organizations/{}/adjustments",
+                organization.id
+            );
+            match admin_call(
+                token,
+                browser::post(&token.0.get_untracked().unwrap_or_default(), &path, &body),
+            )
+            .await
+            {
+                Ok(answer) => {
+                    let name = organization.name.clone();
+                    let available = answer
+                        .get("availableMinor")
+                        .and_then(|v| v.as_i64())
+                        .map(crate::app::credits)
+                        .unwrap_or_default();
+                    notice.set(Some((
+                        format!("Adjusted {name}; it now holds {available} available."),
+                        "success",
+                    )));
+                    set_amount.set(String::new());
+                    set_reason.set(String::new());
+                    organizations.refetch();
+                }
+                Err(message) => set_error.set(Some(message)),
+            }
+            set_busy.set(false);
+        });
+        #[cfg(not(feature = "hydrate"))]
+        let _ = (
+            organization.id.as_str(),
+            &organizations,
+            &token,
+            notice,
+            amount,
+            reason,
+            set_amount,
+            set_reason,
+            set_error,
+            set_busy,
+        );
+    };
+
+    view! {
+        <form class="row" method="post" on:submit=submit aria-label="Adjust the balance">
+            <label>
+                "Amount"
+                <input
+                    type="text"
+                    inputmode="decimal"
+                    name="amount"
+                    placeholder="10 or -2.50"
+                    required
+                    prop:value=move || amount.get()
+                    on:input=move |ev| set_amount.set(event_target_value(&ev))
+                />
+            </label>
+            <label>
+                "Reason"
+                <input
+                    type="text"
+                    name="reason"
+                    required
+                    prop:value=move || reason.get()
+                    on:input=move |ev| set_reason.set(event_target_value(&ev))
+                />
+            </label>
+            <button type="submit" prop:disabled=move || busy.get()>
+                {move || if busy.get() { "Booking…" } else { "Apply" }}
+            </button>
+            {move || error.get().map(|message| view! { <p class="error" role="alert">{message}</p> })}
+        </form>
     }
 }
 

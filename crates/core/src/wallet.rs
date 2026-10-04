@@ -33,6 +33,10 @@ const OPENED: Date = date!(2026 - 01 - 01);
 const WALLET: &str = "Liabilities:Wallet";
 const CASH: &str = "Assets:Cash";
 const REVENUE: &str = "Income:Usage";
+/// Operator-side money that is neither cash received nor usage revenue: admin
+/// adjustments and the signup bonus draw on it (a grant debits it, a deduction
+/// credits it back). Equity, so the books keep it out of both income and assets.
+const ADJUSTMENTS: &str = "Equity:Adjustments";
 
 /// What the wallet account may do: be drawn on only up to what it holds, and never
 /// release a reservation it did not take.
@@ -53,17 +57,22 @@ const WALLET_LIMIT: BalanceLimit = BalanceLimit::FundedReservations;
 
 /// One tenant's wallet ledger.
 ///
-/// Three fixed accounts:
+/// Four fixed accounts:
 /// - wallet: the balance owed to the user, a liability. Carries `FundedReservations`:
 ///   no overdraft, and no release beyond what was reserved.
 /// - cash: money received from top-ups.
 /// - revenue: income recognized on settlement.
+/// - adjustments: operator grants and deductions — the signup bonus and platform-admin
+///   adjustments — booked against the wallet with a reason.
 pub struct Wallet {
     store: PostgresStore<SCALE>,
     registry: AccountRegistry,
     wallet: AccountId,
     cash: AccountId,
     revenue: AccountId,
+    /// Operator grants and deductions: [`Self::adjust`] posts the other side of the
+    /// wallet here.
+    adjustments: AccountId,
     policy: LedgerPolicy,
     /// The validated tenant id this ledger belongs to: the identity its signed tree heads
     /// are published under (`oxsum/ledgers/<tenant_id>`).
@@ -169,7 +178,7 @@ impl Wallet {
         // that finds some of them has to converge, not fail on the half it can see.
         let stored = store.accounts().await?;
         let mut registry = AccountRegistry::from_records(stored).map_err(invalid)?;
-        for path in [WALLET, CASH, REVENUE] {
+        for path in [WALLET, CASH, REVENUE, ADJUSTMENTS] {
             if find_account(&registry, path).is_err() {
                 registry.register_path(path, OPENED).map_err(invalid)?;
             }
@@ -200,6 +209,7 @@ impl Wallet {
             wallet,
             cash: find_account(&registry, CASH)?,
             revenue: find_account(&registry, REVENUE)?,
+            adjustments: find_account(&registry, ADJUSTMENTS)?,
             store,
             registry,
 
@@ -223,6 +233,50 @@ impl Wallet {
                 .credit(self.wallet, amt, currency()),
         )
         .await
+    }
+
+    /// Adjustment: a signed amount the operator books against the wallet, with a
+    /// `reason` that becomes the entry's description — covered by its content hash,
+    /// so the reason is part of the proof.
+    ///
+    /// A positive `minor` grants credits, a negative one deducts them. The wallet's
+    /// `FundedReservations` limit is what refuses a deduction the balance cannot
+    /// carry — [`WalletError::InsufficientFunds`], the same refusal a hold gets — so
+    /// the rule holds under concurrency rather than being a read-then-write check.
+    /// Zero is [`WalletError::InvalidInput`]: a no-op adjustment would only be a
+    /// reason-looking entry that moved nothing.
+    pub async fn adjust(
+        &self,
+        key: &str,
+        reason: &str,
+        minor: i64,
+        on: Date,
+    ) -> Result<Receipt, WalletError> {
+        if reason.trim().is_empty() {
+            return Err(WalletError::InvalidInput(
+                "an adjustment needs a reason".into(),
+            ));
+        }
+        let amt = Credits::from_minor(
+            minor
+                .checked_abs()
+                .ok_or(WalletError::InvalidInput("amount is out of range".into()))?,
+        );
+        if minor == 0 {
+            return Err(WalletError::InvalidInput("amount must not be zero".into()));
+        }
+        let draft = Entry::<Draft, SCALE>::new(entry_id_for(key), idem(key)?, on)
+            .with_description(description_of(reason)?);
+        let draft = if minor > 0 {
+            draft
+                .debit(self.adjustments, amt, currency())
+                .credit(self.wallet, amt, currency())
+        } else {
+            draft
+                .debit(self.wallet, amt, currency())
+                .credit(self.adjustments, amt, currency())
+        };
+        self.append(draft).await
     }
 
     /// Hold: reserves part of the wallet balance in the pending layer; the settled balance is untouched.

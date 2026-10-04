@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.14.0
+  version: 0.15.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -43,7 +43,10 @@ info:
     /api/v1/session/organization` switches which organization the session acts as.
     0.14.0 adds invitation links (`/api/v1/org/invitations`, `/api/v1/invitations/redeem`):
     an owner or admin mints a one-use link, and the person holding it registers into the
-    organization — the only registration `OXSUM_SIGNUP=invite` allows.
+    organization — the only registration `OXSUM_SIGNUP=invite` allows. 0.15.0 gives the platform admin
+    the write half of the organizations list: `POST
+    /api/v1/admin/organizations/{organizationId}/adjustments` books a signed amount with a
+    required reason into that organization's ledger.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie, except
     `/api/v1/auth/login`, `/api/v1/auth/logout` and `/api/v1/auth/register`, which take no
@@ -886,12 +889,8 @@ paths:
         minus unsettled holds) and `reservedMinor` (the sum of its outstanding holds). Balances are
         integer minor units, 1 credit = 1_000_000 minor, and reading one creates the organization's
         ledger if it does not exist yet, the same way the dashboard's overview does.
-        Moving another organization's money — topping it up or adjusting it — is not this
-        endpoint and is planned under issue #60. 0.10.0 added `GET /api/v1/admin/holds`: every
-    unsettled hold across all organizations, the in-flight requests the platform is holding
-    money for. 0.11.0 added `GET /api/v1/admin/anomalies`: the settled turns priced
-    `capped`, `estimated`, `client_cancelled` or `swept` — where the platform lost money
-    upstream or a turn went wrong — read back from each organization's ledger.
+        Moving an organization's money is `POST
+        /api/v1/admin/organizations/{organizationId}/adjustments`.
       security:
         - adminToken: []
       responses:
@@ -907,6 +906,47 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/AdminOrganization" }
         "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/organizations/{organizationId}/adjustments:
+    post:
+      summary: Adjust an organization's balance
+      description: |
+        Books a signed amount into the named organization's ledger, with a required
+        `reason`: a positive `amountMinor` grants credits, a negative one deducts
+        them. The entry is new history — an adjustment never modifies an existing
+        entry, so every bill's proof stays valid. A deduction that would push the
+        balance below what the wallet holds is `402 INSUFFICIENT_FUNDS`: the ledger's
+        no-overdraft rule refuses it, not the route. `402` reads as the refusal it is;
+        `400` answers a zero amount, an empty reason or a missing idempotency key;
+        `404` an organization that does not exist. The idempotency key makes a retried
+        call the same entry — the answer carries `entryId`, which `entry_id_for` derives
+        from it.
+      security:
+        - adminToken: []
+      parameters:
+        - name: organizationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdjustOrganizationRequest" }
+      responses:
+        "200":
+          description: The adjustment as booked
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/AdminAdjustment" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "402": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/admin/holds:
     get:
@@ -1328,6 +1368,36 @@ components:
       properties:
         model: { type: string }
         version: { type: integer, minimum: 1, description: the version this change appended }
+    AdjustOrganizationRequest:
+      type: object
+      required: [amountMinor, reason, idempotencyKey]
+      properties:
+        amountMinor:
+          type: integer
+          format: int64
+          description: "signed minor units: positive grants, negative deducts; never zero"
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: "why the money moved — stored as the entry's description, covered by its hash"
+        idempotencyKey:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: a retry writes no second entry; the same key replays the same adjustment
+    AdminAdjustment:
+      type: object
+      required: [entryId, organizationId, amountMinor, reason, availableMinor]
+      properties:
+        entryId: { type: string, description: "the ledger entry's id, derived from the idempotency key" }
+        organizationId: { type: string, format: uuid }
+        amountMinor: { type: integer, format: int64 }
+        reason: { type: string }
+        availableMinor:
+          type: integer
+          format: int64
+          description: the organization's available balance after the adjustment
     AdminOrganization:
       type: object
       required: [id, name, kind, members, createdAt, availableMinor, reservedMinor]
