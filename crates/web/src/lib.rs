@@ -6,6 +6,11 @@
 //! runs the server functions against `oxsum-core` directly; `hydrate` runs the same
 //! components in the browser.
 
+// `view!` composes each page into one deeply nested type, and computing the layout of
+// those types blows past rustc's default query depth (128) in the wasm release build —
+// the release image's `cargo leptos build --release` failed on exactly that.
+#![recursion_limit = "256"]
+
 // The platform-admin pages: the operator token's surface (issue #57).
 mod admin;
 mod api;
