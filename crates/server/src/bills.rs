@@ -17,6 +17,7 @@ use axum::extract::State;
 use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
+use oxsum_core::{KeyScope, Role};
 use oxsum_web::bills::{BILLS_LIMIT, BillView, csv, json};
 
 use crate::AppState;
@@ -76,11 +77,39 @@ async fn rows(state: &AppState, headers: &HeaderMap) -> Result<Vec<BillView>, Re
             tracing::error!(%error, "the wallet could not be opened");
             Refusal::internal("the wallet could not be opened")
         })?;
-    let settled = wallet.settled_entries(BILLS_LIMIT).await.map_err(|error| {
-        tracing::error!(%error, "the bills could not be read");
-        Refusal::internal("the bills could not be read")
-    })?;
-    Ok(settled.iter().map(BillView::from).collect())
+    let transactions = wallet
+        .recent_transactions(BILLS_LIMIT)
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, "the bills could not be read");
+            Refusal::internal("the bills could not be read")
+        })?;
+    // The page's own scoping, the requests page's rule: a member reads only what
+    // their own keys paid plus the key-less organization history — top-ups and
+    // adjustments — while owners and admins read everything. The export carries the
+    // page's rows, so it applies the same filter.
+    // `Principal::key_scope` covers API keys too; here the credential is always a
+    // session, so the member rule is the role's directly.
+    let scope = match principal.role {
+        Role::Owner | Role::Admin => KeyScope::All,
+        Role::Member => KeyScope::Own(principal.user.id),
+    };
+    let keys = state
+        .db
+        .list_keys(principal.organization.id, scope)
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, "the keys could not be read");
+            Refusal::internal("the keys could not be read")
+        })?;
+    Ok(transactions
+        .iter()
+        .filter(|tx| match tx.key_id.as_deref() {
+            Some(id) => keys.iter().any(|key| key.id.as_simple().to_string() == id),
+            None => true,
+        })
+        .map(BillView::from)
+        .collect())
 }
 
 /// Why a download could not be built: a status and one sentence. The `/api/v1` envelope is

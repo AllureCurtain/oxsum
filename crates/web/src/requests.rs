@@ -68,7 +68,7 @@ impl RequestView {
 /// The match is exhaustive on purpose: a new settlement kind is a compile error here
 /// rather than a word the page invents.
 #[cfg(feature = "ssr")]
-fn status(kind: oxsum_core::SettlementKind) -> String {
+pub(crate) fn status(kind: oxsum_core::SettlementKind) -> String {
     use oxsum_core::SettlementKind;
     match kind {
         SettlementKind::Usage => "usage",

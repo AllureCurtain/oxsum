@@ -21,8 +21,8 @@ use crate::admin::{
 use crate::api::{
     CreatedKeyView, DashboardData, EntryView, HoldView, InvitationView, KeyView, MemberView,
     MembersView, OrgView, TransferView, add_member, change_member_role, create_invitation,
-    create_key, create_team_org, get_bills, get_dashboard, get_keys, get_log, get_members,
-    get_requests, list_organizations, remove_member, revoke_key, switch_organization,
+    create_key, create_team_org, get_bills, get_dashboard, get_entry_bundle, get_keys, get_log,
+    get_members, get_requests, list_organizations, remove_member, revoke_key, switch_organization,
     transfer_ownership,
 };
 use crate::bills::BillView;
@@ -795,16 +795,22 @@ fn EntryTable(#[prop(into)] entries: Vec<EntryView>) -> impl IntoView {
     }
 }
 
-/// The bills page: the organization's settled entries, newest first, each with the
-/// content hash its proof verifies against — and the two exports, which carry the same
-/// rows.
+/// The bills page: every transaction, newest first — top-ups, adjustments and settled
+/// requests — each with what it moved, in credits, and the content hash its proof
+/// verifies against. Every row links to `/verify` with its entry named, so a bill
+/// verifies straight from the page (issue #90).
+///
+/// A member's table is scoped the way the requests page scopes: only what their own
+/// keys paid, plus the organization's shared history — top-ups and adjustments carry
+/// no key, so every member sees them.
 ///
 /// The exports are links rather than buttons: `GET /dashboard/bills/export.csv` answers
 /// with `Content-Disposition: attachment`, so the browser saves the file without any
 /// script of ours, and a command-line client can fetch it the same way
-/// (docs/decisions.md). The charge is the ledger's integer in both files and travels
-/// through the row type unformatted; the table renders that same integer with the
-/// dashboard's [`credits()`], so the page and the files cannot disagree about an amount.
+/// (docs/decisions.md). The amount is the ledger's signed integer in both files and
+/// travels through the row type unformatted; the table renders that same integer with
+/// the dashboard's [`credits()`], so the page and the files cannot disagree about an
+/// amount.
 #[component]
 fn BillsPage() -> impl IntoView {
     let bills = Resource::new(|| (), |_| async { get_bills().await });
@@ -812,7 +818,7 @@ fn BillsPage() -> impl IntoView {
         <section class="card" aria-label="Bills">
             <h1>"Bills"</h1>
             <p class="muted">
-                "This organization's settled entries, newest first: when each was booked, what it charged in credits, and the content hash its proof verifies against. The two downloads carry the same rows, with the charge as the ledger's integer in minor units."
+                "This organization's transactions, newest first: when each was booked, what it moved in credits, and the content hash its proof verifies against. The two downloads carry the same rows, with the amount as the ledger's signed integer in minor units."
             </p>
             <p>
                 <a href="/dashboard/bills/export.csv">"Download CSV"</a>
@@ -829,33 +835,86 @@ fn BillsPage() -> impl IntoView {
     }
 }
 
-/// The settled entries: booked on, entry id, cost in credits, content hash. The columns
-/// are the exports' fields, in the same order; the charge is the one column rendered for
-/// a reader rather than for a machine, so it goes through [`credits()`] like every other
-/// amount in the dashboard.
+/// The kind, as the column reads it.
+fn kind_label(kind: &str) -> &'static str {
+    match kind {
+        "topUp" => "Top-up",
+        "adjustment" => "Adjustment",
+        _ => "Settlement",
+    }
+}
+
+/// What the row moved, in the entry's own terms: a settled gateway turn reads as its
+/// model, token counts, freeze and settlement kind — the fields the bill's content
+/// hash covers — while a top-up or an adjustment shows the reason it was written.
+/// Entries that record no words of their own — a top-up, a settlement written through
+/// the wallet API — read as a dash rather than a blank cell.
+fn detail(bill: &BillView) -> String {
+    match &bill.request {
+        Some(request) => format!(
+            "{} · {} · {}→{} tok · froze {} · {}",
+            request.request_id,
+            request.model,
+            request.input_tokens,
+            request.output_tokens,
+            credits(request.freeze_minor),
+            request.kind,
+        ),
+        None if bill.description.is_empty() => "—".to_owned(),
+        None => bill.description.clone(),
+    }
+}
+
+/// The verify link for one row: the entry id and content hash travel as query
+/// parameters, and `/verify` fetches the proof bundle for the named entry and runs
+/// the check on load.
+fn verify_href(bill: &BillView) -> String {
+    format!(
+        "/verify?entry={}&contentHash={}",
+        bill.entry_id, bill.content_hash
+    )
+}
+
+/// The amount with its sign, so a top-up reads apart from a charge at a glance.
+fn signed_credits(minor: i64) -> String {
+    if minor >= 0 {
+        format!("+{}", credits(minor))
+    } else {
+        credits(minor)
+    }
+}
+
+/// The transactions: booked on, kind, what it was, the signed amount in credits, the
+/// content hash and the per-row verify link. The amount is the one column rendered for
+/// a reader rather than for a machine, so it goes through [`credits()`] like every
+/// other amount in the dashboard.
 #[component]
 fn BillTable(#[prop(into)] bills: Vec<BillView>) -> impl IntoView {
     view! {
         {if bills.is_empty() {
-            view! { <p class="muted">"No settled entries yet."</p> }.into_any()
+            view! { <p class="muted">"No transactions yet."</p> }.into_any()
         } else {
             view! {
                 <table>
                     <thead>
                         <tr>
                             <th scope="col">"Booked on"</th>
-                            <th scope="col">"Entry"</th>
-                            <th scope="col" class="num">"Cost (credits)"</th>
+                            <th scope="col">"Kind"</th>
+                            <th scope="col">"Detail"</th>
+                            <th scope="col" class="num">"Amount (credits)"</th>
                             <th scope="col">"Content hash"</th>
+                            <th scope="col"><span class="muted">"Verify"</span></th>
                         </tr>
                     </thead>
                     <tbody>
                         <For each=move || bills.clone() key=|bill| bill.entry_id.clone() let(bill)>
                             <tr>
                                 <td class="mono">{bill.booked_on.clone()}</td>
-                                <td class="mono">{bill.entry_id.clone()}</td>
-                                <td class="mono num">{credits(bill.charged_minor)}</td>
+                                <td>{kind_label(&bill.kind)}</td>
+                                <td>{detail(&bill)}</td>
+                                <td class="mono num">{signed_credits(bill.amount_minor)}</td>
                                 <td class="mono">{bill.content_hash.clone()}</td>
+                                <td><A href=verify_href(&bill)>"verify"</A></td>
                             </tr>
                         </For>
                     </tbody>
@@ -1578,8 +1637,10 @@ enum VerifyOutcome {
 /// the same code the server runs, compiled to WASM — so a passed check does not
 /// depend on trusting this server, and the bundle never leaves the browser.
 ///
-/// The chat page links here with both halves prefilled (`?bundle=…&contentHash=…`);
-/// the check then runs on load.
+/// The chat page links here with both halves prefilled (`?bundle=…&contentHash=…`),
+/// and the bills page with the entry named (`?entry=…&contentHash=…`) — the bundle is
+/// then fetched from the reader's own organization, which needs a session, so a
+/// logged-out visitor still pastes by hand. Either way the check runs on load.
 #[component]
 fn VerifyPage() -> impl IntoView {
     let query = use_query_map();
@@ -1589,6 +1650,26 @@ fn VerifyPage() -> impl IntoView {
     let (content_hash, set_content_hash) =
         signal(query.get().get("contentHash").unwrap_or_default());
     let (outcome, set_outcome) = signal(Option::<VerifyOutcome>::None);
+    let (load_error, set_load_error) = signal(Option::<String>::None);
+
+    // `?entry=<id>` fetches the bundle in the browser — the server function answers
+    // only for a logged-in reader of the entry's own organization. `LocalResource`
+    // never runs during SSR, so the link cannot leak an entry to a logged-out render.
+    let entry = StoredValue::new(query.get().get("entry"));
+    let fetched = LocalResource::new(move || async move {
+        match entry.get_value() {
+            Some(id) => Some(get_entry_bundle(id).await),
+            None => None,
+        }
+    });
+    Effect::new(move |_| {
+        if let Some(Some(result)) = fetched.get() {
+            match result {
+                Ok(json) => set_bundle.set(json),
+                Err(error) => set_load_error.set(Some(error.to_string())),
+            }
+        }
+    });
 
     let ready = move || !(bundle.get().trim().is_empty() || content_hash.get().trim().is_empty());
 
@@ -1657,6 +1738,11 @@ fn VerifyPage() -> impl IntoView {
                     </button>
                 </form>
                 {move || outcome.get().map(|outcome| view! { <Verdict outcome=outcome/> })}
+                {move || load_error.get().map(|error| view! {
+                    <p class="error" role="alert">
+                        "The entry's proof could not be loaded — log in to the organization it belongs to, or paste the bundle by hand. ("{error}")"
+                    </p>
+                })}
                 <p class="muted fine-print">
                     "Verification proves: this record was not altered after being written, and history was not rewritten. "
                     "It does not prove: upstream really returned that many tokens."
