@@ -481,3 +481,35 @@ async fn concurrent_first_migrations_succeed() {
         task.await.unwrap().unwrap();
     }
 }
+
+/// Two processes can open the same brand-new tenant at once — any second `AppState`
+/// has its own `Tenants`, and admin endpoints open every organization's wallet. The
+/// migrate's `CREATE SCHEMA IF NOT EXISTS` is not atomic in Postgres, so `open`
+/// pre-creates the schema and treats a duplicate as the other opener winning; this
+/// is that race, opened through separate pools so `Tenants` cannot serialize it.
+#[tokio::test]
+async fn one_tenants_first_open_converges_under_concurrency() {
+    let url = db_or_skip!();
+    for round in 0..12 {
+        let tenant = fresh("race");
+        let mut tasks = Vec::new();
+        for _ in 0..4 {
+            let url = url.clone();
+            let tenant = tenant.clone();
+            tasks.push(tokio::spawn(async move {
+                let pool = sqlx::postgres::PgPoolOptions::new()
+                    .max_connections(2)
+                    .connect(&url)
+                    .await
+                    .expect("connects");
+                Wallet::open(pool, &tenant).await
+            }));
+        }
+        for (i, task) in tasks.into_iter().enumerate() {
+            let r = task.await.unwrap();
+            if let Err(e) = r {
+                panic!("round {round} opener {i}: {e:?}");
+            }
+        }
+    }
+}
