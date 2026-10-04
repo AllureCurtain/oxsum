@@ -15,7 +15,7 @@ use axum::extract::{Path, Request, State};
 use axum::http::header::AUTHORIZATION;
 use axum::middleware::Next;
 use axum::response::Response;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Router, middleware};
 use oxsum_core::{Channel, InFlightHold, Kind, ModelPrice, Price, Seal, SettlementKind};
 use serde::{Deserialize, Serialize};
@@ -24,9 +24,9 @@ use time::OffsetDateTime;
 use time::{Date, Month};
 use uuid::Uuid;
 
-use crate::AppState;
 use crate::error::{ApiError, ApiJson};
 use crate::routes::{ApiResult, ok};
+use crate::{AppState, today};
 
 /// The `/api/v1/admin` surface. Nested by [`crate::routes`], which supplies the state.
 pub fn router(state: AppState) -> Router<AppState> {
@@ -34,6 +34,10 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/channels", get(list).post(set))
         .route("/channels/{name}/prices", get(history).post(append))
         .route("/organizations", get(organizations))
+        .route(
+            "/organizations/{organization_id}/adjustments",
+            post(adjust_organization),
+        )
         .route("/holds", get(holds))
         .route("/anomalies", get(anomalies))
         .route("/closings", get(closings).post(close_month))
@@ -164,6 +168,59 @@ async fn organizations(State(state): State<AppState>) -> ApiResult<Vec<Organizat
         });
     }
     ok(answer)
+}
+
+/// The body of `POST …/adjustments`: a signed amount, the reason it moved, and the
+/// idempotency key that makes a retry the same entry.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AdjustReq {
+    amount_minor: i64,
+    reason: String,
+    idempotency_key: String,
+}
+
+/// The adjustment as booked, as the endpoint answers it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AdjustmentRes {
+    entry_id: String,
+    organization_id: Uuid,
+    amount_minor: i64,
+    reason: String,
+    /// The organization's available balance after the write.
+    available_minor: i64,
+}
+
+/// Books a signed amount into the named organization's wallet — a grant or a
+/// deduction, never a rewrite of history. The reason is required: it is the
+/// entry's description, so it is part of what the bill's proof covers.
+///
+/// The ledger enforces the substance: zero is a validation error, and a deduction
+/// the balance cannot carry is `INSUFFICIENT_FUNDS` from the wallet's own
+/// no-overdraft rule — under concurrency too, not as a read-then-write check.
+async fn adjust_organization(
+    State(state): State<AppState>,
+    Path(organization_id): Path<Uuid>,
+    ApiJson(request): ApiJson<AdjustReq>,
+) -> ApiResult<AdjustmentRes> {
+    let organization = state.db.organization_by_id(organization_id).await?;
+    let wallet = state.tenants.get(&organization.tenant_id).await?;
+    let receipt = wallet
+        .adjust(
+            &request.idempotency_key,
+            &request.reason,
+            request.amount_minor,
+            today(),
+        )
+        .await?;
+    ok(AdjustmentRes {
+        entry_id: receipt.entry_id.to_string(),
+        organization_id,
+        amount_minor: request.amount_minor,
+        reason: request.reason,
+        available_minor: wallet.available().await?,
+    })
 }
 
 /// Every unsettled hold across all organizations, newest first: the in-flight list.
