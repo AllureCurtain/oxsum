@@ -8,15 +8,19 @@
 //! hold is gone is deleted without a ledger write, so a disagreement always resolves toward the
 //! ledger (docs/decisions.md, "a small watch table for the hold sweeper").
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use serde::Serialize;
 use sqlx::Row;
 use time::{Date, OffsetDateTime};
+use uuid::Uuid;
 
 use crate::db::Db;
 use crate::error::WalletError;
 use crate::tenants::Tenants;
+use crate::usage::{UsageRecord, UsageRow};
+use crate::wallet::{entry_id_for, settlement_key_for};
 use crate::{Settlement, SettlementKind};
 
 /// One gateway hold the sweeper is watching: everything the swept settlement's record needs, so
@@ -39,6 +43,14 @@ pub struct OpenHold {
     pub output_price: i64,
     /// What was frozen, in minor units.
     pub freeze_minor: i64,
+    /// The key that took the hold, where one was attributed — what the settled
+    /// turn's usage row records as its payer.
+    pub key_id: Option<Uuid>,
+    /// The caller's attribution on the turn, carried so a swept settlement's usage
+    /// row still says whose turn it was.
+    pub end_user: Option<String>,
+    pub service_tier: Option<String>,
+    pub tags: BTreeMap<String, String>,
 }
 
 impl Db {
@@ -54,8 +66,8 @@ impl Db {
         sqlx::query(
             "INSERT INTO oxsum.open_holds \
              (hold_key, tenant_id, request_id, model, channel, price_version, \
-              input_price, output_price, freeze_minor) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+              input_price, output_price, freeze_minor, key_id, end_user, service_tier, tags) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
         )
         .bind(&hold.hold_key)
         .bind(&hold.tenant_id)
@@ -66,6 +78,10 @@ impl Db {
         .bind(hold.input_price)
         .bind(hold.output_price)
         .bind(hold.freeze_minor)
+        .bind(hold.key_id)
+        .bind(&hold.end_user)
+        .bind(&hold.service_tier)
+        .bind(serde_json::to_value(&hold.tags).unwrap_or_default())
         .execute(self.pool())
         .await?;
         Ok(())
@@ -96,7 +112,8 @@ impl Db {
     ) -> Result<Vec<OpenHold>, WalletError> {
         let rows = sqlx::query(
             "SELECT hold_key, tenant_id, request_id, model, channel, \
-             price_version, input_price, output_price, freeze_minor \
+             price_version, input_price, output_price, freeze_minor, key_id, \
+             end_user, service_tier, tags \
              FROM oxsum.open_holds WHERE opened_at < $1 ORDER BY opened_at",
         )
         .bind(older_than)
@@ -120,7 +137,8 @@ impl Db {
     ) -> Result<Vec<OpenHold>, WalletError> {
         let rows = sqlx::query(
             "SELECT hold_key, tenant_id, request_id, model, channel, \
-             price_version, input_price, output_price, freeze_minor \
+             price_version, input_price, output_price, freeze_minor, key_id, \
+             end_user, service_tier, tags \
              FROM oxsum.open_holds WHERE tenant_id = $1 ORDER BY opened_at DESC",
         )
         .bind(tenant_id)
@@ -191,6 +209,7 @@ pub struct InFlightHold {
 
 /// Maps one `oxsum.open_holds` row to [`OpenHold`].
 fn open_hold_from_row(row: &sqlx::postgres::PgRow) -> Result<OpenHold, WalletError> {
+    let tags: serde_json::Value = row.try_get("tags")?;
     Ok(OpenHold {
         hold_key: row.try_get("hold_key")?,
         tenant_id: row.try_get("tenant_id")?,
@@ -201,6 +220,10 @@ fn open_hold_from_row(row: &sqlx::postgres::PgRow) -> Result<OpenHold, WalletErr
         input_price: row.try_get("input_price")?,
         output_price: row.try_get("output_price")?,
         freeze_minor: row.try_get("freeze_minor")?,
+        key_id: row.try_get("key_id")?,
+        end_user: row.try_get("end_user")?,
+        service_tier: row.try_get("service_tier")?,
+        tags: serde_json::from_value(tags).unwrap_or_default(),
     })
 }
 
@@ -270,16 +293,51 @@ async fn sweep_one(
         // admin page. The other two arms are the race the derived key decides: the turn's own
         // settlement landed first (`Conflict`: "hold already settled"), or the hold was never
         // taken (`HoldNotFound`) — either way there is nothing left to release.
-        Ok(_) | Err(WalletError::HoldNotFound(_)) | Err(WalletError::Conflict(_)) => {
+        Ok(_) => {
             tracing::info!(
                 request_id = %hold.request_id,
                 "swept a timed-out hold: the freeze is released and the turn is recorded as an anomaly"
             );
+            // The usage row only when this sweep's settlement landed: on a conflict the
+            // turn's own settlement wrote its record, and a hold that was never taken
+            // billed nothing and records nothing.
+            if let Err(error) = record_swept_usage(db, hold).await {
+                tracing::error!(%error, request_id = %hold.request_id,
+                    "recording the swept turn's usage row failed");
+            }
+            db.clear_open_hold(&hold.hold_key).await?;
+            Ok(())
+        }
+        Err(WalletError::HoldNotFound(_)) | Err(WalletError::Conflict(_)) => {
             db.clear_open_hold(&hold.hold_key).await?;
             Ok(())
         }
         Err(error) => Err(error),
     }
+}
+
+/// The swept turn's usage row: zero counts and zero charge, with the attribution the
+/// watch row kept, so the row says whose turn timed out.
+async fn record_swept_usage(db: &Db, hold: &OpenHold) -> Result<(), WalletError> {
+    db.record_usage(&UsageRow {
+        request_id: hold.request_id.clone(),
+        tenant_id: hold.tenant_id.clone(),
+        key_id: hold.key_id,
+        model: hold.model.clone(),
+        channel: hold.channel.clone(),
+        price_version: hold.price_version,
+        kind: SettlementKind::Swept,
+        entry_id: *entry_id_for(&settlement_key_for(&hold.hold_key)).as_uuid(),
+        usage: UsageRecord {
+            end_user: hold.end_user.clone(),
+            service_tier: hold.service_tier.clone(),
+            tags: hold.tags.clone(),
+            ..UsageRecord::default()
+        },
+        charged_minor: 0,
+        freeze_minor: hold.freeze_minor,
+    })
+    .await
 }
 
 /// The default hold timeout: 30 minutes (docs/product.md). It must exceed the longest possible

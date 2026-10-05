@@ -4,6 +4,7 @@
 //! SDK working here by changing `base_url` only. The fields it does act on are taken out and
 //! validated once, so the rest of the request path never has to pick apart JSON.
 
+use oxsum_core::{Attribution, MAX_CONTEXT_NAME, MAX_END_USER, MAX_TAG, MAX_TAGS};
 use serde_json::{Map, Value, json};
 
 use super::error::GatewayError;
@@ -23,6 +24,10 @@ pub struct ChatRequest {
     pub texts: Vec<String>,
     /// The output ceiling the caller asked for, if it asked for one.
     pub max_tokens: Option<i64>,
+    /// The caller's attribution on the turn: `user` becomes the end user, `metadata`
+    /// the tags, `service_tier` the tier slot — recorded on the usage row, never
+    /// an input to the freeze or the price.
+    pub attribution: Attribution,
 }
 
 impl ChatRequest {
@@ -54,12 +59,14 @@ impl ChatRequest {
         };
         let texts = texts_of(&body)?;
         let max_tokens = output_ceiling(&body)?;
+        let attribution = attribution_of(&body)?;
         Ok(Self {
             body,
             model,
             stream,
             texts,
             max_tokens,
+            attribution,
         })
     }
 
@@ -161,6 +168,64 @@ fn output_ceiling(body: &Map<String, Value>) -> Result<Option<i64>, GatewayError
         }
     }
     Ok(None)
+}
+
+/// The caller's attribution: `user`, `metadata` and `service_tier`, bounded the way the
+/// usage record bounds them. Writes are free within the bounds — these name the
+/// customer's own users, so there is no allowlist — and everything past a bound is a
+/// 400, because silently truncating an id would bill it under the wrong name.
+fn attribution_of(body: &Map<String, Value>) -> Result<Attribution, GatewayError> {
+    let end_user = match body.get("user") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(user)) if user.len() <= MAX_END_USER => Some(user.clone()),
+        Some(Value::String(_)) => {
+            return Err(param("user", "user is at most 128 characters"));
+        }
+        Some(_) => return Err(param("user", "user must be a string")),
+    };
+    let mut tags = std::collections::BTreeMap::new();
+    match body.get("metadata") {
+        None | Some(Value::Null) => {}
+        Some(Value::Object(metadata)) => {
+            if metadata.len() > MAX_TAGS {
+                return Err(param("metadata", "metadata carries at most 10 entries"));
+            }
+            for (key, value) in metadata {
+                if key.is_empty() || key.len() > MAX_TAG {
+                    return Err(param("metadata", "a metadata key is 1-64 characters"));
+                }
+                match value {
+                    Value::String(value) if value.len() <= MAX_TAG => {
+                        tags.insert(key.clone(), value.clone());
+                    }
+                    Value::String(_) => {
+                        return Err(param(
+                            "metadata",
+                            "a metadata value is at most 64 characters",
+                        ));
+                    }
+                    _ => return Err(param("metadata", "metadata values must be strings")),
+                }
+            }
+        }
+        Some(_) => return Err(param("metadata", "metadata must be an object")),
+    }
+    let service_tier = match body.get("service_tier") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(tier)) if tier.len() <= MAX_CONTEXT_NAME => Some(tier.clone()),
+        Some(Value::String(_)) => {
+            return Err(param(
+                "service_tier",
+                "service_tier is at most 64 characters",
+            ));
+        }
+        Some(_) => return Err(param("service_tier", "service_tier must be a string")),
+    };
+    Ok(Attribution {
+        end_user,
+        tags,
+        service_tier,
+    })
 }
 
 fn invalid(message: impl Into<String>) -> GatewayError {
@@ -323,5 +388,65 @@ mod tests {
         .unwrap();
         assert_eq!(parsed.max_tokens, None);
         assert!(!parsed.stream);
+    }
+
+    #[test]
+    fn reads_the_callers_attribution() {
+        let parsed = request(json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "user": "u_42",
+            "metadata": {"team": "search", "env": "prod"},
+            "service_tier": "priority",
+        }))
+        .unwrap();
+        assert_eq!(parsed.attribution.end_user.as_deref(), Some("u_42"));
+        assert_eq!(parsed.attribution.service_tier.as_deref(), Some("priority"));
+        assert_eq!(
+            parsed.attribution.tags.get("team").map(String::as_str),
+            Some("search")
+        );
+        // The fields are recorded, not consumed: upstream sees them unchanged.
+        let forwarded = parsed.forwarded(64);
+        assert_eq!(forwarded["user"], "u_42");
+        assert_eq!(forwarded["metadata"]["team"], "search");
+        assert_eq!(forwarded["service_tier"], "priority");
+    }
+
+    #[test]
+    fn refuses_attribution_past_its_bounds() {
+        for (field, extra) in [
+            ("user", json!({"user": "u".repeat(129)})),
+            ("user", json!({"user": 42})),
+            ("metadata", json!({"metadata": {"k": "v".repeat(65)}})),
+            ("metadata", json!({"metadata": {"k": 1}})),
+            ("metadata", json!({"metadata": "x"})),
+            ("metadata", json!({"metadata": {"": "v"}})),
+            ("service_tier", json!({"service_tier": "s".repeat(65)})),
+            ("service_tier", json!({"service_tier": true})),
+        ] {
+            let mut body = json!({
+                "model": "m",
+                "messages": [{"role": "user", "content": "hi"}],
+            });
+            body.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let error = request(body).expect_err("out of bounds");
+            let GatewayError::Invalid { param, .. } = error else {
+                panic!("expected an invalid-request error");
+            };
+            assert_eq!(param, Some(field), "{field}");
+        }
+        // Eleven tags is one too many.
+        let metadata: Map<String, Value> = (0..11).map(|i| (format!("k{i}"), json!("v"))).collect();
+        assert!(
+            request(json!({
+                "model": "m",
+                "messages": [{"role": "user", "content": "hi"}],
+                "metadata": metadata,
+            }))
+            .is_err()
+        );
     }
 }

@@ -12,6 +12,7 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 
 use crate::error::WalletError;
+use crate::usage::UsageRecord;
 
 /// Tokens a price is quoted per.
 const PER_MILLION: i64 = 1_000_000;
@@ -91,7 +92,7 @@ impl Price {
     /// # Errors
     ///
     /// Refuses usage that does not fit in 64 bits once priced.
-    pub fn cost_minor(&self, usage: Usage) -> Result<i64, WalletError> {
+    pub fn cost_minor(&self, usage: &UsageRecord) -> Result<i64, WalletError> {
         self.minor_for(usage.input_tokens, usage.output_tokens)
     }
 
@@ -125,33 +126,6 @@ pub fn input_upper_bound(texts: &[&str]) -> i64 {
 }
 
 // ── usage ────────────────────────────────────────────────────────────────────
-
-/// A token count: what upstream reported, or what a local estimate stands in for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Usage {
-    /// Prompt tokens, as upstream counted them.
-    pub input_tokens: i64,
-    /// Completion tokens, as upstream counted them.
-    pub output_tokens: i64,
-}
-
-impl Usage {
-    /// # Errors
-    ///
-    /// Refuses a negative count: upstream reporting one is upstream being wrong, and pricing it would
-    /// turn that into a refund.
-    pub fn new(input_tokens: i64, output_tokens: i64) -> Result<Self, WalletError> {
-        if input_tokens < 0 || output_tokens < 0 {
-            return Err(WalletError::InvalidInput(
-                "token counts cannot be negative".into(),
-            ));
-        }
-        Ok(Self {
-            input_tokens,
-            output_tokens,
-        })
-    }
-}
 
 /// Estimates tokens with tiktoken's `o200k_base`, for the path where upstream reported no usage.
 ///
@@ -195,6 +169,22 @@ pub enum SettlementKind {
     /// The hold timed out with no settlement (e.g. the gateway crashed). Nothing was charged:
     /// the sweeper released the whole freeze, and the record marks the anomaly for the admin page.
     Swept,
+}
+
+impl SettlementKind {
+    /// The spelling a usage row stores for the kind: the record's own serde form.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Usage => "usage",
+            Self::Estimated => "estimated",
+            Self::ClientCancelled => "client_cancelled",
+            Self::UpstreamError => "upstream_error",
+            Self::UpstreamUnreachable => "upstream_unreachable",
+            Self::Capped => "capped",
+            Self::Swept => "swept",
+        }
+    }
 }
 
 /// What a settlement entry records, serialised into its description.
@@ -452,9 +442,9 @@ mod tests {
 
     #[test]
     fn usage_is_priced_with_the_same_rounding() {
-        let usage = Usage::new(1_000_000, 500_000).unwrap();
-        assert_eq!(price().cost_minor(usage).unwrap(), 1_000_000 + 1_000_000);
-        assert!(Usage::new(-1, 0).is_err());
+        let usage = UsageRecord::tokens(1_000_000, 500_000).unwrap();
+        assert_eq!(price().cost_minor(&usage).unwrap(), 1_000_000 + 1_000_000);
+        assert!(UsageRecord::tokens(-1, 0).is_err());
         // A price high enough to overflow i64 once multiplied is refused, not wrapped.
         let absurd = Price {
             input_per_million: i64::MAX,
@@ -463,7 +453,7 @@ mod tests {
         };
         assert!(
             absurd
-                .cost_minor(Usage::new(i64::MAX, i64::MAX).unwrap())
+                .cost_minor(&UsageRecord::tokens(i64::MAX, i64::MAX).unwrap())
                 .is_err()
         );
     }

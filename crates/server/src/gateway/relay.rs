@@ -22,8 +22,8 @@ use std::sync::Arc;
 use axum::body::Bytes;
 use futures_core::Stream;
 use oxsum_core::{
-    Db, Price, Receipt, Serving, Settlement, SettlementKind, Usage, Wallet, WalletError,
-    estimate_tokens,
+    Attribution, Db, Price, Receipt, Serving, Settlement, SettlementKind, UsageRecord, UsageRow,
+    Wallet, WalletError, entry_id_for, estimate_tokens, settlement_key_for,
 };
 use serde_json::Value;
 use tokio::sync::broadcast;
@@ -44,12 +44,13 @@ const ESTIMATE_WINDOW: usize = 256 * 1024;
 const PROGRESS_EVERY_CHARS: usize = 1024;
 
 /// What a turn is charged for.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum Charge {
     /// Nothing: upstream failed before emitting anything, or could not be reached at all.
     Nothing,
-    /// Upstream's own counts.
-    Usage(Usage),
+    /// Upstream's own counts, normalized. Boxed: the record is wide and the other
+    /// variants carry nothing.
+    Usage(Box<UsageRecord>),
     /// A local estimate over the input and what was forwarded.
     Estimated,
 }
@@ -83,6 +84,10 @@ struct Plan {
     model: String,
     price: Price,
     freeze: i64,
+    /// The key that took the hold: what the usage row records as its payer.
+    key_id: uuid::Uuid,
+    /// The caller's attribution on the turn, merged into the settled usage record.
+    attribution: Attribution,
     /// The input texts, for the estimate.
     texts: Vec<String>,
     /// What upstream said and what it emitted, for the estimate.
@@ -105,7 +110,7 @@ struct Frames {
     /// The answer text forwarded so far, for the estimate, capped at [`ESTIMATE_WINDOW`].
     output: String,
     /// Upstream's report, once a chunk carried a usable one.
-    usage: Option<Usage>,
+    usage: Option<UsageRecord>,
 }
 
 impl Frames {
@@ -148,7 +153,7 @@ impl Frames {
 
 impl Turn {
     /// Starts a turn that has already been frozen, priced by the channel and version it started on.
-    // Nine arguments because a turn needs the whole settlement context; splitting the
+    // Eleven arguments because a turn needs the whole settlement context; splitting the
     // constructor would just move the list somewhere else.
     #[allow(clippy::too_many_arguments)]
     #[must_use]
@@ -162,6 +167,8 @@ impl Turn {
         texts: Vec<String>,
         tenant_id: &str,
         billing: broadcast::Sender<BillingEvent>,
+        key_id: uuid::Uuid,
+        attribution: Attribution,
     ) -> Self {
         Self {
             plan: Some(Plan {
@@ -176,6 +183,8 @@ impl Turn {
                 model: model.to_owned(),
                 price: serving.price,
                 freeze,
+                key_id,
+                attribution,
                 texts,
                 frames: Frames::default(),
                 finished: false,
@@ -187,8 +196,12 @@ impl Turn {
     /// What this turn is charged for if upstream just ended: its usage, or an estimate.
     #[must_use]
     pub fn closing(&self) -> (SettlementKind, Charge) {
-        match self.plan.as_ref().and_then(|plan| plan.frames.usage) {
-            Some(usage) => (SettlementKind::Usage, Charge::Usage(usage)),
+        match self
+            .plan
+            .as_ref()
+            .and_then(|plan| plan.frames.usage.clone())
+        {
+            Some(usage) => (SettlementKind::Usage, Charge::Usage(Box::new(usage))),
             None => (SettlementKind::Estimated, Charge::Estimated),
         }
     }
@@ -202,7 +215,7 @@ impl Turn {
 
     /// Records upstream's usage report from a body read whole. A streamed turn gets the same thing
     /// out of [`observe`](Self::observe), from the chunk that carries it.
-    pub fn note_usage(&mut self, usage: Usage) {
+    pub fn note_usage(&mut self, usage: UsageRecord) {
         if let Some(plan) = self.plan.as_mut() {
             plan.frames.usage = Some(usage);
         }
@@ -278,8 +291,9 @@ impl Drop for Turn {
         // is a client that goes away after upstream has already ended — the mainstream OpenAI SDK
         // does exactly that, closing the moment it reads the terminator — and that turn is billed as
         // the finished turn it is, with upstream's own counts when it reported them.
+        let usage = plan.frames.usage.take().map(Box::new);
         let (kind, charge) = if plan.finished {
-            match plan.frames.usage {
+            match usage {
                 Some(usage) => (SettlementKind::Usage, Charge::Usage(usage)),
                 None => (SettlementKind::Estimated, Charge::Estimated),
             }
@@ -287,7 +301,7 @@ impl Drop for Turn {
             // Upstream's counts when it already reported them, and an estimate of what was forwarded
             // otherwise: the kind says the client left, and it should still not pay for an estimate
             // when upstream had already counted the turn.
-            let charge = match plan.frames.usage {
+            let charge = match usage {
                 Some(usage) => Charge::Usage(usage),
                 None => Charge::Estimated,
             };
@@ -312,19 +326,24 @@ impl Plan {
         kind: SettlementKind,
         charge: Charge,
     ) -> Result<Receipt, WalletError> {
-        let usage = match charge {
-            Charge::Nothing => Usage::new(0, 0)?,
-            Charge::Usage(usage) => usage,
+        let mut usage = match charge {
+            Charge::Nothing => UsageRecord::tokens(0, 0)?,
+            Charge::Usage(usage) => *usage,
             Charge::Estimated => {
                 let input: Vec<&str> = self.texts.iter().map(String::as_str).collect();
                 let output = estimate_tokens(&[self.frames.output.as_str()]);
-                Usage::new(estimate_tokens(&input), output)?
+                UsageRecord::tokens(estimate_tokens(&input), output)?
             }
         };
+        // The caller's attribution rides whatever the turn was charged for: it is
+        // request-scoped, not upstream-reported.
+        usage.end_user = self.attribution.end_user.clone();
+        usage.tags = self.attribution.tags.clone();
+        usage.service_tier = self.attribution.service_tier.clone();
         // The user never pays more than the freeze: that is the gateway's promise (product.md). A
         // usage report above it is charged at the freeze and recorded as `capped`, an anomaly for
         // the admin page rather than a silent loss.
-        let cost = self.price.cost_minor(usage)?;
+        let cost = self.price.cost_minor(&usage)?;
         let (kind, charged) = if cost > self.freeze {
             (SettlementKind::Capped, self.freeze)
         } else {
@@ -349,11 +368,37 @@ impl Plan {
             .settle(&self.hold_key, &description, charged, today())
             .await;
         match &outcome {
-            // Settled, so the sweeper must not see this hold anymore. The conflict arm is the
-            // race the derived settlement key decides: the sweeper settled it first, and the
-            // ledger refused this write as "hold already settled". `HoldNotFound` is the hold
-            // being gone another way. Either way there is nothing left to watch.
-            Ok(_) | Err(WalletError::Conflict(_)) | Err(WalletError::HoldNotFound(_)) => {
+            Ok(_) => {
+                // The turn's usage row rides beside the settlement it describes: the ledger
+                // entry is the source of truth, and a failed write is drift for the
+                // reconciler to report, not a reason to retry the charge.
+                let row = UsageRow {
+                    request_id: self.request.clone(),
+                    tenant_id: self.tenant_id.clone(),
+                    key_id: Some(self.key_id),
+                    model: self.model.clone(),
+                    channel: self.channel.clone(),
+                    price_version: self.version,
+                    kind,
+                    entry_id: *entry_id_for(&settlement_key_for(&self.hold_key)).as_uuid(),
+                    usage: usage.clone(),
+                    charged_minor: charged,
+                    freeze_minor: self.freeze,
+                };
+                if let Err(error) = self.db.record_usage(&row).await {
+                    tracing::error!(%error, request = %self.request,
+                        "recording the settled turn's usage row failed");
+                }
+                if let Err(error) = self.db.clear_open_hold(&self.hold_key).await {
+                    tracing::error!(%error, request = %self.request,
+                        "clearing the settled hold's watch row failed");
+                }
+            }
+            // The conflict arm is the race the derived settlement key decides: the sweeper
+            // settled it first and wrote its own record, so this turn must not write one.
+            // `HoldNotFound` is the hold being gone another way. Either way there is nothing
+            // left to watch.
+            Err(WalletError::Conflict(_)) | Err(WalletError::HoldNotFound(_)) => {
                 if let Err(error) = self.db.clear_open_hold(&self.hold_key).await {
                     tracing::error!(%error, request = %self.request,
                         "clearing the settled hold's watch row failed");
@@ -414,15 +459,36 @@ pub fn stream(
 /// Upstream's usage report, when it sent a usable one.
 ///
 /// A chunk with `"usage": null` — every chunk but the last, on the wire — carries none, and neither
-/// does an object without a single token count in it.
-pub(crate) fn usage_of(value: &Value) -> Option<Usage> {
+/// does an object without a single token count in it. The OpenAI shape is read into the
+/// normalized record: `prompt_tokens` already includes `cached_tokens` and
+/// `completion_tokens` already includes `reasoning_tokens`, so the subsets only get
+/// clamped into their totals, never added. The usage object itself is kept verbatim as
+/// `provider_raw` for the reconciliation window — it never reaches a ledger description.
+pub(crate) fn usage_of(value: &Value) -> Option<UsageRecord> {
     let usage = value.get("usage")?;
     let input = usage.get("prompt_tokens").and_then(Value::as_i64);
     let output = usage.get("completion_tokens").and_then(Value::as_i64);
     if input.is_none() && output.is_none() {
         return None;
     }
-    Usage::new(input.unwrap_or(0), output.unwrap_or(0)).ok()
+    let nested = |object: &str, field: &str| {
+        usage
+            .get(object)
+            .and_then(|details| details.get(field))
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+    };
+    let record = UsageRecord {
+        input_tokens: input.unwrap_or(0),
+        output_tokens: output.unwrap_or(0),
+        cached_tokens: nested("prompt_tokens_details", "cached_tokens"),
+        reasoning_tokens: nested("completion_tokens_details", "reasoning_tokens"),
+        usage_details: Some(serde_json::json!({"provider_raw": usage.clone()})),
+        ..UsageRecord::default()
+    }
+    .clamped();
+    record.validate().ok()?;
+    Some(record)
 }
 
 /// The answer text in a chunk or a body: the delta of a streamed chunk, or the message of a whole
@@ -471,6 +537,39 @@ mod tests {
         let partial = usage_of(&json!({"usage": {"prompt_tokens": 3}})).expect("partial usage");
         assert_eq!(partial.input_tokens, 3);
         assert_eq!(partial.output_tokens, 0);
+    }
+
+    #[test]
+    fn usage_details_fill_their_dimensions_and_the_raw_report_is_kept() {
+        let usage = usage_of(&json!({
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 20,
+                "prompt_tokens_details": {"cached_tokens": 80},
+                "completion_tokens_details": {"reasoning_tokens": 5},
+            },
+        }))
+        .expect("a detailed report carries usage");
+        // The subsets stay subsets: prompt_tokens already includes the cached part.
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.cached_tokens, 80);
+        assert_eq!(usage.reasoning_tokens, 5);
+        assert_eq!(
+            usage.usage_details.as_ref().unwrap()["provider_raw"]["prompt_tokens"],
+            100
+        );
+        // A subset reported past its total is clamped, not rejected: the counts are
+        // still better than an estimate.
+        let clamped = usage_of(&json!({
+            "usage": {
+                "prompt_tokens": 10,
+                "prompt_tokens_details": {"cached_tokens": 40},
+            },
+        }))
+        .expect("an over-subset report still carries usage");
+        assert_eq!(clamped.cached_tokens, 10);
+        // A negative count is no usable report at all.
+        assert!(usage_of(&json!({"usage": {"prompt_tokens": -1}})).is_none());
     }
 
     #[test]
