@@ -1285,6 +1285,46 @@ mod tests {
         assert_eq!(not_billed.total_minor().unwrap(), 0);
     }
 
+    /// The fail-closed check names every metered dimension the book cannot
+    /// cover, and only those (issue #110).
+    #[test]
+    fn unpriced_dimensions_are_named_never_billed_silently() {
+        // Text usage is fully covered — including the cache and reasoning
+        // counts, which are dimensions the book knows whether or not a rate
+        // is configured for them.
+        let mut usage = UsageRecord::tokens(100, 50).unwrap();
+        usage.cached_tokens = 40;
+        usage.reasoning_tokens = 10;
+        usage.service_tier = Some("priority".into());
+        assert!(price().unpriced_dimensions(&usage).is_empty());
+
+        // A tool call, the media counts, a foreign event kind: each is named.
+        let mut usage = UsageRecord::tokens(100, 50).unwrap();
+        usage.tool_calls = 2;
+        usage.audio_input_tokens = 300;
+        usage.video_input_tokens = 7;
+        usage.event_type = Some("response.created".into());
+        assert_eq!(
+            price().unpriced_dimensions(&usage),
+            vec![
+                "toolCalls",
+                "audioInputTokens",
+                "videoInputTokens",
+                "eventType"
+            ]
+        );
+
+        // A zero count is absent usage, not an unpriced dimension — and while a
+        // dimension is flagged, the part the book covers still prices exactly.
+        let mut usage = UsageRecord::tokens(100, 50).unwrap();
+        usage.image_output_tokens = 4;
+        assert_eq!(
+            price().unpriced_dimensions(&usage),
+            vec!["imageOutputTokens"]
+        );
+        assert_eq!(itemize(&price(), &usage).total_minor().unwrap(), 100 + 100);
+    }
+
     /// The rules: a matched condition swaps the whole set, most specific wins,
     /// and the charge's lines carry the swap's prices — which is what makes the
     /// record recompute from its own fields alone.
@@ -1577,6 +1617,7 @@ mod tests {
             SettlementKind::UpstreamUnreachable,
             SettlementKind::Capped,
             SettlementKind::Swept,
+            SettlementKind::Unpriced,
         ] {
             let text = Settlement {
                 kind,

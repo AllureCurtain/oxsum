@@ -761,7 +761,7 @@ async fn the_holds_list_shows_what_the_platform_is_reserving() {
 }
 
 /// `GET /api/v1/admin/anomalies` lists the settled turns that did not price cleanly —
-/// `capped`, `estimated`, `client_cancelled`, `swept` — read back out of each
+/// `capped`, `estimated`, `client_cancelled`, `swept`, `unpriced` — read back out of each
 /// organization's own ledger, so a normal usage settlement and an upstream error do not
 /// appear, and the rows carry what an operator needs to find where money leaks
 /// upstream.
@@ -794,6 +794,7 @@ async fn the_anomalies_list_shows_the_turns_that_did_not_price_cleanly() {
         ("estimated", "anomaly-estimated"),
         ("client_cancelled", "anomaly-cancelled"),
         ("swept", "anomaly-swept"),
+        ("unpriced", "anomaly-unpriced"),
     ];
     for (kind, request) in kinds {
         let hold_key = fresh(request);
@@ -844,6 +845,7 @@ async fn the_anomalies_list_shows_the_turns_that_did_not_price_cleanly() {
         "anomaly-estimated",
         "anomaly-cancelled",
         "anomaly-swept",
+        "anomaly-unpriced",
     ] {
         let row = anomalies
             .iter()
