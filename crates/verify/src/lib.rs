@@ -13,6 +13,9 @@
 
 use doubleentry::{Balanced, Draft, Entry, InclusionProof};
 
+mod charge;
+
+pub use charge::{ChargeCheck, verify_charge};
 pub use doubleentry::{ConsistencyProof, Hash, TreeHead};
 
 /// Money precision: 6 decimal places; 1 credit = 1_000_000 minor, fine enough
