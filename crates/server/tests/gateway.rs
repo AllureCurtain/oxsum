@@ -24,7 +24,7 @@ use http_body_util::BodyExt;
 use oxsum_core::{Db, Tenants, input_upper_bound, sweep_stale_holds};
 use oxsum_server::{BillingEvent, Config, Signup};
 use serde_json::{Value, json};
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use time::OffsetDateTime;
 use tokio::sync::broadcast;
 use tower::ServiceExt;
@@ -134,6 +134,8 @@ async fn upstream(
                     "prompt_tokens": input,
                     "completion_tokens": output,
                     "total_tokens": input + output,
+                    "prompt_tokens_details": {"cached_tokens": input / 2},
+                    "completion_tokens_details": {"reasoning_tokens": output},
                 });
             }
             axum::Json(completion).into_response()
@@ -595,6 +597,78 @@ async fn a_whole_answer_is_charged_from_upstreams_usage() {
     assert_eq!(wallet.settled().await.unwrap(), 1_000_000 - 12);
     let hold = world.hold(&id).await.expect("the hold is recorded");
     assert_eq!(hold["freeze"], expected_freeze(None));
+}
+
+/// A settled turn leaves its normalized usage record: one row in `oxsum.usage_records`
+/// holding upstream's full report and the caller's attribution — the data a ledger
+/// description deliberately does not carry (issue #102).
+#[tokio::test]
+async fn a_settled_turn_leaves_its_normalized_usage_record() {
+    let world = world!(1_000_000);
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+
+    let response = chat(
+        &world.app,
+        &world.key,
+        json!({
+            "model": world.model("ok"),
+            "messages": [{"role": "user", "content": "hi"}],
+            "user": "u_42",
+            "metadata": {"team": "search"},
+            "service_tier": "priority",
+        }),
+    )
+    .await;
+    let id = request_id(&response);
+    let (status, _) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+    let record = world.settlement(&id).await.expect("the turn settled");
+
+    let row = sqlx::query(
+        "SELECT tenant_id, key_id, model, channel, kind, entry_id, input_tokens, \
+         output_tokens, cached_tokens, reasoning_tokens, service_tier, end_user, tags, \
+         usage_details, charged_minor, freeze_minor \
+         FROM oxsum.usage_records WHERE request_id = $1",
+    )
+    .bind(&id)
+    .fetch_one(&world.pool)
+    .await
+    .expect("the settled turn left its usage row");
+
+    assert_eq!(row.get::<String, _>("tenant_id"), world.tenant_id);
+    assert_eq!(row.get::<uuid::Uuid, _>("key_id").to_string(), world.key_id);
+    assert_eq!(row.get::<String, _>("model"), world.model("ok"));
+    assert_eq!(row.get::<String, _>("channel"), world.channel);
+    assert_eq!(row.get::<String, _>("kind"), "usage");
+    // The row names the settlement entry it describes: the entry id is derived from the
+    // hold's key, so it is known without asking the ledger.
+    let entry_id =
+        oxsum_core::entry_id_for(&oxsum_core::settlement_key_for(&format!("req-{id}:hold")));
+    assert_eq!(row.get::<uuid::Uuid, _>("entry_id"), *entry_id.as_uuid());
+    // Upstream's report, normalized: the subsets stay inside their totals.
+    assert_eq!(row.get::<i64, _>("input_tokens"), 10);
+    assert_eq!(row.get::<i64, _>("output_tokens"), 2);
+    assert_eq!(row.get::<i64, _>("cached_tokens"), 5);
+    assert_eq!(row.get::<i64, _>("reasoning_tokens"), 2);
+    // Upstream's usage object is kept verbatim for the reconciliation window.
+    assert_eq!(
+        row.get::<Value, _>("usage_details")["provider_raw"]["prompt_tokens"],
+        10
+    );
+    // The caller's attribution landed on the row...
+    assert_eq!(row.get::<String, _>("end_user"), "u_42");
+    assert_eq!(row.get::<String, _>("service_tier"), "priority");
+    assert_eq!(row.get::<Value, _>("tags"), json!({"team": "search"}));
+    assert_eq!(row.get::<i64, _>("charged_minor"), 12);
+    assert_eq!(row.get::<i64, _>("freeze_minor"), expected_freeze(None));
+    // ...and on nothing else: the hashed ledger description still carries none of it.
+    assert!(record.get("endUser").is_none(), "{record}");
+    assert!(record.get("tags").is_none(), "{record}");
 }
 
 /// A turn publishes its life to the billing broadcast: started when the hold is taken,

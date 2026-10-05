@@ -481,6 +481,7 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "open_holds".to_owned(),
             "organizations".to_owned(),
             "sessions".to_owned(),
+            "usage_records".to_owned(),
             "users".to_owned(),
         ]
     );

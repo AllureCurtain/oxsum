@@ -16,7 +16,7 @@ use oxsum_core::{
     hold_description, settlement_key_for, sweep_stale_holds,
 };
 use serde_json::Value;
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use time::OffsetDateTime;
 use time::macros::date;
 
@@ -93,6 +93,10 @@ fn watch(tenant: &str, n: u64, freeze: i64) -> (String, String, OpenHold) {
         input_price: 1_000_000,
         output_price: 1_000_000,
         freeze_minor: freeze,
+        key_id: None,
+        end_user: None,
+        service_tier: None,
+        tags: Default::default(),
     };
     (hold_key, request_id, hold)
 }
@@ -218,7 +222,12 @@ async fn a_stale_hold_is_swept_at_zero_and_recorded_as_an_anomaly() {
     let world = world!(1_000_000);
     let sweeper = lock_sweeper(world.db.pool()).await;
     let freeze = 400_000;
-    let (hold_key, request_id, watch) = watch(&world.tenant, 1, freeze);
+    let (hold_key, request_id, mut watch) = watch(&world.tenant, 1, freeze);
+    // The caller's attribution rides the watch row, so a swept turn's usage row still
+    // says whose turn it was.
+    watch.end_user = Some("u_7".to_owned());
+    watch.service_tier = Some("flex".to_owned());
+    watch.tags.insert("team".to_owned(), "search".to_owned());
     take_hold(&world, &hold_key, &request_id, &watch, freeze).await;
     assert_eq!(world.wallet.available().await.unwrap(), 600_000);
     age_row(&world.db, &hold_key, Duration::from_secs(3600)).await;
@@ -251,7 +260,67 @@ async fn a_stale_hold_is_swept_at_zero_and_recorded_as_an_anomaly() {
         .expect("sweeps again");
     assert_eq!(resolved, 0);
     assert!(!is_watched(&world.db, &hold_key).await);
+
+    // The swept turn still left its usage row: zero counts and zero charge, but the
+    // attribution the watch row carried (issue #102).
+    let row = sqlx::query(
+        "SELECT kind, charged_minor, freeze_minor, input_tokens, output_tokens, \
+         end_user, service_tier, tags, entry_id \
+         FROM oxsum.usage_records WHERE request_id = $1",
+    )
+    .bind(&request_id)
+    .fetch_one(world.db.pool())
+    .await
+    .expect("the swept turn left its usage row");
+    assert_eq!(row.get::<String, _>("kind"), "swept");
+    assert_eq!(row.get::<i64, _>("charged_minor"), 0);
+    assert_eq!(row.get::<i64, _>("freeze_minor"), freeze);
+    assert_eq!(row.get::<i64, _>("input_tokens"), 0);
+    assert_eq!(row.get::<i64, _>("output_tokens"), 0);
+    assert_eq!(row.get::<String, _>("end_user"), "u_7");
+    assert_eq!(row.get::<String, _>("service_tier"), "flex");
+    assert_eq!(
+        row.get::<Value, _>("tags"),
+        serde_json::json!({"team": "search"})
+    );
+    assert_eq!(
+        row.get::<uuid::Uuid, _>("entry_id"),
+        *entry_id_for(&settlement_key_for(&hold_key)).as_uuid()
+    );
     unlock_sweeper(sweeper).await;
+}
+
+/// A usage row is written `ON CONFLICT DO NOTHING` on its `request_id`: a replay of the
+/// same write is ignored, so the row is idempotent like the settlement it describes.
+#[tokio::test]
+async fn a_usage_row_replay_is_ignored() {
+    let world = world!(1);
+    let row = oxsum_core::UsageRow {
+        request_id: format!("replay-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]),
+        tenant_id: world.tenant.clone(),
+        key_id: None,
+        model: "test-model".to_owned(),
+        channel: "test-channel".to_owned(),
+        price_version: 1,
+        kind: SettlementKind::Usage,
+        entry_id: uuid::Uuid::new_v4(),
+        usage: oxsum_core::UsageRecord::tokens(10, 2).unwrap(),
+        charged_minor: 12,
+        freeze_minor: 100,
+    };
+    world.db.record_usage(&row).await.expect("writes the row");
+    world
+        .db
+        .record_usage(&row)
+        .await
+        .expect("a replay of the same write is ignored");
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM oxsum.usage_records WHERE request_id = $1")
+            .bind(&row.request_id)
+            .fetch_one(world.db.pool())
+            .await
+            .expect("counts the rows");
+    assert_eq!(count, 1);
 }
 
 #[tokio::test]
