@@ -274,14 +274,14 @@ async fn sweep_one(
     // The swept record reuses the settlement shape, with zero counts and zero charge: the
     // description is built from the row alone, so a retried sweep reproduces it exactly and
     // replays instead of conflicting.
+    let usage = UsageRecord::default();
     let description = Settlement {
         request: &hold.request_id,
         channel: &hold.channel,
         model: &hold.model,
         price_version: hold.price_version,
         kind: SettlementKind::Swept,
-        input_tokens: 0,
-        output_tokens: 0,
+        usage: &usage,
         input_price: hold.input_price,
         output_price: hold.output_price,
         charged: 0,

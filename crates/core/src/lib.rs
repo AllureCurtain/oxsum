@@ -44,7 +44,7 @@ pub use orgs::{
     AdminOrganization, Kind, Member, MembershipActor, Organization, Ownership, Role,
     UserOrganization,
 };
-pub use proof::{ProofBundle, verify_bundle};
+pub use proof::{ChargeCheck, ProofBundle, verify_bundle, verify_charge};
 pub use sessions::{
     CreatedSession, KeyPrincipal, KeyScope, Principal, SESSION_COOKIE, SESSION_LIFETIME, Session,
     SessionPrincipal,

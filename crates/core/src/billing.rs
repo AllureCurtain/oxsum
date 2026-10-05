@@ -199,6 +199,13 @@ impl SettlementKind {
 /// The channel and the version are what keep those prices checkable later: a price change appends a
 /// version rather than replacing one (docs/product.md, "Channels and prices"), so "this turn was
 /// priced by version 3" stays a statement about a row that is still there.
+/// The version the settlement description writes on the wire, and the only
+/// version [`SettlementRecord::parse`] reads. A record that names another one —
+/// older or newer — is not this build's to interpret: `oxsum_verify`'s
+/// `verify_charge` dispatches on `v` and leaves those to inclusion proof alone
+/// (docs/decisions.md, T1-2).
+const DESCRIPTION_VERSION: i64 = 2;
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settlement<'a> {
@@ -212,10 +219,12 @@ pub struct Settlement<'a> {
     pub price_version: i64,
     /// How this turn was priced.
     pub kind: SettlementKind,
-    /// Tokens billed as input.
-    pub input_tokens: i64,
-    /// Tokens billed as output.
-    pub output_tokens: i64,
+    /// What the turn used. Written into the record as [`MeteredUsage`]: the
+    /// metered dimensions only, because `end_user`, `tags` and
+    /// `usage_details.provider_raw` may carry caller or prompt data — they live
+    /// in the mutable usage row and never reach an immutable ledger description
+    /// (docs/decisions.md, data retention).
+    pub usage: &'a UsageRecord,
     /// Minor units per million input tokens at the time of the request.
     pub input_price: i64,
     /// Minor units per million output tokens at the time of the request.
@@ -226,16 +235,157 @@ pub struct Settlement<'a> {
     pub freeze: i64,
 }
 
+/// Whether a metered count is zero: zero fields are not written, so the common
+/// text-only description stays small inside the ledger's 512-character limit.
+fn is_zero(count: &i64) -> bool {
+    *count == 0
+}
+
+/// A usage record's metered dimensions, as a settlement description carries
+/// them (v2's `usage`). A projection of [`UsageRecord`] minus its attribution:
+/// `end_user`, `tags` and `usage_details` are deliberately absent — see
+/// [`Settlement::usage`]. `service_tier` and `event_type` are here, not there:
+/// prices may match on them, so a verifier recomputing the charge needs them
+/// under the hash.
+///
+/// Zero fields are not written, so a text-only turn stays compact inside the
+/// ledger's 512-character description limit; they read back as zero.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MeteredUsage {
+    /// Prompt-side tokens, *including* the cached subset.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub input_tokens: i64,
+    /// Completion-side tokens, *including* the reasoning subset.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub output_tokens: i64,
+    /// The part of `input_tokens` billed at the cache-read price when one exists.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub cached_tokens: i64,
+    /// Tokens written into the 5-minute provider cache tier.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub cache_write_5m_tokens: i64,
+    /// Tokens written into the 1-hour provider cache tier.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub cache_write_1h_tokens: i64,
+    /// The part of `output_tokens` that is model reasoning.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub reasoning_tokens: i64,
+    /// Billable tool invocations.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub tool_calls: i64,
+    /// Media tokens, priced on their own lines when the price book prices them.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub image_input_tokens: i64,
+    /// Audio input tokens.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub audio_input_tokens: i64,
+    /// Video input tokens.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub video_input_tokens: i64,
+    /// Image output tokens.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub image_output_tokens: i64,
+    /// Audio output tokens.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub audio_output_tokens: i64,
+    /// The service tier the caller asked for: a pricing slot, not attribution.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
+    /// The billable event kind (`None` for a native gateway turn).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_type: Option<String>,
+}
+
+impl From<&UsageRecord> for MeteredUsage {
+    /// The record's metered half: every priced dimension, none of its attribution.
+    fn from(usage: &UsageRecord) -> Self {
+        Self {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cached_tokens: usage.cached_tokens,
+            cache_write_5m_tokens: usage.cache_write_5m_tokens,
+            cache_write_1h_tokens: usage.cache_write_1h_tokens,
+            reasoning_tokens: usage.reasoning_tokens,
+            tool_calls: usage.tool_calls,
+            image_input_tokens: usage.image_input_tokens,
+            audio_input_tokens: usage.audio_input_tokens,
+            video_input_tokens: usage.video_input_tokens,
+            image_output_tokens: usage.image_output_tokens,
+            audio_output_tokens: usage.audio_output_tokens,
+            service_tier: usage.service_tier.clone(),
+            event_type: usage.event_type.clone(),
+        }
+    }
+}
+
+/// One priced dimension of a settlement: what was counted, and the rate it was
+/// priced at. `price_per_m` is minor units per million units; `charged` is the
+/// whole lines' summed cost ceiling-divided by a million, capped by `freeze` —
+/// the rule `oxsum_verify::verify_charge` recomputes (v2's `lines`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BillLine {
+    /// The dimension this line prices (`"input"`, `"output"`; more arrive with
+    /// the itemized price book, roadmap P1-4).
+    pub item: String,
+    /// How much of it the turn used, in the item's own units.
+    pub units: i64,
+    /// Minor units per million units.
+    pub price_per_m: i64,
+}
+
+/// A settlement's description on the wire, versioned.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SettlementV2<'a> {
+    /// The schema version — [`DESCRIPTION_VERSION`]. Spelled `v` on the wire.
+    v: i64,
+    request: &'a str,
+    channel: &'a str,
+    model: &'a str,
+    price_version: i64,
+    kind: SettlementKind,
+    usage: MeteredUsage,
+    lines: [BillLine; 2],
+    charged: i64,
+    freeze: i64,
+}
+
 impl Settlement<'_> {
-    /// The compact JSON the settlement entry's description carries.
+    /// The compact JSON the settlement entry's description carries: a
+    /// self-contained billing credential — every input the charge recomputes
+    /// from is inside the content hash (docs/decisions.md, T1-2).
     ///
     /// # Errors
     ///
     /// Refuses a description that cannot be serialised, which cannot happen for these fields; the
     /// `Result` keeps the caller honest rather than unwrapping a formality.
     pub fn description(&self) -> Result<String, WalletError> {
-        serde_json::to_string(self)
-            .map_err(|error| WalletError::InvalidInput(format!("settlement record: {error}")))
+        serde_json::to_string(&SettlementV2 {
+            v: DESCRIPTION_VERSION,
+            request: self.request,
+            channel: self.channel,
+            model: self.model,
+            price_version: self.price_version,
+            kind: self.kind,
+            usage: MeteredUsage::from(self.usage),
+            lines: [
+                BillLine {
+                    item: "input".into(),
+                    units: self.usage.input_tokens,
+                    price_per_m: self.input_price,
+                },
+                BillLine {
+                    item: "output".into(),
+                    units: self.usage.output_tokens,
+                    price_per_m: self.output_price,
+                },
+            ],
+            charged: self.charged,
+            freeze: self.freeze,
+        })
+        .map_err(|error| WalletError::InvalidInput(format!("settlement record: {error}")))
     }
 }
 
@@ -249,10 +399,10 @@ impl Settlement<'_> {
 ///
 /// A hold's own record does not parse into this type: it carries no channel, no token
 /// counts and no prices, and its `kind` (`"hold"`) is not a [`SettlementKind`]. A
-/// settlement written through the wallet API carries no description at all. Neither is a
-/// gateway request, so neither is read as one.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// settlement written through the wallet API carries no description at all, and a record
+/// naming a `v` other than this build's is left to the verifier's dispatch, not guessed
+/// at here. Neither is read as a gateway request.
+#[derive(Debug, Clone)]
 pub struct SettlementRecord {
     /// The request id from `x-oxsum-request-id`; the ledger keys are derived from it.
     pub request: String,
@@ -264,27 +414,73 @@ pub struct SettlementRecord {
     pub price_version: i64,
     /// How this turn was priced, in the record's own spelling.
     pub kind: SettlementKind,
-    /// Tokens billed as input.
+    /// Tokens billed as input — `usage.input_tokens`, kept flat for the lists.
     pub input_tokens: i64,
-    /// Tokens billed as output.
+    /// Tokens billed as output — `usage.output_tokens`.
     pub output_tokens: i64,
-    /// Minor units per million input tokens at the time of the request.
+    /// Minor units per million input tokens at the time of the request — the
+    /// `input` line's rate.
     pub input_price: i64,
-    /// Minor units per million output tokens at the time of the request.
+    /// Minor units per million output tokens at the time of the request — the
+    /// `output` line's rate.
     pub output_price: i64,
     /// What was charged, never more than `freeze`.
     pub charged: i64,
     /// What was frozen before the call.
     pub freeze: i64,
+    /// The metered usage the turn was priced on, every dimension.
+    pub usage: MeteredUsage,
+    /// The priced lines the charge is the sum of.
+    pub lines: Vec<BillLine>,
+}
+
+/// The v2 wire [`SettlementRecord::parse`] reads: [`SettlementV2`] owned.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SettlementRecordV2 {
+    v: i64,
+    request: String,
+    channel: String,
+    model: String,
+    price_version: i64,
+    kind: SettlementKind,
+    usage: MeteredUsage,
+    lines: Vec<BillLine>,
+    charged: i64,
+    freeze: i64,
 }
 
 impl SettlementRecord {
     /// The record one entry's description carries, or `None` when the description is not a
-    /// settlement's — a hold's record, an empty description, or text from a writer that is
-    /// not this one.
+    /// settlement's — a hold's record, an empty description, a version this build does not
+    /// write, or text from a writer that is not this one.
     #[must_use]
     pub fn parse(description: &str) -> Option<Self> {
-        serde_json::from_str(description).ok()
+        let wire: SettlementRecordV2 = serde_json::from_str(description).ok()?;
+        if wire.v != DESCRIPTION_VERSION {
+            return None;
+        }
+        let price_of = |item: &str| {
+            wire.lines
+                .iter()
+                .find(|line| line.item == item)
+                .map(|line| line.price_per_m)
+        };
+        Some(Self {
+            input_tokens: wire.usage.input_tokens,
+            output_tokens: wire.usage.output_tokens,
+            input_price: price_of("input")?,
+            output_price: price_of("output")?,
+            request: wire.request,
+            channel: wire.channel,
+            model: wire.model,
+            price_version: wire.price_version,
+            kind: wire.kind,
+            charged: wire.charged,
+            freeze: wire.freeze,
+            usage: wire.usage,
+            lines: wire.lines,
+        })
     }
 }
 
@@ -460,14 +656,14 @@ mod tests {
 
     #[test]
     fn the_description_carries_the_arithmetic() {
+        let usage = UsageRecord::tokens(116, 100).unwrap();
         let settlement = Settlement {
             request: "abc",
             channel: "deepseek",
             model: "deepseek-chat",
             price_version: 3,
             kind: SettlementKind::Usage,
-            input_tokens: 116,
-            output_tokens: 100,
+            usage: &usage,
             input_price: 1_000_000,
             output_price: 2_000_000,
             charged: 316,
@@ -476,11 +672,44 @@ mod tests {
         let json = settlement.description().unwrap();
         assert_eq!(
             json,
-            r#"{"request":"abc","channel":"deepseek","model":"deepseek-chat","priceVersion":3,"kind":"usage","inputTokens":116,"outputTokens":100,"inputPrice":1000000,"outputPrice":2000000,"charged":316,"freeze":400}"#
+            r#"{"v":2,"request":"abc","channel":"deepseek","model":"deepseek-chat","priceVersion":3,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100},"lines":[{"item":"input","units":116,"pricePerM":1000000},{"item":"output","units":100,"pricePerM":2000000}],"charged":316,"freeze":400}"#
         );
         // Within the ledger's limit, whatever the model is called.
         assert!(json.len() < 512);
         assert_eq!(json, settlement.description().unwrap());
+    }
+
+    /// The description is the record a proof covers: the metered dimensions
+    /// only, because attribution and the provider's raw report may carry caller
+    /// or prompt data — they belong to the mutable usage row, not an immutable
+    /// ledger entry (docs/decisions.md, data retention).
+    #[test]
+    fn the_description_drops_attribution_and_the_raw_report() {
+        let mut usage = UsageRecord::tokens(11, 7).unwrap();
+        usage.cached_tokens = 8;
+        usage.end_user = Some("u_42".into());
+        usage.service_tier = Some("priority".into());
+        usage.tags.insert("team".into(), "search".into());
+        usage.usage_details = Some(serde_json::json!({"provider_raw": {"x": 1}}));
+        let json = Settlement {
+            request: "abc",
+            channel: "c",
+            model: "m",
+            price_version: 1,
+            kind: SettlementKind::Usage,
+            usage: &usage,
+            input_price: 1,
+            output_price: 1,
+            charged: 1,
+            freeze: 1,
+        }
+        .description()
+        .unwrap();
+        assert!(json.contains("\"cachedTokens\":8"), "{json}");
+        assert!(json.contains("\"serviceTier\":\"priority\""), "{json}");
+        for dropped in ["endUser", "tags", "usageDetails", "provider_raw"] {
+            assert!(!json.contains(dropped), "{json} carries {dropped}");
+        }
     }
 
     /// The reader and the writer are one shape: what `Settlement::description` writes is
@@ -488,14 +717,14 @@ mod tests {
     /// only would silently drop requests off the requests page (issue #55).
     #[test]
     fn a_settlement_description_reads_back() {
+        let usage = UsageRecord::tokens(116, 100).unwrap();
         let settlement = Settlement {
             request: "abc",
             channel: "deepseek",
             model: "deepseek-chat",
             price_version: 3,
             kind: SettlementKind::Usage,
-            input_tokens: 116,
-            output_tokens: 100,
+            usage: &usage,
             input_price: 1_000_000,
             output_price: 2_000_000,
             charged: 316,
@@ -513,6 +742,8 @@ mod tests {
         assert_eq!(record.output_price, 2_000_000);
         assert_eq!(record.charged, 316);
         assert_eq!(record.freeze, 400);
+        assert_eq!(record.usage, MeteredUsage::from(&usage));
+        assert_eq!(record.lines.len(), 2);
 
         // Every settlement kind round-trips: the page shows the record's own word.
         for kind in [
@@ -542,8 +773,14 @@ mod tests {
         assert!(SettlementRecord::parse("not json").is_none());
         // A record missing the fields a request is billed by is not one either.
         assert!(SettlementRecord::parse(r#"{"request":"abc","model":"m"}"#).is_none());
+        // The flat record from before descriptions were versioned is not this
+        // build's to read: no `v`, no interpretation (docs/decisions.md, T1-2).
+        assert!(SettlementRecord::parse(r#"{"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","inputTokens":1,"outputTokens":1,"inputPrice":1,"outputPrice":1,"charged":1,"freeze":1}"#).is_none());
+        // Neither is one from the future, or one whose priced lines are missing.
+        assert!(SettlementRecord::parse(r#"{"v":9,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[{"item":"input","units":1,"pricePerM":1},{"item":"output","units":0,"pricePerM":1}],"charged":1,"freeze":1}"#).is_none());
+        assert!(SettlementRecord::parse(r#"{"v":2,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[],"charged":1,"freeze":1}"#).is_none());
         // An unknown settlement kind is not one this build can price.
-        assert!(SettlementRecord::parse(r#"{"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"teleported","inputTokens":1,"outputTokens":1,"inputPrice":1,"outputPrice":1,"charged":1,"freeze":1}"#).is_none());
+        assert!(SettlementRecord::parse(r#"{"v":2,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"teleported","usage":{},"lines":[{"item":"input","units":0,"pricePerM":1},{"item":"output","units":0,"pricePerM":1}],"charged":0,"freeze":1}"#).is_none());
     }
 
     #[test]
