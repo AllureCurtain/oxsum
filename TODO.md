@@ -4,7 +4,7 @@ Updated: 2026-10-05
 
 ## In progress
 
-The productization roadmap (docs/decisions.md, 2026-10-05: P1-1 through P8-4) is executing item by item, one issue and PR each. P1-1 (#102, the normalized usage record), P1-2 (#104, the protocol-keyed usage adapter) and P1-3 (#106, versioned settlement descriptions with `verify_charge`) shipped; next is P1-4, the itemized price book.
+The productization roadmap (docs/decisions.md, 2026-10-05: P1-1 through P8-4) is executing item by item, one issue and PR each. P1-1 (#102, the normalized usage record), P1-2 (#104, the protocol-keyed usage adapter), P1-3 (#106, versioned settlement descriptions with `verify_charge`) and P1-4 (#108, the itemized and conditional price book, descriptions at v3) shipped; next is P1-5, fail-closed pricing.
 
 ## Next
 
@@ -37,6 +37,8 @@ Closed. The chat page is built (issue #39): after login the user tops up, picks 
 Nothing.
 
 ## Recently completed
+
+- 2026-10-05 The itemized price book (roadmap P1-4, issue #108): `channel_prices` gained a `price` JSONB column (migration 0009, still append-only versions) carrying the whole `Price` — cache-read and both cache-write tiers, reasoning, `costPerRequest`, `mode`, `upstream` costs, and `rules` (`serviceTier`/input-window matches that swap the whole set, most-specific-wins, ambiguous same-specificity overlaps refused at write). `Price::itemize` decomposes a turn into `BillLine`s, one ceiling over the sum; the freeze prices the dearest set that could match. Settlement descriptions are `"v":3` — `matchedRule` plus `lines` spelled `[item, units, pricePerMillion]` so the credential fits the 512-character ledger limit; `verify_charge` recomputes v3 under the partition rule and v2 under the old one. Contract `openapi.yaml` 0.20.0 first; pinned by the billing unit tests, the v3 verifier tests, the admin write/read-back and ambiguity refusal, and an end-to-end rule-priced turn recomputing in the gateway suite.
 
 - 2026-10-05 Versioned settlement descriptions (roadmap P1-3, issue #106): `Settlement::description` now writes `"v":2` — a self-contained billing credential carrying `MeteredUsage` (the record's priced dimensions; `endUser`/`tags`/`provider_raw` stay out of the immutable ledger, `serviceTier`/`eventType` stay in as pricing inputs) and `lines`, the two-component price decomposed. `oxsum_verify::verify_charge` dispatches on `v` and recomputes `charged == min(ceil(Σ units·pricePerM / 1e6), freeze)` — the `/verify` page reports recompute, skip-by-age or mismatch beside the inclusion verdict. `SettlementRecord::parse` reads v2 only (no production data; the T1-2 revision declined compat parsing). Pinned by verify unit tests, the billing round-trips, and real settled/swept descriptions recomputing in the gateway and sweeper suites.
 
