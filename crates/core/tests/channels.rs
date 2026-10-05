@@ -58,9 +58,17 @@ fn key() -> SecretKey {
 
 fn price(input: i64, output: i64, max: i64) -> Price {
     Price {
-        input_per_million: input,
-        output_per_million: output,
+        input_price_per_million: input,
+        output_price_per_million: output,
         max_output_tokens: max,
+        cache_read_price_per_million: None,
+        cache_write_5m_price_per_million: None,
+        cache_write_1h_price_per_million: None,
+        reasoning_price_per_million: None,
+        cost_per_request: None,
+        upstream: None,
+        mode: Default::default(),
+        rules: Vec::new(),
     }
 }
 

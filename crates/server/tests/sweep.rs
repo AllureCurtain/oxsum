@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use oxsum_core::{
-    Db, OpenHold, Settlement, SettlementKind, Tenants, UsageRecord, Wallet, WalletError,
+    BillLine, Db, OpenHold, Settlement, SettlementKind, Tenants, UsageRecord, Wallet, WalletError,
     entry_id_for, hold_description, settlement_key_for, sweep_stale_holds,
 };
 use serde_json::Value;
@@ -207,6 +207,18 @@ async fn is_watched(db: &Db, hold_key: &str) -> bool {
 /// The turn's own settlement record, for the race: usage priced at the watched version.
 fn usage_settlement(request_id: &str, charged: i64, freeze: i64) -> String {
     let usage = UsageRecord::tokens(10, 5).expect("the test counts are valid");
+    let lines = [
+        BillLine {
+            item: "input".to_owned(),
+            units: usage.input_tokens,
+            price_per_m: 1_000_000,
+        },
+        BillLine {
+            item: "output".to_owned(),
+            units: usage.output_tokens,
+            price_per_m: 1_000_000,
+        },
+    ];
     Settlement {
         request: request_id,
         channel: "test-channel",
@@ -214,8 +226,8 @@ fn usage_settlement(request_id: &str, charged: i64, freeze: i64) -> String {
         price_version: 1,
         kind: SettlementKind::Usage,
         usage: &usage,
-        input_price: 1_000_000,
-        output_price: 1_000_000,
+        lines: &lines,
+        matched_rule: None,
         charged,
         freeze,
     }
@@ -258,8 +270,8 @@ async fn a_stale_hold_is_swept_at_zero_and_recorded_as_an_anomaly() {
     // Zero usage writes no dimensions: the sparse usage object is empty, and the
     // priced lines count zero units.
     assert_eq!(record["usage"], serde_json::json!({}));
-    assert_eq!(record["lines"][0]["units"], 0);
-    assert_eq!(record["lines"][1]["units"], 0);
+    assert_eq!(record["lines"][0][1], 0);
+    assert_eq!(record["lines"][1][1], 0);
     assert_eq!(record["freeze"], freeze);
     assert_eq!(record["request"], request_id);
     // The swept record recomputes too: zero lines, zero charge, capped by the freeze.

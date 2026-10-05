@@ -122,7 +122,7 @@ async fn world_for(url: &str) -> World {
         .await
         .expect("the channel is written");
     for (model, price) in book.models() {
-        db.append_price(&channel, model, *price)
+        db.append_price(&channel, model, price.clone())
             .await
             .expect("the price is written");
     }
