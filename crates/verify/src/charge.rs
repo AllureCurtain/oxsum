@@ -44,6 +44,7 @@ const SETTLEMENT_KINDS: &[&str] = &[
     "upstream_unreachable",
     "capped",
     "swept",
+    "unpriced",
 ];
 
 /// What recomputing a settlement description's charge concluded.
@@ -191,7 +192,7 @@ fn recompute_v3(value: &Value) -> ChargeCheck {
     // A flat fee bills a turn that ran; a failed or swept one owes nothing.
     let billable = matches!(
         value.get("kind").and_then(Value::as_str),
-        Some("usage" | "estimated" | "client_cancelled" | "capped")
+        Some("usage" | "estimated" | "client_cancelled" | "capped" | "unpriced")
     );
     let Some(lines) = value.get("lines").and_then(Value::as_array) else {
         return ChargeCheck::Mismatch;

@@ -353,6 +353,7 @@ const ANOMALOUS: &[SettlementKind] = &[
     SettlementKind::Estimated,
     SettlementKind::ClientCancelled,
     SettlementKind::Swept,
+    SettlementKind::Unpriced,
 ];
 
 /// One anomalous turn, as the anomalies endpoint answers it.

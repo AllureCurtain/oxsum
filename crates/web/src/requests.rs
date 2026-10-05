@@ -79,6 +79,7 @@ pub(crate) fn status(kind: oxsum_core::SettlementKind) -> String {
         SettlementKind::UpstreamUnreachable => "upstream_unreachable",
         SettlementKind::Capped => "capped",
         SettlementKind::Swept => "swept",
+        SettlementKind::Unpriced => "unpriced",
     }
     .to_owned()
 }

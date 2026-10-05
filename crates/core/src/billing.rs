@@ -586,6 +586,38 @@ impl Price {
             matched_rule: rule,
         })
     }
+
+    /// The metered dimensions no price set can cover, named: the counts that sit
+    /// outside both sides' totals — tool calls and the media tokens — and a
+    /// foreign event kind. A turn carrying any of them settles `unpriced`: the
+    /// part the book *can* bill is charged and the rest is the platform's
+    /// recorded loss, never zero billed nor folded into a rate the dimension
+    /// does not belong to (fail-closed, docs/decisions.md).
+    ///
+    /// `serviceTier` is not here: rules may match on it, so it is priced input,
+    /// not usage. `usage_details` is not either: it is the record's data escape
+    /// hatch, not a metered dimension — an adapter that learns to read a new
+    /// count names it a column, which is what makes it priceable or flagged.
+    #[must_use]
+    pub fn unpriced_dimensions(&self, usage: &UsageRecord) -> Vec<&'static str> {
+        let mut unpriced = Vec::new();
+        for (name, count) in [
+            ("toolCalls", usage.tool_calls),
+            ("imageInputTokens", usage.image_input_tokens),
+            ("audioInputTokens", usage.audio_input_tokens),
+            ("videoInputTokens", usage.video_input_tokens),
+            ("imageOutputTokens", usage.image_output_tokens),
+            ("audioOutputTokens", usage.audio_output_tokens),
+        ] {
+            if count > 0 {
+                unpriced.push(name);
+            }
+        }
+        if usage.event_type.is_some() {
+            unpriced.push("eventType");
+        }
+        unpriced
+    }
 }
 
 /// The input upper bound in tokens: the UTF-8 byte count of every text, plus a fixed per-message
@@ -646,6 +678,12 @@ pub enum SettlementKind {
     /// The hold timed out with no settlement (e.g. the gateway crashed). Nothing was charged:
     /// the sweeper released the whole freeze, and the record marks the anomaly for the admin page.
     Swept,
+    /// Upstream's usage named a dimension the price book cannot cover — a tool
+    /// call, a media token, a foreign event kind. The computable part was
+    /// charged, capped by the freeze; the unpriced rest is the platform's loss,
+    /// flagged for the anomalies page rather than billed at zero or at a rate
+    /// the dimension does not belong to (fail-closed, roadmap P1-5).
+    Unpriced,
 }
 
 impl SettlementKind {
@@ -660,6 +698,7 @@ impl SettlementKind {
             Self::UpstreamUnreachable => "upstream_unreachable",
             Self::Capped => "capped",
             Self::Swept => "swept",
+            Self::Unpriced => "unpriced",
         }
     }
 }
