@@ -22,8 +22,8 @@ use std::sync::Arc;
 use axum::body::Bytes;
 use futures_core::Stream;
 use oxsum_core::{
-    Attribution, Db, Price, Receipt, Serving, Settlement, SettlementKind, UsageRecord, UsageRow,
-    Wallet, WalletError, entry_id_for, estimate_tokens, settlement_key_for,
+    Attribution, Db, Price, Receipt, Serving, Settlement, SettlementKind, UsageAdapter,
+    UsageRecord, UsageRow, Wallet, WalletError, entry_id_for, estimate_tokens, settlement_key_for,
 };
 use serde_json::Value;
 use tokio::sync::broadcast;
@@ -88,6 +88,8 @@ struct Plan {
     key_id: uuid::Uuid,
     /// The caller's attribution on the turn, merged into the settled usage record.
     attribution: Attribution,
+    /// The protocol adapter that reads this channel's usage reports.
+    adapter: &'static dyn UsageAdapter,
     /// The input texts, for the estimate.
     texts: Vec<String>,
     /// What upstream said and what it emitted, for the estimate.
@@ -115,7 +117,8 @@ struct Frames {
 
 impl Frames {
     /// Reads one chunk and reports whether it contained the stream's own terminator.
-    fn observe(&mut self, chunk: &[u8]) -> bool {
+    /// `adapter` reads each frame's usage report in the channel's own protocol.
+    fn observe(&mut self, chunk: &[u8], adapter: &dyn UsageAdapter) -> bool {
         self.buffer.extend_from_slice(chunk);
         let mut terminated = false;
         // SSE is line-delimited, so only whole lines are parsed and a partial line waits.
@@ -133,7 +136,7 @@ impl Frames {
             let Ok(value) = serde_json::from_str::<Value>(payload) else {
                 continue;
             };
-            if let Some(usage) = usage_of(&value) {
+            if let Some(usage) = adapter.usage(&value) {
                 self.usage = Some(usage);
             }
             let text = completion_text(&value);
@@ -169,6 +172,7 @@ impl Turn {
         billing: broadcast::Sender<BillingEvent>,
         key_id: uuid::Uuid,
         attribution: Attribution,
+        adapter: &'static dyn UsageAdapter,
     ) -> Self {
         Self {
             plan: Some(Plan {
@@ -185,6 +189,7 @@ impl Turn {
                 freeze,
                 key_id,
                 attribution,
+                adapter,
                 texts,
                 frames: Frames::default(),
                 finished: false,
@@ -227,7 +232,7 @@ impl Turn {
         let Some(plan) = self.plan.as_mut() else {
             return false;
         };
-        let terminated = plan.frames.observe(chunk);
+        let terminated = plan.frames.observe(chunk, plan.adapter);
         // Best-effort: a dashboard that is not listening misses a progress tick, and the
         // settlement at the end still carries the final charge.
         let output_chars = plan.frames.output.len();
@@ -456,41 +461,6 @@ pub fn stream(
     }
 }
 
-/// Upstream's usage report, when it sent a usable one.
-///
-/// A chunk with `"usage": null` — every chunk but the last, on the wire — carries none, and neither
-/// does an object without a single token count in it. The OpenAI shape is read into the
-/// normalized record: `prompt_tokens` already includes `cached_tokens` and
-/// `completion_tokens` already includes `reasoning_tokens`, so the subsets only get
-/// clamped into their totals, never added. The usage object itself is kept verbatim as
-/// `provider_raw` for the reconciliation window — it never reaches a ledger description.
-pub(crate) fn usage_of(value: &Value) -> Option<UsageRecord> {
-    let usage = value.get("usage")?;
-    let input = usage.get("prompt_tokens").and_then(Value::as_i64);
-    let output = usage.get("completion_tokens").and_then(Value::as_i64);
-    if input.is_none() && output.is_none() {
-        return None;
-    }
-    let nested = |object: &str, field: &str| {
-        usage
-            .get(object)
-            .and_then(|details| details.get(field))
-            .and_then(Value::as_i64)
-            .unwrap_or(0)
-    };
-    let record = UsageRecord {
-        input_tokens: input.unwrap_or(0),
-        output_tokens: output.unwrap_or(0),
-        cached_tokens: nested("prompt_tokens_details", "cached_tokens"),
-        reasoning_tokens: nested("completion_tokens_details", "reasoning_tokens"),
-        usage_details: Some(serde_json::json!({"provider_raw": usage.clone()})),
-        ..UsageRecord::default()
-    }
-    .clamped();
-    record.validate().ok()?;
-    Some(record)
-}
-
 /// The answer text in a chunk or a body: the delta of a streamed chunk, or the message of a whole
 /// completion. Used only for the local estimate.
 pub(crate) fn completion_text(value: &Value) -> String {
@@ -522,54 +492,26 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    #[test]
-    fn usage_is_read_from_a_final_chunk_and_ignored_when_absent() {
-        assert!(usage_of(&json!({"choices": [], "usage": null})).is_none());
-        assert!(usage_of(&json!({"choices": []})).is_none());
-        assert!(usage_of(&json!({"usage": {}})).is_none());
-        let usage = usage_of(&json!({
-            "usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18},
-        }))
-        .expect("a chunk with counts carries usage");
-        assert_eq!(usage.input_tokens, 11);
-        assert_eq!(usage.output_tokens, 7);
-        // A report with only one of the two counts is still a report.
-        let partial = usage_of(&json!({"usage": {"prompt_tokens": 3}})).expect("partial usage");
-        assert_eq!(partial.input_tokens, 3);
-        assert_eq!(partial.output_tokens, 0);
+    /// Every frame these tests feed the scanner is in the one protocol this build
+    /// knows.
+    fn adapter() -> &'static dyn UsageAdapter {
+        oxsum_core::adapter_for(oxsum_core::OPENAI).expect("the OpenAI adapter")
     }
 
     #[test]
-    fn usage_details_fill_their_dimensions_and_the_raw_report_is_kept() {
-        let usage = usage_of(&json!({
-            "usage": {
-                "prompt_tokens": 100,
-                "completion_tokens": 20,
-                "prompt_tokens_details": {"cached_tokens": 80},
-                "completion_tokens_details": {"reasoning_tokens": 5},
-            },
-        }))
-        .expect("a detailed report carries usage");
-        // The subsets stay subsets: prompt_tokens already includes the cached part.
-        assert_eq!(usage.input_tokens, 100);
-        assert_eq!(usage.cached_tokens, 80);
-        assert_eq!(usage.reasoning_tokens, 5);
-        assert_eq!(
-            usage.usage_details.as_ref().unwrap()["provider_raw"]["prompt_tokens"],
-            100
+    fn usage_is_read_from_a_final_chunk_and_ignored_when_absent() {
+        let adapter = adapter();
+        let mut frames = Frames::default();
+        frames.observe(b"data: {\"choices\": [], \"usage\": null}\n\n", adapter);
+        frames.observe(b"data: {\"usage\": {}}\n\n", adapter);
+        assert!(frames.usage.is_none());
+        frames.observe(
+            b"data: {\"usage\": {\"prompt_tokens\": 11, \"completion_tokens\": 7}}\n\n",
+            adapter,
         );
-        // A subset reported past its total is clamped, not rejected: the counts are
-        // still better than an estimate.
-        let clamped = usage_of(&json!({
-            "usage": {
-                "prompt_tokens": 10,
-                "prompt_tokens_details": {"cached_tokens": 40},
-            },
-        }))
-        .expect("an over-subset report still carries usage");
-        assert_eq!(clamped.cached_tokens, 10);
-        // A negative count is no usable report at all.
-        assert!(usage_of(&json!({"usage": {"prompt_tokens": -1}})).is_none());
+        let usage = frames.usage.expect("a chunk with counts carries usage");
+        assert_eq!(usage.input_tokens, 11);
+        assert_eq!(usage.output_tokens, 7);
     }
 
     #[test]
@@ -594,10 +536,11 @@ mod tests {
     fn frames_split_across_chunks_are_reassembled() {
         let mut frames = Frames::default();
         // One frame, then the terminator itself cut in two.
-        assert!(
-            !frames.observe(b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DO")
-        );
-        assert!(frames.observe(b"NE]\n\n"));
+        assert!(!frames.observe(
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DO",
+            adapter()
+        ));
+        assert!(frames.observe(b"NE]\n\n", adapter()));
         assert_eq!(frames.output, "hi");
         assert!(frames.usage.is_none());
     }
@@ -605,9 +548,12 @@ mod tests {
     #[test]
     fn a_usage_frame_is_kept_and_garbage_is_ignored() {
         let mut frames = Frames::default();
-        frames.observe(b": keep-alive\n\ndata: not json\n\n");
+        frames.observe(b": keep-alive\n\ndata: not json\n\n", adapter());
         assert!(frames.usage.is_none());
-        frames.observe(b"data: {\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3}}\n\n");
+        frames.observe(
+            b"data: {\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3}}\n\n",
+            adapter(),
+        );
         let usage = frames.usage.expect("the usage frame was kept");
         assert_eq!(usage.input_tokens, 2);
         assert_eq!(usage.output_tokens, 3);

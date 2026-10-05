@@ -53,6 +53,9 @@ struct ChannelReq {
     base_url: String,
     /// The upstream credential. Stored sealed; only its last four characters are ever read back.
     api_key: String,
+    /// The upstream protocol the channel speaks; defaults to `openai`, the only
+    /// protocol this build knows.
+    protocol: Option<String>,
 }
 
 /// A price to append for one of a channel's models.
@@ -94,7 +97,13 @@ async fn set(
     };
     state
         .db
-        .set_channel(&request.name, &request.base_url, &request.api_key, &secret)
+        .set_channel(
+            &request.name,
+            &request.base_url,
+            &request.api_key,
+            request.protocol.as_deref().unwrap_or(oxsum_core::OPENAI),
+            &secret,
+        )
         .await?;
     let channel = state
         .db
