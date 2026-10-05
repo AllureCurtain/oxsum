@@ -11,6 +11,7 @@ mod adapters;
 mod billing;
 mod channels;
 mod db;
+mod deposits;
 mod error;
 mod heads;
 mod holds;
@@ -32,6 +33,7 @@ pub use billing::{
 };
 pub use channels::{Channel, ModelPrice, SecretKey, Serving};
 pub use db::{Db, SCHEMA};
+pub use deposits::{CodeBatch, MAX_BATCH, Redemption};
 pub use doubleentry::{ConsistencyProof, EntryId, Hash, Seal, TreeHead};
 pub use error::WalletError;
 pub use heads::{
