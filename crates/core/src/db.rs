@@ -53,6 +53,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0008_channel_protocol",
         include_str!("../migrations/0008_channel_protocol.sql"),
     ),
+    (
+        "0009_itemized_prices",
+        include_str!("../migrations/0009_itemized_prices.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.
