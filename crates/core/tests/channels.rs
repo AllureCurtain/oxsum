@@ -75,6 +75,7 @@ async fn a_price_change_appends_a_version_and_leaves_the_old_one_readable() {
         &channel,
         "https://upstream.example/v1",
         "sk-secret-1234",
+        "openai",
         &key(),
     )
     .await
@@ -92,6 +93,7 @@ async fn a_price_change_appends_a_version_and_leaves_the_old_one_readable() {
     // What a request starts on is the newest version…
     let serving = db.serving(&model, &key()).await.unwrap().unwrap();
     assert_eq!(serving.channel, channel);
+    assert_eq!(serving.protocol, "openai");
     assert_eq!(serving.version, second);
     assert_eq!(serving.price, price(30, 40, 200));
     assert_eq!(serving.api_key, "sk-secret-1234");
@@ -114,6 +116,7 @@ async fn a_price_change_appends_a_version_and_leaves_the_old_one_readable() {
         .unwrap();
     assert_eq!(listed.models.len(), 1);
     assert_eq!(listed.models[0].version, second);
+    assert_eq!(listed.protocol, "openai");
     assert_eq!(listed.api_key_last4, "1234", "only the tail is readable");
     assert!(!format!("{listed:?}").contains("sk-secret-1234"));
 
@@ -142,9 +145,15 @@ async fn the_price_table_refuses_to_be_rewritten() {
     let db = db(&url).await;
     let channel = fresh("append-only");
     let model = fresh("m");
-    db.set_channel(&channel, "https://upstream.example/v1", "sk-1", &key())
-        .await
-        .unwrap();
+    db.set_channel(
+        &channel,
+        "https://upstream.example/v1",
+        "sk-1",
+        "openai",
+        &key(),
+    )
+    .await
+    .unwrap();
     let version = db
         .append_price(&channel, &model, price(10, 20, 100))
         .await
@@ -176,10 +185,10 @@ async fn one_model_belongs_to_one_channel() {
     let first = fresh("owner");
     let second = fresh("rival");
     let model = fresh("shared");
-    db.set_channel(&first, "https://a.example/v1", "sk-a", &key())
+    db.set_channel(&first, "https://a.example/v1", "sk-a", "openai", &key())
         .await
         .unwrap();
-    db.set_channel(&second, "https://b.example/v1", "sk-b", &key())
+    db.set_channel(&second, "https://b.example/v1", "sk-b", "openai", &key())
         .await
         .unwrap();
     db.append_price(&first, &model, price(1, 2, 3))
@@ -208,9 +217,15 @@ async fn a_credential_that_does_not_open_is_a_deployment_failure_not_a_caller_er
     let db = db(&url).await;
     let channel = fresh("sealed");
     let model = fresh("m");
-    db.set_channel(&channel, "https://upstream.example/v1", "sk-secret", &key())
-        .await
-        .unwrap();
+    db.set_channel(
+        &channel,
+        "https://upstream.example/v1",
+        "sk-secret",
+        "openai",
+        &key(),
+    )
+    .await
+    .unwrap();
 
     // The startup check: every stored credential must open, and the failure names a channel. (Any
     // channel: the database is shared, so the first one checked is whichever comes first.)
@@ -247,9 +262,15 @@ async fn a_credential_that_does_not_open_is_a_deployment_failure_not_a_caller_er
     );
 
     // Replacing the connection re-seals the credential and the channel serves again.
-    db.set_channel(&channel, "https://other.example/v1", "sk-rotated", &key())
-        .await
-        .unwrap();
+    db.set_channel(
+        &channel,
+        "https://other.example/v1",
+        "sk-rotated",
+        "openai",
+        &key(),
+    )
+    .await
+    .unwrap();
     let serving = db.serving(&model, &key()).await.unwrap().unwrap();
     assert_eq!(serving.api_key, "sk-rotated");
     assert_eq!(serving.base_url, "https://other.example/v1");
@@ -307,34 +328,46 @@ async fn names_addresses_and_prices_that_could_not_be_used_are_refused() {
     let url = db_or_skip!();
     let db = db(&url).await;
     let channel = fresh("validated");
-    db.set_channel(&channel, "https://upstream.example/v1", "sk-secret", &key())
-        .await
-        .unwrap();
+    db.set_channel(
+        &channel,
+        "https://upstream.example/v1",
+        "sk-secret",
+        "openai",
+        &key(),
+    )
+    .await
+    .unwrap();
 
     assert!(
-        db.set_channel("bad name", "https://x.example", "sk", &key())
+        db.set_channel("bad name", "https://x.example", "sk", "openai", &key())
             .await
             .is_err()
     );
     assert!(
-        db.set_channel("", "https://x.example", "sk", &key())
+        db.set_channel("", "https://x.example", "sk", "openai", &key())
             .await
             .is_err()
     );
     assert!(
-        db.set_channel("ok", "ftp://x.example", "sk", &key())
+        db.set_channel("ok", "ftp://x.example", "sk", "openai", &key())
             .await
             .is_err()
     );
     assert!(
-        db.set_channel("ok", "not a url", "sk", &key())
+        db.set_channel("ok", "not a url", "sk", "openai", &key())
             .await
             .is_err()
     );
     assert!(
-        db.set_channel("ok", "https://x.example", "  ", &key())
+        db.set_channel("ok", "https://x.example", "  ", "openai", &key())
             .await
             .is_err()
+    );
+    assert!(
+        db.set_channel("ok", "https://x.example", "sk", "anthropic", &key())
+            .await
+            .is_err(),
+        "a protocol with no adapter is refused: the channel could never normalize usage"
     );
     assert!(
         db.append_price(&fresh("missing"), "m", price(1, 2, 3))
@@ -364,7 +397,7 @@ async fn names_addresses_and_prices_that_could_not_be_used_are_refused() {
     // A channel may not exceed what the admin URL path can carry.
     let long = "c".repeat(41);
     assert!(
-        db.set_channel(&long, "https://x.example", "sk", &key())
+        db.set_channel(&long, "https://x.example", "sk", "openai", &key())
             .await
             .is_err()
     );

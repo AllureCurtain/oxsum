@@ -144,9 +144,27 @@ async fn a_channel_is_created_priced_and_listed() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["name"], channel.as_str());
     assert_eq!(body["data"]["baseUrl"], "https://upstream.example/v1");
+    assert_eq!(body["data"]["protocol"], "openai");
     assert_eq!(body["data"]["apiKeyLast4"], "1234");
     assert_eq!(body["data"]["models"].as_array().expect("models").len(), 0);
     assert!(!body.to_string().contains("sk-upstream-abcd1234"), "{body}");
+
+    // A protocol the adapter registry does not know is refused at write time: the
+    // channel could never normalize its usage reports, so the row must not exist.
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/admin/channels",
+        Some(json!({
+            "name": fresh("admin"),
+            "baseUrl": "https://upstream.example/v1",
+            "apiKey": "sk-upstream-abcd1234",
+            "protocol": "anthropic",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
 
     // Prices: the first write is version 1, the second appends version 2.
     let price = |input: i64, output: i64| {

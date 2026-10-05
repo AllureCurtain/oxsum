@@ -340,7 +340,7 @@ async fn world_for(url: &str, top_up: i64) -> World {
         .expect("the test's own prices parse");
     // The channel and its prices are rows, the way an operator's would be: the gateway reads the
     // database, and the environment is only what a brand-new deployment seeds its first channel with.
-    db.set_channel(&channel, &base_url, "upstream-secret", &secret)
+    db.set_channel(&channel, &base_url, "upstream-secret", "openai", &secret)
         .await
         .expect("the channel is written");
     for (model, price) in book.models() {
@@ -897,7 +897,7 @@ async fn an_unreachable_upstream_charges_nothing() {
     // that is what changing a channel's connection does, and the prices are untouched by it.
     let secret = oxsum_core::SecretKey::from_bytes([7; 32]);
     let db = Db::from_pool(world.pool.clone());
-    db.set_channel(&world.channel, &dead, "upstream-secret", &secret)
+    db.set_channel(&world.channel, &dead, "upstream-secret", "openai", &secret)
         .await
         .expect("the channel is repointed");
     let config = Config::new(Signup::Open, None).with_secret(secret);
