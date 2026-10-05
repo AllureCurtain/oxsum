@@ -112,7 +112,8 @@ password; `/dashboard` is the overview. `/logout` logs out.
   (`/dashboard/requests`): when the settlement was booked, the request id (the
   `x-oxsum-request-id` the gateway answered with), the model, the key that paid, the
   status — how the turn was priced, in the bill's own words: `usage`, `estimated`,
-  `capped`, `client_cancelled`, `upstream_error`, `upstream_unreachable` or `swept` —
+  `capped`, `client_cancelled`, `upstream_error`, `upstream_unreachable`, `swept`
+  or `unpriced` —
   and the input and output tokens it used and what it charged in credits. The
   filters live in the URL: `/dashboard/requests?key=<prefix>&model=<name>`. Type a
   key's prefix (the keys page shows it) or a model name and press **Filter**, or click
@@ -257,6 +258,7 @@ How each turn is recorded, in the settlement entry's own words:
 | `upstream_unreachable` | Upstream could not be reached at all | Nothing; the whole freeze is released |
 | `capped` | Upstream's usage priced above the freeze | The freeze, and the excess is recorded as an anomaly |
 | `swept` | The hold timed out with no settlement (e.g. the gateway crashed) | Nothing; the whole freeze is released, recorded as an anomaly |
+| `unpriced` | Upstream's usage named a dimension the price book cannot bill — a tool call, a media token, a foreign event kind | The part the book covers, flagged as an anomaly; the rest is never billed at zero |
 
 Every settlement also records which channel served the turn and which price version priced it
 (`priceVersion` beside the prices and the token counts). A version is never rewritten, so a price
@@ -332,6 +334,6 @@ A forgotten password is recovered by the operator, not by the user — v1 sends 
 
 The in-flight page (`/admin/in-flight`) lists every hold the platform is currently reserving, across all organizations and newest first — the organization, the request id, the model and channel, the price version the turn froze at, the frozen amount and when it opened. A hold that settled leaves the list; one older than the hold timeout (30 minutes) is one the sweeper is about to release as `swept`.
 
-The anomalies page (`/admin/anomalies`) reviews the settled turns that did not price cleanly, across all organizations and newest first: an `estimated` turn where upstream reported no usage, a `client_cancelled` one where the caller left mid-stream, a `capped` one whose upstream usage priced above the freeze, and a `swept` one whose hold the sweeper had to release. Every row is the settlement record that turn's own ledger holds — organization, request id, model, channel, the price version in force, the charge and what had been frozen. A summary table on top counts the anomalous turns and their charged total per channel: where the platform is losing money upstream is the first thing the page answers.
+The anomalies page (`/admin/anomalies`) reviews the settled turns that did not price cleanly, across all organizations and newest first: an `estimated` turn where upstream reported no usage, a `client_cancelled` one where the caller left mid-stream, a `capped` one whose upstream usage priced above the freeze, a `swept` one whose hold the sweeper had to release, and an `unpriced` one whose usage named a dimension the price book cannot bill — the computable part was charged and the rest is the platform's flagged loss, never a silent zero. Every row is the settlement record that turn's own ledger holds — organization, request id, model, channel, the price version in force, the charge and what had been frozen. A summary table on top counts the anomalous turns and their charged total per channel: where the platform is losing money upstream is the first thing the page answers.
 
 The closing page (`/admin/closing`) runs the monthly closing: pick a month that has fully ended and close it — the month is sealed in every organization's ledger, which produces its closing record (a seal committing to the log's tree head and the month's closing trial balance, chained onto the seal before it) and refuses any new entry dated into it from then on. The table lists the sealed months newest first: organization, period, how many entries it covers, the log's size at sealing, and the three hashes the record is made of. Closing a month twice is safe — the second run answers the records that already exist.

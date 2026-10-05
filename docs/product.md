@@ -148,8 +148,9 @@ When relaying a streaming request, the gateway always writes `stream_options.inc
 | Client disconnected mid-stream | Cancel the upstream call immediately; estimate locally from what was forwarded | `client_cancelled` |
 | Usage-priced cost exceeds the freeze | Charge the freeze only; record the excess as an anomaly for admin review | `capped` |
 | Hold timed out with no settlement (e.g. the gateway crashed) | 0, full release, recorded as an anomaly | `swept` |
+| Usage names a dimension the price book cannot bill (a tool call, a media token, a foreign event kind) | Charge the part the book covers, capped by the freeze; the unpriced rest is the platform's flagged loss — never a silent zero, never folded into a rate it does not belong to | `unpriced` |
 
-(The settlement kinds and the anomalies page that reviews them — `capped`, `estimated`, `client_cancelled` and `swept`, read out of the ledgers — both ship.)
+(The settlement kinds and the anomalies page that reviews them — `capped`, `estimated`, `client_cancelled`, `swept` and `unpriced`, read out of the ledgers — both ship.)
 
 - Local estimation: count input and forwarded output with tiktoken's `o200k_base`; the result never exceeds the freeze. The bill is explicitly marked "estimated".
 - The user never pays more than the freeze — that is the gateway's promise. Underestimates, missing usage and upstream overcharges are the platform's cost.
@@ -212,7 +213,7 @@ The platform admin surface is the `/api/v1/admin` REST API under the operator to
 | Organizations | Every organization's balance; top up, adjust | Shipped: the list paginates a hundred at a time (`?limit=`/`?cursor=` on `GET /api/v1/admin/organizations`, a Load more on the page), plus a per-row adjust form — `POST …/{organizationId}/adjustments` for the write |
 | Channels & prices | Configure upstreams and model prices; view price version history | Shipped: `/admin/channels` on the `/api/v1/admin` endpoints — list, create or repoint a channel, append a price version, read a channel's whole history |
 | In-flight requests | Every unsettled hold, globally | Shipped: `/admin/in-flight` on `GET /api/v1/admin/holds` — the sweeper's watch table joined to the organizations |
-| Anomalies | The settled turns that did not price cleanly, summarized per channel | Shipped: `/admin/anomalies` on `GET /api/v1/admin/anomalies` — the `capped`, `estimated`, `client_cancelled` and `swept` settlement records, read back from the ledgers themselves, with a per-channel count and charged total |
+| Anomalies | The settled turns that did not price cleanly, summarized per channel | Shipped: `/admin/anomalies` on `GET /api/v1/admin/anomalies` — the `capped`, `estimated`, `client_cancelled`, `swept` and `unpriced` settlement records, read back from the ledgers themselves, with a per-channel count and charged total |
 | Closing | Monthly closing; after closing, that month accepts no new entries and a closing record is produced | Shipped: `/admin/closing` on `GET`/`POST /api/v1/admin/closings` — closing seals the `YYYY-MM` period in every organization's ledger (doubleentry's period seals: the log's tree head, the closing trial balance, chained onto the seal before it), and the sealed watermark then refuses any entry dated into the month |
 
 ## Phase C: chat page (shipped)
