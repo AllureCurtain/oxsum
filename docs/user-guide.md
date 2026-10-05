@@ -237,6 +237,12 @@ Notes:
   if it is still running; what the turn cost is upstream's own count when it had already reported
   one, and an estimate of what had been forwarded otherwise, marked `client_cancelled` in the
   settlement record when the turn was cut short.
+- `user`, `metadata` (an object of string-valued pairs) and `service_tier` may ride a request for
+  attribution — which of your own users spent, tagged your way. They are recorded on the turn's
+  usage record and forwarded upstream unchanged; they never change the price. The bounds are a
+  128-character `user`, ten metadata pairs of 64-character keys and values, and a 64-character
+  `service_tier`: anything past a bound is refused, because a silently truncated id would bill
+  under the wrong name.
 - Text only in v1: an image or another content part is refused 400, because the freeze needs a
   computable input bound.
 

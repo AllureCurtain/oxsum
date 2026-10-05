@@ -25,6 +25,7 @@ The axum API, the core, doubleentry and the gateway exist today, with oxsum's ow
 | doubleentry | `crates/doubleentry` | Double-entry bookkeeping, balance limits, pending layer, Merkle inclusion and consistency proofs, period closing. Vendored, see docs/decisions.md |
 | Wallet | `crates/core/src/wallet.rs` | One tenant's wallet: top-up, hold, settle, balance, proof bundles, and the transactions the bills page lists and exports (`recent_transactions`). Built on the shared pool, never on a pool of its own |
 | Pricing | `crates/core/src/billing.rs` | What a turn costs and what the ledger records: the input upper bound, the freeze, priced usage, the local `o200k_base` estimate, the settlement record, and the price book. No I/O, so it is the same arithmetic in a test and in a request |
+| Usage records | `crates/core/src/usage.rs` | The normalized `UsageRecord` every upstream is read into, the bounds on the caller's attribution, and the `oxsum.usage_records` row written beside each landed settlement (issue #102) |
 | Channels | `crates/core/src/channels.rs` | The channels and their prices: the append-only price versions, the resolution a request prices itself by (channel, version, price, upstream address), and the sealed upstream credential. Sealing is AES-256-GCM under `OXSUM_SECRET_KEY`, see docs/decisions.md |
 | Tenants | `crates/core/src/tenants.rs` | Facades over the shared pool, cached per tenant: a tenant costs a facade, not connections. See docs/decisions.md "all tenants share one connection pool" |
 | Db | `crates/core/src/db.rs` | The process's one pool, plus oxsum's own tables: `migrate` creates the `oxsum` schema and applies `crates/core/migrations/` in order, each file and its recorded version in one transaction |
@@ -61,10 +62,12 @@ crates/
       keys.rs           exists: API key mint, resolve, list, revoke
       sessions.rs       exists: session table reads, writes and renewal; login, logout,
                         and the Principal (key or session) the auth middleware resolves
+      usage.rs          exists: the normalized UsageRecord, its attribution bounds,
+                        and the oxsum.usage_records persistence beside the settlement
     migrations/         exists: oxsum's own tables (users/orgs/memberships/keys, channels
-                        and their price versions). Create-table SQL only, applied by oxsum's
-                        own migration runner; ledger schemas stay owned by doubleentry's
-                        migrate, never mixed
+                        and their price versions, usage records). Create-table SQL
+                        only, applied by oxsum's own migration runner; ledger schemas
+                        stay owned by doubleentry's migrate, never mixed
   verify/               Pure verification shared with the browser: the proof bundle,
                         verify_bundle, the signed-head and consistency checks, and the
                         money SCALE; wasm32-clean, re-exported by
@@ -115,12 +118,13 @@ Principle: **domain logic belongs in core; the gateway does protocol and orchest
    - Charges actual usage in the settled layer, moving wallet → revenue
    - The same limit checks the release as a backstop, so the amount it gives back cannot exceed what holds reserved. The pairing itself is one-to-one: a settlement names the hold it releases, and the hold's entry is the amount — see docs/decisions.md.
    - The gateway settles when the relayed stream ends, and the settlement is awaited before the stream closes, so a client that read a stream to its end reads a settled bill. The write runs in a task of its own, so a client that hangs up while it is being appended cannot cancel it; a client that hangs up before that cancels the upstream call and settles what had been forwarded from a local estimate.
+   - Beside a settlement that landed, the same path writes the turn's normalized usage row to `oxsum.usage_records` (`crates/core/src/usage.rs`, issue #102): the full dimensions pricing looks at, the caller's attribution, and `usage_details.provider_raw` — the mutable-store data an immutable entry description cannot hold. The entry stays the source of truth; a failed row write is drift for the reconciler to report, not a reason to retry the charge.
 3. Each step carries its own `idempotencyKey`, so retries are safe. For a gateway turn the hold's key is derived from the request id the response header carries (`req-<id>:hold`), and the settlement's key is derived from the hold's (`oxsum_core::settlement_key_for`).
 
 ### The hold sweeper
 
 1. The gateway notes each hold in `oxsum.open_holds` *before* taking it, and deletes the row when the turn settles — however the turn ends, including the `Drop` path for a client that disconnects mid-stream. A row without a hold (the process died in between) heals itself: the sweeper deletes it when the hold is not there.
-2. Every 60 seconds the background job settles the rows older than `OXSUM_HOLD_TIMEOUT` at 0 with kind `swept`: the whole freeze is released and the settlement record marks the anomaly. A hold younger than the timeout is never touched — "old but still streaming" is excluded by the timeout contract, which must exceed the longest possible single request.
+2. Every 60 seconds the background job settles the rows older than `OXSUM_HOLD_TIMEOUT` at 0 with kind `swept`: the whole freeze is released and the settlement record marks the anomaly. The sweep writes the same usage row — zero counts and zero charge, with the attribution the watch row kept, so the row says whose turn timed out. A hold younger than the timeout is never touched — "old but still streaming" is excluded by the timeout contract, which must exceed the longest possible single request.
 3. The sweeper and a late settlement share the derived settlement key, so both cannot take effect: whichever appends first wins, the other sees `Conflict("hold already settled")`, and the row is cleared either way.
 
 ### User bill verification
