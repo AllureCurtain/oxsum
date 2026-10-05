@@ -1858,10 +1858,16 @@ fn RequestTable(
 /// What one verification attempt concluded.
 #[derive(Debug, Clone)]
 enum VerifyOutcome {
-    /// The bundle matches the content hash and the proof links it to the tree head.
-    Passed,
+    /// The bundle matches the content hash and the proof links it to the tree head;
+    /// carries what recomputing the entry's settlement description concluded —
+    /// recomputed itself, or skipped because the record is not a settlement's or
+    /// is written in a schema this verifier does not know.
+    Passed(oxsum_verify::ChargeCheck),
     /// The bundle does not match the hash, or the proof does not link to the head.
     Failed,
+    /// Inclusion passed but the charge does not recompute from the record's own
+    /// fields — an honest settlement never fails this.
+    ChargeMismatch,
     /// The content hash field is not 64 hexadecimal characters.
     BadHash,
     /// The bundle field does not parse as a proof bundle; carries the parse error.
@@ -1912,11 +1918,30 @@ fn VerifyPage() -> impl IntoView {
     let ready = move || !(bundle.get().trim().is_empty() || content_hash.get().trim().is_empty());
 
     let run = move || {
+        let bundle_text = bundle.get_untracked();
         let outcome = match oxsum_verify::Hash::parse_hex(content_hash.get_untracked().trim()) {
             Err(_) => VerifyOutcome::BadHash,
-            Ok(expected) => match oxsum_verify::verify_bundle(&bundle.get_untracked(), &expected) {
+            Ok(expected) => match oxsum_verify::verify_bundle(&bundle_text, &expected) {
                 Err(error) => VerifyOutcome::BadBundle(error.to_string()),
-                Ok(true) => VerifyOutcome::Passed,
+                Ok(true) => {
+                    // Inclusion proven; now whether the charge inside the entry is
+                    // what its own usage and rates add up to. The description is the
+                    // entry's — the same bytes the content hash already covered.
+                    let description = serde_json::from_str::<serde_json::Value>(&bundle_text)
+                        .ok()
+                        .and_then(|bundle| {
+                            bundle
+                                .get("entry")?
+                                .get("description")?
+                                .as_str()
+                                .map(str::to_owned)
+                        })
+                        .unwrap_or_default();
+                    match oxsum_verify::verify_charge(&description) {
+                        oxsum_verify::ChargeCheck::Mismatch => VerifyOutcome::ChargeMismatch,
+                        check => VerifyOutcome::Passed(check),
+                    }
+                }
                 Ok(false) => VerifyOutcome::Failed,
             },
         };
@@ -1994,11 +2019,37 @@ fn VerifyPage() -> impl IntoView {
 #[component]
 fn Verdict(outcome: VerifyOutcome) -> impl IntoView {
     let (class, icon, title, detail) = match &outcome {
-        VerifyOutcome::Passed => (
-            "success",
-            "✓",
-            "Verification passed.",
-            "The bundle matches the content hash, and the inclusion proof links it to the tree head."
+        VerifyOutcome::Passed(check) => {
+            use oxsum_verify::ChargeCheck;
+            let charge = match check {
+                ChargeCheck::Recomputed => {
+                    " The recorded charge itself recomputes from the usage and rates inside the entry — the arithmetic checks, not only the bytes."
+                }
+                ChargeCheck::NotASettlement => {
+                    " The entry is not a usage settlement, so there is no charge to recompute."
+                }
+                ChargeCheck::OlderSchema => {
+                    " The record predates charge verification — the entry is proven, but its arithmetic is too old to recompute."
+                }
+                ChargeCheck::NewerSchema { .. } => {
+                    " The record is newer than this verifier — the entry is proven, but its arithmetic is skipped rather than guessed at."
+                }
+                ChargeCheck::Mismatch => unreachable!("a mismatch is not a pass"),
+            };
+            (
+                "success",
+                "✓",
+                "Verification passed.",
+                format!(
+                    "The bundle matches the content hash, and the inclusion proof links it to the tree head.{charge}"
+                ),
+            )
+        }
+        VerifyOutcome::ChargeMismatch => (
+            "error",
+            "✗",
+            "The charge does not add up.",
+            "The entry is proven unaltered, but the charge it records does not recompute from the usage and rates it carries — something was written wrong."
                 .to_owned(),
         ),
         VerifyOutcome::Failed => (

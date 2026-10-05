@@ -763,19 +763,6 @@ pub struct TurnBill {
 /// session's organization's, so one organization can never read another's bills.
 #[server(prefix = "/_pages")]
 pub async fn get_turn_bill(request_id: String) -> Result<Option<TurnBill>, ServerFnError> {
-    /// What the settlement entry records, as the gateway wrote it (`billing.rs`).
-    #[derive(serde::Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct SettlementRecord {
-        model: String,
-        kind: String,
-        input_tokens: i64,
-        output_tokens: i64,
-        price_version: i64,
-        charged: i64,
-        freeze: i64,
-    }
-
     let (_db, tenants, principal) = session_ctx().await?;
     if request_id.is_empty()
         || request_id.len() > 64
@@ -800,15 +787,18 @@ pub async fn get_turn_bill(request_id: String) -> Result<Option<TurnBill>, Serve
     let Some(bundle) = bundle else {
         return Ok(None);
     };
-    let record: SettlementRecord = serde_json::from_str(bundle.entry.description().as_str())
-        .map_err(|_| ServerFnError::new("the bill did not parse"))?;
+    // What the settlement entry records, as the gateway wrote it (`billing.rs`):
+    // core's own reader, so the page shows exactly the fields the entry's
+    // content hash covers.
+    let record = oxsum_core::SettlementRecord::parse(bundle.entry.description().as_str())
+        .ok_or_else(|| ServerFnError::new("the bill did not parse"))?;
     let bundle_json =
         serde_json::to_string(&bundle).map_err(|_| ServerFnError::new("the bill did not parse"))?;
     Ok(Some(TurnBill {
         request_id,
         model: record.model,
         charged_minor: record.charged,
-        kind: record.kind,
+        kind: record.kind.as_str().to_owned(),
         input_tokens: record.input_tokens,
         output_tokens: record.output_tokens,
         price_version: record.price_version,
