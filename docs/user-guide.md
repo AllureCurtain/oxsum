@@ -290,6 +290,9 @@ Notes:
 Purpose: check the currently available balance.
 
 Step: `GET /api/v1/balance`. The returned `availableMinor` already subtracts unsettled holds.
+The number is one balance: granted credit (signup bonus, admin grants) and purchased
+credit (top-ups) are separate pools inside the ledger, granted credit is always
+drawn first, and the API sums the two.
 
 ## Verifying a bill
 
