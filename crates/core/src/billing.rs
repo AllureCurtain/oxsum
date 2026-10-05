@@ -264,6 +264,70 @@ impl PriceSet {
         }
         result
     }
+
+    /// What upstream's rates make of the same usage, in minor units — the
+    /// platform's cost for the turn, beside what the customer was charged
+    /// (roadmap P1-6, issue #112).
+    ///
+    /// The same convention the customer lines follow: a subset bills at its
+    /// upstream rate when one is written, else folds into the side's upstream
+    /// base rate; a side with no upstream base rate contributes nothing, and
+    /// the upstream flat fee applies once on a billed turn. A set with no
+    /// `upstream` block answers `None` — untracked, not zero, which is what
+    /// `untrackedTurns` counts on the margin view. No freeze cap: the cap is a
+    /// promise to the customer, not a ceiling on what upstream bills.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::InvalidInput`] when the total does not fit in 64 bits.
+    pub fn upstream_minor(
+        &self,
+        usage: &UsageRecord,
+        billable: bool,
+    ) -> Result<Option<i64>, WalletError> {
+        let Some(upstream) = &self.upstream else {
+            return Ok(None);
+        };
+        let mut numerator: i128 = 0;
+        let mut input_units = usage.input_tokens;
+        for (units, rate) in [
+            (usage.cached_tokens, upstream.cache_read_price_per_million),
+            (
+                usage.cache_write_5m_tokens,
+                upstream.cache_write_5m_price_per_million,
+            ),
+            (
+                usage.cache_write_1h_tokens,
+                upstream.cache_write_1h_price_per_million,
+            ),
+        ] {
+            if let Some(rate) = rate.filter(|_| units > 0) {
+                input_units -= units;
+                numerator += i128::from(units) * i128::from(rate);
+            }
+        }
+        numerator +=
+            i128::from(input_units) * i128::from(upstream.input_price_per_million.unwrap_or(0));
+        let mut output_units = usage.output_tokens;
+        if let Some(rate) = upstream
+            .reasoning_price_per_million
+            .filter(|_| usage.reasoning_tokens > 0)
+        {
+            output_units -= usage.reasoning_tokens;
+            numerator += i128::from(usage.reasoning_tokens) * i128::from(rate);
+        }
+        numerator +=
+            i128::from(output_units) * i128::from(upstream.output_price_per_million.unwrap_or(0));
+        if let Some(flat) = upstream.cost_per_request.filter(|_| billable) {
+            numerator += i128::from(flat) * i128::from(PER_MILLION);
+        }
+        // Ceiling division, by hand, like `ItemizedCharge::total_minor`.
+        let per_million = i128::from(PER_MILLION);
+        let minor = (numerator + per_million - 1) / per_million;
+        i64::try_from(minor)
+            .map(Some)
+            .map_err(|_| WalletError::InvalidInput("the amount does not fit in 64 bits".into()))
+    }
 }
 
 /// The conditions a request must satisfy for a rule's set to price it. Every
@@ -585,6 +649,25 @@ impl Price {
             lines: set.lines(usage, billable),
             matched_rule: rule,
         })
+    }
+
+    /// What upstream billed the platform for the same turn: the set the turn
+    /// priced under resolves the same way — a matched rule's `upstream` block
+    /// wins with it — and the usage prices at upstream's rates. `None` when
+    /// that set carries no `upstream` block: untracked, not zero.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::InvalidInput`] when the usage is invalid or the total
+    /// does not fit in 64 bits.
+    pub fn upstream_cost(
+        &self,
+        usage: &UsageRecord,
+        billable: bool,
+    ) -> Result<Option<i64>, WalletError> {
+        usage.validate()?;
+        let (set, _) = self.resolve(usage);
+        set.upstream_minor(usage, billable)
     }
 
     /// The metered dimensions no price set can cover, named: the counts that sit
@@ -1384,6 +1467,101 @@ mod tests {
         let charge = itemize(&ruled, &short);
         assert_eq!(charge.lines[0].price_per_m, 1_000_000);
         assert_eq!(charge.matched_rule, None);
+    }
+
+    /// `upstream` set to the base rates the channel bills the platform at —
+    /// half the customer price here (issue #112).
+    fn upstream() -> UpstreamPrices {
+        UpstreamPrices {
+            input_price_per_million: Some(500_000),
+            output_price_per_million: Some(1_000_000),
+            ..UpstreamPrices::default()
+        }
+    }
+
+    #[test]
+    fn upstream_cost_prices_the_same_usage_at_upstream_rates() {
+        let mut tracked = price();
+        tracked.upstream = Some(upstream());
+        let usage = UsageRecord::tokens(1_000_000, 500_000).unwrap();
+        assert_eq!(
+            tracked.upstream_cost(&usage, true).unwrap(),
+            Some(1_000_000)
+        );
+        // A price with no `upstream` block is untracked: `None`, not zero —
+        // the margin view counts it separately, because zero would hide a
+        // coverage gap inside a real cost.
+        assert_eq!(price().upstream_cost(&usage, true).unwrap(), None);
+    }
+
+    #[test]
+    fn upstream_cost_follows_the_matched_rules_set() {
+        let mut ruled = price();
+        ruled.upstream = Some(upstream());
+        ruled.rules = vec![PriceRule {
+            cond: RuleMatch {
+                service_tier: Some("priority".into()),
+                ..RuleMatch::default()
+            },
+            price: PriceSet {
+                // The priority lane costs upstream more.
+                upstream: Some(UpstreamPrices {
+                    input_price_per_million: Some(2_000_000),
+                    output_price_per_million: Some(4_000_000),
+                    ..UpstreamPrices::default()
+                }),
+                ..price().set()
+            },
+        }];
+        ruled.validate().unwrap();
+        let mut usage = UsageRecord::tokens(1_000_000, 0).unwrap();
+        assert_eq!(ruled.upstream_cost(&usage, true).unwrap(), Some(500_000));
+        usage.service_tier = Some("priority".into());
+        // The rule's set replaced the base — its `upstream` block came with it.
+        assert_eq!(ruled.upstream_cost(&usage, true).unwrap(), Some(2_000_000));
+    }
+
+    #[test]
+    fn upstream_cost_separates_what_it_prices_and_folds_the_rest() {
+        let mut tracked = price();
+        tracked.upstream = Some(UpstreamPrices {
+            cache_read_price_per_million: Some(50_000),
+            reasoning_price_per_million: Some(4_000_000),
+            cost_per_request: Some(400),
+            ..upstream()
+        });
+        let mut usage = UsageRecord::tokens(100, 50).unwrap();
+        usage.cached_tokens = 80;
+        usage.cache_write_5m_tokens = 20;
+        usage.reasoning_tokens = 10;
+        // Only a dimension upstream prices leaves the base rate: the 80 cached
+        // tokens bill at their own rate, the 20 cache writes fold back into
+        // input. 20·0.5 + 80·0.05 + 40·1 + 10·4 + 400 flat = 10+4+40+40+400.
+        assert_eq!(tracked.upstream_cost(&usage, true).unwrap(), Some(494));
+        // An unbilled turn owes no flat fee.
+        let unpaid = UsageRecord::tokens(0, 0).unwrap();
+        let flat_only = Price {
+            upstream: Some(UpstreamPrices {
+                cost_per_request: Some(400),
+                ..UpstreamPrices::default()
+            }),
+            ..price()
+        };
+        assert_eq!(flat_only.upstream_cost(&unpaid, false).unwrap(), Some(0));
+        // Upstream's arithmetic is the same ceiling-over-numerator, and the
+        // same overflow refusal — never a wrap.
+        let absurd = Price {
+            upstream: Some(UpstreamPrices {
+                input_price_per_million: Some(i64::MAX),
+                ..UpstreamPrices::default()
+            }),
+            ..price()
+        };
+        assert!(
+            absurd
+                .upstream_cost(&UsageRecord::tokens(i64::MAX, 0).unwrap(), true)
+                .is_err()
+        );
     }
 
     #[test]

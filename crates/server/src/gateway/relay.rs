@@ -403,6 +403,16 @@ impl Plan {
                     usage: usage.clone(),
                     charged_minor: charged,
                     freeze_minor: self.freeze,
+                    // The platform's own cost for the same usage, under the set the
+                    // turn priced with — `None` when it carries no `upstream`
+                    // block, which is untracked rather than free (issue #112).
+                    upstream_cost_minor: self.price.upstream_cost(&usage, billable).unwrap_or_else(
+                        |error| {
+                            tracing::error!(%error, request = %self.request,
+                                "pricing upstream's cost failed; the row records untracked");
+                            None
+                        },
+                    ),
                 };
                 if let Err(error) = self.db.record_usage(&row).await {
                     tracing::error!(%error, request = %self.request,

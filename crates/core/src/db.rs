@@ -57,6 +57,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0009_itemized_prices",
         include_str!("../migrations/0009_itemized_prices.sql"),
     ),
+    (
+        "0010_upstream_cost",
+        include_str!("../migrations/0010_upstream_cost.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.

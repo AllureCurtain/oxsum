@@ -18,6 +18,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sqlx::Row;
 use uuid::Uuid;
 
 use crate::billing::SettlementKind;
@@ -269,6 +270,11 @@ pub struct UsageRow {
     /// What the settlement charged and what it had frozen, in minor units.
     pub charged_minor: i64,
     pub freeze_minor: i64,
+    /// What the channel's `upstream` prices made of the same usage — the
+    /// platform's cost for the turn (roadmap P1-6, issue #112). `None` means
+    /// untracked, not zero: a price with no `upstream` block, a swept turn
+    /// whose watch row carries no price, or history from before the column.
+    pub upstream_cost_minor: Option<i64>,
 }
 
 impl Db {
@@ -290,9 +296,9 @@ impl Db {
               cache_write_1h_tokens, reasoning_tokens, tool_calls, image_input_tokens, \
               audio_input_tokens, video_input_tokens, image_output_tokens, \
               audio_output_tokens, service_tier, event_type, end_user, tags, usage_details, \
-              charged_minor, freeze_minor) \
+              charged_minor, freeze_minor, upstream_cost_minor) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, \
-                     $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27) \
+                     $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28) \
              ON CONFLICT (request_id) DO NOTHING",
         )
         .bind(&row.request_id)
@@ -322,10 +328,67 @@ impl Db {
         .bind(&row.usage.usage_details)
         .bind(row.charged_minor)
         .bind(row.freeze_minor)
+        .bind(row.upstream_cost_minor)
         .execute(self.pool())
         .await?;
         Ok(())
     }
+
+    /// The charged-versus-upstream sums per `(channel, model)` the admin margin
+    /// view answers (roadmap P1-6, issue #112).
+    ///
+    /// `untrackedTurns` is the first number a coverage gap shows up in — a price
+    /// without an `upstream` block, swept turns, history — and where upstream
+    /// misbilling would hide if a channel were priced but not tracked.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn margin(&self) -> Result<Vec<Margin>, WalletError> {
+        let rows = sqlx::query(
+            "SELECT channel, model, count(*) AS turns, \
+                    COALESCE(sum(charged_minor), 0)::bigint AS charged_minor, \
+                    COALESCE(sum(upstream_cost_minor), 0)::bigint AS upstream_cost_minor, \
+                    count(*) FILTER (WHERE upstream_cost_minor IS NULL) AS untracked_turns \
+             FROM oxsum.usage_records \
+             GROUP BY channel, model \
+             ORDER BY channel, model",
+        )
+        .fetch_all(self.pool())
+        .await?;
+        let mut margin = Vec::with_capacity(rows.len());
+        for row in &rows {
+            margin.push(Margin {
+                channel: row.try_get("channel")?,
+                model: row.try_get("model")?,
+                turns: row.try_get("turns")?,
+                charged_minor: row.try_get("charged_minor")?,
+                upstream_cost_minor: row.try_get("upstream_cost_minor")?,
+                untracked_turns: row.try_get("untracked_turns")?,
+            });
+        }
+        Ok(margin)
+    }
+}
+
+/// What one `(channel, model)` pair charged against what upstream cost it, as the
+/// margin view answers it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Margin {
+    pub channel: String,
+    pub model: String,
+    /// The settled turns the row sums.
+    pub turns: i64,
+    /// What the organizations were charged, in minor units.
+    pub charged_minor: i64,
+    /// What the channel's `upstream` prices made of the same usage, over the
+    /// turns that track it. `chargedMinor` minus this is the margin, computed
+    /// at the edge rather than stored.
+    pub upstream_cost_minor: i64,
+    /// Settled turns with no upstream cost recorded — an untracked price, a
+    /// swept hold, or history.
+    pub untracked_turns: i64,
 }
 
 #[cfg(test)]
