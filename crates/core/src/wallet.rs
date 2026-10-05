@@ -31,12 +31,30 @@ pub type Credits = Amount<SCALE>;
 const OPENED: Date = date!(2026 - 01 - 01);
 
 const WALLET: &str = "Liabilities:Wallet";
+/// Granted credit — the signup bonus and admin grants — kept in its own pool so
+/// settlement can draw it before the purchased balance (decision D1, see
+/// docs/decisions.md). Equity, because the platform contributes it and no cash
+/// ever stood behind it.
+const BONUS: &str = "Equity:Bonus";
 const CASH: &str = "Assets:Cash";
 const REVENUE: &str = "Income:Usage";
 /// Operator-side money that is neither cash received nor usage revenue: admin
 /// adjustments and the signup bonus draw on it (a grant debits it, a deduction
 /// credits it back). Equity, so the books keep it out of both income and assets.
 const ADJUSTMENTS: &str = "Equity:Adjustments";
+
+/// The idempotency key under which the one-time pool migration posts its
+/// `debit Wallet, credit Bonus` entry. Deterministic, so a second
+/// reclassification run sees the entry and does nothing, and the key doubles as
+/// the marker spend reads exclude: the move is a rebalancing between pools, not
+/// a charge, so it must not count as settled wallet spend.
+const RECLASS_KEY: &str = "pool-reclassification";
+
+/// How many times a pool-splitting write recomputes its split before giving up.
+/// Each retry re-reads pool balances, so a loser only loops while racing appends
+/// keep moving the pools under it; a write the combined balance genuinely cannot
+/// cover fails every attempt anyway and surfaces the same refusal as before.
+const POOL_SPLIT_ATTEMPTS: usize = 3;
 
 /// What the wallet account may do: be drawn on only up to what it holds, and never
 /// release a reservation it did not take.
@@ -57,21 +75,25 @@ const WALLET_LIMIT: BalanceLimit = BalanceLimit::FundedReservations;
 
 /// One tenant's wallet ledger.
 ///
-/// Four fixed accounts:
-/// - wallet: the balance owed to the user, a liability. Carries `FundedReservations`:
-///   no overdraft, and no release beyond what was reserved.
+/// Five fixed accounts:
+/// - wallet: the purchased balance owed to the user, a liability. Carries
+///   `FundedReservations`: no overdraft, and no release beyond what was reserved.
+/// - bonus: granted credit, equity. Carries the same limit — a pool is what a
+///   hold reserves against and a settlement draws down, so the same invariants
+///   apply on both sides of the split.
 /// - cash: money received from top-ups.
 /// - revenue: income recognized on settlement.
 /// - adjustments: operator grants and deductions — the signup bonus and platform-admin
-///   adjustments — booked against the wallet with a reason.
+///   adjustments — booked against the bonus pool with a reason.
 pub struct Wallet {
     store: PostgresStore<SCALE>,
     registry: AccountRegistry,
     wallet: AccountId,
+    bonus: AccountId,
     cash: AccountId,
     revenue: AccountId,
     /// Operator grants and deductions: [`Self::adjust`] posts the other side of the
-    /// wallet here.
+    /// pools here.
     adjustments: AccountId,
     policy: LedgerPolicy,
     /// The validated tenant id this ledger belongs to: the identity its signed tree heads
@@ -274,24 +296,26 @@ impl Wallet {
         // that finds some of them has to converge, not fail on the half it can see.
         let stored = store.accounts().await?;
         let mut registry = AccountRegistry::from_records(stored).map_err(invalid)?;
-        for path in [WALLET, CASH, REVENUE, ADJUSTMENTS] {
+        for path in [WALLET, BONUS, CASH, REVENUE, ADJUSTMENTS] {
             if find_account(&registry, path).is_err() {
                 registry.register_path(path, OPENED).map_err(invalid)?;
             }
         }
 
-        // The wallet's limit is oxsum's rule about its own account, so it is applied on
+        // The pools' limit is oxsum's rule about its own accounts, so it is applied on
         // every open rather than only where a ledger is created. `register_account`
         // upserts master data, which is what lets a ledger written under a weaker rule be
         // tightened here instead of keeping that rule for the rest of its life.
         let wallet = find_account(&registry, WALLET)?;
+        let bonus = find_account(&registry, BONUS)?;
         let weakened = registry
             .records()
-            .into_iter()
-            .find(|r| r.id == wallet)
-            .is_none_or(|r| r.account.limit != WALLET_LIMIT);
+            .iter()
+            .any(|r| (r.id == wallet || r.id == bonus) && r.account.limit != WALLET_LIMIT);
         if weakened {
-            registry.set_limit(wallet, WALLET_LIMIT).map_err(invalid)?;
+            for account in [wallet, bonus] {
+                registry.set_limit(account, WALLET_LIMIT).map_err(invalid)?;
+            }
         }
         // The full account set is persisted on every open. `register_account` upserts —
         // a record the store already holds is a no-op — and two opens racing a fresh
@@ -301,8 +325,9 @@ impl Wallet {
             store.register_account(&record).await?;
         }
 
-        Ok(Self {
+        let wallet = Self {
             wallet,
+            bonus,
             cash: find_account(&registry, CASH)?,
             revenue: find_account(&registry, REVENUE)?,
             adjustments: find_account(&registry, ADJUSTMENTS)?,
@@ -311,7 +336,15 @@ impl Wallet {
 
             policy: LedgerPolicy::default(),
             tenant_id: tenant_id.to_owned(),
-        })
+        };
+        // Ledgers opened for the first time under the two-pool model move their
+        // unspent historical grants into Bonus here — once per ledger, marked by
+        // the entry's fixed idempotency key. Doing it at open keeps the migration
+        // lazy: a tenant pays for its own reclassification the first time it is
+        // used under the new code rather than every `Db::migrate` paying for all
+        // of them under the global lock.
+        wallet.reclassify_grants().await?;
+        Ok(wallet)
     }
 
     /// The tenant id this ledger belongs to: the identity its signed tree heads carry.
@@ -331,14 +364,18 @@ impl Wallet {
         .await
     }
 
-    /// Adjustment: a signed amount the operator books against the wallet, with a
+    /// Adjustment: a signed amount the operator books against the pools, with a
     /// `reason` that becomes the entry's description — covered by its content hash,
     /// so the reason is part of the proof.
     ///
-    /// A positive `minor` grants credits, a negative one deducts them. The wallet's
-    /// `FundedReservations` limit is what refuses a deduction the balance cannot
-    /// carry — [`WalletError::InsufficientFunds`], the same refusal a hold gets — so
-    /// the rule holds under concurrency rather than being a read-then-write check.
+    /// A positive `minor` grants credits into the bonus pool — a grant is the
+    /// platform's contribution, never cash-backed. A negative one deducts, drawing
+    /// the bonus pool first: what the platform granted is what it takes back before
+    /// touching money the user paid for. The pools' `FundedReservations` limit is
+    /// what refuses a deduction the balance cannot carry —
+    /// [`WalletError::InsufficientFunds`], the same refusal a hold gets — so the
+    /// rule holds under concurrency rather than being a read-then-write check; the
+    /// retry only re-reads the split after a racing append moved it.
     /// Zero is [`WalletError::InvalidInput`]: a no-op adjustment would only be a
     /// reason-looking entry that moved nothing.
     pub async fn adjust(
@@ -361,25 +398,52 @@ impl Wallet {
         if minor == 0 {
             return Err(WalletError::InvalidInput("amount must not be zero".into()));
         }
-        let draft = Entry::<Draft, SCALE>::new(entry_id_for(key), idem(key)?, on)
-            .with_description(description_of(reason)?);
-        let draft = if minor > 0 {
-            draft
-                .debit(self.adjustments, amt, currency())
-                .credit(self.wallet, amt, currency())
-        } else {
-            draft
-                .debit(self.wallet, amt, currency())
-                .credit(self.adjustments, amt, currency())
-        };
-        self.append(draft).await
+        if minor > 0 {
+            return self
+                .append(
+                    Entry::<Draft, SCALE>::new(entry_id_for(key), idem(key)?, on)
+                        .with_description(description_of(reason)?)
+                        .debit(self.adjustments, amt, currency())
+                        .credit(self.bonus, amt, currency()),
+                )
+                .await;
+        }
+        let mut last_err = None;
+        for _ in 0..POOL_SPLIT_ATTEMPTS {
+            // The deduction's split is a read-then-write choice: a racing append can
+            // shrink a pool between the read and the write, which the append refuses
+            // — re-read and try the split that fits now.
+            let bonus_take = amt.to_minor().min(self.bonus_settled().await?.max(0));
+            let wallet_take = amt.to_minor() - bonus_take;
+            let mut draft = Entry::<Draft, SCALE>::new(entry_id_for(key), idem(key)?, on)
+                .with_description(description_of(reason)?);
+            if bonus_take > 0 {
+                draft = draft.debit(self.bonus, Credits::from_minor(bonus_take), currency());
+            }
+            if wallet_take > 0 {
+                draft = draft.debit(self.wallet, Credits::from_minor(wallet_take), currency());
+            }
+            match self
+                .append(draft.credit(self.adjustments, amt, currency()))
+                .await
+            {
+                Err(error @ WalletError::InsufficientFunds) => last_err = Some(error),
+                other => return other,
+            }
+        }
+        Err(last_err.unwrap_or(WalletError::InsufficientFunds))
     }
 
-    /// Hold: reserves part of the wallet balance in the pending layer; the settled balance is untouched.
+    /// Hold: reserves part of the balance in the pending layer; the settled balance is untouched.
     ///
-    /// The wallet's limit counts the pending layer, so concurrent holds cannot
-    /// together exceed the balance. Refused with [`WalletError::InsufficientFunds`]
-    /// when the balance cannot cover it.
+    /// The reservation splits across the pools — the bonus pool funds what it can
+    /// and the wallet carries the rest — so the pending debit each pool takes stays
+    /// inside what that pool's own balance covers, which is what
+    /// `FundedReservations` enforces at append. A racing hold can take bonus room
+    /// between the split's read and its write; the retry re-reads and splits again
+    /// rather than refusing a request the combined balance could have served.
+    /// Refused with [`WalletError::InsufficientFunds`] when the balance cannot
+    /// cover it.
     ///
     /// `description` is what the entry says it is, in the caller's words — for a gateway request, the
     /// record built by [`crate::hold_description`]. An empty description records none; either way it
@@ -391,14 +455,73 @@ impl Wallet {
         minor: i64,
         on: Date,
     ) -> Result<Receipt, WalletError> {
-        let amt = positive(minor)?;
-        self.append(
-            Entry::<Draft, SCALE>::new(entry_id_for(key), idem(key)?, on)
-                .with_description(description_of(description)?)
-                .post(Posting::debit(self.wallet, amt, currency()).in_layer(Layer::Pending))
-                .post(Posting::credit(self.revenue, amt, currency()).in_layer(Layer::Pending)),
-        )
-        .await
+        positive(minor)?;
+        let mut last_err = None;
+        for _ in 0..POOL_SPLIT_ATTEMPTS {
+            // The split's read borrows a connection only for itself: holding one
+            // while the append waits for another would starve the pool under
+            // concurrent holds.
+            let (bonus_part, wallet_part) = {
+                let mut conn = self.store.pool().acquire().await?;
+                self.pool_split(&mut conn, minor).await?
+            };
+            let receipt = self
+                .append(self.hold_entry(key, description, bonus_part, wallet_part, None, on)?)
+                .await;
+            match receipt {
+                Err(error @ WalletError::InsufficientFunds) => last_err = Some(error),
+                other => return other,
+            }
+        }
+        Err(last_err.unwrap_or(WalletError::InsufficientFunds))
+    }
+
+    /// The split of `minor` across the pools, bonus first: how much of the
+    /// reservation the bonus pool funds and how much falls to the wallet.
+    /// `bonus_part + wallet_part == minor` always; either side may be zero.
+    async fn pool_split(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        minor: i64,
+    ) -> Result<(i64, i64), WalletError> {
+        let bonus_part = minor.min(self.pool_available_in(conn, self.bonus).await?.max(0));
+        Ok((bonus_part, minor - bonus_part))
+    }
+
+    /// Builds the pending-layer hold entry for a computed split: a pending debit
+    /// on each pool it draws and the pending credit on revenue for the whole
+    /// amount, with the optional provenance actor the hold attributes to.
+    fn hold_entry(
+        &self,
+        key: &str,
+        description: &str,
+        bonus_part: i64,
+        wallet_part: i64,
+        actor: Option<Provenance>,
+        on: Date,
+    ) -> Result<Entry<Draft, SCALE>, WalletError> {
+        let minor = bonus_part + wallet_part;
+        let mut draft = Entry::<Draft, SCALE>::new(entry_id_for(key), idem(key)?, on)
+            .with_description(description_of(description)?);
+        if let Some(actor) = actor {
+            draft = draft.with_provenance(actor);
+        }
+        if bonus_part > 0 {
+            draft = draft.post(
+                Posting::debit(self.bonus, Credits::from_minor(bonus_part), currency())
+                    .in_layer(Layer::Pending),
+            );
+        }
+        if wallet_part > 0 {
+            draft = draft.post(
+                Posting::debit(self.wallet, Credits::from_minor(wallet_part), currency())
+                    .in_layer(Layer::Pending),
+            );
+        }
+        Ok(draft.post(
+            Posting::credit(self.revenue, Credits::from_minor(minor), currency())
+                .in_layer(Layer::Pending),
+        ))
     }
 
     /// Hold attributed to an API key, enforcing the key's spend limit when it has one.
@@ -417,7 +540,12 @@ impl Wallet {
     ///
     /// Refused with [`WalletError::KeyLimitExceeded`] when the hold would push the key's
     /// committed spend past its limit, and with [`WalletError::InsufficientFunds`] when the
-    /// wallet's own balance cannot cover it — the key limit never overrides the balance.
+    /// balance cannot cover it — the key limit never overrides the balance.
+    ///
+    /// The reservation splits across the pools like [`hold`](Self::hold)'s does; the
+    /// split is computed on the transaction's connection so the lock, the limit read
+    /// and the balance read agree on what is committed, and the whole flow retries
+    /// when a racing append invalidates the split it chose.
     pub async fn hold_for_key(
         &self,
         key: &ActingKey,
@@ -426,70 +554,84 @@ impl Wallet {
         minor: i64,
         on: Date,
     ) -> Result<Receipt, WalletError> {
-        let amt = positive(minor)?;
+        positive(minor)?;
         let actor = Provenance::none()
             .with_actor(&key.key_id.as_simple().to_string())
             .map_err(invalid)?;
-        let mut tx = self.store.pool().begin().await?;
-        // The check and the append serialize on this lock, per key. The engine's own
-        // append takes the per-tenant lock inside, so the order is always key lock first,
-        // tenant lock second, and the engine never takes the key lock: no deadlock, and no
-        // tenant-level contention beyond the append lock that already exists.
-        sqlx::query("SELECT pg_advisory_xact_lock($1)")
-            .bind(limit_lock_key(&self.tenant_id, &key.key_id))
-            .execute(&mut *tx)
-            .await?;
-        // The limit in force now, not the one the request authenticated with: locked, so a
-        // PATCH landing between authentication and this hold cannot be missed.
-        let limit: Option<Option<i64>> = sqlx::query_scalar(
-            "SELECT spend_limit_minor FROM oxsum.api_keys WHERE key_id = $1 FOR UPDATE",
-        )
-        .bind(key.key_id)
-        .fetch_optional(&mut *tx)
-        .await?;
-        let Some(limit) = limit else {
-            // Keys are never deleted; a missing row means the credential died mid-request.
-            return Err(WalletError::Unauthenticated);
-        };
-        let entry = self
-            .seal(
-                Entry::<Draft, SCALE>::new(entry_id_for(idem_key), idem(idem_key)?, on)
-                    .with_description(description_of(description)?)
-                    .with_provenance(actor)
-                    .post(Posting::debit(self.wallet, amt, currency()).in_layer(Layer::Pending))
-                    .post(Posting::credit(self.revenue, amt, currency()).in_layer(Layer::Pending)),
+        let mut last_err = None;
+        for _ in 0..POOL_SPLIT_ATTEMPTS {
+            let mut tx = self.store.pool().begin().await?;
+            // The check and the append serialize on this lock, per key. The engine's own
+            // append takes the per-tenant lock inside, so the order is always key lock first,
+            // tenant lock second, and the engine never takes the key lock: no deadlock, and no
+            // tenant-level contention beyond the append lock that already exists.
+            sqlx::query("SELECT pg_advisory_xact_lock($1)")
+                .bind(limit_lock_key(&self.tenant_id, &key.key_id))
+                .execute(&mut *tx)
+                .await?;
+            // The limit in force now, not the one the request authenticated with: locked, so a
+            // PATCH landing between authentication and this hold cannot be missed.
+            let limit: Option<Option<i64>> = sqlx::query_scalar(
+                "SELECT spend_limit_minor FROM oxsum.api_keys WHERE key_id = $1 FOR UPDATE",
             )
+            .bind(key.key_id)
+            .fetch_optional(&mut *tx)
             .await?;
-        // An identical retry replays instead of spending again: the limit guards new spend,
-        // so a replay answers before the check. A different request under a reused key falls
-        // through to the engine's idempotency gate, which names the conflict — also past the
-        // check, because that write never lands either.
-        let existing = self.store.get(entry.id()).await?;
-        if let Some(stored) = &existing
-            && stored.content_hash == entry.content_hash()
-        {
-            tx.rollback().await?;
-            return Ok(Receipt {
-                entry_id: stored.entry.id(),
-                log_index: stored.require_index().map(|index| index.get()).ok(),
-                content_hash: stored.content_hash,
-                is_new: false,
-            });
-        }
-        if existing.is_none()
-            && let Some(limit) = limit
-        {
-            let committed = self.key_committed_in(&mut tx, &key.key_id).await?;
-            if committed + minor > limit {
-                return Err(WalletError::KeyLimitExceeded {
-                    limit_minor: limit,
-                    committed_minor: committed,
+            let Some(limit) = limit else {
+                // Keys are never deleted; a missing row means the credential died mid-request.
+                return Err(WalletError::Unauthenticated);
+            };
+            let (bonus_part, wallet_part) = self.pool_split(&mut tx, minor).await?;
+            let entry = self
+                .seal(self.hold_entry(
+                    idem_key,
+                    description,
+                    bonus_part,
+                    wallet_part,
+                    Some(actor.clone()),
+                    on,
+                )?)
+                .await?;
+            // An identical retry replays instead of spending again: the limit guards new spend,
+            // so a replay answers before the check. A different request under a reused key falls
+            // through to the engine's idempotency gate, which names the conflict — also past the
+            // check, because that write never lands either.
+            let existing = self.store.get(entry.id()).await?;
+            if let Some(stored) = &existing
+                && stored.content_hash == entry.content_hash()
+            {
+                tx.rollback().await?;
+                return Ok(Receipt {
+                    entry_id: stored.entry.id(),
+                    log_index: stored.require_index().map(|index| index.get()).ok(),
+                    content_hash: stored.content_hash,
+                    is_new: false,
                 });
             }
+            if existing.is_none()
+                && let Some(limit) = limit
+            {
+                let committed = self.key_committed_in(&mut tx, &key.key_id).await?;
+                if committed + minor > limit {
+                    return Err(WalletError::KeyLimitExceeded {
+                        limit_minor: limit,
+                        committed_minor: committed,
+                    });
+                }
+            }
+            match self.append_sealed(entry).await {
+                Err(error @ WalletError::InsufficientFunds) => {
+                    tx.rollback().await?;
+                    last_err = Some(error);
+                }
+                receipt => {
+                    let receipt = receipt?;
+                    tx.commit().await?;
+                    return Ok(receipt);
+                }
+            }
         }
-        let receipt = self.append_sealed(entry).await?;
-        tx.commit().await?;
-        Ok(receipt)
+        Err(last_err.unwrap_or(WalletError::InsufficientFunds))
     }
 
     /// What one API key has committed: settled charges plus outstanding holds attributed
@@ -515,11 +657,11 @@ impl Wallet {
                               ELSE -p.amount_minor END), 0)::bigint AS committed \
              FROM ledger_{schema}.postings p \
              JOIN ledger_{schema}.entries e ON e.entry_id = p.entry_id \
-             WHERE p.account_index = $1 AND e.provenance_actor = $2",
+             WHERE p.account_index = ANY($1) AND e.provenance_actor = $2",
             schema = self.tenant_id,
         );
         let committed: i64 = sqlx::query_scalar(&sql)
-            .bind(self.wallet.index() as i32)
+            .bind(vec![self.wallet.index() as i32, self.bonus.index() as i32])
             .bind(key_id.as_simple().to_string())
             .fetch_one(&mut *conn)
             .await?;
@@ -568,13 +710,13 @@ impl Wallet {
                 "actual must be within 0..=held".into(),
             ));
         }
-        let (held_minor, outstanding_actor) = self.outstanding_hold(hold_key).await?;
-        if actual_minor > held_minor {
+        let (bonus_held, wallet_held, outstanding_actor) = self.outstanding_hold(hold_key).await?;
+        if actual_minor > bonus_held + wallet_held {
             return Err(WalletError::InvalidInput(
                 "actual must be within 0..=held".into(),
             ));
         }
-        let held = Credits::from_minor(held_minor);
+        let held = Credits::from_minor(bonus_held + wallet_held);
         let settle_key = settlement_key_for(hold_key);
         let mut draft =
             Entry::<Draft, SCALE>::new(entry_id_for(&settle_key), idem(&settle_key)?, on)
@@ -586,16 +728,33 @@ impl Wallet {
         if let Some(actor) = outstanding_actor {
             draft = draft.with_provenance(Provenance::none().with_actor(&actor).map_err(invalid)?);
         }
-        draft = draft
-            .post(Posting::credit(self.wallet, held, currency()).in_layer(Layer::Pending))
-            .post(Posting::debit(self.revenue, held, currency()).in_layer(Layer::Pending));
-        if actual_minor > 0 {
-            let actual = Credits::from_minor(actual_minor);
-            draft = draft.debit(self.wallet, actual, currency()).credit(
-                self.revenue,
-                actual,
-                currency(),
+        // The release returns exactly what the hold reserved in each pool.
+        if bonus_held > 0 {
+            draft = draft.post(
+                Posting::credit(self.bonus, Credits::from_minor(bonus_held), currency())
+                    .in_layer(Layer::Pending),
             );
+        }
+        if wallet_held > 0 {
+            draft = draft.post(
+                Posting::credit(self.wallet, Credits::from_minor(wallet_held), currency())
+                    .in_layer(Layer::Pending),
+            );
+        }
+        draft = draft.post(Posting::debit(self.revenue, held, currency()).in_layer(Layer::Pending));
+        if actual_minor > 0 {
+            // The charge draws the bonus pool first, never more than this hold
+            // reserved there — taking another hold's reservation is exactly what
+            // the per-pool split exists to prevent.
+            let bonus_take = actual_minor.min(bonus_held);
+            let wallet_take = actual_minor - bonus_take;
+            if bonus_take > 0 {
+                draft = draft.debit(self.bonus, Credits::from_minor(bonus_take), currency());
+            }
+            if wallet_take > 0 {
+                draft = draft.debit(self.wallet, Credits::from_minor(wallet_take), currency());
+            }
+            draft = draft.credit(self.revenue, Credits::from_minor(actual_minor), currency());
         }
         match self.append(draft).await {
             // The settlement's idempotency key is derived from the hold's key, so a key
@@ -612,46 +771,52 @@ impl Wallet {
         Ok(self.settled().await? - self.reserved().await?)
     }
 
-    /// Credits that have settled into the wallet: what top-ups put there, less what settlements
-    /// have charged.
+    /// Credits that have settled across the pools: what top-ups and grants put there,
+    /// less what settlements and deductions have charged.
     ///
     /// Separate from [`reserved`](Self::reserved) because a hold and a settlement are answered
     /// from different layers: a hold draws on the two together, a settlement gives back part of
     /// the reserved one.
     pub async fn settled(&self) -> Result<i64, WalletError> {
-        self.wallet_net(Layer::Settled).await
+        self.pool_net(Layer::Settled).await
     }
 
-    /// Credits currently reserved by holds that have not been settled yet.
+    /// Credits currently reserved by holds that have not been settled yet, across the pools.
     ///
-    /// Never negative: the wallet's limit keeps the pending layer on the hold side, which is what
+    /// Never negative: each pool's limit keeps its pending layer on the hold side, which is what
     /// makes this the ceiling on what a settlement may release.
     pub async fn reserved(&self) -> Result<i64, WalletError> {
-        Ok(-self.wallet_net(Layer::Pending).await?)
+        Ok(-self.pool_net(Layer::Pending).await?)
     }
 
-    /// Credits the wallet has been charged on or after `from`, in minor units: the
-    /// settled-layer debits on the wallet account, which is what a settlement books when it
-    /// charges actual usage.
+    /// Credits the pools have been charged on or after `from`, in minor units: the
+    /// settled-layer debits on the pool accounts, which is what a settlement or a
+    /// deduction books when it draws the balance down.
     ///
     /// The gross debits, not the layer's net: a top-up credits the same layer, and
-    /// subtracting the credits would read a month of top-ups as negative spend. Holds live
-    /// in the pending layer, so an outstanding hold is not spend either. A window in which
-    /// nothing settled is an empty sum: zero, not an error.
+    /// subtracting the credits would read a month of top-ups as negative spend. Holds
+    /// live in the pending layer, so an outstanding hold is not spend either, and the
+    /// pool reclassification is excluded by its idempotency key — moving money between
+    /// pools is not spend. A window in which nothing settled is an empty sum: zero,
+    /// not an error.
     pub async fn settled_spend_since(&self, from: Date) -> Result<i64, WalletError> {
-        let b = self
-            .store
-            .balance(
-                BalanceKey {
-                    account: self.wallet,
-                    currency: currency(),
-                    layer: Layer::Settled,
-                },
-                BalanceQuery::all().from(from),
-            )
+        let mut conn = self.store.pool().acquire().await?;
+        let sql = format!(
+            "SELECT COALESCE(SUM(p.amount_minor), 0)::bigint AS spend \
+             FROM ledger_{schema}.postings p \
+             JOIN ledger_{schema}.entries e ON e.entry_id = p.entry_id \
+             WHERE p.account_index = ANY($1) AND p.direction = 'D' AND p.layer = 'settled' \
+               AND e.log_index IS NOT NULL AND e.booking_date >= $2 \
+               AND e.idempotency_key <> $3",
+            schema = self.tenant_id,
+        );
+        let spend: i64 = sqlx::query_scalar(&sql)
+            .bind(vec![self.wallet.index() as i32, self.bonus.index() as i32])
+            .bind(from)
+            .bind(RECLASS_KEY.as_bytes())
+            .fetch_one(&mut *conn)
             .await?;
-        // The wallet is a liability, so a charge debits it.
-        Ok(b.debits.to_minor())
+        Ok(spend)
     }
 
     /// What the current UTC month has charged the wallet, in minor units — the dashboard's
@@ -750,32 +915,41 @@ impl Wallet {
         self.store.seals().await.map_err(Into::into)
     }
 
-    /// The amount of the hold taken under `hold_key`, read from the hold entry in the ledger,
-    /// plus the provenance actor the hold attributed to — the API key whose spend it counts
-    /// toward, if the hold named one.
+    /// What the hold taken under `hold_key` reserved in each pool — the bonus part
+    /// first, then the wallet part — plus the provenance actor the hold attributed
+    /// to: the API key whose spend it counts toward, if the hold named one.
     ///
     /// The hold entry is found by the id it was given when the hold was taken
-    /// ([`entry_id_for`] of the key), and the amount is the entry's pending-layer debit on the
-    /// wallet account — the ledger's own record of what was reserved, not a caller assertion.
-    /// [`WalletError::HoldNotFound`] when no entry is stored under the key, or when the entry
-    /// is not a hold.
-    async fn outstanding_hold(&self, hold_key: &str) -> Result<(i64, Option<String>), WalletError> {
+    /// ([`entry_id_for`] of the key), and the amounts are the entry's pending-layer
+    /// debits on the pool accounts — the ledger's own record of what was reserved,
+    /// not a caller assertion. [`WalletError::HoldNotFound`] when no entry is stored
+    /// under the key, or when the entry is not a hold.
+    async fn outstanding_hold(
+        &self,
+        hold_key: &str,
+    ) -> Result<(i64, i64, Option<String>), WalletError> {
         let Some(stored) = self.store.get(entry_id_for(hold_key)).await? else {
             return Err(WalletError::HoldNotFound(format!(
                 "no hold under key {hold_key:?}"
             )));
         };
-        let held = stored
-            .entry
-            .postings()
-            .iter()
-            .filter(|p| p.account == self.wallet && p.layer == Layer::Pending)
-            .map(|p| match p.direction {
+        let mut bonus_held = 0;
+        let mut wallet_held = 0;
+        for p in stored.entry.postings() {
+            if p.layer != Layer::Pending {
+                continue;
+            }
+            let signed = match p.direction {
                 Direction::Debit => p.amount.to_minor(),
                 Direction::Credit => -p.amount.to_minor(),
-            })
-            .sum::<i64>();
-        if held <= 0 {
+            };
+            if p.account == self.bonus {
+                bonus_held += signed;
+            } else if p.account == self.wallet {
+                wallet_held += signed;
+            }
+        }
+        if bonus_held + wallet_held <= 0 {
             return Err(WalletError::HoldNotFound(format!(
                 "key {hold_key:?} does not name a hold"
             )));
@@ -786,7 +960,111 @@ impl Wallet {
             .actor
             .as_ref()
             .map(|actor| actor.as_str().to_owned());
-        Ok((held, actor))
+        Ok((bonus_held, wallet_held, actor))
+    }
+
+    /// The one-time pool migration (decision D1): moves the unspent remainder of
+    /// historical grants out of `Liabilities:Wallet` into `Equity:Bonus` with a
+    /// single `debit Wallet, credit Bonus` entry under [`RECLASS_KEY`].
+    ///
+    /// `grants` counts the settled credits on Wallet that pair with an Adjustments
+    /// debit — top-ups pair with Cash instead, so money the user paid in is never
+    /// misread as granted. The amount moved is
+    /// `clamp(grants - settled wallet outflow, 0, wallet balance)`: the
+    /// draw-bonus-first convention applied retroactively, so granted money counts
+    /// as spent before purchased money and what survives of it is grants minus
+    /// everything the wallet ever paid out, bounded by what it still holds.
+    ///
+    /// Idempotent and self-marking: the entry's fixed key makes a second run a
+    /// no-op, which is what makes a failed first pass safe to retry on the next
+    /// `open`. Runs from `open` — the migration is lazy, each ledger reclassifying
+    /// itself the first time it is opened under the two-pool model. Returns
+    /// whether an entry was written. The move is a
+    /// rebalancing between pools — the settled_spend_since read excludes the key,
+    /// and the bills page never lists it (it has no pending, cash or adjustments
+    /// posting, so [`classify`](Self::classify) has no kind for it).
+    pub async fn reclassify_grants(&self) -> Result<bool, WalletError> {
+        let schema = &self.tenant_id;
+        let amount = {
+            let mut conn = self.store.pool().acquire().await?;
+            let done: bool = sqlx::query_scalar(&format!(
+                "SELECT EXISTS (SELECT 1 FROM ledger_{schema}.entries WHERE idempotency_key = $1)"
+            ))
+            .bind(RECLASS_KEY.as_bytes())
+            .fetch_one(&mut *conn)
+            .await?;
+            if done {
+                return Ok(false);
+            }
+            let grants: i64 = sqlx::query_scalar(&format!(
+                "SELECT COALESCE(SUM(p.amount_minor), 0)::bigint \
+                 FROM ledger_{schema}.postings p \
+                 JOIN ledger_{schema}.entries e ON e.entry_id = p.entry_id \
+                 WHERE p.account_index = $1 AND p.direction = 'C' AND p.layer = 'settled' \
+                   AND e.log_index IS NOT NULL \
+                   AND EXISTS (SELECT 1 FROM ledger_{schema}.postings q \
+                       WHERE q.entry_id = p.entry_id AND q.account_index = $2 \
+                         AND q.direction = 'D' AND q.layer = 'settled')"
+            ))
+            .bind(self.wallet.index() as i32)
+            .bind(self.adjustments.index() as i32)
+            .fetch_one(&mut *conn)
+            .await?;
+            let outflow: i64 = sqlx::query_scalar(&format!(
+                "SELECT COALESCE(SUM(p.amount_minor), 0)::bigint \
+                 FROM ledger_{schema}.postings p \
+                 JOIN ledger_{schema}.entries e ON e.entry_id = p.entry_id \
+                 WHERE p.account_index = $1 AND p.direction = 'D' AND p.layer = 'settled' \
+                   AND e.log_index IS NOT NULL AND e.idempotency_key <> $2"
+            ))
+            .bind(self.wallet.index() as i32)
+            .bind(RECLASS_KEY.as_bytes())
+            .fetch_one(&mut *conn)
+            .await?;
+            let balance: i64 = sqlx::query_scalar(&format!(
+                "SELECT COALESCE(SUM(CASE WHEN p.direction = 'C' THEN p.amount_minor \
+                                          ELSE -p.amount_minor END), 0)::bigint \
+                 FROM ledger_{schema}.postings p \
+                 JOIN ledger_{schema}.entries e ON e.entry_id = p.entry_id \
+                 WHERE p.account_index = $1 AND p.layer = 'settled' AND e.log_index IS NOT NULL"
+            ))
+            .bind(self.wallet.index() as i32)
+            .fetch_one(&mut *conn)
+            .await?;
+            (grants - outflow).clamp(0, balance)
+        };
+        if amount == 0 {
+            return Ok(false);
+        }
+        let amt = Credits::from_minor(amount);
+        let appended = self
+            .append(
+                Entry::<Draft, SCALE>::new(
+                    entry_id_for(RECLASS_KEY),
+                    idem(RECLASS_KEY)?,
+                    OffsetDateTime::now_utc().date(),
+                )
+                .with_description(description_of("bonus pool reclassification")?)
+                .debit(self.wallet, amt, currency())
+                .credit(self.bonus, amt, currency()),
+            )
+            .await;
+        match appended {
+            Ok(_) => Ok(true),
+            // Two opens of one tenant can both pass the marker check and write at
+            // once; the loser of the idempotent append sees the marker on re-read
+            // and has nothing to do.
+            Err(e) => {
+                let mut conn = self.store.pool().acquire().await?;
+                let done: bool = sqlx::query_scalar(&format!(
+                    "SELECT EXISTS (SELECT 1 FROM ledger_{schema}.entries WHERE idempotency_key = $1)"
+                ))
+                .bind(RECLASS_KEY.as_bytes())
+                .fetch_one(&mut *conn)
+                .await?;
+                if done { Ok(false) } else { Err(e) }
+            }
+        }
     }
 
     /// Builds the proof bundle for one entry. Returns None when the entry does not exist.
@@ -1035,7 +1313,7 @@ impl Wallet {
         let mut cash = false;
         let mut adjustments = false;
         for p in stored.entry.postings() {
-            if p.account == self.wallet {
+            if p.account == self.wallet || p.account == self.bonus {
                 match (p.layer, p.direction) {
                     (Layer::Pending, Direction::Credit) => pending_credit = true,
                     (Layer::Pending, Direction::Debit) => pending_debit = true,
@@ -1062,16 +1340,19 @@ impl Wallet {
         None
     }
 
-    /// The entry's effect on the wallet's settled balance, signed: credits add,
-    /// debits take. A top-up or a grant reads positive, a deduction or a settled
-    /// charge negative, and a settlement that charged nothing reads zero — the
-    /// pending-layer release it also writes is not a movement of settled money.
+    /// The entry's effect on the pools' combined settled balance, signed: credits
+    /// add, debits take. A top-up or a grant reads positive, a deduction or a
+    /// settled charge negative, and a settlement that charged nothing reads zero —
+    /// the pending-layer release it also writes is not a movement of settled money.
+    /// The pool reclassification nets to zero across the two accounts.
     fn settled_effect(&self, stored: &StoredEntry<SCALE>) -> i64 {
         stored
             .entry
             .postings()
             .iter()
-            .filter(|p| p.account == self.wallet && p.layer == Layer::Settled)
+            .filter(|p| {
+                (p.account == self.wallet || p.account == self.bonus) && p.layer == Layer::Settled
+            })
             .map(|p| match p.direction {
                 Direction::Credit => p.amount.to_minor(),
                 Direction::Debit => -p.amount.to_minor(),
@@ -1079,24 +1360,26 @@ impl Wallet {
             .sum()
     }
 
-    /// True when the entry settled a hold: the pending-layer credit on the wallet account
+    /// True when the entry settled a hold: the pending-layer credit on a pool account
     /// that [`Wallet::settle`] writes for every settlement, whatever it charges.
     fn is_settlement(&self, stored: &StoredEntry<SCALE>) -> bool {
         stored.entry.postings().iter().any(|p| {
-            p.account == self.wallet
+            (p.account == self.wallet || p.account == self.bonus)
                 && p.layer == Layer::Pending
                 && p.direction == Direction::Credit
         })
     }
 
-    /// What the entry charged: the wallet account's net debit in the settled layer, in
+    /// What the entry charged: the pool accounts' net debit in the settled layer, in
     /// minor units. Nothing at all for a settlement that charged nothing.
     fn settled_charge(&self, stored: &StoredEntry<SCALE>) -> i64 {
         stored
             .entry
             .postings()
             .iter()
-            .filter(|p| p.account == self.wallet && p.layer == Layer::Settled)
+            .filter(|p| {
+                (p.account == self.wallet || p.account == self.bonus) && p.layer == Layer::Settled
+            })
             .map(|p| match p.direction {
                 Direction::Debit => p.amount.to_minor(),
                 Direction::Credit => -p.amount.to_minor(),
@@ -1104,20 +1387,60 @@ impl Wallet {
             .sum()
     }
 
-    async fn wallet_net(&self, layer: Layer) -> Result<i64, WalletError> {
+    /// The two pools' combined balance in one layer. Both accounts are
+    /// credit-normal — the wallet is a liability, the bonus pool equity — so a
+    /// credit balance is the positive side on each.
+    async fn pool_net(&self, layer: Layer) -> Result<i64, WalletError> {
+        Ok(self.account_net(self.wallet, layer).await?
+            + self.account_net(self.bonus, layer).await?)
+    }
+
+    /// The bonus pool's settled balance: what a deduction may draw before it
+    /// touches purchased credit.
+    async fn bonus_settled(&self) -> Result<i64, WalletError> {
+        self.account_net(self.bonus, Layer::Settled).await
+    }
+
+    async fn account_net(&self, account: AccountId, layer: Layer) -> Result<i64, WalletError> {
         let b = self
             .store
             .balance(
                 BalanceKey {
-                    account: self.wallet,
+                    account,
                     currency: currency(),
                     layer,
                 },
                 BalanceQuery::all(),
             )
             .await?;
-        // The wallet is a liability: credit balances are the positive side.
         Ok(b.credits.to_minor() - b.debits.to_minor())
+    }
+
+    /// What a pool account can still fund: its settled balance minus the
+    /// reservations pending holds already took. The `FundedReservations` limit
+    /// keeps pending credits off a pool account, so the pending layer only ever
+    /// subtracts.
+    async fn pool_available_in(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        account: AccountId,
+    ) -> Result<i64, WalletError> {
+        let sql = format!(
+            "SELECT COALESCE(SUM(CASE \
+                 WHEN p.layer = 'settled' AND p.direction = 'C' THEN p.amount_minor \
+                 WHEN p.layer = 'settled' AND p.direction = 'D' THEN -p.amount_minor \
+                 WHEN p.layer = 'pending' AND p.direction = 'D' THEN -p.amount_minor \
+                 ELSE 0 END), 0)::bigint AS available \
+             FROM ledger_{schema}.postings p \
+             JOIN ledger_{schema}.entries e ON e.entry_id = p.entry_id \
+             WHERE p.account_index = $1 AND e.log_index IS NOT NULL",
+            schema = self.tenant_id,
+        );
+        let available: i64 = sqlx::query_scalar(&sql)
+            .bind(account.index() as i32)
+            .fetch_one(&mut *conn)
+            .await?;
+        Ok(available)
     }
 
     /// Seals a draft against the ledger's *current* calendar — read back from
