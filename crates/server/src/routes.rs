@@ -41,6 +41,7 @@ pub fn router(state: AppState) -> Router {
         .route("/session", get(session))
         .route("/session/organization", post(switch_organization))
         .route("/topups", post(top_up))
+        .route("/redemptions", post(redeem))
         .route("/holds", post(hold))
         .route("/settlements", post(settle))
         .route("/balance", get(balance))
@@ -172,6 +173,13 @@ struct AmountReq {
 struct SettleReq {
     hold_key: String,
     actual_minor: i64,
+}
+
+/// The body of `POST /api/v1/redemptions`: the code as minted.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RedeemCodeReq {
+    code: String,
 }
 
 #[derive(Serialize)]
@@ -599,7 +607,34 @@ async fn top_up(
     ApiJson(r): ApiJson<AmountReq>,
 ) -> ApiResult<oxsum_core::Receipt> {
     let w = wallet(&state.tenants, principal.organization()).await?;
-    ok(w.top_up(&r.idempotency_key, r.amount_minor, today())
+    let receipt = w
+        .top_up(&r.idempotency_key, r.amount_minor, today())
+        .await?;
+    // The manual deposit rail: every funding event leaves a row on deposits for
+    // reconciliation (decision D2). The caller's idempotency key is the payment
+    // reference, so a replayed top-up sees its own row.
+    state
+        .db
+        .record_manual_deposit(
+            principal.organization().id,
+            &r.idempotency_key,
+            r.amount_minor,
+            *receipt.entry_id.as_uuid(),
+        )
+        .await?;
+    ok(receipt)
+}
+
+/// Redeem an operator-minted code into the acting organization's wallet.
+async fn redeem(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    ApiJson(r): ApiJson<RedeemCodeReq>,
+) -> ApiResult<oxsum_core::Redemption> {
+    let w = wallet(&state.tenants, principal.organization()).await?;
+    ok(state
+        .db
+        .redeem_code(&w, principal.organization().id, &r.code, today())
         .await?)
 }
 

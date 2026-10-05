@@ -42,6 +42,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/holds", get(holds))
         .route("/anomalies", get(anomalies))
         .route("/margin", get(margin))
+        .route("/redemption-codes", post(mint_codes))
         .route("/closings", get(closings).post(close_month))
         .layer(middleware::from_fn_with_state(state, require_admin))
 }
@@ -548,6 +549,30 @@ pub(crate) async fn require_admin(
         }
         _ => Err(ApiError::Unauthorized),
     }
+}
+
+/// The body of `POST …/redemption-codes`: how many codes, worth how much, and
+/// optionally when the batch stops redeeming.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MintCodesReq {
+    count: i64,
+    amount_minor: i64,
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    expires_at: Option<OffsetDateTime>,
+}
+
+/// Mints a batch of redemption codes: the codes themselves are answered once,
+/// here, and the database keeps only their hashes — whoever holds a code can
+/// redeem it through `POST /api/v1/redemptions`.
+async fn mint_codes(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<MintCodesReq>,
+) -> ApiResult<oxsum_core::CodeBatch> {
+    ok(state
+        .db
+        .mint_codes(request.count, request.amount_minor, request.expires_at)
+        .await?)
 }
 
 /// Whether a presented token is the configured one, in time that does not depend on how much of it

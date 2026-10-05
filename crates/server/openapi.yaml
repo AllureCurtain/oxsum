@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.22.0
+  version: 0.23.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -65,7 +65,11 @@ info:
     0.22.0 adds `GET /api/v1/admin/margin`: each settled turn now also records what
     the channel's `upstream` prices made of the same usage, and the endpoint sums
     the two per channel and model — the gross-margin view the `upstream` prices
-    were written for.
+    were written for. 0.23.0 makes funding multi-rail: every credit into the
+    purchased pool is recorded as a deposit on one `deposits` table (`/api/v1/topups`
+    is the `manual` rail, unchanged on the wire), and the first live rail is
+    redemption codes — `POST /api/v1/admin/redemption-codes` mints a batch and
+    `POST /api/v1/redemptions` redeems one into the acting organization's wallet.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie, except
     `/api/v1/auth/login`, `/api/v1/auth/logout` and `/api/v1/auth/register`, which take no
@@ -590,6 +594,11 @@ paths:
   /api/v1/topups:
     post:
       summary: Top up credits
+      description: |
+        The `manual` deposit rail: the caller asserts money arrived out of band and the credit
+        lands in the purchased pool. The credit is also recorded on `oxsum.deposits`
+        (`rail = manual`, `payment_ref` = the idempotency key) so every funding event has one
+        record for reconciliation.
       requestBody:
         required: true
         content:
@@ -599,6 +608,39 @@ paths:
         "200": { $ref: "#/components/responses/Receipt" }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/redemptions:
+    post:
+      summary: Redeem a code into the acting organization's wallet
+      description: |
+        The `redemption` deposit rail: a code the operator minted (`POST
+        /api/v1/admin/redemption-codes`) credits its amount to the purchased pool.
+        Redeeming is one atomic claim — the code's row is locked, the deposit is
+        recorded (`rail = redemption`, `payment_ref` = the code's id), and the ledger
+        credits the wallet under idempotency key `redemption:<code_id>`; a retried
+        redeem replays the same credit, and two concurrent redeems of one code leave
+        exactly one winner. A code that is unknown, already spent or past its expiry
+        answers `404` whichever it is: which of the three is wrong is the holder's
+        business. The answer is the ledger receipt of the credit plus what it credited.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RedeemRequest" }
+      responses:
+        "200":
+          description: The receipt of the credit, with the amount the code carried
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/Redemption" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/holds:
@@ -1065,6 +1107,35 @@ paths:
                   data:
                     type: array
                     items: { $ref: "#/components/schemas/AdminMargin" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/redemption-codes:
+    post:
+      summary: Mint a batch of redemption codes
+      description: |
+        Generates `count` codes worth `amountMinor` each — every code is `oxr-` plus
+        32 random bytes, and the database keeps only its SHA-256 hash, so this answer
+        is the only time the codes exist in readable form. The batch shares one id
+        and one optional expiry; a code without `expiresAt` never expires. Codes
+        redeem through `POST /api/v1/redemptions`.
+      security:
+        - adminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RedemptionCodeBatchRequest" }
+      responses:
+        "200":
+          description: The minted batch; the only answer that carries the codes
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/RedemptionCodeBatch" }
+        "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/admin/closings:
@@ -1637,6 +1708,37 @@ components:
       properties:
         holdKey: { type: string, minLength: 1, maxLength: 128, description: the idempotency key of the hold this settlement releases; the hold's amount is read from the ledger, and one hold settles at most once }
         actualMinor: { type: integer, format: int64, minimum: 0, description: actual usage, must not exceed the hold's amount }
+    RedeemRequest:
+      type: object
+      required: [code]
+      properties:
+        code: { type: string, description: "the redemption code as minted, `oxr-` plus 64 hex characters" }
+    RedemptionCodeBatchRequest:
+      type: object
+      required: [count, amountMinor]
+      properties:
+        count: { type: integer, minimum: 1, maximum: 1000, description: how many codes this batch mints }
+        amountMinor: { type: integer, format: int64, minimum: 1, description: what each code credits }
+        expiresAt: { type: [string, "null"], format: date-time, description: when the codes stop redeeming; absent means never }
+    Redemption:
+      allOf:
+        - $ref: "#/components/schemas/Receipt"
+        - type: object
+          required: [amountMinor]
+          properties:
+            amountMinor: { type: integer, format: int64, description: what the code credited }
+    RedemptionCodeBatch:
+      type: object
+      required: [batchId, count, amountMinor, expiresAt, codes]
+      properties:
+        batchId: { type: string, format: uuid, description: names the batch in deposit metadata and a future admin list }
+        count: { type: integer }
+        amountMinor: { type: integer, format: int64 }
+        expiresAt: { type: [string, "null"], format: date-time }
+        codes:
+          type: array
+          items: { type: string }
+          description: the plaintext codes — answered once, never stored readable
     Receipt:
       type: object
       required: [entryId, contentHash, isNew]
