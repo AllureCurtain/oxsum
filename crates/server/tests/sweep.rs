@@ -12,8 +12,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use oxsum_core::{
-    Db, OpenHold, Settlement, SettlementKind, Tenants, Wallet, WalletError, entry_id_for,
-    hold_description, settlement_key_for, sweep_stale_holds,
+    Db, OpenHold, Settlement, SettlementKind, Tenants, UsageRecord, Wallet, WalletError,
+    entry_id_for, hold_description, settlement_key_for, sweep_stale_holds,
 };
 use serde_json::Value;
 use sqlx::{PgPool, Row};
@@ -117,16 +117,22 @@ async fn take_hold(world: &World, hold_key: &str, request_id: &str, watch: &Open
         .expect("takes the hold");
 }
 
-/// The settlement entry's record for a hold, once it exists.
-async fn settlement_record(wallet: &Arc<Wallet>, hold_key: &str) -> Option<Value> {
+/// The settlement entry's description for a hold, verbatim — the bytes
+/// `verify_charge` recomputes.
+async fn settlement_description(wallet: &Arc<Wallet>, hold_key: &str) -> Option<String> {
     let entry_id = entry_id_for(&settlement_key_for(hold_key));
     let bundle = wallet
         .receipt_proof(entry_id)
         .await
         .expect("the proof is built")?;
-    Some(
-        serde_json::from_str(bundle.entry.description().as_str()).expect("the description is JSON"),
-    )
+    Some(bundle.entry.description().as_str().to_owned())
+}
+
+/// The settlement entry's record for a hold, once it exists.
+async fn settlement_record(wallet: &Arc<Wallet>, hold_key: &str) -> Option<Value> {
+    settlement_description(wallet, hold_key)
+        .await
+        .map(|text| serde_json::from_str(&text).expect("the description is JSON"))
 }
 
 /// Serialises the test sweepers across test binaries: production runs one sweeper, so the
@@ -200,14 +206,14 @@ async fn is_watched(db: &Db, hold_key: &str) -> bool {
 
 /// The turn's own settlement record, for the race: usage priced at the watched version.
 fn usage_settlement(request_id: &str, charged: i64, freeze: i64) -> String {
+    let usage = UsageRecord::tokens(10, 5).expect("the test counts are valid");
     Settlement {
         request: request_id,
         channel: "test-channel",
         model: "test-model",
         price_version: 1,
         kind: SettlementKind::Usage,
-        input_tokens: 10,
-        output_tokens: 5,
+        usage: &usage,
         input_price: 1_000_000,
         output_price: 1_000_000,
         charged,
@@ -249,10 +255,21 @@ async fn a_stale_hold_is_swept_at_zero_and_recorded_as_an_anomaly() {
         .expect("the sweep wrote a settlement");
     assert_eq!(record["kind"], "swept");
     assert_eq!(record["charged"], 0);
-    assert_eq!(record["inputTokens"], 0);
-    assert_eq!(record["outputTokens"], 0);
+    // Zero usage writes no dimensions: the sparse usage object is empty, and the
+    // priced lines count zero units.
+    assert_eq!(record["usage"], serde_json::json!({}));
+    assert_eq!(record["lines"][0]["units"], 0);
+    assert_eq!(record["lines"][1]["units"], 0);
     assert_eq!(record["freeze"], freeze);
     assert_eq!(record["request"], request_id);
+    // The swept record recomputes too: zero lines, zero charge, capped by the freeze.
+    let description = settlement_description(&world.wallet, &hold_key)
+        .await
+        .expect("the sweep wrote a settlement");
+    assert_eq!(
+        oxsum_core::verify_charge(&description),
+        oxsum_core::ChargeCheck::Recomputed
+    );
     // A second pass finds nothing: the row is gone, and nothing can have aged a new one — only a
     // test ages rows, and this one still holds the sweep lock.
     let resolved = sweep_stale_holds(&world.db, &world.tenants, stale_cutoff(), D)

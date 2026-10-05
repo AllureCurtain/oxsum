@@ -11,8 +11,8 @@
 use std::sync::Arc;
 
 use oxsum_core::{
-    Settlement, SettlementKind, Tenants, TransactionKind, Wallet, WalletError, hold_description,
-    verify_bundle,
+    Settlement, SettlementKind, Tenants, TransactionKind, UsageRecord, Wallet, WalletError,
+    hold_description, verify_bundle,
 };
 use sqlx::PgPool;
 use time::macros::date;
@@ -601,14 +601,14 @@ async fn a_gateway_settlement_names_its_key_and_its_record() {
     )
     .await
     .unwrap();
+    let usage = UsageRecord::tokens(11, 22).unwrap();
     let record = Settlement {
         request: "req-9",
         channel: "chan",
         model: "model-x",
         price_version: 1,
         kind: SettlementKind::Usage,
-        input_tokens: 11,
-        output_tokens: 22,
+        usage: &usage,
         input_price: 1_000,
         output_price: 2_000,
         charged: 77,
@@ -748,14 +748,14 @@ async fn request_pages_walk_only_settled_turns() {
         w.hold(&format!("{request}:h"), &format!("{request}:hold"), ONE, D)
             .await
             .unwrap();
+        let usage = UsageRecord::tokens(1, 2).unwrap();
         let record = Settlement {
             request: &request,
             channel: "chan",
             model: "m",
             price_version: 1,
             kind: SettlementKind::Usage,
-            input_tokens: 1,
-            output_tokens: 2,
+            usage: &usage,
             input_price: 1_000,
             output_price: 2_000,
             charged: ONE,

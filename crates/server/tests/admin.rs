@@ -700,6 +700,7 @@ async fn the_anomalies_list_shows_the_turns_that_did_not_price_cleanly() {
             .hold(&hold_key, "", 900_000, today)
             .await
             .expect("a hold settles");
+        let usage = oxsum_core::UsageRecord::tokens(10, 20).expect("the seed counts");
         let description = oxsum_core::Settlement {
             request,
             channel: "chan-y",
@@ -707,8 +708,7 @@ async fn the_anomalies_list_shows_the_turns_that_did_not_price_cleanly() {
             price_version: 2,
             kind: serde_json::from_str::<oxsum_core::SettlementKind>(&format!("\"{kind}\""))
                 .expect("a settlement kind"),
-            input_tokens: 10,
-            output_tokens: 20,
+            usage: &usage,
             input_price: 1_000,
             output_price: 2_000,
             charged: 60,

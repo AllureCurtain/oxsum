@@ -258,8 +258,9 @@ impl World {
             .expect("the organization's ledger opens")
     }
 
-    /// What the settlement entry for a request says, once it is there.
-    async fn settlement(&self, request_id: &str) -> Option<Value> {
+    /// The settlement entry's description for a request, verbatim, once it is
+    /// there — the bytes `verify_charge` recomputes.
+    async fn settlement_description(&self, request_id: &str) -> Option<String> {
         // The settlement names the hold, and its idempotency key — and so its entry id — is
         // derived from the hold's key.
         let hold_key = format!("req-{request_id}:hold");
@@ -271,9 +272,14 @@ impl World {
             .await
             .expect("the proof is built")
             .map(|bundle| bundle.entry);
-        bundle.map(|entry| {
-            serde_json::from_str(entry.description().as_str()).expect("the description is JSON")
-        })
+        bundle.map(|entry| entry.description().as_str().to_owned())
+    }
+
+    /// What the settlement entry for a request says, once it is there.
+    async fn settlement(&self, request_id: &str) -> Option<Value> {
+        self.settlement_description(request_id)
+            .await
+            .map(|text| serde_json::from_str(&text).expect("the description is JSON"))
     }
 
     /// Waits for a settlement that happens off the request path, like a cancelled turn's.
@@ -585,11 +591,23 @@ async fn a_whole_answer_is_charged_from_upstreams_usage() {
     // Ten input tokens and two output tokens, at one minor unit each.
     let record = world.settlement(&id).await.expect("the turn settled");
     assert_eq!(record["kind"], "usage");
-    assert_eq!(record["inputTokens"], 10);
-    assert_eq!(record["outputTokens"], 2);
+    assert_eq!(record["usage"]["inputTokens"], 10);
+    assert_eq!(record["usage"]["outputTokens"], 2);
     assert_eq!(record["charged"], 12);
     assert_eq!(record["model"], world.model("ok"));
     assert_eq!(record["request"], id);
+
+    // The description is a self-contained billing credential (issue #106): the
+    // verifier recomputes the charge from the usage and rates inside the entry,
+    // with nothing from the server but the bytes themselves.
+    let description = world
+        .settlement_description(&id)
+        .await
+        .expect("the turn settled");
+    assert_eq!(
+        oxsum_core::verify_charge(&description),
+        oxsum_core::ChargeCheck::Recomputed
+    );
 
     // The freeze went back whole, less the charge.
     let wallet = world.wallet().await;
@@ -818,7 +836,10 @@ async fn a_missing_usage_report_falls_back_to_a_local_estimate() {
     // The estimate prices the prompt and the answer text; it is never more than the freeze.
     assert!(charged > 0, "{record}");
     assert!(charged <= record["freeze"].as_i64().unwrap(), "{record}");
-    assert!(record["outputTokens"].as_i64().unwrap() > 0, "{record}");
+    assert!(
+        record["usage"]["outputTokens"].as_i64().unwrap() > 0,
+        "{record}"
+    );
     let wallet = world.wallet().await;
     assert_eq!(wallet.reserved().await.unwrap(), 0);
     assert_eq!(wallet.settled().await.unwrap(), 1_000_000 - charged);
@@ -850,8 +871,8 @@ async fn usage_above_the_freeze_is_capped_at_it() {
     // anomaly is visible as its own kind rather than as a silent loss.
     assert_eq!(record["kind"], "capped");
     assert_eq!(record["charged"], freeze);
-    assert_eq!(record["inputTokens"], 10);
-    assert_eq!(record["outputTokens"], 500);
+    assert_eq!(record["usage"]["inputTokens"], 10);
+    assert_eq!(record["usage"]["outputTokens"], 500);
     assert_eq!(world.wallet().await.reserved().await.unwrap(), 0);
 }
 
@@ -877,7 +898,8 @@ async fn an_upstream_refusal_charges_nothing_and_passes_the_reason_through() {
     let record = world.settlement(&id).await.expect("the turn settled");
     assert_eq!(record["kind"], "upstream_error");
     assert_eq!(record["charged"], 0);
-    assert_eq!(record["inputTokens"], 0);
+    // Zero usage writes no dimensions at all: the sparse usage object is empty.
+    assert_eq!(record["usage"], json!({}));
     // The whole freeze went back.
     let wallet = world.wallet().await;
     assert_eq!(wallet.reserved().await.unwrap(), 0);
@@ -1138,8 +1160,8 @@ async fn a_client_that_hangs_up_at_the_terminator_still_gets_its_usage_bill() {
     // The turn upstream had finished is billed as finished, from its own counts.
     let record = world.settlement_within(&id).await;
     assert_eq!(record["kind"], "usage", "{record}");
-    assert_eq!(record["inputTokens"], 10);
-    assert_eq!(record["outputTokens"], 2);
+    assert_eq!(record["usage"]["inputTokens"], 10);
+    assert_eq!(record["usage"]["outputTokens"], 2);
     assert_eq!(record["charged"], 12);
     let wallet = world.wallet().await;
     assert_eq!(wallet.reserved().await.unwrap(), 0);
@@ -1345,8 +1367,8 @@ async fn a_price_change_lands_on_later_requests_and_not_on_the_one_in_flight() {
     let record = world.settlement_within(&first_id).await;
     assert_eq!(record["channel"], world.channel.as_str());
     assert_eq!(record["priceVersion"], 1);
-    assert_eq!(record["inputPrice"], 1_000_000);
-    assert_eq!(record["outputPrice"], 1_000_000);
+    assert_eq!(record["lines"][0]["pricePerM"], 1_000_000);
+    assert_eq!(record["lines"][1]["pricePerM"], 1_000_000);
 
     // A turn that starts after the change is priced by version 2: the same call, ten times the price.
     world.answers(
@@ -1364,7 +1386,7 @@ async fn a_price_change_lands_on_later_requests_and_not_on_the_one_in_flight() {
         .await
         .expect("the turn settled");
     assert_eq!(record["priceVersion"], 2);
-    assert_eq!(record["inputPrice"], 10_000_000);
+    assert_eq!(record["lines"][0]["pricePerM"], 10_000_000);
     assert_eq!(record["charged"], 120);
 }
 

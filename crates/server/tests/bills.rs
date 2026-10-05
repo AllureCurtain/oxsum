@@ -18,7 +18,9 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode};
 use http_body_util::BodyExt;
-use oxsum_core::{ActingKey, Db, Settlement, SettlementKind, Tenants, hold_description};
+use oxsum_core::{
+    ActingKey, Db, Settlement, SettlementKind, Tenants, UsageRecord, hold_description,
+};
 use oxsum_server::{Config, Signup};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -395,14 +397,14 @@ async fn seed_request(
         )
         .await
         .expect("the hold is taken");
+    let usage = UsageRecord::tokens(116, 100).expect("the seed counts");
     let record = Settlement {
         request,
         channel: "mock",
         model: "mock-a",
         price_version: 1,
         kind: status,
-        input_tokens: 116,
-        output_tokens: 100,
+        usage: &usage,
         input_price: 1_000,
         output_price: 2_000,
         charged,
