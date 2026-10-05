@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use oxsum_core::{
-    Settlement, SettlementKind, Tenants, TransactionKind, UsageRecord, Wallet, WalletError,
+    SCALE, Settlement, SettlementKind, Tenants, TransactionKind, UsageRecord, Wallet, WalletError,
     hold_description, verify_bundle,
 };
 use sqlx::PgPool;
@@ -348,16 +348,17 @@ async fn opening_a_wallet_tightens_a_ledger_written_under_the_old_rule() {
     w.top_up("fund", 10 * ONE, D).await.unwrap();
     drop(w);
 
-    // A ledger created before the reservation rule existed stored the weaker limit. The
-    // schema is assembled from this test's own generated tenant id, never from input.
+    // A ledger created before the reservation rule existed stored the weaker limit
+    // on every balance account. The schema is assembled from this test's own
+    // generated tenant id, never from input.
     let weakened = sqlx::query(&format!(
         "UPDATE ledger_{tenant}.accounts SET balance_limit = 'no_debit' \
-         WHERE path = 'Liabilities:Wallet'"
+         WHERE path IN ('Liabilities:Wallet', 'Equity:Bonus')"
     ))
     .execute(&pool)
     .await
     .unwrap();
-    assert_eq!(weakened.rows_affected(), 1);
+    assert_eq!(weakened.rows_affected(), 2);
 
     // Including the constraint that stored code was allowed by. `CREATE TABLE IF NOT EXISTS`
     // would leave it exactly as it is, so the migration has to widen it — otherwise the limit
@@ -377,13 +378,14 @@ async fn opening_a_wallet_tightens_a_ledger_written_under_the_old_rule() {
     .unwrap();
 
     let w = Wallet::open(pool.clone(), &tenant).await.unwrap();
-    let stored: String = sqlx::query_scalar(&format!(
-        "SELECT balance_limit FROM ledger_{tenant}.accounts WHERE path = 'Liabilities:Wallet'"
+    let stored: Vec<String> = sqlx::query_scalar(&format!(
+        "SELECT balance_limit FROM ledger_{tenant}.accounts \
+         WHERE path IN ('Liabilities:Wallet', 'Equity:Bonus') ORDER BY path"
     ))
-    .fetch_one(&pool)
+    .fetch_all(&pool)
     .await
     .unwrap();
-    assert_eq!(stored, "funded_reservations");
+    assert_eq!(stored, ["funded_reservations", "funded_reservations"]);
     assert_eq!(w.available().await.unwrap(), 10 * ONE);
 
     // Which is the point: the rule is enforced again — a hold the balance cannot cover
@@ -806,4 +808,274 @@ async fn request_pages_walk_only_settled_turns() {
         }
     }
     assert_eq!(requests, ["req-2", "req-1", "req-0"]);
+}
+
+/// The settled-layer postings of one entry, as `(account index, direction, minor)`.
+/// The account indexes are learned per tenant from entries whose shape is known —
+/// a top-up credits the wallet, a grant credits the bonus pool — so the assertions
+/// never name a handle the ledger assigned.
+async fn settled_postings(w: &Wallet, entry: oxsum_core::EntryId) -> Vec<(u32, char, i64)> {
+    use doubleentry::Direction;
+    let bundle = w.receipt_proof(entry).await.unwrap().unwrap();
+    bundle
+        .entry
+        .postings()
+        .iter()
+        .filter(|p| p.layer == doubleentry::Layer::Settled)
+        .map(|p| {
+            (
+                p.account.index(),
+                match p.direction {
+                    Direction::Debit => 'D',
+                    Direction::Credit => 'C',
+                },
+                p.amount.to_minor(),
+            )
+        })
+        .collect()
+}
+
+async fn pending_debits(w: &Wallet, entry: oxsum_core::EntryId) -> Vec<(u32, i64)> {
+    use doubleentry::Direction;
+    let bundle = w.receipt_proof(entry).await.unwrap().unwrap();
+    bundle
+        .entry
+        .postings()
+        .iter()
+        .filter(|p| p.layer == doubleentry::Layer::Pending && p.direction == Direction::Debit)
+        .map(|p| (p.account.index(), p.amount.to_minor()))
+        .collect()
+}
+
+/// The credit account of a settled entry: the wallet on a top-up, the bonus pool on
+/// a grant, `Equity:Adjustments` never.
+async fn credited_account(w: &Wallet, entry: oxsum_core::EntryId) -> u32 {
+    settled_postings(w, entry)
+        .await
+        .into_iter()
+        .find(|(_, d, _)| *d == 'C')
+        .map(|(a, _, _)| a)
+        .expect("the entry credits a pool account")
+}
+
+#[tokio::test]
+async fn grants_and_charges_draw_the_bonus_pool_first() {
+    let url = db_or_skip!();
+    let w = Wallet::open(pool(&url).await, &fresh("pools"))
+        .await
+        .unwrap();
+    let fund = w.top_up("fund", 8 * ONE, D).await.unwrap();
+    let grant = w.adjust("grant", "welcome", 2 * ONE, D).await.unwrap();
+    let wallet = credited_account(&w, fund.entry_id).await;
+    let bonus = credited_account(&w, grant.entry_id).await;
+    assert_ne!(wallet, bonus, "top-ups and grants credit different pools");
+
+    // A hold that spans both pools reserves each side separately: the bonus pool
+    // funds what it can, the wallet carries the rest.
+    let hold = w.hold("h", "", 6 * ONE, D).await.unwrap();
+    let reserved = pending_debits(&w, hold.entry_id).await;
+    let from = |account: u32| {
+        reserved
+            .iter()
+            .filter(|(a, _)| *a == account)
+            .map(|(_, m)| *m)
+            .sum::<i64>()
+    };
+    assert_eq!(from(bonus), 2 * ONE, "the bonus pool funds what it holds");
+    assert_eq!(from(wallet), 4 * ONE, "the wallet carries the rest");
+    assert_eq!(w.reserved().await.unwrap(), 6 * ONE);
+    assert_eq!(w.available().await.unwrap(), 4 * ONE);
+
+    // The charge draws the bonus pool first, capped by what this hold reserved
+    // there — actual 5 takes the 2 it reserved from bonus and 3 from the wallet.
+    let settled = w.settle("h", "", 5 * ONE, D).await.unwrap();
+    let postings = settled_postings(&w, settled.entry_id).await;
+    let debit = |account: u32| {
+        postings
+            .iter()
+            .filter(|(a, d, _)| *a == account && *d == 'D')
+            .map(|(_, _, m)| *m)
+            .sum::<i64>()
+    };
+    assert_eq!(debit(bonus), 2 * ONE);
+    assert_eq!(debit(wallet), 3 * ONE);
+    assert_eq!(w.available().await.unwrap(), 5 * ONE);
+}
+
+#[tokio::test]
+async fn a_deduction_draws_bonus_first() {
+    let url = db_or_skip!();
+    let w = Wallet::open(pool(&url).await, &fresh("deduct"))
+        .await
+        .unwrap();
+    let fund = w.top_up("fund", 6 * ONE, D).await.unwrap();
+    let grant = w.adjust("grant", "welcome", 4 * ONE, D).await.unwrap();
+    let wallet = credited_account(&w, fund.entry_id).await;
+    let bonus = credited_account(&w, grant.entry_id).await;
+
+    // The first deduction fits inside the bonus pool; the second spills over into
+    // purchased credit only after the bonus side is empty.
+    let first = w.adjust("d1", "clawback", -3 * ONE, D).await.unwrap();
+    let postings = settled_postings(&w, first.entry_id).await;
+    assert_eq!(postings.len(), 2, "one pool debit, one adjustments credit");
+    assert_eq!(postings[0], (bonus, 'D', 3 * ONE));
+    assert_eq!(w.available().await.unwrap(), 7 * ONE);
+
+    let second = w.adjust("d2", "clawback", -3 * ONE, D).await.unwrap();
+    let postings = settled_postings(&w, second.entry_id).await;
+    let debit = |account: u32| {
+        postings
+            .iter()
+            .filter(|(a, d, _)| *a == account && *d == 'D')
+            .map(|(_, _, m)| *m)
+            .sum::<i64>()
+    };
+    assert_eq!(debit(bonus), ONE, "the remainder of the bonus pool");
+    assert_eq!(debit(wallet), 2 * ONE, "only what bonus could not cover");
+    assert_eq!(w.available().await.unwrap(), 4 * ONE);
+}
+
+/// Appends a pre-pools entry — a grant (`Adjustments` → `Wallet`) or a charge
+/// (`Wallet` → `Income:Usage`) in the single-pool shape — through the engine
+/// directly, so the reclassification sees exactly the data it was written for.
+async fn legacy_entry(
+    pool: &PgPool,
+    tenant: &str,
+    key: &str,
+    debit: &str,
+    credit: &str,
+    minor: i64,
+) {
+    use doubleentry::storage::postgres::PostgresStore;
+    use doubleentry::{
+        AccountRegistry, Amount, Currency, Draft, Entry, EntryBatch, IdempotencyKey, LedgerId,
+        LedgerPolicy, LedgerStore, SealContext,
+    };
+    let store = PostgresStore::<SCALE>::new(
+        pool.clone(),
+        LedgerId::new(format!("tenant-{tenant}")).unwrap(),
+    )
+    .in_schema(&format!("ledger_{tenant}"));
+    let registry = AccountRegistry::from_records(store.accounts().await.unwrap()).unwrap();
+    let find = |path: &str| {
+        registry
+            .records()
+            .iter()
+            .find(|r| r.account.path.to_string() == path)
+            .unwrap_or_else(|| panic!("account {path} exists"))
+            .id
+    };
+    let amt = Amount::<SCALE>::from_minor(minor);
+    let draft = Entry::<Draft, SCALE>::new(
+        oxsum_core::entry_id_for(key),
+        IdempotencyKey::new(key.as_bytes().to_vec()).unwrap(),
+        D,
+    )
+    .debit(find(debit), amt, Currency::USD)
+    .credit(find(credit), amt, Currency::USD);
+    let sealed = draft
+        .seal(&SealContext {
+            accounts: &registry,
+            calendar: &store.calendar().await.unwrap(),
+            policy: &LedgerPolicy::default(),
+        })
+        .unwrap();
+    store.append(&EntryBatch::single(sealed)).await.unwrap();
+}
+
+#[tokio::test]
+async fn reclassification_moves_unspent_grants_into_bonus_once() {
+    let url = db_or_skip!();
+    let p = pool(&url).await;
+    let tenant = fresh("reclass");
+    let w = Wallet::open(p.clone(), &tenant).await.unwrap();
+
+    // What a pre-pools ledger looks like: purchased and granted credit mixed in
+    // the wallet account, with spend already charged against it.
+    w.top_up("fund", 5 * ONE, D).await.unwrap();
+    legacy_entry(
+        &p,
+        &tenant,
+        "g1",
+        "Equity:Adjustments",
+        "Liabilities:Wallet",
+        4 * ONE,
+    )
+    .await;
+    legacy_entry(&p, &tenant, "c1", "Liabilities:Wallet", "Income:Usage", ONE).await;
+
+    // Granted 4, spent 1: the draw-bonus-first convention leaves 3 of the grant
+    // unspent, inside a wallet balance of 8.
+    assert!(w.reclassify_grants().await.unwrap());
+    assert!(
+        !w.reclassify_grants().await.unwrap(),
+        "self-marking: a rerun writes nothing"
+    );
+    assert_eq!(w.settled().await.unwrap(), 8 * ONE, "the move nets to zero");
+
+    // The reclass debit is not spend.
+    assert_eq!(w.settled_spend_since(D).await.unwrap(), ONE);
+
+    // The bills page never lists it — it classifies as no transaction kind.
+    let listed: Vec<String> = w
+        .recent_transactions(20)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|t| t.description)
+        .collect();
+    assert!(
+        !listed.iter().any(|d| d.contains("reclassification")),
+        "the reclassification is invisible to bills: {listed:?}"
+    );
+
+    // And the migrated wallet charges bonus first like any other.
+    let fund = w.top_up("fund2", ONE, D).await.unwrap();
+    let grant = w.adjust("grant", "welcome", ONE, D).await.unwrap();
+    let wallet = credited_account(&w, fund.entry_id).await;
+    let bonus = credited_account(&w, grant.entry_id).await;
+    let hold = w.hold("h", "", 2 * ONE, D).await.unwrap();
+    let reserved = pending_debits(&w, hold.entry_id).await;
+    let from = |account: u32| {
+        reserved
+            .iter()
+            .filter(|(a, _)| *a == account)
+            .map(|(_, m)| *m)
+            .sum::<i64>()
+    };
+    // Bonus after migration: 3 reclassified + 1 new grant = 4, so the whole 2 fits.
+    assert_eq!(from(bonus), 2 * ONE);
+    assert_eq!(from(wallet), 0);
+}
+
+#[tokio::test]
+async fn reclassification_leaves_a_grant_fully_spent_ledger_alone() {
+    let url = db_or_skip!();
+    let p = pool(&url).await;
+    let tenant = fresh("reclass_spent");
+    let w = Wallet::open(p.clone(), &tenant).await.unwrap();
+
+    w.top_up("fund", 5 * ONE, D).await.unwrap();
+    legacy_entry(
+        &p,
+        &tenant,
+        "g1",
+        "Equity:Adjustments",
+        "Liabilities:Wallet",
+        4 * ONE,
+    )
+    .await;
+    legacy_entry(
+        &p,
+        &tenant,
+        "c1",
+        "Liabilities:Wallet",
+        "Income:Usage",
+        6 * ONE,
+    )
+    .await;
+
+    // Grants (4) are fully spent (6 ≥ 4): nothing moves and no marker entry lands.
+    assert!(!w.reclassify_grants().await.unwrap());
+    assert_eq!(w.settled().await.unwrap(), 3 * ONE);
 }
