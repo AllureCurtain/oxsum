@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.19.0
+  version: 0.20.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -50,7 +50,15 @@ info:
     /api/v1/admin/users/{userId}/password-reset`: the operator's recovery path, which revokes the
     user's sessions with the change. 0.17.0 paginates the one admin list that can grow
     unboundedly — `GET /api/v1/admin/organizations` takes `cursor`/`limit` and answers
-    `nextCursor`.
+    `nextCursor`. 0.18.0 added request attribution to the gateway: `user`, `metadata` and
+    `service_tier` on a chat completion land on the turn's usage record. 0.19.0 added
+    `protocol` to channels: the name the usage-adapter registry resolves the upstream's
+    usage report with. 0.20.0 itemizes the price book: a price version may carry the cache
+    dimensions (read, 5-minute and 1-hour write), a reasoning price, a flat
+    `costPerRequest`, a `mode` (only `chat` is priced today), conditional `rules` that swap
+    the whole price set most-specific-wins — two rules that could match the same request at
+    the same specificity are refused when written — and `upstream` prices, which record what
+    the channel costs us and are never shown to an organization.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie, except
     `/api/v1/auth/login`, `/api/v1/auth/logout` and `/api/v1/auth/register`, which take no
@@ -1403,24 +1411,70 @@ components:
           type: array
           description: one entry per model, at its current version
           items: { $ref: "#/components/schemas/ModelPrice" }
-    ModelPrice:
+    PriceSet:
       type: object
-      required: [model, version, inputPricePerMillion, outputPricePerMillion, maxOutputTokens, createdAt]
+      required: [inputPricePerMillion, outputPricePerMillion, maxOutputTokens]
       properties:
-        model: { type: string }
-        version: { type: integer, minimum: 1, description: "counted per model from 1; a settlement names the version that priced it" }
         inputPricePerMillion: { type: integer, format: int64, minimum: 0, description: minor units per million input tokens }
         outputPricePerMillion: { type: integer, format: int64, minimum: 0, description: minor units per million output tokens }
         maxOutputTokens: { type: integer, format: int64, minimum: 1, description: "the most output the model may produce; also the ceiling a caller's max_tokens is clamped to" }
-        createdAt: { type: string, format: date-time, description: "when this version was written" }
-    PriceRequest:
+        cacheReadPricePerMillion: { type: integer, format: int64, minimum: 0, description: "minor units per million cached input tokens; absent bills the cached part at the input price" }
+        cacheWrite5mPricePerMillion: { type: integer, format: int64, minimum: 0, description: "minor units per million tokens written into the 5-minute provider cache tier; absent bills them at the input price" }
+        cacheWrite1hPricePerMillion: { type: integer, format: int64, minimum: 0, description: "as cacheWrite5mPricePerMillion, for the 1-hour tier" }
+        reasoningPricePerMillion: { type: integer, format: int64, minimum: 0, description: "minor units per million reasoning tokens; absent bills the reasoning part at the output price" }
+        costPerRequest: { type: integer, format: int64, minimum: 0, description: "a flat amount in minor units, charged once per billed request in addition to the token lines" }
+        upstream: { $ref: "#/components/schemas/UpstreamPrices" }
+    UpstreamPrices:
       type: object
-      required: [model, inputPricePerMillion, outputPricePerMillion, maxOutputTokens]
+      description: "what the upstream bills the deployment for the same usage, in the same units — the margin and misbilling view reads it; an organization never sees it"
       properties:
-        model: { type: string, minLength: 1, maxLength: 200 }
         inputPricePerMillion: { type: integer, format: int64, minimum: 0 }
         outputPricePerMillion: { type: integer, format: int64, minimum: 0 }
-        maxOutputTokens: { type: integer, format: int64, minimum: 1 }
+        cacheReadPricePerMillion: { type: integer, format: int64, minimum: 0 }
+        cacheWrite5mPricePerMillion: { type: integer, format: int64, minimum: 0 }
+        cacheWrite1hPricePerMillion: { type: integer, format: int64, minimum: 0 }
+        reasoningPricePerMillion: { type: integer, format: int64, minimum: 0 }
+        costPerRequest: { type: integer, format: int64, minimum: 0 }
+    PriceMatch:
+      type: object
+      description: "the conditions a request must satisfy: every present field must hold, and the count of present fields is the rule's specificity"
+      properties:
+        serviceTier: { type: string, maxLength: 64, description: "matches when the caller asked for this service tier" }
+        minInputTokens: { type: integer, format: int64, minimum: 0, description: "matches when the turn's input reaches this count" }
+        maxInputTokens: { type: integer, format: int64, minimum: 0, description: "matches when the turn's input stays under this count" }
+    PriceRule:
+      type: object
+      required: [match, price]
+      description: "a conditional price: when the request matches, this rule's price set replaces the whole base set — never a field-level diff. The most specific matching rule wins; two rules that could match the same request at the same specificity are refused when the price is written."
+      properties:
+        match: { $ref: "#/components/schemas/PriceMatch" }
+        price: { $ref: "#/components/schemas/PriceSet" }
+    ModelPrice:
+      allOf:
+        - $ref: "#/components/schemas/PriceSet"
+        - type: object
+          required: [model, version, createdAt]
+          properties:
+            model: { type: string }
+            version: { type: integer, minimum: 1, description: "counted per model from 1; a settlement names the version that priced it" }
+            mode: { type: string, enum: [chat], description: "the billing mode this price applies to; only chat is priced today, the field reserves the others" }
+            rules:
+              type: array
+              description: "the conditional price sets; empty when every request pays the base set"
+              items: { $ref: "#/components/schemas/PriceRule" }
+            createdAt: { type: string, format: date-time, description: "when this version was written" }
+    PriceRequest:
+      allOf:
+        - $ref: "#/components/schemas/PriceSet"
+        - type: object
+          required: [model]
+          properties:
+            model: { type: string, minLength: 1, maxLength: 200 }
+            mode: { type: string, enum: [chat], description: "the billing mode; only chat is priced today, and the field defaults to it" }
+            rules:
+              type: array
+              description: "conditional price sets, evaluated most-specific-wins; two rules that could match the same request at the same specificity are refused"
+              items: { $ref: "#/components/schemas/PriceRule" }
     PriceVersion:
       type: object
       required: [model, version]
