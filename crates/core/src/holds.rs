@@ -351,6 +351,9 @@ async fn record_swept_usage(db: &Db, hold: &OpenHold) -> Result<(), WalletError>
         },
         charged_minor: 0,
         freeze_minor: hold.freeze_minor,
+        // The watch row carries no price, so a swept turn's upstream cost is
+        // untracked rather than zero — `upstream_cost_minor` stays NULL.
+        upstream_cost_minor: None,
     })
     .await
 }

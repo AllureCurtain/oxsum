@@ -41,6 +41,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/users/{user_id}/password-reset", post(reset_password))
         .route("/holds", get(holds))
         .route("/anomalies", get(anomalies))
+        .route("/margin", get(margin))
         .route("/closings", get(closings).post(close_month))
         .layer(middleware::from_fn_with_state(state, require_admin))
 }
@@ -399,6 +400,38 @@ async fn anomalies(State(state): State<AppState>) -> ApiResult<Vec<AnomalyRes>> 
     // Booking dates are days, so within one day the per-ledger order stands; across
     // days newest first.
     answer.sort_by(|a, b| b.booked_on.cmp(&a.booked_on));
+    ok(answer)
+}
+
+/// One `(channel, model)` pair's margin, as the endpoint answers it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MarginRes {
+    channel: String,
+    model: String,
+    turns: i64,
+    charged_minor: i64,
+    upstream_cost_minor: i64,
+    margin_minor: i64,
+    untracked_turns: i64,
+}
+
+/// What the platform charged versus what upstream cost it, per channel and
+/// model — summed over the usage rows every settled turn writes, so the sums
+/// are exactly what the mutable record holds (issue #112).
+async fn margin(State(state): State<AppState>) -> ApiResult<Vec<MarginRes>> {
+    let mut answer = Vec::new();
+    for row in state.db.margin().await? {
+        answer.push(MarginRes {
+            margin_minor: row.charged_minor - row.upstream_cost_minor,
+            channel: row.channel,
+            model: row.model,
+            turns: row.turns,
+            charged_minor: row.charged_minor,
+            upstream_cost_minor: row.upstream_cost_minor,
+            untracked_turns: row.untracked_turns,
+        });
+    }
     ok(answer)
 }
 

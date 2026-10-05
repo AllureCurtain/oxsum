@@ -52,7 +52,7 @@ pub use sessions::{
 };
 pub use tenants::Tenants;
 pub use usage::{
-    Attribution, MAX_CONTEXT_NAME, MAX_END_USER, MAX_TAG, MAX_TAGS, UsageRecord, UsageRow,
+    Attribution, MAX_CONTEXT_NAME, MAX_END_USER, MAX_TAG, MAX_TAGS, Margin, UsageRecord, UsageRow,
     validate_attribution,
 };
 pub use users::{NewUser, Registration, User};
