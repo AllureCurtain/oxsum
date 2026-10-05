@@ -464,8 +464,8 @@ async fn topup_chat_billing_and_proof() {
     )
     .expect("the record is JSON");
     assert_eq!(record["kind"], "usage");
-    assert_eq!(record["inputTokens"], 10);
-    assert_eq!(record["outputTokens"], 2);
+    assert_eq!(record["usage"]["inputTokens"], 10);
+    assert_eq!(record["usage"]["outputTokens"], 2);
     // One minor unit per token: the bill is the token count itself.
     assert_eq!(record["charged"], 12);
 
