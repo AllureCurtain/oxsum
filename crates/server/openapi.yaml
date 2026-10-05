@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.21.0
+  version: 0.22.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -62,6 +62,10 @@ info:
     settlement kind to the anomalies the platform reviews: a turn whose usage carried a
     metered dimension the price book cannot cover settles for the computable part and is
     flagged, never billed at zero or at a rate the dimension does not belong to.
+    0.22.0 adds `GET /api/v1/admin/margin`: each settled turn now also records what
+    the channel's `upstream` prices made of the same usage, and the endpoint sums
+    the two per channel and model — the gross-margin view the `upstream` prices
+    were written for.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie, except
     `/api/v1/auth/login`, `/api/v1/auth/logout` and `/api/v1/auth/register`, which take no
@@ -1034,6 +1038,35 @@ paths:
                     items: { $ref: "#/components/schemas/AdminAnomaly" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/margin:
+    get:
+      summary: What the platform charged versus what upstream cost it, per channel and model
+      description: |
+        Each settled gateway turn records what its channel's `upstream` prices
+        made of the same usage beside what the organization was charged — the
+        mutable usage row, never the bill itself. This view sums the two per
+        `(channel, model)`: what the platform took in, what upstream billed it,
+        the margin between, and how many turns carried no upstream cost at all —
+        a price without an `upstream` block, a swept hold, history from before
+        the column existed. `untrackedTurns` is the number a growing gap in the
+        coverage shows up in first; it is also where upstream misbilling would
+        hide if a channel were priced but not tracked.
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: The margin per channel and model
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/AdminMargin" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/admin/closings:
     get:
       summary: The sealed months, across all organizations
@@ -1565,6 +1598,17 @@ components:
         chargedMinor: { type: integer, format: int64, minimum: 0, description: what the settlement charged, in minor units }
         freezeMinor: { type: integer, format: int64, minimum: 1, description: what had been frozen, in minor units }
         bookedOn: { type: string, format: date, description: the settlement's booking date }
+    AdminMargin:
+      type: object
+      required: [channel, model, turns, chargedMinor, upstreamCostMinor, marginMinor, untrackedTurns]
+      properties:
+        channel: { type: string }
+        model: { type: string }
+        turns: { type: integer, format: int64, minimum: 0, description: the settled turns the row sums }
+        chargedMinor: { type: integer, format: int64, description: what the organizations were charged, in minor units }
+        upstreamCostMinor: { type: integer, format: int64, description: what the channel's upstream prices made of the same usage, over the turns that track it }
+        marginMinor: { type: integer, format: int64, description: chargedMinor minus upstreamCostMinor }
+        untrackedTurns: { type: integer, format: int64, minimum: 0, description: settled turns with no upstream cost recorded — an untracked price, a swept hold, or history }
     AdminClosing:
       type: object
       required: [organization, period, entryCount, treeSize, treeRoot, trialBalanceRoot, sealHash]
