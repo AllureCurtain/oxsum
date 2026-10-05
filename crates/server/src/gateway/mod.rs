@@ -16,7 +16,10 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router, middleware};
-use oxsum_core::{ActingKey, OpenHold, Organization, Serving, SettlementKind, hold_description};
+use oxsum_core::{
+    ActingKey, OpenHold, Organization, Serving, SettlementKind, WalletError, adapter_for,
+    hold_description,
+};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -147,6 +150,18 @@ async fn run(
     let Some(serving) = serving(state, &request.model).await? else {
         return Err(GatewayError::model_not_served(&request.model));
     };
+    // The channel's protocol selects the adapter that reads its usage reports. A name
+    // the registry does not know is refused when the channel is written, so reaching
+    // here means the row was edited by hand — a deployment problem, not the caller's.
+    let Some(adapter) = adapter_for(&serving.protocol) else {
+        tracing::error!(channel = %serving.channel, protocol = %serving.protocol,
+            "the channel names a protocol this build has no usage adapter for");
+        return Err(WalletError::Misconfigured(format!(
+            "channel {} names an unknown protocol: {}",
+            serving.channel, serving.protocol
+        ))
+        .into());
+    };
     let price = serving.price;
     let output_bound = price.output_upper_bound(request.max_tokens)?;
     let texts: Vec<&str> = request.texts.iter().map(String::as_str).collect();
@@ -210,6 +225,7 @@ async fn run(
         state.billing.clone(),
         key.key_id,
         request.attribution.clone(),
+        adapter,
     );
     // The dashboard's live section sees the turn from here: the hold is taken, upstream is
     // next. Best-effort — a missed event is a missed live update, not lost state.
@@ -265,7 +281,7 @@ async fn run(
             match serde_json::from_str::<Value>(&text) {
                 Ok(value) => {
                     // A whole body is not a stream, but its usage report is read the same way.
-                    if let Some(usage) = relay::usage_of(&value) {
+                    if let Some(usage) = adapter.usage(&value) {
                         turn.note_usage(usage);
                     }
                     turn.note_text(&relay::completion_text(&value));

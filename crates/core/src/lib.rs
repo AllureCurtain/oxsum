@@ -4,8 +4,10 @@
 //! maps to one PostgreSQL schema (`ledger_<tenant_id>`) and one doubleentry ledger, so each
 //! ledger has its own log, Merkle tree and idempotency-key space — physical isolation, not
 //! filtering. oxsum's own tables (users, organizations, memberships, API keys, channels and
-//! their prices, open holds) live in one `oxsum` schema, outside the ledgers; see [`Db`].
+//! their prices, open holds, usage records) live in one `oxsum` schema, outside the ledgers;
+//! see [`Db`].
 
+mod adapters;
 mod billing;
 mod channels;
 mod db;
@@ -22,6 +24,7 @@ mod usage;
 mod users;
 mod wallet;
 
+pub use adapters::{OPENAI, UsageAdapter, adapter_for};
 pub use billing::{
     Price, PriceBook, Settlement, SettlementKind, SettlementRecord, estimate_tokens,
     hold_description, input_upper_bound,

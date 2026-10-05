@@ -140,6 +140,9 @@ impl std::fmt::Debug for SecretKey {
 pub struct Channel {
     pub name: String,
     pub base_url: String,
+    /// The upstream protocol the channel speaks: the name the usage-adapter registry
+    /// resolves (issue #104).
+    pub protocol: String,
     /// The last four characters of the upstream key, and nothing more of it.
     pub api_key_last4: String,
     #[serde(with = "time::serde::rfc3339")]
@@ -179,6 +182,8 @@ impl ModelPrice {
 pub struct Serving {
     pub channel: String,
     pub base_url: String,
+    /// The upstream protocol, resolved into a usage adapter when the turn starts.
+    pub protocol: String,
     /// The upstream credential, opened. Held for this request only.
     pub api_key: String,
     /// The price version this request is billed at, which the settlement records.
@@ -200,20 +205,24 @@ impl Db {
         name: &str,
         base_url: &str,
         api_key: &str,
+        protocol: &str,
         key: &SecretKey,
     ) -> Result<(), WalletError> {
         let name = channel_name(name)?;
         let base_url = base_url_of(base_url)?;
         let api_key = api_key_of(api_key)?;
+        crate::adapters::known_protocol(protocol)?;
         let sealed = key.seal(api_key)?;
         let last4 = last_chars(api_key, LAST4);
         sqlx::query(
-            "INSERT INTO oxsum.channels (channel_id, name, base_url, api_key_sealed, api_key_last4) \
-             VALUES ($1, $2, $3, $4, $5) \
+            "INSERT INTO oxsum.channels \
+             (channel_id, name, base_url, api_key_sealed, api_key_last4, protocol) \
+             VALUES ($1, $2, $3, $4, $5, $6) \
              ON CONFLICT (name) DO UPDATE SET \
                  base_url = EXCLUDED.base_url, \
                  api_key_sealed = EXCLUDED.api_key_sealed, \
                  api_key_last4 = EXCLUDED.api_key_last4, \
+                 protocol = EXCLUDED.protocol, \
                  updated_at = now()",
         )
         .bind(Uuid::new_v4())
@@ -221,6 +230,7 @@ impl Db {
         .bind(base_url)
         .bind(sealed)
         .bind(last4)
+        .bind(protocol)
         .execute(self.pool())
         .await?;
         Ok(())
@@ -288,7 +298,7 @@ impl Db {
     /// Every channel with the current version of each of its models, oldest first.
     pub async fn channels(&self) -> Result<Vec<Channel>, WalletError> {
         let rows = sqlx::query(
-            "SELECT channel_id, name, base_url, api_key_last4, created_at \
+            "SELECT channel_id, name, base_url, api_key_last4, created_at, protocol \
              FROM oxsum.channels ORDER BY created_at, name",
         )
         .fetch_all(self.pool())
@@ -299,6 +309,7 @@ impl Db {
             channels.push(Channel {
                 name: row.try_get("name")?,
                 base_url: row.try_get("base_url")?,
+                protocol: row.try_get("protocol")?,
                 api_key_last4: row.try_get("api_key_last4")?,
                 created_at: row.try_get("created_at")?,
                 models: current_prices(self, channel_id).await?,
@@ -340,7 +351,7 @@ impl Db {
         key: &SecretKey,
     ) -> Result<Option<Serving>, WalletError> {
         let row = sqlx::query(
-            "SELECT c.name, c.base_url, c.api_key_sealed, p.version, \
+            "SELECT c.name, c.base_url, c.api_key_sealed, c.protocol, p.version, \
                     p.input_price_per_million, p.output_price_per_million, p.max_output_tokens \
              FROM oxsum.channel_prices p JOIN oxsum.channels c USING (channel_id) \
              WHERE p.model = $1 \
@@ -357,6 +368,7 @@ impl Db {
         Ok(Some(Serving {
             channel: row.try_get("name")?,
             base_url: row.try_get("base_url")?,
+            protocol: row.try_get("protocol")?,
             api_key: key.open(&sealed)?,
             version: i64::from(row.try_get::<i32, _>("version")?),
             price: Price {
@@ -437,14 +449,16 @@ impl Db {
         let base_url = base_url_of(base_url)?;
         let api_key = api_key_of(api_key)?;
         sqlx::query(
-            "INSERT INTO oxsum.channels (channel_id, name, base_url, api_key_sealed, api_key_last4) \
-             VALUES ($1, $2, $3, $4, $5)",
+            "INSERT INTO oxsum.channels \
+             (channel_id, name, base_url, api_key_sealed, api_key_last4, protocol) \
+             VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(channel_id)
         .bind(name)
         .bind(base_url)
         .bind(key.seal(api_key)?)
         .bind(last_chars(api_key, LAST4))
+        .bind(crate::adapters::OPENAI)
         .execute(&mut *tx)
         .await?;
         let models: BTreeMap<&str, &Price> = book.models().collect();
