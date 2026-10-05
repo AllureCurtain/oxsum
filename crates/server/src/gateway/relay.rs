@@ -355,7 +355,16 @@ impl Plan {
         );
         let itemized = self.price.itemize(&usage, billable)?;
         let cost = itemized.total_minor()?;
-        let (kind, charged) = if cost > self.freeze {
+        // Fail closed on what the price book cannot cover: a usage report naming a
+        // dimension outside every price set settles for the computable part and is
+        // recorded `unpriced` — the anomaly the admin page reviews — never billed at
+        // zero or folded into a rate the dimension does not belong to (issue #110).
+        let unpriced = self.price.unpriced_dimensions(&usage);
+        let (kind, charged) = if !unpriced.is_empty() {
+            tracing::error!(request = %self.request, model = %self.model, ?unpriced,
+                "upstream's usage carried dimensions the price book cannot bill");
+            (SettlementKind::Unpriced, cost.min(self.freeze))
+        } else if cost > self.freeze {
             (SettlementKind::Capped, self.freeze)
         } else {
             (kind, cost)

@@ -58,9 +58,11 @@ impl UsageAdapter for OpenAiChat {
 
     /// `usage.prompt_tokens` already includes the cached subset and
     /// `usage.completion_tokens` the reasoning subset, so the details objects only
-    /// fill columns — never add. The usage object itself is kept verbatim as
-    /// `provider_raw` for the reconciliation window; it never reaches a ledger
-    /// description.
+    /// fill columns — never add. The audio counts land in their own columns the
+    /// same way: they sit inside the side's total, and the price book's
+    /// fail-closed check flags them `unpriced` until a set prices them
+    /// (issue #110). The usage object itself is kept verbatim as `provider_raw`
+    /// for the reconciliation window; it never reaches a ledger description.
     fn usage(&self, body: &Value) -> Option<UsageRecord> {
         let usage = body.get("usage")?;
         let input = usage.get("prompt_tokens").and_then(Value::as_i64);
@@ -79,7 +81,9 @@ impl UsageAdapter for OpenAiChat {
             input_tokens: input.unwrap_or(0),
             output_tokens: output.unwrap_or(0),
             cached_tokens: nested("prompt_tokens_details", "cached_tokens"),
+            audio_input_tokens: nested("prompt_tokens_details", "audio_tokens"),
             reasoning_tokens: nested("completion_tokens_details", "reasoning_tokens"),
+            audio_output_tokens: nested("completion_tokens_details", "audio_tokens"),
             usage_details: Some(serde_json::json!({"provider_raw": usage.clone()})),
             ..UsageRecord::default()
         }
