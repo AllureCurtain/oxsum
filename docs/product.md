@@ -86,16 +86,18 @@ Who may do what, and the gaps that are closed on purpose:
 
 ## Where credit comes from
 
-v1 has no payment integration. Credit has three designed sources; the table says which of them the code implements today, and what the ledger actually records.
+v1 has no payment integration. Credit has four designed sources; the table says which of them the code implements today, and what the ledger actually records.
 
 | Source | Who | Notes |
 | --- | --- | --- |
 | Top-up | Any credential of the organization — session or API key | **Shipped.** `POST /api/v1/topups` sits behind the same credential check as every other organization endpoint (`crates/server/src/routes.rs`, the `authenticated` router), so a logged-in user self-tops-up; the chat page's top-up button is exactly this call (`crates/web/src/chat.rs`). The request carries an amount and an idempotency key and **no reason**: the endpoint takes no description. Admin-gated top-ups with a required reason are the rejected alternative in docs/decisions.md. |
 | Signup bonus | Automatic | **Shipped** (issue #60). `OXSUM_SIGNUP_BONUS_MINOR`, default 0: self-registration credits the new organization's bonus pool with the amount, booked as an adjustment carrying "signup bonus" as its reason — an invitation's redeem joins an existing organization and grants nothing. At 0, registration still writes no ledger entry. |
 | Adjustment | Platform admin | **Shipped** (issue #60). `POST /api/v1/admin/organizations/{organizationId}/adjustments`, and an "Adjust" form on each row of `/admin/organizations`. Positive grants, negative deducts; the reason is required and becomes the entry's description, covered by its proof. A grant lands in the bonus pool; a deduction draws the bonus pool first and only spills into purchased credit once granted money is gone — the platform takes back what it gave before touching what the user paid for. A deduction deeper than the combined balance is the ledger's own no-overdraft refusal — `402 INSUFFICIENT_FUNDS`. |
+| Redemption code | Operator mints, any credential redeems | **Shipped** (issue #118, decision D2). `POST /api/v1/admin/redemption-codes` mints a batch under the operator token — `oxr-` plus 32 random bytes, only the SHA-256 is stored, so the mint answer is the only place the codes are readable. The holder redeems through `POST /api/v1/redemptions` and the amount lands in the purchased pool: the code's row is claimed atomically (`FOR UPDATE`), the deposit and the ledger credit follow under the fixed idempotency key `redemption:<code_id>`, so a retried or concurrent redeem of one code credits once. Unknown, spent and expired codes are all the same `NOT_FOUND`. Stripe and on-chain rails join the same `deposits` table later; a top-up is the `manual` rail of it already. |
 
 - The unit is credit, 1 credit = 1_000_000 minor. What a credit maps to in real money is the deployer's choice; oxsum does not care. (Shipped.)
 - The balance is one number to the organization but two pools in the ledger (issue #116, decision D1): granted credit — the signup bonus and admin grants — lives in `Equity:Bonus`, purchased credit in `Liabilities:Wallet`. Holds reserve bonus-first, settlements charge bonus-first, and every balance read sums the two; the pool split is how the ledger keeps granted and paid-for credit apart, never something a caller manages.
+- Every funding event — a top-up, a redemption, later a Stripe charge or a chain transfer — is one row on `oxsum.deposits` keyed by `(rail, organization, payment_ref)`, carrying expected versus received amount and a status walk of `pending → confirmed → credited | reversed | expired`; a `credited` row names the ledger entry that moved the money. That single record is what reconciliation (P4-1) reads against each rail's own reporting. (Shipped, issue #118.)
 - Adjustments never modify history; they book a new entry. The original entry and its proof stay valid.
 
 ## API keys (shipped)

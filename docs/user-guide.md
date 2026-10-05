@@ -194,6 +194,13 @@ Steps:
 1. `POST /api/v1/topups` with `idempotencyKey` and `amountMinor` in the body.
 2. Save the returned `contentHash`; you will need it to verify the bill later.
 
+With a redemption code instead: `POST /api/v1/redemptions` with `{"code": "oxr-…"}` —
+no idempotency key, the code is its own. The answer is the credit's receipt plus
+`amountMinor`; retrying the same call replays it with `isNew: false`, and a code that
+is wrong, spent or past its expiry answers `NOT_FOUND` whichever it is. Ask your
+operator for a code — they mint batches through `POST /api/v1/admin/redemption-codes`,
+and the codes only exist in that one answer.
+
 Note: the unit is minor, 1 credit = 1_000_000.
 
 ## Paying for one AI call
