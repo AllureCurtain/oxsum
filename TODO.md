@@ -4,7 +4,7 @@ Updated: 2026-10-05
 
 ## In progress
 
-The productization roadmap (docs/decisions.md, 2026-10-05: P1-1 through P8-4) is executing item by item, one issue and PR each. P1-1 (#102, the normalized usage record) and P1-2 (#104, the protocol-keyed usage adapter) shipped; next is P1-3, versioned settlement descriptions and WASM verify v2.
+The productization roadmap (docs/decisions.md, 2026-10-05: P1-1 through P8-4) is executing item by item, one issue and PR each. P1-1 (#102, the normalized usage record), P1-2 (#104, the protocol-keyed usage adapter) and P1-3 (#106, versioned settlement descriptions with `verify_charge`) shipped; next is P1-4, the itemized price book.
 
 ## Next
 
@@ -37,6 +37,8 @@ Closed. The chat page is built (issue #39): after login the user tops up, picks 
 Nothing.
 
 ## Recently completed
+
+- 2026-10-05 Versioned settlement descriptions (roadmap P1-3, issue #106): `Settlement::description` now writes `"v":2` — a self-contained billing credential carrying `MeteredUsage` (the record's priced dimensions; `endUser`/`tags`/`provider_raw` stay out of the immutable ledger, `serviceTier`/`eventType` stay in as pricing inputs) and `lines`, the two-component price decomposed. `oxsum_verify::verify_charge` dispatches on `v` and recomputes `charged == min(ceil(Σ units·pricePerM / 1e6), freeze)` — the `/verify` page reports recompute, skip-by-age or mismatch beside the inclusion verdict. `SettlementRecord::parse` reads v2 only (no production data; the T1-2 revision declined compat parsing). Pinned by verify unit tests, the billing round-trips, and real settled/swept descriptions recomputing in the gateway and sweeper suites.
 
 - 2026-10-05 The protocol-keyed usage adapter (roadmap P1-2, issue #104): usage normalization moved out of `gateway/relay.rs` into `crates/core/src/adapters.rs` — a `UsageAdapter` trait, the `adapter_for` registry and the OpenAI implementation reproducing the old parsing exactly (subsets inside their totals, `provider_raw` kept, clamped not rejected). `oxsum.channels` gained a `protocol` column (migration 0008): the name is part of a channel's connection identity, resolved once per request when the serving is resolved, and refused at write time when the registry does not know it — a channel that cannot normalize its own usage reports cannot serve. Contract `openapi.yaml` 0.19.0 first (`ChannelRequest.protocol` optional, `Channel.protocol` answered); pinned by adapter unit tests, the channels suite's protocol checks, the admin suite's `VALIDATION_ERROR` on an unknown protocol, and the unchanged settled-row gateway test.
 
