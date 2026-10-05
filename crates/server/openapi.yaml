@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.17.0
+  version: 0.18.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -1600,6 +1600,12 @@ components:
         stream: { type: [boolean, "null"], default: false, description: "absent or null counts as false; a stream is terminated by `data: [DONE]`" }
         max_tokens: { type: [integer, "null"], format: int64, minimum: 1, description: "the output upper bound the freeze uses; absent or null means the model's configured maximum, and a value below 1 is 400" }
         max_completion_tokens: { type: [integer, "null"], format: int64, minimum: 1, description: "newer spelling of max_tokens; when both are present this one wins, and null counts as absent" }
+        user: { type: [string, "null"], maxLength: 128, description: "the caller's own end-user id, recorded on the turn's usage record for attribution; never priced on and never shown to other organizations. Longer than 128 characters is 400" }
+        metadata:
+          type: [object, "null"]
+          description: "the caller's own tags on the turn, recorded on its usage record for attribution and filtering: at most 10 key/value pairs, keys and values at most 64 characters and strings only; anything else is 400"
+          additionalProperties: { type: string, maxLength: 64 }
+        service_tier: { type: [string, "null"], maxLength: 64, description: "the service tier the caller asks for, recorded on the turn's usage record and forwarded upstream unchanged; no tier is priced until a channel prices one" }
       additionalProperties: true
     ChatMessage:
       type: object
