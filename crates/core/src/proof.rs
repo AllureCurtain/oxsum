@@ -5,4 +5,4 @@
 //! `wasm32-unknown-unknown` (sqlx-postgres needs OS sockets). These re-exports keep
 //! the established `oxsum_core::{ProofBundle, verify_bundle}` paths stable.
 
-pub use oxsum_verify::{ProofBundle, verify_bundle};
+pub use oxsum_verify::{ChargeCheck, ProofBundle, verify_bundle, verify_charge};
