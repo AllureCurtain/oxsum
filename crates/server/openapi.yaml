@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.18.0
+  version: 0.19.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -1389,12 +1389,14 @@ components:
         name: { type: string, minLength: 1, maxLength: 40, pattern: "^[A-Za-z0-9._-]+$", description: the channel's identity; posting an existing name replaces its connection }
         baseUrl: { type: string, format: uri, description: "where the OpenAI-compatible surface lives, http or https; `/chat/completions` is appended to it" }
         apiKey: { type: string, minLength: 1, description: "the upstream credential; sealed with OXSUM_SECRET_KEY, only its last four characters readable afterwards" }
+        protocol: { type: string, description: "the upstream protocol the channel speaks, which selects the usage adapter its reports are normalized by; defaults to `openai`, the only protocol this version knows — any other name is VALIDATION_ERROR" }
     Channel:
       type: object
-      required: [name, baseUrl, apiKeyLast4, createdAt, models]
+      required: [name, baseUrl, protocol, apiKeyLast4, createdAt, models]
       properties:
         name: { type: string }
         baseUrl: { type: string }
+        protocol: { type: string, description: "the upstream protocol the channel speaks" }
         apiKeyLast4: { type: string, description: "the last four characters of the stored credential, and nothing more of it" }
         createdAt: { type: string, format: date-time }
         models:
