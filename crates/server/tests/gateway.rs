@@ -742,6 +742,104 @@ async fn a_conditional_price_bills_each_dimension_on_its_own_line() {
     );
 }
 
+/// The usage row carries what upstream charged the platform for the turn,
+/// computed from the price's `upstream` block — separate from what the
+/// organization was charged, and `NULL` when the price tracks no upstream
+/// side at all (issue #112).
+#[tokio::test]
+async fn a_tracked_turns_upstream_cost_sits_beside_its_charge() {
+    let world = world!(1_000_000);
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+
+    // The world's base price is version 1 and tracks no upstream: the turn's
+    // row is written, its cost column NULL — untracked, not zero.
+    let response = chat(
+        &world.app,
+        &world.key,
+        json!({
+            "model": world.model("ok"),
+            "messages": [{"role": "user", "content": "hi"}],
+        }),
+    )
+    .await;
+    let untracked = request_id(&response);
+    let (status, _) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+    world
+        .settlement(&untracked)
+        .await
+        .expect("the turn settled");
+
+    // Version 2 prices the customer exactly as before but adds upstream's side
+    // at half the customer rate on input and output.
+    let db = Db::from_pool(world.pool.clone());
+    let price: oxsum_core::Price = serde_json::from_value(json!({
+        "inputPricePerMillion": 1_000_000,
+        "outputPricePerMillion": 1_000_000,
+        "maxOutputTokens": 1000,
+        "upstream": {
+            "inputPricePerMillion": 500_000,
+            "outputPricePerMillion": 250_000,
+        },
+    }))
+    .expect("the test's own price parses");
+    let version = db
+        .append_price(&world.channel, &world.model("ok"), price)
+        .await
+        .expect("the price is written");
+    assert_eq!(version, 2);
+
+    let response = chat(
+        &world.app,
+        &world.key,
+        json!({
+            "model": world.model("ok"),
+            "messages": [{"role": "user", "content": "hi"}],
+        }),
+    )
+    .await;
+    let tracked = request_id(&response);
+    let (status, _) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+    let record = world.settlement(&tracked).await.expect("the turn settled");
+    // The charge is exactly what the price without upstream would have made:
+    // 10 input + 2 output at one minor each.
+    assert_eq!(record["charged"], 12);
+
+    // The charged column still says what the customer paid — the upstream cost
+    // is a second number beside it, never an input to it.
+    let charged: i64 =
+        sqlx::query_scalar("SELECT charged_minor FROM oxsum.usage_records WHERE request_id = $1")
+            .bind(&tracked)
+            .fetch_one(&world.pool)
+            .await
+            .expect("the row is there");
+    assert_eq!(charged, 12);
+    // ceil((10·5e5 + 2·2.5e5)/1e6) = 5 + 0.5 → 6: the platform paid upstream 6
+    // minor for a turn it billed 12.
+    let upstream_cost: Option<i64> = sqlx::query_scalar(
+        "SELECT upstream_cost_minor FROM oxsum.usage_records WHERE request_id = $1",
+    )
+    .bind(&tracked)
+    .fetch_one(&world.pool)
+    .await
+    .expect("the row is there");
+    assert_eq!(upstream_cost, Some(6));
+    let upstream_cost: Option<i64> = sqlx::query_scalar(
+        "SELECT upstream_cost_minor FROM oxsum.usage_records WHERE request_id = $1",
+    )
+    .bind(&untracked)
+    .fetch_one(&world.pool)
+    .await
+    .expect("the row is there");
+    assert_eq!(upstream_cost, None);
+}
+
 /// A settled turn leaves its normalized usage record: one row in `oxsum.usage_records`
 /// holding upstream's full report and the caller's attribution — the data a ledger
 /// description deliberately does not carry (issue #102).

@@ -291,10 +291,11 @@ async fn a_stale_hold_is_swept_at_zero_and_recorded_as_an_anomaly() {
     assert!(!is_watched(&world.db, &hold_key).await);
 
     // The swept turn still left its usage row: zero counts and zero charge, but the
-    // attribution the watch row carried (issue #102).
+    // attribution the watch row carried (issue #102). Its upstream cost is NULL —
+    // the watch row carries no price, so the turn is untracked, not free (issue #112).
     let row = sqlx::query(
         "SELECT kind, charged_minor, freeze_minor, input_tokens, output_tokens, \
-         end_user, service_tier, tags, entry_id \
+         end_user, service_tier, tags, entry_id, upstream_cost_minor \
          FROM oxsum.usage_records WHERE request_id = $1",
     )
     .bind(&request_id)
@@ -316,6 +317,7 @@ async fn a_stale_hold_is_swept_at_zero_and_recorded_as_an_anomaly() {
         row.get::<uuid::Uuid, _>("entry_id"),
         *entry_id_for(&settlement_key_for(&hold_key)).as_uuid()
     );
+    assert_eq!(row.get::<Option<i64>, _>("upstream_cost_minor"), None);
     unlock_sweeper(sweeper).await;
 }
 
@@ -336,6 +338,7 @@ async fn a_usage_row_replay_is_ignored() {
         usage: oxsum_core::UsageRecord::tokens(10, 2).unwrap(),
         charged_minor: 12,
         freeze_minor: 100,
+        upstream_cost_minor: Some(4),
     };
     world.db.record_usage(&row).await.expect("writes the row");
     world
