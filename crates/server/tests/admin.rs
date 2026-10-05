@@ -17,6 +17,7 @@ use oxsum_core::{Db, SecretKey};
 use oxsum_server::{Config, Signup};
 use serde_json::{Value, json};
 use sqlx::PgPool;
+use time::{Duration, OffsetDateTime};
 use tower::ServiceExt;
 
 /// The operator token these tests configure. Long enough to be worth configuring, per config.rs.
@@ -1441,4 +1442,254 @@ async fn a_password_reset_changes_the_password_and_kills_the_sessions() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+/// `POST /api/v1/admin/redemption-codes` mints a batch and `POST /api/v1/redemptions`
+/// turns a code into purchased balance: the deposit row it leaves credits under
+/// `redemption:<code_id>`, a replay redeems nothing twice, and a code another
+/// organization spent is indistinguishable from a bad one.
+#[tokio::test]
+async fn a_minted_code_redeems_once_into_the_purchased_pool() {
+    let (app, pool) = app_or_skip!();
+    let (_org, key) = register(&app, "redeem").await;
+    let (_other, other_key) = register(&app, "redeem2").await;
+
+    // Mint three codes worth 2 credits each.
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/admin/redemption-codes",
+        Some(json!({"count": 3, "amountMinor": 2_000_000})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["count"], 3);
+    assert_eq!(body["data"]["amountMinor"], 2_000_000);
+    assert_eq!(body["data"]["expiresAt"], Value::Null);
+    let codes = body["data"]["codes"].as_array().expect("the codes");
+    assert_eq!(codes.len(), 3);
+    for code in codes {
+        let code = code.as_str().unwrap();
+        assert!(code.starts_with("oxr-") && code.len() == 68, "{code}");
+    }
+    // The table keeps hashes only: the plaintext never lands in storage.
+    let batch_id = body["data"]["batchId"].as_str().unwrap().to_owned();
+    let stored: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM oxsum.redemption_codes WHERE batch_id = $1::uuid")
+            .bind(&batch_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored, 3);
+    let hashes: Vec<String> =
+        sqlx::query_scalar("SELECT code_hash::text FROM oxsum.redemption_codes")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert!(
+        !hashes
+            .iter()
+            .any(|h| h.contains(codes[0].as_str().unwrap())),
+        "only hashes are stored"
+    );
+
+    // Redeem: the purchased pool grows, and the answer is the entry's receipt
+    // plus what the code carried.
+    let (status, body) = call_with(
+        &app,
+        "POST",
+        "/api/v1/redemptions",
+        Some(json!({"code": codes[0]})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["amountMinor"], 2_000_000);
+    let entry_id = body["data"]["entryId"].as_str().unwrap().to_owned();
+    let (_status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    assert_eq!(body["data"]["availableMinor"], 2_000_000);
+
+    // The deposit row closed as credited, named by the entry that moved the money.
+    let (d_status, d_entry): (String, uuid::Uuid) = sqlx::query_as(
+        "SELECT d.status, d.entry_id FROM oxsum.deposits d \
+         JOIN oxsum.redemption_codes c ON c.deposit_id = d.deposit_id \
+         WHERE c.batch_id = $1::uuid",
+    )
+    .bind(&batch_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(d_status, "credited");
+    assert_eq!(d_entry.to_string(), entry_id, "the deposit names its entry");
+
+    // The same caller's replay rewrites nothing: same entry, isNew false.
+    let (status, body) = call_with(
+        &app,
+        "POST",
+        "/api/v1/redemptions",
+        Some(json!({"code": codes[0]})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["isNew"], false);
+    assert_eq!(body["data"]["entryId"].as_str(), Some(entry_id.as_str()));
+
+    // Another organization sees a spent code the same as a bad one.
+    let (status, body) = call_with(
+        &app,
+        "POST",
+        "/api/v1/redemptions",
+        Some(json!({"code": codes[0]})),
+        Some(&other_key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["error"]["code"], "NOT_FOUND");
+
+    // An unknown code and a malformed one are the same answer.
+    for code in [
+        codes[0].as_str().unwrap().replace('a', "b"),
+        "oxr-short".to_owned(),
+    ] {
+        let (status, body) = call_with(
+            &app,
+            "POST",
+            "/api/v1/redemptions",
+            Some(json!({"code": code})),
+            Some(&key),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{code}: {body}");
+    }
+
+    // The second code redeems as fresh.
+    let (status, body) = call_with(
+        &app,
+        "POST",
+        "/api/v1/redemptions",
+        Some(json!({"code": codes[1]})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["isNew"], true);
+    let (_status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    assert_eq!(body["data"]["availableMinor"], 4_000_000);
+}
+
+/// An expired code and a mint call's bad input are refused — an expiry in the
+/// past, a count outside the batch bound, or a non-positive amount.
+#[tokio::test]
+async fn codes_validate_their_mint_and_their_expiry() {
+    let (app, _pool) = app_or_skip!();
+    let (_org, key) = register(&app, "redeemexp").await;
+
+    // An already-past expiry and a bad count are validation failures.
+    for body_json in [
+        json!({"count": 2, "amountMinor": 1_000_000, "expiresAt": "2000-01-01T00:00:00Z"}),
+        json!({"count": 0, "amountMinor": 1_000_000}),
+        json!({"count": 2, "amountMinor": 0}),
+        json!({"count": 1001, "amountMinor": 1_000_000}),
+    ] {
+        let (status, body) = call(
+            &app,
+            "POST",
+            "/api/v1/admin/redemption-codes",
+            Some(body_json.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body_json}: {body}");
+    }
+
+    // A batch that expires redeems before it and is refused after.
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/admin/redemption-codes",
+        Some(json!({
+            "count": 1,
+            "amountMinor": 1_000_000,
+            "expiresAt": (OffsetDateTime::now_utc() + Duration::milliseconds(1200))
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap(),
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let code = body["data"]["codes"][0].as_str().unwrap().to_owned();
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    let (status, body) = call_with(
+        &app,
+        "POST",
+        "/api/v1/redemptions",
+        Some(json!({"code": code})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+
+    // Minting is the operator's alone: an organization's key is not the platform's.
+    let (status, _) = call_with(
+        &app,
+        "POST",
+        "/api/v1/admin/redemption-codes",
+        Some(json!({"count": 1, "amountMinor": 1_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+/// `POST /api/v1/topups` is the manual deposit rail: beside the ledger entry it
+/// writes a `deposits` row naming the entry, keyed by the caller's idempotency
+/// key — a replayed top-up sees its own row rather than a second record.
+#[tokio::test]
+async fn a_topup_records_its_manual_deposit() {
+    let (app, pool) = app_or_skip!();
+    let (org, key) = register(&app, "manualrail").await;
+    let idem = format!("topup-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+
+    let (status, body) = call_with(
+        &app,
+        "POST",
+        "/api/v1/topups",
+        Some(json!({"idempotencyKey": idem, "amountMinor": 3_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let entry_id = body["data"]["entryId"].as_str().unwrap().to_owned();
+
+    let (rail, reference, status_, entry): (String, String, String, uuid::Uuid) = sqlx::query_as(
+        "SELECT rail, payment_ref, status, entry_id FROM oxsum.deposits \
+             WHERE organization_id = $1::uuid",
+    )
+    .bind(&org)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rail, "manual");
+    assert_eq!(reference, idem);
+    assert_eq!(status_, "credited");
+    assert_eq!(entry.to_string(), entry_id);
+
+    // The replay lands one row: the unique key on (rail, payment_ref) holds.
+    let (status, body) = call_with(
+        &app,
+        "POST",
+        "/api/v1/topups",
+        Some(json!({"idempotencyKey": idem, "amountMinor": 3_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["isNew"], false);
+    let rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM oxsum.deposits WHERE organization_id = $1::uuid")
+            .bind(&org)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(rows, 1);
 }
