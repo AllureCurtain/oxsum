@@ -4,7 +4,7 @@ Updated: 2026-10-05
 
 ## In progress
 
-The productization roadmap (docs/decisions.md, 2026-10-05: P1-1 through P8-4) is executing item by item, one issue and PR each. P1-1 (#102, the normalized usage record), P1-2 (#104, the protocol-keyed usage adapter), P1-3 (#106, versioned settlement descriptions with `verify_charge`), P1-4 (#108, the itemized and conditional price book, descriptions at v3), P1-5 (#110, fail-closed pricing — the `unpriced` settlement kind) and P1-6 (#112, upstream-cost tracking with the admin margin view) shipped; next is P1-7, the billing-correctness test suite.
+The productization roadmap (docs/decisions.md, 2026-10-05: P1-1 through P8-4) is executing item by item, one issue and PR each. P1-1 (#102, the normalized usage record), P1-2 (#104, the protocol-keyed usage adapter), P1-3 (#106, versioned settlement descriptions with `verify_charge`), P1-4 (#108, the itemized and conditional price book, descriptions at v3), P1-5 (#110, fail-closed pricing — the `unpriced` settlement kind) and P1-6 (#112, upstream-cost tracking with the admin margin view) shipped; next is P1-7, the billing-correctness test suite, in progress on `test/billing-correctness`.
 
 ## Next
 
