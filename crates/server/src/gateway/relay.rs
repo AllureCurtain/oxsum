@@ -185,7 +185,7 @@ impl Turn {
                 channel: serving.channel.clone(),
                 version: serving.version,
                 model: model.to_owned(),
-                price: serving.price,
+                price: serving.price.clone(),
                 freeze,
                 key_id,
                 attribution,
@@ -347,8 +347,14 @@ impl Plan {
         usage.service_tier = self.attribution.service_tier.clone();
         // The user never pays more than the freeze: that is the gateway's promise (product.md). A
         // usage report above it is charged at the freeze and recorded as `capped`, an anomaly for
-        // the admin page rather than a silent loss.
-        let cost = self.price.cost_minor(&usage)?;
+        // the admin page rather than a silent loss. A turn upstream never served owes no flat fee
+        // either — `billable` is whether the request ran.
+        let billable = !matches!(
+            kind,
+            SettlementKind::UpstreamError | SettlementKind::UpstreamUnreachable
+        );
+        let itemized = self.price.itemize(&usage, billable)?;
+        let cost = itemized.total_minor()?;
         let (kind, charged) = if cost > self.freeze {
             (SettlementKind::Capped, self.freeze)
         } else {
@@ -361,8 +367,8 @@ impl Plan {
             price_version: self.version,
             kind,
             usage: &usage,
-            input_price: self.price.input_per_million,
-            output_price: self.price.output_per_million,
+            lines: &itemized.lines,
+            matched_rule: itemized.matched_rule.as_ref(),
             charged,
             freeze: self.freeze,
         };

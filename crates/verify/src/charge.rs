@@ -15,10 +15,20 @@
 
 use serde_json::Value;
 
-/// The description version this verifier recomputes. Every settlement written
-/// before descriptions were versioned counts as older; every `v` above this is
-/// newer than this build.
-const KNOWN_VERSION: i64 = 2;
+/// The newest description version this verifier recomputes. Every settlement
+/// written before descriptions were versioned counts as older; every `v` above
+/// this is newer than this build. Versions it does know each get their own
+/// rule: an old bill stays recomputable after the writer has moved on.
+const KNOWN_VERSION: i64 = 3;
+
+/// The line items the input side prices: their units must account for the
+/// whole `inputTokens`, between them and the usage record — cached reads and
+/// both cache-write tiers are part of the input total (crates/core's usage
+/// normalization). Everything a v3 record may name on the input side.
+const INPUT_ITEMS: &[&str] = &["input", "cache_read", "cache_write_5m", "cache_write_1h"];
+
+/// As [`INPUT_ITEMS`], for the output side: reasoning is part of `outputTokens`.
+const OUTPUT_ITEMS: &[&str] = &["output", "reasoning"];
 
 /// Minor units per priced million units: the denominator every v2 line shares.
 const PER_MILLION: i128 = 1_000_000;
@@ -79,7 +89,8 @@ pub fn verify_charge(description: &str) -> ChargeCheck {
         // A settlement with no `v` predates versioning.
         None => ChargeCheck::OlderSchema,
         Some(version) => match version.as_i64() {
-            Some(KNOWN_VERSION) => recompute_v2(&value),
+            Some(2) => recompute_v2(&value),
+            Some(KNOWN_VERSION) => recompute_v3(&value),
             Some(v) if v > KNOWN_VERSION => ChargeCheck::NewerSchema { version: v },
             Some(_) => ChargeCheck::OlderSchema,
             // A `v` that names no version is a broken record, not an old one.
@@ -147,6 +158,93 @@ fn recompute_v2(value: &Value) -> ChargeCheck {
     }
 }
 
+/// The v3 rule: the same ceiling-and-cap as v2, but the usage totals bind the
+/// *sum* of each side's lines, and a line spells itself as the tuple
+/// `[item, units, pricePerMillion]` — the ledger's description limit cannot
+/// afford an object's repeated keys. The itemized price book splits `input`
+/// into `input` plus `cache_read` and the cache-write tiers, and `output` into
+/// `output` plus `reasoning`, so each side's lines must account for the whole
+/// usage count — a line that counts other tokens than the usage describes is
+/// a record that disagrees with itself. A bound item may appear once; an item
+/// this verifier does not know is unbound and still joins the sum. A `request`
+/// line is the flat fee: one per billed turn, zero on a turn nothing ran for.
+fn recompute_v3(value: &Value) -> ChargeCheck {
+    let integer = |value: &Value, key: &str| value.get(key).and_then(Value::as_i64);
+    let Some(usage) = value.get("usage") else {
+        return ChargeCheck::Mismatch;
+    };
+    let usage_count = |key: &str| match usage.get(key) {
+        None => Some(0),
+        Some(count) => count.as_i64(),
+    };
+    let (Some(input), Some(output)) = (usage_count("inputTokens"), usage_count("outputTokens"))
+    else {
+        return ChargeCheck::Mismatch;
+    };
+    let (Some(charged), Some(freeze)) = (integer(value, "charged"), integer(value, "freeze"))
+    else {
+        return ChargeCheck::Mismatch;
+    };
+    if input < 0 || output < 0 || charged < 0 || freeze < 0 {
+        return ChargeCheck::Mismatch;
+    }
+    // A flat fee bills a turn that ran; a failed or swept one owes nothing.
+    let billable = matches!(
+        value.get("kind").and_then(Value::as_str),
+        Some("usage" | "estimated" | "client_cancelled" | "capped")
+    );
+    let Some(lines) = value.get("lines").and_then(Value::as_array) else {
+        return ChargeCheck::Mismatch;
+    };
+    let (mut input_sum, mut output_sum) = (0_i64, 0_i64);
+    let mut bound_seen: u8 = 0;
+    let mut numerator: i128 = 0;
+    for line in lines {
+        let item = line.get(0).and_then(Value::as_str);
+        let (Some(units), Some(price)) = (
+            line.get(1).and_then(Value::as_i64),
+            line.get(2).and_then(Value::as_i64),
+        ) else {
+            return ChargeCheck::Mismatch;
+        };
+        if units < 0 || price < 0 {
+            return ChargeCheck::Mismatch;
+        }
+        match item {
+            Some(item) if INPUT_ITEMS.contains(&item) || OUTPUT_ITEMS.contains(&item) => {
+                // A bound item twice is two writers' claims where one belongs.
+                let bit = INPUT_ITEMS
+                    .iter()
+                    .chain(OUTPUT_ITEMS.iter())
+                    .position(|known| *known == item)
+                    .map(|index| 1_u8 << index)
+                    .unwrap_or(0);
+                if bound_seen & bit != 0 {
+                    return ChargeCheck::Mismatch;
+                }
+                bound_seen |= bit;
+                if INPUT_ITEMS.contains(&item) {
+                    input_sum += units;
+                } else {
+                    output_sum += units;
+                }
+            }
+            Some("request") if units > i64::from(billable) => return ChargeCheck::Mismatch,
+            _ => {}
+        }
+        numerator += i128::from(units) * i128::from(price);
+    }
+    if input_sum != input || output_sum != output {
+        return ChargeCheck::Mismatch;
+    }
+    let expected = ((numerator + PER_MILLION - 1) / PER_MILLION).min(i128::from(freeze));
+    if i128::from(charged) == expected {
+        ChargeCheck::Recomputed
+    } else {
+        ChargeCheck::Mismatch
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // The tests may unwrap: a panic here is a failing test, which is what a test is for.
@@ -154,13 +252,59 @@ mod tests {
 
     use super::*;
 
-    /// A settled turn as the gateway writes it: 116 input at 1 credit per million,
-    /// 100 output at 2, ceiling 316 minor under a 400 freeze.
+    /// A settled turn as the gateway wrote it under v2: 116 input at 1 credit
+    /// per million, 100 output at 2, ceiling 316 minor under a 400 freeze.
     const V2: &str = r#"{"v":2,"request":"req-abc","channel":"deepseek","model":"deepseek-chat","priceVersion":3,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100,"cachedTokens":40},"lines":[{"item":"input","units":116,"pricePerM":1000000},{"item":"output","units":100,"pricePerM":2000000}],"charged":316,"freeze":400}"#;
+
+    /// The same turn under v3, itemized: 20 fresh input at 1 credit per million,
+    /// 96 cached at a tenth of that, 80 output at 2 plus 20 reasoning at 3 — one
+    /// ceiling over the summed cost: 20 + 9.6 + 160 + 60 = 249.6 → 250.
+    const V3: &str = r#"{"v":3,"request":"req-abc","channel":"deepseek","model":"deepseek-chat","priceVersion":4,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100,"cachedTokens":96,"reasoningTokens":20},"matchedRule":{"minInputTokens":100},"lines":[["input",20,1000000],["cache_read",96,100000],["output",80,2000000],["reasoning",20,3000000]],"charged":250,"freeze":400}"#;
 
     #[test]
     fn a_genuine_v2_record_recomputes() {
         assert_eq!(verify_charge(V2), ChargeCheck::Recomputed);
+    }
+
+    #[test]
+    fn a_genuine_v3_record_recomputes() {
+        assert_eq!(verify_charge(V3), ChargeCheck::Recomputed);
+        // And a wrong total is a mismatch, not a pass.
+        let wrong = V3.replacen(r#""charged":250"#, r#""charged":300"#, 1);
+        assert_eq!(verify_charge(&wrong), ChargeCheck::Mismatch);
+    }
+
+    #[test]
+    fn a_v3_record_must_account_for_the_whole_usage() {
+        // The input lines split 116 into 20 + 96; claim only part of it and the
+        // record disagrees with itself.
+        let short = V3.replacen(r#"["cache_read",96"#, r#"["cache_read",90"#, 1);
+        assert_eq!(verify_charge(&short), ChargeCheck::Mismatch);
+        // The same bound item twice is two claims where one belongs.
+        let dup = V3.replacen(
+            r#"["cache_read",96,100000]"#,
+            r#"["cache_read",48,100000],["cache_read",48,100000]"#,
+            1,
+        );
+        assert_eq!(verify_charge(&dup), ChargeCheck::Mismatch);
+    }
+
+    #[test]
+    fn the_flat_fee_counts_once_and_only_when_billed() {
+        let flat = r#"{"v":3,"kind":"usage","usage":{"inputTokens":0,"outputTokens":0},"lines":[["input",0,1000000],["output",0,2000000],["request",1,500000000]],"charged":500,"freeze":4000}"#;
+        assert_eq!(verify_charge(flat), ChargeCheck::Recomputed);
+        // Two requests' fee for one turn is a lie the sum alone would pass.
+        let doubled = flat
+            .replacen(
+                r#"["request",1,500000000]"#,
+                r#"["request",2,500000000]"#,
+                1,
+            )
+            .replacen(r#""charged":500"#, r#""charged":1000"#, 1);
+        assert_eq!(verify_charge(&doubled), ChargeCheck::Mismatch);
+        // A swept turn carries the line at zero — the rate is still on record.
+        let swept = r#"{"v":3,"kind":"swept","usage":{},"lines":[["input",0,1000000],["output",0,2000000],["request",0,500000000]],"charged":0,"freeze":4000}"#;
+        assert_eq!(verify_charge(swept), ChargeCheck::Recomputed);
     }
 
     #[test]

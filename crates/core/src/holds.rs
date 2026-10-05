@@ -16,6 +16,7 @@ use sqlx::Row;
 use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
+use crate::billing::BillLine;
 use crate::db::Db;
 use crate::error::WalletError;
 use crate::tenants::Tenants;
@@ -275,6 +276,20 @@ async fn sweep_one(
     // description is built from the row alone, so a retried sweep reproduces it exactly and
     // replays instead of conflicting.
     let usage = UsageRecord::default();
+    // A swept turn ran nothing and owes nothing: the lines price zero units at
+    // the rates the hold's version carried.
+    let lines = [
+        BillLine {
+            item: "input".into(),
+            units: 0,
+            price_per_m: hold.input_price,
+        },
+        BillLine {
+            item: "output".into(),
+            units: 0,
+            price_per_m: hold.output_price,
+        },
+    ];
     let description = Settlement {
         request: &hold.request_id,
         channel: &hold.channel,
@@ -282,8 +297,8 @@ async fn sweep_one(
         price_version: hold.price_version,
         kind: SettlementKind::Swept,
         usage: &usage,
-        input_price: hold.input_price,
-        output_price: hold.output_price,
+        lines: &lines,
+        matched_rule: None,
         charged: 0,
         freeze: hold.freeze_minor,
     }

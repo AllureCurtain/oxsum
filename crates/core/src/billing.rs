@@ -24,33 +24,464 @@ const PER_MESSAGE_OVERHEAD: i64 = 16;
 
 // ── prices ───────────────────────────────────────────────────────────────────
 
-/// One model's price, in minor units per million tokens, and how much output it may produce.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Price {
-    /// Minor units per million input tokens. Zero is a model that is free to prompt.
-    #[serde(rename = "inputPricePerMillion")]
-    pub input_per_million: i64,
-    /// Minor units per million output tokens.
-    #[serde(rename = "outputPricePerMillion")]
-    pub output_per_million: i64,
-    /// The most output the model can produce. A request asking for more, or for nothing, gets this.
-    #[serde(rename = "maxOutputTokens")]
-    pub max_output_tokens: i64,
+/// The billing mode a price applies to: what the usage record's counts mean.
+/// Only `chat` exists today; the field is versioned with the price so a new
+/// mode is an addition, not a reinterpretation of an old row.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BillingMode {
+    /// A chat-completion turn, priced on token usage.
+    #[default]
+    Chat,
 }
 
-impl Price {
-    /// Checks the parts of a price that no arithmetic downstream can repair.
-    ///
-    /// # Errors
-    ///
-    /// Names the field when a rate is negative or the output ceiling is not positive.
-    pub fn validate(&self) -> Result<(), String> {
-        if self.input_per_million < 0 || self.output_per_million < 0 {
-            return Err("prices must be zero or more minor units per million tokens".into());
+impl BillingMode {
+    /// The spelling `channel_prices.mode` stores.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Chat => "chat",
+        }
+    }
+
+    /// Reads a stored mode back; an unknown one is a price this build cannot
+    /// apply, and the caller refuses it rather than guess.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "chat" => Some(Self::Chat),
+            _ => None,
+        }
+    }
+}
+
+/// The upstream's side of the price: what the channel costs the deployment for
+/// the same usage, in the same units as the customer price. Sparse — only the
+/// dimensions upstream actually meters are written. The margin view and the
+/// upstream-misbilling checks read it (roadmap P1-6); it never reaches an
+/// organization's bill.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+pub struct UpstreamPrices {
+    /// Minor units per million input tokens upstream charges.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_price_per_million: Option<i64>,
+    /// Minor units per million output tokens upstream charges.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_price_per_million: Option<i64>,
+    /// Minor units per million cached input tokens upstream charges.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read_price_per_million: Option<i64>,
+    /// Minor units per million tokens written into upstream's 5-minute cache tier.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_write_5m_price_per_million: Option<i64>,
+    /// Minor units per million tokens written into upstream's 1-hour cache tier.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_write_1h_price_per_million: Option<i64>,
+    /// Minor units per million reasoning tokens upstream charges.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_price_per_million: Option<i64>,
+    /// A flat minor-unit amount upstream charges per request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_per_request: Option<i64>,
+}
+
+impl UpstreamPrices {
+    /// The non-negativity check every price is under.
+    fn validate(&self) -> Result<(), String> {
+        for rate in [
+            self.input_price_per_million,
+            self.output_price_per_million,
+            self.cache_read_price_per_million,
+            self.cache_write_5m_price_per_million,
+            self.cache_write_1h_price_per_million,
+            self.reasoning_price_per_million,
+            self.cost_per_request,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if rate < 0 {
+                return Err("upstream prices must be zero or more".into());
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A whole price set: what a matched rule swaps in, and what the base price is
+/// made of. The rates are minor units per million units; a dimension with no
+/// rate is not free — it bills at its side's base rate and folds into the
+/// `input` or `output` line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PriceSet {
+    /// Minor units per million input tokens.
+    pub input_price_per_million: i64,
+    /// Minor units per million output tokens.
+    pub output_price_per_million: i64,
+    /// The most output the model may produce; the ceiling `max_tokens` clamps to.
+    pub max_output_tokens: i64,
+    /// Minor units per million cached input tokens, when the cached part prices
+    /// differently from fresh input.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read_price_per_million: Option<i64>,
+    /// Minor units per million tokens written into the 5-minute provider cache tier.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_write_5m_price_per_million: Option<i64>,
+    /// Minor units per million tokens written into the 1-hour provider cache tier.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_write_1h_price_per_million: Option<i64>,
+    /// Minor units per million reasoning tokens, when reasoning prices
+    /// differently from ordinary output.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_price_per_million: Option<i64>,
+    /// A flat amount in minor units, charged once per billed request on top of
+    /// the token lines.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_per_request: Option<i64>,
+    /// What upstream charges for the same usage.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<UpstreamPrices>,
+}
+
+impl PriceSet {
+    /// Checks the parts of a set that no arithmetic downstream can repair.
+    fn validate(&self) -> Result<(), String> {
+        for rate in [
+            Some(self.input_price_per_million),
+            Some(self.output_price_per_million),
+            self.cache_read_price_per_million,
+            self.cache_write_5m_price_per_million,
+            self.cache_write_1h_price_per_million,
+            self.reasoning_price_per_million,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if rate < 0 {
+                return Err("prices must be zero or more minor units per million units".into());
+            }
         }
         if self.max_output_tokens <= 0 {
             return Err("maxOutputTokens must be positive".into());
+        }
+        // The flat fee rides a line whose rate is per million requests, so the
+        // encode must still fit a minor unit count.
+        if let Some(flat) = self.cost_per_request
+            && !(0..=i64::MAX / PER_MILLION).contains(&flat)
+        {
+            return Err("costPerRequest must be a non-negative amount".into());
+        }
+        if let Some(upstream) = &self.upstream {
+            upstream.validate()?;
+        }
+        Ok(())
+    }
+
+    /// The dearest rate a token on the input side can bill at: the base rate or
+    /// a configured cache rate, whichever is largest. The freeze is only a
+    /// promise when it covers the most expensive path.
+    fn input_ceiling(&self) -> i64 {
+        self.input_price_per_million
+            .max(self.cache_read_price_per_million.unwrap_or(0))
+            .max(self.cache_write_5m_price_per_million.unwrap_or(0))
+            .max(self.cache_write_1h_price_per_million.unwrap_or(0))
+    }
+
+    /// As [`input_ceiling`](Self::input_ceiling), for the output side.
+    fn output_ceiling(&self) -> i64 {
+        self.output_price_per_million
+            .max(self.reasoning_price_per_million.unwrap_or(0))
+    }
+
+    /// The lines a settlement decomposes into under this set: one per dimension
+    /// the price actually prices, the rest folded into the side's base line —
+    /// a cache dimension with no configured rate is billed at the input rate,
+    /// which is what "no cache discount" means. `billable` is whether the
+    /// request ran: a failed or swept turn owes no flat fee.
+    fn lines(&self, usage: &UsageRecord, billable: bool) -> Vec<BillLine> {
+        let mut input_units = usage.input_tokens;
+        let mut lines = Vec::with_capacity(6);
+        for (units, rate, item) in [
+            (
+                usage.cached_tokens,
+                self.cache_read_price_per_million,
+                "cache_read",
+            ),
+            (
+                usage.cache_write_5m_tokens,
+                self.cache_write_5m_price_per_million,
+                "cache_write_5m",
+            ),
+            (
+                usage.cache_write_1h_tokens,
+                self.cache_write_1h_price_per_million,
+                "cache_write_1h",
+            ),
+        ] {
+            if let Some(rate) = rate.filter(|_| units > 0) {
+                input_units -= units;
+                lines.push(BillLine {
+                    item: item.into(),
+                    units,
+                    price_per_m: rate,
+                });
+            }
+        }
+        let mut output_units = usage.output_tokens;
+        let reasoning = (self.reasoning_price_per_million.is_some())
+            .then_some(usage.reasoning_tokens)
+            .filter(|units| *units > 0);
+        if let Some(units) = reasoning {
+            output_units -= units;
+        }
+        let mut result = Vec::with_capacity(lines.len() + 3);
+        result.push(BillLine {
+            item: "input".into(),
+            units: input_units,
+            price_per_m: self.input_price_per_million,
+        });
+        result.append(&mut lines);
+        result.push(BillLine {
+            item: "output".into(),
+            units: output_units,
+            price_per_m: self.output_price_per_million,
+        });
+        if let Some(units) = reasoning {
+            result.push(BillLine {
+                item: "reasoning".into(),
+                units,
+                price_per_m: self.reasoning_price_per_million.unwrap_or(0),
+            });
+        }
+        if let Some(flat) = self.cost_per_request {
+            result.push(BillLine {
+                item: "request".into(),
+                units: i64::from(billable),
+                price_per_m: flat * PER_MILLION,
+            });
+        }
+        result
+    }
+}
+
+/// The conditions a request must satisfy for a rule's set to price it. Every
+/// present field must hold; the count of present fields is the rule's
+/// specificity, and the most specific matching rule wins.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+pub struct RuleMatch {
+    /// Matches when the caller asked for this service tier.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
+    /// Matches when the turn's input reaches this count.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_input_tokens: Option<i64>,
+    /// Matches when the turn's input stays under this count.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_input_tokens: Option<i64>,
+}
+
+impl RuleMatch {
+    /// The match's specificity: how many conditions it carries.
+    fn specificity(&self) -> usize {
+        usize::from(self.service_tier.is_some())
+            + usize::from(self.min_input_tokens.is_some())
+            + usize::from(self.max_input_tokens.is_some())
+    }
+
+    /// Checks the conditions themselves: at least one must exist — a rule that
+    /// always matches is the base price wearing a costume — and a token window
+    /// must not be empty.
+    fn validate(&self) -> Result<(), String> {
+        if self.specificity() == 0 {
+            return Err("a price rule needs at least one condition".into());
+        }
+        if self.service_tier.as_deref().is_some_and(str::is_empty) {
+            return Err("a rule's serviceTier cannot be empty".into());
+        }
+        if let (Some(min), Some(max)) = (self.min_input_tokens, self.max_input_tokens)
+            && min > max
+        {
+            return Err("a rule's minInputTokens cannot exceed its maxInputTokens".into());
+        }
+        if self.min_input_tokens.is_some_and(|bound| bound < 0)
+            || self.max_input_tokens.is_some_and(|bound| bound < 0)
+        {
+            return Err("a rule's token bounds cannot be negative".into());
+        }
+        Ok(())
+    }
+
+    /// Whether this usage satisfies every condition present.
+    fn matches(&self, usage: &UsageRecord) -> bool {
+        self.service_tier
+            .as_ref()
+            .is_none_or(|tier| usage.service_tier.as_ref() == Some(tier))
+            && self
+                .min_input_tokens
+                .is_none_or(|bound| usage.input_tokens >= bound)
+            && self
+                .max_input_tokens
+                .is_none_or(|bound| usage.input_tokens <= bound)
+    }
+
+    /// Whether a request asking for `service_tier` could match at all. The
+    /// token bounds are not knowable before the turn runs, so they never
+    /// disqualify — a freeze that prices the dearest possible tier must keep
+    /// every rule they do not exclude.
+    fn could_match(&self, service_tier: Option<&str>) -> bool {
+        self.service_tier
+            .as_deref()
+            .is_none_or(|tier| Some(tier) == service_tier)
+    }
+
+    /// Whether some request could satisfy both matches at once: compatible
+    /// tiers and intersecting token windows.
+    fn overlaps(&self, other: &Self) -> bool {
+        if self.service_tier.is_some()
+            && other.service_tier.is_some()
+            && self.service_tier != other.service_tier
+        {
+            return false;
+        }
+        let low = [self.min_input_tokens, other.min_input_tokens]
+            .into_iter()
+            .flatten()
+            .max();
+        let high = [self.max_input_tokens, other.max_input_tokens]
+            .into_iter()
+            .flatten()
+            .min();
+        low.zip(high).is_none_or(|(low, high)| low <= high)
+    }
+}
+
+/// A conditional price: when the request matches, the rule's set replaces the
+/// whole base set — never a field-level diff (docs/decisions.md, "Pricing").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PriceRule {
+    /// The conditions, spelled `match` on the wire.
+    #[serde(rename = "match")]
+    pub cond: RuleMatch,
+    /// The price set that takes over when `match` holds.
+    pub price: PriceSet,
+}
+
+/// One model's price: the base set every request pays, the mode it applies to,
+/// and the conditional rules that may swap the set in whole.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Price {
+    /// Minor units per million input tokens. Zero is a model that is free to prompt.
+    pub input_price_per_million: i64,
+    /// Minor units per million output tokens.
+    pub output_price_per_million: i64,
+    /// The most output the model can produce. A request asking for more, or for nothing, gets this.
+    pub max_output_tokens: i64,
+    /// Minor units per million cached input tokens, when the cached part prices
+    /// differently from fresh input.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read_price_per_million: Option<i64>,
+    /// Minor units per million tokens written into the 5-minute provider cache tier.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_write_5m_price_per_million: Option<i64>,
+    /// Minor units per million tokens written into the 1-hour provider cache tier.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_write_1h_price_per_million: Option<i64>,
+    /// Minor units per million reasoning tokens.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_price_per_million: Option<i64>,
+    /// A flat amount in minor units, charged once per billed request on top of
+    /// the token lines.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_per_request: Option<i64>,
+    /// What upstream charges for the same usage.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<UpstreamPrices>,
+    /// The billing mode; only `chat` is priced today.
+    #[serde(default)]
+    pub mode: BillingMode,
+    /// The conditional price sets, resolved most-specific-wins.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<PriceRule>,
+}
+
+/// A turn's charge decomposed: the priced lines and the rule whose set priced
+/// them. [`ItemizedCharge::total_minor`] is one ceiling over the lines'
+/// combined numerator — one rounding per turn, not per line, so the user never
+/// pays a fraction of a minor unit per line.
+#[derive(Debug)]
+pub struct ItemizedCharge {
+    /// The lines the settlement description writes.
+    pub lines: Vec<BillLine>,
+    /// The match that chose the set, when a conditional rule priced the turn.
+    pub matched_rule: Option<RuleMatch>,
+}
+
+impl ItemizedCharge {
+    /// The charge the lines sum to, ceiling-divided as one amount.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a total that does not fit in 64 bits.
+    pub fn total_minor(&self) -> Result<i64, WalletError> {
+        let mut numerator: i128 = 0;
+        for line in &self.lines {
+            numerator += i128::from(line.units) * i128::from(line.price_per_m);
+        }
+        // Ceiling division, by hand: both sides are non-negative (validated above), and
+        // `i128::div_ceil` is still unstable.
+        let per_million = i128::from(PER_MILLION);
+        let minor = (numerator + per_million - 1) / per_million;
+        i64::try_from(minor)
+            .map_err(|_| WalletError::InvalidInput("the amount does not fit in 64 bits".into()))
+    }
+}
+
+impl Price {
+    /// The base set: the part of this price a matching rule replaces.
+    fn set(&self) -> PriceSet {
+        PriceSet {
+            input_price_per_million: self.input_price_per_million,
+            output_price_per_million: self.output_price_per_million,
+            max_output_tokens: self.max_output_tokens,
+            cache_read_price_per_million: self.cache_read_price_per_million,
+            cache_write_5m_price_per_million: self.cache_write_5m_price_per_million,
+            cache_write_1h_price_per_million: self.cache_write_1h_price_per_million,
+            reasoning_price_per_million: self.reasoning_price_per_million,
+            cost_per_request: self.cost_per_request,
+            upstream: self.upstream.clone(),
+        }
+    }
+
+    /// Checks the parts of a price that no arithmetic downstream can repair:
+    /// the base set's sanity, every rule's match and set, and that no two rules
+    /// could match the same request at the same specificity — an ambiguous
+    /// price book is refused when it is written, not discovered at a bill.
+    ///
+    /// # Errors
+    ///
+    /// Names the field when a rate is negative, the output ceiling is not
+    /// positive, a rule is malformed, or two rules overlap ambiguously.
+    pub fn validate(&self) -> Result<(), String> {
+        self.set().validate()?;
+        for rule in &self.rules {
+            rule.cond.validate()?;
+            rule.price.validate()?;
+        }
+        for (index, rule) in self.rules.iter().enumerate() {
+            for other in &self.rules[index + 1..] {
+                if rule.cond.specificity() == other.cond.specificity()
+                    && rule.cond.overlaps(&other.cond)
+                {
+                    return Err(
+                        "two rules could match the same request at the same specificity".into(),
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -71,8 +502,15 @@ impl Price {
         Ok(asked.min(self.max_output_tokens))
     }
 
-    /// The most this request could cost: the input upper bound at the input price plus the output
-    /// upper bound at the output price, rounded up to the minor unit.
+    /// The most this request could cost: the input and output upper bounds
+    /// priced at the dearest rate any candidate set bills them at, plus the
+    /// highest flat fee, rounded up to the minor unit.
+    ///
+    /// A candidate is the base set plus every rule the caller's declared
+    /// `service_tier` does not already disqualify — token bounds cannot be
+    /// known before the turn runs, so a rule they do not exclude stays a
+    /// candidate and the freeze covers its price (docs/decisions.md: the hold
+    /// prices the highest applicable tier).
     ///
     /// # Errors
     ///
@@ -81,33 +519,72 @@ impl Price {
         &self,
         texts: &[&str],
         asked_output: Option<i64>,
+        service_tier: Option<&str>,
     ) -> Result<i64, WalletError> {
+        let base = self.set();
+        let candidates = std::iter::once(&base).chain(
+            self.rules
+                .iter()
+                .filter(|rule| rule.cond.could_match(service_tier))
+                .map(|rule| &rule.price),
+        );
+        let (mut input_rate, mut output_rate, mut flat, mut ceiling) = (0_i64, 0_i64, 0_i64, 0_i64);
+        for set in candidates {
+            input_rate = input_rate.max(set.input_ceiling());
+            output_rate = output_rate.max(set.output_ceiling());
+            flat = flat.max(set.cost_per_request.unwrap_or(0));
+            ceiling = ceiling.max(set.max_output_tokens);
+        }
         let input = input_upper_bound(texts);
-        let output = self.output_upper_bound(asked_output)?;
-        self.minor_for(input, output)
-    }
-
-    /// What a turn cost at this price, before the freeze caps it.
-    ///
-    /// # Errors
-    ///
-    /// Refuses usage that does not fit in 64 bits once priced.
-    pub fn cost_minor(&self, usage: &UsageRecord) -> Result<i64, WalletError> {
-        self.minor_for(usage.input_tokens, usage.output_tokens)
-    }
-
-    /// The price of a token count, rounded up: a fraction of a minor unit is still a minor unit of
-    /// cost, and rounding down would hand out free credit one request at a time.
-    fn minor_for(&self, input_tokens: i64, output_tokens: i64) -> Result<i64, WalletError> {
+        let asked = asked_output.unwrap_or(ceiling);
+        if asked <= 0 {
+            return Err(WalletError::InvalidInput(
+                "max_tokens must be positive".into(),
+            ));
+        }
+        let output = asked.min(ceiling);
         // i128 so the multiplication cannot overflow before the division brings it back down.
-        let numerator = i128::from(input_tokens) * i128::from(self.input_per_million)
-            + i128::from(output_tokens) * i128::from(self.output_per_million);
-        // Ceiling division, by hand: both sides are non-negative (validated above), and
-        // `i128::div_ceil` is still unstable.
+        let numerator = i128::from(input) * i128::from(input_rate)
+            + i128::from(output) * i128::from(output_rate)
+            + i128::from(flat) * i128::from(PER_MILLION);
         let per_million = i128::from(PER_MILLION);
         let minor = (numerator + per_million - 1) / per_million;
         i64::try_from(minor)
             .map_err(|_| WalletError::InvalidInput("the amount does not fit in 64 bits".into()))
+    }
+
+    /// The set that bills this usage, and the rule that chose it — the most
+    /// specific match, which [`validate`](Self::validate) guarantees is unique.
+    fn resolve(&self, usage: &UsageRecord) -> (PriceSet, Option<RuleMatch>) {
+        let best = self
+            .rules
+            .iter()
+            .filter(|rule| rule.cond.matches(usage))
+            .max_by_key(|rule| rule.cond.specificity());
+        match best {
+            Some(rule) => (rule.price.clone(), Some(rule.cond.clone())),
+            None => (self.set(), None),
+        }
+    }
+
+    /// The lines a settlement decomposes the charge into, under the set the
+    /// usage matched, and the rule that chose it when one did.
+    ///
+    /// # Errors
+    ///
+    /// Refuses usage that violates its own invariants — a record the verifier
+    /// could never confirm must not be written in the first place.
+    pub fn itemize(
+        &self,
+        usage: &UsageRecord,
+        billable: bool,
+    ) -> Result<ItemizedCharge, WalletError> {
+        usage.validate()?;
+        let (set, rule) = self.resolve(usage);
+        Ok(ItemizedCharge {
+            lines: set.lines(usage, billable),
+            matched_rule: rule,
+        })
     }
 }
 
@@ -204,7 +681,7 @@ impl SettlementKind {
 /// older or newer — is not this build's to interpret: `oxsum_verify`'s
 /// `verify_charge` dispatches on `v` and leaves those to inclusion proof alone
 /// (docs/decisions.md, T1-2).
-const DESCRIPTION_VERSION: i64 = 2;
+const DESCRIPTION_VERSION: i64 = 3;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -225,10 +702,13 @@ pub struct Settlement<'a> {
     /// in the mutable usage row and never reach an immutable ledger description
     /// (docs/decisions.md, data retention).
     pub usage: &'a UsageRecord,
-    /// Minor units per million input tokens at the time of the request.
-    pub input_price: i64,
-    /// Minor units per million output tokens at the time of the request.
-    pub output_price: i64,
+    /// The priced lines the charge decomposes into — [`Price::itemize`]'s
+    /// output: one per dimension the price prices, the rest folded into the
+    /// side's base line.
+    pub lines: &'a [BillLine],
+    /// The match that chose the set, when a conditional rule priced the turn:
+    /// the audit answer to "which rule hit", recorded under the hash.
+    pub matched_rule: Option<&'a RuleMatch>,
     /// What was charged, never more than `freeze`.
     pub charged: i64,
     /// What was frozen before the call.
@@ -322,12 +802,15 @@ impl From<&UsageRecord> for MeteredUsage {
 /// One priced dimension of a settlement: what was counted, and the rate it was
 /// priced at. `price_per_m` is minor units per million units; `charged` is the
 /// whole lines' summed cost ceiling-divided by a million, capped by `freeze` —
-/// the rule `oxsum_verify::verify_charge` recomputes (v2's `lines`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// the rule `oxsum_verify::verify_charge` recomputes (v3's `lines`).
+///
+/// On the wire a line is a three-element array, `[item, units, pricePerMillion]`
+/// — the ledger's 512-character description limit cannot afford an object's
+/// repeated keys, and the item name keeps the tuple self-describing.
+#[derive(Debug, Clone, PartialEq)]
 pub struct BillLine {
-    /// The dimension this line prices (`"input"`, `"output"`; more arrive with
-    /// the itemized price book, roadmap P1-4).
+    /// The dimension this line prices (`"input"`, `"output"`, `"cache_read"`,
+    /// `"reasoning"`, `"request"`, …).
     pub item: String,
     /// How much of it the turn used, in the item's own units.
     pub units: i64,
@@ -335,10 +818,27 @@ pub struct BillLine {
     pub price_per_m: i64,
 }
 
+impl Serialize for BillLine {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        (&self.item, self.units, self.price_per_m).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for BillLine {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let (item, units, price_per_m) = <(String, i64, i64)>::deserialize(deserializer)?;
+        Ok(Self {
+            item,
+            units,
+            price_per_m,
+        })
+    }
+}
+
 /// A settlement's description on the wire, versioned.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SettlementV2<'a> {
+struct SettlementV3<'a> {
     /// The schema version — [`DESCRIPTION_VERSION`]. Spelled `v` on the wire.
     v: i64,
     request: &'a str,
@@ -347,7 +847,9 @@ struct SettlementV2<'a> {
     price_version: i64,
     kind: SettlementKind,
     usage: MeteredUsage,
-    lines: [BillLine; 2],
+    lines: &'a [BillLine],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    matched_rule: Option<&'a RuleMatch>,
     charged: i64,
     freeze: i64,
 }
@@ -362,7 +864,7 @@ impl Settlement<'_> {
     /// Refuses a description that cannot be serialised, which cannot happen for these fields; the
     /// `Result` keeps the caller honest rather than unwrapping a formality.
     pub fn description(&self) -> Result<String, WalletError> {
-        serde_json::to_string(&SettlementV2 {
+        serde_json::to_string(&SettlementV3 {
             v: DESCRIPTION_VERSION,
             request: self.request,
             channel: self.channel,
@@ -370,18 +872,8 @@ impl Settlement<'_> {
             price_version: self.price_version,
             kind: self.kind,
             usage: MeteredUsage::from(self.usage),
-            lines: [
-                BillLine {
-                    item: "input".into(),
-                    units: self.usage.input_tokens,
-                    price_per_m: self.input_price,
-                },
-                BillLine {
-                    item: "output".into(),
-                    units: self.usage.output_tokens,
-                    price_per_m: self.output_price,
-                },
-            ],
+            lines: self.lines,
+            matched_rule: self.matched_rule,
             charged: self.charged,
             freeze: self.freeze,
         })
@@ -432,12 +924,14 @@ pub struct SettlementRecord {
     pub usage: MeteredUsage,
     /// The priced lines the charge is the sum of.
     pub lines: Vec<BillLine>,
+    /// The rule that priced the turn, when one did.
+    pub matched_rule: Option<RuleMatch>,
 }
 
-/// The v2 wire [`SettlementRecord::parse`] reads: [`SettlementV2`] owned.
+/// The v3 wire [`SettlementRecord::parse`] reads: [`SettlementV3`] owned.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SettlementRecordV2 {
+struct SettlementRecordV3 {
     v: i64,
     request: String,
     channel: String,
@@ -446,6 +940,7 @@ struct SettlementRecordV2 {
     kind: SettlementKind,
     usage: MeteredUsage,
     lines: Vec<BillLine>,
+    matched_rule: Option<RuleMatch>,
     charged: i64,
     freeze: i64,
 }
@@ -456,7 +951,7 @@ impl SettlementRecord {
     /// write, or text from a writer that is not this one.
     #[must_use]
     pub fn parse(description: &str) -> Option<Self> {
-        let wire: SettlementRecordV2 = serde_json::from_str(description).ok()?;
+        let wire: SettlementRecordV3 = serde_json::from_str(description).ok()?;
         if wire.v != DESCRIPTION_VERSION {
             return None;
         }
@@ -480,6 +975,7 @@ impl SettlementRecord {
             freeze: wire.freeze,
             usage: wire.usage,
             lines: wire.lines,
+            matched_rule: wire.matched_rule,
         })
     }
 }
@@ -587,13 +1083,43 @@ mod tests {
 
     use super::*;
 
-    /// One credit per million tokens each way, eight thousand tokens of output.
+    /// One credit per million input tokens, two per million output, eight
+    /// thousand tokens of output.
     fn price() -> Price {
         Price {
-            input_per_million: 1_000_000,
-            output_per_million: 2_000_000,
+            input_price_per_million: 1_000_000,
+            output_price_per_million: 2_000_000,
             max_output_tokens: 8_000,
+            cache_read_price_per_million: None,
+            cache_write_5m_price_per_million: None,
+            cache_write_1h_price_per_million: None,
+            reasoning_price_per_million: None,
+            cost_per_request: None,
+            upstream: None,
+            mode: BillingMode::Chat,
+            rules: Vec::new(),
         }
+    }
+
+    /// The two lines an ordinary turn decomposes into.
+    fn lines(input: i64, output: i64) -> Vec<BillLine> {
+        vec![
+            BillLine {
+                item: "input".into(),
+                units: input,
+                price_per_m: 1_000_000,
+            },
+            BillLine {
+                item: "output".into(),
+                units: output,
+                price_per_m: 2_000_000,
+            },
+        ]
+    }
+
+    /// The itemized charge for a usage: the lines and the matched rule together.
+    fn itemize(price: &Price, usage: &UsageRecord) -> ItemizedCharge {
+        price.itemize(usage, true).unwrap()
     }
 
     #[test]
@@ -619,7 +1145,7 @@ mod tests {
         // 84 bytes + overhead = 100 input tokens at 1 credit per million (one minor unit each),
         // 100 output tokens at 2 credits per million (two minor units each).
         let freeze = price()
-            .freeze_minor(&["x".repeat(84).as_str()], Some(100))
+            .freeze_minor(&["x".repeat(84).as_str()], Some(100), None)
             .unwrap();
         assert_eq!(freeze, 100 + 200);
     }
@@ -627,36 +1153,250 @@ mod tests {
     #[test]
     fn a_fraction_of_a_minor_unit_rounds_up() {
         let cheap = Price {
-            input_per_million: 1,
-            output_per_million: 0,
+            input_price_per_million: 1,
+            output_price_per_million: 0,
             max_output_tokens: 1,
+            ..price()
         };
         // An empty message is still the per-message overhead in input tokens, which at one minor
         // unit per million tokens is a millionth of a minor unit — and that still rounds up to one.
-        assert_eq!(cheap.freeze_minor(&[""], None).unwrap(), 1);
+        assert_eq!(cheap.freeze_minor(&[""], None, None).unwrap(), 1);
     }
 
     #[test]
     fn usage_is_priced_with_the_same_rounding() {
         let usage = UsageRecord::tokens(1_000_000, 500_000).unwrap();
-        assert_eq!(price().cost_minor(&usage).unwrap(), 1_000_000 + 1_000_000);
+        assert_eq!(
+            itemize(&price(), &usage).total_minor().unwrap(),
+            1_000_000 + 1_000_000
+        );
         assert!(UsageRecord::tokens(-1, 0).is_err());
         // A price high enough to overflow i64 once multiplied is refused, not wrapped.
         let absurd = Price {
-            input_per_million: i64::MAX,
-            output_per_million: i64::MAX,
+            input_price_per_million: i64::MAX,
+            output_price_per_million: i64::MAX,
             max_output_tokens: 1,
+            ..price()
         };
         assert!(
-            absurd
-                .cost_minor(&UsageRecord::tokens(i64::MAX, i64::MAX).unwrap())
+            itemize(&absurd, &UsageRecord::tokens(i64::MAX, i64::MAX).unwrap())
+                .total_minor()
                 .is_err()
         );
     }
 
     #[test]
+    fn a_priced_cache_dimension_gets_its_own_line() {
+        let priced = Price {
+            cache_read_price_per_million: Some(100_000),
+            reasoning_price_per_million: Some(8_000_000),
+            ..price()
+        };
+        let mut usage = UsageRecord::tokens(100, 50).unwrap();
+        usage.cached_tokens = 80;
+        usage.reasoning_tokens = 20;
+        let charge = itemize(&priced, &usage);
+        // Input minus the cached part at the base rate, the cache at its own,
+        // output minus reasoning at the base rate, reasoning at its own.
+        assert_eq!(
+            charge
+                .lines
+                .iter()
+                .map(|line| (line.item.as_str(), line.units, line.price_per_m))
+                .collect::<Vec<_>>(),
+            vec![
+                ("input", 20, 1_000_000),
+                ("cache_read", 80, 100_000),
+                ("output", 30, 2_000_000),
+                ("reasoning", 20, 8_000_000),
+            ]
+        );
+        // ceil((20·1e6 + 80·1e5 + 30·2e6 + 20·8e6)/1e6) = 20+8+60+160.
+        assert_eq!(charge.total_minor().unwrap(), 248);
+    }
+
+    #[test]
+    fn an_unpriced_dimension_folds_into_the_base_line() {
+        // No cache price configured: the cached part bills at the input rate —
+        // one `input` line for the whole count.
+        let mut usage = UsageRecord::tokens(100, 50).unwrap();
+        usage.cached_tokens = 80;
+        usage.reasoning_tokens = 20;
+        let charge = itemize(&price(), &usage);
+        assert_eq!(charge.lines.len(), 2);
+        assert_eq!(charge.lines[0].units, 100);
+        assert_eq!(charge.lines[1].units, 50);
+    }
+
+    #[test]
+    fn the_flat_fee_joins_the_lines_only_when_billed() {
+        let flat = Price {
+            cost_per_request: Some(500),
+            ..price()
+        };
+        let usage = UsageRecord::tokens(0, 0).unwrap();
+        let billed = flat.itemize(&usage, true).unwrap();
+        // units 1 at the per-million-encoded flat rate: exactly `costPerRequest`.
+        assert_eq!(billed.lines.last().unwrap().item, "request");
+        assert_eq!(billed.lines.last().unwrap().units, 1);
+        assert_eq!(billed.total_minor().unwrap(), 500);
+        // A turn upstream never served owes nothing, and the record still says why.
+        let not_billed = flat.itemize(&usage, false).unwrap();
+        assert_eq!(not_billed.lines.last().unwrap().units, 0);
+        assert_eq!(not_billed.total_minor().unwrap(), 0);
+    }
+
+    /// The rules: a matched condition swaps the whole set, most specific wins,
+    /// and the charge's lines carry the swap's prices — which is what makes the
+    /// record recompute from its own fields alone.
+    #[test]
+    fn the_most_specific_matching_rule_prices_the_turn() {
+        let mut ruled = price();
+        ruled.rules = vec![
+            // The base 128k-and-up tier: input at half price.
+            PriceRule {
+                cond: RuleMatch {
+                    min_input_tokens: Some(128_000),
+                    ..RuleMatch::default()
+                },
+                price: PriceSet {
+                    input_price_per_million: 500_000,
+                    ..price().set()
+                },
+            },
+            // The same tier on the priority lane: a different input rate still.
+            PriceRule {
+                cond: RuleMatch {
+                    service_tier: Some("priority".into()),
+                    min_input_tokens: Some(128_000),
+                    ..RuleMatch::default()
+                },
+                price: PriceSet {
+                    input_price_per_million: 250_000,
+                    ..price().set()
+                },
+            },
+        ];
+        ruled.validate().unwrap();
+
+        let mut long = UsageRecord::tokens(200_000, 10).unwrap();
+        let charge = itemize(&ruled, &long);
+        // One condition matched: the token tier.
+        assert_eq!(charge.lines[0].price_per_m, 500_000);
+        assert_eq!(
+            charge.matched_rule,
+            Some(RuleMatch {
+                min_input_tokens: Some(128_000),
+                ..RuleMatch::default()
+            })
+        );
+
+        // Two conditions matched on the priority lane: the more specific rule wins.
+        long.service_tier = Some("priority".into());
+        let charge = itemize(&ruled, &long);
+        assert_eq!(charge.lines[0].price_per_m, 250_000);
+        assert_eq!(
+            charge.matched_rule.unwrap().service_tier.as_deref(),
+            Some("priority")
+        );
+
+        // Nothing matched: the base set, no rule named.
+        let short = UsageRecord::tokens(100, 10).unwrap();
+        let charge = itemize(&ruled, &short);
+        assert_eq!(charge.lines[0].price_per_m, 1_000_000);
+        assert_eq!(charge.matched_rule, None);
+    }
+
+    #[test]
+    fn an_ambiguous_rule_book_is_refused_when_written() {
+        let mut ruled = price();
+        ruled.rules = vec![
+            // 64k–256k at one specificity…
+            PriceRule {
+                cond: RuleMatch {
+                    min_input_tokens: Some(64_000),
+                    max_input_tokens: Some(256_000),
+                    ..RuleMatch::default()
+                },
+                price: price().set(),
+            },
+            // …and 128k and up at the same specificity: 128k–256k matches both.
+            PriceRule {
+                cond: RuleMatch {
+                    min_input_tokens: Some(128_000),
+                    max_input_tokens: Some(512_000),
+                    ..RuleMatch::default()
+                },
+                price: price().set(),
+            },
+        ];
+        assert!(ruled.validate().is_err());
+
+        // A disjoint window does not overlap: different tiers never collide.
+        ruled.rules[0].cond.service_tier = Some("batch".into());
+        ruled.validate().unwrap();
+
+        // A rule with no conditions, and one with an empty window, are malformed.
+        ruled.rules[1].cond = RuleMatch::default();
+        assert!(ruled.validate().is_err());
+        ruled.rules[1].cond = RuleMatch {
+            min_input_tokens: Some(200),
+            max_input_tokens: Some(100),
+            ..RuleMatch::default()
+        };
+        assert!(ruled.validate().is_err());
+    }
+
+    #[test]
+    fn the_freeze_prices_the_dearest_rule_that_could_match() {
+        let mut ruled = price();
+        ruled.rules = vec![
+            // A dearer cache-write rate the caller cannot rule out: input bounds
+            // stay unknowable until the turn runs.
+            PriceRule {
+                cond: RuleMatch {
+                    min_input_tokens: Some(1),
+                    ..RuleMatch::default()
+                },
+                price: PriceSet {
+                    cache_write_5m_price_per_million: Some(4_000_000),
+                    ..price().set()
+                },
+            },
+            // A priority-lane rule at an even dearer input rate, made more
+            // specific than the window rule so the two can coexist: a
+            // standard-lane caller does not freeze for it, a priority caller
+            // does.
+            PriceRule {
+                cond: RuleMatch {
+                    service_tier: Some("priority".into()),
+                    min_input_tokens: Some(1),
+                    ..RuleMatch::default()
+                },
+                price: PriceSet {
+                    input_price_per_million: 5_000_000,
+                    ..price().set()
+                },
+            },
+        ];
+        ruled.validate().unwrap();
+        let text = "x".repeat(84);
+        let texts = [text.as_str()];
+        // Standard lane: input at the dearest possibly-matching rate — the
+        // cache-write 4e6 beats the base 1e6.
+        let freeze = ruled.freeze_minor(&texts, Some(100), None).unwrap();
+        assert_eq!(freeze, 100 * 4 + 100 * 2);
+        // Priority lane: the tier's 5e6 input is now the dearest candidate.
+        let freeze = ruled
+            .freeze_minor(&texts, Some(100), Some("priority"))
+            .unwrap();
+        assert_eq!(freeze, 100 * 5 + 100 * 2);
+    }
+
+    #[test]
     fn the_description_carries_the_arithmetic() {
         let usage = UsageRecord::tokens(116, 100).unwrap();
+        let lines = lines(116, 100);
         let settlement = Settlement {
             request: "abc",
             channel: "deepseek",
@@ -664,19 +1404,51 @@ mod tests {
             price_version: 3,
             kind: SettlementKind::Usage,
             usage: &usage,
-            input_price: 1_000_000,
-            output_price: 2_000_000,
+            lines: &lines,
+            matched_rule: None,
             charged: 316,
             freeze: 400,
         };
         let json = settlement.description().unwrap();
         assert_eq!(
             json,
-            r#"{"v":2,"request":"abc","channel":"deepseek","model":"deepseek-chat","priceVersion":3,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100},"lines":[{"item":"input","units":116,"pricePerM":1000000},{"item":"output","units":100,"pricePerM":2000000}],"charged":316,"freeze":400}"#
+            r#"{"v":3,"request":"abc","channel":"deepseek","model":"deepseek-chat","priceVersion":3,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100},"lines":[["input",116,1000000],["output",100,2000000]],"charged":316,"freeze":400}"#
         );
         // Within the ledger's limit, whatever the model is called.
         assert!(json.len() < 512);
         assert_eq!(json, settlement.description().unwrap());
+    }
+
+    /// A rule hit lands in the record: `matchedRule` is the match itself, so
+    /// the bill names its tier without the reader needing the price history.
+    #[test]
+    fn a_matched_rule_is_named_in_the_description() {
+        let usage = UsageRecord::tokens(116, 100).unwrap();
+        let lines = lines(116, 100);
+        let matched = RuleMatch {
+            min_input_tokens: Some(100),
+            ..RuleMatch::default()
+        };
+        let json = Settlement {
+            request: "abc",
+            channel: "c",
+            model: "m",
+            price_version: 3,
+            kind: SettlementKind::Usage,
+            usage: &usage,
+            lines: &lines,
+            matched_rule: Some(&matched),
+            charged: 316,
+            freeze: 400,
+        }
+        .description()
+        .unwrap();
+        assert!(
+            json.contains(r#""matchedRule":{"minInputTokens":100}"#),
+            "{json}"
+        );
+        let record = SettlementRecord::parse(&json).unwrap();
+        assert_eq!(record.matched_rule, Some(matched));
     }
 
     /// The description is the record a proof covers: the metered dimensions
@@ -691,6 +1463,18 @@ mod tests {
         usage.service_tier = Some("priority".into());
         usage.tags.insert("team".into(), "search".into());
         usage.usage_details = Some(serde_json::json!({"provider_raw": {"x": 1}}));
+        let lines = [
+            BillLine {
+                item: "input".into(),
+                units: 3,
+                price_per_m: 1,
+            },
+            BillLine {
+                item: "output".into(),
+                units: 7,
+                price_per_m: 1,
+            },
+        ];
         let json = Settlement {
             request: "abc",
             channel: "c",
@@ -698,8 +1482,8 @@ mod tests {
             price_version: 1,
             kind: SettlementKind::Usage,
             usage: &usage,
-            input_price: 1,
-            output_price: 1,
+            lines: &lines,
+            matched_rule: None,
             charged: 1,
             freeze: 1,
         }
@@ -718,6 +1502,7 @@ mod tests {
     #[test]
     fn a_settlement_description_reads_back() {
         let usage = UsageRecord::tokens(116, 100).unwrap();
+        let lines = lines(116, 100);
         let settlement = Settlement {
             request: "abc",
             channel: "deepseek",
@@ -725,8 +1510,8 @@ mod tests {
             price_version: 3,
             kind: SettlementKind::Usage,
             usage: &usage,
-            input_price: 1_000_000,
-            output_price: 2_000_000,
+            lines: &lines,
+            matched_rule: None,
             charged: 316,
             freeze: 400,
         };
@@ -776,11 +1561,13 @@ mod tests {
         // The flat record from before descriptions were versioned is not this
         // build's to read: no `v`, no interpretation (docs/decisions.md, T1-2).
         assert!(SettlementRecord::parse(r#"{"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","inputTokens":1,"outputTokens":1,"inputPrice":1,"outputPrice":1,"charged":1,"freeze":1}"#).is_none());
-        // Neither is one from the future, or one whose priced lines are missing.
-        assert!(SettlementRecord::parse(r#"{"v":9,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[{"item":"input","units":1,"pricePerM":1},{"item":"output","units":0,"pricePerM":1}],"charged":1,"freeze":1}"#).is_none());
-        assert!(SettlementRecord::parse(r#"{"v":2,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[],"charged":1,"freeze":1}"#).is_none());
+        // Neither is one from the future, one written before the itemized book
+        // (v2), or one whose priced lines are missing.
+        assert!(SettlementRecord::parse(r#"{"v":9,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[["input",1,1],["output",0,1]],"charged":1,"freeze":1}"#).is_none());
+        assert!(SettlementRecord::parse(r#"{"v":2,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[{"item":"input","units":1,"pricePerM":1},{"item":"output","units":1,"pricePerM":1}],"charged":1,"freeze":1}"#).is_none());
+        assert!(SettlementRecord::parse(r#"{"v":3,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[],"charged":1,"freeze":1}"#).is_none());
         // An unknown settlement kind is not one this build can price.
-        assert!(SettlementRecord::parse(r#"{"v":2,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"teleported","usage":{},"lines":[{"item":"input","units":0,"pricePerM":1},{"item":"output","units":0,"pricePerM":1}],"charged":0,"freeze":1}"#).is_none());
+        assert!(SettlementRecord::parse(r#"{"v":3,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"teleported","usage":{},"lines":[["input",0,1],["output",0,1]],"charged":0,"freeze":1}"#).is_none());
     }
 
     #[test]

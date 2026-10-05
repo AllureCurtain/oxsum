@@ -130,6 +130,13 @@ impl UsageRecord {
     /// bounded claim instead of discarding the counts for an estimate.
     pub fn clamped(mut self) -> Self {
         self.cached_tokens = self.cached_tokens.clamp(0, self.input_tokens.max(0));
+        // The cache-write tiers belong to the input total too, behind the
+        // cached read: clamp what is left.
+        let rest = self.input_tokens - self.cached_tokens;
+        self.cache_write_5m_tokens = self.cache_write_5m_tokens.clamp(0, rest.max(0));
+        self.cache_write_1h_tokens = self
+            .cache_write_1h_tokens
+            .clamp(0, (rest - self.cache_write_5m_tokens).max(0));
         self.reasoning_tokens = self.reasoning_tokens.clamp(0, self.output_tokens.max(0));
         self
     }
@@ -161,9 +168,14 @@ impl UsageRecord {
                 )));
             }
         }
-        if self.cached_tokens > self.input_tokens {
+        // Cached reads and both cache-write tiers are all part of `inputTokens` —
+        // a provider whose writes sit outside the prompt count must fold them in
+        // at the adapter, or the charge's input-side lines cannot account for it.
+        if self.cached_tokens + self.cache_write_5m_tokens + self.cache_write_1h_tokens
+            > self.input_tokens
+        {
             return Err(WalletError::InvalidInput(
-                "cachedTokens cannot exceed inputTokens".into(),
+                "the cached and cache-write tokens together cannot exceed inputTokens".into(),
             ));
         }
         if self.reasoning_tokens > self.output_tokens {

@@ -66,6 +66,15 @@ struct PriceReq {
     input_price_per_million: i64,
     output_price_per_million: i64,
     max_output_tokens: i64,
+    cache_read_price_per_million: Option<i64>,
+    cache_write_5m_price_per_million: Option<i64>,
+    cache_write_1h_price_per_million: Option<i64>,
+    reasoning_price_per_million: Option<i64>,
+    cost_per_request: Option<i64>,
+    upstream: Option<oxsum_core::UpstreamPrices>,
+    mode: Option<oxsum_core::BillingMode>,
+    #[serde(default)]
+    rules: Vec<oxsum_core::PriceRule>,
 }
 
 /// The version a price change wrote.
@@ -130,9 +139,17 @@ async fn append(
         return Err(ApiError::not_found());
     }
     let price = Price {
-        input_per_million: request.input_price_per_million,
-        output_per_million: request.output_price_per_million,
+        input_price_per_million: request.input_price_per_million,
+        output_price_per_million: request.output_price_per_million,
         max_output_tokens: request.max_output_tokens,
+        cache_read_price_per_million: request.cache_read_price_per_million,
+        cache_write_5m_price_per_million: request.cache_write_5m_price_per_million,
+        cache_write_1h_price_per_million: request.cache_write_1h_price_per_million,
+        reasoning_price_per_million: request.reasoning_price_per_million,
+        cost_per_request: request.cost_per_request,
+        upstream: request.upstream,
+        mode: request.mode.unwrap_or_default(),
+        rules: request.rules,
     };
     let version = state.db.append_price(&name, &request.model, price).await?;
     ok(VersionRes {
