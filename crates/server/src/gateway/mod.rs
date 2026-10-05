@@ -170,6 +170,10 @@ async fn run(
             input_price: price.input_per_million,
             output_price: price.output_per_million,
             freeze_minor: freeze,
+            key_id: Some(key.key_id),
+            end_user: request.attribution.end_user.clone(),
+            service_tier: request.attribution.service_tier.clone(),
+            tags: request.attribution.tags.clone(),
         })
         .await
     {
@@ -204,6 +208,8 @@ async fn run(
         request.texts.clone(),
         &organization.tenant_id,
         state.billing.clone(),
+        key.key_id,
+        request.attribution.clone(),
     );
     // The dashboard's live section sees the turn from here: the hold is taken, upstream is
     // next. Best-effort — a missed event is a missed live update, not lost state.

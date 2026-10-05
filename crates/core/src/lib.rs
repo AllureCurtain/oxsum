@@ -18,11 +18,12 @@ mod orgs;
 mod proof;
 mod sessions;
 mod tenants;
+mod usage;
 mod users;
 mod wallet;
 
 pub use billing::{
-    Price, PriceBook, Settlement, SettlementKind, SettlementRecord, Usage, estimate_tokens,
+    Price, PriceBook, Settlement, SettlementKind, SettlementRecord, estimate_tokens,
     hold_description, input_upper_bound,
 };
 pub use channels::{Channel, ModelPrice, SecretKey, Serving};
@@ -46,6 +47,10 @@ pub use sessions::{
     SessionPrincipal,
 };
 pub use tenants::Tenants;
+pub use usage::{
+    Attribution, MAX_CONTEXT_NAME, MAX_END_USER, MAX_TAG, MAX_TAGS, UsageRecord, UsageRow,
+    validate_attribution,
+};
 pub use users::{NewUser, Registration, User};
 pub use wallet::{
     Credits, ListPage, LogEntry, Receipt, RequestEntry, SCALE, SettledEntry, SettledTurn,
