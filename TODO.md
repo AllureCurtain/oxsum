@@ -4,7 +4,7 @@ Updated: 2026-10-05
 
 ## In progress
 
-The productization roadmap (docs/decisions.md, 2026-10-05: P1-1 through P8-4) is executing item by item, one issue and PR each. P1-1 (#102, the normalized usage record), P1-2 (#104, the protocol-keyed usage adapter), P1-3 (#106, versioned settlement descriptions with `verify_charge`), P1-4 (#108, the itemized and conditional price book, descriptions at v3), P1-5 (#110, fail-closed pricing — the `unpriced` settlement kind), P1-6 (#112, upstream-cost tracking with the admin margin view) and P1-7 (#114, the billing-correctness test suite) shipped — P1 is closed; next is P2-1, the Bonus/Purchased balance pools with the grant reclassification, in progress on `feat/balance-pools`.
+The productization roadmap (docs/decisions.md, 2026-10-05: P1-1 through P8-4) is executing item by item, one issue and PR each. P1-1 (#102, the normalized usage record), P1-2 (#104, the protocol-keyed usage adapter), P1-3 (#106, versioned settlement descriptions with `verify_charge`), P1-4 (#108, the itemized and conditional price book, descriptions at v3), P1-5 (#110, fail-closed pricing — the `unpriced` settlement kind), P1-6 (#112, upstream-cost tracking with the admin margin view), P1-7 (#114, the billing-correctness test suite) and P2-1 (#116, the Bonus/Purchased balance pools with lazy grant reclassification) shipped; P2-2, the deposit abstraction with the redemption-code rail, is in progress on `feat/redemption-rail`.
 
 ## Next
 
@@ -37,6 +37,8 @@ Closed. The chat page is built (issue #39): after login the user tops up, picks 
 Nothing.
 
 ## Recently completed
+
+- 2026-10-05 Bonus/Purchased balance pools (roadmap P2-1, issue #116): the wallet's single funded account split into two — `Equity:Bonus` for granted credit, `Liabilities:Wallet` for purchased credit, both under `FundedReservations`. Holds reserve bonus-first with a pool split computed under the per-key lock (a racing split retries with balances re-read), settlements consume the held split, adjustments grant to Bonus and deduct bonus-first, and every org-facing read still answers one aggregate balance. Historical grants reclassify Bonus lazily on `Wallet::open` under the fixed `pool-reclassification` key — a global sweep inside the migration lock was tried first and serialized `migrate` across thousands of tenant schemas; the per-wallet form self-marks and costs one read per open. Pool internals never reach a contract surface. Pinned by wallet, key-limit, generative and end-to-end admin tests, and the full suite.
 
 - 2026-10-05 Upstream-cost tracking (roadmap P1-6, issue #112): `oxsum.usage_records` gained `upstream_cost_minor` (migration 0010) — what the price's `upstream` block made of the same usage, computed under the same set the turn priced with (`Price::upstream_cost`, `PriceSet::upstream_minor`: same subset-fold and ceiling-over-numerator as the customer lines) and written beside `charged_minor` by the settling path. NULL is untracked, not zero: a price without an `upstream` block, a swept turn whose watch row carries no price, or history. `GET /api/v1/admin/margin` (contract 0.22.0 first) sums charged against upstream cost per channel and model plus the `untrackedTurns` count; upstream cost reaches no settlement description and no organization-facing endpoint. Pinned by the billing unit tests, a gateway test whose row carries the tracked cost beside an unchanged charge, the swept-row NULL check, and the margin endpoint's integration test.
 
