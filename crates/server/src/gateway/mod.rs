@@ -162,10 +162,14 @@ async fn run(
         ))
         .into());
     };
-    let price = serving.price;
+    let price = serving.price.clone();
     let output_bound = price.output_upper_bound(request.max_tokens)?;
     let texts: Vec<&str> = request.texts.iter().map(String::as_str).collect();
-    let freeze = price.freeze_minor(&texts, request.max_tokens)?;
+    let freeze = price.freeze_minor(
+        &texts,
+        request.max_tokens,
+        request.attribution.service_tier.as_deref(),
+    )?;
 
     let wallet = state.tenants.get(&organization.tenant_id).await?;
     let hold_key = format!("req-{request_id}:hold");
@@ -182,8 +186,8 @@ async fn run(
             model: request.model.clone(),
             channel: serving.channel.clone(),
             price_version: serving.version,
-            input_price: price.input_per_million,
-            output_price: price.output_per_million,
+            input_price: price.input_price_per_million,
+            output_price: price.output_price_per_million,
             freeze_minor: freeze,
             key_id: Some(key.key_id),
             end_user: request.attribution.end_user.clone(),

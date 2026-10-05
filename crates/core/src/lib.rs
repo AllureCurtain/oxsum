@@ -26,7 +26,8 @@ mod wallet;
 
 pub use adapters::{OPENAI, UsageAdapter, adapter_for};
 pub use billing::{
-    Price, PriceBook, Settlement, SettlementKind, SettlementRecord, estimate_tokens,
+    BillLine, BillingMode, ItemizedCharge, MeteredUsage, Price, PriceBook, PriceRule, PriceSet,
+    RuleMatch, Settlement, SettlementKind, SettlementRecord, UpstreamPrices, estimate_tokens,
     hold_description, input_upper_bound,
 };
 pub use channels::{Channel, ModelPrice, SecretKey, Serving};

@@ -157,9 +157,10 @@ pub struct Channel {
 pub struct ModelPrice {
     pub model: String,
     pub version: i64,
-    pub input_price_per_million: i64,
-    pub output_price_per_million: i64,
-    pub max_output_tokens: i64,
+    /// The whole price this version carries, flattened into the record: the
+    /// base set plus the mode and any conditional rules.
+    #[serde(flatten)]
+    pub price: Price,
     /// When this version was written, which is the closest thing a price has to a creation time.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
@@ -169,11 +170,7 @@ impl ModelPrice {
     /// The price this record carries.
     #[must_use]
     pub fn price(&self) -> Price {
-        Price {
-            input_per_million: self.input_price_per_million,
-            output_per_million: self.output_price_per_million,
-            max_output_tokens: self.max_output_tokens,
-        }
+        self.price.clone()
     }
 }
 
@@ -279,16 +276,41 @@ impl Db {
         let version: i32 = sqlx::query_scalar(
             "INSERT INTO oxsum.channel_prices \
                  (channel_id, model, version, input_price_per_million, output_price_per_million, \
-                  max_output_tokens) \
-             SELECT $1, $2, COALESCE(max(version), 0) + 1, $3, $4, $5 \
+                  max_output_tokens, cache_read_price_per_million, \
+                  cache_write_5m_price_per_million, cache_write_1h_price_per_million, \
+                  reasoning_price_per_million, cost_per_request, mode, upstream_prices, rules) \
+             SELECT $1, $2, COALESCE(max(version), 0) + 1, $3, $4, $5, $6, $7, $8, $9, $10, $11, \
+                    $12, $13 \
              FROM oxsum.channel_prices WHERE channel_id = $1 AND model = $2 \
              RETURNING version",
         )
         .bind(channel_id)
         .bind(model)
-        .bind(price.input_per_million)
-        .bind(price.output_per_million)
+        .bind(price.input_price_per_million)
+        .bind(price.output_price_per_million)
         .bind(price.max_output_tokens)
+        .bind(price.cache_read_price_per_million)
+        .bind(price.cache_write_5m_price_per_million)
+        .bind(price.cache_write_1h_price_per_million)
+        .bind(price.reasoning_price_per_million)
+        .bind(price.cost_per_request)
+        .bind(price.mode.as_str())
+        .bind(
+            price
+                .upstream
+                .as_ref()
+                .map(serde_json::to_value)
+                .transpose()
+                .map_err(|error| WalletError::InvalidInput(format!("upstream prices: {error}")))?,
+        )
+        .bind(if price.rules.is_empty() {
+            None
+        } else {
+            Some(
+                serde_json::to_value(&price.rules)
+                    .map_err(|error| WalletError::InvalidInput(format!("price rules: {error}")))?,
+            )
+        })
         .fetch_one(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -352,7 +374,10 @@ impl Db {
     ) -> Result<Option<Serving>, WalletError> {
         let row = sqlx::query(
             "SELECT c.name, c.base_url, c.api_key_sealed, c.protocol, p.version, \
-                    p.input_price_per_million, p.output_price_per_million, p.max_output_tokens \
+                    p.input_price_per_million, p.output_price_per_million, p.max_output_tokens, \
+                    p.cache_read_price_per_million, p.cache_write_5m_price_per_million, \
+                    p.cache_write_1h_price_per_million, p.reasoning_price_per_million, \
+                    p.cost_per_request, p.mode, p.upstream_prices, p.rules \
              FROM oxsum.channel_prices p JOIN oxsum.channels c USING (channel_id) \
              WHERE p.model = $1 \
              ORDER BY p.version DESC, c.name \
@@ -371,11 +396,7 @@ impl Db {
             protocol: row.try_get("protocol")?,
             api_key: key.open(&sealed)?,
             version: i64::from(row.try_get::<i32, _>("version")?),
-            price: Price {
-                input_per_million: row.try_get("input_price_per_million")?,
-                output_per_million: row.try_get("output_price_per_million")?,
-                max_output_tokens: row.try_get("max_output_tokens")?,
-            },
+            price: price_from_row(&row)?,
         }))
     }
 
@@ -467,15 +488,40 @@ impl Db {
             sqlx::query(
                 "INSERT INTO oxsum.channel_prices \
                      (channel_id, model, version, input_price_per_million, output_price_per_million, \
-                      max_output_tokens) \
-                 VALUES ($1, $2, $3, $4, $5, $6)",
+                      max_output_tokens, cache_read_price_per_million, \
+                      cache_write_5m_price_per_million, cache_write_1h_price_per_million, \
+                      reasoning_price_per_million, cost_per_request, mode, upstream_prices, rules) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
             )
             .bind(channel_id)
             .bind(model_name(model)?)
             .bind(i32::try_from(index).unwrap_or(i32::MAX) + 1)
-            .bind(price.input_per_million)
-            .bind(price.output_per_million)
+            .bind(price.input_price_per_million)
+            .bind(price.output_price_per_million)
             .bind(price.max_output_tokens)
+            .bind(price.cache_read_price_per_million)
+            .bind(price.cache_write_5m_price_per_million)
+            .bind(price.cache_write_1h_price_per_million)
+            .bind(price.reasoning_price_per_million)
+            .bind(price.cost_per_request)
+            .bind(price.mode.as_str())
+            .bind(
+                price
+                    .upstream
+                    .as_ref()
+                    .map(serde_json::to_value)
+                    .transpose()
+                    .map_err(|error| {
+                        WalletError::InvalidInput(format!("upstream prices: {error}"))
+                    })?,
+            )
+            .bind(if price.rules.is_empty() {
+                None
+            } else {
+                Some(serde_json::to_value(&price.rules).map_err(|error| {
+                    WalletError::InvalidInput(format!("price rules: {error}"))
+                })?)
+            })
             .execute(&mut *tx)
             .await?;
         }
@@ -497,7 +543,10 @@ async fn prices_of(
 ) -> Result<Vec<ModelPrice>, WalletError> {
     let rows = sqlx::query(
         "SELECT model, version, input_price_per_million, output_price_per_million, \
-                max_output_tokens, created_at \
+                max_output_tokens, cache_read_price_per_million, \
+                cache_write_5m_price_per_million, cache_write_1h_price_per_million, \
+                reasoning_price_per_million, cost_per_request, mode, upstream_prices, rules, \
+                created_at \
          FROM (SELECT p.*, row_number() OVER (PARTITION BY model ORDER BY version DESC) AS rank \
                FROM oxsum.channel_prices p WHERE p.channel_id = $1) ranked \
          WHERE $2::int IS NULL OR rank <= $2 \
@@ -512,13 +561,47 @@ async fn prices_of(
             Ok(ModelPrice {
                 model: row.try_get("model")?,
                 version: i64::from(row.try_get::<i32, _>("version")?),
-                input_price_per_million: row.try_get("input_price_per_million")?,
-                output_price_per_million: row.try_get("output_price_per_million")?,
-                max_output_tokens: row.try_get("max_output_tokens")?,
+                price: price_from_row(row)?,
                 created_at: row.try_get("created_at")?,
             })
         })
         .collect()
+}
+
+/// The price a `channel_prices` row carries, columns and JSONB slots together.
+///
+/// A stored `mode` this build cannot name, or rules that do not deserialize,
+/// are configuration the gateway cannot price — [`WalletError::Misconfigured`]
+/// rather than a bill computed on a guess.
+fn price_from_row(row: &sqlx::postgres::PgRow) -> Result<Price, WalletError> {
+    let mode: String = row.try_get("mode")?;
+    let rules: Option<serde_json::Value> = row.try_get("rules")?;
+    let upstream: Option<serde_json::Value> = row.try_get("upstream_prices")?;
+    let price = Price {
+        input_price_per_million: row.try_get("input_price_per_million")?,
+        output_price_per_million: row.try_get("output_price_per_million")?,
+        max_output_tokens: row.try_get("max_output_tokens")?,
+        cache_read_price_per_million: row.try_get("cache_read_price_per_million")?,
+        cache_write_5m_price_per_million: row.try_get("cache_write_5m_price_per_million")?,
+        cache_write_1h_price_per_million: row.try_get("cache_write_1h_price_per_million")?,
+        reasoning_price_per_million: row.try_get("reasoning_price_per_million")?,
+        cost_per_request: row.try_get("cost_per_request")?,
+        upstream: upstream
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|error| {
+                WalletError::Misconfigured(format!("stored upstream prices: {error}"))
+            })?,
+        mode: crate::billing::BillingMode::parse(&mode).ok_or_else(|| {
+            WalletError::Misconfigured(format!("a stored price has unknown mode {mode:?}"))
+        })?,
+        rules: rules
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|error| WalletError::Misconfigured(format!("stored price rules: {error}")))?
+            .unwrap_or_default(),
+    };
+    Ok(price)
 }
 
 /// A channel name: what the admin URL path can carry.
