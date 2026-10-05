@@ -308,6 +308,27 @@ mod tests {
         assert_eq!(verify_charge(swept), ChargeCheck::Recomputed);
     }
 
+    /// A turn that ran but carried a dimension the book cannot bill: the
+    /// computable part is charged, the flat fee still counts once, and the
+    /// unpriced dimension sits in the usage the lines do not claim — the
+    /// record stays self-consistent for what it charged (issue #110).
+    #[test]
+    fn an_unpriced_turn_recomputes_what_it_charged() {
+        // 100 input at 1 + 20 output at 2 + the 500 flat fee: 640 minor, and
+        // `audioInputTokens` in the usage is the flagged unpriced part.
+        let unpriced = r#"{"v":3,"kind":"unpriced","usage":{"inputTokens":100,"outputTokens":20,"audioInputTokens":60},"lines":[["input",100,1000000],["output",20,2000000],["request",1,500000000]],"charged":640,"freeze":4000}"#;
+        assert_eq!(verify_charge(unpriced), ChargeCheck::Recomputed);
+        // The unpriced flag does not license the flat fee twice either.
+        let doubled = unpriced
+            .replacen(
+                r#"["request",1,500000000]"#,
+                r#"["request",2,500000000]"#,
+                1,
+            )
+            .replacen(r#""charged":640"#, r#""charged":1140"#, 1);
+        assert_eq!(verify_charge(&doubled), ChargeCheck::Mismatch);
+    }
+
     #[test]
     fn a_fraction_of_a_minor_unit_still_costs_one() {
         // Two half-minor components sum to exactly one: the single ceiling over the

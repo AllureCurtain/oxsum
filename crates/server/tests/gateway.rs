@@ -39,6 +39,9 @@ const OPERATOR_TOKEN: &str = "operator-token-0123456789";
 enum Answer {
     /// A whole completion, with a usage report (`prompt_tokens`, `completion_tokens`) or without.
     Completion { usage: Option<(i64, i64)> },
+    /// A whole completion whose usage object the test writes itself — for the
+    /// reports the tuple shorthand cannot reach, like audio details (issue #110).
+    RawUsage { usage: Value },
     /// A streamed completion; `terminated` says whether upstream closes it with `[DONE]`.
     Stream { usage: bool, terminated: bool },
     /// A stream that emits one chunk and then stays open, for as long as the client is there.
@@ -118,28 +121,19 @@ async fn upstream(
             .into_response();
     };
     match answer {
-        Answer::Completion { usage } => {
-            let mut completion = json!({
-                "id": "chatcmpl-1",
-                "object": "chat.completion",
-                "model": model,
-                "choices": [{
-                    "index": 0,
-                    "message": {"role": "assistant", "content": "Hello there"},
-                    "finish_reason": "stop",
-                }],
-            });
-            if let Some((input, output)) = usage {
-                completion["usage"] = json!({
+        Answer::Completion { usage } => completion(
+            &model,
+            usage.map(|(input, output)| {
+                json!({
                     "prompt_tokens": input,
                     "completion_tokens": output,
                     "total_tokens": input + output,
                     "prompt_tokens_details": {"cached_tokens": input / 2},
                     "completion_tokens_details": {"reasoning_tokens": output},
-                });
-            }
-            axum::Json(completion).into_response()
-        }
+                })
+            }),
+        ),
+        Answer::RawUsage { usage } => completion(&model, Some(usage)),
         Answer::Stream { usage, terminated } => {
             let mut frames = String::from(
                 "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}],\"usage\":null}\n\n\
@@ -175,6 +169,24 @@ async fn upstream(
         )
             .into_response(),
     }
+}
+
+/// A whole chat completion in OpenAI's shape, with whatever usage upstream reports.
+fn completion(model: &str, usage: Option<Value>) -> Response {
+    let mut completion = json!({
+        "id": "chatcmpl-1",
+        "object": "chat.completion",
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "Hello there"},
+            "finish_reason": "stop",
+        }],
+    });
+    if let Some(usage) = usage {
+        completion["usage"] = usage;
+    }
+    axum::Json(completion).into_response()
 }
 
 /// An SSE response carrying frames upstream prepared.
@@ -987,6 +999,71 @@ async fn usage_above_the_freeze_is_capped_at_it() {
     assert_eq!(record["usage"]["inputTokens"], 10);
     assert_eq!(record["usage"]["outputTokens"], 500);
     assert_eq!(world.wallet().await.reserved().await.unwrap(), 0);
+}
+
+/// A report that names a dimension the price book cannot bill settles the
+/// computable part under `unpriced` — the anomaly the admin page reviews —
+/// rather than silently charging it at zero or folding it into a rate it does
+/// not belong to (issue #110).
+#[tokio::test]
+async fn a_dimension_the_book_cannot_bill_settles_unpriced() {
+    let world = world!(1_000_000);
+    // Upstream reports audio inside the prompt: a count the book has no rate for.
+    world.answers(
+        "ok",
+        Answer::RawUsage {
+            usage: json!({
+                "prompt_tokens": 100,
+                "completion_tokens": 20,
+                "total_tokens": 120,
+                "prompt_tokens_details": {"audio_tokens": 60},
+            }),
+        },
+    );
+
+    // Version 2 carries a flat fee, which still bills the turn that ran.
+    let db = Db::from_pool(world.pool.clone());
+    let price: oxsum_core::Price = serde_json::from_value(json!({
+        "inputPricePerMillion": 1_000_000,
+        "outputPricePerMillion": 2_000_000,
+        "maxOutputTokens": 1000,
+        "costPerRequest": 50,
+    }))
+    .expect("the test's own price parses");
+    db.append_price(&world.channel, &world.model("ok"), price)
+        .await
+        .expect("the price is written");
+
+    let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
+    let id = request_id(&response);
+    let (status, _) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // The record is flagged, the usage keeps the dimension it could not bill,
+    // and the charge is exactly what the book covers: 100 + 40 + the 50 flat.
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["kind"], "unpriced", "{record}");
+    assert_eq!(record["usage"]["audioInputTokens"], 60);
+    assert_eq!(record["charged"], 190);
+    let description = world
+        .settlement_description(&id)
+        .await
+        .expect("the turn settled");
+    assert_eq!(
+        oxsum_core::verify_charge(&description),
+        oxsum_core::ChargeCheck::Recomputed
+    );
+
+    // The normalized record keeps both the kind and the column that caused it.
+    let row = sqlx::query(
+        "SELECT kind, audio_input_tokens FROM oxsum.usage_records WHERE request_id = $1",
+    )
+    .bind(&id)
+    .fetch_one(&world.pool)
+    .await
+    .expect("the usage row is there");
+    assert_eq!(row.get::<String, _>("kind"), "unpriced");
+    assert_eq!(row.get::<i64, _>("audio_input_tokens"), 60);
 }
 
 #[tokio::test]

@@ -170,6 +170,31 @@ mod tests {
         );
     }
 
+    /// Audio counts land in their own columns — inside the side's total like the
+    /// other details — so the price book's fail-closed check can flag them rather
+    /// than have them vanish into `provider_raw` (issue #110).
+    #[test]
+    fn audio_counts_name_their_own_columns() {
+        let usage = openai()
+            .usage(&json!({
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 20,
+                    "prompt_tokens_details": {"audio_tokens": 60},
+                    "completion_tokens_details": {"audio_tokens": 15},
+                },
+            }))
+            .expect("an audio report carries usage");
+        assert_eq!(usage.audio_input_tokens, 60);
+        assert_eq!(usage.audio_output_tokens, 15);
+        // A report without audio leaves the columns at zero.
+        let quiet = openai()
+            .usage(&json!({"usage": {"prompt_tokens": 100, "completion_tokens": 20}}))
+            .expect("a plain report carries usage");
+        assert_eq!(quiet.audio_input_tokens, 0);
+        assert_eq!(quiet.audio_output_tokens, 0);
+    }
+
     #[test]
     fn a_bad_report_is_clamped_or_refused_never_guessed() {
         // A subset reported past its total is clamped, not rejected: the counts are
