@@ -113,12 +113,12 @@ Principle: **domain logic belongs in core; the gateway does protocol and orchest
 ### Billing for one streaming call
 
 1. Before relaying an LLM request, `POST holds` freezes an upper bound.
-   - The wallet account books a debit in the pending layer; available balance drops accordingly.
-   - The wallet carries a `FundedReservations` limit; the limit check and the write happen in one database transaction, with the pending layer included in the calculation, so concurrent holds cannot overdraw.
+   - The pool accounts book a debit in the pending layer, split bonus-first — `Equity:Bonus` funds what it can and `Liabilities:Wallet` carries the rest; available balance drops accordingly.
+   - Both pools carry a `FundedReservations` limit; the limit check and the write happen in one database transaction, with the pending layer included in the calculation, so concurrent holds cannot overdraw either pool. A hold whose split a racing append invalidated retries with balances re-read rather than refusing a request the combined balance could have served.
    - A gateway request does this itself, before it opens the upstream connection: the freeze is computed in `crates/core/src/billing.rs` from the request text and the output ceiling, and its refusal is answered as OpenAI's 402.
 2. When the stream ends, `POST settlements` books one entry that does two things:
-   - Books a reversal in the pending layer, releasing the hold
-   - Charges actual usage in the settled layer, moving wallet → revenue
+   - Books a reversal in the pending layer, releasing each pool's slice of the hold
+   - Charges actual usage in the settled layer, bonus pool first, moving pools → revenue
    - The same limit checks the release as a backstop, so the amount it gives back cannot exceed what holds reserved. The pairing itself is one-to-one: a settlement names the hold it releases, and the hold's entry is the amount — see docs/decisions.md.
    - The gateway settles when the relayed stream ends, and the settlement is awaited before the stream closes, so a client that read a stream to its end reads a settled bill. The write runs in a task of its own, so a client that hangs up while it is being appended cannot cancel it; a client that hangs up before that cancels the upstream call and settles what had been forwarded from a local estimate.
    - Beside a settlement that landed, the same path writes the turn's normalized usage row to `oxsum.usage_records` (`crates/core/src/usage.rs`, issue #102): the full dimensions pricing looks at, the caller's attribution, and `usage_details.provider_raw` — the mutable-store data an immutable entry description cannot hold. The entry stays the source of truth; a failed row write is drift for the reconciler to report, not a reason to retry the charge.
@@ -148,11 +148,13 @@ Only relationships; the ledger's table structure is authoritative in `crates/dou
 - Organization 1-to-many API keys; a key holds no balance itself, it is a credential resolving to its organization.
 - Planned (not built): organization 1-to-many invitations.
 - User 1-to-many sessions (web login): built; a session acts as the user's oldest membership until the dashboard adds switching.
-- Every ledger has four fixed accounts:
-  - `Liabilities:Wallet`: user balance, overdraft forbidden
+- Every ledger has five fixed accounts:
+  - `Liabilities:Wallet`: purchased balance, overdraft forbidden
+  - `Equity:Bonus`: granted credit — the signup bonus and admin grants; settlement draws it before the wallet
   - `Assets:Cash`: money received from top-ups
   - `Income:Usage`: revenue recognized on settlement
   - `Equity:Adjustments`: operator-side money that is neither cash nor usage revenue — admin adjustments and the signup bonus draw on it, so grants and deductions stay out of the income line
+- The two balance accounts are the pools of decision D1, each carrying the `FundedReservations` limit. A hold reserves bonus-first — a pending debit on each pool it draws, so neither pool's reservation exceeds what it holds — and a settlement releases exactly that split and charges `min(actual, bonus_held)` from Bonus before the Wallet. A deduction draws Bonus first as well. What callers see stays one balance: every balance read sums the pools. Ledgers written before the split migrate lazily, on their next `Wallet::open`: `reclassify_grants` moves the unspent remainder of historical grants — `clamp(grants - settled wallet outflow, 0, wallet balance)` — with one `debit Wallet, credit Bonus` entry under a fixed idempotency key, which spend reads exclude as a rebalancing rather than a charge.
 - One entry has many postings. Each posting sits in the settled or the pending layer, and the entry must balance within each layer.
 - The Merkle log's leaves are the entries' content hashes.
 
