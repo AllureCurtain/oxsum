@@ -118,7 +118,7 @@ async fn world_for(url: &str) -> World {
     prices.insert(model.clone(), price);
     let book = oxsum_core::PriceBook::from_json(&channel, &Value::Object(prices).to_string())
         .expect("prices parse");
-    db.set_channel(&channel, &base_url, "upstream-secret", &secret)
+    db.set_channel(&channel, &base_url, "upstream-secret", "openai", &secret)
         .await
         .expect("the channel is written");
     for (model, price) in book.models() {
