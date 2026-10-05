@@ -350,7 +350,7 @@ async fn world_for(url: &str, top_up: i64) -> World {
         .await
         .expect("the channel is written");
     for (model, price) in book.models() {
-        db.append_price(&channel, model, *price)
+        db.append_price(&channel, model, price.clone())
             .await
             .expect("the price is written");
     }
@@ -615,6 +615,119 @@ async fn a_whole_answer_is_charged_from_upstreams_usage() {
     assert_eq!(wallet.settled().await.unwrap(), 1_000_000 - 12);
     let hold = world.hold(&id).await.expect("the hold is recorded");
     assert_eq!(hold["freeze"], expected_freeze(None));
+}
+
+/// A conditional price bills each dimension on its own line: the request's
+/// service tier picks the rule, cache and reasoning price at their own rates,
+/// the flat fee joins once, and the record names the rule and still recomputes
+/// (issue #108).
+#[tokio::test]
+async fn a_conditional_price_bills_each_dimension_on_its_own_line() {
+    let world = world!(1_000_000);
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+
+    // Version 2: a service-tier rule whose set prices every dimension it
+    // carries — cached input cheap, reasoning dear, and a flat fee per request.
+    let db = Db::from_pool(world.pool.clone());
+    let price: oxsum_core::Price = serde_json::from_value(json!({
+        "inputPricePerMillion": 1_000_000,
+        "outputPricePerMillion": 1_000_000,
+        "maxOutputTokens": 1000,
+        "rules": [{
+            "match": {"serviceTier": "priority"},
+            "price": {
+                "inputPricePerMillion": 2_000_000,
+                "outputPricePerMillion": 4_000_000,
+                "maxOutputTokens": 1000,
+                "cacheReadPricePerMillion": 100_000,
+                "reasoningPricePerMillion": 8_000_000,
+                "costPerRequest": 100,
+            },
+        }],
+    }))
+    .expect("the test's own price parses");
+    let version = db
+        .append_price(&world.channel, &world.model("ok"), price)
+        .await
+        .expect("the price is written");
+    assert_eq!(version, 2);
+
+    let response = chat(
+        &world.app,
+        &world.key,
+        json!({
+            "model": world.model("ok"),
+            "messages": [{"role": "user", "content": "hi"}],
+            "service_tier": "priority",
+        }),
+    )
+    .await;
+    let id = request_id(&response);
+    let (status, _) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // The rule's set priced the turn: 5 fresh input at 2e6, 5 cached at 1e5,
+    // 2 reasoning at 8e6, and the 100-minor flat fee spelled per-million — one
+    // ceiling over the sum.
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["v"], 3);
+    assert_eq!(record["priceVersion"], 2);
+    assert_eq!(record["matchedRule"]["serviceTier"], "priority");
+    let lines = record["lines"].as_array().expect("itemized lines");
+    let line = |item: &str| {
+        lines
+            .iter()
+            .find(|line| line[0] == item)
+            .unwrap_or_else(|| panic!("a {item} line: {lines:?}"))
+    };
+    assert_eq!(line("input")[1], 5);
+    assert_eq!(line("input")[2], 2_000_000);
+    assert_eq!(line("cache_read")[1], 5);
+    assert_eq!(line("cache_read")[2], 100_000);
+    assert_eq!(line("reasoning")[1], 2);
+    assert_eq!(line("reasoning")[2], 8_000_000);
+    assert_eq!(line("request")[1], 1);
+    assert_eq!(line("request")[2], 100_000_000);
+    assert_eq!(record["charged"], 127);
+    let description = world
+        .settlement_description(&id)
+        .await
+        .expect("the turn settled");
+    assert_eq!(
+        oxsum_core::verify_charge(&description),
+        oxsum_core::ChargeCheck::Recomputed
+    );
+
+    // The same model without the tier pays the base set, which has no
+    // conditional lines: the cached part folds into the input line.
+    let response = chat(
+        &world.app,
+        &world.key,
+        json!({
+            "model": world.model("ok"),
+            "messages": [{"role": "user", "content": "hi"}],
+        }),
+    )
+    .await;
+    let id = request_id(&response);
+    let (status, _) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["matchedRule"], Value::Null);
+    assert_eq!(record["charged"], 12);
+    let description = world
+        .settlement_description(&id)
+        .await
+        .expect("the turn settled");
+    assert_eq!(
+        oxsum_core::verify_charge(&description),
+        oxsum_core::ChargeCheck::Recomputed
+    );
 }
 
 /// A settled turn leaves its normalized usage record: one row in `oxsum.usage_records`
@@ -1367,8 +1480,8 @@ async fn a_price_change_lands_on_later_requests_and_not_on_the_one_in_flight() {
     let record = world.settlement_within(&first_id).await;
     assert_eq!(record["channel"], world.channel.as_str());
     assert_eq!(record["priceVersion"], 1);
-    assert_eq!(record["lines"][0]["pricePerM"], 1_000_000);
-    assert_eq!(record["lines"][1]["pricePerM"], 1_000_000);
+    assert_eq!(record["lines"][0][2], 1_000_000);
+    assert_eq!(record["lines"][1][2], 1_000_000);
 
     // A turn that starts after the change is priced by version 2: the same call, ten times the price.
     world.answers(
@@ -1386,7 +1499,7 @@ async fn a_price_change_lands_on_later_requests_and_not_on_the_one_in_flight() {
         .await
         .expect("the turn settled");
     assert_eq!(record["priceVersion"], 2);
-    assert_eq!(record["lines"][0]["pricePerM"], 10_000_000);
+    assert_eq!(record["lines"][0][2], 10_000_000);
     assert_eq!(record["charged"], 120);
 }
 

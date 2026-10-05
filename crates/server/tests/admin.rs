@@ -227,6 +227,107 @@ async fn a_channel_is_created_priced_and_listed() {
     assert_eq!(versions[1]["outputPricePerMillion"], 2_000_000);
 }
 
+/// An itemized price — cache, reasoning, flat fee, upstream costs and a
+/// conditional set — writes and reads back whole, while a book whose rules
+/// could price the same request at the same specificity is refused (issue #108).
+#[tokio::test]
+async fn an_itemized_price_writes_lists_and_refuses_ambiguity() {
+    let (app, _pool) = app_or_skip!();
+    let channel = fresh("priced");
+    let model = fresh("model");
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/admin/channels",
+        Some(json!({
+            "name": channel,
+            "baseUrl": "https://upstream.example/v1",
+            "apiKey": "sk-upstream-abcd1234",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let price = json!({
+        "model": model,
+        "inputPricePerMillion": 1_000_000,
+        "outputPricePerMillion": 2_000_000,
+        "maxOutputTokens": 1000,
+        "cacheReadPricePerMillion": 100_000,
+        "cacheWrite5mPricePerMillion": 1_250_000,
+        "cacheWrite1hPricePerMillion": 2_500_000,
+        "reasoningPricePerMillion": 4_000_000,
+        "costPerRequest": 500,
+        "mode": "chat",
+        "upstream": {
+            "inputPricePerMillion": 400_000,
+            "outputPricePerMillion": 800_000,
+        },
+        "rules": [{
+            "match": {"serviceTier": "priority"},
+            "price": {
+                "inputPricePerMillion": 5_000_000,
+                "outputPricePerMillion": 6_000_000,
+                "maxOutputTokens": 2000,
+            },
+        }],
+    });
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/channels/{channel}/prices"),
+        Some(price),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["version"], 1);
+
+    // The history reads every dimension back, rules and upstream included.
+    let (status, body) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/admin/channels/{channel}/prices"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let listed = &body["data"][0];
+    assert_eq!(listed["cacheReadPricePerMillion"], 100_000);
+    assert_eq!(listed["cacheWrite5mPricePerMillion"], 1_250_000);
+    assert_eq!(listed["cacheWrite1hPricePerMillion"], 2_500_000);
+    assert_eq!(listed["reasoningPricePerMillion"], 4_000_000);
+    assert_eq!(listed["costPerRequest"], 500);
+    assert_eq!(listed["mode"], "chat");
+    assert_eq!(listed["upstream"]["inputPricePerMillion"], 400_000);
+    assert_eq!(listed["rules"][0]["match"]["serviceTier"], "priority");
+    assert_eq!(
+        listed["rules"][0]["price"]["inputPricePerMillion"],
+        5_000_000
+    );
+
+    // Two windows at the same specificity that overlap are ambiguous, and the
+    // write is refused rather than silently ordered.
+    let ambiguous = json!({
+        "model": model,
+        "inputPricePerMillion": 1,
+        "outputPricePerMillion": 1,
+        "maxOutputTokens": 10,
+        "rules": [
+            {"match": {"minInputTokens": 100}, "price": {"inputPricePerMillion": 1, "outputPricePerMillion": 1, "maxOutputTokens": 10}},
+            {"match": {"maxInputTokens": 1000}, "price": {"inputPricePerMillion": 1, "outputPricePerMillion": 1, "maxOutputTokens": 10}},
+        ],
+    });
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/channels/{channel}/prices"),
+        Some(ambiguous),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+}
+
 #[tokio::test]
 async fn changing_the_connection_keeps_the_prices() {
     let (app, _pool) = app_or_skip!();
@@ -701,6 +802,18 @@ async fn the_anomalies_list_shows_the_turns_that_did_not_price_cleanly() {
             .await
             .expect("a hold settles");
         let usage = oxsum_core::UsageRecord::tokens(10, 20).expect("the seed counts");
+        let lines = [
+            oxsum_core::BillLine {
+                item: "input".to_owned(),
+                units: usage.input_tokens,
+                price_per_m: 1_000,
+            },
+            oxsum_core::BillLine {
+                item: "output".to_owned(),
+                units: usage.output_tokens,
+                price_per_m: 2_000,
+            },
+        ];
         let description = oxsum_core::Settlement {
             request,
             channel: "chan-y",
@@ -709,8 +822,8 @@ async fn the_anomalies_list_shows_the_turns_that_did_not_price_cleanly() {
             kind: serde_json::from_str::<oxsum_core::SettlementKind>(&format!("\"{kind}\""))
                 .expect("a settlement kind"),
             usage: &usage,
-            input_price: 1_000,
-            output_price: 2_000,
+            lines: &lines,
+            matched_rule: None,
             charged: 60,
             freeze: 900_000,
         }

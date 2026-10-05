@@ -602,6 +602,18 @@ async fn a_gateway_settlement_names_its_key_and_its_record() {
     .await
     .unwrap();
     let usage = UsageRecord::tokens(11, 22).unwrap();
+    let lines = [
+        oxsum_core::BillLine {
+            item: "input".into(),
+            units: 11,
+            price_per_m: 1_000,
+        },
+        oxsum_core::BillLine {
+            item: "output".into(),
+            units: 22,
+            price_per_m: 2_000,
+        },
+    ];
     let record = Settlement {
         request: "req-9",
         channel: "chan",
@@ -609,8 +621,8 @@ async fn a_gateway_settlement_names_its_key_and_its_record() {
         price_version: 1,
         kind: SettlementKind::Usage,
         usage: &usage,
-        input_price: 1_000,
-        output_price: 2_000,
+        lines: &lines,
+        matched_rule: None,
         charged: 77,
         freeze: 5 * ONE,
     };
@@ -749,6 +761,18 @@ async fn request_pages_walk_only_settled_turns() {
             .await
             .unwrap();
         let usage = UsageRecord::tokens(1, 2).unwrap();
+        let lines = [
+            oxsum_core::BillLine {
+                item: "input".into(),
+                units: 1,
+                price_per_m: 1_000,
+            },
+            oxsum_core::BillLine {
+                item: "output".into(),
+                units: 2,
+                price_per_m: 2_000,
+            },
+        ];
         let record = Settlement {
             request: &request,
             channel: "chan",
@@ -756,8 +780,8 @@ async fn request_pages_walk_only_settled_turns() {
             price_version: 1,
             kind: SettlementKind::Usage,
             usage: &usage,
-            input_price: 1_000,
-            output_price: 2_000,
+            lines: &lines,
+            matched_rule: None,
             charged: ONE,
             freeze: ONE,
         };
