@@ -892,6 +892,67 @@ async fn the_anomalies_list_shows_the_turns_that_did_not_price_cleanly() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
+/// `GET /api/v1/admin/margin` sums what the platform charged against what
+/// upstream cost it, per channel and model — and separates the turns no
+/// `upstream` block tracked from the ones it priced at zero (issue #112).
+#[tokio::test]
+async fn the_margin_view_sums_charges_against_upstream_costs() {
+    let (app, pool) = app_or_skip!();
+    let db = Db::from_pool(pool.clone());
+    let channel = fresh("margin-chan");
+    let model = fresh("margin-model");
+
+    // Three turns on the pair: two the price tracked upstream for (charged 12
+    // at a cost of 6, charged 8 at a cost of 4) and one untracked — a swept
+    // row, or a price with no `upstream` block.
+    for (i, (charged, upstream)) in [(12, Some(6)), (8, Some(4)), (5, None)].iter().enumerate() {
+        db.record_usage(&oxsum_core::UsageRow {
+            request_id: format!("margin-{}-{i}", &channel[channel.len() - 8..]),
+            tenant_id: "margin-test".to_owned(),
+            key_id: None,
+            model: model.clone(),
+            channel: channel.clone(),
+            price_version: 1,
+            kind: oxsum_core::SettlementKind::Usage,
+            entry_id: uuid::Uuid::new_v4(),
+            usage: oxsum_core::UsageRecord::tokens(10, 2).expect("the seed counts"),
+            charged_minor: *charged,
+            freeze_minor: 100,
+            upstream_cost_minor: *upstream,
+        })
+        .await
+        .expect("the row is written");
+    }
+
+    let (status, body) = call(&app, "GET", "/api/v1/admin/margin", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let margin = body["data"].as_array().expect("a list of margin rows");
+    let row = margin
+        .iter()
+        .find(|row| row["channel"] == channel)
+        .unwrap_or_else(|| panic!("{channel} is listed: {margin:?}"));
+    assert_eq!(row["model"], model);
+    assert_eq!(row["turns"], 3);
+    assert_eq!(row["chargedMinor"], 25);
+    // Upstream tracked 10 of the 25 charged; the margin is the difference.
+    assert_eq!(row["upstreamCostMinor"], 10);
+    assert_eq!(row["marginMinor"], 15);
+    // The untracked turn is counted on its own — NULL is not zero, so a
+    // coverage gap shows up here instead of inflating the margin.
+    assert_eq!(row["untrackedTurns"], 1);
+
+    // The operator's only: an organization's key stays out, like every admin view.
+    let (status, _) = call_with(
+        &app,
+        "GET",
+        "/api/v1/admin/margin",
+        None,
+        Some("not-the-token"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
 /// `GET`/`POST /api/v1/admin/closings`: closing a month seals it in every
 /// organization's ledger — the seal is the closing record — and a sealed month
 /// accepts no new entries. Only a month that has fully ended can close, and
