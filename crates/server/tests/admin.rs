@@ -1169,6 +1169,74 @@ async fn an_adjustment_grants_and_deducts_with_a_reason() {
     assert_eq!(body["data"]["availableMinor"], 3_000_000);
 }
 
+/// A grant lands in the bonus pool and purchased credit in the wallet, but the
+/// org-facing surface stays one balance: a hold spanning the pools reserves,
+/// a settlement charges, and every total on the way through agrees — the pools
+/// are how the ledger keeps the two kinds of credit apart, not something a
+/// caller has to know about.
+#[tokio::test]
+async fn grants_and_topups_share_one_balance_across_pools() {
+    let (app, _pool) = app_or_skip!();
+    let (org, key) = register(&app, "pools").await;
+
+    // Granted credit, booked by the operator.
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/organizations/{org}/adjustments"),
+        Some(json!({
+            "amountMinor": 4_000_000,
+            "reason": "welcome credit",
+            "idempotencyKey": "pool-grant-1",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Purchased credit, booked by the organization.
+    let (status, body) = call_with(
+        &app,
+        "POST",
+        "/api/v1/topups",
+        Some(json!({"idempotencyKey": "pool-topup-1", "amountMinor": 4_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["availableMinor"], 8_000_000);
+
+    // A hold bigger than either pool alone reserves across both.
+    let (status, body) = call_with(
+        &app,
+        "POST",
+        "/api/v1/holds",
+        Some(json!({"idempotencyKey": "pool-hold-1", "amountMinor": 6_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["availableMinor"], 2_000_000);
+
+    // The settlement charges the actual amount — drawn bonus first inside the
+    // ledger — and returns the rest of the freeze.
+    let (status, body) = call_with(
+        &app,
+        "POST",
+        "/api/v1/settlements",
+        Some(json!({"holdKey": "pool-hold-1", "actualMinor": 5_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["availableMinor"], 3_000_000);
+}
+
 /// Zero is not an adjustment, an empty reason is not a reason, and an unknown
 /// organization is not found — the envelope codes say which.
 #[tokio::test]
