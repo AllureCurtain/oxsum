@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.20.0
+  version: 0.21.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -58,7 +58,10 @@ info:
     `costPerRequest`, a `mode` (only `chat` is priced today), conditional `rules` that swap
     the whole price set most-specific-wins — two rules that could match the same request at
     the same specificity are refused when written — and `upstream` prices, which record what
-    the channel costs us and are never shown to an organization.
+    the channel costs us and are never shown to an organization. 0.21.0 adds the `unpriced`
+    settlement kind to the anomalies the platform reviews: a turn whose usage carried a
+    metered dimension the price book cannot cover settles for the computable part and is
+    flagged, never billed at zero or at a rate the dimension does not belong to.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie, except
     `/api/v1/auth/login`, `/api/v1/auth/logout` and `/api/v1/auth/register`, which take no
@@ -1008,12 +1011,13 @@ paths:
     get:
       summary: The settled turns that did not price cleanly, across all organizations
       description: |
-        Every settlement whose kind is `capped`, `estimated`, `client_cancelled` or
-        `swept`, newest first — the turns where usage was never reported, the caller
-        left mid-stream, the upstream price ran over the freeze, or the sweeper had to
-        release a hold nobody settled. The records are the settlement descriptions the
-        ledgers themselves hold, so every row is exactly what its bill proves; a
-        hand-driven settlement carries no record and is not listed.
+        Every settlement whose kind is `capped`, `estimated`, `client_cancelled`,
+        `swept` or `unpriced`, newest first — the turns where usage was never reported,
+        the caller left mid-stream, the upstream price ran over the freeze, the sweeper
+        had to release a hold nobody settled, or the usage named a dimension the price
+        book cannot bill. The records are the settlement descriptions the ledgers
+        themselves hold, so every row is exactly what its bill proves; a hand-driven
+        settlement carries no record and is not listed.
       security:
         - adminToken: []
       responses:
@@ -1557,7 +1561,7 @@ components:
         model: { type: string }
         channel: { type: string, description: the channel that served the turn }
         priceVersion: { type: integer, minimum: 1 }
-        kind: { type: string, enum: [capped, estimated, client_cancelled, swept], description: how the turn was priced; the anomalous kinds }
+        kind: { type: string, enum: [capped, estimated, client_cancelled, swept, unpriced], description: how the turn was priced; the anomalous kinds }
         chargedMinor: { type: integer, format: int64, minimum: 0, description: what the settlement charged, in minor units }
         freezeMinor: { type: integer, format: int64, minimum: 1, description: what had been frozen, in minor units }
         bookedOn: { type: string, format: date, description: the settlement's booking date }
