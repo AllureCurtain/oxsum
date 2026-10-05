@@ -1,14 +1,14 @@
 # TODO
 
-Updated: 2026-10-04
+Updated: 2026-10-05
 
 ## In progress
 
-Nothing filed. #93 (list pagination) is closed; #94 (witness-signed tree heads) was closed on filing: the backend half shipped as B-7, and the browser-side signature check shipped with #92's archive.
+The productization roadmap (docs/decisions.md, 2026-10-05: P1-1 through P8-4) is executing item by item, one issue and PR each. P1-1 (#102, the normalized usage record) shipped; next is P1-2, the protocol-keyed usage-adapter layer with the OpenAI implementation.
 
 ## Next
 
-All three phases are done — A, B and C closed, most recently C-11 (the chat page, issue #39). The rationale for the order is in docs/decisions.md under "wallet service first, then AI gateway, then chat UI".
+The roadmap itself is the backlog, in order: P1 billing core (P1-1…P1-7), P2 pools and deposits, P3 controls, P4 reliability, then the P5–P8 productization batches — the full list and its decisions are in docs/decisions.md under 2026-10-05. The original phases below are done — A, B and C closed, most recently C-11 (the chat page, issue #39).
 
 ### A. Wallet service
 
@@ -37,6 +37,8 @@ Closed. The chat page is built (issue #39): after login the user tops up, picks 
 Nothing.
 
 ## Recently completed
+
+- 2026-10-05 The normalized usage record (roadmap P1-1, issue #102): the two-count `Usage` became `UsageRecord` (`crates/core/src/usage.rs`) — input and output tokens plus the dimensions D3 settled on: cached and reasoning tokens as subsets of their totals, cache-creation 5m/1h, tool calls, media tokens, a `service_tier`/`event_type` slot, caller attribution (`endUser`, bounded tags) and the `usageDetails` JSON escape hatch carrying `provider_raw` verbatim for the retention window. Every settlement that lands writes the row to `oxsum.usage_records` (migration 0007) beside the entry — the turn's own path or the sweeper, whose watch rows now carry the attribution — keyed on `request_id` with `ON CONFLICT DO NOTHING`; the entry stays the source of truth and the mutable store holds what a hashed description cannot. The gateway request parses and bounds `user`, `metadata` and `service_tier` (contract `openapi.yaml` 0.18.0 first) and the OpenAI wire report is read into the record, subsets clamped into their totals. Pinned by `usage.rs`'s unit tests, the request/relay parsing tests, `crates/server/tests/gateway.rs`'s settled-row check and `sweep.rs`'s swept-row and replay checks; `docs/product.md`, `docs/architecture.md`, `docs/api.md`, `docs/user-guide.md` and `docs/decisions.md` updated in the same change.
 
 - 2026-10-04 List pagination (issue #93): the unbounded lists paginate on cursors, and the bounded ones documented why they stay whole. The ledger's own lists — the bills page, the transaction log and the requests page — walk `Wallet::*_page` reads whose cursor is the log index: `Wallet::scan_back` pages backward one store page at a time, returns the smallest index left unvisited as `next_cursor` (`None` at the log's start), and the filtered reads — settlements among holds, settlement records among entries — resume inside a window rather than skipping it. The pages carry the position as the URL's `?before=` with **Older**/**Newest** links, so a middle page is a shareable link and works without hydration; the CSV and JSON exports stopped being the page's slice and walk `transactions_page` to the log's start, since an archive means the whole history. `GET /api/v1/admin/organizations` paginates the one unbounded oxsum-owned table on the keyset `(created_at, organization_id)` — the timestamp alone cannot order two registrations in one instant — encoded as an opaque `nextCursor` the `/admin/organizations` page walks with Load more; holds, anomalies and closings keep their caps as bounded lists (docs/decisions.md). Contract `openapi.yaml` 0.17.0 first; `docs/api.md`, `docs/product.md`, `docs/user-guide.md` and `docs/decisions.md` updated in the same change. Pinned by `crates/core` tests (transaction, entry, request and organization walks with no gaps or repeats, a held cursor surviving an append) and `crates/server/tests/admin.rs` (page honoring `limit`, `nextCursor` resume, malformed cursor 400).
 
