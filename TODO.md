@@ -4,7 +4,7 @@ Updated: 2026-10-05
 
 ## In progress
 
-The productization roadmap (docs/decisions.md, 2026-10-05: P1-1 through P8-4) is executing item by item, one issue and PR each. P1-1 (#102, the normalized usage record) shipped; next is P1-2, the protocol-keyed usage-adapter layer with the OpenAI implementation.
+The productization roadmap (docs/decisions.md, 2026-10-05: P1-1 through P8-4) is executing item by item, one issue and PR each. P1-1 (#102, the normalized usage record) and P1-2 (#104, the protocol-keyed usage adapter) shipped; next is P1-3, versioned settlement descriptions and WASM verify v2.
 
 ## Next
 
@@ -37,6 +37,8 @@ Closed. The chat page is built (issue #39): after login the user tops up, picks 
 Nothing.
 
 ## Recently completed
+
+- 2026-10-05 The protocol-keyed usage adapter (roadmap P1-2, issue #104): usage normalization moved out of `gateway/relay.rs` into `crates/core/src/adapters.rs` — a `UsageAdapter` trait, the `adapter_for` registry and the OpenAI implementation reproducing the old parsing exactly (subsets inside their totals, `provider_raw` kept, clamped not rejected). `oxsum.channels` gained a `protocol` column (migration 0008): the name is part of a channel's connection identity, resolved once per request when the serving is resolved, and refused at write time when the registry does not know it — a channel that cannot normalize its own usage reports cannot serve. Contract `openapi.yaml` 0.19.0 first (`ChannelRequest.protocol` optional, `Channel.protocol` answered); pinned by adapter unit tests, the channels suite's protocol checks, the admin suite's `VALIDATION_ERROR` on an unknown protocol, and the unchanged settled-row gateway test.
 
 - 2026-10-05 The normalized usage record (roadmap P1-1, issue #102): the two-count `Usage` became `UsageRecord` (`crates/core/src/usage.rs`) — input and output tokens plus the dimensions D3 settled on: cached and reasoning tokens as subsets of their totals, cache-creation 5m/1h, tool calls, media tokens, a `service_tier`/`event_type` slot, caller attribution (`endUser`, bounded tags) and the `usageDetails` JSON escape hatch carrying `provider_raw` verbatim for the retention window. Every settlement that lands writes the row to `oxsum.usage_records` (migration 0007) beside the entry — the turn's own path or the sweeper, whose watch rows now carry the attribution — keyed on `request_id` with `ON CONFLICT DO NOTHING`; the entry stays the source of truth and the mutable store holds what a hashed description cannot. The gateway request parses and bounds `user`, `metadata` and `service_tier` (contract `openapi.yaml` 0.18.0 first) and the OpenAI wire report is read into the record, subsets clamped into their totals. Pinned by `usage.rs`'s unit tests, the request/relay parsing tests, `crates/server/tests/gateway.rs`'s settled-row check and `sweep.rs`'s swept-row and replay checks; `docs/product.md`, `docs/architecture.md`, `docs/api.md`, `docs/user-guide.md` and `docs/decisions.md` updated in the same change.
 

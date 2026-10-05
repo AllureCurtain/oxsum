@@ -116,7 +116,7 @@ v1 has no embeddings, images, audio, Responses API or Anthropic Messages format.
 
 ### Channels and prices (shipped)
 
-- Channels are configured by the platform admin: name, upstream base_url, upstream API key, served models.
+- Channels are configured by the platform admin: name, upstream base_url, upstream API key, served models, and the upstream protocol the channel speaks — `openai` today; the protocol selects the adapter that normalizes its usage reports, and a name with no adapter is refused at write time.
 - In v1 one model maps to exactly one channel; no load balancing, no failover. The gateway never retries upstream automatically, because a retry might charge upstream twice.
 - Upstream API keys are stored encrypted; the admin API and the channels page show only the last 4 characters.
 - Each model's price: input price, output price (credit per million tokens), plus a max-output-token count.
