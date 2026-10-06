@@ -7,6 +7,7 @@ mod bills;
 mod config;
 mod error;
 mod gateway;
+mod metrics;
 mod routes;
 mod web;
 mod ws;
@@ -22,6 +23,7 @@ use tokio::sync::broadcast;
 
 pub use billing::BillingEvent;
 pub use config::{Config, Gateway, Signup};
+pub use metrics::Metrics;
 
 /// Everything a request handler may need.
 ///
@@ -41,6 +43,9 @@ pub(crate) struct AppState {
     /// The per-key request limiter the hold-creation paths consult: in-process today,
     /// the trait is the seam a shared backend slots behind (docs/decisions.md).
     pub(crate) rate_limiter: Arc<dyn oxsum_core::RateLimiter>,
+    /// The process's own telemetry registry: per-app, not the `metrics` facade's global
+    /// slot, so a test reads back exactly the counts it caused (src/metrics.rs).
+    pub(crate) metrics: Metrics,
     pub(crate) leptos_options: LeptosOptions,
 }
 
@@ -59,14 +64,21 @@ pub fn app(db: Db, config: Config) -> Router {
     app_with_billing(db, config).0
 }
 
-/// Builds the router plus the broadcast sender the gateway publishes [`BillingEvent`]s to.
+/// Builds the router plus the broadcast sender the gateway publishes [`BillingEvent`]s to
+/// and the metrics registry `GET /metrics` renders.
 ///
-/// The dashboard's `/ws/billing` forwards them to the browser; tests subscribe to the
-/// sender to assert what a turn publishes, without opening a socket.
-pub fn app_with_billing(db: Db, config: Config) -> (Router, broadcast::Sender<BillingEvent>) {
+/// The dashboard's `/ws/billing` forwards the events to the browser; tests subscribe to the
+/// sender to assert what a turn publishes, without opening a socket. The metrics come back
+/// out so `main` can hand the same registry to the sweeper task, whose pass count would
+/// otherwise record into a registry nobody scrapes.
+pub fn app_with_billing(
+    db: Db,
+    config: Config,
+) -> (Router, broadcast::Sender<BillingEvent>, Metrics) {
     // The billing broadcast is best-effort: a slow dashboard misses an event, and the
     // watch table stays the record of in-flight holds.
     let (billing, _) = broadcast::channel(128);
+    let metrics = Metrics::new();
     let state = AppState {
         tenants: Tenants::new(db.pool().clone()),
         db,
@@ -74,9 +86,10 @@ pub fn app_with_billing(db: Db, config: Config) -> (Router, broadcast::Sender<Bi
         http: gateway::client(),
         billing: billing.clone(),
         rate_limiter: Arc::new(oxsum_core::SlidingWindow::default()),
+        metrics: metrics.clone(),
         leptos_options: web::options(),
     };
-    (routes::router(state), billing)
+    (routes::router(state), billing, metrics)
 }
 
 /// Prepares a database for serving: seed the first channel, and make sure the configured key opens

@@ -77,6 +77,10 @@ struct Plan {
     tenant_id: String,
     /// Where billing progress goes: the dashboard's live holds section.
     billing: broadcast::Sender<BillingEvent>,
+    /// The registry the settlement counters record into: same one `/metrics` renders.
+    metrics: crate::metrics::Metrics,
+    /// When the turn's hold was taken — the `turn_seconds` histogram's start.
+    started: std::time::Instant,
     /// The channel that served the request, and the price version it was priced by. Both go into the
     /// settlement, so a bill says which version priced it and not only at what price.
     channel: String,
@@ -173,6 +177,7 @@ impl Turn {
         key_id: uuid::Uuid,
         attribution: Attribution,
         adapter: &'static dyn UsageAdapter,
+        metrics: crate::metrics::Metrics,
     ) -> Self {
         Self {
             plan: Some(Plan {
@@ -182,6 +187,8 @@ impl Turn {
                 request: request_id.to_owned(),
                 tenant_id: tenant_id.to_owned(),
                 billing,
+                metrics,
+                started: std::time::Instant::now(),
                 channel: serving.channel.clone(),
                 version: serving.version,
                 model: model.to_owned(),
@@ -437,6 +444,16 @@ impl Plan {
             // sweeper retries what the turn could not finish.
             Err(_) => {}
         }
+        // The settlement counters record here, at the one place every kind of settle
+        // passes through — including the Drop path a hung-up client triggers.
+        crate::metrics::settled(
+            &self.metrics,
+            kind,
+            charged,
+            usage.input_tokens,
+            usage.output_tokens,
+            self.started.elapsed().as_secs_f64(),
+        );
         // The turn is over however the write went: the dashboard stops showing it live.
         // Best-effort, like the progress ticks — the ledger, not this event, is the bill.
         let _ = self.billing.send(BillingEvent::TurnSettled {

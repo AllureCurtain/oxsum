@@ -44,6 +44,9 @@ http-body-util.workspace = true
 oxsum-web.workspace = true
 leptos.workspace = true
 leptos_axum.workspace = true
+# Process telemetry: the recorder and its render handle live in AppState (see src/metrics.rs).
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
 
 [dev-dependencies]
 dotenvy.workspace = true

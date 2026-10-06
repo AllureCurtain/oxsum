@@ -8,7 +8,7 @@ pub(crate) mod error;
 mod relay;
 mod request;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::body::{Body, Bytes};
 use axum::extract::{Extension, State};
@@ -137,14 +137,19 @@ async fn chat(
                 .claim_request(organization.id, key, &fingerprint(&body), &minted_id)
                 .await
             {
-                Ok(Claim::Fresh { request_id }) => Some((key.clone(), request_id)),
+                Ok(Claim::Fresh { request_id }) => {
+                    crate::metrics::claim(&state.metrics, "fresh");
+                    Some((key.clone(), request_id))
+                }
                 Ok(Claim::InFlight) => {
+                    crate::metrics::claim(&state.metrics, "in_flight");
                     return with_request_id(
                         GatewayError::idempotency_in_flight().into_response(),
                         &minted_id,
                     );
                 }
                 Ok(Claim::Mismatch) => {
+                    crate::metrics::claim(&state.metrics, "mismatch");
                     return with_request_id(
                         GatewayError::idempotency_mismatch().into_response(),
                         &minted_id,
@@ -154,7 +159,10 @@ async fn chat(
                     request_id,
                     status,
                     body,
-                }) => return replay(status, body, &request_id),
+                }) => {
+                    crate::metrics::claim(&state.metrics, "replay");
+                    return replay(status, body, &request_id);
+                }
                 Err(error) => {
                     return with_request_id(GatewayError::from(error).into_response(), &minted_id);
                 }
@@ -297,6 +305,7 @@ async fn run(
                 .rate_limiter
                 .admit(key.key_id, rpm as u32, std::time::Instant::now())
     {
+        crate::metrics::rate_limited(&state.metrics, "gateway");
         return Err(GatewayError::RateLimited {
             message: format!("this API key is limited to {rpm} requests per minute"),
             code: "RATE_LIMITED",
@@ -396,9 +405,11 @@ async fn run(
         key.key_id,
         request.attribution.clone(),
         adapter,
+        state.metrics.clone(),
     );
     // The dashboard's live section sees the turn from here: the hold is taken, upstream is
     // next. Best-effort — a missed event is a missed live update, not lost state.
+    crate::metrics::hold(&state.metrics, &serving.channel, &request.model);
     let _ = state
         .billing
         .send(crate::billing::BillingEvent::TurnStarted {
@@ -408,6 +419,7 @@ async fn run(
             channel: serving.channel.clone(),
             freeze_minor: freeze,
         });
+    let upstream_started = Instant::now();
     let upstream = state
         .http
         .post(format!("{}/chat/completions", serving.base_url))
@@ -418,6 +430,11 @@ async fn run(
 
     let response = match upstream {
         Err(error) => {
+            crate::metrics::upstream_response(
+                &state.metrics,
+                "unreachable",
+                upstream_started.elapsed().as_secs_f64(),
+            );
             // Nothing was received, so nothing is charged and the whole freeze goes back.
             tracing::warn!(%error, "upstream is unreachable");
             turn.settle(SettlementKind::UpstreamUnreachable, Charge::Nothing)
@@ -430,6 +447,11 @@ async fn run(
         }
         Ok(response) if !response.status().is_success() => {
             let status = response.status();
+            crate::metrics::upstream_response(
+                &state.metrics,
+                "error",
+                upstream_started.elapsed().as_secs_f64(),
+            );
             let text = response.text().await.unwrap_or_default();
             turn.settle(SettlementKind::UpstreamError, Charge::Nothing)
                 .await;
@@ -442,34 +464,43 @@ async fn run(
                     .filter(|body| body.get("error").is_some()),
             ));
         }
-        Ok(response) if request.stream => sse(Body::from_stream(relay::stream(turn, response))),
         Ok(response) => {
-            let text = response.text().await.unwrap_or_default();
-            // Upstream answered in full, so the turn is finished: from here the only work left is the
-            // local write, whatever the client does with the response.
-            turn.note_upstream_end();
-            match serde_json::from_str::<Value>(&text) {
-                Ok(value) => {
-                    // A whole body is not a stream, but its usage report is read the same way.
-                    if let Some(usage) = adapter.usage(&value) {
-                        turn.note_usage(usage);
+            crate::metrics::upstream_response(
+                &state.metrics,
+                "ok",
+                upstream_started.elapsed().as_secs_f64(),
+            );
+            if request.stream {
+                sse(Body::from_stream(relay::stream(turn, response)))
+            } else {
+                let text = response.text().await.unwrap_or_default();
+                // Upstream answered in full, so the turn is finished: from here the only work
+                // left is the local write, whatever the client does with the response.
+                turn.note_upstream_end();
+                match serde_json::from_str::<Value>(&text) {
+                    Ok(value) => {
+                        // A whole body is not a stream, but its usage report is read the same
+                        // way.
+                        if let Some(usage) = adapter.usage(&value) {
+                            turn.note_usage(usage);
+                        }
+                        turn.note_text(&relay::completion_text(&value));
+                        let (kind, charge) = turn.closing();
+                        turn.settle(kind, charge).await;
+                        Json(value).into_response()
                     }
-                    turn.note_text(&relay::completion_text(&value));
-                    let (kind, charge) = turn.closing();
-                    turn.settle(kind, charge).await;
-                    Json(value).into_response()
-                }
-                Err(error) => {
-                    // A 200 that is not JSON is upstream breaking its own contract: price what came
-                    // back rather than handing the caller a charge of nothing.
-                    turn.note_text(&text);
-                    turn.settle(SettlementKind::Estimated, Charge::Estimated)
-                        .await;
-                    return Err(GatewayError::upstream(
-                        StatusCode::BAD_GATEWAY,
-                        format!("upstream answered 200 with a body that is not JSON: {error}"),
-                        None,
-                    ));
+                    Err(error) => {
+                        // A 200 that is not JSON is upstream breaking its own contract: price
+                        // what came back rather than handing the caller a charge of nothing.
+                        turn.note_text(&text);
+                        turn.settle(SettlementKind::Estimated, Charge::Estimated)
+                            .await;
+                        return Err(GatewayError::upstream(
+                            StatusCode::BAD_GATEWAY,
+                            format!("upstream answered 200 with a body that is not JSON: {error}"),
+                            None,
+                        ));
+                    }
                 }
             }
         }

@@ -88,6 +88,19 @@ impl Db {
         Ok(())
     }
 
+    /// How many hold watch rows are open right now — the `/metrics` gauge, refreshed per
+    /// scrape rather than counted up and down, so a missed decrement can never drift it.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn open_hold_count(&self) -> Result<i64, WalletError> {
+        sqlx::query_scalar("SELECT count(*)::bigint FROM oxsum.open_holds")
+            .fetch_one(self.pool())
+            .await
+            .map_err(Into::into)
+    }
+
     /// Stops watching a hold. Idempotent: deleting a row that is already gone is not an error,
     /// because the sweeper and the settling turn both clear it.
     ///

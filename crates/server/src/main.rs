@@ -39,11 +39,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Seeding the bootstrap channel and opening every stored channel credential happen before the
     // listener: a deployment that cannot open its channels must not accept a request at all.
     oxsum_server::prepare(&db, &config).await?;
+    // The app's own metrics registry comes back out so the sweeper can count its passes into
+    // the same registry `/metrics` renders.
+    let (app, _events, metrics) = oxsum_server::app_with_billing(db.clone(), config.clone());
     // A crashed gateway turn leaves its hold outstanding; the sweeper releases holds older than
     // the configured timeout, every minute. It also runs once right away, so a restart heals
     // what the crashed process left behind without waiting for the first interval.
-    let _sweeper = spawn_sweeper(db.clone(), config.hold_timeout());
-    let app = oxsum_server::app(db, config);
+    let _sweeper = spawn_sweeper(db, config.hold_timeout(), metrics);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "oxsum listening");
     axum::serve(listener, app)
@@ -57,7 +59,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///
 /// The task ends with the process — a sweep is idempotent (a row is only cleared once its hold is
 /// settled or gone), so an interrupted pass is simply retried on the next start.
-fn spawn_sweeper(db: Db, timeout: Duration) -> tokio::task::JoinHandle<()> {
+fn spawn_sweeper(
+    db: Db,
+    timeout: Duration,
+    metrics: oxsum_server::Metrics,
+) -> tokio::task::JoinHandle<()> {
     let tenants = Tenants::new(db.pool().clone());
     tokio::spawn(async move {
         loop {
@@ -66,6 +72,7 @@ fn spawn_sweeper(db: Db, timeout: Duration) -> tokio::task::JoinHandle<()> {
             match sweep_stale_holds(&db, &tenants, older_than, on).await {
                 Ok(resolved) => {
                     if resolved > 0 {
+                        metrics.swept(resolved as u64);
                         tracing::info!(resolved, "the hold sweeper resolved stale holds");
                     }
                 }

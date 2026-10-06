@@ -71,8 +71,21 @@ pub fn router(state: AppState) -> Router {
     // The platform admin: an operator token, not an organization key, and its own middleware.
     let admin = crate::admin::router(state.clone());
 
+    // The metrics scrape sits at the conventional path rather than under /api/v1/admin, but
+    // it answers to the same operator token — a Prometheus scrape config carries it as
+    // `bearer_token`.
+    let operator = Router::new()
+        .route("/metrics", get(crate::metrics::scrape))
+        // `route_layer`, not `layer`: a plain layer on a merged router also wraps the
+        // combined fallback, so an unmatched path would answer 401 instead of 404.
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::admin::require_admin,
+        ));
+
     let router: Router<AppState> = Router::new()
         .route("/healthz", get(|| async { "ok" }))
+        .merge(operator)
         // Live billing progress for the dashboard: session-cookie auth, like the pages.
         .route("/ws/billing", get(crate::ws::billing_ws))
         // The bills export: the page's table as a file the browser saves, on the
@@ -86,7 +99,14 @@ pub fn router(state: AppState) -> Router {
         // The OpenAI-compatible surface, which brings its own auth and its own error format.
         .nest("/v1", crate::gateway::router(state.clone()));
     // The Leptos pages and their server functions, served by the same binary.
-    crate::web::mount(router, &state).with_state(state)
+    // The request counter sits last so it sees every route the router answered, pages
+    // included — labelled by the matched pattern, never the concrete path.
+    crate::web::mount(router, &state)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::metrics::track,
+        ))
+        .with_state(state)
 }
 
 /// The uniform success envelope: { "data": ... }.
@@ -728,6 +748,7 @@ async fn hold(
                         .rate_limiter
                         .admit(key.key_id, rpm as u32, std::time::Instant::now())
             {
+                crate::metrics::rate_limited(&state.metrics, "api");
                 return Err(WalletError::RateLimited {
                     limit: i64::from(rpm),
                     retry_after_secs: limited.retry_after.as_secs(),

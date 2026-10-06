@@ -87,6 +87,11 @@ uuid = { version = "1", features = ["v4", "v5"] }
 
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+# Telemetry: the `metrics` facade's types, and the Prometheus recorder whose handle renders
+# `/metrics`. Default features off — the exporter's own HTTP listener and push gateway would
+# pull a second HTTP stack; oxsum already serves, so only the recorder and handle are needed.
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
 futures-util = "0.3"
 tokio-tungstenite = "0.29"
 
