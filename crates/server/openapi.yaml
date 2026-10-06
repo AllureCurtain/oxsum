@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.30.0
+  version: 0.31.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -121,6 +121,12 @@ info:
     outcomes, and scrape-time gauges for open holds and the connection
     pool. The scrape carries the same operator bearer token as the admin
     surface; a deployment without one answers 401 there too.
+    0.31.0 answers what a gateway request cost without a second call:
+    `x-oxsum-freeze-minor` and `x-oxsum-balance-minor` on the response
+    head of every answer that took the hold — the reserved bound and the
+    spendable balance left after it — and `x-oxsum-charged-minor` once
+    the turn settled, a header on non-streamed answers and on refusals
+    that happened after the hold, and an HTTP trailer on streamed ones.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie, except
     `/api/v1/auth/login`, `/api/v1/auth/logout` and `/api/v1/auth/register`, which take no
@@ -1752,6 +1758,13 @@ paths:
         under a different request body is refused 422. A refusal that never reached the wallet
         releases the key, so retrying a corrected request is always possible; a key expires
         24 hours after it was first claimed.
+
+        Every answer that took the hold — a completion or an upstream refusal — carries
+        `x-oxsum-freeze-minor` (the reserved bound) and `x-oxsum-balance-minor` (the
+        spendable balance left after it) on the response head. The settled charge rides as
+        `x-oxsum-charged-minor`: a header on a non-streamed answer and on a refusal that
+        settled `Charge::Nothing`, and — because the head goes out before a streamed turn
+        settles — an HTTP trailer on a streamed answer, announced by `Trailer`.
       parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
       requestBody:
         required: true
@@ -1766,6 +1779,10 @@ paths:
             `Idempotent-Replayed: true`
           headers:
             x-oxsum-request-id: { $ref: "#/components/headers/RequestId" }
+            x-oxsum-freeze-minor: { $ref: "#/components/headers/FreezeMinor" }
+            x-oxsum-balance-minor: { $ref: "#/components/headers/BalanceMinor" }
+            x-oxsum-charged-minor: { $ref: "#/components/headers/ChargedMinor" }
+            Trailer: { schema: { type: string, example: "x-oxsum-charged-minor" }, description: "on a streamed answer, announces the settled charge arrives as a trailer" }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ChatCompletion" }
@@ -1836,6 +1853,15 @@ components:
     RequestId:
       description: "the id the ledger entries are keyed by: `req-<id>:hold` and `req-<id>:settle`"
       schema: { type: string }
+    FreezeMinor:
+      description: "minor units this request froze — the most it can cost"
+      schema: { type: integer }
+    BalanceMinor:
+      description: "the organization's spendable balance after this request's reservation"
+      schema: { type: integer }
+    ChargedMinor:
+      description: "minor units the settled turn actually charged — a header on non-streamed answers and post-hold refusals, a trailer on streamed ones"
+      schema: { type: integer }
   schemas:
     CreatedInvitation:
       type: object

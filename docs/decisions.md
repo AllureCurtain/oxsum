@@ -917,3 +917,14 @@ Three judgment calls, recorded:
 - **Gauges are scraped, not tracked.** `oxsum_open_holds` and the pool gauges refresh inside the scrape handler: a watch row read as a count cannot drift the way an increment/decrement tally would, and a quiet deployment pays nothing between scrapes. A failed refresh is logged and skipped rather than failing the whole render.
 
 The series: `oxsum_http_requests_total` and `oxsum_http_request_duration_seconds` (method, route pattern, status), `oxsum_gateway_holds_total` (channel, model), `oxsum_gateway_settlements_total` (kind), `oxsum_gateway_charged_minor_total`, `oxsum_gateway_tokens_total` (direction), `oxsum_gateway_turn_seconds`, `oxsum_upstream_response_seconds` (result), `oxsum_rate_limit_rejections_total` (surface), `oxsum_idempotency_claims_total` (outcome), `oxsum_holds_swept_total`, `oxsum_open_holds`, `oxsum_db_pool_connections` (state). Pinned by `crates/server/tests/metrics.rs` (token gating, request counting, gauges) and the gateway suite's settled-turn scrape.
+
+## 2026-10-07 — The response carries the cost; streams carry it in a trailer (roadmap P4-3, issue #138)
+
+A gateway caller should learn what a request cost and how much runway is left without a second API call. Three headers answer it: `x-oxsum-freeze-minor` (the reserved bound — the most the request can cost) and `x-oxsum-balance-minor` (the spendable balance measured right after the hold landed) on the head of every answer that took the hold, and `x-oxsum-charged-minor` once the turn settles — a header on non-streamed answers and on post-hold refusals, an HTTP trailer on streamed ones, announced by `Trailer`.
+
+Two judgment calls, recorded:
+
+- **A trailer, not an SSE frame, for the streamed charge.** Injecting a `data:` frame would pollute upstream's own wire format and trip strict OpenAI clients; an HTTP trailer is transport metadata that a client which does not read it simply ignores — it still has the request id, the settled receipt on an idempotent replay, and `/ws/billing`. The relay yields `http_body::Frame`s over `StreamBody` so the settlement can append the trailer after the terminator.
+- **Refusals after the hold answer through `Ok`, not `Err`.** A post-hold upstream failure needs the head stamped with the settled charge (`0`), but `GatewayError::into_response` is called downstream of where the number exists — so those arms build and stamp the response themselves. Nothing is lost: the idempotency claim stores a finished non-streamed answer whether it arrives as `Ok` or as `Err(Upstream)`, so replay semantics are unchanged.
+
+The balance is read once at hold time — not twice, not on a timer — so a failed read omits the header rather than reporting a made-up number. Pinned by `crates/server/tests/gateway.rs` (headers on a non-streamed turn, the trailer on a streamed one, `charged: 0` on a post-hold refusal).

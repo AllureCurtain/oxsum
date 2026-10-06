@@ -239,6 +239,13 @@ Steps:
    ledger: its entries are keyed `req-<id>:hold` and the settlement derived from it
    (`oxsum_core::settlement_key_for`).
 
+   The cost rides along too: `x-oxsum-freeze-minor` is the most the request can charge and
+   `x-oxsum-balance-minor` is the spendable balance left under that freeze. Once the turn
+   settles, `x-oxsum-charged-minor` reports what it actually cost — a header on a
+   non-streamed answer or a post-hold refusal, and an HTTP trailer (`Trailer:
+   x-oxsum-charged-minor` announces it) on a streamed one, since the response head is sent
+   before the stream settles.
+
 Notes:
 
 - The gateway freezes an upper bound *before* it contacts upstream, then charges upstream's reported
