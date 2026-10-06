@@ -99,6 +99,7 @@ async fn login_mints_a_session_that_authenticates() {
         key: ActingKey {
             key_id: Uuid::new_v4(),
             spend_limit_minor: None,
+            requests_per_minute: None,
         },
     });
     assert_eq!(key_principal.user_id(), None);

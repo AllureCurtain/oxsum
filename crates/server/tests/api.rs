@@ -642,7 +642,9 @@ async fn key_constraints_round_trip() {
             "name": "scoped",
             "spendLimitMinor": 5_000_000,
             "budgetDuration": "daily",
-            "modelAllowlist": ["mock-a", "mock-b"]
+            "modelAllowlist": ["mock-a", "mock-b"],
+            "requestsPerMinute": 60,
+            "maxConcurrentHolds": 4
         })),
         Some(&key),
     )
@@ -652,6 +654,8 @@ async fn key_constraints_round_trip() {
     assert_eq!(body["data"]["spendLimitMinor"], 5_000_000);
     assert_eq!(body["data"]["budgetDuration"], "daily");
     assert_eq!(body["data"]["modelAllowlist"], json!(["mock-a", "mock-b"]));
+    assert_eq!(body["data"]["requestsPerMinute"], 60);
+    assert_eq!(body["data"]["maxConcurrentHolds"], 4);
 
     let (status, body) = call(&app, "GET", "/api/v1/org/keys", None, Some(&key)).await;
     assert_eq!(status, StatusCode::OK);
@@ -663,6 +667,8 @@ async fn key_constraints_round_trip() {
         .expect("the new key is listed");
     assert_eq!(listed["budgetDuration"], "daily");
     assert_eq!(listed["modelAllowlist"], json!(["mock-a", "mock-b"]));
+    assert_eq!(listed["requestsPerMinute"], 60);
+    assert_eq!(listed["maxConcurrentHolds"], 4);
 
     // A patch replaces the set wholesale: the fields it omits fall back to unset.
     let (status, body) = call(
@@ -677,18 +683,22 @@ async fn key_constraints_round_trip() {
     assert_eq!(body["data"]["modelAllowlist"], json!(["mock-c"]));
     assert!(body["data"]["spendLimitMinor"].is_null());
     assert!(body["data"]["budgetDuration"].is_null());
+    assert!(body["data"]["requestsPerMinute"].is_null());
+    assert!(body["data"]["maxConcurrentHolds"].is_null());
 
     // Every constraint clears with null.
     let (status, body) = call(
         &app,
         "PATCH",
         &format!("/api/v1/org/keys/{key_id}"),
-        Some(json!({"spendLimitMinor": null, "budgetDuration": null, "modelAllowlist": null})),
+        Some(json!({"spendLimitMinor": null, "budgetDuration": null, "modelAllowlist": null, "requestsPerMinute": null, "maxConcurrentHolds": null})),
         Some(&key),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body["data"]["modelAllowlist"].is_null());
+    assert!(body["data"]["requestsPerMinute"].is_null());
+    assert!(body["data"]["maxConcurrentHolds"].is_null());
 }
 
 /// The constraint boundary conditions: a window without a limit, a window spelled wrong,
@@ -703,6 +713,9 @@ async fn key_constraints_reject_malformed_input() {
         json!({"budgetDuration": "daily"}), // a window without a limit is meaningless
         json!({"modelAllowlist": []}),
         json!({"modelAllowlist": ["  "]}),
+        json!({"requestsPerMinute": 0}),
+        json!({"requestsPerMinute": -5}),
+        json!({"maxConcurrentHolds": 0}),
     ] {
         let (status, _) = call(
             &app,
@@ -802,6 +815,147 @@ async fn key_spend_limit_is_enforced_on_wallet_holds() {
         "/api/v1/holds",
         Some(json!({"idempotencyKey": "h3", "amountMinor": 500_000})),
         Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+/// A key's `requestsPerMinute` is spent at admission: a second hold inside the
+/// same minute is refused 429 with `RATE_LIMITED`, `Retry-After` and the
+/// `X-RateLimit-*` headers — and it never reaches the wallet.
+#[tokio::test]
+async fn a_requests_per_minute_cap_refuses_at_admission() {
+    let (app, _pool) = app_or_skip!(Signup::Open);
+    let (_registration, key) = register(&app, "keyrpm").await;
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/topups",
+        Some(json!({"idempotencyKey": "t1", "amountMinor": 10_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/org/keys",
+        Some(json!({"requestsPerMinute": 1})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let capped_secret = body["data"]["secret"].as_str().unwrap().to_owned();
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/holds",
+        Some(json!({"idempotencyKey": "h1", "amountMinor": 100_000})),
+        Some(&capped_secret),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // The second request inside the same minute is refused: the answer names the
+    // code and carries the backoff headers the contract promises. `call` drops
+    // the headers, so this one goes raw.
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/holds")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {capped_secret}"))
+        .body(Body::from(
+            json!({"idempotencyKey": "h2", "amountMinor": 100_000}).to_string(),
+        ))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(response.headers().get("retry-after").is_some());
+    assert_eq!(response.headers().get("x-ratelimit-limit").unwrap(), "1");
+    let body =
+        serde_json::from_slice::<Value>(&response.into_body().collect().await.unwrap().to_bytes())
+            .unwrap();
+    assert_eq!(body["error"]["code"], "RATE_LIMITED");
+
+    // The allowance is the key's own: the uncapped key still holds freely.
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/holds",
+        Some(json!({"idempotencyKey": "h3", "amountMinor": 100_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+/// A key's `maxConcurrentHolds` caps reservations outstanding at once: the
+/// second hold is refused 429 `TOO_MANY_HOLDS`, and settling the first frees
+/// the slot it took.
+#[tokio::test]
+async fn a_max_concurrent_holds_cap_refuses_the_extra_hold() {
+    let (app, _pool) = app_or_skip!(Signup::Open);
+    let (_registration, key) = register(&app, "keycap").await;
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/topups",
+        Some(json!({"idempotencyKey": "t1", "amountMinor": 10_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/org/keys",
+        Some(json!({"maxConcurrentHolds": 1})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let capped_secret = body["data"]["secret"].as_str().unwrap().to_owned();
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/holds",
+        Some(json!({"idempotencyKey": "h1", "amountMinor": 100_000})),
+        Some(&capped_secret),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/holds",
+        Some(json!({"idempotencyKey": "h2", "amountMinor": 100_000})),
+        Some(&capped_secret),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert_eq!(body["error"]["code"], "TOO_MANY_HOLDS");
+
+    // A settled hold no longer counts: the cap frees the slot it took.
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/settlements",
+        Some(json!({"holdKey": "h1", "actualMinor": 100_000})),
+        Some(&capped_secret),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/holds",
+        Some(json!({"idempotencyKey": "h3", "amountMinor": 100_000})),
+        Some(&capped_secret),
     )
     .await;
     assert_eq!(status, StatusCode::OK);

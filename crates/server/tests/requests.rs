@@ -247,6 +247,7 @@ async fn seed_request(
             &ActingKey {
                 key_id,
                 spend_limit_minor: None,
+                requests_per_minute: None,
             },
             Some(model),
             &hold_key,
