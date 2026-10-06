@@ -152,6 +152,8 @@ struct OrganizationView {
     created_at: String,
     available_minor: i64,
     reserved_minor: i64,
+    credit_limit_minor: i64,
+    credit_used_minor: i64,
 }
 
 /// One page of organizations, as the endpoint answers it (issue #93): the rows and
@@ -728,8 +730,9 @@ pub fn AdminOrganizationsPage() -> impl IntoView {
                                                 <th class="num">"Members"</th>
                                                 <th class="num">"Available"</th>
                                                 <th class="num">"Frozen"</th>
+                                                <th class="num">"Credit used / limit"</th>
                                                 <th>"Created"</th>
-                                                <th>"Adjust"</th>
+                                                <th>"Adjust · Credit"</th>
                                             </tr>
                                         </thead>
                                         <tbody>
@@ -747,9 +750,21 @@ pub fn AdminOrganizationsPage() -> impl IntoView {
                                                             <td class="mono num pending">
                                                                 {crate::app::credits(organization.reserved_minor)}
                                                             </td>
+                                                            <td class="mono num">
+                                                                {format!(
+                                                                    "{} / {}",
+                                                                    crate::app::credits(organization.credit_used_minor),
+                                                                    crate::app::credits(organization.credit_limit_minor),
+                                                                )}
+                                                            </td>
                                                             <td class="mono">{organization.created_at.clone()}</td>
                                                             <td>
                                                                 <AdjustForm
+                                                                    organization=organization.clone()
+                                                                    on_adjusted=on_adjusted
+                                                                    notice=notice
+                                                                />
+                                                                <CreditLimitForm
                                                                     organization=organization
                                                                     on_adjusted=on_adjusted
                                                                     notice=notice
@@ -930,6 +945,116 @@ fn AdjustForm(
             </label>
             <button type="submit" prop:disabled=move || busy.get()>
                 {move || if busy.get() { "Booking…" } else { "Apply" }}
+            </button>
+            {move || error.get().map(|message| view! { <p class="error" role="alert">{message}</p> })}
+        </form>
+    }
+}
+
+/// One row's credit-limit form: the whole line the organization may draw, in
+/// credits — absolute, not a delta. Shrinking below what is still drawn is a
+/// validation error the server answers; the form only reports it.
+#[component]
+fn CreditLimitForm(
+    organization: OrganizationView,
+    on_adjusted: Callback<()>,
+    notice: RwSignal<Option<(String, &'static str)>>,
+) -> impl IntoView {
+    let token = admin_token();
+    let (limit, set_limit) = signal(String::new());
+    let (error, set_error) = signal(Option::<String>::None);
+    let (busy, set_busy) = signal(false);
+
+    let submit = move |ev: web_sys::SubmitEvent| {
+        ev.prevent_default();
+        #[cfg(feature = "hydrate")]
+        {
+            let organization_id = organization.id.clone();
+            let organization_name = organization.name.clone();
+            leptos::task::spawn_local(async move {
+                set_busy.set(true);
+                set_error.set(None);
+                notice.set(None);
+                let credit_limit_minor = match crate::chat::parse_credits(&limit.get_untracked()) {
+                    Ok(minor) => minor,
+                    Err(_) => {
+                        set_error.set(Some("Enter a credit limit like 10 or 0.".to_owned()));
+                        set_busy.set(false);
+                        return;
+                    }
+                };
+                #[derive(serde::Serialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Body {
+                    credit_limit_minor: i64,
+                    idempotency_key: String,
+                }
+                let body = Body {
+                    credit_limit_minor,
+                    // Fresh per submit: a retried *call* replays, a second click is a
+                    // second change.
+                    idempotency_key: uuid::Uuid::new_v4().to_string(),
+                };
+                let path = format!("/api/v1/admin/organizations/{organization_id}");
+                match admin_call(
+                    token,
+                    browser::patch(&token.0.get_untracked().unwrap_or_default(), &path, &body),
+                )
+                .await
+                {
+                    Ok(answer) => {
+                        let name = organization_name;
+                        let used = answer
+                            .get("creditUsedMinor")
+                            .and_then(|v| v.as_i64())
+                            .map(crate::app::credits)
+                            .unwrap_or_default();
+                        let limit = answer
+                            .get("creditLimitMinor")
+                            .and_then(|v| v.as_i64())
+                            .map(crate::app::credits)
+                            .unwrap_or_default();
+                        notice.set(Some((
+                            format!("Credit line for {name} is now {used} of {limit} drawn."),
+                            "success",
+                        )));
+                        set_limit.set(String::new());
+                        on_adjusted.run(());
+                    }
+                    Err(message) => set_error.set(Some(message)),
+                }
+                set_busy.set(false);
+            });
+        }
+        #[cfg(not(feature = "hydrate"))]
+        let _ = (
+            organization.id.as_str(),
+            on_adjusted,
+            &token,
+            notice,
+            limit,
+            set_limit,
+            set_error,
+            set_busy,
+        );
+    };
+
+    view! {
+        <form class="row" method="post" on:submit=submit aria-label="Set the credit limit">
+            <label>
+                "Credit limit"
+                <input
+                    type="text"
+                    inputmode="decimal"
+                    name="creditLimit"
+                    placeholder="10"
+                    required
+                    prop:value=move || limit.get()
+                    on:input=move |ev| set_limit.set(event_target_value(&ev))
+                />
+            </label>
+            <button type="submit" prop:disabled=move || busy.get()>
+                {move || if busy.get() { "Setting…" } else { "Set" }}
             </button>
             {move || error.get().map(|message| view! { <p class="error" role="alert">{message}</p> })}
         </form>
@@ -1442,6 +1567,30 @@ mod browser {
         body: &B,
     ) -> Result<serde_json::Value, FetchError> {
         let response = Request::post(path)
+            .header("Authorization", &format!("Bearer {token}"))
+            .json(body)
+            .map_err(|_| FetchError::Failed("could not build the request".to_owned()))?
+            .send()
+            .await
+            .map_err(|_| FetchError::Failed("the server could not be reached".to_owned()))?;
+        if !response.ok() {
+            return Err(failure(response).await);
+        }
+        response
+            .json::<Envelope<serde_json::Value>>()
+            .await
+            .map(|envelope| envelope.data)
+            .map_err(|_| FetchError::Failed("the answer could not be read".to_owned()))
+    }
+
+    /// PATCHes a JSON body — the credit-limit write's method — and answers the
+    /// envelope's data unparsed, like `post`.
+    pub async fn patch<B: Serialize>(
+        token: &str,
+        path: &str,
+        body: &B,
+    ) -> Result<serde_json::Value, FetchError> {
+        let response = Request::patch(path)
             .header("Authorization", &format!("Bearer {token}"))
             .json(body)
             .map_err(|_| FetchError::Failed("could not build the request".to_owned()))?

@@ -210,7 +210,13 @@ struct RedeemCodeReq {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BalanceRes {
+    /// Everything the organization can still reserve: own funds plus the
+    /// undrawn part of its credit line.
     available_minor: i64,
+    /// The credit limit the operator granted; 0 for an organization without one.
+    credit_limit_minor: i64,
+    /// The drawn plus reserved part of the credit line.
+    credit_used_minor: i64,
 }
 
 /// The ledger facade of the organization the credential belongs to.
@@ -710,6 +716,8 @@ async fn balance(
     let w = wallet(&state.tenants, principal.organization()).await?;
     ok(BalanceRes {
         available_minor: w.available().await?,
+        credit_limit_minor: w.credit_limit().await?,
+        credit_used_minor: w.credit_used().await?,
     })
 }
 

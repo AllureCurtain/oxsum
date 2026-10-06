@@ -1,5 +1,5 @@
 use doubleentry::account::AccountRegistry;
-use doubleentry::storage::postgres::PostgresStore;
+use doubleentry::storage::postgres::{PostgresError, PostgresStore};
 use doubleentry::{
     AccountId, Amount, BalanceKey, BalanceLimit, BalanceQuery, Balanced, Currency, Cursor,
     Description, Direction, Draft, Entry, EntryBatch, EntryId, Hash, IdempotencyKey, Layer,
@@ -42,6 +42,20 @@ const REVENUE: &str = "Income:Usage";
 /// adjustments and the signup bonus draw on it (a grant debits it, a deduction
 /// credits it back). Equity, so the books keep it out of both income and assets.
 const ADJUSTMENTS: &str = "Equity:Adjustments";
+/// The drawable part of the organization's credit line — a liability like the
+/// wallet, funded by the facility the operator grants and drawn after the bonus
+/// and purchased pools exhaust (decision D4, see docs/decisions.md). It carries
+/// the same `FundedReservations` rule the other pools do, so a hold on credit
+/// reserves against what the line really carries and a release cannot invent
+/// room the line never gave.
+const CREDIT_LINE: &str = "Liabilities:CreditLine";
+/// The credit facility committed to the organization, kept gross: the account's
+/// debit balance is the granted limit, and a shrink debits `CreditLine` back
+/// against it, so the ledger itself refuses a limit cut below the outstanding
+/// draw. A draw never touches it — it moves between `CreditLine` and
+/// `Revenue` — so what the organization owes is the limit minus the line's
+/// balance, not a separate counter that could drift.
+const FACILITY: &str = "Assets:CreditFacility";
 
 /// The idempotency key under which the one-time pool migration posts its
 /// `debit Wallet, credit Bonus` entry. Deterministic, so a second
@@ -55,6 +69,27 @@ const RECLASS_KEY: &str = "pool-reclassification";
 /// keep moving the pools under it; a write the combined balance genuinely cannot
 /// cover fails every attempt anyway and surfaces the same refusal as before.
 const POOL_SPLIT_ATTEMPTS: usize = 3;
+
+/// How many times `open` re-reads the account table after a racing opener
+/// committed it mid-bootstrap. The winner's write is one statement batch, so a
+/// loser only loops while racers keep landing in between.
+const OPEN_RACE_ATTEMPTS: usize = 3;
+
+/// How one amount divides across the funded pools — bonus, then purchased
+/// wallet, then the credit line. Any side may be zero; the parts always sum to
+/// the amount the split was computed for.
+#[derive(Clone, Copy)]
+struct PoolSplit {
+    bonus: i64,
+    wallet: i64,
+    credit: i64,
+}
+
+impl PoolSplit {
+    fn total(&self) -> i64 {
+        self.bonus + self.wallet + self.credit
+    }
+}
 
 /// What the wallet account may do: be drawn on only up to what it holds, and never
 /// release a reservation it did not take.
@@ -73,14 +108,24 @@ const POOL_SPLIT_ATTEMPTS: usize = 3;
 /// account. See docs/decisions.md.
 const WALLET_LIMIT: BalanceLimit = BalanceLimit::FundedReservations;
 
+/// What the credit-facility account may do: carry a debit balance — the committed
+/// limit — and never a credit one, so a shrink entry cannot reduce the facility
+/// past zero or take back a grant the line already drew.
+const FACILITY_LIMIT: BalanceLimit = BalanceLimit::NoCreditBalance;
+
 /// One tenant's wallet ledger.
 ///
-/// Five fixed accounts:
+/// Seven fixed accounts:
 /// - wallet: the purchased balance owed to the user, a liability. Carries
 ///   `FundedReservations`: no overdraft, and no release beyond what was reserved.
 /// - bonus: granted credit, equity. Carries the same limit — a pool is what a
 ///   hold reserves against and a settlement draws down, so the same invariants
 ///   apply on both sides of the split.
+/// - credit line: the drawable part of the operator-granted credit facility, a
+///   liability under the same limit again. Holds and settlements draw it only
+///   after bonus and purchased funds exhaust; the organization owes limit minus
+///   its balance.
+/// - credit facility: the committed limit, an asset kept gross of draws.
 /// - cash: money received from top-ups.
 /// - revenue: income recognized on settlement.
 /// - adjustments: operator grants and deductions — the signup bonus and platform-admin
@@ -90,6 +135,8 @@ pub struct Wallet {
     registry: AccountRegistry,
     wallet: AccountId,
     bonus: AccountId,
+    credit_line: AccountId,
+    facility: AccountId,
     cash: AccountId,
     revenue: AccountId,
     /// Operator grants and deductions: [`Self::adjust`] posts the other side of the
@@ -291,43 +338,68 @@ impl Wallet {
 
         // Account handles must be restored from storage on restart. Re-registering by
         // path could mint different handle numbers and mispoint historical entries.
-        // The three the wallet needs are registered wherever the store lacks them —
+        // The seven the wallet needs are registered wherever the store lacks them —
         // a second opener can read while the first is still mid-bootstrap, and a read
         // that finds some of them has to converge, not fail on the half it can see.
-        let stored = store.accounts().await?;
-        let mut registry = AccountRegistry::from_records(stored).map_err(invalid)?;
-        for path in [WALLET, BONUS, CASH, REVENUE, ADJUSTMENTS] {
-            if find_account(&registry, path).is_err() {
-                registry.register_path(path, OPENED).map_err(invalid)?;
+        let mut attempts = OPEN_RACE_ATTEMPTS;
+        let registry = loop {
+            let stored = store.accounts().await?;
+            let mut registry = AccountRegistry::from_records(stored).map_err(invalid)?;
+            for path in [
+                WALLET,
+                BONUS,
+                CREDIT_LINE,
+                FACILITY,
+                CASH,
+                REVENUE,
+                ADJUSTMENTS,
+            ] {
+                if find_account(&registry, path).is_err() {
+                    registry.register_path(path, OPENED).map_err(invalid)?;
+                }
             }
-        }
 
-        // The pools' limit is oxsum's rule about its own accounts, so it is applied on
-        // every open rather than only where a ledger is created. `register_account`
-        // upserts master data, which is what lets a ledger written under a weaker rule be
-        // tightened here instead of keeping that rule for the rest of its life.
-        let wallet = find_account(&registry, WALLET)?;
-        let bonus = find_account(&registry, BONUS)?;
-        let weakened = registry
-            .records()
-            .iter()
-            .any(|r| (r.id == wallet || r.id == bonus) && r.account.limit != WALLET_LIMIT);
-        if weakened {
-            for account in [wallet, bonus] {
-                registry.set_limit(account, WALLET_LIMIT).map_err(invalid)?;
+            // The pools' limit is oxsum's rule about its own accounts, so it is applied on
+            // every open rather than only where a ledger is created. `register_account`
+            // upserts master data, which is what lets a ledger written under a weaker rule be
+            // tightened here instead of keeping that rule for the rest of its life.
+            let wallet = find_account(&registry, WALLET)?;
+            let bonus = find_account(&registry, BONUS)?;
+            let credit_line = find_account(&registry, CREDIT_LINE)?;
+            let facility = find_account(&registry, FACILITY)?;
+            let weakened = registry.records().iter().any(|r| {
+                ((r.id == wallet || r.id == bonus || r.id == credit_line)
+                    && r.account.limit != WALLET_LIMIT)
+                    || (r.id == facility && r.account.limit != FACILITY_LIMIT)
+            });
+            if weakened {
+                for account in [wallet, bonus, credit_line] {
+                    registry.set_limit(account, WALLET_LIMIT).map_err(invalid)?;
+                }
+                registry
+                    .set_limit(facility, FACILITY_LIMIT)
+                    .map_err(invalid)?;
             }
-        }
-        // The full account set is persisted on every open. `register_account` upserts —
-        // a record the store already holds is a no-op — and two opens racing a fresh
-        // ledger mint the same handles for the same missing paths, so they write the
-        // same rows and converge instead of one failing on a half-written bootstrap.
-        for record in registry.records() {
-            store.register_account(&record).await?;
-        }
+            // The full account set is persisted on every open. `register_account` upserts —
+            // a record the store already holds is a no-op — and two opens racing a fresh
+            // ledger mint the same handles for the same missing paths, so they write the
+            // same rows. The upsert's arbiter is the handle, though: a racer that commits
+            // between our read and our write leaves the loser's insert to violate the *path*
+            // unique constraint instead — read the winner's rows again and converge on them.
+            match persist_accounts(&store, &registry).await {
+                Ok(()) => break registry,
+                Err(error) if attempts > 0 && is_unique_violation(&error) => {
+                    attempts -= 1;
+                }
+                Err(error) => return Err(error),
+            }
+        };
 
         let wallet = Self {
-            wallet,
-            bonus,
+            wallet: find_account(&registry, WALLET)?,
+            bonus: find_account(&registry, BONUS)?,
+            credit_line: find_account(&registry, CREDIT_LINE)?,
+            facility: find_account(&registry, FACILITY)?,
             cash: find_account(&registry, CASH)?,
             revenue: find_account(&registry, REVENUE)?,
             adjustments: find_account(&registry, ADJUSTMENTS)?,
@@ -354,14 +426,123 @@ impl Wallet {
     }
 
     /// Top-up: cash and wallet balance increase together.
+    ///
+    /// When the organization owes on its credit line, the deposit repays the line
+    /// first — `debit Cash, credit CreditLine` for the drawn part, the rest into
+    /// the wallet — so paying in restores borrowed headroom before it adds own
+    /// funds: "borrow first, settle monthly" needs the receipt to shrink the debt,
+    /// not to stack on top of it. The repay split is computed under the credit
+    /// lock, which serializes it with `set_credit_limit` and other repaying
+    /// top-ups; a draw racing it only ever makes the drawn figure *larger*, so a
+    /// stale read can under-repay, never over-credit the line past its limit.
+    ///
+    /// The entry's shape depends on what is drawn, so a retry could compute a
+    /// different split than the one already committed under the same key. The
+    /// derived entry id is looked up before anything is sealed: a committed
+    /// entry under it answers with its own receipt, whatever shape it took.
     pub async fn top_up(&self, key: &str, minor: i64, on: Date) -> Result<Receipt, WalletError> {
         let amt = positive(minor)?;
-        self.append(
-            Entry::<Draft, SCALE>::new(entry_id_for(key), idem(key)?, on)
-                .debit(self.cash, amt, currency())
-                .credit(self.wallet, amt, currency()),
-        )
-        .await
+        let entry_id = entry_id_for(key);
+        if let Some(stored) = self.store.get(entry_id).await? {
+            return self.topup_replay(&stored, minor, key);
+        }
+        if self.credit_drawn().await? <= 0 {
+            let receipt = self
+                .append(
+                    Entry::<Draft, SCALE>::new(entry_id, idem(key)?, on)
+                        .debit(self.cash, amt, currency())
+                        .credit(self.wallet, amt, currency()),
+                )
+                .await;
+            return match receipt {
+                // The key was taken between our read and the append — by a
+                // racing copy of this same request, whose repay split may
+                // differ from ours, or by a different request under it.
+                Err(WalletError::Conflict(_)) => match self.store.get(entry_id).await? {
+                    Some(stored) => self.topup_replay(&stored, minor, key),
+                    None => Err(WalletError::Conflict(format!(
+                        "idempotency key {key:?} is already taken"
+                    ))),
+                },
+                other => other,
+            };
+        }
+        let mut tx = self.store.pool().begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(credit_lock_key(&self.tenant_id))
+            .execute(&mut *tx)
+            .await?;
+        // Re-read under the lock: the figure the split is computed against is the
+        // one serialized with every other write that restores the line.
+        let drawn = self.credit_drawn_in(&mut tx).await?;
+        let repay = minor.min(drawn.max(0));
+        let mut draft =
+            Entry::<Draft, SCALE>::new(entry_id, idem(key)?, on).debit(self.cash, amt, currency());
+        if repay > 0 {
+            draft = draft.credit(self.credit_line, Credits::from_minor(repay), currency());
+        }
+        if minor - repay > 0 {
+            draft = draft.credit(self.wallet, Credits::from_minor(minor - repay), currency());
+        }
+        let receipt = self.append_sealed(self.seal(draft).await?).await;
+        match receipt {
+            Ok(receipt) => {
+                tx.commit().await?;
+                Ok(receipt)
+            }
+            Err(WalletError::Conflict(_)) => {
+                tx.rollback().await?;
+                // A racing copy committed while this one waited on the lock:
+                // its repay split need not be the shape this draft computed.
+                match self.store.get(entry_id).await? {
+                    Some(stored) => self.topup_replay(&stored, minor, key),
+                    None => Err(WalletError::Conflict(format!(
+                        "idempotency key {key:?} is already taken"
+                    ))),
+                }
+            }
+            Err(error) => {
+                tx.rollback().await?;
+                Err(error)
+            }
+        }
+    }
+
+    /// Answers for a key that already has a committed top-up entry: the
+    /// stored entry's receipt when it is the top-up being asked for — a cash
+    /// debit of the full amount, pool credits adding to it, whatever the
+    /// repay split (what is drawn moves after a top-up lands, so the
+    /// committed shape is the answer, never the split a retry would compute
+    /// now) — and the key-reuse conflict when the entry is anything else. A
+    /// credit-limit grant also credits a pool; requiring the cash leg is what
+    /// tells the two apart.
+    fn topup_replay(
+        &self,
+        stored: &StoredEntry<SCALE>,
+        minor: i64,
+        key: &str,
+    ) -> Result<Receipt, WalletError> {
+        let cash: i64 = stored
+            .entry
+            .postings()
+            .iter()
+            .filter(|p| p.account == self.cash && p.direction == Direction::Debit)
+            .map(|p| p.amount.to_minor())
+            .sum();
+        let credited: i64 = stored
+            .entry
+            .postings()
+            .iter()
+            .filter(|p| self.is_pool(p.account) && p.direction == Direction::Credit)
+            .map(|p| p.amount.to_minor())
+            .sum();
+        if cash == minor && credited == minor {
+            Ok(stored_receipt(stored))
+        } else {
+            Err(WalletError::Conflict(format!(
+                "idempotency key {key:?} is already taken"
+            )))
+        }
     }
 
     /// Adjustment: a signed amount the operator books against the pools, with a
@@ -371,7 +552,10 @@ impl Wallet {
     /// A positive `minor` grants credits into the bonus pool — a grant is the
     /// platform's contribution, never cash-backed. A negative one deducts, drawing
     /// the bonus pool first: what the platform granted is what it takes back before
-    /// touching money the user paid for. The pools' `FundedReservations` limit is
+    /// touching money the user paid for. Borrowed headroom is never a pool a
+    /// deduction draws — shrinking what the organization may borrow is the credit
+    /// limit's job, so a deduction deeper than granted plus purchased funds is
+    /// refused even while undrawn credit remains. The pools' `FundedReservations` limit is
     /// what refuses a deduction the balance cannot carry —
     /// [`WalletError::InsufficientFunds`], the same refusal a hold gets — so the
     /// rule holds under concurrency rather than being a read-then-write check; the
@@ -408,6 +592,7 @@ impl Wallet {
                 )
                 .await;
         }
+        let description = description_of(reason)?;
         let mut last_err = None;
         for _ in 0..POOL_SPLIT_ATTEMPTS {
             // The deduction's split is a read-then-write choice: a racing append can
@@ -416,7 +601,7 @@ impl Wallet {
             let bonus_take = amt.to_minor().min(self.bonus_settled().await?.max(0));
             let wallet_take = amt.to_minor() - bonus_take;
             let mut draft = Entry::<Draft, SCALE>::new(entry_id_for(key), idem(key)?, on)
-                .with_description(description_of(reason)?);
+                .with_description(description.clone());
             if bonus_take > 0 {
                 draft = draft.debit(self.bonus, Credits::from_minor(bonus_take), currency());
             }
@@ -428,20 +613,81 @@ impl Wallet {
                 .await
             {
                 Err(error @ WalletError::InsufficientFunds) => last_err = Some(error),
+                // The key was taken between our read and the append — by a
+                // racing copy of this same deduction, whose pool split may
+                // differ from ours, or by a different write under it.
+                Err(WalletError::Conflict(_)) => {
+                    return match self.store.get(entry_id_for(key)).await? {
+                        Some(stored) => self.deduction_replay(&stored, &description, minor, key),
+                        None => Err(WalletError::Conflict(format!(
+                            "idempotency key {key:?} is already taken"
+                        ))),
+                    };
+                }
                 other => return other,
             }
         }
         Err(last_err.unwrap_or(WalletError::InsufficientFunds))
     }
 
+    /// Answers for a key that already has a committed deduction entry: the
+    /// stored entry's receipt when it drew the amount asked for, under the
+    /// same reason — whatever its pool split (balances move after a
+    /// deduction lands, so the committed shape is the answer, never the
+    /// split a retry would compute now) — and the key-reuse conflict when
+    /// the entry is anything else.
+    fn deduction_replay(
+        &self,
+        stored: &StoredEntry<SCALE>,
+        description: &Description,
+        minor: i64,
+        key: &str,
+    ) -> Result<Receipt, WalletError> {
+        let drawn: i64 = stored
+            .entry
+            .postings()
+            .iter()
+            .filter(|p| {
+                self.is_pool(p.account)
+                    && p.layer == Layer::Settled
+                    && p.direction == Direction::Debit
+            })
+            .map(|p| p.amount.to_minor())
+            .sum();
+        // A settlement draws the same settled debits a deduction does; the
+        // adjustments credit is the leg only a deduction carries.
+        let booked: i64 = stored
+            .entry
+            .postings()
+            .iter()
+            .filter(|p| {
+                p.account == self.adjustments
+                    && p.layer == Layer::Settled
+                    && p.direction == Direction::Credit
+            })
+            .map(|p| p.amount.to_minor())
+            .sum();
+        if drawn == minor.abs()
+            && booked == minor.abs()
+            && stored.entry.description().as_str() == description.as_str()
+        {
+            Ok(stored_receipt(stored))
+        } else {
+            Err(WalletError::Conflict(format!(
+                "idempotency key {key:?} is already taken"
+            )))
+        }
+    }
+
     /// Hold: reserves part of the balance in the pending layer; the settled balance is untouched.
     ///
-    /// The reservation splits across the pools — the bonus pool funds what it can
-    /// and the wallet carries the rest — so the pending debit each pool takes stays
-    /// inside what that pool's own balance covers, which is what
-    /// `FundedReservations` enforces at append. A racing hold can take bonus room
-    /// between the split's read and its write; the retry re-reads and splits again
-    /// rather than refusing a request the combined balance could have served.
+    /// The reservation splits across the pools — the bonus pool funds what it
+    /// can, the wallet carries what it can, and the credit line picks up the
+    /// rest — so the pending debit each pool takes stays inside what that pool's
+    /// own balance covers, which is what `FundedReservations` enforces at
+    /// append. A racing hold can take bonus room between the split's read and
+    /// its write; the retry re-reads and splits again rather than refusing a
+    /// request the combined balance could have served.
     /// Refused with [`WalletError::InsufficientFunds`] when the balance cannot
     /// cover it.
     ///
@@ -456,36 +702,108 @@ impl Wallet {
         on: Date,
     ) -> Result<Receipt, WalletError> {
         positive(minor)?;
+        let description = description_of(description)?;
+        let entry_id = entry_id_for(key);
+        // A retry recomputes its pool split against balances that have moved
+        // since the original hold landed, so the draft it builds need not be
+        // the committed entry's shape: the committed one is the answer, like
+        // `top_up`'s repaying shape. A stored entry that is not this hold —
+        // another request under the same key — is the engine's key-reuse
+        // conflict.
+        if let Some(stored) = self.store.get(entry_id).await? {
+            return self.hold_replay(&stored, &description, None, minor, key);
+        }
         let mut last_err = None;
         for _ in 0..POOL_SPLIT_ATTEMPTS {
             // The split's read borrows a connection only for itself: holding one
             // while the append waits for another would starve the pool under
             // concurrent holds.
-            let (bonus_part, wallet_part) = {
+            let split = {
                 let mut conn = self.store.pool().acquire().await?;
                 self.pool_split(&mut conn, minor).await?
             };
             let receipt = self
-                .append(self.hold_entry(key, description, bonus_part, wallet_part, None, on)?)
+                .append(self.hold_entry(key, &description, split, None, on)?)
                 .await;
             match receipt {
                 Err(error @ WalletError::InsufficientFunds) => last_err = Some(error),
+                // The key was taken between our read and the append — by a
+                // racing copy of this same request or by a different one.
+                Err(WalletError::Conflict(_)) => {
+                    return match self.store.get(entry_id).await? {
+                        Some(stored) => self.hold_replay(&stored, &description, None, minor, key),
+                        None => Err(WalletError::Conflict(format!(
+                            "idempotency key {key:?} is already taken"
+                        ))),
+                    };
+                }
                 other => return other,
             }
         }
         Err(last_err.unwrap_or(WalletError::InsufficientFunds))
     }
 
-    /// The split of `minor` across the pools, bonus first: how much of the
-    /// reservation the bonus pool funds and how much falls to the wallet.
-    /// `bonus_part + wallet_part == minor` always; either side may be zero.
+    /// Answers for a key that already has a committed entry: the stored
+    /// entry's receipt when it is the hold being asked for — same amount,
+    /// same description, same actor — whatever its pool split (balances move
+    /// after a hold lands, so the committed shape is the answer, never the
+    /// split a retry would compute now), and the key-reuse conflict when the
+    /// entry is anything else.
+    fn hold_replay(
+        &self,
+        stored: &StoredEntry<SCALE>,
+        description: &Description,
+        actor: Option<&Provenance>,
+        minor: i64,
+        key: &str,
+    ) -> Result<Receipt, WalletError> {
+        let held: i64 = stored
+            .entry
+            .postings()
+            .iter()
+            .filter(|p| {
+                self.is_pool(p.account)
+                    && p.layer == Layer::Pending
+                    && p.direction == Direction::Debit
+            })
+            .map(|p| p.amount.to_minor())
+            .sum();
+        let stored_actor = stored
+            .entry
+            .provenance()
+            .actor
+            .as_ref()
+            .map(|label| label.as_str());
+        let asked_actor = actor.and_then(|p| p.actor.as_ref().map(|label| label.as_str()));
+        if held == minor
+            && stored.entry.description().as_str() == description.as_str()
+            && stored_actor == asked_actor
+        {
+            Ok(stored_receipt(stored))
+        } else {
+            Err(WalletError::Conflict(format!(
+                "idempotency key {key:?} is already taken"
+            )))
+        }
+    }
+
+    /// The split of `minor` across the pools, own funds first: the bonus pool
+    /// funds what it can, the purchased wallet carries what it can, and the
+    /// credit line picks up the rest. `split.total() == minor` always; any side
+    /// may be zero, and `credit` above what the line still carries is what the
+    /// append's `FundedReservations` check refuses.
     async fn pool_split(
         &self,
         conn: &mut sqlx::PgConnection,
         minor: i64,
-    ) -> Result<(i64, i64), WalletError> {
-        let bonus_part = minor.min(self.pool_available_in(conn, self.bonus).await?.max(0));
-        Ok((bonus_part, minor - bonus_part))
+    ) -> Result<PoolSplit, WalletError> {
+        let bonus = minor.min(self.pool_available_in(conn, self.bonus).await?.max(0));
+        let wallet = (minor - bonus).min(self.pool_available_in(conn, self.wallet).await?.max(0));
+        Ok(PoolSplit {
+            bonus,
+            wallet,
+            credit: minor - bonus - wallet,
+        })
     }
 
     /// Builds the pending-layer hold entry for a computed split: a pending debit
@@ -494,29 +812,28 @@ impl Wallet {
     fn hold_entry(
         &self,
         key: &str,
-        description: &str,
-        bonus_part: i64,
-        wallet_part: i64,
+        description: &Description,
+        split: PoolSplit,
         actor: Option<Provenance>,
         on: Date,
     ) -> Result<Entry<Draft, SCALE>, WalletError> {
-        let minor = bonus_part + wallet_part;
+        let minor = split.total();
         let mut draft = Entry::<Draft, SCALE>::new(entry_id_for(key), idem(key)?, on)
-            .with_description(description_of(description)?);
+            .with_description(description.clone());
         if let Some(actor) = actor {
             draft = draft.with_provenance(actor);
         }
-        if bonus_part > 0 {
-            draft = draft.post(
-                Posting::debit(self.bonus, Credits::from_minor(bonus_part), currency())
-                    .in_layer(Layer::Pending),
-            );
-        }
-        if wallet_part > 0 {
-            draft = draft.post(
-                Posting::debit(self.wallet, Credits::from_minor(wallet_part), currency())
-                    .in_layer(Layer::Pending),
-            );
+        for (account, part) in [
+            (self.bonus, split.bonus),
+            (self.wallet, split.wallet),
+            (self.credit_line, split.credit),
+        ] {
+            if part > 0 {
+                draft = draft.post(
+                    Posting::debit(account, Credits::from_minor(part), currency())
+                        .in_layer(Layer::Pending),
+                );
+            }
         }
         Ok(draft.post(
             Posting::credit(self.revenue, Credits::from_minor(minor), currency())
@@ -560,9 +877,18 @@ impl Wallet {
         on: Date,
     ) -> Result<Receipt, WalletError> {
         positive(minor)?;
+        let description = description_of(description)?;
         let actor = Provenance::none()
             .with_actor(&key.key_id.as_simple().to_string())
             .map_err(invalid)?;
+        let entry_id = entry_id_for(idem_key);
+        // A committed entry under the key is this request's answer before any
+        // constraint is consulted: a replayed hold gets its own receipt even
+        // when a budget or an allowlist has since moved — its split need not
+        // match either, because the balances it was computed against moved too.
+        if let Some(stored) = self.store.get(entry_id).await? {
+            return self.hold_replay(&stored, &description, Some(&actor), minor, idem_key);
+        }
         let mut last_err = None;
         for _ in 0..POOL_SPLIT_ATTEMPTS {
             let mut tx = self.store.pool().begin().await?;
@@ -587,34 +913,11 @@ impl Wallet {
                 // Keys are never deleted; a missing row means the credential died mid-request.
                 return Err(WalletError::Unauthenticated);
             };
-            let (bonus_part, wallet_part) = self.pool_split(&mut tx, minor).await?;
+            let split = self.pool_split(&mut tx, minor).await?;
             let entry = self
-                .seal(self.hold_entry(
-                    idem_key,
-                    description,
-                    bonus_part,
-                    wallet_part,
-                    Some(actor.clone()),
-                    on,
-                )?)
+                .seal(self.hold_entry(idem_key, &description, split, Some(actor.clone()), on)?)
                 .await?;
-            // An identical retry replays instead of spending again: the limit guards new spend,
-            // so a replay answers before the check. A different request under a reused key falls
-            // through to the engine's idempotency gate, which names the conflict — also past the
-            // check, because that write never lands either.
-            let existing = self.store.get(entry.id()).await?;
-            if let Some(stored) = &existing
-                && stored.content_hash == entry.content_hash()
             {
-                tx.rollback().await?;
-                return Ok(Receipt {
-                    entry_id: stored.entry.id(),
-                    log_index: stored.require_index().map(|index| index.get()).ok(),
-                    content_hash: stored.content_hash,
-                    is_new: false,
-                });
-            }
-            if existing.is_none() {
                 use sqlx::Row;
                 // Like the limit, the allowlist guards new spend: a replayed hold answers
                 // with its own receipt even if the list has since dropped the model.
@@ -650,6 +953,19 @@ impl Wallet {
                 Err(error @ WalletError::InsufficientFunds) => {
                     tx.rollback().await?;
                     last_err = Some(error);
+                }
+                // The key was taken between our read and the append — by a
+                // racing copy of this same request or by a different one.
+                Err(WalletError::Conflict(_)) => {
+                    tx.rollback().await?;
+                    return match self.store.get(entry_id).await? {
+                        Some(stored) => {
+                            self.hold_replay(&stored, &description, Some(&actor), minor, idem_key)
+                        }
+                        None => Err(WalletError::Conflict(format!(
+                            "idempotency key {idem_key:?} is already taken"
+                        ))),
+                    };
                 }
                 receipt => {
                     let receipt = receipt?;
@@ -694,7 +1010,11 @@ impl Wallet {
             schema = self.tenant_id,
         );
         let committed: i64 = sqlx::query_scalar(&sql)
-            .bind(vec![self.wallet.index() as i32, self.bonus.index() as i32])
+            .bind(vec![
+                self.wallet.index() as i32,
+                self.bonus.index() as i32,
+                self.credit_line.index() as i32,
+            ])
             .bind(key_id.as_simple().to_string())
             .bind(since)
             .fetch_one(&mut *conn)
@@ -744,13 +1064,14 @@ impl Wallet {
                 "actual must be within 0..=held".into(),
             ));
         }
-        let (bonus_held, wallet_held, outstanding_actor) = self.outstanding_hold(hold_key).await?;
-        if actual_minor > bonus_held + wallet_held {
+        let (bonus_held, wallet_held, credit_held, outstanding_actor) =
+            self.outstanding_hold(hold_key).await?;
+        if actual_minor > bonus_held + wallet_held + credit_held {
             return Err(WalletError::InvalidInput(
                 "actual must be within 0..=held".into(),
             ));
         }
-        let held = Credits::from_minor(bonus_held + wallet_held);
+        let held = Credits::from_minor(bonus_held + wallet_held + credit_held);
         let settle_key = settlement_key_for(hold_key);
         let mut draft =
             Entry::<Draft, SCALE>::new(entry_id_for(&settle_key), idem(&settle_key)?, on)
@@ -763,30 +1084,35 @@ impl Wallet {
             draft = draft.with_provenance(Provenance::none().with_actor(&actor).map_err(invalid)?);
         }
         // The release returns exactly what the hold reserved in each pool.
-        if bonus_held > 0 {
-            draft = draft.post(
-                Posting::credit(self.bonus, Credits::from_minor(bonus_held), currency())
-                    .in_layer(Layer::Pending),
-            );
-        }
-        if wallet_held > 0 {
-            draft = draft.post(
-                Posting::credit(self.wallet, Credits::from_minor(wallet_held), currency())
-                    .in_layer(Layer::Pending),
-            );
+        for (account, held_part) in [
+            (self.bonus, bonus_held),
+            (self.wallet, wallet_held),
+            (self.credit_line, credit_held),
+        ] {
+            if held_part > 0 {
+                draft = draft.post(
+                    Posting::credit(account, Credits::from_minor(held_part), currency())
+                        .in_layer(Layer::Pending),
+                );
+            }
         }
         draft = draft.post(Posting::debit(self.revenue, held, currency()).in_layer(Layer::Pending));
         if actual_minor > 0 {
-            // The charge draws the bonus pool first, never more than this hold
-            // reserved there — taking another hold's reservation is exactly what
-            // the per-pool split exists to prevent.
+            // The charge draws the bonus pool first, then the purchased wallet, then
+            // the credit line — never more than this hold reserved in each, because
+            // taking another hold's reservation is exactly what the per-pool split
+            // exists to prevent.
             let bonus_take = actual_minor.min(bonus_held);
-            let wallet_take = actual_minor - bonus_take;
-            if bonus_take > 0 {
-                draft = draft.debit(self.bonus, Credits::from_minor(bonus_take), currency());
-            }
-            if wallet_take > 0 {
-                draft = draft.debit(self.wallet, Credits::from_minor(wallet_take), currency());
+            let wallet_take = (actual_minor - bonus_take).min(wallet_held);
+            let credit_take = actual_minor - bonus_take - wallet_take;
+            for (account, take) in [
+                (self.bonus, bonus_take),
+                (self.wallet, wallet_take),
+                (self.credit_line, credit_take),
+            ] {
+                if take > 0 {
+                    draft = draft.debit(account, Credits::from_minor(take), currency());
+                }
             }
             draft = draft.credit(self.revenue, Credits::from_minor(actual_minor), currency());
         }
@@ -809,7 +1135,7 @@ impl Wallet {
     /// less what settlements and deductions have charged.
     ///
     /// Separate from [`reserved`](Self::reserved) because a hold and a settlement are answered
-    /// from different layers: a hold draws on the two together, a settlement gives back part of
+    /// from different layers: a hold draws on the pools together, a settlement gives back part of
     /// the reserved one.
     pub async fn settled(&self) -> Result<i64, WalletError> {
         self.pool_net(Layer::Settled).await
@@ -823,16 +1149,160 @@ impl Wallet {
         Ok(-self.pool_net(Layer::Pending).await?)
     }
 
+    /// The credit limit the operator granted, in minor units: the credit-facility
+    /// account's settled debit balance, gross of draws. 0 for a wallet that has
+    /// never been given a line.
+    pub async fn credit_limit(&self) -> Result<i64, WalletError> {
+        Ok(-self.account_net(self.facility, Layer::Settled).await?)
+    }
+
+    /// The part of the credit line in use, in minor units: the committed limit
+    /// minus what the line still carries, so it counts settled draws and the
+    /// credit reservations in flight alike. 0 for a wallet with no line at all.
+    pub async fn credit_used(&self) -> Result<i64, WalletError> {
+        let mut conn = self.store.pool().acquire().await?;
+        let committed = self.committed_limit_in(&mut conn).await?;
+        let headroom = self.pool_available_in(&mut conn, self.credit_line).await?;
+        Ok((committed - headroom).max(0))
+    }
+
+    /// What the organization owes on its line right now, in minor units: limit
+    /// minus the line's settled balance — settled draws only, not the holds
+    /// still reserving it. 0 when nothing is drawn.
+    async fn credit_drawn(&self) -> Result<i64, WalletError> {
+        let mut conn = self.store.pool().acquire().await?;
+        self.credit_drawn_in(&mut conn).await
+    }
+
+    /// The [`credit_drawn`](Self::credit_drawn) read on the caller's connection:
+    /// `top_up` runs it inside the transaction that holds the credit lock.
+    async fn credit_drawn_in(&self, conn: &mut sqlx::PgConnection) -> Result<i64, WalletError> {
+        let committed = self.committed_limit_in(conn).await?;
+        let line = self.settled_net_in(conn, self.credit_line).await?;
+        Ok((committed - line).max(0))
+    }
+
+    /// The facility committed, on the caller's connection: the account is
+    /// debit-normal, so its settled net — credits minus debits — reads negated.
+    async fn committed_limit_in(&self, conn: &mut sqlx::PgConnection) -> Result<i64, WalletError> {
+        Ok(-self.settled_net_in(conn, self.facility).await?)
+    }
+
+    /// Grants or resizes the organization's credit line, booking the delta as a
+    /// ledger entry: `debit CreditFacility, credit CreditLine` to grow the line,
+    /// the reverse to shrink it.
+    ///
+    /// `limit_minor` is the whole limit, not a delta — the entry's amount is the
+    /// difference from what the facility already commits, and an unchanged limit
+    /// writes nothing and answers `None`. The computation runs under the credit
+    /// lock so two calls cannot both read the same committed figure and double
+    /// the line.
+    ///
+    /// Shrinking is bounded by the line's own `FundedReservations` limit: the
+    /// shrink debits `CreditLine`, which refuses a debit beyond what it carries
+    /// — the undrawn part — so a limit below the outstanding draw is
+    /// [`WalletError::InvalidInput`], not a partial write. A draw racing the
+    /// shrink can only make the refusal stricter, never permit a cut that should
+    /// have failed.
+    ///
+    /// The idempotency key derives the entry's id like every other write: a
+    /// retried call under one key replays, a second call under a fresh key is a
+    /// second change.
+    pub async fn set_credit_limit(
+        &self,
+        key: &str,
+        limit_minor: i64,
+        on: Date,
+    ) -> Result<Option<Receipt>, WalletError> {
+        if limit_minor < 0 {
+            return Err(WalletError::InvalidInput(
+                "a credit limit cannot be negative".into(),
+            ));
+        }
+        idem(key)?;
+        // The target rides in the description: the entry then says what it set,
+        // not just what it moved, and the replay check can tell the same request
+        // — same key, same limit — from a different one under a reused key.
+        let description = description_of(&format!("credit limit set to {limit_minor} minor"))?;
+        let entry_id = entry_id_for(key);
+        if let Some(stored) = self.store.get(entry_id).await? {
+            if stored.entry.description().as_str() == description.as_str() {
+                return Ok(Some(stored_receipt(&stored)));
+            }
+            return Err(WalletError::Conflict(format!(
+                "idempotency key {key:?} is already taken"
+            )));
+        }
+        let mut tx = self.store.pool().begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(credit_lock_key(&self.tenant_id))
+            .execute(&mut *tx)
+            .await?;
+        // A same-key call may have committed while this one waited on the
+        // lock: answer it from the stored entry exactly as the pre-lock check
+        // does — a matching change replays its receipt, anything else is the
+        // key-reuse conflict — rather than reporting a no-op for a change
+        // that did write.
+        if let Some(stored) = self.store.get(entry_id).await? {
+            tx.rollback().await?;
+            if stored.entry.description().as_str() == description.as_str() {
+                return Ok(Some(stored_receipt(&stored)));
+            }
+            return Err(WalletError::Conflict(format!(
+                "idempotency key {key:?} is already taken"
+            )));
+        }
+        let committed = self.committed_limit_in(&mut tx).await?;
+        let delta = limit_minor - committed;
+        if delta == 0 {
+            tx.rollback().await?;
+            return Ok(None);
+        }
+        let amt = Credits::from_minor(delta.abs());
+        let draft = if delta > 0 {
+            Entry::<Draft, SCALE>::new(entry_id, idem(key)?, on)
+                .with_description(description)
+                .debit(self.facility, amt, currency())
+                .credit(self.credit_line, amt, currency())
+        } else {
+            Entry::<Draft, SCALE>::new(entry_id, idem(key)?, on)
+                .with_description(description)
+                .debit(self.credit_line, amt, currency())
+                .credit(self.facility, amt, currency())
+        };
+        let receipt = self.append_sealed(self.seal(draft).await?).await;
+        match receipt {
+            // A shrink that would cut into the outstanding draw surfaces as the
+            // credit line's `InsufficientFunds`; name what it actually is.
+            Err(WalletError::InsufficientFunds) if delta < 0 => {
+                tx.rollback().await?;
+                Err(WalletError::InvalidInput(
+                    "the credit limit cannot go below what is still drawn".into(),
+                ))
+            }
+            Ok(receipt) => {
+                tx.commit().await?;
+                Ok(Some(receipt))
+            }
+            Err(error) => {
+                tx.rollback().await?;
+                Err(error)
+            }
+        }
+    }
+
     /// Credits the pools have been charged on or after `from`, in minor units: the
     /// settled-layer debits on the pool accounts, which is what a settlement or a
     /// deduction books when it draws the balance down.
     ///
     /// The gross debits, not the layer's net: a top-up credits the same layer, and
     /// subtracting the credits would read a month of top-ups as negative spend. Holds
-    /// live in the pending layer, so an outstanding hold is not spend either, and the
-    /// pool reclassification is excluded by its idempotency key — moving money between
-    /// pools is not spend. A window in which nothing settled is an empty sum: zero,
-    /// not an error.
+    /// live in the pending layer, so an outstanding hold is not spend either, the
+    /// pool reclassification is excluded by its idempotency key — moving money
+    /// between pools is not spend — and a credit-limit change is excluded by the
+    /// facility leg it always carries: shrinking the line debits the credit pool,
+    /// but giving the organization less credit is not charging it. A window in
+    /// which nothing settled is an empty sum: zero, not an error.
     pub async fn settled_spend_since(&self, from: Date) -> Result<i64, WalletError> {
         let mut conn = self.store.pool().acquire().await?;
         let sql = format!(
@@ -841,13 +1311,20 @@ impl Wallet {
              JOIN ledger_{schema}.entries e ON e.entry_id = p.entry_id \
              WHERE p.account_index = ANY($1) AND p.direction = 'D' AND p.layer = 'settled' \
                AND e.log_index IS NOT NULL AND e.booking_date >= $2 \
-               AND e.idempotency_key <> $3",
+               AND e.idempotency_key <> $3 \
+               AND NOT EXISTS (SELECT 1 FROM ledger_{schema}.postings f \
+                               WHERE f.entry_id = p.entry_id AND f.account_index = $4)",
             schema = self.tenant_id,
         );
         let spend: i64 = sqlx::query_scalar(&sql)
-            .bind(vec![self.wallet.index() as i32, self.bonus.index() as i32])
+            .bind(vec![
+                self.wallet.index() as i32,
+                self.bonus.index() as i32,
+                self.credit_line.index() as i32,
+            ])
             .bind(from)
             .bind(RECLASS_KEY.as_bytes())
+            .bind(self.facility.index() as i32)
             .fetch_one(&mut *conn)
             .await?;
         Ok(spend)
@@ -949,9 +1426,10 @@ impl Wallet {
         self.store.seals().await.map_err(Into::into)
     }
 
-    /// What the hold taken under `hold_key` reserved in each pool — the bonus part
-    /// first, then the wallet part — plus the provenance actor the hold attributed
-    /// to: the API key whose spend it counts toward, if the hold named one.
+    /// What the hold taken under `hold_key` reserved in each pool — the bonus
+    /// part, the wallet part, then the credit-line part — plus the provenance
+    /// actor the hold attributed to: the API key whose spend it counts toward,
+    /// if the hold named one.
     ///
     /// The hold entry is found by the id it was given when the hold was taken
     /// ([`entry_id_for`] of the key), and the amounts are the entry's pending-layer
@@ -961,7 +1439,7 @@ impl Wallet {
     async fn outstanding_hold(
         &self,
         hold_key: &str,
-    ) -> Result<(i64, i64, Option<String>), WalletError> {
+    ) -> Result<(i64, i64, i64, Option<String>), WalletError> {
         let Some(stored) = self.store.get(entry_id_for(hold_key)).await? else {
             return Err(WalletError::HoldNotFound(format!(
                 "no hold under key {hold_key:?}"
@@ -969,6 +1447,7 @@ impl Wallet {
         };
         let mut bonus_held = 0;
         let mut wallet_held = 0;
+        let mut credit_held = 0;
         for p in stored.entry.postings() {
             if p.layer != Layer::Pending {
                 continue;
@@ -981,9 +1460,11 @@ impl Wallet {
                 bonus_held += signed;
             } else if p.account == self.wallet {
                 wallet_held += signed;
+            } else if p.account == self.credit_line {
+                credit_held += signed;
             }
         }
-        if bonus_held + wallet_held <= 0 {
+        if bonus_held + wallet_held + credit_held <= 0 {
             return Err(WalletError::HoldNotFound(format!(
                 "key {hold_key:?} does not name a hold"
             )));
@@ -994,7 +1475,7 @@ impl Wallet {
             .actor
             .as_ref()
             .map(|actor| actor.as_str().to_owned());
-        Ok((bonus_held, wallet_held, actor))
+        Ok((bonus_held, wallet_held, credit_held, actor))
     }
 
     /// The one-time pool migration (decision D1): moves the unspent remainder of
@@ -1346,8 +1827,9 @@ impl Wallet {
         let mut pending_debit = false;
         let mut cash = false;
         let mut adjustments = false;
+        let mut facility = false;
         for p in stored.entry.postings() {
-            if p.account == self.wallet || p.account == self.bonus {
+            if self.is_pool(p.account) {
                 match (p.layer, p.direction) {
                     (Layer::Pending, Direction::Credit) => pending_credit = true,
                     (Layer::Pending, Direction::Debit) => pending_debit = true,
@@ -1357,6 +1839,8 @@ impl Wallet {
                 cash = true;
             } else if p.account == self.adjustments {
                 adjustments = true;
+            } else if p.account == self.facility {
+                facility = true;
             }
         }
         if pending_credit {
@@ -1368,7 +1852,10 @@ impl Wallet {
         if cash {
             return Some(TransactionKind::TopUp);
         }
-        if adjustments {
+        // A credit-limit change touches only the facility and the credit line:
+        // an operator action that moves what the organization may draw, shown
+        // like the other operator movements rather than hidden from the history.
+        if adjustments || facility {
             return Some(TransactionKind::Adjustment);
         }
         None
@@ -1384,9 +1871,7 @@ impl Wallet {
             .entry
             .postings()
             .iter()
-            .filter(|p| {
-                (p.account == self.wallet || p.account == self.bonus) && p.layer == Layer::Settled
-            })
+            .filter(|p| self.is_pool(p.account) && p.layer == Layer::Settled)
             .map(|p| match p.direction {
                 Direction::Credit => p.amount.to_minor(),
                 Direction::Debit => -p.amount.to_minor(),
@@ -1398,9 +1883,7 @@ impl Wallet {
     /// that [`Wallet::settle`] writes for every settlement, whatever it charges.
     fn is_settlement(&self, stored: &StoredEntry<SCALE>) -> bool {
         stored.entry.postings().iter().any(|p| {
-            (p.account == self.wallet || p.account == self.bonus)
-                && p.layer == Layer::Pending
-                && p.direction == Direction::Credit
+            self.is_pool(p.account) && p.layer == Layer::Pending && p.direction == Direction::Credit
         })
     }
 
@@ -1411,9 +1894,7 @@ impl Wallet {
             .entry
             .postings()
             .iter()
-            .filter(|p| {
-                (p.account == self.wallet || p.account == self.bonus) && p.layer == Layer::Settled
-            })
+            .filter(|p| self.is_pool(p.account) && p.layer == Layer::Settled)
             .map(|p| match p.direction {
                 Direction::Debit => p.amount.to_minor(),
                 Direction::Credit => -p.amount.to_minor(),
@@ -1421,12 +1902,20 @@ impl Wallet {
             .sum()
     }
 
-    /// The two pools' combined balance in one layer. Both accounts are
-    /// credit-normal — the wallet is a liability, the bonus pool equity — so a
-    /// credit balance is the positive side on each.
+    /// The three pools' combined balance in one layer. All three are
+    /// credit-normal — the wallet and the credit line are liabilities, the bonus
+    /// pool equity — so a credit balance is the positive side on each.
     async fn pool_net(&self, layer: Layer) -> Result<i64, WalletError> {
         Ok(self.account_net(self.wallet, layer).await?
-            + self.account_net(self.bonus, layer).await?)
+            + self.account_net(self.bonus, layer).await?
+            + self.account_net(self.credit_line, layer).await?)
+    }
+
+    /// Whether the account is one a hold reserves against and a settlement draws:
+    /// the bonus pool, the purchased wallet, or the credit line. The facility
+    /// account is not a pool — nothing ever spends out of it.
+    fn is_pool(&self, account: AccountId) -> bool {
+        account == self.wallet || account == self.bonus || account == self.credit_line
     }
 
     /// The bonus pool's settled balance: what a deduction may draw before it
@@ -1450,10 +1939,37 @@ impl Wallet {
         Ok(b.credits.to_minor() - b.debits.to_minor())
     }
 
+    /// An account's settled balance on the caller's connection — credits minus
+    /// debits — for reads that must agree with what a locked transaction sees.
+    /// [`account_net`](Self::account_net) answers the same figure on its own
+    /// connection; this one exists for the credit paths, whose read has to be
+    /// covered by the advisory lock the caller already holds.
+    async fn settled_net_in(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        account: AccountId,
+    ) -> Result<i64, WalletError> {
+        let sql = format!(
+            "SELECT COALESCE(SUM(CASE \
+                 WHEN p.direction = 'C' THEN p.amount_minor \
+                 ELSE -p.amount_minor END), 0)::bigint AS net \
+             FROM ledger_{schema}.postings p \
+             JOIN ledger_{schema}.entries e ON e.entry_id = p.entry_id \
+             WHERE p.account_index = $1 AND p.layer = 'settled' AND e.log_index IS NOT NULL",
+            schema = self.tenant_id,
+        );
+        let net: i64 = sqlx::query_scalar(&sql)
+            .bind(account.index() as i32)
+            .fetch_one(&mut *conn)
+            .await?;
+        Ok(net)
+    }
+
     /// What a pool account can still fund: its settled balance minus the
-    /// reservations pending holds already took. The `FundedReservations` limit
-    /// keeps pending credits off a pool account, so the pending layer only ever
-    /// subtracts.
+    /// reservations pending holds still carry. Pending debits subtract what is
+    /// held, pending credits add back what a settlement released — and
+    /// `FundedReservations` keeps the pending layer's net on the hold side, so
+    /// the figure can never exceed the settled balance.
     async fn pool_available_in(
         &self,
         conn: &mut sqlx::PgConnection,
@@ -1464,6 +1980,7 @@ impl Wallet {
                  WHEN p.layer = 'settled' AND p.direction = 'C' THEN p.amount_minor \
                  WHEN p.layer = 'settled' AND p.direction = 'D' THEN -p.amount_minor \
                  WHEN p.layer = 'pending' AND p.direction = 'D' THEN -p.amount_minor \
+                 WHEN p.layer = 'pending' AND p.direction = 'C' THEN p.amount_minor \
                  ELSE 0 END), 0)::bigint AS available \
              FROM ledger_{schema}.postings p \
              JOIN ledger_{schema}.entries e ON e.entry_id = p.entry_id \
@@ -1723,6 +2240,39 @@ fn description_of(text: &str) -> Result<Description, WalletError> {
     Description::new(text.to_owned()).map_err(invalid)
 }
 
+/// The receipt of an entry already committed — what a replayed write answers.
+fn stored_receipt(stored: &StoredEntry<SCALE>) -> Receipt {
+    Receipt {
+        entry_id: stored.entry.id(),
+        log_index: stored.require_index().map(|index| index.get()).ok(),
+        content_hash: stored.content_hash,
+        is_new: false,
+    }
+}
+
+/// Persists every account record the registry knows — `register_account`
+/// upserts master data, so a record the store already holds is a no-op.
+async fn persist_accounts(
+    store: &PostgresStore<SCALE>,
+    registry: &AccountRegistry,
+) -> Result<(), WalletError> {
+    for record in registry.records() {
+        store.register_account(&record).await?;
+    }
+    Ok(())
+}
+
+/// Whether the storage error is a unique-violation — the losing write of a
+/// raced account bootstrap.
+fn is_unique_violation(error: &WalletError) -> bool {
+    match error {
+        WalletError::Storage(PostgresError::Database(sqlx::Error::Database(e))) => {
+            e.code().as_deref() == Some("23505")
+        }
+        _ => false,
+    }
+}
+
 /// Derives the EntryId deterministically from the idempotency key, so a retry always lands on the
 /// same entry.
 ///
@@ -1765,6 +2315,21 @@ fn limit_lock_key(tenant_id: &str, key_id: &Uuid) -> i64 {
     hasher.update(tenant_id.as_bytes());
     hasher.update(b"\0");
     hasher.update(key_id.as_bytes());
+    let digest = hasher.finalize();
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&digest[..8]);
+    i64::from_le_bytes(bytes)
+}
+
+/// The advisory-lock key serializing one tenant's credit-line writes: a limit
+/// change reads the committed figure, and a repaying top-up reads the drawn one,
+/// so both serialize on this lock — a stale read under it can under-count, never
+/// grant past what was committed. Draws and releases stay off the lock: they
+/// only ever move the line's balance down, the safe direction for both readers.
+fn credit_lock_key(tenant_id: &str) -> i64 {
+    let mut hasher = Sha256::new();
+    hasher.update(b"oxsum/credit-limit/v1\0");
+    hasher.update(tenant_id.as_bytes());
     let digest = hasher.finalize();
     let mut bytes = [0u8; 8];
     bytes.copy_from_slice(&digest[..8]);

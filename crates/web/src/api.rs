@@ -52,6 +52,13 @@ pub struct DashboardData {
     /// in minor units. The settled-layer debits, so top-ups are not spend; a month with
     /// nothing charged reads 0.
     pub month_spend_minor: i64,
+    /// The credit limit the operator granted, in minor units; 0 for an
+    /// organization without one. `available_minor` already counts the undrawn
+    /// part of the line — the organization's own spendable funds are what is left
+    /// over the drawn share.
+    pub credit_limit_minor: i64,
+    /// The drawn plus reserved part of the credit line, in minor units.
+    pub credit_used_minor: i64,
     pub holds: Vec<HoldView>,
     pub entries: Vec<EntryView>,
 }
@@ -279,6 +286,14 @@ pub async fn get_dashboard() -> Result<DashboardData, ServerFnError> {
         .month_spend()
         .await
         .map_err(|_| ServerFnError::new("this month's spend could not be read"))?;
+    let credit_limit_minor = wallet
+        .credit_limit()
+        .await
+        .map_err(|_| ServerFnError::new("the credit limit could not be read"))?;
+    let credit_used_minor = wallet
+        .credit_used()
+        .await
+        .map_err(|_| ServerFnError::new("the drawn credit could not be read"))?;
     let holds = db
         .open_holds_for_tenant(&org.tenant_id)
         .await
@@ -304,6 +319,8 @@ pub async fn get_dashboard() -> Result<DashboardData, ServerFnError> {
         available_minor,
         frozen_minor,
         month_spend_minor,
+        credit_limit_minor,
+        credit_used_minor,
         holds: holds.iter().map(HoldView::from).collect(),
         entries: entries.iter().map(EntryView::from).collect(),
     })
