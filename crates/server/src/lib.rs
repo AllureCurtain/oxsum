@@ -11,6 +11,8 @@ mod routes;
 mod web;
 mod ws;
 
+use std::sync::Arc;
+
 use axum::Router;
 use axum::extract::FromRef;
 use leptos::config::LeptosOptions;
@@ -36,6 +38,9 @@ pub(crate) struct AppState {
     /// them to the dashboard. Process-wide and in-memory — a missed event is a missed
     /// live update, not lost state, because the watch table stays the record.
     pub(crate) billing: broadcast::Sender<BillingEvent>,
+    /// The per-key request limiter the hold-creation paths consult: in-process today,
+    /// the trait is the seam a shared backend slots behind (docs/decisions.md).
+    pub(crate) rate_limiter: Arc<dyn oxsum_core::RateLimiter>,
     pub(crate) leptos_options: LeptosOptions,
 }
 
@@ -68,6 +73,7 @@ pub fn app_with_billing(db: Db, config: Config) -> (Router, broadcast::Sender<Bi
         config,
         http: gateway::client(),
         billing: billing.clone(),
+        rate_limiter: Arc::new(oxsum_core::SlidingWindow::default()),
         leptos_options: web::options(),
     };
     (routes::router(state), billing)

@@ -19,6 +19,7 @@ mod invitations;
 mod keys;
 mod orgs;
 mod proof;
+mod ratelimit;
 mod sessions;
 mod statements;
 mod tenants;
@@ -49,6 +50,7 @@ pub use orgs::{
     UserOrganization,
 };
 pub use proof::{ChargeCheck, ProofBundle, verify_bundle, verify_charge};
+pub use ratelimit::{RateAllowance, RateLimited, RateLimiter, SlidingWindow};
 pub use sessions::{
     CreatedSession, KeyPrincipal, KeyScope, Principal, SESSION_COOKIE, SESSION_LIFETIME, Session,
     SessionPrincipal,

@@ -28,6 +28,18 @@ pub enum ApiError {
         limit_minor: i64,
         committed_minor: i64,
     },
+    /// The acting API key's rolling-minute request allowance is used up. The answer
+    /// carries `Retry-After` and the `X-RateLimit-*` headers, so a client can back
+    /// off without guessing.
+    RateLimited {
+        limit: i64,
+        retry_after_secs: u64,
+    },
+    /// The acting API key's outstanding-holds cap is reached.
+    TooManyHolds {
+        limit: i64,
+        open: i64,
+    },
     /// A feature the deployment did not configure: the wallet works, this surface does not.
     ServiceUnavailable(String),
     Internal,
@@ -61,6 +73,14 @@ impl From<WalletError> for ApiError {
                 limit_minor,
                 committed_minor,
             },
+            WalletError::RateLimited {
+                limit,
+                retry_after_secs,
+            } => Self::RateLimited {
+                limit,
+                retry_after_secs,
+            },
+            WalletError::TooManyHolds { limit, open } => Self::TooManyHolds { limit, open },
             // A deployment that cannot open its own channel credentials is broken rather than asked
             // something wrong: the operator gets the detail in the log, the caller gets a 500.
             WalletError::Misconfigured(detail) => {
@@ -124,6 +144,34 @@ impl IntoResponse for ApiError {
                 format!(
                     "this API key has committed {committed_minor} of its {limit_minor} minor-unit spend limit"
                 ),
+            ),
+            Self::RateLimited {
+                limit,
+                retry_after_secs,
+            } => {
+                let body = json!({ "error": {
+                    "code": "RATE_LIMITED",
+                    "message": format!(
+                        "this API key is limited to {limit} requests per minute"
+                    ),
+                    "details": [],
+                } });
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    [
+                        ("retry-after", retry_after_secs.max(1).to_string()),
+                        ("x-ratelimit-limit", limit.to_string()),
+                        ("x-ratelimit-remaining", "0".to_owned()),
+                        ("x-ratelimit-reset", retry_after_secs.max(1).to_string()),
+                    ],
+                    Json(body),
+                )
+                    .into_response();
+            }
+            Self::TooManyHolds { limit, open } => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "TOO_MANY_HOLDS",
+                format!("this API key has {open} holds outstanding, at or over its cap of {limit}"),
             ),
             Self::ServiceUnavailable(m) => {
                 (StatusCode::SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE", m)

@@ -26,6 +26,18 @@ pub enum GatewayError {
     /// The acting API key's spend limit is exhausted: settled charges plus outstanding
     /// holds attributed to the key would exceed it. A quota refusal, not a balance one.
     KeyLimitExceeded(String),
+    /// The acting API key's rate allowance is used up — the rolling-minute request
+    /// cap, or the concurrent-holds cap. The answer is `rate_limit_exceeded` with
+    /// `Retry-After` and the `X-RateLimit-*` headers, so a client can back off
+    /// without guessing.
+    RateLimited {
+        message: String,
+        /// oxsum's own code on the error object: `RATE_LIMITED` for the minute
+        /// window, `TOO_MANY_HOLDS` for the concurrency cap.
+        code: &'static str,
+        limit: i64,
+        retry_after_secs: u64,
+    },
     /// No usable credential.
     Unauthorized,
     /// The credential is not allowed to do this. Unreachable until roles arrive; mapped rather
@@ -106,6 +118,23 @@ impl From<WalletError> for GatewayError {
                 "this API key has committed {committed_minor} of its {limit_minor} \
                  minor-unit spend limit"
             )),
+            WalletError::RateLimited {
+                limit,
+                retry_after_secs,
+            } => Self::RateLimited {
+                message: format!("this API key is limited to {limit} requests per minute"),
+                code: "RATE_LIMITED",
+                limit,
+                retry_after_secs,
+            },
+            WalletError::TooManyHolds { limit, open } => Self::RateLimited {
+                message: format!(
+                    "this API key has {open} requests in flight, at or over its cap of {limit}"
+                ),
+                code: "TOO_MANY_HOLDS",
+                limit,
+                retry_after_secs: 1,
+            },
             // The gateway settles the hold it took itself in this turn; a hold it cannot find
             // is an internal inconsistency, not a caller error.
             WalletError::HoldNotFound(key) => {
@@ -156,6 +185,32 @@ impl IntoResponse for GatewayError {
                 "KEY_LIMIT_EXCEEDED",
                 None,
             ),
+            Self::RateLimited {
+                message,
+                code,
+                limit,
+                retry_after_secs,
+            } => {
+                let body = json!({
+                    "error": {
+                        "message": message,
+                        "type": "rate_limit_exceeded",
+                        "param": null,
+                        "code": code,
+                    }
+                });
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    [
+                        ("retry-after", retry_after_secs.max(1).to_string()),
+                        ("x-ratelimit-limit", limit.to_string()),
+                        ("x-ratelimit-remaining", "0".to_owned()),
+                        ("x-ratelimit-reset", retry_after_secs.max(1).to_string()),
+                    ],
+                    Json(body),
+                )
+                    .into_response()
+            }
             Self::Unauthorized => error_response(
                 StatusCode::UNAUTHORIZED,
                 // One message for every way a key can fail: unknown, revoked, expired and missing

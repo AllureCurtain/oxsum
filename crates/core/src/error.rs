@@ -52,6 +52,18 @@ pub enum WalletError {
         committed_minor: i64,
     },
 
+    /// A request would push the acting API key past its rolling-minute request
+    /// allowance. The HTTP layer answers 429 with `Retry-After`; the numbers are
+    /// the key's own, so they are safe to show.
+    #[error("key rate limit exceeded: {limit} requests per minute, retry in {retry_after_secs}s")]
+    RateLimited { limit: i64, retry_after_secs: u64 },
+
+    /// A hold would push the acting API key past its outstanding-holds cap. The
+    /// HTTP layer answers 429; the numbers are the key's own, so they are safe to
+    /// show.
+    #[error("key has {open} holds outstanding, at or over its cap of {limit}")]
+    TooManyHolds { limit: i64, open: i64 },
+
     /// This deployment cannot serve what it was asked for: a stored channel credential that does not
     /// open under `OXSUM_SECRET_KEY`, or a key that is not configured at all. The message is for the
     /// operator; the HTTP layer answers 500 with a generic one, because this is neither the caller's
