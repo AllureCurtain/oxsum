@@ -1841,3 +1841,61 @@ async fn a_credit_limit_is_granted_drawn_and_repaid() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
 }
+
+/// `GET /api/v1/admin/reconciliation` scans every ledger against the projections
+/// and answers one entry per drift class — here: a deposit marked credited whose
+/// ledger entry was never written (issue #134).
+#[tokio::test]
+async fn the_reconciliation_report_names_the_drift() {
+    let (app, pool) = app_or_skip!();
+    let (org_id, _) = register(&app, "recon").await;
+
+    // Plant the drift a crash would leave: credited, no entry behind it.
+    let payment_ref = format!(
+        "unbooked-{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    );
+    sqlx::query(
+        "INSERT INTO oxsum.deposits \
+             (deposit_id, organization_id, rail, payment_ref, amount_minor, \
+              received_minor, status, entry_id) \
+         VALUES ($1, $2::uuid, 'manual', $3, 100, 100, 'credited', NULL)",
+    )
+    .bind(uuid::Uuid::new_v4())
+    .bind(&org_id)
+    .bind(&payment_ref)
+    .execute(&pool)
+    .await
+    .expect("the fixture lands");
+
+    let (status, body) = call(&app, "GET", "/api/v1/admin/reconciliation", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let report = &body["data"];
+    assert_eq!(report["clean"], false);
+    let classes = report["classes"].as_array().expect("the class list");
+    assert_eq!(classes.len(), 8, "{report}");
+    let unbooked = classes
+        .iter()
+        .find(|class| class["class"] == "deposits_unbooked")
+        .expect("the class answers");
+    assert!(
+        unbooked["samples"]
+            .as_array()
+            .is_some_and(|samples| samples.iter().any(|sample| sample["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains(&payment_ref)))),
+        "the planted deposit is reported: {unbooked}"
+    );
+
+    // An organization's own credential is not the operator's.
+    let (_, key) = register(&app, "recon-key").await;
+    let (status, _) = call_with(
+        &app,
+        "GET",
+        "/api/v1/admin/reconciliation",
+        None,
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
