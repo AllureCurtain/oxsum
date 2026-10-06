@@ -109,6 +109,16 @@ otherwise make two worlds price the same model, which is the conflict rule worki
 There is no shared API token any more: every request carries an organization's API key, created
 by registration or by `POST /api/v1/org/keys`. The plaintext secret is returned exactly once.
 
+The process's own telemetry is scraped at `GET /metrics` (Prometheus exposition format), gated
+by the same `OXSUM_ADMIN_TOKEN` as the admin surface — a scrape config carries it as
+`bearer_token`. HTTP request counts and durations by route, the gateway's holds, settlements,
+charges and tokens, upstream response latency, rate-limit and idempotency outcomes, and
+scrape-time gauges for open holds and the connection pool are all under the `oxsum_` prefix:
+
+```bash
+curl -H "authorization: Bearer $OXSUM_ADMIN_TOKEN" http://127.0.0.1:3000/metrics
+```
+
 oxsum's own tables are migrated at startup, in the same process that serves requests: `Db::migrate`
 creates the `oxsum` schema and applies the files under `crates/core/migrations/` that have not run
 yet, each in one transaction together with its row in `oxsum._migrations`, under a database-wide

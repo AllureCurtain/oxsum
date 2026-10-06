@@ -85,7 +85,9 @@ Whoever deploys oxsum, and nobody else: the credential is the operator token fro
 - `POST /api/v1/admin/statements/{statementId}/suspend` — mark an unpaid finalized statement `suspended` (`{"idempotencyKey"}`): the standing for a bill unpaid past grace. Suspension is a standing, not a refusal of money — a later payment still settles it to `paid`. A draft or a paid statement is `400`; suspending an already-suspended one answers the standing document.
 - `POST /api/v1/admin/users/{userId}/password-reset` — set a new password for a user (`{"newPassword"}`, same length rule as signup) and revoke every session they hold, in one transaction. Answers `{"userId", "sessionsRevoked"}`; an unknown user is `NOT_FOUND`. This is the only password-recovery path v1 has — no email is sent.
 
-A deployment that sets no `OXSUM_ADMIN_TOKEN` has no admin surface: the routes exist and answer `UNAUTHORIZED`, rather than being open or absent.
+- `GET /metrics` — the process's telemetry in Prometheus exposition format: HTTP request counts and durations by route pattern, the gateway's money path (holds taken, settlements by kind, charged minor units, settled tokens, upstream response latency), rate-limit rejections, idempotency claim outcomes, and scrape-time gauges for open holds and the connection pool. It sits outside the `/api/v1` prefix like `/healthz` but carries the same operator token: a scrape config sends it as `bearer_token`.
+
+A deployment that sets no `OXSUM_ADMIN_TOKEN` has no admin surface: the routes exist and answer `UNAUTHORIZED`, rather than being open or absent — `/metrics` included.
 
 ## Tree heads (`/api/v1/log`)
 
