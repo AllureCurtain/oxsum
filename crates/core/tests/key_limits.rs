@@ -10,13 +10,23 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use oxsum_core::{ActingKey, Db, KeyScope, NewUser, Tenants, Wallet, WalletError};
+use oxsum_core::{
+    ActingKey, BudgetDuration, Db, KeyConstraints, KeyScope, NewUser, Tenants, Wallet, WalletError,
+};
 use sqlx::PgPool;
 use time::macros::date;
 use uuid::Uuid;
 
 const D: time::Date = date!(2026 - 10 - 01);
 const ONE: i64 = 1_000_000;
+
+/// Constraints carrying just a cumulative spend limit, the common case here.
+fn limit(minor: i64) -> KeyConstraints {
+    KeyConstraints {
+        spend_limit_minor: Some(minor),
+        ..Default::default()
+    }
+}
 
 fn url() -> Option<String> {
     // `.env` is searched for in the current directory and its parents, see docs/development.md.
@@ -97,23 +107,23 @@ async fn hold_for_key_enforces_the_limit() {
     let url = db_or_skip!();
     let db = db(&url, 5).await;
     let world = world(&db, "limit").await;
-    db.update_key_limit(
+    db.update_key_constraints(
         world.organization_id,
         world.key.key_id,
         KeyScope::Organization,
-        Some(10 * ONE),
+        limit(10 * ONE),
     )
     .await
     .unwrap();
 
     world
         .wallet
-        .hold_for_key(&world.key, "h1", "", 6 * ONE, D)
+        .hold_for_key(&world.key, None, "h1", "", 6 * ONE, D)
         .await
         .unwrap();
     let err = world
         .wallet
-        .hold_for_key(&world.key, "h2", "", 5 * ONE, D)
+        .hold_for_key(&world.key, None, "h2", "", 5 * ONE, D)
         .await
         .unwrap_err();
     let (limit, committed) = match err {
@@ -132,7 +142,7 @@ async fn hold_for_key_enforces_the_limit() {
     // Exactly at the limit still fits.
     world
         .wallet
-        .hold_for_key(&world.key, "h3", "", 4 * ONE, D)
+        .hold_for_key(&world.key, None, "h3", "", 4 * ONE, D)
         .await
         .unwrap();
 }
@@ -144,18 +154,18 @@ async fn settled_spend_counts_toward_the_limit() {
     let url = db_or_skip!();
     let db = db(&url, 5).await;
     let world = world(&db, "settled").await;
-    db.update_key_limit(
+    db.update_key_constraints(
         world.organization_id,
         world.key.key_id,
         KeyScope::Organization,
-        Some(10 * ONE),
+        limit(10 * ONE),
     )
     .await
     .unwrap();
 
     world
         .wallet
-        .hold_for_key(&world.key, "h1", "", 6 * ONE, D)
+        .hold_for_key(&world.key, None, "h1", "", 6 * ONE, D)
         .await
         .unwrap();
     // Settles 2 of the 6: 4 return to the balance, 2 stay committed as the charge.
@@ -168,7 +178,7 @@ async fn settled_spend_counts_toward_the_limit() {
     // 2 committed + 9 held would exceed 10.
     let err = world
         .wallet
-        .hold_for_key(&world.key, "h2", "", 9 * ONE, D)
+        .hold_for_key(&world.key, None, "h2", "", 9 * ONE, D)
         .await
         .unwrap_err();
     assert!(
@@ -178,7 +188,7 @@ async fn settled_spend_counts_toward_the_limit() {
     // 2 committed + 8 held fits exactly.
     world
         .wallet
-        .hold_for_key(&world.key, "h3", "", 8 * ONE, D)
+        .hold_for_key(&world.key, None, "h3", "", 8 * ONE, D)
         .await
         .unwrap();
 }
@@ -193,11 +203,11 @@ async fn concurrent_holds_cannot_exceed_the_limit() {
     // transaction holding the per-key advisory lock, and the engine's append inside it.
     let db = db(&url, 12).await;
     let world = world(&db, "racing").await;
-    db.update_key_limit(
+    db.update_key_constraints(
         world.organization_id,
         world.key.key_id,
         KeyScope::Organization,
-        Some(1_000),
+        limit(1_000),
     )
     .await
     .unwrap();
@@ -208,7 +218,7 @@ async fn concurrent_holds_cannot_exceed_the_limit() {
         let key = world.key.clone();
         tasks.push(tokio::spawn(async move {
             wallet
-                .hold_for_key(&key, &format!("race-{i}"), "", 300, D)
+                .hold_for_key(&key, None, &format!("race-{i}"), "", 300, D)
                 .await
         }));
     }
@@ -241,21 +251,21 @@ async fn limit_changes_apply_to_later_holds() {
     // No limit: the hold lands.
     world
         .wallet
-        .hold_for_key(&world.key, "h1", "", 6 * ONE, D)
+        .hold_for_key(&world.key, None, "h1", "", 6 * ONE, D)
         .await
         .unwrap();
     // Lower the limit below what is already committed: the next hold is refused.
-    db.update_key_limit(
+    db.update_key_constraints(
         organization_id,
         world.key.key_id,
         KeyScope::Organization,
-        Some(ONE),
+        limit(ONE),
     )
     .await
     .unwrap();
     let err = world
         .wallet
-        .hold_for_key(&world.key, "h2", "", ONE, D)
+        .hold_for_key(&world.key, None, "h2", "", ONE, D)
         .await
         .unwrap_err();
     assert!(
@@ -263,17 +273,17 @@ async fn limit_changes_apply_to_later_holds() {
         "wrong error: {err:?}"
     );
     // Clearing it back to unlimited lets the hold through.
-    db.update_key_limit(
+    db.update_key_constraints(
         organization_id,
         world.key.key_id,
         KeyScope::Organization,
-        None,
+        KeyConstraints::default(),
     )
     .await
     .unwrap();
     world
         .wallet
-        .hold_for_key(&world.key, "h3", "", ONE, D)
+        .hold_for_key(&world.key, None, "h3", "", ONE, D)
         .await
         .unwrap();
 }
@@ -289,7 +299,7 @@ async fn unlimited_key_holds_freely_but_attributes() {
 
     world
         .wallet
-        .hold_for_key(&world.key, "h1", "", 6 * ONE, D)
+        .hold_for_key(&world.key, None, "h1", "", 6 * ONE, D)
         .await
         .unwrap();
     assert_eq!(
@@ -309,11 +319,11 @@ async fn update_key_limit_scope_rules() {
 
     // A member naming a key they did not create gets the same answer as a missing key.
     assert!(
-        db.update_key_limit(
+        db.update_key_constraints(
             organization_id,
             world.key.key_id,
             KeyScope::Own(other),
-            Some(ONE)
+            limit(ONE)
         )
         .await
         .unwrap()
@@ -325,11 +335,11 @@ async fn update_key_limit_scope_rules() {
 
     // The creator may change their own.
     let updated = db
-        .update_key_limit(
+        .update_key_constraints(
             organization_id,
             world.key.key_id,
             KeyScope::Own(world.creator),
-            Some(5 * ONE),
+            limit(5 * ONE),
         )
         .await
         .unwrap()
@@ -346,7 +356,16 @@ async fn negative_limit_is_refused() {
     let organization_id = world.organization_id;
 
     let err = db
-        .create_key(organization_id, None, None, None, Some(-1))
+        .create_key(
+            organization_id,
+            None,
+            None,
+            None,
+            KeyConstraints {
+                spend_limit_minor: Some(-1),
+                ..Default::default()
+            },
+        )
         .await
         .unwrap_err();
     assert!(
@@ -354,11 +373,14 @@ async fn negative_limit_is_refused() {
         "wrong error: {err:?}"
     );
     let err = db
-        .update_key_limit(
+        .update_key_constraints(
             organization_id,
             world.key.key_id,
             KeyScope::Organization,
-            Some(-1),
+            KeyConstraints {
+                spend_limit_minor: Some(-1),
+                ..Default::default()
+            },
         )
         .await
         .unwrap_err();
@@ -375,31 +397,31 @@ async fn identical_retry_replays_past_a_full_limit() {
     let url = db_or_skip!();
     let db = db(&url, 5).await;
     let world = world(&db, "replay").await;
-    db.update_key_limit(
+    db.update_key_constraints(
         world.organization_id,
         world.key.key_id,
         KeyScope::Organization,
-        Some(10 * ONE),
+        limit(10 * ONE),
     )
     .await
     .unwrap();
 
     let first = world
         .wallet
-        .hold_for_key(&world.key, "h1", "", 6 * ONE, D)
+        .hold_for_key(&world.key, None, "h1", "", 6 * ONE, D)
         .await
         .unwrap();
     assert!(first.is_new);
     // Fill the limit with a second hold.
     world
         .wallet
-        .hold_for_key(&world.key, "h2", "", 4 * ONE, D)
+        .hold_for_key(&world.key, None, "h2", "", 4 * ONE, D)
         .await
         .unwrap();
     // The identical retry of the first hold replays: same entry, nothing new written.
     let replay = world
         .wallet
-        .hold_for_key(&world.key, "h1", "", 6 * ONE, D)
+        .hold_for_key(&world.key, None, "h1", "", 6 * ONE, D)
         .await
         .unwrap();
     assert!(!replay.is_new);
@@ -411,11 +433,271 @@ async fn identical_retry_replays_past_a_full_limit() {
     // A conflicting reuse of the key is still the engine's conflict, not a limit refusal.
     let err = world
         .wallet
-        .hold_for_key(&world.key, "h1", "a different description", 6 * ONE, D)
+        .hold_for_key(
+            &world.key,
+            None,
+            "h1",
+            "a different description",
+            6 * ONE,
+            D,
+        )
         .await
         .unwrap_err();
     assert!(
         matches!(err, WalletError::Conflict(_)),
         "wrong error: {err:?}"
     );
+}
+
+/// Constraints carrying a periodic budget: the limit applies within the window.
+fn budget(minor: i64, duration: BudgetDuration) -> KeyConstraints {
+    KeyConstraints {
+        spend_limit_minor: Some(minor),
+        budget_duration: Some(duration),
+        ..Default::default()
+    }
+}
+
+/// Constraints carrying a model allowlist alone.
+fn allowlist(models: &[&str]) -> KeyConstraints {
+    KeyConstraints {
+        model_allowlist: Some(models.iter().map(|m| m.to_string()).collect()),
+        ..Default::default()
+    }
+}
+
+/// A daily budget counts only the current UTC day's settled charges: yesterday's settled
+/// charge no longer counts, but a hold still outstanding from yesterday does — it still
+/// reserves money now.
+#[tokio::test]
+async fn a_daily_budget_counts_the_current_day() {
+    let url = db_or_skip!();
+    let db = db(&url, 5).await;
+    let world = world(&db, "daily").await;
+    db.update_key_constraints(
+        world.organization_id,
+        world.key.key_id,
+        KeyScope::Organization,
+        budget(10 * ONE, BudgetDuration::Daily),
+    )
+    .await
+    .unwrap();
+
+    // Yesterday: a hold settled for 4, and a 2 hold left outstanding.
+    world
+        .wallet
+        .hold_for_key(&world.key, None, "h1", "", 6 * ONE, D)
+        .await
+        .unwrap();
+    world.wallet.settle("h1", "", 4 * ONE, D).await.unwrap();
+    world
+        .wallet
+        .hold_for_key(&world.key, None, "h2", "", 2 * ONE, D)
+        .await
+        .unwrap();
+
+    // Today: committed is just the outstanding 2; the settled 4 fell out of the window.
+    let tomorrow = D + time::Duration::days(1);
+    let err = world
+        .wallet
+        .hold_for_key(&world.key, None, "h3", "", 9 * ONE, tomorrow)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, WalletError::KeyLimitExceeded { committed_minor, .. } if committed_minor == 2 * ONE),
+        "wrong error: {err:?}"
+    );
+    world
+        .wallet
+        .hold_for_key(&world.key, None, "h4", "", 8 * ONE, tomorrow)
+        .await
+        .unwrap();
+}
+
+/// Weekly and monthly windows start on their calendar boundaries: an ISO-week Monday and
+/// the first of the month. Spend settled inside the window counts; outside it does not.
+#[tokio::test]
+async fn budget_windows_reset_on_their_boundaries() {
+    let url = db_or_skip!();
+    let db = db(&url, 5).await;
+    let world = world(&db, "windows").await;
+    let sunday = date!(2026 - 10 - 04);
+    let monday = date!(2026 - 10 - 05);
+    let november = date!(2026 - 11 - 01);
+
+    // Weekly: D (a Thursday) and Sunday share one week; Monday starts the next.
+    db.update_key_constraints(
+        world.organization_id,
+        world.key.key_id,
+        KeyScope::Organization,
+        budget(10 * ONE, BudgetDuration::Weekly),
+    )
+    .await
+    .unwrap();
+    world
+        .wallet
+        .hold_for_key(&world.key, None, "w1", "", 6 * ONE, D)
+        .await
+        .unwrap();
+    world.wallet.settle("w1", "", 6 * ONE, D).await.unwrap();
+    // Same week: the settled 6 still counts.
+    assert!(
+        world
+            .wallet
+            .hold_for_key(&world.key, None, "w2", "", 5 * ONE, sunday)
+            .await
+            .is_err(),
+        "a 5 hold over a 6 charge does not fit a weekly 10"
+    );
+    // Next week: the window reset.
+    world
+        .wallet
+        .hold_for_key(&world.key, None, "w3", "", 9 * ONE, monday)
+        .await
+        .unwrap();
+    world
+        .wallet
+        .settle("w3", "", 9 * ONE, monday)
+        .await
+        .unwrap();
+
+    // Monthly: D and November are different months.
+    db.update_key_constraints(
+        world.organization_id,
+        world.key.key_id,
+        KeyScope::Organization,
+        budget(10 * ONE, BudgetDuration::Monthly),
+    )
+    .await
+    .unwrap();
+    // October's 9 is committed within October still.
+    assert!(
+        world
+            .wallet
+            .hold_for_key(&world.key, None, "m1", "", 5 * ONE, sunday)
+            .await
+            .is_err(),
+        "the October 5 hold saw the October charge"
+    );
+    world
+        .wallet
+        .hold_for_key(&world.key, None, "m2", "", 8 * ONE, november)
+        .await
+        .unwrap();
+}
+
+/// The window is read inside the same per-key lock as the limit, so racing holds cannot
+/// together exceed a period budget either.
+#[tokio::test]
+async fn concurrent_holds_cannot_exceed_a_period_budget() {
+    let url = db_or_skip!();
+    let db = db(&url, 12).await;
+    let world = world(&db, "race-budget").await;
+    db.update_key_constraints(
+        world.organization_id,
+        world.key.key_id,
+        KeyScope::Organization,
+        budget(1_000, BudgetDuration::Daily),
+    )
+    .await
+    .unwrap();
+
+    let mut tasks = Vec::new();
+    for i in 0..10 {
+        let wallet = world.wallet.clone();
+        let key = world.key.clone();
+        tasks.push(tokio::spawn(async move {
+            wallet
+                .hold_for_key(&key, None, &format!("race-{i}"), "", 300, D)
+                .await
+        }));
+    }
+    let mut ok = 0;
+    let mut refused = 0;
+    for task in tasks {
+        match task.await.unwrap() {
+            Ok(_) => ok += 1,
+            Err(WalletError::KeyLimitExceeded { .. }) => refused += 1,
+            Err(other) => panic!("wrong error: {other:?}"),
+        }
+    }
+    assert_eq!(ok, 3);
+    assert_eq!(refused, 7);
+}
+
+/// The allowlist gates by exact model name: listed models hold, unlisted are forbidden,
+/// and a `None` model — the generic holds path — is never gated.
+#[tokio::test]
+async fn a_model_allowlist_gates_named_models() {
+    let url = db_or_skip!();
+    let db = db(&url, 5).await;
+    let world = world(&db, "allowlist").await;
+    db.update_key_constraints(
+        world.organization_id,
+        world.key.key_id,
+        KeyScope::Organization,
+        allowlist(&["mock-a", "mock-b"]),
+    )
+    .await
+    .unwrap();
+
+    world
+        .wallet
+        .hold_for_key(&world.key, Some("mock-a"), "h1", "", ONE, D)
+        .await
+        .unwrap();
+    let err = world
+        .wallet
+        .hold_for_key(&world.key, Some("mock-c"), "h2", "", ONE, D)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, WalletError::Forbidden(_)),
+        "wrong error: {err:?}"
+    );
+    // No model named: the list does not apply.
+    world
+        .wallet
+        .hold_for_key(&world.key, None, "h3", "", ONE, D)
+        .await
+        .unwrap();
+}
+
+/// A replayed hold answers with its own receipt even when the allowlist has since dropped
+/// the model — the list guards new spend, like the limit does.
+#[tokio::test]
+async fn a_replayed_hold_survives_an_allowlist_change() {
+    let url = db_or_skip!();
+    let db = db(&url, 5).await;
+    let world = world(&db, "replay-model").await;
+    db.update_key_constraints(
+        world.organization_id,
+        world.key.key_id,
+        KeyScope::Organization,
+        allowlist(&["mock-a", "mock-b"]),
+    )
+    .await
+    .unwrap();
+
+    let first = world
+        .wallet
+        .hold_for_key(&world.key, Some("mock-a"), "h1", "", ONE, D)
+        .await
+        .unwrap();
+    // The list drops mock-a.
+    db.update_key_constraints(
+        world.organization_id,
+        world.key.key_id,
+        KeyScope::Organization,
+        allowlist(&["mock-b"]),
+    )
+    .await
+    .unwrap();
+    let replay = world
+        .wallet
+        .hold_for_key(&world.key, Some("mock-a"), "h1", "", ONE, D)
+        .await
+        .unwrap();
+    assert!(!replay.is_new);
+    assert_eq!(replay.entry_id, first.entry_id);
 }

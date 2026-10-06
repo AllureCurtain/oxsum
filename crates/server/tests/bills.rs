@@ -390,6 +390,7 @@ async fn seed_request(
                 key_id,
                 spend_limit_minor: None,
             },
+            None,
             &hold_key,
             &hold_description(request, "mock-a", freeze).expect("the hold record serializes"),
             freeze,

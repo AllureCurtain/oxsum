@@ -1762,3 +1762,75 @@ async fn a_key_spend_limit_is_refused_before_upstream_is_contacted() {
     let wallet = world.wallet().await;
     assert_eq!(wallet.reserved().await.unwrap(), 0);
 }
+
+/// A key's `modelAllowlist` gates the gateway: a model it does not name answers 403 in the
+/// OpenAI shape, upstream never hears about it and nothing is frozen — while the listed
+/// model passes, and the generic `/holds` endpoint is not a model call at all.
+#[tokio::test]
+async fn a_model_allowlist_gates_the_gateway() {
+    let world = world!(10_000_000);
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+    world.answers(
+        "stream",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+
+    // Allow only the world's "ok" model.
+    let (status, body) = call(
+        &world.app,
+        "PATCH",
+        &format!("/api/v1/org/keys/{}", world.key_id),
+        Some(json!({"modelAllowlist": [world.model("ok")]})),
+        Some(&world.key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // The listed model still flows end to end.
+    let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(world.script.seen().len(), 1);
+
+    // Another priced model — real, served by this deployment — is forbidden.
+    let response = chat(&world.app, &world.key, simple(&world.model("stream"))).await;
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"]["type"], "permission_error");
+    assert_eq!(body["error"]["code"], "FORBIDDEN");
+    // Upstream was never asked and no money moved.
+    assert_eq!(world.script.seen().len(), 1);
+    assert_eq!(world.wallet().await.reserved().await.unwrap(), 0);
+
+    // The generic hold endpoint names no model, so the list does not constrain it.
+    let (status, body) = call(
+        &world.app,
+        "POST",
+        "/api/v1/holds",
+        Some(json!({"idempotencyKey": "modelless", "amountMinor": 100})),
+        Some(&world.key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Clearing the list lets every model through again.
+    let (status, body) = call(
+        &world.app,
+        "PATCH",
+        &format!("/api/v1/org/keys/{}", world.key_id),
+        Some(json!({"modelAllowlist": null})),
+        Some(&world.key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let response = chat(&world.app, &world.key, simple(&world.model("stream"))).await;
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
