@@ -106,7 +106,7 @@ v1 has no payment integration. Credit has four designed sources; the table says 
 - The plaintext shows once at creation. The database stores only the SHA-256 hash and a prefix; the dashboard uses the prefix to help users recognize keys.
 - Format: `oxs-` followed by 32 random bytes, so secret-scanning tools can recognize them.
 - Optional name and expiry. Revocation is permanent.
-- Per-key spend limits are implemented (backend, TODO B-8): a key's `spendLimitMinor` caps its committed spend, enforced atomically with the hold append. Model whitelists are still post-v1.
+- Per-key constraints are implemented (backend): a key's `spendLimitMinor` caps its committed spend, enforced atomically with the hold append. `budgetDuration` (`daily`, `weekly`, `monthly`) makes the limit periodic over the current UTC calendar window — settled charges inside the window plus every outstanding hold — instead of cumulative. `modelAllowlist` restricts the gateway models the key may call: a request naming another model is refused before upstream sees it, while a null list allows every served model.
 
 ## Gateway (shipped)
 

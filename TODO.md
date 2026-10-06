@@ -4,7 +4,7 @@ Updated: 2026-10-05
 
 ## In progress
 
-The productization roadmap (docs/decisions.md, 2026-10-05: P1-1 through P8-4) is executing item by item, one issue and PR each. P1-1 (#102, the normalized usage record), P1-2 (#104, the protocol-keyed usage adapter), P1-3 (#106, versioned settlement descriptions with `verify_charge`), P1-4 (#108, the itemized and conditional price book, descriptions at v3), P1-5 (#110, fail-closed pricing — the `unpriced` settlement kind), P1-6 (#112, upstream-cost tracking with the admin margin view), P1-7 (#114, the billing-correctness test suite) and P2-1 (#116, the Bonus/Purchased balance pools with lazy grant reclassification) shipped; P2-2, the deposit abstraction with the redemption-code rail, is in progress on `feat/redemption-rail`.
+The productization roadmap (docs/decisions.md, 2026-10-05: P1-1 through P8-4) is executing item by item, one issue and PR each. P1-1 (#102, the normalized usage record), P1-2 (#104, the protocol-keyed usage adapter), P1-3 (#106, versioned settlement descriptions with `verify_charge`), P1-4 (#108, the itemized and conditional price book, descriptions at v3), P1-5 (#110, fail-closed pricing — the `unpriced` settlement kind), P1-6 (#112, upstream-cost tracking with the admin margin view), P1-7 (#114, the billing-correctness test suite), P2-1 (#116, the Bonus/Purchased balance pools with lazy grant reclassification) and P2-2 (#118, the deposit abstraction with the redemption-code rail) shipped; P3-1, key constraints — periodic budgets and model allowlists beside the existing expiry — is in progress on `feat/key-constraints`.
 
 ## Next
 
