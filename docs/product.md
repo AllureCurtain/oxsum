@@ -195,6 +195,14 @@ The transaction log page is still what it was (`/dashboard/log`, `crates/web/src
 
 Verification proves: this record was not altered after being written, history was not rewritten, and — for a versioned settlement — the recorded charge agrees with the usage and rates inside the entry. It does not prove: upstream really returned that many tokens. The page states this plainly, without inflating it. (Shipped.)
 
+### Monthly statements (shipped)
+
+An organization on a credit limit settles monthly (issue #124, the second half of roadmap P3-2). The platform issues one statement per organization and UTC `YYYY-MM` period — the month's settled usage itemized by channel and model, with how much of it the credit line carried — and a statement exists only for a month with usage.
+
+- The lifecycle is `draft → finalized`: the platform generates a draft (and regenerates it as late usage lands), then issues it — finalizing locks the lines and totals, snapshots the organization's `paymentTermsDays` into the due date, and pins the ledger window (`logFromIndex`/`logToIndex`) the lines prove, so the document is anchored to the verifiable log. Drafts are the platform's working documents and never appear to the organization.
+- Payment standing is `pending → paid | overdue | suspended`: a pending statement flips to `overdue` lazily when it is read past its due date, suspension is the platform's standing for a bill unpaid past grace (a suspended bill still pays), and `paid` the ledger derives, not an allocation table — every credit-line repayment, however it arrived (a top-up, a redemption, a recorded statement payment), settles the oldest outstanding draw first, so a statement's `paidMinor` is a fact of the ledger and self-heals on every read and every money-in.
+- The organization reads its issued statements through `GET /api/v1/statements` and `GET /api/v1/statements/{statementId}`; the platform's half of the lifecycle lives under `/api/v1/admin/statements` (generation, detail, finalization, payments, suspension). `PATCH /api/v1/admin/organizations/{organizationId}` sets `paymentTermsDays`, snapshotted at issue. Paying is just funding the wallet — there is no organization-side "pay this statement" call, because a repayment always lands on the oldest debt first.
+
 ## Pages
 
 ### Organization view (logged-in users)
