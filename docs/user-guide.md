@@ -259,6 +259,14 @@ Notes:
   128-character `user`, ten metadata pairs of 64-character keys and values, and a 64-character
   `service_tier`: anything past a bound is refused, because a silently truncated id would bill
   under the wrong name.
+- Retrying safely: send an `Idempotency-Key` header with the request, and a retry carrying the
+  same key and body is the same turn — it replays the stored answer (a streamed turn answers
+  its settled receipt, since a stream cannot be replayed) instead of freezing and charging
+  again. Replays are marked `Idempotent-Replayed: true` and carry the original
+  `x-oxsum-request-id`. Retrying while the first turn still runs is refused 409, and the same
+  key under a different body is refused 422; a key is free again once its record is 24 hours
+  old. A refusal that never reached the wallet does not hold the key: fix the request and
+  retry under it.
 - Text only in v1: an image or another content part is refused 400, because the freeze needs a
   computable input bound.
 
