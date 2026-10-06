@@ -87,6 +87,7 @@ pub fn AdminLayout() -> impl IntoView {
                 <A href="/admin/organizations">"Organizations"</A>
                 <A href="/admin/in-flight">"In-flight"</A>
                 <A href="/admin/anomalies">"Anomalies"</A>
+                <A href="/admin/reconciliation">"Reconciliation"</A>
                 <A href="/admin/closing">"Closing"</A>
                 <A href="/dashboard">"Dashboard"</A>
             </nav>
@@ -1303,6 +1304,157 @@ async fn load_anomalies(token: AdminToken) -> Result<Vec<AnomalyView>, String> {
 
 #[cfg(not(feature = "hydrate"))]
 async fn load_anomalies(_token: AdminToken) -> Result<Vec<AnomalyView>, String> {
+    Err(String::new())
+}
+
+/// One drift class as `GET /api/v1/admin/reconciliation` returns it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DriftClassView {
+    class: String,
+    count: i64,
+    samples: Vec<DriftSampleView>,
+}
+
+/// One offending identifier inside a drift class.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DriftSampleView {
+    organization: String,
+    detail: String,
+}
+
+/// The reconciliation report as the endpoint returns it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReconciliationView {
+    checked_at: String,
+    organizations: i64,
+    clean: bool,
+    classes: Vec<DriftClassView>,
+}
+
+/// A drift class's label as a sentence.
+fn drift_label(class: &str) -> &'static str {
+    match class {
+        "usage_orphans" => "Usage rows with no settlement entry",
+        "settlements_unrecorded" => "Settled turns that wrote no usage row",
+        "deposits_unbooked" => "Credited deposits with no ledger entry",
+        "deposits_mismatched" => "Deposits the rail paid a different amount on",
+        "deposits_stuck" => "Deposits confirmed but never credited or reversed",
+        "watches_orphaned" => "Hold watches with no live reservation",
+        "holds_unwatched" => "Pending holds the sweeper cannot see",
+        "log_gaps" => "Log positions that are not dense",
+        _ => "Unclassified drift",
+    }
+}
+
+/// The reconciliation page: the drift between the ledgers and the tables that
+/// project them, one class at a time. The report is read-only — every class
+/// is a thing for an operator to look into, not a state the scan repairs.
+#[component]
+pub fn AdminReconciliationPage() -> impl IntoView {
+    let token = admin_token();
+    let report = LocalResource::new(move || async move { load_reconciliation(token).await });
+
+    view! {
+        <h1>"Reconciliation"</h1>
+        <p class="muted">
+            "The books against the projections: a usage row with no settlement entry, \
+             a settled turn that wrote no record, a deposit that claims a credit the \
+             ledger never posted, a hold the sweeper cannot see. The scan reports and \
+             never repairs — every row below is for an operator to act on."
+        </p>
+        <Suspense fallback=move || view! { <p class="muted">"Scanning…"</p> }>
+            {move || {
+                report.get().map(|result| match result {
+                    Err(message) => view! { <p class="error" role="alert">{message}</p> }.into_any(),
+                    Ok(report) => {
+                        let drift: Vec<_> =
+                            report.classes.iter().filter(|class| class.count > 0).collect();
+                        view! {
+                            <p class="muted">
+                                {format!(
+                                    "{} organization{} scanned at {}.",
+                                    report.organizations,
+                                    if report.organizations == 1 { "" } else { "s" },
+                                    report.checked_at
+                                )}
+                            </p>
+                            {if report.clean {
+                                view! {
+                                    <p class="muted">"Clean — the projections match the books."</p>
+                                }
+                                .into_any()
+                            } else {
+                                view! {
+                                    <table>
+                                        <thead>
+                                            <tr>
+                                                <th>"Drift"</th>
+                                                <th class="num">"Count"</th>
+                                                <th>"Samples"</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {drift
+                                                .into_iter()
+                                                .map(|class| {
+                                                    view! {
+                                                        <tr>
+                                                            <td>{drift_label(&class.class)}</td>
+                                                            <td class="num">{class.count}</td>
+                                                            <td>
+                                                                {class
+                                                                    .samples
+                                                                    .iter()
+                                                                    .map(|sample| {
+                                                                        view! {
+                                                                            <div>
+                                                                                <span class="mono">{sample.detail.clone()}</span>
+                                                                                " "
+                                                                                <span class="muted">
+                                                                                    {"("}{sample.organization.clone()}{")"}
+                                                                                </span>
+                                                                            </div>
+                                                                        }
+                                                                    })
+                                                                    .collect_view()}
+                                                            </td>
+                                                        </tr>
+                                                    }
+                                                })
+                                                .collect_view()}
+                                        </tbody>
+                                    </table>
+                                }
+                                .into_any()
+                            }}
+                        }
+                        .into_any()
+                    }
+                })
+            }}
+        </Suspense>
+    }
+}
+
+/// The resource's read. `LocalResource` only ever runs in the browser; the SSR body is
+/// a placeholder so the page compiles for the server too.
+#[cfg(feature = "hydrate")]
+async fn load_reconciliation(token: AdminToken) -> Result<ReconciliationView, String> {
+    admin_call(
+        token,
+        browser::get(
+            &token.0.get_untracked().unwrap_or_default(),
+            "/api/v1/admin/reconciliation",
+        ),
+    )
+    .await
+}
+
+#[cfg(not(feature = "hydrate"))]
+async fn load_reconciliation(_token: AdminToken) -> Result<ReconciliationView, String> {
     Err(String::new())
 }
 

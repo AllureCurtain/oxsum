@@ -16,7 +16,7 @@ use leptos_router::path;
 
 use crate::admin::{
     AdminAnomaliesPage, AdminChannelsPage, AdminClosingPage, AdminInFlightPage, AdminLayout,
-    AdminOrganizationsPage,
+    AdminOrganizationsPage, AdminReconciliationPage,
 };
 use crate::api::{
     CreatedKeyView, DashboardData, EntryView, HoldView, InvitationView, KeyView, MemberView,
@@ -75,6 +75,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/organizations") view=AdminOrganizationsPage/>
                     <Route path=path!("/in-flight") view=AdminInFlightPage/>
                     <Route path=path!("/anomalies") view=AdminAnomaliesPage/>
+                    <Route path=path!("/reconciliation") view=AdminReconciliationPage/>
                     <Route path=path!("/closing") view=AdminClosingPage/>
                 </ParentRoute>
                 <ParentRoute path=path!("/dashboard") view=DashboardLayout>

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.28.0
+  version: 0.29.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -108,6 +108,12 @@ info:
     marked `Idempotent-Replayed: true`. The same key with a different
     body is 422 `IDEMPOTENCY_MISMATCH`; a retry while the first turn is
     still running is 409 `IDEMPOTENCY_IN_FLIGHT`. Records live 24 hours.
+    0.29.0 adds `GET /api/v1/admin/reconciliation`: the reconciliation
+    report scans every organization's ledger against the oxsum-owned
+    projections — usage rows, deposits, hold watches — and answers one
+    entry per drift class with a count and a bounded sample. It never
+    repairs: drift is for a human to read and act on, not for a second
+    writer to patch silently.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie, except
     `/api/v1/auth/login`, `/api/v1/auth/logout` and `/api/v1/auth/register`, which take no
@@ -1300,6 +1306,38 @@ paths:
                     items: { $ref: "#/components/schemas/AdminMargin" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/reconciliation:
+    get:
+      summary: The drift between the ledgers and the tables that project them
+      description: |
+        Scans every organization's ledger against the oxsum-owned records
+        that claim to describe it and answers one entry per drift class:
+        `usage_orphans` (a usage row whose settlement entry is not on the
+        books), `settlements_unrecorded` (a settled turn that wrote no usage
+        row), `deposits_unbooked` (a deposit marked credited whose entry is
+        missing), `deposits_mismatched` (the rail paid a different amount
+        than the deposit expected), `deposits_stuck` (confirmed by the rail
+        but never credited or reversed), `watches_orphaned` (a hold watch
+        row with no pending posting behind it), `holds_unwatched` (a pending
+        hold no watch row covers — invisible to the sweeper) and `log_gaps`
+        (a ledger log whose positions are not dense). Each class carries a
+        count and a bounded sample of the offending identifiers. The report
+        is read-only: drift is for an operator to read, never for the
+        reconciler to patch.
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: The reconciliation report
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ReconciliationReport" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/admin/redemption-codes:
     post:
       summary: Mint a batch of redemption codes
@@ -2162,6 +2200,35 @@ components:
         upstreamCostMinor: { type: integer, format: int64, description: what the channel's upstream prices made of the same usage, over the turns that track it }
         marginMinor: { type: integer, format: int64, description: chargedMinor minus upstreamCostMinor }
         untrackedTurns: { type: integer, format: int64, minimum: 0, description: settled turns with no upstream cost recorded — an untracked price, a swept hold, or history }
+    ReconciliationReport:
+      type: object
+      required: [checkedAt, organizations, clean, classes]
+      properties:
+        checkedAt: { type: string, format: date-time, description: when the scan ran }
+        organizations: { type: integer, format: int64, minimum: 0, description: the organizations whose ledgers were scanned }
+        clean: { type: boolean, description: every class counted zero }
+        classes:
+          type: array
+          description: every drift class, zero-count ones included, in a fixed order
+          items: { $ref: "#/components/schemas/ReconciliationClass" }
+    ReconciliationClass:
+      type: object
+      required: [class, count, samples]
+      properties:
+        class:
+          type: string
+          enum: [usage_orphans, settlements_unrecorded, deposits_unbooked, deposits_mismatched, deposits_stuck, watches_orphaned, holds_unwatched, log_gaps]
+        count: { type: integer, format: int64, minimum: 0, description: how much drift the class holds }
+        samples:
+          type: array
+          description: a bounded sample of the offending identifiers, newest first
+          items: { $ref: "#/components/schemas/ReconciliationSample" }
+    ReconciliationSample:
+      type: object
+      required: [organization, detail]
+      properties:
+        organization: { type: string, description: the organization the drift belongs to }
+        detail: { type: string, description: "the identifier an operator follows: the request id, hold key, deposit ref or gap position" }
     AdminClosing:
       type: object
       required: [organization, period, entryCount, treeSize, treeRoot, trialBalanceRoot, sealHash]

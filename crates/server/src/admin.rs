@@ -17,7 +17,9 @@ use axum::middleware::Next;
 use axum::response::Response;
 use axum::routing::{get, patch, post};
 use axum::{Router, middleware};
-use oxsum_core::{Channel, InFlightHold, Kind, ModelPrice, Price, Seal, SettlementKind};
+use oxsum_core::{
+    Channel, InFlightHold, Kind, ModelPrice, Price, Reconciliation, Seal, SettlementKind,
+};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq as _;
 use time::OffsetDateTime;
@@ -46,6 +48,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/holds", get(holds))
         .route("/anomalies", get(anomalies))
         .route("/margin", get(margin))
+        .route("/reconciliation", get(reconciliation))
         .route("/redemption-codes", post(mint_codes))
         .route("/closings", get(closings).post(close_month))
         .route("/statements", get(statements).post(generate_statements))
@@ -531,6 +534,13 @@ async fn margin(State(state): State<AppState>) -> ApiResult<Vec<MarginRes>> {
         });
     }
     ok(answer)
+}
+
+/// The reconciliation report: the drift between the ledgers and the projections
+/// that claim to describe them, one entry per class with a bounded sample —
+/// read-only, for an operator to act on (issue #134).
+async fn reconciliation(State(state): State<AppState>) -> ApiResult<Reconciliation> {
+    ok(state.db.reconcile().await?)
 }
 
 /// One organization's closing record for a sealed period, as the closings endpoint
