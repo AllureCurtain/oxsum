@@ -701,3 +701,198 @@ async fn a_replayed_hold_survives_an_allowlist_change() {
     assert!(!replay.is_new);
     assert_eq!(replay.entry_id, first.entry_id);
 }
+
+/// Constraints carrying only the outstanding-holds cap.
+fn holds_cap(n: i32) -> KeyConstraints {
+    KeyConstraints {
+        max_concurrent_holds: Some(n),
+        ..Default::default()
+    }
+}
+
+/// The cap on outstanding holds: a key may have at most `maxConcurrentHolds`
+/// reservations open at once, the count comes from the ledger's own pending
+/// entries, and a settlement frees the slot it took.
+#[tokio::test]
+async fn a_concurrent_holds_cap_counts_open_holds() {
+    let url = db_or_skip!();
+    let db = db(&url, 5).await;
+    let world = world(&db, "cap").await;
+    db.update_key_constraints(
+        world.organization_id,
+        world.key.key_id,
+        KeyScope::Organization,
+        holds_cap(1),
+    )
+    .await
+    .unwrap();
+
+    let first = world
+        .wallet
+        .hold_for_key(&world.key, None, "h1", "", ONE, D)
+        .await
+        .unwrap();
+    assert!(first.is_new);
+
+    // One hold open is the cap: a second is refused, and the refusal names the count.
+    let err = world
+        .wallet
+        .hold_for_key(&world.key, None, "h2", "", ONE, D)
+        .await
+        .unwrap_err();
+    let (limit, open) = match err {
+        WalletError::TooManyHolds { limit, open } => (limit, open),
+        other => panic!("wrong error: {other:?}"),
+    };
+    assert_eq!(limit, 1);
+    assert_eq!(open, 1);
+
+    // The identical retry is a replay, answered before the cap is counted.
+    let replay = world
+        .wallet
+        .hold_for_key(&world.key, None, "h1", "", ONE, D)
+        .await
+        .unwrap();
+    assert!(!replay.is_new);
+    assert_eq!(replay.entry_id, first.entry_id);
+
+    // Settling frees the slot: the release leg cancels the hold's pending debit,
+    // so the next hold fits under the same cap.
+    world.wallet.settle("h1", "", ONE, D).await.unwrap();
+    world
+        .wallet
+        .hold_for_key(&world.key, None, "h2", "", ONE, D)
+        .await
+        .unwrap();
+}
+
+/// A key without the cap is unbounded: the cap column is null and nothing counts.
+#[tokio::test]
+async fn an_uncapped_key_holds_freely() {
+    let url = db_or_skip!();
+    let db = db(&url, 5).await;
+    let world = world(&db, "nocap").await;
+    for n in 1..=3 {
+        world
+            .wallet
+            .hold_for_key(&world.key, None, &format!("h{n}"), "", ONE, D)
+            .await
+            .unwrap();
+    }
+}
+
+/// The cap is part of the replace-all constraint set: a patch that leaves it out
+/// clears it back to uncapped, and a zero is refused at the boundary.
+#[tokio::test]
+async fn the_holds_cap_patches_and_validates() {
+    let url = db_or_skip!();
+    let db = db(&url, 5).await;
+    let world = world(&db, "cappatch").await;
+
+    // Zero is not a cap: both rate fields require at least 1.
+    for constraints in [
+        KeyConstraints {
+            max_concurrent_holds: Some(0),
+            ..Default::default()
+        },
+        KeyConstraints {
+            requests_per_minute: Some(0),
+            ..Default::default()
+        },
+    ] {
+        let err = db
+            .update_key_constraints(
+                world.organization_id,
+                world.key.key_id,
+                KeyScope::Organization,
+                constraints,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, WalletError::InvalidInput(_)),
+            "wrong error: {err:?}"
+        );
+    }
+
+    db.update_key_constraints(
+        world.organization_id,
+        world.key.key_id,
+        KeyScope::Organization,
+        holds_cap(1),
+    )
+    .await
+    .unwrap();
+    world
+        .wallet
+        .hold_for_key(&world.key, None, "h1", "", ONE, D)
+        .await
+        .unwrap();
+    world
+        .wallet
+        .hold_for_key(&world.key, None, "h2", "", ONE, D)
+        .await
+        .expect_err("the cap holds");
+
+    // A patch naming only the spend limit clears the cap: replace-all semantics.
+    db.update_key_constraints(
+        world.organization_id,
+        world.key.key_id,
+        KeyScope::Organization,
+        limit(10 * ONE),
+    )
+    .await
+    .unwrap();
+    world
+        .wallet
+        .hold_for_key(&world.key, None, "h2", "", ONE, D)
+        .await
+        .expect("the cap was cleared");
+}
+
+/// Two keys of one organization cap separately: the pending count is attributed
+/// to the acting key, not to the wallet.
+#[tokio::test]
+async fn the_holds_cap_is_per_key() {
+    let url = db_or_skip!();
+    let db = db(&url, 5).await;
+    let world = world(&db, "perkey").await;
+
+    let second = db
+        .create_key(
+            world.organization_id,
+            Some("second".to_owned()),
+            None,
+            Some(world.creator),
+            KeyConstraints::default(),
+        )
+        .await
+        .unwrap();
+    let (_, second_key) = db.authenticate(&second.secret).await.unwrap().unwrap();
+
+    db.update_key_constraints(
+        world.organization_id,
+        second_key.key_id,
+        KeyScope::Organization,
+        holds_cap(1),
+    )
+    .await
+    .unwrap();
+
+    // The first key's hold does not spend the second key's cap.
+    world
+        .wallet
+        .hold_for_key(&world.key, None, "h-first", "", ONE, D)
+        .await
+        .unwrap();
+    world
+        .wallet
+        .hold_for_key(&second_key, None, "h-second-1", "", ONE, D)
+        .await
+        .unwrap();
+    world
+        .wallet
+        .hold_for_key(&second_key, None, "h-second-2", "", ONE, D)
+        .await
+        .expect_err("the second key's own cap holds");
+}

@@ -1834,3 +1834,102 @@ async fn a_model_allowlist_gates_the_gateway() {
     let (status, body) = json_of(response).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 }
+
+/// A key's `requestsPerMinute` is spent at admission: the second request inside
+/// the minute answers 429 in OpenAI's `rate_limit_exceeded` shape, carries the
+/// backoff headers, and never reaches upstream — a new turn is a new request,
+/// so a client retry rightly spends another slot.
+#[tokio::test]
+async fn a_requests_per_minute_cap_refuses_the_next_request() {
+    let world = world!(1_000_000);
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+
+    let (status, body) = call(
+        &world.app,
+        "PATCH",
+        &format!("/api/v1/org/keys/{}", world.key_id),
+        Some(json!({"requestsPerMinute": 1})),
+        Some(&world.key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // The first fits inside the window and flows end to end.
+    let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
+    let (status, _) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(world.script.seen().len(), 1);
+
+    // The second is refused at admission, before a price or a hold exists.
+    let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(response.headers().get("retry-after").is_some());
+    assert_eq!(response.headers().get("x-ratelimit-limit").unwrap(), "1");
+    let (_, body) = json_of(response).await;
+    assert_eq!(body["error"]["type"], "rate_limit_exceeded");
+    assert_eq!(body["error"]["code"], "RATE_LIMITED");
+    // Upstream never heard about it and no money moved.
+    assert_eq!(world.script.seen().len(), 1);
+    assert_eq!(world.wallet().await.reserved().await.unwrap(), 0);
+}
+
+/// A key's `maxConcurrentHolds` caps reservations outstanding at once: a second
+/// turn while one holds answers 429 `TOO_MANY_HOLDS`, the slot frees when the
+/// first settles, and upstream is never asked.
+#[tokio::test]
+async fn a_max_concurrent_holds_cap_refuses_the_extra_turn() {
+    let world = world!(10_000_000);
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+    world.answers("stall", Answer::Stall);
+
+    let (status, body) = call(
+        &world.app,
+        "PATCH",
+        &format!("/api/v1/org/keys/{}", world.key_id),
+        Some(json!({"maxConcurrentHolds": 1})),
+        Some(&world.key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // One stalled stream keeps its hold open for the whole turn. It must be a
+    // streaming request: a buffered call would wait on the body forever.
+    let stalled = chat(
+        &world.app,
+        &world.key,
+        json!({
+            "model": world.model("stall"),
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true,
+        }),
+    )
+    .await;
+    let stall_id = request_id(&stalled);
+    assert_eq!(stalled.status(), StatusCode::OK);
+
+    // A second request cannot fit beside it.
+    let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let (_, body) = json_of(response).await;
+    assert_eq!(body["error"]["type"], "rate_limit_exceeded");
+    assert_eq!(body["error"]["code"], "TOO_MANY_HOLDS");
+    assert_eq!(world.script.seen().len(), 1);
+
+    // Dropping the stream is the client going away: the turn settles what it
+    // received, the pending debit frees, and the cap lets the next turn in.
+    drop(stalled);
+    world.settlement_within(&stall_id).await;
+    let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
+    let (status, _) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+}
