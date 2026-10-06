@@ -1933,3 +1933,205 @@ async fn a_max_concurrent_holds_cap_refuses_the_extra_turn() {
     let (status, _) = json_of(response).await;
     assert_eq!(status, StatusCode::OK);
 }
+
+// ── request-level idempotency (issue #132) ───────────────────────────────────
+
+/// A chat request carrying an `Idempotency-Key` header.
+async fn chat_idem(app: &Router, key: &str, idem: &str, body: Value) -> Response {
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {key}"))
+        .header("idempotency-key", idem)
+        .body(Body::from(body.to_string()))
+        .expect("the test's own request");
+    app.clone()
+        .oneshot(request)
+        .await
+        .expect("the router answers")
+}
+
+/// Whether the response was answered from the idempotency record.
+fn replayed(response: &Response) -> bool {
+    response.headers().get("idempotent-replayed").is_some()
+}
+
+#[tokio::test]
+async fn a_retried_turn_replays_its_answer_without_running_again() {
+    let world = world!(1_000_000_000);
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+    let body = simple(&world.model("ok"));
+
+    let first = chat_idem(&world.app, &world.key, "turn-1", body.clone()).await;
+    let first_id = request_id(&first);
+    let (status, answer) = json_of(first).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(answer["object"], "chat.completion");
+
+    // The retry is the same turn: the stored body, the original request id, and
+    // upstream was never asked twice.
+    let second = chat_idem(&world.app, &world.key, "turn-1", body).await;
+    assert!(replayed(&second));
+    assert_eq!(request_id(&second), first_id);
+    let (status, replay) = json_of(second).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(replay, answer);
+    assert_eq!(world.script.seen().len(), 1);
+
+    // And it billed once: the settlement under the original request id stands alone.
+    assert_eq!(world.settlement(&first_id).await.unwrap()["charged"], 12);
+}
+
+#[tokio::test]
+async fn a_streamed_turn_replays_its_settled_receipt() {
+    let world = world!(1_000_000_000);
+    world.answers(
+        "stream",
+        Answer::Stream {
+            usage: true,
+            terminated: true,
+        },
+    );
+    let body = json!({
+        "model": world.model("stream"),
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": true,
+    });
+
+    let first = chat_idem(&world.app, &world.key, "stream-1", body.clone()).await;
+    let first_id = request_id(&first);
+    assert_eq!(first.status(), StatusCode::OK);
+    // Consuming the body to its end is what finishes the turn's settlement.
+    let bytes = first
+        .into_body()
+        .collect()
+        .await
+        .expect("the stream is read")
+        .to_bytes();
+    assert!(String::from_utf8_lossy(&bytes).contains("data: [DONE]"));
+
+    // A stream cannot be replayed byte for byte, so the retry answers the
+    // settled receipt: what the turn charged, under the original request id.
+    let second = chat_idem(&world.app, &world.key, "stream-1", body).await;
+    assert!(replayed(&second));
+    assert_eq!(request_id(&second), first_id);
+    let (status, receipt) = json_of(second).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(receipt["object"], "oxsum.receipt");
+    assert_eq!(receipt["requestId"], first_id);
+    assert_eq!(receipt["chargedMinor"], 12);
+    assert_eq!(receipt["usage"]["inputTokens"], 10);
+    assert_eq!(world.script.seen().len(), 1);
+}
+
+#[tokio::test]
+async fn a_retry_landing_mid_turn_is_in_flight() {
+    let world = world!(1_000_000_000);
+    world.answers("stall", Answer::Stall);
+    let body = json!({
+        "model": world.model("stall"),
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": true,
+    });
+
+    // The first turn is still streaming when the retry arrives.
+    let first = chat_idem(&world.app, &world.key, "flight-1", body.clone()).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let first_id = request_id(&first);
+
+    let second = chat_idem(&world.app, &world.key, "flight-1", body).await;
+    assert_eq!(second.status(), StatusCode::CONFLICT);
+    let (_, error) = json_of(second).await;
+    assert_eq!(error["error"]["code"], "IDEMPOTENCY_IN_FLIGHT");
+    assert_eq!(world.script.seen().len(), 1);
+
+    // The client going away settles the turn; a later retry finds the receipt.
+    drop(first);
+    world.settlement_within(&first_id).await;
+    let third = chat_idem(
+        &world.app,
+        &world.key,
+        "flight-1",
+        json!({
+            "model": world.model("stall"),
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true,
+        }),
+    )
+    .await;
+    assert!(replayed(&third));
+    let (status, receipt) = json_of(third).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(receipt["requestId"], first_id);
+}
+
+#[tokio::test]
+async fn a_claimed_key_with_a_different_body_is_a_mismatch() {
+    let world = world!(1_000_000_000);
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+
+    let first = chat_idem(
+        &world.app,
+        &world.key,
+        "same-key",
+        simple(&world.model("ok")),
+    )
+    .await;
+    let (status, _) = json_of(first).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let second = chat_idem(
+        &world.app,
+        &world.key,
+        "same-key",
+        json!({"model": world.model("ok"), "messages": [{"role": "user", "content": "different"}]}),
+    )
+    .await;
+    assert_eq!(second.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let (_, error) = json_of(second).await;
+    assert_eq!(error["error"]["code"], "IDEMPOTENCY_MISMATCH");
+    assert_eq!(world.script.seen().len(), 1);
+}
+
+#[tokio::test]
+async fn a_refusal_before_the_wallet_releases_its_key() {
+    let world = world!(0);
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+    let body = simple(&world.model("ok"));
+
+    // The empty wallet cannot cover the freeze: 402, and the claim is released
+    // rather than stored — nothing was billed, so a corrected retry runs.
+    let first = chat_idem(&world.app, &world.key, "retry-1", body.clone()).await;
+    assert_eq!(first.status(), StatusCode::PAYMENT_REQUIRED);
+
+    call(
+        &world.app,
+        "POST",
+        "/api/v1/topups",
+        Some(json!({"idempotencyKey": "fix-1", "amountMinor": 1_000_000_000})),
+        Some(&world.key),
+    )
+    .await;
+
+    let second = chat_idem(&world.app, &world.key, "retry-1", body).await;
+    assert!(!replayed(&second));
+    let (status, _) = json_of(second).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(world.script.seen().len(), 1);
+}
