@@ -20,10 +20,12 @@
 use std::sync::Arc;
 
 use axum::body::Bytes;
+use axum::http::{HeaderMap, HeaderValue};
 use futures_core::Stream;
+use http_body::Frame;
 use oxsum_core::{
-    Attribution, Db, Price, Receipt, Serving, Settlement, SettlementKind, UsageAdapter,
-    UsageRecord, UsageRow, Wallet, WalletError, entry_id_for, estimate_tokens, settlement_key_for,
+    Attribution, Db, Price, Serving, Settlement, SettlementKind, UsageAdapter, UsageRecord,
+    UsageRow, Wallet, WalletError, entry_id_for, estimate_tokens, settlement_key_for,
 };
 use serde_json::Value;
 use tokio::sync::broadcast;
@@ -275,18 +277,22 @@ impl Turn {
     /// A settlement that fails is logged, not returned: the response may already be on its way, and
     /// the hold it would have released stays outstanding for the sweeper (issue #13) instead of
     /// turning into a 500 after upstream has already answered.
-    pub async fn settle(&mut self, kind: SettlementKind, charge: Charge) {
-        let Some(mut plan) = self.plan.take() else {
-            return;
-        };
+    ///
+    /// The settled charge comes back for the caller to see: the response-cost header on a
+    /// non-streamed answer, the trailer on a streamed one (P4-3). `None` says the write did
+    /// not land, so nothing is stamped — the sweeper's settle reports its own number.
+    pub async fn settle(&mut self, kind: SettlementKind, charge: Charge) -> Option<i64> {
+        let mut plan = self.plan.take()?;
         let request = plan.request.clone();
         match tokio::spawn(async move { plan.write(kind, charge).await }).await {
-            Ok(Ok(_)) => {}
+            Ok(Ok(charged)) => Some(charged),
             Ok(Err(error)) => {
                 tracing::error!(%error, %request, "settling a gateway turn failed");
+                None
             }
             Err(error) => {
                 tracing::error!(%error, %request, "the settlement task did not finish");
+                None
             }
         }
     }
@@ -332,12 +338,8 @@ impl Drop for Turn {
 }
 
 impl Plan {
-    /// Charges the turn and writes the settlement entry.
-    async fn write(
-        &mut self,
-        kind: SettlementKind,
-        charge: Charge,
-    ) -> Result<Receipt, WalletError> {
+    /// Charges the turn and writes the settlement entry, answering the settled charge.
+    async fn write(&mut self, kind: SettlementKind, charge: Charge) -> Result<i64, WalletError> {
         let mut usage = match charge {
             Charge::Nothing => UsageRecord::tokens(0, 0)?,
             Charge::Usage(usage) => *usage,
@@ -464,22 +466,26 @@ impl Plan {
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
         });
-        outcome
+        outcome.map(|_| charged)
     }
 }
 
 /// Relays `upstream` to the client and settles the turn when the stream ends.
+///
+/// The items are `Frame`s rather than bare bytes so the settlement can ride the wire as an
+/// HTTP trailer: the response head went out before the turn's cost was known, and the
+/// trailer is the one channel left that does not touch the OpenAI stream's own format.
 pub fn stream(
     mut turn: Turn,
     mut upstream: reqwest::Response,
-) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static {
+) -> impl Stream<Item = Result<Frame<Bytes>, std::io::Error>> + Send + 'static {
     async_stream::stream! {
         let mut terminated = false;
         loop {
             match upstream.chunk().await {
                 Ok(Some(chunk)) => {
                     terminated |= turn.observe(&chunk);
-                    yield Ok(chunk);
+                    yield Ok(Frame::data(chunk));
                 }
                 Ok(None) => break,
                 Err(error) => {
@@ -493,11 +499,20 @@ pub fn stream(
         // Upstream is done, whatever the client does next: what ends here is a finished turn.
         turn.note_upstream_end();
         let (kind, charge) = turn.closing();
-        turn.settle(kind, charge).await;
+        let charged = turn.settle(kind, charge).await;
         if !terminated {
             // Upstream ended without its own terminator, so an SSE reader would wait for an event
             // that is never coming. Close the stream for it.
-            yield Ok(Bytes::from_static(b"data: [DONE]\n\n"));
+            yield Ok(Frame::data(Bytes::from_static(b"data: [DONE]\n\n")));
+        }
+        // The trailer is last: the data frames must all be out before it. A settlement
+        // that did not land reports no number rather than a wrong one.
+        if let Some(charged) = charged
+            && let Ok(value) = HeaderValue::from_str(&charged.to_string())
+        {
+            let mut trailers = HeaderMap::new();
+            trailers.insert(crate::gateway::error::CHARGED_MINOR, value);
+            yield Ok(Frame::trailers(trailers));
         }
     }
 }

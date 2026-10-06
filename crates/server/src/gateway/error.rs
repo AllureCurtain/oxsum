@@ -13,6 +13,18 @@ use serde_json::{Value, json};
 /// The header every response carries, so a caller can find its bill without reading the body.
 pub const REQUEST_ID: &str = "x-oxsum-request-id";
 
+/// What the request froze — the most it can cost. On the head of every answer that took the hold.
+pub const FREEZE_MINOR: &str = "x-oxsum-freeze-minor";
+
+/// The spendable balance left after this request's reservation — the runway. On the head of
+/// every answer that took the hold.
+pub const BALANCE_MINOR: &str = "x-oxsum-balance-minor";
+
+/// What the settled turn actually charged. A header on a non-streamed answer and on a refusal
+/// that settled after the hold; a trailer on a streamed answer, because the head is already
+/// out when the settlement lands.
+pub const CHARGED_MINOR: &str = "x-oxsum-charged-minor";
+
 /// An error a gateway request can end in.
 #[derive(Debug)]
 pub enum GatewayError {

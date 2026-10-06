@@ -16,7 +16,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router, middleware};
-use http_body_util::BodyExt;
+use http_body_util::{BodyExt, StreamBody};
 use oxsum_core::{
     ActingKey, Claim, OpenHold, Organization, Serving, SettlementKind, WalletError, adapter_for,
     fingerprint, hold_description,
@@ -26,7 +26,7 @@ use uuid::Uuid;
 
 use crate::AppState;
 use crate::auth::require_key_gateway;
-use crate::gateway::error::{GatewayError, REQUEST_ID};
+use crate::gateway::error::{BALANCE_MINOR, CHARGED_MINOR, FREEZE_MINOR, GatewayError, REQUEST_ID};
 use crate::gateway::relay::{Charge, Turn};
 use crate::gateway::request::ChatRequest;
 use crate::today;
@@ -392,6 +392,19 @@ async fn run(
         });
     }
 
+    // The cost head: the reserved bound and the runway left under it are both known now,
+    // before upstream is asked — they ride every answer this turn produces, streamed or
+    // refused (P4-3). A balance that could not be read omits the header rather than
+    // reporting a made-up number.
+    let balance = match wallet.available().await {
+        Ok(balance) => Some(balance),
+        Err(error) => {
+            tracing::warn!(%error, "the balance runway could not be read");
+            None
+        }
+    };
+    let cost = CostHead { freeze, balance };
+
     let mut turn = Turn::new(
         state.db.clone(),
         wallet,
@@ -437,13 +450,22 @@ async fn run(
             );
             // Nothing was received, so nothing is charged and the whole freeze goes back.
             tracing::warn!(%error, "upstream is unreachable");
-            turn.settle(SettlementKind::UpstreamUnreachable, Charge::Nothing)
+            let charged = turn
+                .settle(SettlementKind::UpstreamUnreachable, Charge::Nothing)
                 .await;
-            return Err(GatewayError::upstream(
+            // The answer is upstream's refusal shape with the cost head on it — returned as
+            // a response rather than the error so the head can be stamped here, where the
+            // numbers are. The claim still stores it: a finished non-streamed answer is
+            // completed either way.
+            let mut response = GatewayError::upstream(
                 StatusCode::BAD_GATEWAY,
                 format!("upstream is unreachable: {error}"),
                 None,
-            ));
+            )
+            .into_response();
+            cost.stamp(&mut response);
+            stamp_charged(&mut response, charged);
+            return Ok(response);
         }
         Ok(response) if !response.status().is_success() => {
             let status = response.status();
@@ -453,16 +475,21 @@ async fn run(
                 upstream_started.elapsed().as_secs_f64(),
             );
             let text = response.text().await.unwrap_or_default();
-            turn.settle(SettlementKind::UpstreamError, Charge::Nothing)
+            let charged = turn
+                .settle(SettlementKind::UpstreamError, Charge::Nothing)
                 .await;
             // Upstream's own refusal is the honest answer, and it is already in the caller's format.
-            return Err(GatewayError::upstream(
+            let mut response = GatewayError::upstream(
                 StatusCode::BAD_GATEWAY,
                 format!("upstream answered {status}: {text}"),
                 serde_json::from_str::<Value>(&text)
                     .ok()
                     .filter(|body| body.get("error").is_some()),
-            ));
+            )
+            .into_response();
+            cost.stamp(&mut response);
+            stamp_charged(&mut response, charged);
+            return Ok(response);
         }
         Ok(response) => {
             crate::metrics::upstream_response(
@@ -471,7 +498,11 @@ async fn run(
                 upstream_started.elapsed().as_secs_f64(),
             );
             if request.stream {
-                sse(Body::from_stream(relay::stream(turn, response)))
+                // StreamBody rather than from_stream: the items are Frames, so the turn's
+                // settled charge can ride the end of the stream as an HTTP trailer.
+                let mut response = sse(Body::new(StreamBody::new(relay::stream(turn, response))));
+                cost.stamp(&mut response);
+                response
             } else {
                 let text = response.text().await.unwrap_or_default();
                 // Upstream answered in full, so the turn is finished: from here the only work
@@ -486,20 +517,28 @@ async fn run(
                         }
                         turn.note_text(&relay::completion_text(&value));
                         let (kind, charge) = turn.closing();
-                        turn.settle(kind, charge).await;
-                        Json(value).into_response()
+                        let charged = turn.settle(kind, charge).await;
+                        let mut response = Json(value).into_response();
+                        cost.stamp(&mut response);
+                        stamp_charged(&mut response, charged);
+                        response
                     }
                     Err(error) => {
                         // A 200 that is not JSON is upstream breaking its own contract: price
                         // what came back rather than handing the caller a charge of nothing.
                         turn.note_text(&text);
-                        turn.settle(SettlementKind::Estimated, Charge::Estimated)
+                        let charged = turn
+                            .settle(SettlementKind::Estimated, Charge::Estimated)
                             .await;
-                        return Err(GatewayError::upstream(
+                        let mut response = GatewayError::upstream(
                             StatusCode::BAD_GATEWAY,
                             format!("upstream answered 200 with a body that is not JSON: {error}"),
                             None,
-                        ));
+                        )
+                        .into_response();
+                        cost.stamp(&mut response);
+                        stamp_charged(&mut response, charged);
+                        return Ok(response);
                     }
                 }
             }
@@ -508,7 +547,9 @@ async fn run(
     Ok(response)
 }
 
-/// An SSE response: upstream's bytes, streamed, with the content type an OpenAI client expects.
+/// An SSE response: upstream's bytes, streamed, with the content type an OpenAI client
+/// expects. `Trailer` announces that the settled charge follows the frames as
+/// `x-oxsum-charged-minor` — the head is already out when the turn settles.
 fn sse(body: Body) -> Response {
     let mut response = body.into_response();
     response.headers_mut().insert(
@@ -519,6 +560,41 @@ fn sse(body: Body) -> Response {
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     response
+        .headers_mut()
+        .insert(header::TRAILER, HeaderValue::from_static(CHARGED_MINOR));
+    response
+}
+
+/// What a response head can say about cost before the turn settles (P4-3): the freeze is the
+/// most the request can be charged, and the balance is the organization's spendable runway
+/// left under that reservation — read once, right after the hold landed.
+struct CostHead {
+    freeze: i64,
+    balance: Option<i64>,
+}
+
+impl CostHead {
+    /// Stamps `x-oxsum-freeze-minor` always and `x-oxsum-balance-minor` when the read worked.
+    fn stamp(&self, response: &mut Response) {
+        if let Ok(value) = HeaderValue::from_str(&self.freeze.to_string()) {
+            response.headers_mut().insert(FREEZE_MINOR, value);
+        }
+        if let Some(balance) = self.balance
+            && let Ok(value) = HeaderValue::from_str(&balance.to_string())
+        {
+            response.headers_mut().insert(BALANCE_MINOR, value);
+        }
+    }
+}
+
+/// Stamps `x-oxsum-charged-minor` on a head — the settled charge was known before the answer
+/// went out. A streamed answer carries it as a trailer instead (relay::stream).
+fn stamp_charged(response: &mut Response, charged: Option<i64>) {
+    if let Some(charged) = charged
+        && let Ok(value) = HeaderValue::from_str(&charged.to_string())
+    {
+        response.headers_mut().insert(CHARGED_MINOR, value);
+    }
 }
 
 /// Stamps the request id on a response, so every answer can be traced to its bill.
