@@ -362,6 +362,39 @@ form.row label {
     white-space: nowrap;
 }
 
+/* The usage page's daily chart: flexbox bars over the window's days, scaled to the
+   busiest day. Height carries magnitude; each bar's title and hidden text carry the
+   number, so the colour is never the only signal (DESIGN.md). */
+
+.usage-chart {
+    display: flex;
+    align-items: flex-end;
+    gap: 4px;
+    height: 96px;
+    margin-top: 16px;
+}
+
+.usage-chart .day {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    height: 100%;
+}
+
+.usage-chart .bar {
+    background: var(--primary);
+    border-radius: 2px 2px 0 0;
+}
+
+.usage-axis {
+    display: flex;
+    justify-content: space-between;
+    margin: 4px 0 24px;
+    font-size: 12px;
+}
+
 /* The chat page */
 
 .section-head {

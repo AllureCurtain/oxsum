@@ -27,6 +27,8 @@ pub mod heads;
 // The requests page's row shape and its filters, which the page and its server function
 // share (issue #55).
 mod requests;
+// The usage page's row shape, which the page and its server function share (issue #126).
+mod usage;
 
 pub use app::{App, Shell};
 pub use chat::ChatPage;
