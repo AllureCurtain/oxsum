@@ -19,13 +19,22 @@ cargo build --workspace
 
 ### Test residue in the development database
 
-The server integration tests (`crates/server/tests/gateway.rs` and `crates/server/tests/admin.rs`) write channels sealed with the tests' own key into the shared `oxsum` schema. Afterwards `cargo run -p oxsum-server` refuses to boot: a deployment that cannot open a stored credential fails at startup by design, instead of failing a request mid-relay. Clear the test-sealed rows before starting the server:
+The tests share the development database and never delete their fixtures: every test organization leaves a user, an organization and a `ledger_<tenant_id>` schema behind, and the server integration tests (`crates/server/tests/gateway.rs` and `crates/server/tests/admin.rs`) also write channels sealed with the tests' own key. Two consequences accumulate over time:
+
+- `cargo run -p oxsum-server` refuses to boot once a test-sealed channel exists: a deployment that cannot open a stored credential fails at startup by design, instead of failing a request mid-relay.
+- Tests that scan all tenant ledgers (the admin suite is the heavy case) walk every historical schema, so the whole suite slows down as residue accumulates — thousands of schemas turn it from minutes into most of an hour.
+
+Run the reset script after a full `cargo test --workspace` run, and any time the database has accumulated enough fixtures to slow things down:
 
 ```bash
-psql "$DATABASE_URL" -c "TRUNCATE oxsum.channel_prices, oxsum.channels;"
+psql "$DATABASE_URL" -f scripts/reset-dev-database.sql
+# or against the Compose database directly:
+docker exec -i oxsum-postgres-1 psql -U postgres -d oxsum -f - < scripts/reset-dev-database.sql
 ```
 
-(`DATABASE_URL` comes from `.env` or the shell, as for the tests.) `TRUNCATE` is what the append-only trigger on `oxsum.channel_prices` leaves open: the trigger refuses row rewrites, not a table reset, so this does not weaken the price-history guarantee. Users, organizations, keys and ledgers are untouched; only channels and their prices are cleared. On a database with real channel configuration, dump it first — this is a development-database reset.
+(`DATABASE_URL` comes from `.env` or the shell, as for the tests.) The script drops every `ledger_*` schema and truncates every mutable `oxsum` table, leaving `oxsum._migrations` — and therefore the schema version — untouched. It is a development-database reset: on a database holding anything worth keeping, dump it first. `TRUNCATE` is what the append-only triggers leave open: they refuse row rewrites, not a table reset, so this does not weaken the audit guarantees.
+
+`crates/doubleentry` Postgres tests run against throwaway containers instead, started by testcontainers. They clean up after themselves, but an interrupted run or a Docker restart can leave the container behind; `docker container prune` and `docker volume prune` clear what is no longer attached.
 
 ## Branch naming
 
