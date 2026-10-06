@@ -86,6 +86,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "v5"] }
 
 tower = { version = "0.5", features = ["util"] }
+http-body = "1"
 http-body-util = "0.1"
 # Telemetry: the `metrics` facade's types, and the Prometheus recorder whose handle renders
 # `/metrics`. Default features off — the exporter's own HTTP listener and push gateway would

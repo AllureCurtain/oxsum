@@ -3349,6 +3349,7 @@ dependencies = [
  "doubleentry",
  "futures-core",
  "futures-util",
+ "http-body",
  "http-body-util",
  "leptos",
  "leptos_axum",

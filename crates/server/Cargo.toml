@@ -38,6 +38,7 @@ futures-core.workspace = true
 # The upstream HTTP client, built once in lib.rs and shared through AppState.
 reqwest.workspace = true
 # Buffering a finished response body for the idempotency record.
+http-body.workspace = true
 http-body-util.workspace = true
 # The dashboard pages: server-side rendering plus hydration, mounted through
 # leptos_axum into the same binary (docs/decisions.md, "pages move to Leptos").
