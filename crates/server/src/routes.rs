@@ -44,6 +44,8 @@ pub fn router(state: AppState) -> Router {
         .route("/redemptions", post(redeem))
         .route("/holds", post(hold))
         .route("/settlements", post(settle))
+        .route("/statements", get(statements))
+        .route("/statements/{statement_id}", get(statement_detail))
         .route("/balance", get(balance))
         .route("/entries/{entry_id}/proof", get(proof))
         .route("/log/head", get(log_head))
@@ -663,6 +665,12 @@ async fn top_up(
             *receipt.entry_id.as_uuid(),
         )
         .await?;
+    // Whatever the deposit repaid counts against the statement book: open
+    // statements are repaid oldest first (issue #124).
+    state
+        .db
+        .reconcile_statements(principal.organization().id, &w, today())
+        .await?;
     ok(receipt)
 }
 
@@ -673,10 +681,15 @@ async fn redeem(
     ApiJson(r): ApiJson<RedeemCodeReq>,
 ) -> ApiResult<oxsum_core::Redemption> {
     let w = wallet(&state.tenants, principal.organization()).await?;
-    ok(state
+    let redemption = state
         .db
         .redeem_code(&w, principal.organization().id, &r.code, today())
-        .await?)
+        .await?;
+    state
+        .db
+        .reconcile_statements(principal.organization().id, &w, today())
+        .await?;
+    ok(redemption)
 }
 
 async fn hold(
@@ -707,6 +720,63 @@ async fn settle(
     // No description: this endpoint takes a hold key, not a reason. The gateway, which knows what
     // the hold is for, records one.
     ok(w.settle(&r.hold_key, "", r.actual_minor, today()).await?)
+}
+
+/// A statement and its itemized lines, as the detail endpoint answers it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StatementDetailRes {
+    statement: oxsum_core::Statement,
+    lines: Vec<oxsum_core::StatementLine>,
+}
+
+/// The organization's finalized statements, newest period first — the monthly
+/// billing documents "borrow first, settle monthly" issues. Drafts are the
+/// operator's working copy and never appear here. The read reconciles first, so
+/// a repayment that landed since the last look is already counted, and a pending
+/// statement past its due date answers `overdue`.
+async fn statements(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+) -> ApiResult<Vec<oxsum_core::Statement>> {
+    let w = wallet(&state.tenants, principal.organization()).await?;
+    state
+        .db
+        .reconcile_statements(principal.organization().id, &w, today())
+        .await?;
+    ok(state
+        .db
+        .organization_statements(principal.organization().id)
+        .await?)
+}
+
+/// One of the organization's finalized statements, with its lines. A draft,
+/// another organization's statement and a missing id all answer 404 — an
+/// unissued document does not exist for the organization.
+async fn statement_detail(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(statement_id): Path<Uuid>,
+) -> ApiResult<StatementDetailRes> {
+    let w = wallet(&state.tenants, principal.organization()).await?;
+    state
+        .db
+        .reconcile_statements(principal.organization().id, &w, today())
+        .await?;
+    let statement = state
+        .db
+        .statement_by_id(statement_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    if statement.organization_id != principal.organization().id
+        || statement.status != oxsum_core::StatementStatus::Finalized
+    {
+        return Err(ApiError::not_found());
+    }
+    ok(StatementDetailRes {
+        lines: state.db.statement_lines(statement_id).await?,
+        statement,
+    })
 }
 
 async fn balance(

@@ -34,7 +34,10 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/channels", get(list).post(set))
         .route("/channels/{name}/prices", get(history).post(append))
         .route("/organizations", get(organizations))
-        .route("/organizations/{organization_id}", patch(set_credit_limit))
+        .route(
+            "/organizations/{organization_id}",
+            patch(update_organization),
+        )
         .route(
             "/organizations/{organization_id}/adjustments",
             post(adjust_organization),
@@ -45,6 +48,17 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/margin", get(margin))
         .route("/redemption-codes", post(mint_codes))
         .route("/closings", get(closings).post(close_month))
+        .route("/statements", get(statements).post(generate_statements))
+        .route("/statements/{statement_id}", get(statement))
+        .route(
+            "/statements/{statement_id}/finalize",
+            post(finalize_statement),
+        )
+        .route("/statements/{statement_id}/payments", post(record_payment))
+        .route(
+            "/statements/{statement_id}/suspend",
+            post(suspend_statement),
+        )
         .layer(middleware::from_fn_with_state(state, require_admin))
 }
 
@@ -311,55 +325,78 @@ async fn adjust_organization(
     })
 }
 
-/// The body of `PATCH …/organizations/{id}`: the credit line the organization
-/// may draw, absolute, and the idempotency key that makes a retry the same entry.
+/// The body of `PATCH …/organizations/{id}`: the billing terms to set — the credit
+/// line absolute, the payment-terms day count — and the idempotency key that makes
+/// a retried credit-limit change the same entry.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SetCreditLimitReq {
-    credit_limit_minor: i64,
+struct UpdateOrganizationReq {
+    credit_limit_minor: Option<i64>,
+    payment_terms_days: Option<i32>,
     idempotency_key: String,
 }
 
-/// The credit limit as it stands after the write, as the endpoint answers it.
+/// The billing terms as they stand after the write, as the endpoint answers it.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct CreditLimitRes {
-    /// The ledger entry the change booked; absent when the limit did not move.
+struct BillingTermsRes {
+    /// The ledger entry the credit-limit change booked; absent when no limit was
+    /// given or it did not move.
     #[serde(skip_serializing_if = "Option::is_none")]
     entry_id: Option<String>,
     organization_id: Uuid,
     credit_limit_minor: i64,
     credit_used_minor: i64,
+    /// Days a finalized statement's payment has before it falls due.
+    payment_terms_days: i32,
     /// The organization's spendable balance after the change, own funds plus
     /// undrawn credit.
     available_minor: i64,
 }
 
-/// Grants or resizes an organization's credit line — "borrow first, settle
-/// monthly" (decision D4). The limit is an entry, not a flag: the delta from the
-/// committed figure posts `debit CreditFacility, credit CreditLine`, so the
-/// whole credit history sits inside the ledger the organization can verify, and
-/// a shrink below the outstanding draw is refused by the credit-line pool's own
-/// no-overdraft rule as `INSUFFICIENT_FUNDS`, surfaced as a validation error.
-async fn set_credit_limit(
+/// Sets an organization's billing terms — the credit line it may draw and the
+/// payment terms its finalized statements carry.
+///
+/// The limit is an entry, not a flag: the delta from the committed figure posts
+/// `debit CreditFacility, credit CreditLine`, so the whole credit history sits
+/// inside the ledger the organization can verify, and a shrink below the
+/// outstanding draw is refused by the credit-line pool's own no-overdraft rule,
+/// surfaced as a validation error. `paymentTermsDays` is a column write — it is
+/// snapshotted onto each statement at finalization, so it moves the terms of
+/// statements issued after the change, never one already due.
+async fn update_organization(
     State(state): State<AppState>,
     Path(organization_id): Path<Uuid>,
-    ApiJson(request): ApiJson<SetCreditLimitReq>,
-) -> ApiResult<CreditLimitRes> {
+    ApiJson(request): ApiJson<UpdateOrganizationReq>,
+) -> ApiResult<BillingTermsRes> {
+    if request.credit_limit_minor.is_none() && request.payment_terms_days.is_none() {
+        return Err(ApiError::Validation(
+            "at least one of creditLimitMinor and paymentTermsDays must be present".into(),
+        ));
+    }
     let organization = state.db.organization_by_id(organization_id).await?;
+    if let Some(days) = request.payment_terms_days {
+        state.db.set_payment_terms(organization_id, days).await?;
+    }
     let wallet = state.tenants.get(&organization.tenant_id).await?;
-    let receipt = wallet
-        .set_credit_limit(
-            &request.idempotency_key,
-            request.credit_limit_minor,
-            today(),
-        )
-        .await?;
-    ok(CreditLimitRes {
+    let receipt = match request.credit_limit_minor {
+        Some(limit) => {
+            wallet
+                .set_credit_limit(&request.idempotency_key, limit, today())
+                .await?
+        }
+        None => None,
+    };
+    ok(BillingTermsRes {
         entry_id: receipt.map(|r| r.entry_id.to_string()),
         organization_id,
         credit_limit_minor: wallet.credit_limit().await?,
         credit_used_minor: wallet.credit_used().await?,
+        payment_terms_days: state
+            .db
+            .organization_by_id(organization_id)
+            .await?
+            .payment_terms_days,
         available_minor: wallet.available().await?,
     })
 }
@@ -578,6 +615,250 @@ fn parse_month(month: &str) -> Result<Date, ApiError> {
     let year = year.parse::<i32>().map_err(|_| bad())?;
     let month = Month::try_from(month.parse::<u8>().map_err(|_| bad())?).map_err(|_| bad())?;
     Date::from_calendar_date(year, month, 1).map_err(|_| bad())
+}
+
+/// The optional filters of `GET /admin/statements`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StatementsQuery {
+    period: Option<String>,
+    organization_id: Option<Uuid>,
+}
+
+/// Every statement the platform has generated, newest period first — drafts and
+/// finalized alike, optionally narrowed by `period` or `organizationId`. The lazy
+/// overdue flip runs first, so a pending statement past its due date answers
+/// `overdue` already.
+async fn statements(
+    State(state): State<AppState>,
+    Query(query): Query<StatementsQuery>,
+) -> ApiResult<Vec<oxsum_core::Statement>> {
+    // The filter names a billing month; a malformed or still-running one is a
+    // validation failure rather than an empty list, so a mistyped period does
+    // not silently look like "no statements".
+    if let Some(period) = &query.period {
+        oxsum_core::statement_period(period)?;
+    }
+    state.db.flip_overdue(today()).await?;
+    ok(state
+        .db
+        .statements(query.organization_id, query.period.as_deref())
+        .await?)
+}
+
+/// The body of `POST /admin/statements`: the month to bill, and optionally the one
+/// organization to bill it for.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GenerateStatementsReq {
+    period: String,
+    organization_id: Option<Uuid>,
+}
+
+/// Builds the period's draft statements — for the named organization, or for every
+/// organization the period's usage covers when `organizationId` is absent.
+///
+/// Generation is idempotent per organization and period: a draft is rebuilt from
+/// the usage rows each call, so a usage row that landed after generation is picked
+/// up by regenerating; a statement already finalized stands and is answered as it
+/// is. Only a month that has fully ended generates.
+async fn generate_statements(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<GenerateStatementsReq>,
+) -> ApiResult<Vec<oxsum_core::Statement>> {
+    let period = oxsum_core::statement_period(&request.period)?;
+    let organizations = match request.organization_id {
+        Some(id) => vec![state.db.organization_by_id(id).await?],
+        None => state.db.billable_organizations().await?,
+    };
+    let mut answer = Vec::with_capacity(organizations.len());
+    for organization in &organizations {
+        let wallet = state.tenants.get(&organization.tenant_id).await?;
+        if let Some(statement) = state
+            .db
+            .generate_statement(organization, &wallet, &period)
+            .await?
+        {
+            answer.push(statement);
+        }
+    }
+    ok(answer)
+}
+
+/// A statement and its itemized lines, as the detail endpoints answer it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StatementDetailRes {
+    statement: oxsum_core::Statement,
+    lines: Vec<oxsum_core::StatementLine>,
+}
+
+/// One statement with its lines, whatever standing it is in — the admin view of
+/// the document.
+async fn statement(
+    State(state): State<AppState>,
+    Path(statement_id): Path<Uuid>,
+) -> ApiResult<StatementDetailRes> {
+    state.db.flip_overdue(today()).await?;
+    let statement = state
+        .db
+        .statement_by_id(statement_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    ok(StatementDetailRes {
+        lines: state.db.statement_lines(statement_id).await?,
+        statement,
+    })
+}
+
+/// The body of the statement transitions: only the idempotency key, carried for
+/// uniformity — a lifecycle transition is idempotent on its own.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TransitionReq {
+    idempotency_key: String,
+}
+
+/// The key is carried for uniformity, so it is held to the same shape every write
+/// key answers to: present, and at most 200 bytes.
+fn transition_key(request: &TransitionReq) -> Result<(), ApiError> {
+    if request.idempotency_key.is_empty() || request.idempotency_key.len() > 200 {
+        return Err(ApiError::Validation("a malformed idempotency key".into()));
+    }
+    Ok(())
+}
+
+/// Issues a draft statement: locks its lines and totals, snapshots the
+/// organization's payment terms into the due date, and pins the ledger window
+/// the lines prove. Idempotent — an already-final statement answers itself.
+async fn finalize_statement(
+    State(state): State<AppState>,
+    Path(statement_id): Path<Uuid>,
+    ApiJson(request): ApiJson<TransitionReq>,
+) -> ApiResult<oxsum_core::Statement> {
+    transition_key(&request)?;
+    let existing = state
+        .db
+        .statement_by_id(statement_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    let organization = state
+        .db
+        .organization_by_id(existing.organization_id)
+        .await?;
+    let wallet = state.tenants.get(&organization.tenant_id).await?;
+    ok(state
+        .db
+        .finalize_statement(statement_id, &wallet, today())
+        .await?)
+}
+
+/// The body of `POST …/statements/{id}/payments`: the amount the organization paid
+/// and the idempotency key naming the ledger repayment entry.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RecordPaymentReq {
+    amount_minor: i64,
+    idempotency_key: String,
+}
+
+/// A recorded payment, as the endpoint answers it: the repayment's ledger entry
+/// and the statement's standing after the money applied.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PaymentRes {
+    statement: oxsum_core::Statement,
+    entry_id: String,
+    amount_minor: i64,
+}
+
+/// Records a payment against a statement: books the amount into the
+/// organization's ledger — `debit Cash`, repaying the drawn credit line first —
+/// then reconciles the statement book, which applies repayments oldest-first.
+///
+/// The payment may not exceed the credit-line debt outstanding through the
+/// statement's period (`400` if it does), so money recorded here always lands
+/// on the line. The idempotency key names the ledger entry, which can never
+/// book twice: a retried payment while the statement is still open replays the
+/// receipt, and one that arrives after the statement paid is refused as
+/// `400` — there is nothing left to take.
+async fn record_payment(
+    State(state): State<AppState>,
+    Path(statement_id): Path<Uuid>,
+    ApiJson(request): ApiJson<RecordPaymentReq>,
+) -> ApiResult<PaymentRes> {
+    let existing = state
+        .db
+        .statement_by_id(statement_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    let organization = state
+        .db
+        .organization_by_id(existing.organization_id)
+        .await?;
+    let wallet = state.tenants.get(&organization.tenant_id).await?;
+    // Fresh figures first: a payment raced with a top-up could have repaid the
+    // statement since it was last read, and the caps below validate against the
+    // standing the ledger now shows.
+    state
+        .db
+        .reconcile_statements(organization.id, &wallet, today())
+        .await?;
+    let statement = state
+        .db
+        .statement_by_id(statement_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    if statement.status == oxsum_core::StatementStatus::Draft {
+        return Err(ApiError::Validation(
+            "a draft statement is not issued yet; finalize it first".into(),
+        ));
+    }
+    if statement.payment_status == oxsum_core::PaymentStatus::Paid {
+        return Err(ApiError::Validation(
+            "the statement is paid; nothing is owed".into(),
+        ));
+    }
+    let owed = state
+        .db
+        .statement_debt_through(&wallet, &statement.period)
+        .await?;
+    if request.amount_minor > owed {
+        return Err(ApiError::Validation(
+            "the payment exceeds the billed debt outstanding through this statement".into(),
+        ));
+    }
+    let receipt = wallet
+        .top_up(&request.idempotency_key, request.amount_minor, today())
+        .await?;
+    state
+        .db
+        .reconcile_statements(organization.id, &wallet, today())
+        .await?;
+    let statement = state
+        .db
+        .statement_by_id(statement_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    ok(PaymentRes {
+        statement,
+        entry_id: receipt.entry_id.to_string(),
+        amount_minor: request.amount_minor,
+    })
+}
+
+/// Marks an unpaid finalized statement `suspended` — the standing for a bill that
+/// has gone unpaid past its grace. A later payment still settles it.
+async fn suspend_statement(
+    State(state): State<AppState>,
+    Path(statement_id): Path<Uuid>,
+    ApiJson(request): ApiJson<TransitionReq>,
+) -> ApiResult<oxsum_core::Statement> {
+    transition_key(&request)?;
+    // A pending statement whose due date has passed is overdue first — suspending
+    // it lands from the standing it actually holds.
+    state.db.flip_overdue(today()).await?;
+    ok(state.db.suspend_statement(statement_id).await?)
 }
 
 /// Every version of every model of one channel, newest first.
