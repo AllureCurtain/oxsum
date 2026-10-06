@@ -15,7 +15,7 @@ use axum::extract::{Path, Query, Request, State};
 use axum::http::header::AUTHORIZATION;
 use axum::middleware::Next;
 use axum::response::Response;
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::{Router, middleware};
 use oxsum_core::{Channel, InFlightHold, Kind, ModelPrice, Price, Seal, SettlementKind};
 use serde::{Deserialize, Serialize};
@@ -34,6 +34,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/channels", get(list).post(set))
         .route("/channels/{name}/prices", get(history).post(append))
         .route("/organizations", get(organizations))
+        .route("/organizations/{organization_id}", patch(set_credit_limit))
         .route(
             "/organizations/{organization_id}/adjustments",
             post(adjust_organization),
@@ -171,10 +172,14 @@ struct OrganizationRes {
     members: i64,
     #[serde(with = "time::serde::rfc3339")]
     created_at: OffsetDateTime,
-    /// Settled minus unsettled holds.
+    /// Settled minus unsettled holds — own funds plus the undrawn credit line.
     available_minor: i64,
     /// The sum of the organization's outstanding holds; 0 when it holds nothing.
     reserved_minor: i64,
+    /// The credit limit the operator granted; 0 for an organization without one.
+    credit_limit_minor: i64,
+    /// The drawn plus reserved part of the credit line.
+    credit_used_minor: i64,
 }
 
 /// The organizations query string: the page size, and where the walk resumes — an
@@ -226,6 +231,8 @@ async fn organizations(
             created_at: organization.created_at,
             available_minor: wallet.available().await?,
             reserved_minor: wallet.reserved().await?,
+            credit_limit_minor: wallet.credit_limit().await?,
+            credit_used_minor: wallet.credit_used().await?,
         });
     }
     ok(OrganizationsPageRes {
@@ -300,6 +307,59 @@ async fn adjust_organization(
         organization_id,
         amount_minor: request.amount_minor,
         reason: request.reason,
+        available_minor: wallet.available().await?,
+    })
+}
+
+/// The body of `PATCH …/organizations/{id}`: the credit line the organization
+/// may draw, absolute, and the idempotency key that makes a retry the same entry.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SetCreditLimitReq {
+    credit_limit_minor: i64,
+    idempotency_key: String,
+}
+
+/// The credit limit as it stands after the write, as the endpoint answers it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CreditLimitRes {
+    /// The ledger entry the change booked; absent when the limit did not move.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    entry_id: Option<String>,
+    organization_id: Uuid,
+    credit_limit_minor: i64,
+    credit_used_minor: i64,
+    /// The organization's spendable balance after the change, own funds plus
+    /// undrawn credit.
+    available_minor: i64,
+}
+
+/// Grants or resizes an organization's credit line — "borrow first, settle
+/// monthly" (decision D4). The limit is an entry, not a flag: the delta from the
+/// committed figure posts `debit CreditFacility, credit CreditLine`, so the
+/// whole credit history sits inside the ledger the organization can verify, and
+/// a shrink below the outstanding draw is refused by the credit-line pool's own
+/// no-overdraft rule as `INSUFFICIENT_FUNDS`, surfaced as a validation error.
+async fn set_credit_limit(
+    State(state): State<AppState>,
+    Path(organization_id): Path<Uuid>,
+    ApiJson(request): ApiJson<SetCreditLimitReq>,
+) -> ApiResult<CreditLimitRes> {
+    let organization = state.db.organization_by_id(organization_id).await?;
+    let wallet = state.tenants.get(&organization.tenant_id).await?;
+    let receipt = wallet
+        .set_credit_limit(
+            &request.idempotency_key,
+            request.credit_limit_minor,
+            today(),
+        )
+        .await?;
+    ok(CreditLimitRes {
+        entry_id: receipt.map(|r| r.entry_id.to_string()),
+        organization_id,
+        credit_limit_minor: wallet.credit_limit().await?,
+        credit_used_minor: wallet.credit_used().await?,
         available_minor: wallet.available().await?,
     })
 }

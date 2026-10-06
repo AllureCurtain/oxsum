@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.24.0
+  version: 0.25.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -76,6 +76,12 @@ info:
     `modelAllowlist` (the models the key may call on the gateway; null is all of
     them). A hold over a disallowed model is refused 403 `FORBIDDEN`; both fields
     are set at creation and replaced wholesale by `PATCH /api/v1/org/keys/{keyId}`.
+    0.25.0 adds organization credit: `PATCH
+    /api/v1/admin/organizations/{organizationId}` grants an organization a credit
+    limit, which its holds and settlements draw after the bonus and purchased
+    pools exhaust — borrow first, settle monthly. The balance answer and the
+    admin organization list gain `creditLimitMinor`/`creditUsedMinor` so the
+    drawn share is always readable next to the limit.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie, except
     `/api/v1/auth/login`, `/api/v1/auth/logout` and `/api/v1/auth/register`, which take no
@@ -707,6 +713,13 @@ paths:
   /api/v1/balance:
     get:
       summary: Available balance (settled minus unsettled holds)
+      description: |
+        `availableMinor` is everything the organization can still reserve: its own
+        funds (bonus and purchased pools) plus the undrawn part of its credit line.
+        `creditLimitMinor` is the facility the operator granted — 0 for an
+        organization without one — and `creditUsedMinor` is how much of it is
+        drawn or held against right now. What the organization holds of its own
+        money is `availableMinor - (creditLimitMinor - creditUsedMinor)`.
       responses:
         "200":
           description: The balance
@@ -718,9 +731,19 @@ paths:
                 properties:
                   data:
                     type: object
-                    required: [availableMinor]
+                    required: [availableMinor, creditLimitMinor, creditUsedMinor]
                     properties:
                       availableMinor: { type: integer, format: int64 }
+                      creditLimitMinor:
+                        type: integer
+                        format: int64
+                        minimum: 0
+                        description: the credit limit the operator granted, in minor units
+                      creditUsedMinor:
+                        type: integer
+                        format: int64
+                        minimum: 0
+                        description: the drawn plus reserved part of the credit line, in minor units
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/entries/{entryId}/proof:
@@ -1040,6 +1063,55 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "402": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/organizations/{organizationId}:
+    patch:
+      summary: Set an organization's credit limit
+      description: |
+        Grants or resizes the credit line the named organization may draw: after
+        its bonus and purchased pools exhaust, its holds and settlements keep
+        drawing down to `-creditLimitMinor` of own funds — borrow first, settle
+        monthly. The grant is a ledger entry, not a flag: the operator's facility
+        funds a credit-line pool that holds reserve against like the wallet does,
+        and the whole draw is part of the verifiable history.
+
+        `creditLimitMinor` is absolute, not a delta: the entry the call books is
+        the difference from the limit already committed, and setting the same
+        limit again books nothing. Shrinking the line below what the
+        organization already owes is `400 VALIDATION_ERROR` — the ledger's own
+        no-overdraft rule on the credit-line pool refuses the write, and the
+        refusal is a property of the request, not of the balance. `400` also
+        answers a negative limit or a missing idempotency key; `404` an
+        organization that does not exist. The idempotency key makes a retried
+        call the same entry, and the answer's `entryId` is its name — absent
+        when the limit did not move and nothing was written. Reusing the key
+        for a different limit is `409 CONFLICT`.
+      security:
+        - adminToken: []
+      parameters:
+        - name: organizationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SetCreditLimitRequest" }
+      responses:
+        "200":
+          description: The credit limit as it now stands
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/AdminCreditLimit" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/admin/holds:
     get:
@@ -1631,6 +1703,20 @@ components:
           minLength: 1
           maxLength: 200
           description: a retry writes no second entry; the same key replays the same adjustment
+    SetCreditLimitRequest:
+      type: object
+      required: [creditLimitMinor, idempotencyKey]
+      properties:
+        creditLimitMinor:
+          type: integer
+          format: int64
+          minimum: 0
+          description: the credit line the organization may draw, absolute — not a delta
+        idempotencyKey:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: a retry writes no second entry; the same key replays the same change
     PasswordResetRequest:
       type: object
       required: [newPassword]
@@ -1658,17 +1744,33 @@ components:
           type: integer
           format: int64
           description: the organization's available balance after the adjustment
+    AdminCreditLimit:
+      type: object
+      required: [organizationId, creditLimitMinor, creditUsedMinor, availableMinor]
+      properties:
+        entryId:
+          type: string
+          description: "the ledger entry's id, derived from the idempotency key — absent when the limit did not move"
+        organizationId: { type: string, format: uuid }
+        creditLimitMinor: { type: integer, format: int64, minimum: 0 }
+        creditUsedMinor: { type: integer, format: int64, minimum: 0 }
+        availableMinor:
+          type: integer
+          format: int64
+          description: the organization's spendable balance after the change, own funds plus undrawn credit
     AdminOrganization:
       type: object
-      required: [id, name, kind, members, createdAt, availableMinor, reservedMinor]
+      required: [id, name, kind, members, createdAt, availableMinor, reservedMinor, creditLimitMinor, creditUsedMinor]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
         kind: { type: string, enum: [personal, team] }
         members: { type: integer, format: int64, minimum: 0, description: how many people belong to the organization }
         createdAt: { type: string, format: date-time }
-        availableMinor: { type: integer, format: int64, description: settled minus unsettled holds }
+        availableMinor: { type: integer, format: int64, description: settled minus unsettled holds, own funds plus undrawn credit }
         reservedMinor: { type: integer, format: int64, minimum: 0, description: the sum of the organization's outstanding holds }
+        creditLimitMinor: { type: integer, format: int64, minimum: 0, description: the credit limit the operator granted }
+        creditUsedMinor: { type: integer, format: int64, minimum: 0, description: the drawn plus reserved part of the credit line }
     AdminHold:
       type: object
       required: [organization, requestId, model, channel, priceVersion, freezeMinor, openedAt]

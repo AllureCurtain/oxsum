@@ -648,6 +648,23 @@ fn Overview(data: DashboardData) -> impl IntoView {
                 <span class="muted">"Spent this month"</span>
                 <strong class="mono">{credits(data.month_spend_minor)}</strong>
             </p>
+            {data
+                .credit_limit_minor
+                .gt(&0)
+                .then(|| {
+                    view! {
+                        <p class="balance">
+                            <span class="muted">"Credit line (used of limit)"</span>
+                            <strong class="mono">
+                                {format!(
+                                    "{} / {}",
+                                    credits(data.credit_used_minor),
+                                    credits(data.credit_limit_minor),
+                                )}
+                            </strong>
+                        </p>
+                    }
+                })}
         </section>
         <HoldsSection initial=data.holds.clone()/>
         <section class="card" aria-label="Recent entries">
