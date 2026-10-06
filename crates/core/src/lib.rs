@@ -15,6 +15,7 @@ mod deposits;
 mod error;
 mod heads;
 mod holds;
+mod idempotency;
 mod invitations;
 mod keys;
 mod orgs;
@@ -43,6 +44,7 @@ pub use heads::{
     sign_head, signing_key,
 };
 pub use holds::{DEFAULT_HOLD_TIMEOUT, InFlightHold, OpenHold, SWEEP_INTERVAL, sweep_stale_holds};
+pub use idempotency::{Claim, fingerprint};
 pub use invitations::CreatedInvitation;
 pub use keys::{ActingKey, ApiKey, BudgetDuration, CreatedApiKey, KeyConstraints};
 pub use orgs::{

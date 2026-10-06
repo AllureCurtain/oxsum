@@ -385,6 +385,28 @@ impl Db {
             .execute(&mut *tx)
             .await?;
         }
+        // A settled turn resolves the request's idempotency claim, whenever one was
+        // made: a retry of a streamed turn cannot be handed the stream back, so it
+        // is answered with this receipt (issue #132). Running here covers the
+        // sweeper's settlements too, not only the turn's own write.
+        let receipt = serde_json::json!({
+            "object": "oxsum.receipt",
+            "requestId": row.request_id,
+            "kind": row.kind.as_str(),
+            "chargedMinor": row.charged_minor,
+            "freezeMinor": row.freeze_minor,
+            "settlementEntryId": row.entry_id,
+            "usage": serde_json::to_value(&row.usage).unwrap_or_default(),
+        });
+        sqlx::query(
+            "UPDATE oxsum.idempotency_records \
+             SET status = 'completed', response_status = 200, response_body = $2 \
+             WHERE request_id = $1 AND status = 'in_flight'",
+        )
+        .bind(&row.request_id)
+        .bind(&receipt)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(())
     }
