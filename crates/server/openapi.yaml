@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.23.0
+  version: 0.24.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -70,6 +70,12 @@ info:
     is the `manual` rail, unchanged on the wire), and the first live rail is
     redemption codes — `POST /api/v1/admin/redemption-codes` mints a batch and
     `POST /api/v1/redemptions` redeems one into the acting organization's wallet.
+    0.24.0 widens per-key controls: beside the cumulative `spendLimitMinor` and the
+    existing `expiresAt`, a key may carry a `budgetDuration` (`daily`, `weekly` or
+    `monthly` — the spend limit becomes per-period instead of cumulative) and a
+    `modelAllowlist` (the models the key may call on the gateway; null is all of
+    them). A hold over a disallowed model is refused 403 `FORBIDDEN`; both fields
+    are set at creation and replaced wholesale by `PATCH /api/v1/org/keys/{keyId}`.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie, except
     `/api/v1/auth/login`, `/api/v1/auth/logout` and `/api/v1/auth/register`, which take no
@@ -375,11 +381,23 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/keys/{keyId}:
     patch:
-      summary: Set or clear an API key's spend limit
+      summary: Set an API key's constraints
       description: |
+        Replaces the key's whole constraint set — each of `spendLimitMinor`,
+        `budgetDuration` and `modelAllowlist` is written as given, so a field left
+        out or null clears it.
+
         `spendLimitMinor` caps what the key may have committed — settled charges plus
-        outstanding holds attributed to it, in minor units; `null` clears the limit back to
-        unlimited. A hold that would push the key past its limit is refused with 429
+        outstanding holds attributed to it, in minor units. `budgetDuration` makes
+        that cap periodic: with `daily`, `weekly` or `monthly` the committed figure
+        counts only the current UTC period's settled charges, plus every outstanding
+        hold whatever its age; without it the cap is cumulative over all time.
+        `budgetDuration` is meaningless without a limit and is refused without one.
+        `modelAllowlist` lists the gateway models the key may call; a hold naming a
+        model outside it is refused 403 `FORBIDDEN`. The `/api/v1/holds` endpoint
+        takes no model and is not governed by the list.
+
+        A hold that would push the key past its limit is refused with 429
         `KEY_LIMIT_EXCEEDED`, atomically with the ledger append, so concurrent requests
         cannot exceed it. The scope rules are the revoke's: a member may change only the keys
         they created — any other key id answers 404 and the key is untouched; owners, admins
@@ -390,11 +408,7 @@ paths:
         required: true
         content:
           application/json:
-            schema:
-              type: object
-              required: [spendLimitMinor]
-              properties:
-                spendLimitMinor: { type: [integer, "null"], format: int64, minimum: 0, description: "the new limit in minor units, or null for unlimited" }
+            schema: { $ref: "#/components/schemas/UpdateKeyConstraintsRequest" }
       responses:
         "200":
           description: The key with its new limit
@@ -1438,9 +1452,17 @@ components:
         name: { type: string, minLength: 1, maxLength: 80 }
         expiresAt: { type: [string, "null"], format: date-time, description: optional expiry; an expired key authenticates nothing }
         spendLimitMinor: { type: [integer, "null"], format: int64, minimum: 0, description: "the key's spend limit in minor units: settled charges plus outstanding holds attributed to the key may not exceed it; null (the default) is unlimited" }
+        budgetDuration: { type: [string, "null"], enum: [daily, weekly, monthly], description: "makes spendLimitMinor periodic over the current UTC calendar period; requires spendLimitMinor, meaningless without it" }
+        modelAllowlist: { type: [array, "null"], items: { type: string, minLength: 1 }, description: "the gateway models this key may call; null (the default) allows all served models" }
+    UpdateKeyConstraintsRequest:
+      type: object
+      properties:
+        spendLimitMinor: { type: [integer, "null"], format: int64, minimum: 0, description: "the new limit in minor units, or null for unlimited" }
+        budgetDuration: { type: [string, "null"], enum: [daily, weekly, monthly], description: "periodic limit window; requires spendLimitMinor; null or absent clears it" }
+        modelAllowlist: { type: [array, "null"], items: { type: string, minLength: 1 }, description: "models the key may call; null or absent clears the list to allow all" }
     ApiKey:
       type: object
-      required: [id, name, prefix, createdBy, createdAt, expiresAt, revokedAt, spendLimitMinor]
+      required: [id, name, prefix, createdBy, createdAt, expiresAt, revokedAt, spendLimitMinor, budgetDuration, modelAllowlist]
       properties:
         id: { type: string, format: uuid }
         name: { type: [string, "null"] }
@@ -1450,6 +1472,8 @@ components:
         expiresAt: { type: [string, "null"], format: date-time }
         revokedAt: { type: [string, "null"], format: date-time }
         spendLimitMinor: { type: [integer, "null"], format: int64, minimum: 0, description: "the key's spend limit in minor units; null is unlimited" }
+        budgetDuration: { type: [string, "null"], enum: [daily, weekly, monthly], description: "the window spendLimitMinor applies to; null makes the limit cumulative" }
+        modelAllowlist: { type: [array, "null"], items: { type: string }, description: "models the key may call on the gateway; null allows all" }
     CreatedApiKey:
       allOf:
         - $ref: "#/components/schemas/ApiKey"

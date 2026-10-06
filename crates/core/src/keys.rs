@@ -27,6 +27,97 @@ const SECRET_BYTES: usize = 32;
 const PREFIX_CHARS: usize = 4 + 8;
 /// The longest a key name may be.
 pub(crate) const MAX_NAME: usize = 80;
+/// The longest one entry of a model allowlist may be.
+pub(crate) const MAX_MODEL: usize = 128;
+/// The columns every `ApiKey` read projects, in one place for select and returning.
+const KEY_COLS: &str = "key_id, name, prefix, created_by, created_at, expires_at, \
+                        revoked_at, spend_limit_minor, budget_duration, model_allowlist";
+
+/// The window a periodic spend limit applies to. Without one the limit is cumulative.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BudgetDuration {
+    Daily,
+    Weekly,
+    Monthly,
+}
+
+impl BudgetDuration {
+    /// Parses the contract's lowercase name for the duration.
+    pub fn parse(name: &str) -> Result<Self, WalletError> {
+        match name {
+            "daily" => Ok(Self::Daily),
+            "weekly" => Ok(Self::Weekly),
+            "monthly" => Ok(Self::Monthly),
+            other => Err(WalletError::InvalidInput(format!(
+                "budgetDuration must be daily, weekly or monthly, not {other:?}"
+            ))),
+        }
+    }
+
+    /// The contract's lowercase name, for storage.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Daily => "daily",
+            Self::Weekly => "weekly",
+            Self::Monthly => "monthly",
+        }
+    }
+
+    /// The first day of the UTC calendar period `on` falls in: `daily` is `on` itself,
+    /// `weekly` is the Monday of its ISO week, `monthly` is the first of its month.
+    pub(crate) fn period_start(self, on: time::Date) -> time::Date {
+        match self {
+            Self::Daily => on,
+            Self::Weekly => {
+                on - time::Duration::days(i64::from(on.weekday().number_from_monday() - 1))
+            }
+            // The first of a real month always exists; the fallback is unreachable.
+            Self::Monthly => time::Date::from_calendar_date(on.year(), on.month(), 1).unwrap_or(on),
+        }
+    }
+}
+
+/// The constraints one key carries, written as a set — at mint or replaced wholesale
+/// by a patch. Every field is optional: `None` lifts that constraint.
+#[derive(Debug, Clone, Default)]
+pub struct KeyConstraints {
+    /// Settled charges plus outstanding holds attributed to the key may not exceed it.
+    pub spend_limit_minor: Option<i64>,
+    /// Makes the limit periodic over the current UTC period. Requires a limit.
+    pub budget_duration: Option<BudgetDuration>,
+    /// The gateway models the key may call. `None` allows every served model.
+    pub model_allowlist: Option<Vec<String>>,
+}
+
+impl KeyConstraints {
+    /// The domain rules the column checks cannot express: a window needs a limit, and
+    /// an allowlist is null or a non-empty list of non-empty names.
+    fn validate(&self) -> Result<(), WalletError> {
+        validate_limit(self.spend_limit_minor)?;
+        if self.budget_duration.is_some() && self.spend_limit_minor.is_none() {
+            return Err(WalletError::InvalidInput(
+                "budgetDuration requires spendLimitMinor".into(),
+            ));
+        }
+        if let Some(models) = &self.model_allowlist {
+            if models.is_empty() {
+                return Err(WalletError::InvalidInput(
+                    "modelAllowlist must be null or name at least one model".into(),
+                ));
+            }
+            if models
+                .iter()
+                .any(|m| m.trim().is_empty() || m.len() > MAX_MODEL)
+            {
+                return Err(WalletError::InvalidInput(format!(
+                    "a modelAllowlist entry is a model name, 1..={MAX_MODEL} bytes"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
 
 /// An API key as the API presents it. Never the secret, never the hash.
 #[derive(Debug, Clone, Serialize)]
@@ -48,6 +139,10 @@ pub struct ApiKey {
     /// The key's spend limit in minor units: settled charges plus outstanding holds
     /// attributed to the key may not exceed it. `None` is unlimited.
     pub spend_limit_minor: Option<i64>,
+    /// The window the limit applies to; `None` makes it cumulative.
+    pub budget_duration: Option<BudgetDuration>,
+    /// The gateway models the key may call; `None` allows every served model.
+    pub model_allowlist: Option<Vec<String>>,
 }
 
 /// The credential behind a key-authenticated request: which key acted, and the spend
@@ -75,7 +170,7 @@ impl Db {
         name: Option<String>,
         expires_at: Option<OffsetDateTime>,
         created_by: Option<Uuid>,
-        spend_limit_minor: Option<i64>,
+        constraints: KeyConstraints,
     ) -> Result<CreatedApiKey, WalletError> {
         let name = validate_name(name)?;
         if let Some(expires) = expires_at
@@ -85,7 +180,7 @@ impl Db {
                 "expiresAt must be in the future".into(),
             ));
         }
-        validate_limit(spend_limit_minor)?;
+        constraints.validate()?;
         let mut tx = self.pool().begin().await?;
         let created = insert(
             &mut tx,
@@ -93,7 +188,7 @@ impl Db {
             name,
             expires_at,
             created_by,
-            spend_limit_minor,
+            constraints,
         )
         .await?;
         tx.commit().await?;
@@ -132,49 +227,55 @@ impl Db {
         .transpose()
     }
 
-    /// Sets or clears a key's spend limit. `None` means this organization has no such key —
-    /// which is also the answer for another organization's key id, and for a member naming a
-    /// key they did not create, so ids cannot be probed. The scope rules are the revoke's.
+    /// Replaces a key's whole constraint set: the request names the limit, the budget
+    /// window and the allowlist, each cleared by null. `None` returned means this
+    /// organization has no such key — which is also the answer for another
+    /// organization's key id, and for a member naming a key they did not create, so
+    /// ids cannot be probed. The scope rules are the revoke's.
     ///
     /// # Errors
     ///
-    /// A negative limit is [`WalletError::InvalidInput`]; storage failures surface as
-    /// [`WalletError`].
-    pub async fn update_key_limit(
+    /// A negative limit, a window without a limit or a malformed allowlist is
+    /// [`WalletError::InvalidInput`]; storage failures surface as [`WalletError`].
+    pub async fn update_key_constraints(
         &self,
         organization_id: Uuid,
         key_id: Uuid,
         scope: KeyScope,
-        spend_limit_minor: Option<i64>,
+        constraints: KeyConstraints,
     ) -> Result<Option<ApiKey>, WalletError> {
-        validate_limit(spend_limit_minor)?;
+        constraints.validate()?;
         // Like revoke: the scope is part of the lookup, not a check after it, so a member
         // naming a key they did not create gets the same answer as a key that does not exist.
         let row = match scope {
             KeyScope::Own(user_id) => {
-                sqlx::query(
-                    "UPDATE oxsum.api_keys SET spend_limit_minor = $4 \
-                 WHERE organization_id = $1 AND key_id = $2 AND created_by = $3 \
-                 RETURNING key_id, name, prefix, created_by, created_at, expires_at, \
-                           revoked_at, spend_limit_minor",
-                )
+                sqlx::query(&format!(
+                    "UPDATE oxsum.api_keys \
+                     SET spend_limit_minor = $4, budget_duration = $5, model_allowlist = $6 \
+                     WHERE organization_id = $1 AND key_id = $2 AND created_by = $3 \
+                     RETURNING {KEY_COLS}"
+                ))
                 .bind(organization_id)
                 .bind(key_id)
                 .bind(user_id)
-                .bind(spend_limit_minor)
+                .bind(constraints.spend_limit_minor)
+                .bind(constraints.budget_duration.map(|d| d.as_str()))
+                .bind(constraints.model_allowlist)
                 .fetch_optional(self.pool())
                 .await?
             }
             KeyScope::Organization | KeyScope::All => {
-                sqlx::query(
-                    "UPDATE oxsum.api_keys SET spend_limit_minor = $3 \
-                 WHERE organization_id = $1 AND key_id = $2 \
-                 RETURNING key_id, name, prefix, created_by, created_at, expires_at, \
-                           revoked_at, spend_limit_minor",
-                )
+                sqlx::query(&format!(
+                    "UPDATE oxsum.api_keys \
+                     SET spend_limit_minor = $3, budget_duration = $4, model_allowlist = $5 \
+                     WHERE organization_id = $1 AND key_id = $2 \
+                     RETURNING {KEY_COLS}"
+                ))
                 .bind(organization_id)
                 .bind(key_id)
-                .bind(spend_limit_minor)
+                .bind(constraints.spend_limit_minor)
+                .bind(constraints.budget_duration.map(|d| d.as_str()))
+                .bind(constraints.model_allowlist)
                 .fetch_optional(self.pool())
                 .await?
             }
@@ -191,30 +292,29 @@ impl Db {
         organization_id: Uuid,
         scope: KeyScope,
     ) -> Result<Vec<ApiKey>, WalletError> {
-        let rows =
-            match scope {
-                KeyScope::Own(user_id) => sqlx::query(
-                    "SELECT key_id, name, prefix, created_by, created_at, expires_at, revoked_at, \
-                            spend_limit_minor \
-                     FROM oxsum.api_keys \
-                     WHERE organization_id = $1 AND created_by = $2 \
-                     ORDER BY created_at DESC, key_id",
-                )
+        let rows = match scope {
+            KeyScope::Own(user_id) => {
+                sqlx::query(&format!(
+                    "SELECT {KEY_COLS} FROM oxsum.api_keys \
+                 WHERE organization_id = $1 AND created_by = $2 \
+                 ORDER BY created_at DESC, key_id"
+                ))
                 .bind(organization_id)
                 .bind(user_id)
                 .fetch_all(self.pool())
-                .await?,
-                KeyScope::Organization | KeyScope::All => sqlx::query(
-                    "SELECT key_id, name, prefix, created_by, created_at, expires_at, revoked_at, \
-                            spend_limit_minor \
-                     FROM oxsum.api_keys \
-                     WHERE organization_id = $1 \
-                     ORDER BY created_at DESC, key_id",
-                )
+                .await?
+            }
+            KeyScope::Organization | KeyScope::All => {
+                sqlx::query(&format!(
+                    "SELECT {KEY_COLS} FROM oxsum.api_keys \
+                 WHERE organization_id = $1 \
+                 ORDER BY created_at DESC, key_id"
+                ))
                 .bind(organization_id)
                 .fetch_all(self.pool())
-                .await?,
-            };
+                .await?
+            }
+        };
         rows.iter().map(key_from_row).collect()
     }
 
@@ -234,12 +334,11 @@ impl Db {
         // not a check after it.
         let row = match scope {
             KeyScope::Own(user_id) => {
-                sqlx::query(
+                sqlx::query(&format!(
                     "UPDATE oxsum.api_keys SET revoked_at = COALESCE(revoked_at, now()) \
                      WHERE organization_id = $1 AND key_id = $2 AND created_by = $3 \
-                     RETURNING key_id, name, prefix, created_by, created_at, expires_at, \
-                               revoked_at, spend_limit_minor",
-                )
+                     RETURNING {KEY_COLS}"
+                ))
                 .bind(organization_id)
                 .bind(key_id)
                 .bind(user_id)
@@ -247,12 +346,11 @@ impl Db {
                 .await?
             }
             KeyScope::Organization | KeyScope::All => {
-                sqlx::query(
+                sqlx::query(&format!(
                     "UPDATE oxsum.api_keys SET revoked_at = COALESCE(revoked_at, now()) \
                      WHERE organization_id = $1 AND key_id = $2 \
-                     RETURNING key_id, name, prefix, created_by, created_at, expires_at, \
-                               revoked_at, spend_limit_minor",
-                )
+                     RETURNING {KEY_COLS}"
+                ))
                 .bind(organization_id)
                 .bind(key_id)
                 .fetch_optional(self.pool())
@@ -271,19 +369,18 @@ pub(crate) async fn insert(
     name: Option<String>,
     expires_at: Option<OffsetDateTime>,
     created_by: Option<Uuid>,
-    spend_limit_minor: Option<i64>,
+    constraints: KeyConstraints,
 ) -> Result<CreatedApiKey, WalletError> {
     let secret = generate_secret();
     let prefix = secret.chars().take(PREFIX_CHARS).collect::<String>();
     let hash = hash_secret(&secret);
-    let row = sqlx::query(
+    let row = sqlx::query(&format!(
         "INSERT INTO oxsum.api_keys \
              (key_id, organization_id, name, prefix, secret_hash, created_by, expires_at, \
-              spend_limit_minor) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
-         RETURNING key_id, name, prefix, created_by, created_at, expires_at, revoked_at, \
-                   spend_limit_minor",
-    )
+              spend_limit_minor, budget_duration, model_allowlist) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+         RETURNING {KEY_COLS}"
+    ))
     .bind(Uuid::new_v4())
     .bind(organization_id)
     .bind(name.as_deref())
@@ -291,7 +388,9 @@ pub(crate) async fn insert(
     .bind(hash.as_slice())
     .bind(created_by)
     .bind(expires_at)
-    .bind(spend_limit_minor)
+    .bind(constraints.spend_limit_minor)
+    .bind(constraints.budget_duration.map(|d| d.as_str()))
+    .bind(constraints.model_allowlist)
     .fetch_one(&mut **tx)
     .await
     .map_err(|e| conflict_or_storage(e, "api_keys_secret_hash_key", "key collision"))?;
@@ -351,6 +450,12 @@ fn key_from_row(row: &sqlx::postgres::PgRow) -> Result<ApiKey, WalletError> {
         expires_at: row.try_get("expires_at")?,
         revoked_at: row.try_get("revoked_at")?,
         spend_limit_minor: row.try_get("spend_limit_minor")?,
+        budget_duration: row
+            .try_get::<Option<String>, _>("budget_duration")?
+            .as_deref()
+            .map(BudgetDuration::parse)
+            .transpose()?,
+        model_allowlist: row.try_get("model_allowlist")?,
     })
 }
 

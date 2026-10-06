@@ -16,7 +16,7 @@ use uuid::Uuid;
 use crate::billing::{SettlementKind, SettlementRecord};
 use crate::error::{WalletError, invalid};
 use crate::heads::{Consistency, HeadSigningKey, SignedHead, origin_for, sign_head};
-use crate::keys::ActingKey;
+use crate::keys::{ActingKey, BudgetDuration};
 use crate::proof::ProofBundle;
 
 /// Money precision: 6 decimal places; 1 credit = 1_000_000 minor, fine enough for per-token pricing.
@@ -542,6 +542,10 @@ impl Wallet {
     /// committed spend past its limit, and with [`WalletError::InsufficientFunds`] when the
     /// balance cannot cover it — the key limit never overrides the balance.
     ///
+    /// `model` is the gateway model the request wants, when the caller names one — the
+    /// `/holds` endpoint passes `None` and is not governed by a model allowlist. A hold
+    /// for a model the key may not use is [`WalletError::Forbidden`].
+    ///
     /// The reservation splits across the pools like [`hold`](Self::hold)'s does; the
     /// split is computed on the transaction's connection so the lock, the limit read
     /// and the balance read agree on what is committed, and the whole flow retries
@@ -549,6 +553,7 @@ impl Wallet {
     pub async fn hold_for_key(
         &self,
         key: &ActingKey,
+        model: Option<&str>,
         idem_key: &str,
         description: &str,
         minor: i64,
@@ -569,15 +574,16 @@ impl Wallet {
                 .bind(limit_lock_key(&self.tenant_id, &key.key_id))
                 .execute(&mut *tx)
                 .await?;
-            // The limit in force now, not the one the request authenticated with: locked, so a
-            // PATCH landing between authentication and this hold cannot be missed.
-            let limit: Option<Option<i64>> = sqlx::query_scalar(
-                "SELECT spend_limit_minor FROM oxsum.api_keys WHERE key_id = $1 FOR UPDATE",
+            // The constraints in force now, not the ones the request authenticated with:
+            // locked, so a PATCH landing between authentication and this hold cannot be missed.
+            let constraints = sqlx::query(
+                "SELECT spend_limit_minor, budget_duration, model_allowlist \
+                 FROM oxsum.api_keys WHERE key_id = $1 FOR UPDATE",
             )
             .bind(key.key_id)
             .fetch_optional(&mut *tx)
             .await?;
-            let Some(limit) = limit else {
+            let Some(constraints) = constraints else {
                 // Keys are never deleted; a missing row means the credential died mid-request.
                 return Err(WalletError::Unauthenticated);
             };
@@ -608,15 +614,36 @@ impl Wallet {
                     is_new: false,
                 });
             }
-            if existing.is_none()
-                && let Some(limit) = limit
-            {
-                let committed = self.key_committed_in(&mut tx, &key.key_id).await?;
-                if committed + minor > limit {
-                    return Err(WalletError::KeyLimitExceeded {
-                        limit_minor: limit,
-                        committed_minor: committed,
-                    });
+            if existing.is_none() {
+                use sqlx::Row;
+                // Like the limit, the allowlist guards new spend: a replayed hold answers
+                // with its own receipt even if the list has since dropped the model.
+                let allowlist: Option<Vec<String>> = constraints.try_get("model_allowlist")?;
+                if let (Some(model), Some(list)) = (model, &allowlist)
+                    && !list.iter().any(|allowed| allowed == model)
+                {
+                    return Err(WalletError::Forbidden(format!(
+                        "this key may not call model {model:?}"
+                    )));
+                }
+                let limit: Option<i64> = constraints.try_get("spend_limit_minor")?;
+                if let Some(limit) = limit {
+                    // A budget window makes the limit periodic: committed counts only the
+                    // current period's settled charges; outstanding holds count whatever
+                    // their age, because they still reserve money now.
+                    let since = constraints
+                        .try_get::<Option<String>, _>("budget_duration")?
+                        .as_deref()
+                        .map(BudgetDuration::parse)
+                        .transpose()?
+                        .map(|d| d.period_start(on));
+                    let committed = self.key_committed_in(&mut tx, &key.key_id, since).await?;
+                    if committed + minor > limit {
+                        return Err(WalletError::KeyLimitExceeded {
+                            limit_minor: limit,
+                            committed_minor: committed,
+                        });
+                    }
                 }
             }
             match self.append_sealed(entry).await {
@@ -640,15 +667,20 @@ impl Wallet {
     /// drift from the books.
     pub async fn key_committed(&self, key_id: &Uuid) -> Result<i64, WalletError> {
         let mut conn = self.store.pool().acquire().await?;
-        self.key_committed_in(&mut conn, key_id).await
+        self.key_committed_in(&mut conn, key_id, None).await
     }
 
     /// The [`key_committed`](Self::key_committed) read, on the caller's connection: the
     /// limit check runs it inside the transaction that holds the per-key advisory lock.
+    ///
+    /// `since` scopes the settled half to entries booked on or after that date — the
+    /// period start a `budget_duration` window gives. Pending postings always count in
+    /// full: an outstanding hold reserves money now whatever day it was taken.
     async fn key_committed_in(
         &self,
         conn: &mut sqlx::PgConnection,
         key_id: &Uuid,
+        since: Option<Date>,
     ) -> Result<i64, WalletError> {
         // The schema name is assembled from the validated tenant id, like `Wallet::open`
         // does; the actor is the key id in uuid simple form, bound as a parameter.
@@ -657,12 +689,14 @@ impl Wallet {
                               ELSE -p.amount_minor END), 0)::bigint AS committed \
              FROM ledger_{schema}.postings p \
              JOIN ledger_{schema}.entries e ON e.entry_id = p.entry_id \
-             WHERE p.account_index = ANY($1) AND e.provenance_actor = $2",
+             WHERE p.account_index = ANY($1) AND e.provenance_actor = $2 \
+               AND (p.layer = 'pending' OR $3::date IS NULL OR e.booking_date >= $3)",
             schema = self.tenant_id,
         );
         let committed: i64 = sqlx::query_scalar(&sql)
             .bind(vec![self.wallet.index() as i32, self.bonus.index() as i32])
             .bind(key_id.as_simple().to_string())
+            .bind(since)
             .fetch_one(&mut *conn)
             .await?;
         Ok(committed)

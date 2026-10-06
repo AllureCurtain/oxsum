@@ -200,7 +200,14 @@ async fn run(
         return Err(error.into());
     }
     if let Err(error) = wallet
-        .hold_for_key(key, &hold_key, &description, freeze, today())
+        .hold_for_key(
+            key,
+            Some(request.model.as_str()),
+            &hold_key,
+            &description,
+            freeze,
+            today(),
+        )
         .await
     {
         // The hold was refused, so there is nothing for the sweeper to watch.

@@ -92,7 +92,7 @@ impl Db {
             Some(FIRST_KEY_NAME.to_owned()),
             None,
             Some(user_id),
-            None,
+            keys::KeyConstraints::default(),
         )
         .await?;
         tx.commit().await?;

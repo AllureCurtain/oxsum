@@ -159,7 +159,7 @@ impl Db {
             Some("default".to_owned()),
             None,
             Some(user_id),
-            None,
+            keys::KeyConstraints::default(),
         )
         .await?;
         tx.commit().await?;
