@@ -1693,3 +1693,151 @@ async fn a_topup_records_its_manual_deposit() {
             .unwrap();
     assert_eq!(rows, 1);
 }
+
+/// `PATCH /api/v1/admin/organizations/{id}` grants a credit line and the whole
+/// draw is then ledger-visible: the org's own balance endpoint and the admin's
+/// organization list both read limit and used from the books.
+#[tokio::test]
+async fn a_credit_limit_is_granted_drawn_and_repaid() {
+    let (app, _pool) = app_or_skip!();
+    let (org, key) = register(&app, "creditline").await;
+
+    // Grant 10 credits of credit — a platform action, so the organization's own
+    // key is not a credential for it.
+    let (status, body) = call_with(
+        &app,
+        "PATCH",
+        &format!("/api/v1/admin/organizations/{org}"),
+        Some(json!({"creditLimitMinor": 10_000_000, "idempotencyKey": "cl-grant-1"})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+
+    let (status, body) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/admin/organizations/{org}"),
+        Some(json!({"creditLimitMinor": 10_000_000, "idempotencyKey": "cl-grant-1"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let entry_id = body["data"]["entryId"].as_str().unwrap().to_owned();
+    assert_eq!(body["data"]["creditLimitMinor"], 10_000_000);
+    assert_eq!(body["data"]["creditUsedMinor"], 0);
+
+    // The organization's balance answers the line: nothing of it drawn yet.
+    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["creditLimitMinor"], 10_000_000);
+    assert_eq!(body["data"]["creditUsedMinor"], 0);
+
+    // With 5 of own funds and a 10 line, a 12 hold lands; a 4 on top does not.
+    let (status, body) = call_with(
+        &app,
+        "POST",
+        "/api/v1/topups",
+        Some(json!({"idempotencyKey": "cl-topup", "amountMinor": 5_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = call_with(
+        &app,
+        "POST",
+        "/api/v1/holds",
+        Some(json!({"idempotencyKey": "cl-hold", "amountMinor": 12_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = call_with(
+        &app,
+        "POST",
+        "/api/v1/holds",
+        Some(json!({"idempotencyKey": "cl-hold-2", "amountMinor": 4_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "{body}");
+
+    // Settle the whole hold: 7 of the charge sits on the line.
+    let (status, body) = call_with(
+        &app,
+        "POST",
+        "/api/v1/settlements",
+        Some(json!({"holdKey": "cl-hold", "actualMinor": 12_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["creditUsedMinor"], 7_000_000);
+    assert_eq!(body["data"]["availableMinor"], 3_000_000);
+
+    // The line cannot shrink below what is still owed.
+    let (status, body) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/admin/organizations/{org}"),
+        Some(json!({"creditLimitMinor": 5_000_000, "idempotencyKey": "cl-shrink"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    // But to exactly the debt it can — and the same key replays its own entry.
+    let (status, body) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/admin/organizations/{org}"),
+        Some(json!({"creditLimitMinor": 7_000_000, "idempotencyKey": "cl-shrink-2"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/admin/organizations/{org}"),
+        Some(json!({"creditLimitMinor": 10_000_000, "idempotencyKey": "cl-grant-1"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["entryId"], entry_id);
+
+    // The same key carrying a different limit is a conflict, not a replay.
+    let (status, body) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/admin/organizations/{org}"),
+        Some(json!({"creditLimitMinor": 15_000_000, "idempotencyKey": "cl-grant-1"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+    // A repaying top-up restores the line before it adds own funds: 7 owed,
+    // 9 in — the debt clears and 2 land in the wallet.
+    let (status, body) = call_with(
+        &app,
+        "POST",
+        "/api/v1/topups",
+        Some(json!({"idempotencyKey": "cl-repay", "amountMinor": 9_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["creditUsedMinor"], 0);
+    assert_eq!(body["data"]["availableMinor"], 9_000_000);
+
+    // An organization that does not exist is a 404.
+    let (status, body) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/admin/organizations/{}", uuid::Uuid::new_v4()),
+        Some(json!({"creditLimitMinor": 1_000_000, "idempotencyKey": "cl-none"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+}

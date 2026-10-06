@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc bc56390b9a4273f9fb74ef27970c9c3a68b4823309b754c183b6e3c7b86f6ab7 # shrinks to ledger = 5, raw = [TopUp(577596), Hold(1022246), Replay { back: 192 }]
