@@ -2213,3 +2213,139 @@ async fn a_scrape_counts_the_settled_turn() {
         .find(|line| line.starts_with("oxsum_open_holds"))
         .expect("the open-holds gauge is reported");
 }
+
+/// The response head carries the freeze and the runway (P4-3): a non-streamed
+/// answer also stamps the settled charge, because the settlement lands before
+/// the answer goes out.
+#[tokio::test]
+async fn the_answer_says_what_it_cost_and_what_is_left() {
+    let world = world!(1_000_000);
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+
+    let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
+    let header = |name: &str| -> i64 {
+        response
+            .headers()
+            .get(name)
+            .unwrap_or_else(|| panic!("the {name} header is set"))
+            .to_str()
+            .expect("the header is ASCII")
+            .parse()
+            .expect("the header is a number")
+    };
+    let freeze = expected_freeze(None);
+    assert_eq!(header("x-oxsum-freeze-minor"), freeze);
+    // The runway is the spendable balance measured right after the hold landed.
+    assert_eq!(header("x-oxsum-balance-minor"), 1_000_000 - freeze);
+    assert_eq!(header("x-oxsum-charged-minor"), 12);
+    let (status, _) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+/// A streamed answer's head went out before the turn settled, so the charge
+/// arrives as an HTTP trailer — the one channel that does not touch the
+/// OpenAI stream's own bytes (P4-3).
+#[tokio::test]
+async fn a_streamed_answer_reports_its_charge_in_a_trailer() {
+    let world = world!(1_000_000);
+    world.answers(
+        "stream",
+        Answer::Stream {
+            usage: true,
+            terminated: true,
+        },
+    );
+
+    let response = chat(
+        &world.app,
+        &world.key,
+        json!({
+            "model": world.model("stream"),
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true,
+        }),
+    )
+    .await;
+    let freeze = expected_freeze(None);
+    assert_eq!(
+        response
+            .headers()
+            .get("x-oxsum-freeze-minor")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<i64>().ok()),
+        Some(freeze)
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("x-oxsum-balance-minor")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<i64>().ok()),
+        Some(1_000_000 - freeze)
+    );
+    // The settled charge is announced as a trailer, not stamped on the head.
+    assert_eq!(
+        response
+            .headers()
+            .get("trailer")
+            .and_then(|value| value.to_str().ok()),
+        Some("x-oxsum-charged-minor")
+    );
+    assert!(
+        response.headers().get("x-oxsum-charged-minor").is_none(),
+        "the head cannot know the charge yet"
+    );
+    let collected = response
+        .into_body()
+        .collect()
+        .await
+        .expect("collects the body");
+    let trailers = collected.trailers().expect("the trailer block is sent");
+    assert_eq!(
+        trailers
+            .get("x-oxsum-charged-minor")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<i64>().ok()),
+        Some(12),
+        "the trailer carries the settled charge: {trailers:?}"
+    );
+}
+
+/// A refusal that happened after the hold still says the cost: the whole
+/// freeze went back, so the settled charge is zero (P4-3).
+#[tokio::test]
+async fn a_post_hold_refusal_reports_a_zero_charge() {
+    let world = world!(1_000_000);
+    world.answers(
+        "refuse",
+        Answer::Refuse {
+            status: 500,
+            body: json!({"error": {"message": "model overloaded", "type": "api_error"}}),
+        },
+    );
+
+    let response = chat(&world.app, &world.key, simple(&world.model("refuse"))).await;
+    let freeze = expected_freeze(None);
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(
+        response
+            .headers()
+            .get("x-oxsum-charged-minor")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<i64>().ok()),
+        Some(0)
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("x-oxsum-freeze-minor")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<i64>().ok()),
+        Some(freeze)
+    );
+}
