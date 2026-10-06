@@ -311,6 +311,25 @@ drawn line before it adds purchased balance. The admin lowers the limit only aft
 the drawn part is repaid — shrinking below the debt is refused, and a top-up is how
 the debt shrinks.
 
+## Statements
+
+Purpose: read the monthly bill for what the credit line carried.
+
+A platform that bills monthly issues one statement per UTC month that had usage:
+`GET /api/v1/statements` lists them newest first, and
+`GET /api/v1/statements/{statementId}` answers one with its `lines` — the month's
+charges itemized by channel and model, with turn and token counts. What the
+statement is owed is `creditDrawnMinor` — the part of the month's charges the
+credit line carried — and `outstandingMinor` is what is still open. `dueDate`
+comes from the `paymentTermsDays` the organization carried when the statement was
+issued.
+
+Paying a statement needs no dedicated call: any top-up or redemption repays the
+credit line first, and repayments always land on the oldest open statement — so a
+`POST /api/v1/topups` while a statement is outstanding settles it. `paymentStatus`
+reads `pending` until the due date has passed (then `overdue`), `suspended` while
+the platform holds the bill, and `paid` once repayments cover it.
+
 ## Verifying a bill
 
 Purpose: confirm a recorded transaction has not been altered since.
