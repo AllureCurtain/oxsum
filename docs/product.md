@@ -115,6 +115,7 @@ v1 has no payment integration. Credit has four designed sources; the table says 
 
 - `POST /v1/chat/completions`, streaming and non-streaming
 - `GET /v1/models`: lists only models with configured prices
+- `Idempotency-Key` on the chat endpoint makes a client retry the same turn: the identical request replays the first response (or the settled receipt for a streamed turn), a different body under the same key is refused 422, and a retry while the first turn still runs is refused 409. A retry never produces a second hold or charge.
 
 v1 has no embeddings, images, audio, Responses API or Anthropic Messages format. Request content is text-only; messages containing images get a 400. This is decided: the input token upper bound must be computable for the freeze promise to hold (see "How much to freeze" below). Image support is re-evaluated post-v1.
 
@@ -247,8 +248,6 @@ The platform admin surface is the `/api/v1/admin` REST API under the operator to
 - Multi-currency
 - Multi-channel load balancing and failover
 - Anything beyond text chat
-- Request-level deduplication: retrying with the same Idempotency-Key charges once. Streaming responses cannot be replayed verbatim, so this waits; instead, every request is individually traceable on the bill.
-- Rate limiting: v1's only gate is balance. The sum of concurrent freezes cannot exceed the balance, which itself bounds concurrency.
 
 ## Planned, in one place
 
