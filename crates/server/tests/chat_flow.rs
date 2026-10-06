@@ -130,7 +130,7 @@ async fn world_for(url: &str) -> World {
     oxsum_server::prepare(&db, &config)
         .await
         .expect("the deployment is prepared");
-    let (app, _billing) = oxsum_server::app_with_billing(db.clone(), config);
+    let (app, _billing, _metrics) = oxsum_server::app_with_billing(db.clone(), config);
     let tenants = Tenants::new(pool.clone());
 
     let email = format!(
