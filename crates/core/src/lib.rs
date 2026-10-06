@@ -42,7 +42,7 @@ pub use heads::{
 };
 pub use holds::{DEFAULT_HOLD_TIMEOUT, InFlightHold, OpenHold, SWEEP_INTERVAL, sweep_stale_holds};
 pub use invitations::CreatedInvitation;
-pub use keys::{ActingKey, ApiKey, CreatedApiKey};
+pub use keys::{ActingKey, ApiKey, BudgetDuration, CreatedApiKey, KeyConstraints};
 pub use orgs::{
     AdminOrganization, Kind, Member, MembershipActor, Organization, Ownership, Role,
     UserOrganization,

@@ -10,7 +10,7 @@ use oxsum_core::{
     ApiKey, Consistency, CreatedApiKey, CreatedInvitation, CreatedSession, HeadSigningKey,
     KeyPublication, Member, NewUser, Organization, Ownership, Principal, Registration, Role,
     SESSION_COOKIE, Session, SessionPrincipal, SignedHead, Tenants, User, UserOrganization, Wallet,
-    signing_key,
+    WalletError, signing_key,
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -151,14 +151,39 @@ struct CreateKeyReq {
     /// Minor units; absent or null means unlimited.
     #[serde(default)]
     spend_limit_minor: Option<i64>,
+    /// "daily" | "weekly" | "monthly"; absent keeps the limit cumulative.
+    #[serde(default)]
+    budget_duration: Option<String>,
+    /// The gateway models this key may call; absent or null allows all of them.
+    #[serde(default)]
+    model_allowlist: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct UpdateKeyLimitReq {
+struct UpdateKeyConstraintsReq {
     /// The new limit in minor units; null clears it back to unlimited.
     #[serde(default)]
     spend_limit_minor: Option<i64>,
+    /// The window the limit applies to; null clears it back to cumulative.
+    #[serde(default)]
+    budget_duration: Option<String>,
+    /// The models the key may call; null clears the list back to all.
+    #[serde(default)]
+    model_allowlist: Option<Vec<String>>,
+}
+
+/// Builds the constraint set both key endpoints carry, parsing the duration's name.
+fn key_constraints(r: &UpdateKeyConstraintsReq) -> Result<oxsum_core::KeyConstraints, WalletError> {
+    Ok(oxsum_core::KeyConstraints {
+        spend_limit_minor: r.spend_limit_minor,
+        budget_duration: r
+            .budget_duration
+            .as_deref()
+            .map(oxsum_core::BudgetDuration::parse)
+            .transpose()?,
+        model_allowlist: r.model_allowlist.clone(),
+    })
 }
 
 #[derive(Deserialize)]
@@ -435,9 +460,19 @@ async fn create_key(
     Extension(principal): Extension<Principal>,
     body: Option<ApiJson<CreateKeyReq>>,
 ) -> ApiResult<CreatedApiKey> {
-    let (name, expires_at, spend_limit_minor) = body.map_or((None, None, None), |ApiJson(r)| {
-        (r.name, r.expires_at, r.spend_limit_minor)
-    });
+    let (name, expires_at, constraints) = body
+        .map_or(
+            Ok((None, None, oxsum_core::KeyConstraints::default())),
+            |ApiJson(r)| {
+                key_constraints(&UpdateKeyConstraintsReq {
+                    spend_limit_minor: r.spend_limit_minor,
+                    budget_duration: r.budget_duration,
+                    model_allowlist: r.model_allowlist,
+                })
+                .map(|c| (r.name, r.expires_at, c))
+            },
+        )
+        .map_err(ApiError::from)?;
     // A key minted through a session records who minted it, for product.md's per-member
     // rules; a key minted with an API key records no creator, because no person acts there.
     ok(state
@@ -447,7 +482,7 @@ async fn create_key(
             name,
             expires_at,
             principal.user_id(),
-            spend_limit_minor,
+            constraints,
         )
         .await?)
 }
@@ -483,17 +518,17 @@ async fn patch_key(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
     Path(key_id): Path<Uuid>,
-    ApiJson(r): ApiJson<UpdateKeyLimitReq>,
+    ApiJson(r): ApiJson<UpdateKeyConstraintsReq>,
 ) -> ApiResult<ApiKey> {
     // The scope rules are the revoke's: a member may change only the keys they created,
     // and any other key id answers 404 with the key untouched, so ids cannot be probed.
     match state
         .db
-        .update_key_limit(
+        .update_key_constraints(
             principal.organization().id,
             key_id,
             principal.key_scope(),
-            r.spend_limit_minor,
+            key_constraints(&r)?,
         )
         .await?
     {
@@ -649,7 +684,7 @@ async fn hold(
     // spend limit; a session holds unattributed, with no limit to check.
     match principal.acting_key() {
         Some(key) => ok(w
-            .hold_for_key(key, &r.idempotency_key, "", r.amount_minor, today())
+            .hold_for_key(key, None, &r.idempotency_key, "", r.amount_minor, today())
             .await?),
         None => ok(w
             .hold(&r.idempotency_key, "", r.amount_minor, today())

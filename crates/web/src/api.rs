@@ -571,7 +571,7 @@ pub async fn create_key(name: Option<String>) -> Result<CreatedKeyView, ServerFn
             name,
             None,
             Some(principal.user.id),
-            None,
+            oxsum_core::KeyConstraints::default(),
         )
         .await
         .map_err(|error| match error {
