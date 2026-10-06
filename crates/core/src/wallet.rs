@@ -1188,6 +1188,92 @@ impl Wallet {
         Ok(-self.settled_net_in(conn, self.facility).await?)
     }
 
+    /// What the credit line carried for settlements whose booking dates fall in
+    /// `[from, to]` inclusive — a statement period's credit-drawn figure: the part
+    /// of the month's charges the organization borrowed rather than paid from its
+    /// own pools (issue #124).
+    ///
+    /// Settled debits on the credit line, entries carrying a facility leg excluded:
+    /// a limit *shrink* debits the line too, and granting the organization less
+    /// credit is not it spending.
+    pub async fn credit_drawn_between(&self, from: Date, to: Date) -> Result<i64, WalletError> {
+        self.credit_flow("D", Some(from), Some(to)).await
+    }
+
+    /// The same read cumulative through `to`: where the FIFO match of repayments
+    /// against draws positions a statement's debt. Repayments cover the line's
+    /// draws oldest first, so a statement is paid in the measure that all-time
+    /// repaid exceeds the draws booked before its period (issue #124).
+    pub async fn credit_drawn_through(&self, to: Date) -> Result<i64, WalletError> {
+        self.credit_flow("D", None, Some(to)).await
+    }
+
+    /// What top-ups and payments have repaid to the credit line over all time —
+    /// settled credits on it that carry no facility leg, which excludes the limit
+    /// *grants* that credit the line without a payment behind them (issue #124).
+    pub async fn credit_repaid(&self) -> Result<i64, WalletError> {
+        self.credit_flow("C", None, None).await
+    }
+
+    /// Settled postings on the credit line of one `direction` (`D` or `C`),
+    /// bounded by booking date, facility-leg entries excluded — those are the
+    /// credit-limit changes, and a limit moving is neither a draw nor a repayment.
+    async fn credit_flow(
+        &self,
+        direction: &str,
+        from: Option<Date>,
+        to: Option<Date>,
+    ) -> Result<i64, WalletError> {
+        let mut conn = self.store.pool().acquire().await?;
+        let sql = format!(
+            "SELECT COALESCE(SUM(p.amount_minor), 0)::bigint AS flow \
+             FROM ledger_{schema}.postings p \
+             JOIN ledger_{schema}.entries e ON e.entry_id = p.entry_id \
+             WHERE p.account_index = $1 AND p.direction = $2 AND p.layer = 'settled' \
+               AND e.log_index IS NOT NULL \
+               AND ($3::date IS NULL OR e.booking_date >= $3) \
+               AND ($4::date IS NULL OR e.booking_date <= $4) \
+               AND NOT EXISTS (SELECT 1 FROM ledger_{schema}.postings f \
+                               WHERE f.entry_id = p.entry_id AND f.account_index = $5)",
+            schema = self.tenant_id,
+        );
+        let flow: i64 = sqlx::query_scalar(&sql)
+            .bind(self.credit_line.index() as i32)
+            .bind(direction)
+            .bind(from)
+            .bind(to)
+            .bind(self.facility.index() as i32)
+            .fetch_one(&mut *conn)
+            .await?;
+        Ok(flow)
+    }
+
+    /// The log-index window covering the named entries: `(min, max)` of the
+    /// log indices the ids sit at, `None`s when none of them is in the log.
+    /// A finalized statement stores the window over its settlement entries so
+    /// the lines' proof window is a range the caller can walk (issue #124).
+    pub async fn log_window_of(
+        &self,
+        entry_ids: &[Uuid],
+    ) -> Result<(Option<i64>, Option<i64>), WalletError> {
+        if entry_ids.is_empty() {
+            return Ok((None, None));
+        }
+        use sqlx::Row;
+        let mut conn = self.store.pool().acquire().await?;
+        let sql = format!(
+            "SELECT min(log_index)::bigint, max(log_index)::bigint \
+             FROM ledger_{schema}.entries \
+             WHERE entry_id = ANY($1) AND log_index IS NOT NULL",
+            schema = self.tenant_id,
+        );
+        let row = sqlx::query(&sql)
+            .bind(entry_ids)
+            .fetch_one(&mut *conn)
+            .await?;
+        Ok((row.try_get(0)?, row.try_get(1)?))
+    }
+
     /// Grants or resizes the organization's credit line, booking the delta as a
     /// ledger entry: `debit CreditFacility, credit CreditLine` to grow the line,
     /// the reverse to shrink it.

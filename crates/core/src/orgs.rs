@@ -106,6 +106,8 @@ pub struct AdminOrganization {
     pub kind: Kind,
     /// How many people belong: a personal organization is normally one, a team's more.
     pub members: i64,
+    /// Days a finalized statement's payment has before it falls due (issue #124).
+    pub payment_terms_days: i32,
     pub created_at: OffsetDateTime,
 }
 
@@ -174,14 +176,19 @@ fn assignable(role: Role) -> Result<Role, WalletError> {
     }
 }
 
-/// One `AdminOrganization` out of the shared `SELECT` both organization lists run.
-fn admin_organization(row: &sqlx::postgres::PgRow) -> Result<AdminOrganization, WalletError> {
+/// One `AdminOrganization` out of the shared `SELECT` the organization lists run;
+/// `pub(crate)` for statements' billable-organizations read, which runs the same
+/// column set.
+pub(crate) fn admin_organization(
+    row: &sqlx::postgres::PgRow,
+) -> Result<AdminOrganization, WalletError> {
     Ok(AdminOrganization {
         id: row.try_get("organization_id")?,
         name: row.try_get("name")?,
         tenant_id: row.try_get("tenant_id")?,
         kind: Kind::parse(&row.try_get::<String, _>("kind")?)?,
         members: row.try_get("members")?,
+        payment_terms_days: row.try_get("payment_terms_days")?,
         created_at: row.try_get("created_at")?,
     })
 }
@@ -196,7 +203,7 @@ impl Db {
     /// Storage failures surface as [`WalletError`].
     pub async fn organizations(&self) -> Result<Vec<AdminOrganization>, WalletError> {
         let rows = sqlx::query(
-            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, \
+            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, o.payment_terms_days, \
              count(m.user_id) AS members \
              FROM oxsum.organizations o LEFT JOIN oxsum.memberships m USING (organization_id) \
              GROUP BY o.organization_id ORDER BY o.created_at",
@@ -233,7 +240,7 @@ impl Db {
         let (created_at, id) = after.unzip();
         let wanted = limit.clamp(1, 100) as i64;
         let rows = sqlx::query(
-            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, \
+            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, o.payment_terms_days, \
              count(m.user_id) AS members \
              FROM oxsum.organizations o LEFT JOIN oxsum.memberships m USING (organization_id) \
              WHERE $1::timestamptz IS NULL OR o.created_at > $1 \
@@ -267,7 +274,7 @@ impl Db {
     /// failures surface as [`WalletError`].
     pub async fn organization_by_id(&self, id: Uuid) -> Result<AdminOrganization, WalletError> {
         let row = sqlx::query(
-            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at,              count(m.user_id) AS members              FROM oxsum.organizations o LEFT JOIN oxsum.memberships m USING (organization_id)              WHERE o.organization_id = $1 GROUP BY o.organization_id",
+            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, o.payment_terms_days,              count(m.user_id) AS members              FROM oxsum.organizations o LEFT JOIN oxsum.memberships m USING (organization_id)              WHERE o.organization_id = $1 GROUP BY o.organization_id",
         )
         .bind(id)
         .fetch_optional(self.pool())
@@ -279,6 +286,7 @@ impl Db {
             tenant_id: row.try_get("tenant_id")?,
             kind: Kind::parse(&row.try_get::<String, _>("kind")?)?,
             members: row.try_get("members")?,
+            payment_terms_days: row.try_get("payment_terms_days")?,
             created_at: row.try_get("created_at")?,
         })
     }

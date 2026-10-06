@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.25.0
+  version: 0.26.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -82,6 +82,16 @@ info:
     pools exhaust — borrow first, settle monthly. The balance answer and the
     admin organization list gain `creditLimitMinor`/`creditUsedMinor` so the
     drawn share is always readable next to the limit.
+    0.26.0 adds statements — the monthly billing document that closes the
+    "borrow first, settle monthly" loop: `POST /api/v1/admin/statements`
+    generates a draft per organization for a closed `YYYY-MM` period,
+    `/finalize` locks it and sets the due date from the organization's
+    `paymentTermsDays` (a new field on `PATCH
+    /api/v1/admin/organizations/{organizationId}`), `/payments` records a
+    payment as a real ledger repayment, and `/suspend` marks an unpaid one.
+    An organization reads its finalized statements through
+    `GET /api/v1/statements` and `GET /api/v1/statements/{statementId}` —
+    every line's charge is ledger entries the bill proofs already cover.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie, except
     `/api/v1/auth/login`, `/api/v1/auth/logout` and `/api/v1/auth/register`, which take no
@@ -710,6 +720,59 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/statements:
+    get:
+      summary: The organization's finalized statements
+      description: |
+        The monthly billing documents the operator has finalized, newest period
+        first: each statement itemizes a closed `YYYY-MM` month's settled usage
+        and carries its payment standing — `pending`, `paid`, `overdue` or
+        `suspended`. Drafts are the operator's working copy and never appear
+        here. `creditDrawnMinor` is what the period put on the credit line —
+        what the organization owes — and `outstandingMinor` is the part still
+        unpaid; a top-up repays the line and counts against the oldest open
+        statement first.
+      responses:
+        "200":
+          description: The finalized statements, newest period first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/Statement" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/statements/{statementId}:
+    get:
+      summary: One finalized statement, with its lines
+      description: |
+        The statement and its itemized lines — settled usage aggregated per
+        channel and model. Only `finalized` statements are readable here; a
+        draft, another organization's statement and a missing id are all 404.
+        `logFromIndex`/`logToIndex` bound the ledger window the lines prove:
+        every charge sits in an entry a bill proof verifies.
+      parameters:
+        - name: statementId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The statement and its lines
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/StatementDetail" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/balance:
     get:
       summary: Available balance (settled minus unsettled holds)
@@ -1066,26 +1129,35 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/admin/organizations/{organizationId}:
     patch:
-      summary: Set an organization's credit limit
+      summary: Set an organization's billing terms — credit limit, payment terms
       description: |
-        Grants or resizes the credit line the named organization may draw: after
-        its bonus and purchased pools exhaust, its holds and settlements keep
-        drawing down to `-creditLimitMinor` of own funds — borrow first, settle
-        monthly. The grant is a ledger entry, not a flag: the operator's facility
-        funds a credit-line pool that holds reserve against like the wallet does,
-        and the whole draw is part of the verifiable history.
+        Updates the named organization's billing terms; at least one of
+        `creditLimitMinor` and `paymentTermsDays` must be present — a call
+        carrying neither is `400`.
 
-        `creditLimitMinor` is absolute, not a delta: the entry the call books is
-        the difference from the limit already committed, and setting the same
-        limit again books nothing. Shrinking the line below what the
-        organization already owes is `400 VALIDATION_ERROR` — the ledger's own
-        no-overdraft rule on the credit-line pool refuses the write, and the
-        refusal is a property of the request, not of the balance. `400` also
-        answers a negative limit or a missing idempotency key; `404` an
-        organization that does not exist. The idempotency key makes a retried
-        call the same entry, and the answer's `entryId` is its name — absent
-        when the limit did not move and nothing was written. Reusing the key
-        for a different limit is `409 CONFLICT`.
+        `creditLimitMinor` grants or resizes the credit line the organization
+        may draw: after its bonus and purchased pools exhaust, its holds and
+        settlements keep drawing down to `-creditLimitMinor` of own funds —
+        borrow first, settle monthly. The grant is a ledger entry, not a flag:
+        the operator's facility funds a credit-line pool that holds reserve
+        against like the wallet does, and the whole draw is part of the
+        verifiable history. The limit is absolute, not a delta: the entry the
+        call books is the difference from the limit already committed, and
+        setting the same limit again books nothing. Shrinking the line below
+        what the organization already owes is `400 VALIDATION_ERROR` — the
+        ledger's own no-overdraft rule on the credit-line pool refuses the
+        write, and the refusal is a property of the request, not of the
+        balance. `400` also answers a negative limit or a missing idempotency
+        key; `404` an organization that does not exist. The idempotency key
+        makes a retried call the same entry, and the answer's `entryId` is its
+        name — absent when the limit did not move and nothing was written.
+        Reusing the key for a different limit is `409 CONFLICT`.
+
+        `paymentTermsDays` is how long a finalized statement's payment has
+        before it is due — the count is snapshotted onto each statement at
+        finalization, so changing it affects only statements finalized after.
+        It is a column on the organization, not a ledger entry. `400` answers
+        a negative value.
       security:
         - adminToken: []
       parameters:
@@ -1097,10 +1169,10 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/SetCreditLimitRequest" }
+            schema: { $ref: "#/components/schemas/UpdateOrganizationRequest" }
       responses:
         "200":
-          description: The credit limit as it now stands
+          description: The billing terms as they now stand
           content:
             application/json:
               schema:
@@ -1286,6 +1358,218 @@ paths:
                     items: { $ref: "#/components/schemas/AdminClosing" }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/statements:
+    get:
+      summary: List statements across organizations
+      description: |
+        Every statement the platform has generated, newest period first —
+        drafts and finalized alike, optionally narrowed by `period`
+        (`YYYY-MM`) or `organizationId`. A pending statement whose due date
+        has passed reports `overdue`, and the read is what flips it.
+      security:
+        - adminToken: []
+      parameters:
+        - name: period
+          in: query
+          required: false
+          schema: { type: string, pattern: '^\d{4}-(0[1-9]|1[0-2])$' }
+        - name: organizationId
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The statements, newest period first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/Statement" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Generate draft statements for a closed month
+      description: |
+        Builds the `YYYY-MM` statement for one organization — `organizationId`
+        in the body — or for every organization the period's usage records
+        cover when it is absent. Generation is idempotent per organization and
+        period: a draft is rebuilt from the usage rows each time, so a late
+        settlement that lands after generation is picked up by regenerating;
+        a statement already finalized stands — the committed document is the
+        answer, not a rebuilt draft. Only a month that has fully ended
+        generates: the running month is `400`, as is a malformed `period`.
+      security:
+        - adminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GenerateStatementsRequest" }
+      responses:
+        "200":
+          description: The statements the period produced, drafts and standing finals alike
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/Statement" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/statements/{statementId}:
+    get:
+      summary: One statement, with its lines
+      description: |
+        The statement and its itemized lines — the period's settled usage
+        aggregated per channel and model. `logFromIndex`/`logToIndex` bound the
+        ledger window the lines prove.
+      security:
+        - adminToken: []
+      parameters:
+        - name: statementId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The statement and its lines
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/StatementDetail" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/statements/{statementId}/finalize:
+    post:
+      summary: Finalize a draft statement
+      description: |
+        Locks the draft's lines and totals and issues the statement: the due
+        date is set from the organization's `paymentTermsDays`, `creditDrawnMinor`
+        is read from the ledger — the period's settled draws on the credit
+        line, what the organization owes — and `logFromIndex`/`logToIndex` pin
+        the ledger window the lines prove. Finalizing is idempotent: an
+        already-final statement answers itself. A draft for a month that has
+        not fully ended is `400`; a statement that is not a draft is the
+        standing document, not an error.
+      security:
+        - adminToken: []
+      parameters:
+        - name: statementId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StatementTransitionRequest" }
+      responses:
+        "200":
+          description: The finalized statement
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/Statement" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/statements/{statementId}/payments:
+    post:
+      summary: Record a payment against a statement
+      description: |
+        Books the payment into the organization's ledger — `debit Cash`,
+        repaying the drawn credit line first, the remainder into the wallet —
+        and applies it to the statement: `paidMinor` grows, and the statement
+        turns `paid` once the payments cover `creditDrawnMinor`. Repayments
+        settle the line's draws oldest-first, so the amount may be as large as
+        the credit-line debt outstanding through the statement's period —
+        earlier draws take their share even when their period was never
+        billed — and never larger (`400`). A statement with nothing owed
+        refuses a payment the same way. The idempotency key names the ledger
+        entry, which can never book twice: a retried payment on a still-open
+        statement replays the receipt; one that arrives after the statement
+        paid is refused as `400`, and the same key under a different amount is
+        `409`.
+      security:
+        - adminToken: []
+      parameters:
+        - name: statementId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RecordStatementPaymentRequest" }
+      responses:
+        "200":
+          description: The statement after the payment
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/StatementPayment" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/statements/{statementId}/suspend:
+    post:
+      summary: Mark a statement's payment suspended
+      description: |
+        Marks an unpaid finalized statement `suspended` — the standing the
+        platform puts an organization in when the bill has gone unpaid past
+        its grace. Only a `pending` or `overdue` statement suspends; a paid
+        one and a draft are `400`. A later payment still settles it — a
+        suspended statement that is paid turns `paid`.
+      security:
+        - adminToken: []
+      parameters:
+        - name: statementId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StatementTransitionRequest" }
+      responses:
+        "200":
+          description: The suspended statement
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/Statement" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/admin/users/{userId}/password-reset:
     post:
@@ -1703,20 +1987,25 @@ components:
           minLength: 1
           maxLength: 200
           description: a retry writes no second entry; the same key replays the same adjustment
-    SetCreditLimitRequest:
+    UpdateOrganizationRequest:
       type: object
-      required: [creditLimitMinor, idempotencyKey]
+      required: [idempotencyKey]
       properties:
         creditLimitMinor:
           type: integer
           format: int64
           minimum: 0
           description: the credit line the organization may draw, absolute — not a delta
+        paymentTermsDays:
+          type: integer
+          format: int32
+          minimum: 0
+          description: days a finalized statement's payment has before it falls due — snapshotted onto each statement at finalization
         idempotencyKey:
           type: string
           minLength: 1
           maxLength: 200
-          description: a retry writes no second entry; the same key replays the same change
+          description: a retry writes no second entry; the same key replays the same change. At least one of creditLimitMinor and paymentTermsDays must be present.
     PasswordResetRequest:
       type: object
       required: [newPassword]
@@ -1746,7 +2035,7 @@ components:
           description: the organization's available balance after the adjustment
     AdminCreditLimit:
       type: object
-      required: [organizationId, creditLimitMinor, creditUsedMinor, availableMinor]
+      required: [organizationId, creditLimitMinor, creditUsedMinor, availableMinor, paymentTermsDays]
       properties:
         entryId:
           type: string
@@ -1758,6 +2047,11 @@ components:
           type: integer
           format: int64
           description: the organization's spendable balance after the change, own funds plus undrawn credit
+        paymentTermsDays:
+          type: integer
+          format: int32
+          minimum: 0
+          description: days a finalized statement's payment has before it falls due
     AdminOrganization:
       type: object
       required: [id, name, kind, members, createdAt, availableMinor, reservedMinor, creditLimitMinor, creditUsedMinor]
@@ -1822,6 +2116,73 @@ components:
       required: [month]
       properties:
         month: { type: string, pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$", description: "the month to close, `YYYY-MM`; it must have fully ended" }
+    GenerateStatementsRequest:
+      type: object
+      required: [period]
+      properties:
+        period: { type: string, pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$", description: "the month to bill, `YYYY-MM`; it must have fully ended" }
+        organizationId: { type: string, format: uuid, description: generate for this organization only; absent means every organization the period's usage covers }
+    StatementTransitionRequest:
+      type: object
+      required: [idempotencyKey]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200, description: carried for uniformity; the transition is idempotent on its own }
+    RecordStatementPaymentRequest:
+      type: object
+      required: [amountMinor, idempotencyKey]
+      properties:
+        amountMinor: { type: integer, format: int64, minimum: 1, description: the payment's amount — may not exceed what the statement still owes }
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200, description: names the ledger repayment entry; a retry replays it, a different amount under it conflicts }
+    Statement:
+      type: object
+      required: [id, organizationId, period, status, paymentStatus, totalMinor, creditDrawnMinor, paidMinor, outstandingMinor, paymentTermsDays, entryCount, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        organizationId: { type: string, format: uuid }
+        period: { type: string, description: "the billed month, `YYYY-MM`" }
+        status: { type: string, enum: [draft, finalized], description: draft is the operator's working copy — rebuilt on regeneration; finalized is issued and immutable }
+        paymentStatus: { type: string, enum: [pending, paid, overdue, suspended], description: pending while the drawn part is unpaid; overdue once the due date has passed; suspended when the operator marks it; paid once payments cover creditDrawnMinor }
+        totalMinor: { type: integer, format: int64, minimum: 0, description: the period's settled usage charges, own funds and credit alike }
+        creditDrawnMinor: { type: integer, format: int64, minimum: 0, description: the part of the period's charges the credit line carried — what the statement is owed }
+        paidMinor: { type: integer, format: int64, minimum: 0, description: payments allocated to the statement so far }
+        outstandingMinor: { type: integer, format: int64, minimum: 0, description: creditDrawnMinor minus paidMinor — what is still owed }
+        paymentTermsDays: { type: integer, format: int32, minimum: 0, description: the organization's payment terms at finalization, snapshotted }
+        dueDate: { type: [string, "null"], format: date, description: when payment falls due — set at finalization }
+        logFromIndex: { type: [integer, "null"], format: int64, description: the first covered ledger entry's log index — the proof window's lower bound, set at finalization }
+        logToIndex: { type: [integer, "null"], format: int64, description: the last covered ledger entry's log index — the proof window's upper bound, set at finalization }
+        entryCount: { type: integer, format: int64, minimum: 0, description: usage rows the statement itemizes }
+        finalizedAt: { type: [string, "null"], format: date-time }
+        paidAt: { type: [string, "null"], format: date-time }
+        overdueAt: { type: [string, "null"], format: date-time, description: when the statement first answered past due }
+        suspendedAt: { type: [string, "null"], format: date-time }
+        createdAt: { type: string, format: date-time }
+    StatementLine:
+      type: object
+      required: [channel, model, turns, inputTokens, outputTokens, cachedTokens, reasoningTokens, amountMinor]
+      properties:
+        channel: { type: string }
+        model: { type: string }
+        turns: { type: integer, format: int64, minimum: 0, description: settled requests the line aggregates }
+        inputTokens: { type: integer, format: int64, minimum: 0 }
+        outputTokens: { type: integer, format: int64, minimum: 0 }
+        cachedTokens: { type: integer, format: int64, minimum: 0 }
+        reasoningTokens: { type: integer, format: int64, minimum: 0 }
+        amountMinor: { type: integer, format: int64, minimum: 0, description: what the line's usage was charged }
+    StatementDetail:
+      type: object
+      required: [statement, lines]
+      properties:
+        statement: { $ref: "#/components/schemas/Statement" }
+        lines:
+          type: array
+          items: { $ref: "#/components/schemas/StatementLine" }
+    StatementPayment:
+      type: object
+      required: [statement, entryId, amountMinor]
+      properties:
+        statement: { $ref: "#/components/schemas/Statement" }
+        entryId: { type: string, description: "the repayment's ledger entry, derived from the idempotency key" }
+        amountMinor: { type: integer, format: int64, description: the payment as booked }
     AmountRequest:
       type: object
       required: [idempotencyKey, amountMinor]

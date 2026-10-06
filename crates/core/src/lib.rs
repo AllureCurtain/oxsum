@@ -20,6 +20,7 @@ mod keys;
 mod orgs;
 mod proof;
 mod sessions;
+mod statements;
 mod tenants;
 mod usage;
 mod users;
@@ -51,6 +52,9 @@ pub use proof::{ChargeCheck, ProofBundle, verify_bundle, verify_charge};
 pub use sessions::{
     CreatedSession, KeyPrincipal, KeyScope, Principal, SESSION_COOKIE, SESSION_LIFETIME, Session,
     SessionPrincipal,
+};
+pub use statements::{
+    PaymentStatus, Statement, StatementLine, StatementPeriod, StatementStatus, statement_period,
 };
 pub use tenants::Tenants;
 pub use usage::{
