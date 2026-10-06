@@ -12,13 +12,14 @@ use std::time::Duration;
 
 use axum::body::{Body, Bytes};
 use axum::extract::{Extension, State};
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router, middleware};
+use http_body_util::BodyExt;
 use oxsum_core::{
-    ActingKey, OpenHold, Organization, Serving, SettlementKind, WalletError, adapter_for,
-    hold_description,
+    ActingKey, Claim, OpenHold, Organization, Serving, SettlementKind, WalletError, adapter_for,
+    fingerprint, hold_description,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -106,34 +107,175 @@ async fn serving(state: &AppState, model: &str) -> Result<Option<Serving>, Gatew
     Ok(state.db.serving(model, secret).await?)
 }
 
+/// The header a retry carries to claim the same turn, Stripe-shaped.
+const IDEMPOTENCY_KEY: &str = "idempotency-key";
+
+/// Marks a response answered from the idempotency record rather than run again.
+const IDEMPOTENT_REPLAYED: &str = "idempotent-replayed";
+
 /// One chat completion: freeze, relay, settle.
 async fn chat(
     State(state): State<AppState>,
     Extension(organization): Extension<Organization>,
     Extension(key): Extension<ActingKey>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     // The id exists before anything else does, so even a malformed body answers with the header a
     // caller can quote.
-    let request_id = Uuid::new_v4().to_string();
+    let minted_id = Uuid::new_v4().to_string();
+    // An `Idempotency-Key` claims the turn before it runs (issue #132): a retry under the
+    // same key and body replays the stored answer instead of holding and charging twice,
+    // and the claim is decided before the limiter, so a replay never burns the window.
+    let idem_key = headers
+        .get(IDEMPOTENCY_KEY)
+        .map(|value| value.to_str().unwrap_or_default().to_owned());
+    let claim = match &idem_key {
+        Some(key) => {
+            match state
+                .db
+                .claim_request(organization.id, key, &fingerprint(&body), &minted_id)
+                .await
+            {
+                Ok(Claim::Fresh { request_id }) => Some((key.clone(), request_id)),
+                Ok(Claim::InFlight) => {
+                    return with_request_id(
+                        GatewayError::idempotency_in_flight().into_response(),
+                        &minted_id,
+                    );
+                }
+                Ok(Claim::Mismatch) => {
+                    return with_request_id(
+                        GatewayError::idempotency_mismatch().into_response(),
+                        &minted_id,
+                    );
+                }
+                Ok(Claim::Replay {
+                    request_id,
+                    status,
+                    body,
+                }) => return replay(status, body, &request_id),
+                Err(error) => {
+                    return with_request_id(GatewayError::from(error).into_response(), &minted_id);
+                }
+            }
+        }
+        None => None,
+    };
+    let request_id = claim
+        .as_ref()
+        .map(|(_, id)| id.clone())
+        .unwrap_or(minted_id);
     let body = match serde_json::from_slice::<Value>(&body) {
         Ok(body) => body,
         Err(error) => {
+            let error = GatewayError::Invalid {
+                message: format!("the request body must be JSON: {error}"),
+                param: None,
+            };
             return with_request_id(
-                GatewayError::Invalid {
-                    message: format!("the request body must be JSON: {error}"),
-                    param: None,
-                }
-                .into_response(),
+                settle_claim(&state, &organization, claim, Err(error)).await,
                 &request_id,
             );
         }
     };
-    let response = match run(&state, &organization, &key, body, &request_id).await {
-        Ok(response) => response,
-        Err(error) => error.into_response(),
-    };
+    let outcome = run(&state, &organization, &key, body, &request_id).await;
+    let response = settle_claim(&state, &organization, claim, outcome).await;
     with_request_id(response, &request_id)
+}
+
+/// Writes the idempotency record its answer, or releases the claim.
+///
+/// A streamed turn's bytes cannot be replayed, so its record is left `in_flight` here
+/// and completed by the usage-row write (`Db::record_usage`) with the settled receipt —
+/// which also covers a client that hung up and a turn the sweeper settled. A refusal
+/// that never reached the wallet releases the claim instead: nothing was billed, and a
+/// corrected retry should run rather than replay an old refusal.
+async fn settle_claim(
+    state: &AppState,
+    organization: &Organization,
+    claim: Option<(String, String)>,
+    outcome: Result<Response, GatewayError>,
+) -> Response {
+    let Some((key, _)) = claim else {
+        return match outcome {
+            Ok(response) => response,
+            Err(error) => error.into_response(),
+        };
+    };
+    match outcome {
+        Ok(response) if is_sse(&response) => response,
+        Ok(response) => complete_claim(state, organization, &key, response).await,
+        // The turn ran and settled — upstream failing after the hold is an answer worth
+        // replaying, because running it again would freeze and charge again.
+        Err(error @ GatewayError::Upstream { .. }) => {
+            complete_claim(state, organization, &key, error.into_response()).await
+        }
+        Err(error) => {
+            if let Err(error) = state.db.release_request(organization.id, &key).await {
+                tracing::error!(%error, "releasing an idempotency claim failed");
+            }
+            error.into_response()
+        }
+    }
+}
+
+/// Stores a finished response on the claim and answers it. The body is already
+/// materialized — JSON for both the completion and every error — so buffering it
+/// for the record costs one copy, not a stream interruption.
+async fn complete_claim(
+    state: &AppState,
+    organization: &Organization,
+    key: &str,
+    response: Response,
+) -> Response {
+    let (parts, body) = response.into_parts();
+    let bytes = match body.collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(error) => {
+            // Nothing is released: the turn may already have billed, and a released
+            // claim would let the retry bill again. The record expires on its own.
+            tracing::error!(%error, "a finished gateway body could not be buffered");
+            return GatewayError::Internal.into_response();
+        }
+    };
+    if let Ok(body) = serde_json::from_slice::<Value>(&bytes)
+        && let Err(error) = state
+            .db
+            .complete_request(
+                organization.id,
+                key,
+                i32::from(parts.status.as_u16()),
+                &body,
+            )
+            .await
+    {
+        tracing::error!(%error, "completing an idempotency record failed");
+    }
+    Response::from_parts(parts, Body::from(bytes))
+}
+
+/// Whether this response is the SSE stream — whose record completes at settlement.
+fn is_sse(response: &Response) -> bool {
+    response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/event-stream"))
+}
+
+/// The stored answer to a claimed key: same status and body, the original request id,
+/// and the replay marker.
+fn replay(status: i32, body: Value, request_id: &str) -> Response {
+    let mut response = (
+        StatusCode::from_u16(status as u16).unwrap_or(StatusCode::OK),
+        Json(body),
+    )
+        .into_response();
+    if let Ok(value) = HeaderValue::from_str("true") {
+        response.headers_mut().insert(IDEMPOTENT_REPLAYED, value);
+    }
+    with_request_id(response, request_id)
 }
 
 /// The turn itself, from the freeze to the settlement.

@@ -38,6 +38,14 @@ pub enum GatewayError {
         limit: i64,
         retry_after_secs: u64,
     },
+    /// A retried request collided with the first run of its idempotency key: the
+    /// first turn is still executing (409 `IDEMPOTENCY_IN_FLIGHT`) or the key was
+    /// claimed under a different request body (422 `IDEMPOTENCY_MISMATCH`).
+    Idempotency {
+        status: StatusCode,
+        message: String,
+        code: &'static str,
+    },
     /// No usable credential.
     Unauthorized,
     /// The credential is not allowed to do this. Unreachable until roles arrive; mapped rather
@@ -90,6 +98,24 @@ impl GatewayError {
             status,
             message,
             body,
+        }
+    }
+
+    /// The first request under this idempotency key is still running.
+    pub fn idempotency_in_flight() -> Self {
+        Self::Idempotency {
+            status: StatusCode::CONFLICT,
+            message: "a request with this idempotency key is still in flight".to_owned(),
+            code: "IDEMPOTENCY_IN_FLIGHT",
+        }
+    }
+
+    /// The idempotency key was claimed under a different request body.
+    pub fn idempotency_mismatch() -> Self {
+        Self::Idempotency {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            message: "this idempotency key was already used for a different request".to_owned(),
+            code: "IDEMPOTENCY_MISMATCH",
         }
     }
 }
@@ -211,6 +237,11 @@ impl IntoResponse for GatewayError {
                 )
                     .into_response()
             }
+            Self::Idempotency {
+                status,
+                message,
+                code,
+            } => error_response(status, &message, "invalid_request_error", code, None),
             Self::Unauthorized => error_response(
                 StatusCode::UNAUTHORIZED,
                 // One message for every way a key can fail: unknown, revoked, expired and missing

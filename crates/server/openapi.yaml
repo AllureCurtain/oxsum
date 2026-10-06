@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.27.0
+  version: 0.28.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -100,6 +100,14 @@ info:
     cap is refused 429 `TOO_MANY_HOLDS`, checked under the same per-key
     lock as the spend limit. The gateway answers both as
     `rate_limit_exceeded` in OpenAI's shape.
+    0.28.0 adds request-level idempotency on the gateway: `POST
+    /v1/chat/completions` accepts an `Idempotency-Key` header, and a
+    retry carrying the same key and the same request body replays the
+    first response — a completed non-streamed turn answers its stored
+    body, a completed streamed turn answers the settled receipt, both
+    marked `Idempotent-Replayed: true`. The same key with a different
+    body is 422 `IDEMPOTENCY_MISMATCH`; a retry while the first turn is
+    still running is 409 `IDEMPOTENCY_IN_FLIGHT`. Records live 24 hours.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie, except
     `/api/v1/auth/login`, `/api/v1/auth/logout` and `/api/v1/auth/register`, which take no
@@ -1670,6 +1678,16 @@ paths:
         the upstream call is cancelled and the turn settles on local estimation, marked as estimated
         in the settlement description; if upstream is unreachable or answers with an error before
         emitting anything, the whole freeze is released and nothing is charged.
+
+        An `Idempotency-Key` header makes a retried request the same turn: the first request
+        claims the key, and a retry carrying it is answered from the record rather than run
+        again — a completed non-streamed turn replays its stored response, a completed
+        streamed turn (whose bytes cannot be replayed) answers its settled receipt, and a
+        retry that lands while the first turn is still running is refused 409. The same key
+        under a different request body is refused 422. A refusal that never reached the wallet
+        releases the key, so retrying a corrected request is always possible; a key expires
+        24 hours after it was first claimed.
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
       requestBody:
         required: true
         content:
@@ -1677,7 +1695,10 @@ paths:
             schema: { $ref: "#/components/schemas/ChatCompletionRequest" }
       responses:
         "200":
-          description: Upstream's completion, passed through unchanged
+          description: >-
+            Upstream's completion, passed through unchanged — or, for a replayed
+            `Idempotency-Key`, the stored response or the settled receipt, marked
+            `Idempotent-Replayed: true`
           headers:
             x-oxsum-request-id: { $ref: "#/components/headers/RequestId" }
           content:
@@ -1692,6 +1713,7 @@ paths:
         "402": { $ref: "#/components/responses/GatewayError" }
         "403": { $ref: "#/components/responses/GatewayError" }
         "409": { $ref: "#/components/responses/GatewayError" }
+        "422": { $ref: "#/components/responses/GatewayError" }
         "429": { $ref: "#/components/responses/GatewayError" }
         "500": { $ref: "#/components/responses/GatewayError" }
         "502": { $ref: "#/components/responses/GatewayError" }
@@ -1736,6 +1758,15 @@ components:
       required: true
       schema: { type: string, pattern: "^[A-Za-z0-9._-]{1,40}$" }
       description: the channel's name, which is its identity
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema: { type: string, minLength: 1, maxLength: 255 }
+      description: >-
+        makes a retried request the same turn: the same key under the same request body
+        replays the first response, under a different body it is refused 422, and while the
+        first turn is still running it is refused 409
   headers:
     RequestId:
       description: "the id the ledger entries are keyed by: `req-<id>:hold` and `req-<id>:settle`"
@@ -2412,7 +2443,8 @@ components:
               description: >-
                 oxsum's own code: VALIDATION_ERROR, UNAUTHORIZED, FORBIDDEN, CONFLICT,
                 INSUFFICIENT_FUNDS, KEY_LIMIT_EXCEEDED, RATE_LIMITED, TOO_MANY_HOLDS,
-                UPSTREAM_ERROR or INTERNAL_ERROR.
+                IDEMPOTENCY_IN_FLIGHT, IDEMPOTENCY_MISMATCH, UPSTREAM_ERROR or
+                INTERNAL_ERROR.
                 A key past its spend limit arrives as 429 KEY_LIMIT_EXCEEDED with the
                 `insufficient_quota` type, the same type the 402 INSUFFICIENT_FUNDS
                 refusal carries; a key past its request or concurrency allowance
