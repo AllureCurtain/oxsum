@@ -47,7 +47,9 @@ password; `/dashboard` is the overview. `/logout` logs out.
   available balance, the frozen total (everything the organization's outstanding holds
   have reserved), this month's spend (what settlements have charged since the first day
   of the current month — the server's UTC month), the in-flight holds, and the newest
-  ledger entries.
+  ledger entries. When the organization carries a credit limit, the card also shows the
+  limit, how much of it is used and how much remains — the drawn part is what a top-up
+  repays first.
 - **In-flight holds** update live: a hold appears when a gateway turn starts freezing,
   shows streaming progress while upstream answers, and leaves the list when the turn
   settles. The stream behind it is a WebSocket at `/ws/billing` (session login, like
@@ -297,9 +299,17 @@ Notes:
 Purpose: check the currently available balance.
 
 Step: `GET /api/v1/balance`. The returned `availableMinor` already subtracts unsettled holds.
-The number is one balance: granted credit (signup bonus, admin grants) and purchased
-credit (top-ups) are separate pools inside the ledger, granted credit is always
-drawn first, and the API sums the two.
+The number is one balance: granted credit (signup bonus, admin grants), purchased
+credit (top-ups) and an organization's credit line are separate pools inside the
+ledger, the pools are drawn in that order, and the API sums the three.
+
+When the platform admin has granted the organization a credit limit,
+`creditLimitMinor` and `creditUsedMinor` come along: the limit is spendable credit
+that keeps `availableMinor` positive past what the organization has paid in, a hold
+draws it only after granted and purchased credit run out, and a top-up repays the
+drawn line before it adds purchased balance. The admin lowers the limit only after
+the drawn part is repaid — shrinking below the debt is refused, and a top-up is how
+the debt shrinks.
 
 ## Verifying a bill
 
