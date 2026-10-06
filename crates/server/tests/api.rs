@@ -627,6 +627,123 @@ async fn key_spend_limit_round_trip() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+/// The key constraints beyond the plain limit: a budget window and a model allowlist
+/// mint, list, patch and clear — each replace-all, each cleared by null.
+#[tokio::test]
+async fn key_constraints_round_trip() {
+    let (app, _pool) = app_or_skip!(Signup::Open);
+    let (_registration, key) = register(&app, "keyconstr").await;
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/org/keys",
+        Some(json!({
+            "name": "scoped",
+            "spendLimitMinor": 5_000_000,
+            "budgetDuration": "daily",
+            "modelAllowlist": ["mock-a", "mock-b"]
+        })),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let key_id = body["data"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(body["data"]["spendLimitMinor"], 5_000_000);
+    assert_eq!(body["data"]["budgetDuration"], "daily");
+    assert_eq!(body["data"]["modelAllowlist"], json!(["mock-a", "mock-b"]));
+
+    let (status, body) = call(&app, "GET", "/api/v1/org/keys", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK);
+    let listed = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["id"] == key_id)
+        .expect("the new key is listed");
+    assert_eq!(listed["budgetDuration"], "daily");
+    assert_eq!(listed["modelAllowlist"], json!(["mock-a", "mock-b"]));
+
+    // A patch replaces the set wholesale: the fields it omits fall back to unset.
+    let (status, body) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/org/keys/{key_id}"),
+        Some(json!({"modelAllowlist": ["mock-c"]})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["modelAllowlist"], json!(["mock-c"]));
+    assert!(body["data"]["spendLimitMinor"].is_null());
+    assert!(body["data"]["budgetDuration"].is_null());
+
+    // Every constraint clears with null.
+    let (status, body) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/org/keys/{key_id}"),
+        Some(json!({"spendLimitMinor": null, "budgetDuration": null, "modelAllowlist": null})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["data"]["modelAllowlist"].is_null());
+}
+
+/// The constraint boundary conditions: a window without a limit, a window spelled wrong,
+/// a list that names no model or a blank one — all refused, nothing written.
+#[tokio::test]
+async fn key_constraints_reject_malformed_input() {
+    let (app, _pool) = app_or_skip!(Signup::Open);
+    let (_registration, key) = register(&app, "keybadconstr").await;
+
+    for body in [
+        json!({"budgetDuration": "fortnightly"}),
+        json!({"budgetDuration": "daily"}), // a window without a limit is meaningless
+        json!({"modelAllowlist": []}),
+        json!({"modelAllowlist": ["  "]}),
+    ] {
+        let (status, _) = call(
+            &app,
+            "POST",
+            "/api/v1/org/keys",
+            Some(body.clone()),
+            Some(&key),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    }
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/org/keys",
+        Some(json!({"spendLimitMinor": 1_000_000, "budgetDuration": "weekly"})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let key_id = body["data"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(body["data"]["budgetDuration"], "weekly");
+
+    for body in [
+        json!({"budgetDuration": "yearly"}),
+        json!({"spendLimitMinor": null, "budgetDuration": "daily"}),
+        json!({"modelAllowlist": []}),
+    ] {
+        let (status, _) = call(
+            &app,
+            "PATCH",
+            &format!("/api/v1/org/keys/{key_id}"),
+            Some(body.clone()),
+            Some(&key),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    }
+}
+
 #[tokio::test]
 async fn key_spend_limit_is_enforced_on_wallet_holds() {
     let (app, _pool) = app_or_skip!(Signup::Open);

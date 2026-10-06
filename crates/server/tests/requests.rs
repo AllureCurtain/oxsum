@@ -248,6 +248,7 @@ async fn seed_request(
                 key_id,
                 spend_limit_minor: None,
             },
+            Some(model),
             &hold_key,
             &hold_description(request, model, freeze_minor).expect("the hold record serializes"),
             freeze_minor,

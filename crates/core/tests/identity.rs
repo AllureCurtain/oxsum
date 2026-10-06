@@ -8,7 +8,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use oxsum_core::{Db, KeyScope, NewUser, Tenants, WalletError};
+use oxsum_core::{Db, KeyConstraints, KeyScope, NewUser, Tenants, WalletError};
 use sqlx::PgPool;
 use sqlx::Row;
 use uuid::Uuid;
@@ -180,7 +180,13 @@ async fn two_organizations_under_one_user_have_isolated_balances() {
     .await
     .unwrap();
     let b_key = db
-        .create_key(b_id, Some("second".into()), None, Some(user), None)
+        .create_key(
+            b_id,
+            Some("second".into()),
+            None,
+            Some(user),
+            KeyConstraints::default(),
+        )
         .await
         .unwrap();
 
@@ -284,7 +290,7 @@ async fn an_expired_key_stops_authenticating() {
             Some("short-lived".into()),
             Some(time::OffsetDateTime::now_utc() + time::Duration::seconds(60)),
             None,
-            None,
+            KeyConstraints::default(),
         )
         .await
         .unwrap();
@@ -310,7 +316,7 @@ async fn an_expired_key_stops_authenticating() {
             None,
             Some(time::OffsetDateTime::now_utc() - time::Duration::seconds(1)),
             None,
-            None,
+            KeyConstraints::default(),
         )
         .await
         .unwrap_err();
@@ -405,7 +411,13 @@ async fn key_management_is_scoped_to_its_organization() {
     let organization = first.organization.id;
 
     let second = db
-        .create_key(organization, Some("  staging  ".into()), None, None, None)
+        .create_key(
+            organization,
+            Some("  staging  ".into()),
+            None,
+            None,
+            KeyConstraints::default(),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -436,7 +448,13 @@ async fn key_management_is_scoped_to_its_organization() {
     assert_eq!(other_keys[0].id, other.api_key.key.id);
 
     let too_long = db
-        .create_key(organization, Some("x".repeat(81)), None, None, None)
+        .create_key(
+            organization,
+            Some("x".repeat(81)),
+            None,
+            None,
+            KeyConstraints::default(),
+        )
         .await
         .unwrap_err();
     assert!(

@@ -7,7 +7,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use oxsum_core::{
-    ActingKey, CreatedSession, Db, KeyPrincipal, KeyScope, NewUser, Principal, WalletError,
+    ActingKey, CreatedSession, Db, KeyConstraints, KeyPrincipal, KeyScope, NewUser, Principal,
+    WalletError,
 };
 use sqlx::PgPool;
 use sqlx::Row;
@@ -344,7 +345,7 @@ async fn role_scopes_constrain_key_listing_and_revocation() {
             Some("owner-key".into()),
             None,
             Some(owner.user.id),
-            None,
+            KeyConstraints::default(),
         )
         .await
         .unwrap();
@@ -354,7 +355,7 @@ async fn role_scopes_constrain_key_listing_and_revocation() {
             Some("member-key".into()),
             None,
             Some(member_user.user.id),
-            None,
+            KeyConstraints::default(),
         )
         .await
         .unwrap();
@@ -404,7 +405,10 @@ async fn role_scopes_constrain_key_listing_and_revocation() {
     // A key minted with an API key records no creator: it is invisible to a member's
     // listing, and a member cannot revoke it. (The revoked member key is still listed,
     // with its revocation timestamp — listing never hides revoked keys.)
-    let machine_key = db.create_key(org, None, None, None, None).await.unwrap();
+    let machine_key = db
+        .create_key(org, None, None, None, KeyConstraints::default())
+        .await
+        .unwrap();
     assert_eq!(machine_key.key.created_by, None);
     let mine = db.list_keys(org, member.key_scope()).await.unwrap();
     assert_eq!(mine.len(), 1);

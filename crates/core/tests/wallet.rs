@@ -596,6 +596,7 @@ async fn a_gateway_settlement_names_its_key_and_its_record() {
     w.top_up("t1", 10 * ONE, D).await.unwrap();
     w.hold_for_key(
         &key,
+        None,
         "req-9:hold",
         &hold_description("req-9", "model-x", 5 * ONE).unwrap(),
         5 * ONE,
