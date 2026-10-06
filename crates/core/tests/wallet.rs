@@ -349,16 +349,20 @@ async fn opening_a_wallet_tightens_a_ledger_written_under_the_old_rule() {
     drop(w);
 
     // A ledger created before the reservation rule existed stored the weaker limit
-    // on every balance account. The schema is assembled from this test's own
-    // generated tenant id, never from input.
+    // on every balance account — and for the credit pool and the facility, codes
+    // the old constraint's domain knows too, so the narrowed check still fits.
+    // The schema is assembled from this test's own generated tenant id, never
+    // from input.
     let weakened = sqlx::query(&format!(
-        "UPDATE ledger_{tenant}.accounts SET balance_limit = 'no_debit' \
-         WHERE path IN ('Liabilities:Wallet', 'Equity:Bonus')"
+        "UPDATE ledger_{tenant}.accounts SET balance_limit = CASE \
+             WHEN path = 'Assets:CreditFacility' THEN 'unlimited' ELSE 'no_debit' END \
+         WHERE path IN ('Liabilities:Wallet', 'Equity:Bonus', 'Liabilities:CreditLine', \
+                        'Assets:CreditFacility')"
     ))
     .execute(&pool)
     .await
     .unwrap();
-    assert_eq!(weakened.rows_affected(), 2);
+    assert_eq!(weakened.rows_affected(), 4);
 
     // Including the constraint that stored code was allowed by. `CREATE TABLE IF NOT EXISTS`
     // would leave it exactly as it is, so the migration has to widen it — otherwise the limit
@@ -380,12 +384,23 @@ async fn opening_a_wallet_tightens_a_ledger_written_under_the_old_rule() {
     let w = Wallet::open(pool.clone(), &tenant).await.unwrap();
     let stored: Vec<String> = sqlx::query_scalar(&format!(
         "SELECT balance_limit FROM ledger_{tenant}.accounts \
-         WHERE path IN ('Liabilities:Wallet', 'Equity:Bonus') ORDER BY path"
+         WHERE path IN ('Liabilities:Wallet', 'Equity:Bonus', 'Liabilities:CreditLine', \
+                        'Assets:CreditFacility') ORDER BY path"
     ))
     .fetch_all(&pool)
     .await
     .unwrap();
-    assert_eq!(stored, ["funded_reservations", "funded_reservations"]);
+    // Ordered by path: Assets:CreditFacility first, then the three pools —
+    // Equity:Bonus, Liabilities:CreditLine, Liabilities:Wallet.
+    assert_eq!(
+        stored,
+        [
+            "no_credit",
+            "funded_reservations",
+            "funded_reservations",
+            "funded_reservations"
+        ]
+    );
     assert_eq!(w.available().await.unwrap(), 10 * ONE);
 
     // Which is the point: the rule is enforced again — a hold the balance cannot cover
@@ -1079,4 +1094,221 @@ async fn reclassification_leaves_a_grant_fully_spent_ledger_alone() {
     // Grants (4) are fully spent (6 ≥ 4): nothing moves and no marker entry lands.
     assert!(!w.reclassify_grants().await.unwrap());
     assert_eq!(w.settled().await.unwrap(), 3 * ONE);
+}
+
+// ---- organization credit limit (issue #122) ----
+
+#[tokio::test]
+async fn credit_limit_defaults_to_zero_and_counts_in_available() {
+    let url = db_or_skip!();
+    let p = pool(&url).await;
+    let w = Wallet::open(p.clone(), &fresh("cl_default")).await.unwrap();
+
+    assert_eq!(w.credit_limit().await.unwrap(), 0);
+    assert_eq!(w.credit_used().await.unwrap(), 0);
+
+    w.set_credit_limit("cl-1", 10 * ONE, D).await.unwrap();
+    assert_eq!(w.credit_limit().await.unwrap(), 10 * ONE);
+    assert_eq!(w.credit_used().await.unwrap(), 0);
+
+    // The undrawn line is spendable: own funds plus the line's headroom.
+    w.top_up("t1", 3 * ONE, D).await.unwrap();
+    assert_eq!(w.available().await.unwrap(), 13 * ONE);
+    assert_eq!(w.credit_used().await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn holds_draw_the_credit_line_after_own_funds() {
+    let url = db_or_skip!();
+    let p = pool(&url).await;
+    let w = Wallet::open(p.clone(), &fresh("cl_draw")).await.unwrap();
+
+    w.top_up("t1", 5 * ONE, D).await.unwrap();
+    w.set_credit_limit("cl-1", 10 * ONE, D).await.unwrap();
+
+    // A hold within own funds + the line passes; beyond it is refused by the
+    // engine, not by a read-then-write check.
+    w.hold("h1", "", 12 * ONE, D).await.unwrap();
+    let err = w.hold("h2", "", 4 * ONE, D).await.unwrap_err();
+    assert!(matches!(err, WalletError::InsufficientFunds));
+
+    // The drawn share is the reserved part: 12 held, 5 of it own funds.
+    assert_eq!(w.credit_used().await.unwrap(), 7 * ONE);
+    assert_eq!(w.available().await.unwrap(), 3 * ONE);
+}
+
+#[tokio::test]
+async fn settling_a_credit_hold_charges_the_line_and_releases_the_rest() {
+    let url = db_or_skip!();
+    let p = pool(&url).await;
+    let w = Wallet::open(p.clone(), &fresh("cl_settle")).await.unwrap();
+
+    w.set_credit_limit("cl-1", 10 * ONE, D).await.unwrap();
+    w.hold("h1", "", 6 * ONE, D).await.unwrap();
+    assert_eq!(w.credit_used().await.unwrap(), 6 * ONE);
+
+    // Settle less than held: the charge stays on the line, the rest releases.
+    w.settle("h1", "", 4 * ONE, D).await.unwrap();
+    assert_eq!(w.credit_used().await.unwrap(), 4 * ONE);
+    assert_eq!(w.available().await.unwrap(), 6 * ONE);
+    assert_eq!(w.settled_spend_since(D).await.unwrap(), 4 * ONE);
+
+    // A full release gives the whole reservation back to the line.
+    w.hold("h2", "", 3 * ONE, D).await.unwrap();
+    w.settle("h2", "", 0, D).await.unwrap();
+    assert_eq!(w.credit_used().await.unwrap(), 4 * ONE);
+    assert_eq!(w.available().await.unwrap(), 6 * ONE);
+}
+
+#[tokio::test]
+async fn a_topup_repays_the_drawn_line_before_the_wallet() {
+    let url = db_or_skip!();
+    let p = pool(&url).await;
+    let w = Wallet::open(p.clone(), &fresh("cl_repay")).await.unwrap();
+
+    w.set_credit_limit("cl-1", 10 * ONE, D).await.unwrap();
+    w.hold("h1", "", 6 * ONE, D).await.unwrap();
+    w.settle("h1", "", 6 * ONE, D).await.unwrap();
+    assert_eq!(w.credit_used().await.unwrap(), 6 * ONE);
+
+    // Repaying deposit: 4 toward the drawn 6, the rest into the wallet.
+    w.top_up("pay", 7 * ONE, D).await.unwrap();
+    assert_eq!(w.credit_used().await.unwrap(), 0);
+    // Spendable = wallet remainder (1) + restored line (10).
+    assert_eq!(w.available().await.unwrap(), 11 * ONE);
+
+    // Retrying the same key replays the entry it committed — the repayment
+    // shape is not recomputed against the now-restored line.
+    let replay = w.top_up("pay", 7 * ONE, D).await.unwrap();
+    assert!(!replay.is_new);
+    assert_eq!(w.credit_used().await.unwrap(), 0);
+    assert_eq!(w.available().await.unwrap(), 11 * ONE);
+}
+
+#[tokio::test]
+async fn the_limit_cannot_shrink_below_the_outstanding_draw() {
+    let url = db_or_skip!();
+    let p = pool(&url).await;
+    let w = Wallet::open(p.clone(), &fresh("cl_shrink")).await.unwrap();
+
+    w.set_credit_limit("cl-1", 10 * ONE, D).await.unwrap();
+    w.hold("h1", "", 6 * ONE, D).await.unwrap();
+    w.settle("h1", "", 6 * ONE, D).await.unwrap();
+
+    // 6 is still owed: a limit of 5 would leave the debt larger than the line.
+    let err = w.set_credit_limit("cl-2", 5 * ONE, D).await.unwrap_err();
+    assert!(matches!(err, WalletError::InvalidInput(_)));
+
+    // A limit equal to the debt stands: the line is fully drawn and blocks
+    // every further hold.
+    w.set_credit_limit("cl-3", 6 * ONE, D).await.unwrap();
+    assert_eq!(w.credit_limit().await.unwrap(), 6 * ONE);
+    assert_eq!(w.credit_used().await.unwrap(), 6 * ONE);
+    let err = w.hold("h2", "", ONE, D).await.unwrap_err();
+    assert!(matches!(err, WalletError::InsufficientFunds));
+}
+
+#[tokio::test]
+async fn a_credit_limit_replay_and_a_noop_write_nothing_new() {
+    let url = db_or_skip!();
+    let p = pool(&url).await;
+    let w = Wallet::open(p.clone(), &fresh("cl_idem")).await.unwrap();
+
+    let first = w
+        .set_credit_limit("cl-1", 10 * ONE, D)
+        .await
+        .unwrap()
+        .expect("a grant writes an entry");
+    assert!(first.is_new);
+    let size = w.log_size().await.unwrap();
+
+    // The same key answers the same entry; a fresh key at the same limit is a
+    // no-op — the delta is zero, so there is nothing to write.
+    let again = w
+        .set_credit_limit("cl-1", 10 * ONE, D)
+        .await
+        .unwrap()
+        .expect("the replayed entry");
+    assert!(!again.is_new);
+    assert_eq!(first.entry_id, again.entry_id);
+    assert!(
+        w.set_credit_limit("cl-2", 10 * ONE, D)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(w.log_size().await.unwrap(), size);
+
+    // A reused key carrying a different limit is a conflict, not a replay.
+    let err = w.set_credit_limit("cl-1", 5 * ONE, D).await.unwrap_err();
+    assert!(matches!(err, WalletError::Conflict(_)));
+
+    let err = w.set_credit_limit("cl-3", -ONE, D).await.unwrap_err();
+    assert!(matches!(err, WalletError::InvalidInput(_)));
+}
+
+#[tokio::test]
+async fn concurrent_holds_cannot_overdraw_the_line() {
+    let url = db_or_skip!();
+    let p = pool(&url).await;
+    let tenant = fresh("cl_race");
+    let w = Wallet::open(p.clone(), &tenant).await.unwrap();
+    w.set_credit_limit("cl-1", 10 * ONE, D).await.unwrap();
+
+    // Twelve holds of 1 each against a 10 line: ten win, two are refused, and
+    // the committed draw never exceeds the grant.
+    let mut joins = Vec::new();
+    for i in 0..12 {
+        let w = Wallet::open(p.clone(), &tenant).await.unwrap();
+        joins.push(tokio::spawn(async move {
+            w.hold(&format!("h-{i}"), "", ONE, D).await
+        }));
+    }
+    let mut held = 0;
+    for j in joins {
+        if j.await.unwrap().is_ok() {
+            held += 1;
+        }
+    }
+    assert_eq!(held, 10);
+    let w = Wallet::open(p.clone(), &tenant).await.unwrap();
+    assert_eq!(w.credit_used().await.unwrap(), 10 * ONE);
+}
+
+#[tokio::test]
+async fn credit_entries_classify_but_never_count_as_spend() {
+    let url = db_or_skip!();
+    let p = pool(&url).await;
+    let w = Wallet::open(p.clone(), &fresh("cl_spend")).await.unwrap();
+
+    w.top_up("t1", 5 * ONE, D).await.unwrap();
+    w.set_credit_limit("cl-1", 10 * ONE, D).await.unwrap();
+    w.hold("h1", "", 8 * ONE, D).await.unwrap();
+    w.settle("h1", "", 8 * ONE, D).await.unwrap();
+    // Shrink the undrawn headroom back: a facility write, not a charge.
+    w.set_credit_limit("cl-2", 3 * ONE, D).await.unwrap();
+
+    // Spend counts the settled draw only — the grant and the shrink move the
+    // line but bill nothing.
+    assert_eq!(w.settled_spend_since(D).await.unwrap(), 8 * ONE);
+    assert_eq!(w.credit_used().await.unwrap(), 3 * ONE);
+
+    let kinds: Vec<TransactionKind> = w
+        .recent_transactions(20)
+        .await
+        .unwrap()
+        .iter()
+        .map(|e| e.kind)
+        .collect();
+    // Two operator movements show as adjustments; the grant reads +10, the
+    // shrink reads -7 of spendable change.
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|k| **k == TransactionKind::Adjustment)
+            .count(),
+        2
+    );
+    assert!(kinds.contains(&TransactionKind::TopUp));
+    assert!(kinds.contains(&TransactionKind::Settlement));
 }
