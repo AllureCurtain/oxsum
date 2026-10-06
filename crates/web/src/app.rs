@@ -22,12 +22,13 @@ use crate::api::{
     CreatedKeyView, DashboardData, EntryView, HoldView, InvitationView, KeyView, MemberView,
     MembersView, OrgView, TransferView, add_member, change_member_role, create_invitation,
     create_key, create_team_org, get_bills, get_dashboard, get_entry_bundle, get_keys, get_log,
-    get_members, get_requests, list_organizations, remove_member, revoke_key, switch_organization,
-    transfer_ownership,
+    get_members, get_requests, get_usage, list_organizations, remove_member, revoke_key,
+    switch_organization, transfer_ownership,
 };
 use crate::bills::BillView;
 use crate::chat::ChatPage;
 use crate::requests::{REQUESTS_PATH, RequestFilters, RequestView};
+use crate::usage::UsageDayView;
 
 /// The HTML shell: the document around the app. `leptos_axum` renders this as the
 /// whole response, so the `<head>` leptos_meta needs lives here, together with the
@@ -84,6 +85,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/members") view=MembersPage/>
                     <Route path=path!("/log") view=LogPage/>
                     <Route path=path!("/requests") view=RequestsPage/>
+                    <Route path=path!("/usage") view=UsagePage/>
                 </ParentRoute>
             </Routes>
         </Router>
@@ -464,6 +466,7 @@ fn DashboardLayout() -> impl IntoView {
                 <A href="/dashboard/members">"Members"</A>
                 <A href="/dashboard/log">"Transaction log"</A>
                 <A href="/dashboard/requests">"Requests"</A>
+                <A href="/dashboard/usage">"Usage"</A>
                 // Top-level and public, like /logout: verification needs no session.
                 <A href="/verify">"Verify a bill"</A>
                 <A href="/logout">"Log out"</A>
@@ -1743,6 +1746,153 @@ fn RequestsPage() -> impl IntoView {
                 })}
             </Suspense>
         </section>
+    }
+}
+
+/// The usage dashboard: what the organization spent per day over the trailing 30 UTC
+/// days, drawn as a bar chart, and per channel and model, summed into a table
+/// (issue #126).
+///
+/// The days are the settlement entries' booking dates — the ledger's day, the same one
+/// a statement counts a turn under — and a member's page covers the keys they may see
+/// plus the organization's unattributed usage, the bills page's rule.
+#[component]
+fn UsagePage() -> impl IntoView {
+    let usage = Resource::new(|| (), |_| async { get_usage().await });
+    view! {
+        <section class="card" aria-label="Usage">
+            <h1>"Usage"</h1>
+            <p class="muted">
+                "This organization's settled usage over the last 30 days, by ledger booking date: the chart sums each day's charge in credits (1 credit = 1,000,000), the table sums the window by channel and model. Members see their own keys' usage plus the organization's shared rows."
+            </p>
+            <Suspense fallback=move || view! { <p class="muted">"Loading…"</p> }>
+                {move || usage.get().map(|result| match result {
+                    Ok(usage) => view! {
+                        <UsageChart days=usage.days.clone() rows=usage.rows.clone()/>
+                        <UsageTable rows=usage.rows/>
+                    }
+                        .into_any(),
+                    Err(error) => view! { <p class="error" role="alert">{error.to_string()}</p> }
+                        .into_any(),
+                })}
+            </Suspense>
+        </section>
+    }
+}
+
+/// The daily bar chart: one bar per day of the window, height scaled to the busiest
+/// day's charge. Every bar carries its day and charge as text too — the chart is
+/// decoration over the same numbers the table sums, never the only carrier
+/// (DESIGN.md: nothing is colour alone).
+#[component]
+fn UsageChart(days: Vec<String>, rows: Vec<UsageDayView>) -> impl IntoView {
+    let mut per_day: std::collections::BTreeMap<&str, i64> = std::collections::BTreeMap::new();
+    for row in &rows {
+        *per_day.entry(row.day.as_str()).or_default() += row.charged_minor;
+    }
+    let max = per_day.values().copied().max().unwrap_or(0).max(1);
+    view! {
+        <div
+            class="usage-chart"
+            role="img"
+            aria-label="Daily charged credits over the last 30 days"
+        >
+            {days
+                .iter()
+                .map(|day| {
+                    let charged = per_day.get(day.as_str()).copied().unwrap_or(0);
+                    let height = (charged as u64 * 100 / max as u64).max(if charged > 0 {
+                        4
+                    } else {
+                        0
+                    });
+                    view! {
+                        <div class="day" title=format!("{day}: {} credits", credits(charged))>
+                            <div class="bar" style=format!("height:{height}%")></div>
+                            <span class="visually-hidden">
+                                {format!("{day}: {} credits", credits(charged))}
+                            </span>
+                        </div>
+                    }
+                })
+                .collect::<Vec<_>>()}
+        </div>
+        <div class="usage-axis muted">
+            <span class="mono">{days.first().cloned().unwrap_or_default()}</span>
+            <span class="mono">{days.last().cloned().unwrap_or_default()}</span>
+        </div>
+    }
+}
+
+/// The window's rollup by channel and model: turns, the token sums, and what it
+/// charged, rendered as credits like every other amount. With nothing to show the
+/// table keeps its header and says why it is empty.
+#[component]
+fn UsageTable(rows: Vec<UsageDayView>) -> impl IntoView {
+    let mut by_pair: std::collections::BTreeMap<(&str, &str), UsageDayView> =
+        std::collections::BTreeMap::new();
+    for row in &rows {
+        by_pair
+            .entry((row.channel.as_str(), row.model.as_str()))
+            .and_modify(|sum| {
+                sum.turns += row.turns;
+                sum.input_tokens += row.input_tokens;
+                sum.output_tokens += row.output_tokens;
+                sum.cached_tokens += row.cached_tokens;
+                sum.reasoning_tokens += row.reasoning_tokens;
+                sum.charged_minor += row.charged_minor;
+            })
+            .or_insert_with(|| row.clone());
+    }
+    let rows: Vec<UsageDayView> = by_pair.into_values().collect();
+    view! {
+        <h2>"By channel and model"</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th scope="col">"Channel"</th>
+                    <th scope="col">"Model"</th>
+                    <th scope="col" class="num">"Turns"</th>
+                    <th scope="col" class="num">"Input tokens"</th>
+                    <th scope="col" class="num">"Cached"</th>
+                    <th scope="col" class="num">"Output tokens"</th>
+                    <th scope="col" class="num">"Reasoning"</th>
+                    <th scope="col" class="num">"Cost (credits)"</th>
+                </tr>
+            </thead>
+            <tbody>
+                {if rows.is_empty() {
+                    view! {
+                        <tr>
+                            <td colspan="8" class="muted">
+                                "No usage in the last 30 days."
+                            </td>
+                        </tr>
+                    }
+                        .into_any()
+                } else {
+                    view! {
+                        <For
+                            each=move || rows.clone()
+                            key=|row| format!("{}:{}", row.channel, row.model)
+                            let(row)
+                        >
+                            <tr>
+                                <td>{row.channel.clone()}</td>
+                                <td class="mono">{row.model.clone()}</td>
+                                <td class="num">{row.turns}</td>
+                                <td class="num">{row.input_tokens}</td>
+                                <td class="num">{row.cached_tokens}</td>
+                                <td class="num">{row.output_tokens}</td>
+                                <td class="num">{row.reasoning_tokens}</td>
+                                <td class="num mono">{credits(row.charged_minor)}</td>
+                            </tr>
+                        </For>
+                    }
+                        .into_any()
+                }}
+            </tbody>
+        </table>
     }
 }
 

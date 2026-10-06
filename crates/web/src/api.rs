@@ -16,6 +16,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::bills::BillView;
 use crate::requests::RequestView;
+use crate::usage::UsageView;
+
+#[cfg(feature = "ssr")]
+use crate::usage::UsageDayView;
 
 #[cfg(feature = "ssr")]
 use crate::heads::HeadSeed;
@@ -550,6 +554,48 @@ pub async fn get_requests(
     Ok(PageView {
         rows,
         next_cursor: page.next_cursor,
+    })
+}
+
+/// The usage page: the organization's daily usage rollup over the trailing
+/// [`USAGE_DAYS`] UTC days (issue #126).
+///
+/// The rows come from `oxsum.usage_daily` — the table `record_usage` rolls each
+/// settled turn into beside the usage write, keyed by the settlement entry's
+/// booking date — so the page's days are the ledger's days and the read never
+/// scans `usage_records`. Scoping is the bills page's rule: a member reads their
+/// own keys' usage plus the unattributed shared rows, owners and admins read
+/// all of it, and a row attributed to a key outside the scope drops before it
+/// is summed.
+#[server(prefix = "/_pages")]
+pub async fn get_usage() -> Result<UsageView, ServerFnError> {
+    let (db, _tenants, principal) = session_ctx().await?;
+    let organization = &principal.organization;
+    let to = time::OffsetDateTime::now_utc().date();
+    let from = to - time::Duration::days(crate::usage::USAGE_DAYS - 1);
+    let days = (0..crate::usage::USAGE_DAYS)
+        .map(|offset| (from + time::Duration::days(offset)).to_string())
+        .collect();
+    let rows = db
+        .usage_daily(&organization.tenant_id, from, to)
+        .await
+        .map_err(|_| ServerFnError::new("the usage could not be read"))?;
+    let keys = db
+        .list_keys(organization.id, key_scope(&principal))
+        .await
+        .map_err(|_| ServerFnError::new("the keys could not be read"))?;
+    Ok(UsageView {
+        days,
+        rows: rows
+            .iter()
+            .filter(|row| match row.key_id {
+                // Attributed to a key outside this session's scope — another member's
+                // usage — is not this session's row to read.
+                Some(id) => keys.iter().any(|key| key.id.as_simple() == id.as_simple()),
+                None => true,
+            })
+            .map(UsageDayView::new)
+            .collect(),
     })
 }
 
