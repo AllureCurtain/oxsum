@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.26.0
+  version: 0.27.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -92,6 +92,14 @@ info:
     An organization reads its finalized statements through
     `GET /api/v1/statements` and `GET /api/v1/statements/{statementId}` —
     every line's charge is ledger entries the bill proofs already cover.
+    0.27.0 adds per-key rate limiting: a key may carry `requestsPerMinute`
+    and `maxConcurrentHolds` beside the spend constraints, set at creation
+    and replaced wholesale by `PATCH /api/v1/org/keys/{keyId}`. A request
+    over the minute's allowance is refused 429 `RATE_LIMITED` with
+    `Retry-After` and `X-RateLimit-*` headers; a hold over the concurrent
+    cap is refused 429 `TOO_MANY_HOLDS`, checked under the same per-key
+    lock as the spend limit. The gateway answers both as
+    `rate_limit_exceeded` in OpenAI's shape.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie, except
     `/api/v1/auth/login`, `/api/v1/auth/logout` and `/api/v1/auth/register`, which take no
@@ -400,8 +408,9 @@ paths:
       summary: Set an API key's constraints
       description: |
         Replaces the key's whole constraint set — each of `spendLimitMinor`,
-        `budgetDuration` and `modelAllowlist` is written as given, so a field left
-        out or null clears it.
+        `budgetDuration`, `modelAllowlist`, `requestsPerMinute` and
+        `maxConcurrentHolds` is written as given, so a field left out or null
+        clears it.
 
         `spendLimitMinor` caps what the key may have committed — settled charges plus
         outstanding holds attributed to it, in minor units. `budgetDuration` makes
@@ -413,9 +422,20 @@ paths:
         model outside it is refused 403 `FORBIDDEN`. The `/api/v1/holds` endpoint
         takes no model and is not governed by the list.
 
+        `requestsPerMinute` caps how many requests the key may start inside a
+        rolling minute — on the gateway and on `POST /api/v1/holds` alike. A request
+        past it is refused 429 `RATE_LIMITED`, answering `Retry-After` and the
+        `X-RateLimit-Limit`/`X-RateLimit-Remaining`/`X-RateLimit-Reset` headers.
+        `maxConcurrentHolds` caps how many holds the key may have outstanding at
+        once: a hold over it is refused 429 `TOO_MANY_HOLDS`, counted from the
+        ledger's own pending entries under the same per-key lock as the spend
+        limit, so racing requests cannot both fit through.
+
         A hold that would push the key past its limit is refused with 429
         `KEY_LIMIT_EXCEEDED`, atomically with the ledger append, so concurrent requests
-        cannot exceed it. The scope rules are the revoke's: a member may change only the keys
+        cannot exceed it. A replayed hold answers its own receipt before any of
+        these checks run: retrying one request never consumes the key's windows
+        twice. The scope rules are the revoke's: a member may change only the keys
         they created — any other key id answers 404 and the key is untouched; owners, admins
         and API keys acting as the organization may change any key of the organization. A key
         id belonging to another organization is `NOT_FOUND`.
@@ -677,11 +697,16 @@ paths:
     post:
       summary: Hold credits (before a streaming call starts)
       description: |
-        A hold taken with an API key is checked against the key's spend limit when it has one:
-        when settled charges plus outstanding holds attributed to the key would exceed
-        `spendLimitMinor`, the hold is refused with 429 `KEY_LIMIT_EXCEEDED`, checked under a
-        per-key lock and atomic with the ledger append, so concurrent holds cannot together
-        exceed it. A session holds unattributed, with no limit to check.
+        A hold taken with an API key is checked against the key's constraints when it
+        has them: when settled charges plus outstanding holds attributed to the key
+        would exceed `spendLimitMinor`, the hold is refused with 429
+        `KEY_LIMIT_EXCEEDED`, checked under a per-key lock and atomic with the ledger
+        append, so concurrent holds cannot together exceed it. `requestsPerMinute`
+        refuses a request over the key's rolling-minute allowance with 429
+        `RATE_LIMITED` — the answer carries `Retry-After` and the `X-RateLimit-*`
+        headers — and `maxConcurrentHolds` refuses a hold over the outstanding-holds
+        cap with 429 `TOO_MANY_HOLDS`. A session holds unattributed, with no limit
+        to check.
       requestBody:
         required: true
         content:
@@ -1810,15 +1835,19 @@ components:
         spendLimitMinor: { type: [integer, "null"], format: int64, minimum: 0, description: "the key's spend limit in minor units: settled charges plus outstanding holds attributed to the key may not exceed it; null (the default) is unlimited" }
         budgetDuration: { type: [string, "null"], enum: [daily, weekly, monthly], description: "makes spendLimitMinor periodic over the current UTC calendar period; requires spendLimitMinor, meaningless without it" }
         modelAllowlist: { type: [array, "null"], items: { type: string, minLength: 1 }, description: "the gateway models this key may call; null (the default) allows all served models" }
+        requestsPerMinute: { type: [integer, "null"], minimum: 1, description: "requests the key may start inside a rolling minute, on the gateway and on /api/v1/holds; null (the default) is uncapped" }
+        maxConcurrentHolds: { type: [integer, "null"], minimum: 1, description: "holds the key may have outstanding at once; null (the default) is uncapped" }
     UpdateKeyConstraintsRequest:
       type: object
       properties:
         spendLimitMinor: { type: [integer, "null"], format: int64, minimum: 0, description: "the new limit in minor units, or null for unlimited" }
         budgetDuration: { type: [string, "null"], enum: [daily, weekly, monthly], description: "periodic limit window; requires spendLimitMinor; null or absent clears it" }
         modelAllowlist: { type: [array, "null"], items: { type: string, minLength: 1 }, description: "models the key may call; null or absent clears the list to allow all" }
+        requestsPerMinute: { type: [integer, "null"], minimum: 1, description: "the new per-minute request allowance, or null to uncap" }
+        maxConcurrentHolds: { type: [integer, "null"], minimum: 1, description: "the new outstanding-holds cap, or null to uncap" }
     ApiKey:
       type: object
-      required: [id, name, prefix, createdBy, createdAt, expiresAt, revokedAt, spendLimitMinor, budgetDuration, modelAllowlist]
+      required: [id, name, prefix, createdBy, createdAt, expiresAt, revokedAt, spendLimitMinor, budgetDuration, modelAllowlist, requestsPerMinute, maxConcurrentHolds]
       properties:
         id: { type: string, format: uuid }
         name: { type: [string, "null"] }
@@ -1830,6 +1859,8 @@ components:
         spendLimitMinor: { type: [integer, "null"], format: int64, minimum: 0, description: "the key's spend limit in minor units; null is unlimited" }
         budgetDuration: { type: [string, "null"], enum: [daily, weekly, monthly], description: "the window spendLimitMinor applies to; null makes the limit cumulative" }
         modelAllowlist: { type: [array, "null"], items: { type: string }, description: "models the key may call on the gateway; null allows all" }
+        requestsPerMinute: { type: [integer, "null"], minimum: 1, description: "the key's rolling-minute request allowance; null is uncapped" }
+        maxConcurrentHolds: { type: [integer, "null"], minimum: 1, description: "the key's outstanding-holds cap; null is uncapped" }
     CreatedApiKey:
       allOf:
         - $ref: "#/components/schemas/ApiKey"
@@ -2275,7 +2306,7 @@ components:
           properties:
             code:
               type: string
-              enum: [VALIDATION_ERROR, UNAUTHORIZED, FORBIDDEN, INSUFFICIENT_FUNDS, KEY_LIMIT_EXCEEDED, NOT_FOUND, CONFLICT, INTERNAL_ERROR, SERVICE_UNAVAILABLE]
+              enum: [VALIDATION_ERROR, UNAUTHORIZED, FORBIDDEN, INSUFFICIENT_FUNDS, KEY_LIMIT_EXCEEDED, RATE_LIMITED, TOO_MANY_HOLDS, NOT_FOUND, CONFLICT, INTERNAL_ERROR, SERVICE_UNAVAILABLE]
             message: { type: string }
             details: { type: array, items: {} }
     ChatCompletionRequest:
@@ -2372,6 +2403,7 @@ components:
                 - invalid_request_error
                 - authentication_error
                 - permission_error
+                - rate_limit_exceeded
                 - insufficient_quota
                 - api_error
             param: { type: [string, "null"] }
@@ -2379,9 +2411,13 @@ components:
               type: [string, "null"]
               description: >-
                 oxsum's own code: VALIDATION_ERROR, UNAUTHORIZED, FORBIDDEN, CONFLICT,
-                INSUFFICIENT_FUNDS, KEY_LIMIT_EXCEEDED, UPSTREAM_ERROR or INTERNAL_ERROR.
+                INSUFFICIENT_FUNDS, KEY_LIMIT_EXCEEDED, RATE_LIMITED, TOO_MANY_HOLDS,
+                UPSTREAM_ERROR or INTERNAL_ERROR.
                 A key past its spend limit arrives as 429 KEY_LIMIT_EXCEEDED with the
-                `insufficient_quota` type, the same type the 402 INSUFFICIENT_FUNDS refusal carries.
+                `insufficient_quota` type, the same type the 402 INSUFFICIENT_FUNDS
+                refusal carries; a key past its request or concurrency allowance
+                arrives as 429 with the `rate_limit_exceeded` type and the
+                `Retry-After`/`X-RateLimit-*` headers.
   responses:
     Receipt:
       description: The ledger receipt

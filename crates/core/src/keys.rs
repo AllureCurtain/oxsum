@@ -31,7 +31,8 @@ pub(crate) const MAX_NAME: usize = 80;
 pub(crate) const MAX_MODEL: usize = 128;
 /// The columns every `ApiKey` read projects, in one place for select and returning.
 const KEY_COLS: &str = "key_id, name, prefix, created_by, created_at, expires_at, \
-                        revoked_at, spend_limit_minor, budget_duration, model_allowlist";
+                        revoked_at, spend_limit_minor, budget_duration, model_allowlist, \
+                        requests_per_minute, max_concurrent_holds";
 
 /// The window a periodic spend limit applies to. Without one the limit is cumulative.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -88,6 +89,12 @@ pub struct KeyConstraints {
     pub budget_duration: Option<BudgetDuration>,
     /// The gateway models the key may call. `None` allows every served model.
     pub model_allowlist: Option<Vec<String>>,
+    /// Requests the key may start inside a rolling minute — on the gateway and on
+    /// `/api/v1/holds`. `None` is uncapped.
+    pub requests_per_minute: Option<i32>,
+    /// Holds the key may have outstanding at once, counted from the ledger's
+    /// pending entries under the per-key lock. `None` is uncapped.
+    pub max_concurrent_holds: Option<i32>,
 }
 
 impl KeyConstraints {
@@ -112,6 +119,18 @@ impl KeyConstraints {
             {
                 return Err(WalletError::InvalidInput(format!(
                     "a modelAllowlist entry is a model name, 1..={MAX_MODEL} bytes"
+                )));
+            }
+        }
+        for (name, value) in [
+            ("requestsPerMinute", self.requests_per_minute),
+            ("maxConcurrentHolds", self.max_concurrent_holds),
+        ] {
+            if let Some(value) = value
+                && value <= 0
+            {
+                return Err(WalletError::InvalidInput(format!(
+                    "{name} must be at least 1"
                 )));
             }
         }
@@ -143,14 +162,25 @@ pub struct ApiKey {
     pub budget_duration: Option<BudgetDuration>,
     /// The gateway models the key may call; `None` allows every served model.
     pub model_allowlist: Option<Vec<String>>,
+    /// The key's rolling-minute request allowance; `None` is uncapped.
+    pub requests_per_minute: Option<i32>,
+    /// The key's outstanding-holds cap; `None` is uncapped.
+    pub max_concurrent_holds: Option<i32>,
 }
 
-/// The credential behind a key-authenticated request: which key acted, and the spend
-/// limit in force for it. Carried on the principal so the hold path can enforce it.
+/// The credential behind a key-authenticated request: which key acted, and the
+/// constraints the admission path needs without a second read — the spend limit
+/// and the per-minute request allowance. Carried on the principal so the hold
+/// path can enforce it.
 #[derive(Debug, Clone)]
 pub struct ActingKey {
     pub key_id: Uuid,
     pub spend_limit_minor: Option<i64>,
+    /// The rolling-minute request allowance in force when the key authenticated.
+    /// Checked against the limiter's own window at admission; a PATCH landing
+    /// between authentication and a hold tightens nothing retroactively for a
+    /// request already read, and loosens on the next authentication.
+    pub requests_per_minute: Option<i32>,
 }
 
 /// A key plus its secret, returned exactly once: at creation.
@@ -206,7 +236,7 @@ impl Db {
         let hash = hash_secret(secret);
         let row = sqlx::query(
             "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, \
-                    k.key_id, k.spend_limit_minor \
+                    k.key_id, k.spend_limit_minor, k.requests_per_minute \
              FROM oxsum.api_keys k JOIN oxsum.organizations o USING (organization_id) \
              WHERE k.secret_hash = $1 \
                AND k.revoked_at IS NULL \
@@ -221,6 +251,7 @@ impl Db {
             let key = ActingKey {
                 key_id: row.try_get("key_id")?,
                 spend_limit_minor: row.try_get("spend_limit_minor")?,
+                requests_per_minute: row.try_get("requests_per_minute")?,
             };
             Ok((organization, key))
         })
@@ -251,7 +282,8 @@ impl Db {
             KeyScope::Own(user_id) => {
                 sqlx::query(&format!(
                     "UPDATE oxsum.api_keys \
-                     SET spend_limit_minor = $4, budget_duration = $5, model_allowlist = $6 \
+                     SET spend_limit_minor = $4, budget_duration = $5, model_allowlist = $6, \
+                         requests_per_minute = $7, max_concurrent_holds = $8 \
                      WHERE organization_id = $1 AND key_id = $2 AND created_by = $3 \
                      RETURNING {KEY_COLS}"
                 ))
@@ -261,13 +293,16 @@ impl Db {
                 .bind(constraints.spend_limit_minor)
                 .bind(constraints.budget_duration.map(|d| d.as_str()))
                 .bind(constraints.model_allowlist)
+                .bind(constraints.requests_per_minute)
+                .bind(constraints.max_concurrent_holds)
                 .fetch_optional(self.pool())
                 .await?
             }
             KeyScope::Organization | KeyScope::All => {
                 sqlx::query(&format!(
                     "UPDATE oxsum.api_keys \
-                     SET spend_limit_minor = $3, budget_duration = $4, model_allowlist = $5 \
+                     SET spend_limit_minor = $3, budget_duration = $4, model_allowlist = $5, \
+                         requests_per_minute = $6, max_concurrent_holds = $7 \
                      WHERE organization_id = $1 AND key_id = $2 \
                      RETURNING {KEY_COLS}"
                 ))
@@ -276,6 +311,8 @@ impl Db {
                 .bind(constraints.spend_limit_minor)
                 .bind(constraints.budget_duration.map(|d| d.as_str()))
                 .bind(constraints.model_allowlist)
+                .bind(constraints.requests_per_minute)
+                .bind(constraints.max_concurrent_holds)
                 .fetch_optional(self.pool())
                 .await?
             }
@@ -377,8 +414,9 @@ pub(crate) async fn insert(
     let row = sqlx::query(&format!(
         "INSERT INTO oxsum.api_keys \
              (key_id, organization_id, name, prefix, secret_hash, created_by, expires_at, \
-              spend_limit_minor, budget_duration, model_allowlist) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+              spend_limit_minor, budget_duration, model_allowlist, \
+              requests_per_minute, max_concurrent_holds) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
          RETURNING {KEY_COLS}"
     ))
     .bind(Uuid::new_v4())
@@ -391,6 +429,8 @@ pub(crate) async fn insert(
     .bind(constraints.spend_limit_minor)
     .bind(constraints.budget_duration.map(|d| d.as_str()))
     .bind(constraints.model_allowlist)
+    .bind(constraints.requests_per_minute)
+    .bind(constraints.max_concurrent_holds)
     .fetch_one(&mut **tx)
     .await
     .map_err(|e| conflict_or_storage(e, "api_keys_secret_hash_key", "key collision"))?;
@@ -456,6 +496,8 @@ fn key_from_row(row: &sqlx::postgres::PgRow) -> Result<ApiKey, WalletError> {
             .map(BudgetDuration::parse)
             .transpose()?,
         model_allowlist: row.try_get("model_allowlist")?,
+        requests_per_minute: row.try_get("requests_per_minute")?,
+        max_concurrent_holds: row.try_get("max_concurrent_holds")?,
     })
 }
 

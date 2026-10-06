@@ -145,6 +145,23 @@ async fn run(
     request_id: &str,
 ) -> Result<Response, GatewayError> {
     let request = ChatRequest::parse(body)?;
+    // The key's rolling-minute allowance is consumed at admission, before any
+    // money moves: a refused request never reaches the wallet. A client retry is
+    // a new request (the id is minted here), so it rightly spends another slot.
+    if let Some(rpm) = key.requests_per_minute
+        && rpm > 0
+        && let Err(limited) =
+            state
+                .rate_limiter
+                .admit(key.key_id, rpm as u32, std::time::Instant::now())
+    {
+        return Err(GatewayError::RateLimited {
+            message: format!("this API key is limited to {rpm} requests per minute"),
+            code: "RATE_LIMITED",
+            limit: i64::from(rpm),
+            retry_after_secs: limited.retry_after.as_secs(),
+        });
+    }
     // The channel and the price version are resolved once, here, before anything is frozen: this
     // turn is priced by the version in force when it starts, whatever happens to prices later.
     let Some(serving) = serving(state, &request.model).await? else {

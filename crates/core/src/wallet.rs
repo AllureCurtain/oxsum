@@ -903,7 +903,8 @@ impl Wallet {
             // The constraints in force now, not the ones the request authenticated with:
             // locked, so a PATCH landing between authentication and this hold cannot be missed.
             let constraints = sqlx::query(
-                "SELECT spend_limit_minor, budget_duration, model_allowlist \
+                "SELECT spend_limit_minor, budget_duration, model_allowlist, \
+                        max_concurrent_holds \
                  FROM oxsum.api_keys WHERE key_id = $1 FOR UPDATE",
             )
             .bind(key.key_id)
@@ -945,6 +946,19 @@ impl Wallet {
                         return Err(WalletError::KeyLimitExceeded {
                             limit_minor: limit,
                             committed_minor: committed,
+                        });
+                    }
+                }
+                // The concurrent-holds cap bounds hold-spam: how many reservations
+                // the key may have open at once, counted from the ledger's pending
+                // entries under the same lock so racing holds cannot both fit.
+                let hold_cap: Option<i32> = constraints.try_get("max_concurrent_holds")?;
+                if let Some(cap) = hold_cap {
+                    let open = self.key_open_holds_in(&mut tx, &key.key_id).await?;
+                    if open >= i64::from(cap) {
+                        return Err(WalletError::TooManyHolds {
+                            limit: i64::from(cap),
+                            open,
                         });
                     }
                 }
@@ -1020,6 +1034,48 @@ impl Wallet {
             .fetch_one(&mut *conn)
             .await?;
         Ok(committed)
+    }
+
+    /// How many holds the key has outstanding, counted from the ledger's own
+    /// entries: an entry that debits a pool account in the pending layer is a
+    /// live reservation, and an entry that credits one is the release leg of a
+    /// settlement — the release rides the settlement entry, so a hold stays open
+    /// until another entry frees it. The difference is the open count.
+    ///
+    /// Run inside the transaction holding the per-key advisory lock, so the count
+    /// and the hold append that follows it agree on what is committed.
+    async fn key_open_holds_in(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        key_id: &Uuid,
+    ) -> Result<i64, WalletError> {
+        let sql = format!(
+            "SELECT count(*) FILTER (WHERE pending_debit > 0) \
+                  - count(*) FILTER (WHERE pending_credit > 0) \
+             FROM ( \
+                 SELECT e.entry_id, \
+                        SUM(CASE WHEN p.direction = 'D' THEN p.amount_minor ELSE 0 END) \
+                            AS pending_debit, \
+                        SUM(CASE WHEN p.direction = 'C' THEN p.amount_minor ELSE 0 END) \
+                            AS pending_credit \
+                 FROM ledger_{schema}.postings p \
+                 JOIN ledger_{schema}.entries e ON e.entry_id = p.entry_id \
+                 WHERE p.account_index = ANY($1) AND e.provenance_actor = $2 \
+                   AND p.layer = 'pending' \
+                 GROUP BY e.entry_id \
+             ) per_entry",
+            schema = self.tenant_id,
+        );
+        let open: i64 = sqlx::query_scalar(&sql)
+            .bind(vec![
+                self.wallet.index() as i32,
+                self.bonus.index() as i32,
+                self.credit_line.index() as i32,
+            ])
+            .bind(key_id.as_simple().to_string())
+            .fetch_one(&mut *conn)
+            .await?;
+        Ok(open)
     }
 
     /// Settle: one entry does two things — releases the hold (a reversal in the pending layer)

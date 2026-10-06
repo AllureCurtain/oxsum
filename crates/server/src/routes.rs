@@ -159,6 +159,12 @@ struct CreateKeyReq {
     /// The gateway models this key may call; absent or null allows all of them.
     #[serde(default)]
     model_allowlist: Option<Vec<String>>,
+    /// Requests inside a rolling minute; absent or null is uncapped.
+    #[serde(default)]
+    requests_per_minute: Option<i32>,
+    /// Holds outstanding at once; absent or null is uncapped.
+    #[serde(default)]
+    max_concurrent_holds: Option<i32>,
 }
 
 #[derive(Deserialize)]
@@ -173,6 +179,12 @@ struct UpdateKeyConstraintsReq {
     /// The models the key may call; null clears the list back to all.
     #[serde(default)]
     model_allowlist: Option<Vec<String>>,
+    /// The per-minute request allowance; null clears it back to uncapped.
+    #[serde(default)]
+    requests_per_minute: Option<i32>,
+    /// The outstanding-holds cap; null clears it back to uncapped.
+    #[serde(default)]
+    max_concurrent_holds: Option<i32>,
 }
 
 /// Builds the constraint set both key endpoints carry, parsing the duration's name.
@@ -185,6 +197,8 @@ fn key_constraints(r: &UpdateKeyConstraintsReq) -> Result<oxsum_core::KeyConstra
             .map(oxsum_core::BudgetDuration::parse)
             .transpose()?,
         model_allowlist: r.model_allowlist.clone(),
+        requests_per_minute: r.requests_per_minute,
+        max_concurrent_holds: r.max_concurrent_holds,
     })
 }
 
@@ -476,6 +490,8 @@ async fn create_key(
                     spend_limit_minor: r.spend_limit_minor,
                     budget_duration: r.budget_duration,
                     model_allowlist: r.model_allowlist,
+                    requests_per_minute: r.requests_per_minute,
+                    max_concurrent_holds: r.max_concurrent_holds,
                 })
                 .map(|c| (r.name, r.expires_at, c))
             },
@@ -702,9 +718,27 @@ async fn hold(
     // hold is for, records one. A key's hold is attributed to the key and checked against its
     // spend limit; a session holds unattributed, with no limit to check.
     match principal.acting_key() {
-        Some(key) => ok(w
-            .hold_for_key(key, None, &r.idempotency_key, "", r.amount_minor, today())
-            .await?),
+        Some(key) => {
+            // The rolling-minute allowance is spent at admission, the same as the
+            // gateway's: a refused hold never reaches the wallet.
+            if let Some(rpm) = key.requests_per_minute
+                && rpm > 0
+                && let Err(limited) =
+                    state
+                        .rate_limiter
+                        .admit(key.key_id, rpm as u32, std::time::Instant::now())
+            {
+                return Err(WalletError::RateLimited {
+                    limit: i64::from(rpm),
+                    retry_after_secs: limited.retry_after.as_secs(),
+                }
+                .into());
+            }
+            ok(
+                w.hold_for_key(key, None, &r.idempotency_key, "", r.amount_minor, today())
+                    .await?,
+            )
+        }
         None => ok(w
             .hold(&r.idempotency_key, "", r.amount_minor, today())
             .await?),
