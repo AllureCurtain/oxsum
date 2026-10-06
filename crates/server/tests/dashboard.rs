@@ -41,7 +41,7 @@ async fn online_app(url: &str) -> (Router, Db, broadcast::Sender<BillingEvent>) 
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
     let config = Config::new(Signup::Open, None);
-    let (app, billing) = oxsum_server::app_with_billing(db.clone(), config);
+    let (app, billing, _metrics) = oxsum_server::app_with_billing(db.clone(), config);
     (app, db, billing)
 }
 

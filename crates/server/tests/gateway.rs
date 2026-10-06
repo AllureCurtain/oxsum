@@ -366,11 +366,15 @@ async fn world_for(url: &str, top_up: i64) -> World {
             .await
             .expect("the price is written");
     }
-    let config = Config::new(Signup::Open, None).with_secret(secret);
+    // The world app carries the operator token too, so `/metrics` can be scraped on the same
+    // registry the turns recorded into (each app has its own; admin_app's would be empty).
+    let config = Config::new(Signup::Open, None)
+        .with_secret(secret)
+        .with_admin_token(OPERATOR_TOKEN);
     oxsum_server::prepare(&db, &config)
         .await
         .expect("the deployment is prepared");
-    let (app, billing) = oxsum_server::app_with_billing(db, config);
+    let (app, billing, _metrics) = oxsum_server::app_with_billing(db, config);
     let tenants = Tenants::new(pool.clone());
 
     let (registration, key) = register(&app).await;
@@ -560,6 +564,22 @@ async fn json_of(response: Response) -> (StatusCode, Value) {
         status,
         serde_json::from_slice(&bytes).unwrap_or(Value::Null),
     )
+}
+
+/// A scrape of `/metrics` with the operator token: the exposition document as text.
+async fn scrape(app: &Router) -> String {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::get("/metrics")
+                .header("authorization", format!("Bearer {OPERATOR_TOKEN}"))
+                .body(Body::empty())
+                .expect("the test's own request"),
+        )
+        .await
+        .expect("the router answers");
+    assert_eq!(response.status(), StatusCode::OK);
+    text_of(response).await
 }
 
 async fn text_of(response: Response) -> String {
@@ -2134,4 +2154,62 @@ async fn a_refusal_before_the_wallet_releases_its_key() {
     let (status, _) = json_of(second).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(world.script.seen().len(), 1);
+}
+
+/// The `/metrics` scrape sees the turn end to end: the hold, the settlement, the charge and
+/// the tokens, plus the upstream latency histogram — all on the registry this app owns.
+#[tokio::test]
+async fn a_scrape_counts_the_settled_turn() {
+    let world = world!(1_000_000);
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+
+    let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
+    let (status, _) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let document = scrape(&world.app).await;
+    let sample = |name: &str, label: &str| -> f64 {
+        document
+            .lines()
+            .find(|line| line.starts_with(name) && line.contains(label))
+            .and_then(|line| line.rsplit(' ').next()?.parse().ok())
+            .unwrap_or_else(|| panic!("{name} with {label} is reported:\n{document}"))
+    };
+    // One hold on this world's channel and model, one settlement of kind `usage` at 12
+    // minor units, and the settled tokens the usage report carried.
+    assert_eq!(
+        sample(
+            "oxsum_gateway_holds_total",
+            &format!("model=\"{}\"", world.model("ok")),
+        ),
+        1.0
+    );
+    assert_eq!(
+        sample("oxsum_gateway_settlements_total", "kind=\"usage\""),
+        1.0
+    );
+    assert_eq!(sample("oxsum_gateway_charged_minor_total", ""), 12.0);
+    assert_eq!(
+        sample("oxsum_gateway_tokens_total", "direction=\"input\""),
+        10.0
+    );
+    assert_eq!(
+        sample("oxsum_gateway_tokens_total", "direction=\"output\""),
+        2.0
+    );
+    assert_eq!(
+        sample("oxsum_upstream_response_seconds_count", "result=\"ok\""),
+        1.0
+    );
+    // The gauge reads the shared table — other worlds' in-flight holds are not this test's
+    // to assert on, only that the gauge is reported at all.
+    document
+        .lines()
+        .find(|line| line.starts_with("oxsum_open_holds"))
+        .expect("the open-holds gauge is reported");
 }
