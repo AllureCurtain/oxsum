@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.29.0
+  version: 0.30.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -114,6 +114,13 @@ info:
     entry per drift class with a count and a bounded sample. It never
     repairs: drift is for a human to read and act on, not for a second
     writer to patch silently.
+    0.30.0 adds `GET /metrics`: the process's own telemetry in Prometheus
+    exposition format — HTTP request counts and durations by route, the
+    gateway's money path (holds, settlements by kind, charged minor units,
+    settled tokens, upstream latency), rate-limit and idempotency
+    outcomes, and scrape-time gauges for open holds and the connection
+    pool. The scrape carries the same operator bearer token as the admin
+    surface; a deployment without one answers 401 there too.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie, except
     `/api/v1/auth/login`, `/api/v1/auth/logout` and `/api/v1/auth/register`, which take no
@@ -133,6 +140,26 @@ paths:
           content:
             text/plain:
               schema: { type: string, example: ok }
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      description: |
+        The process's telemetry in Prometheus exposition format (`text/plain;
+        version=0.0.4`): HTTP request counts and durations by matched route, the
+        gateway's money path (holds taken, settlements by kind, charged minor
+        units, settled tokens, upstream response latency), rate-limit rejections,
+        idempotency claim outcomes, and scrape-time gauges for open holds and the
+        shared connection pool. The credential is the operator token — the same
+        `OXSUM_ADMIN_TOKEN` the `/api/v1/admin` surface takes — so a Prometheus
+        scrape config carries it as `bearer_token`. A deployment with no
+        operator token answers 401 here, the same as every admin route.
+      responses:
+        "200":
+          description: The current exposition document
+          content:
+            text/plain:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Error" }
   /api/v1/auth/register:
     post:
       summary: Register a user, its personal organization and the first API key
