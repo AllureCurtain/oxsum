@@ -161,6 +161,7 @@ When relaying a streaming request, the gateway always writes `stream_options.inc
 - The user never pays more than the freeze — that is the gateway's promise. Underestimates, missing usage and upstream overcharges are the platform's cost.
 - The hold timeout defaults to 30 minutes and must exceed the longest possible single request. A background job sweeps timed-out holds. The sweeper and normal settlement share the same idempotency key, so both cannot succeed; whichever lands first wins.
 - Every response carries an `x-oxsum-request-id` header; the bills page's settlement rows lead with that same request id, so a row joins the header a client logged to the ledger entry that billed it.
+- A caller learns what a request cost from the response itself: every answer that took the hold carries `x-oxsum-freeze-minor` (the most it can cost) and `x-oxsum-balance-minor` (the spendable runway left under the reservation), and the settled charge arrives as `x-oxsum-charged-minor` — a header on a non-streamed answer or a post-hold refusal, an HTTP trailer on a streamed one.
 
 Two settled trade-offs:
 
