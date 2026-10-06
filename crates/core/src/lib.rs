@@ -58,8 +58,8 @@ pub use statements::{
 };
 pub use tenants::Tenants;
 pub use usage::{
-    Attribution, MAX_CONTEXT_NAME, MAX_END_USER, MAX_TAG, MAX_TAGS, Margin, UsageRecord, UsageRow,
-    validate_attribution,
+    Attribution, MAX_CONTEXT_NAME, MAX_END_USER, MAX_TAG, MAX_TAGS, Margin, UsageDay, UsageRecord,
+    UsageRow, validate_attribution,
 };
 pub use users::{NewUser, Registration, User};
 pub use wallet::{

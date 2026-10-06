@@ -285,11 +285,18 @@ impl Db {
     /// is the source of truth, and a missing row is drift for the reconciler to
     /// report, not a second opinion about money.
     ///
+    /// A row that lands also rolls into `oxsum.usage_daily` in the same
+    /// transaction, keyed by the settlement entry's `booking_date` — the same
+    /// day a statement period would count the turn under, not the instant the
+    /// write happened. A replay inserts no usage row and rolls nothing, so the
+    /// daily table can never double-count one turn.
+    ///
     /// # Errors
     ///
     /// Storage failures surface as [`WalletError`].
     pub async fn record_usage(&self, row: &UsageRow) -> Result<(), WalletError> {
-        sqlx::query(
+        let mut tx = self.pool().begin().await?;
+        let inserted = sqlx::query(
             "INSERT INTO oxsum.usage_records \
              (request_id, tenant_id, key_id, model, channel, price_version, kind, entry_id, \
               input_tokens, output_tokens, cached_tokens, cache_write_5m_tokens, \
@@ -329,9 +336,105 @@ impl Db {
         .bind(row.charged_minor)
         .bind(row.freeze_minor)
         .bind(row.upstream_cost_minor)
-        .execute(self.pool())
-        .await?;
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if inserted == 0 {
+            tx.rollback().await?;
+            return Ok(());
+        }
+        // The day comes from the settlement entry itself. A usage row can
+        // name a tenant whose ledger does not exist — the margin suite seeds
+        // rows for a synthetic tenant — so the rollup guards on the schema
+        // the way the migration's backfill does. A row whose entry cannot be
+        // found rolls nothing; the missing day is drift for the reconciler.
+        // The schema name is quoted and `"`-escaped rather than trusting the
+        // tenant-id shape, so a synthetic id cannot break the statement.
+        let ledger = format!("ledger_{}", row.tenant_id.replace('"', "\"\""));
+        let has_ledger = sqlx::query_scalar::<_, Option<String>>("SELECT to_regclass($1)::text")
+            .bind(format!("\"{ledger}\".entries"))
+            .fetch_one(&mut *tx)
+            .await?
+            .is_some();
+        if has_ledger {
+            sqlx::query(&format!(
+                "INSERT INTO oxsum.usage_daily \
+                     (tenant_id, day, key_id, channel, model, turns, \
+                      input_tokens, output_tokens, cached_tokens, reasoning_tokens, \
+                      charged_minor) \
+                 SELECT $1, e.booking_date, $2, $3, $4, 1, $5, $6, $7, $8, $9 \
+                 FROM \"{ledger}\".entries e WHERE e.entry_id = $10 \
+                 ON CONFLICT (tenant_id, day, channel, model, key_id) DO UPDATE SET \
+                     turns = usage_daily.turns + 1, \
+                     input_tokens = usage_daily.input_tokens + EXCLUDED.input_tokens, \
+                     output_tokens = usage_daily.output_tokens + EXCLUDED.output_tokens, \
+                     cached_tokens = usage_daily.cached_tokens + EXCLUDED.cached_tokens, \
+                     reasoning_tokens = usage_daily.reasoning_tokens + EXCLUDED.reasoning_tokens, \
+                     charged_minor = usage_daily.charged_minor + EXCLUDED.charged_minor",
+            ))
+            .bind(&row.tenant_id)
+            .bind(row.key_id)
+            .bind(&row.channel)
+            .bind(&row.model)
+            .bind(row.usage.input_tokens)
+            .bind(row.usage.output_tokens)
+            .bind(row.usage.cached_tokens)
+            .bind(row.usage.reasoning_tokens)
+            .bind(row.charged_minor)
+            .bind(row.entry_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
         Ok(())
+    }
+
+    /// One organization's daily usage rollup, `[from, to]` inclusive, as the
+    /// usage dashboard reads it (roadmap P3-3, issue #126).
+    ///
+    /// Rows come back one per `(day, channel, model, key)` — `key_id` stays on
+    /// the row so the caller applies the members' scope rule losslessly: a
+    /// member reads their own keys' days plus the unattributed (`None`) shared
+    /// usage, the same rule the bills page applies to the ledger.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn usage_daily(
+        &self,
+        tenant_id: &str,
+        from: time::Date,
+        to: time::Date,
+    ) -> Result<Vec<UsageDay>, WalletError> {
+        let rows = sqlx::query(
+            "SELECT day, key_id, channel, model, turns, \
+                    input_tokens, output_tokens, cached_tokens, reasoning_tokens, \
+                    charged_minor \
+             FROM oxsum.usage_daily \
+             WHERE tenant_id = $1 AND day >= $2 AND day <= $3 \
+             ORDER BY day, channel, model, key_id",
+        )
+        .bind(tenant_id)
+        .bind(from)
+        .bind(to)
+        .fetch_all(self.pool())
+        .await?;
+        let mut days = Vec::with_capacity(rows.len());
+        for row in &rows {
+            days.push(UsageDay {
+                day: row.try_get("day")?,
+                key_id: row.try_get("key_id")?,
+                channel: row.try_get("channel")?,
+                model: row.try_get("model")?,
+                turns: row.try_get("turns")?,
+                input_tokens: row.try_get("input_tokens")?,
+                output_tokens: row.try_get("output_tokens")?,
+                cached_tokens: row.try_get("cached_tokens")?,
+                reasoning_tokens: row.try_get("reasoning_tokens")?,
+                charged_minor: row.try_get("charged_minor")?,
+            });
+        }
+        Ok(days)
     }
 
     /// The charged-versus-upstream sums per `(channel, model)` the admin margin
@@ -369,6 +472,29 @@ impl Db {
         }
         Ok(margin)
     }
+}
+
+/// One daily rollup row of `oxsum.usage_daily` — what the usage dashboard sums
+/// into its chart and table.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageDay {
+    /// The settlement entries' `booking_date` these turns were booked under.
+    pub day: time::Date,
+    /// The key that paid for these turns; `None` is the shared unattributed
+    /// usage (session settles) every member may see.
+    pub key_id: Option<Uuid>,
+    pub channel: String,
+    pub model: String,
+    /// The settled turns the row sums.
+    pub turns: i64,
+    /// Token sums over the turns, the normalized record's same four counts.
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cached_tokens: i64,
+    pub reasoning_tokens: i64,
+    /// What the turns charged, in minor units.
+    pub charged_minor: i64,
 }
 
 /// What one `(channel, model)` pair charged against what upstream cost it, as the
