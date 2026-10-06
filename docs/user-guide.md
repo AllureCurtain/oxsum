@@ -125,6 +125,12 @@ password; `/dashboard` is the overview. `/logout` logs out.
   pages a hundred at a time — **Older** and **Newest** under the table, keeping the
   filters in the link. A turn that is still in flight has not settled yet, so it is
   not here — the overview shows those live.
+- **Usage**: the organization's settled usage aggregated by day
+  (`/dashboard/usage`): a bar chart of what each of the last 30 days charged in
+  credits — the day is the settlement's ledger booking date — and a table summing
+  the same window by channel and model, with turns and the token counts. A quiet
+  day draws a zero-height bar, and a member's page sums their own keys' usage plus
+  the organization's shared rows, the same scope the bills page applies.
 
 - **Organization**: the top-right corner of every dashboard page names the
   organization the session acts as. Choosing another one from the select switches it —
