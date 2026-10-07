@@ -79,6 +79,9 @@ Copy `.env.example` to `.env` and the server and the tests pick it up automatica
 | `OXSUM_GITHUB_CLIENT_SECRET` | Optional; the OAuth app's client secret — keep it out of logs the way `OXSUM_SECRET_KEY` is kept |
 | `OXSUM_GITHUB_WEB_URL` | Tests only; the provider's web origin the authorize redirect and token exchange go to, default `https://github.com` — a stub stands there |
 | `OXSUM_GITHUB_API_URL` | Tests only; the provider's API origin, default `https://api.github.com` |
+| `OXSUM_TURNSTILE_SITE_KEY` | Optional; the Cloudflare Turnstile site key the register page hands the widget — set together with `OXSUM_TURNSTILE_SECRET_KEY`, a subset is a startup error. Public by design: `auth/methods` publishes it |
+| `OXSUM_TURNSTILE_SECRET_KEY` | Optional; the secret `siteverify` authenticates with — keep it out of logs the way `OXSUM_SECRET_KEY` is kept |
+| `OXSUM_TURNSTILE_VERIFY_URL` | Tests only; the siteverify endpoint, default `https://challenges.cloudflare.com/turnstile/v0/siteverify` — a stub stands there |
 | `RUST_LOG` | Optional `tracing-subscriber` filter; defaults to `info` |
 | `LEPTOS_OUTPUT_NAME` | Build-time, not a server setting, and deliberately not in `.env.example`: it is set in `.cargo/config.toml` for every cargo invocation in the workspace, because leptos reads it with `option_env!` *while it is compiled* and the shell it compiles into the server is what names the wasm module the browser loads. See "Web dashboard" |
 
