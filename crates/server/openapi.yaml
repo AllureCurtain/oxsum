@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.35.0
+  version: 0.36.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -155,7 +155,16 @@ info:
     `before` cursor, `POST /api/v1/estimate-price` prices a declared token
     shape through the same arithmetic the gateway freezes on, and `GET
     /api/v1/pricing` answers the public catalog — every model's current price
-    version, without channel credentials.
+    version, without channel credentials. 0.36.0 adds the email flows a
+    deployment with SMTP configured gets (`OXSUM_SMTP_URL`/`OXSUM_MAIL_FROM`/
+    `OXSUM_PUBLIC_URL`): `POST /api/v1/auth/verify/request` mails the session
+    user's verification link, `POST /api/v1/auth/verify` consumes it and marks
+    `emailVerified` on the user, `POST /api/v1/auth/password/forgot` mails a
+    reset link when the address has an account — indistinguishable when it does
+    not — and `POST /api/v1/auth/password/reset` sets the new password and
+    revokes every session the user holds. A deployment without a mailer
+    registers and logs in as before; `verify/request` is the one endpoint that
+    answers `SERVICE_UNAVAILABLE` there, because the mail is the feature.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie, except
     `/api/v1/auth/login`, `/api/v1/auth/logout` and `/api/v1/auth/register`, which take no
@@ -311,6 +320,125 @@ paths:
                 required: [data]
                 properties:
                   data: { $ref: "#/components/schemas/LogoutResponse" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/auth/verify/request:
+    post:
+      summary: Mail the session user's verification link
+      description: |
+        Mints a single-use email token (seven-day life, stored as its SHA-256 hash) and
+        mails the verification link to the session user's address. The session is the
+        credential: an API key names no user and is `FORBIDDEN` here.
+
+        A deployment without a mailer answers `SERVICE_UNAVAILABLE` — sending the mail
+        is the endpoint's whole job. An already-verified user answers `alreadyVerified`
+        without mailing. A resend within sixty seconds of the last mint answers
+        `sent: false` rather than mailing again — the cooldown keeps the endpoint from
+        being a mail amplifier.
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Whether a verification mail went out
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/VerifyRequestResult" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/auth/verify:
+    post:
+      summary: Consume a verification token
+      description: |
+        Marks the token's user's email verified. Unknown, spent and expired tokens are
+        all `404 NOT_FOUND` — which is wrong is the holder's business. Already-verified
+        is not an error: the token is consumed all the same.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VerifyEmailRequest" }
+      responses:
+        "200":
+          description: The email is verified
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [verified]
+                    properties:
+                      verified: { type: boolean }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/auth/password/forgot:
+    post:
+      summary: Mail a password-reset link
+      description: |
+        Always 200 with an empty `data` — an unknown address gets the same answer as a
+        known one, so the endpoint enumerates no accounts. When the address has an
+        account and no reset mail went out in the last sixty seconds, a single-use
+        token (one-hour life, stored as its SHA-256 hash) is minted and the link is
+        mailed. A deployment without a mailer mints and mails nothing and still
+        answers the same 200.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ForgotPasswordRequest" }
+      responses:
+        "200":
+          description: Empty, whatever the address
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { type: object }
+        "400": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/auth/password/reset:
+    post:
+      summary: Consume a reset token and set a new password
+      description: |
+        Sets the token's user's password — the same length rule as signup — and
+        revokes every session they hold, in one transaction: the old credential dies
+        with the reset. Unknown, spent and expired tokens are all `404 NOT_FOUND`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ResetPasswordRequest" }
+      responses:
+        "200":
+          description: The new password is set; how many sessions it revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [sessionsRevoked]
+                    properties:
+                      sessionsRevoked:
+                        type: integer
+                        format: int64
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/session:
     get:
@@ -2258,17 +2386,49 @@ components:
         organizationName: { type: string, minLength: 1, maxLength: 80, description: name of the personal organization; defaults to the local part of the email }
     Registration:
       type: object
-      required: [user, organization, apiKey]
+      required: [user, organization, apiKey, verificationSent]
       properties:
         user: { $ref: "#/components/schemas/User" }
         organization: { $ref: "#/components/schemas/Organization" }
         apiKey: { $ref: "#/components/schemas/CreatedApiKey" }
+        verificationSent:
+          type: boolean
+          description: whether a verification mail went out — always false on a deployment without a mailer
     User:
       type: object
-      required: [id, email]
+      required: [id, email, emailVerified]
       properties:
         id: { type: string, format: uuid }
         email: { type: string }
+        emailVerified:
+          type: boolean
+          description: whether the address has been verified through a mailed token
+    VerifyRequestResult:
+      type: object
+      required: [sent, alreadyVerified]
+      properties:
+        sent:
+          type: boolean
+          description: whether a verification mail went out — false is the sixty-second resend cooldown
+        alreadyVerified:
+          type: boolean
+          description: the address was already verified, so nothing was mailed
+    VerifyEmailRequest:
+      type: object
+      required: [token]
+      properties:
+        token: { type: string, minLength: 1, maxLength: 256, description: the `oxt-…` token the verification mail's link carries }
+    ForgotPasswordRequest:
+      type: object
+      required: [email]
+      properties:
+        email: { type: string, format: email, maxLength: 320 }
+    ResetPasswordRequest:
+      type: object
+      required: [token, password]
+      properties:
+        token: { type: string, minLength: 1, maxLength: 256, description: the `oxt-…` token the reset mail's link carries }
+        password: { type: string, minLength: 12, maxLength: 256, description: at least 12 characters }
     LoginRequest:
       type: object
       required: [email, password]

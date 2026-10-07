@@ -30,6 +30,9 @@ const FIRST_KEY_NAME: &str = "default";
 pub struct User {
     pub id: Uuid,
     pub email: String,
+    /// Whether the address has been verified through a mailed token (issue
+    /// #150): `false` for an account that registered before or without a mailer.
+    pub email_verified: bool,
 }
 
 /// What a caller must supply to register.
@@ -48,6 +51,9 @@ pub struct Registration {
     pub user: User,
     pub organization: Organization,
     pub api_key: CreatedApiKey,
+    /// Whether a verification mail went out — false until the route layer mails
+    /// one, which a deployment without a mailer never does (issue #150).
+    pub verification_sent: bool,
 }
 
 impl Db {
@@ -98,16 +104,22 @@ impl Db {
         tx.commit().await?;
 
         Ok(Registration {
-            user: User { id: user_id, email },
+            user: User {
+                id: user_id,
+                email,
+                email_verified: false,
+            },
             organization,
             api_key,
+            verification_sent: false,
         })
     }
 
     /// Resets a user's password and revokes every session they hold, in one
-    /// transaction — the only recovery path v1 has, since no email is sent. The
-    /// platform admin calls this; an unknown user is `NotFound`. Returns the
-    /// sessions the reset revoked, so the caller can report what died with it.
+    /// transaction. Both recovery paths call this — the platform admin's
+    /// endpoint and the self-service reset through a mailed token (issue #150);
+    /// an unknown user is `NotFound`. Returns the sessions the reset revoked,
+    /// so the caller can report what died with it.
     pub async fn reset_password(&self, user_id: Uuid, password: &str) -> Result<u64, WalletError> {
         validate_password(password)?;
         // Hashing runs before the transaction opens, same as register: argon2 is

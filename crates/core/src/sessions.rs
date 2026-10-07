@@ -86,6 +86,16 @@ impl Principal {
         }
     }
 
+    /// The acting user itself, if a person is acting rather than a key — the
+    /// email flows need the address and its verified state, not just the id.
+    #[must_use]
+    pub fn user(&self) -> Option<&User> {
+        match self {
+            Self::Key(_) => None,
+            Self::Session(session) => Some(&session.user),
+        }
+    }
+
     /// What the principal may do with the organization's keys (docs/product.md, "Roles").
     ///
     /// Roles constrain sessions, not keys: a key keeps acting as the whole organization,
@@ -184,7 +194,9 @@ impl Db {
     pub async fn login(&self, email: &str, password: &str) -> Result<CreatedSession, WalletError> {
         let normalized = email.trim().to_lowercase();
         let row = sqlx::query(
-            "SELECT user_id, email, password_hash FROM oxsum.users WHERE email_normalized = $1",
+            "SELECT user_id, email, password_hash, \
+             (email_verified_at IS NOT NULL) AS email_verified \
+             FROM oxsum.users WHERE email_normalized = $1",
         )
         .bind(&normalized)
         .fetch_optional(self.pool())
@@ -198,6 +210,7 @@ impl Db {
         let user = User {
             id: row.try_get("user_id")?,
             email: row.try_get("email")?,
+            email_verified: row.try_get("email_verified")?,
         };
         let password_hash: String = row.try_get("password_hash")?;
         if verify_password(password, &password_hash).is_err() {
@@ -265,7 +278,7 @@ impl Db {
         let hash = hash_token(token);
         let row = sqlx::query(
             "SELECT s.session_id, s.created_at, s.expires_at, s.last_used_at, \
-                    u.user_id, u.email, \
+                    u.user_id, u.email, (u.email_verified_at IS NOT NULL) AS email_verified, \
                     o.organization_id, o.name, o.tenant_id, o.kind, o.created_at AS org_created_at, \
                     m.role \
              FROM oxsum.sessions s \
@@ -300,6 +313,7 @@ impl Db {
             user: User {
                 id: row.try_get("user_id")?,
                 email: row.try_get("email")?,
+                email_verified: row.try_get("email_verified")?,
             },
             organization,
             role: Role::parse(&row.try_get::<String, _>("role")?)?,

@@ -176,9 +176,14 @@ impl Db {
         let organization = orgs::organization_from_row(&row)?;
 
         Ok(Registration {
-            user: User { id: user_id, email },
+            user: User {
+                id: user_id,
+                email,
+                email_verified: false,
+            },
             organization,
             api_key,
+            verification_sent: false,
         })
     }
 }
