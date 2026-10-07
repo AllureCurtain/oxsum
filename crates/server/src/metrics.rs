@@ -49,8 +49,12 @@ const RATE_LIMIT_REJECTED: &str = "oxsum_rate_limit_rejections_total";
 const IDEMPOTENCY_CLAIMS: &str = "oxsum_idempotency_claims_total";
 /// Stale holds the sweeper released, summed over passes.
 const HOLDS_SWEPT: &str = "oxsum_holds_swept_total";
+/// Holds that crossed into the dead-letter state — transitions, not retries.
+const HOLDS_DEAD_LETTERED: &str = "oxsum_holds_dead_lettered_total";
 /// Watch rows open right now — refreshed on each scrape, never counted up and down.
 const OPEN_HOLDS: &str = "oxsum_open_holds";
+/// Dead-lettered watch rows right now — refreshed on each scrape like [`OPEN_HOLDS`].
+const DEAD_HOLDS: &str = "oxsum_dead_holds";
 /// The shared connection pool, by `state` (`open`/`idle`) — refreshed on each scrape.
 const POOL_CONNECTIONS: &str = "oxsum_db_pool_connections";
 
@@ -125,6 +129,12 @@ impl Metrics {
         self.count(HOLDS_SWEPT, released, &[]);
     }
 
+    /// The sweeper's dead-letter transitions for a pass — `main`'s second
+    /// instrumentation call, beside [`Self::swept`].
+    pub fn dead_lettered(&self, holds: u64) {
+        self.count(HOLDS_DEAD_LETTERED, holds, &[]);
+    }
+
     /// The HELP text of every series, so a scrape explains itself.
     fn describe(&self) {
         const DESCRIPTIONS: &[(&str, &str)] = &[
@@ -163,6 +173,10 @@ impl Metrics {
                 "Idempotency-Key claims on the gateway, by outcome.",
             ),
             (HOLDS_SWEPT, "Stale holds the sweeper released."),
+            (
+                HOLDS_DEAD_LETTERED,
+                "Holds whose sweep failures dead-lettered them.",
+            ),
         ];
         for (name, help) in DESCRIPTIONS {
             self.recorder
@@ -170,6 +184,10 @@ impl Metrics {
         }
         for (name, help) in [
             (OPEN_HOLDS, "Hold watch rows currently open."),
+            (
+                DEAD_HOLDS,
+                "Hold watch rows dead-lettered by repeated sweep failures.",
+            ),
             (
                 POOL_CONNECTIONS,
                 "Shared connection pool connections, by state.",
@@ -201,6 +219,12 @@ pub(crate) async fn scrape(State(state): State<AppState>) -> Response {
         Ok(open) => state.metrics.set_gauge(OPEN_HOLDS, open as f64, &[]),
         Err(error) => {
             tracing::error!(%error, "the open-holds gauge could not be refreshed");
+        }
+    }
+    match state.db.dead_hold_count().await {
+        Ok(dead) => state.metrics.set_gauge(DEAD_HOLDS, dead as f64, &[]),
+        Err(error) => {
+            tracing::error!(%error, "the dead-holds gauge could not be refreshed");
         }
     }
     (
