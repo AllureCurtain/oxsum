@@ -423,7 +423,10 @@ API key, and a member session sees its own keys' rows plus the shared ones.
   the usage page sums (bounded to a 92-day window).
 - `GET /api/v1/billing-records?limit=…&before=…` — settled turns newest-first;
   follow `nextCursor` until it disappears, and any row's `requestId` names the
-  settlement entry `req-<requestId>:settle` a proof can be fetched for.
+  settlement entry `req-<requestId>:settle` a proof can be fetched for. When the
+  platform granted your organization a discount, the row carries
+  `discountPercent` — the same snapshot the settlement's proof recomputes
+  against, so a discounted bill verifies like any other.
 - `POST /api/v1/estimate-price` — `{"model", "inputTokens", "outputTokens"}`
   answers `estimateMinor`: the most a real request of that shape could be
   charged, computed by the same arithmetic the gateway freezes with.
