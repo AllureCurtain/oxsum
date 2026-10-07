@@ -152,6 +152,28 @@ pub struct Channel {
     pub models: Vec<ModelPrice>,
 }
 
+/// One model's current price version as the public catalog answers it: the channel
+/// and protocol it is sold through, and the whole price the version carries —
+/// everything `GET /api/v1/pricing` shows, nothing it withholds. The credential is
+/// not a column this row selects.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogModel {
+    /// The channel the model is sold through.
+    pub channel: String,
+    /// The upstream protocol the model answers on: `openai` or `anthropic`.
+    pub protocol: String,
+    pub model: String,
+    /// The current price version; a settlement names the version that priced it.
+    pub version: i64,
+    /// The whole price this version carries, flattened into the record.
+    #[serde(flatten)]
+    pub price: Price,
+    /// When this version was written.
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+}
+
 /// One model's price, and the version it came from.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -401,6 +423,51 @@ impl Db {
         }))
     }
 
+    /// The price a request for this model is billed at — channel, protocol and version
+    /// included — without opening the credential.
+    ///
+    /// The estimate endpoint and any caller pricing a shape read this; only the
+    /// gateway's relay needs the credential `serving` opens. `None` when nothing
+    /// serves the model.
+    pub async fn priced(&self, model: &str) -> Result<Option<CatalogModel>, WalletError> {
+        let row = sqlx::query(
+            "SELECT c.name, c.protocol, p.model, p.version, \
+                    p.input_price_per_million, p.output_price_per_million, p.max_output_tokens, \
+                    p.cache_read_price_per_million, p.cache_write_5m_price_per_million, \
+                    p.cache_write_1h_price_per_million, p.reasoning_price_per_million, \
+                    p.cost_per_request, p.mode, p.upstream_prices, p.rules, p.created_at \
+             FROM oxsum.channel_prices p JOIN oxsum.channels c USING (channel_id) \
+             WHERE p.model = $1 \
+             ORDER BY p.version DESC, c.name \
+             LIMIT 1",
+        )
+        .bind(model)
+        .fetch_optional(self.pool())
+        .await?;
+        row.as_ref().map(catalog_from_row).transpose()
+    }
+
+    /// Every model's current price version across all channels — the public catalog
+    /// `/api/v1/pricing` answers. Credentials never leave this layer: the query does
+    /// not select them.
+    pub async fn catalog(&self) -> Result<Vec<CatalogModel>, WalletError> {
+        let rows = sqlx::query(
+            "SELECT c.name, c.protocol, p.model, p.version, \
+                    p.input_price_per_million, p.output_price_per_million, p.max_output_tokens, \
+                    p.cache_read_price_per_million, p.cache_write_5m_price_per_million, \
+                    p.cache_write_1h_price_per_million, p.reasoning_price_per_million, \
+                    p.cost_per_request, p.mode, p.upstream_prices, p.rules, p.created_at \
+             FROM (SELECT p.*, row_number() OVER (PARTITION BY model ORDER BY version DESC) AS rank \
+                   FROM oxsum.channel_prices p) p \
+             JOIN oxsum.channels c USING (channel_id) \
+             WHERE rank = 1 \
+             ORDER BY p.model, c.name",
+        )
+        .fetch_all(self.pool())
+        .await?;
+        rows.iter().map(catalog_from_row).collect()
+    }
+
     /// The models with a current price, for `/v1/models`.
     pub async fn served_models(&self) -> Result<Vec<String>, WalletError> {
         let rows =
@@ -603,6 +670,18 @@ fn price_from_row(row: &sqlx::postgres::PgRow) -> Result<Price, WalletError> {
             .unwrap_or_default(),
     };
     Ok(price)
+}
+
+/// A `channel_prices`-join-`channels` row as the catalog answers it.
+fn catalog_from_row(row: &sqlx::postgres::PgRow) -> Result<CatalogModel, WalletError> {
+    Ok(CatalogModel {
+        channel: row.try_get("name")?,
+        protocol: row.try_get("protocol")?,
+        model: row.try_get("model")?,
+        version: i64::from(row.try_get::<i32, _>("version")?),
+        price: price_from_row(row)?,
+        created_at: row.try_get("created_at")?,
+    })
 }
 
 /// A channel name: what the admin URL path can carry.
