@@ -74,11 +74,15 @@ Copy `.env.example` to `.env` and the server and the tests pick it up automatica
 | `OXSUM_SESSION_COOKIE_SECURE` | Optional; whether the session cookie carries the `Secure` attribute: `true` or `false`, default `false`. A deployment behind TLS must set it to `true`, or browsers will not send the cookie back over https; `false` is what makes local http development work. Anything else refuses to start |
 | `OXSUM_SMTP_URL` | Optional; the lettre connection string for outbound mail — `smtps://user:pass@host` for implicit TLS, `smtp://user:pass@host` for STARTTLS-when-offered. The credentials live in the URL, so keep it out of logs the way `OXSUM_SECRET_KEY` is kept |
 | `OXSUM_MAIL_FROM` | Optional; the `From:` mailbox of the verification and reset mails, e.g. `oxsum <noreply@example.com>` |
-| `OXSUM_PUBLIC_URL` | Optional; the deployment's public base URL the mailed links point at, e.g. `https://wallet.example.com` — no trailing path |
+| `OXSUM_PUBLIC_URL` | Optional; the deployment's public base URL the mailed links and the OAuth callback are built on, e.g. `https://wallet.example.com` — no trailing path |
+| `OXSUM_GITHUB_CLIENT_ID` | Optional; the GitHub OAuth app's client id — set together with `OXSUM_GITHUB_CLIENT_SECRET` and `OXSUM_PUBLIC_URL`. The callback the GitHub app registers is `<public-url>/api/v1/auth/oauth/github/callback` |
+| `OXSUM_GITHUB_CLIENT_SECRET` | Optional; the OAuth app's client secret — keep it out of logs the way `OXSUM_SECRET_KEY` is kept |
+| `OXSUM_GITHUB_WEB_URL` | Tests only; the provider's web origin the authorize redirect and token exchange go to, default `https://github.com` — a stub stands there |
+| `OXSUM_GITHUB_API_URL` | Tests only; the provider's API origin, default `https://api.github.com` |
 | `RUST_LOG` | Optional `tracing-subscriber` filter; defaults to `info` |
 | `LEPTOS_OUTPUT_NAME` | Build-time, not a server setting, and deliberately not in `.env.example`: it is set in `.cargo/config.toml` for every cargo invocation in the workspace, because leptos reads it with `option_env!` *while it is compiled* and the shell it compiles into the server is what names the wasm module the browser loads. See "Web dashboard" |
 
-The mailer trio is all three or none: a subset refuses to boot, because a half-configured mailer would only fail at send time inside a request. Unset, the deployment sends no email — registration answers `verificationSent: false`, forgot-password still answers its indistinguishable 200, and `POST /api/v1/auth/verify/request` alone reports the absence with 503.
+The mailer trio is all three or none: a subset refuses to boot, because a half-configured mailer would only fail at send time inside a request. Unset, the deployment sends no email — registration answers `verificationSent: false`, forgot-password still answers its indistinguishable 200, and `POST /api/v1/auth/verify/request` alone reports the absence with 503. The GitHub OAuth pair follows the same rule — a client id or secret without `OXSUM_PUBLIC_URL` refuses to boot, and unset the login page draws no GitHub button and the OAuth endpoints answer 404.
 
 A deployment's channels and their prices live in the database, and the environment only seeds a
 database that has none. Prices are append-only versions: `POST /api/v1/admin/channels/{name}/prices`

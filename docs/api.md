@@ -191,6 +191,16 @@ The verification and password-reset mails, shipped when the deployment configure
 
 Registration and invitation redemption mail the verification link themselves and say so in `verificationSent`; a send failure there logs and answers `false` rather than failing the request — the account stands, and `verify/request` is the retry.
 
+## OAuth login
+
+GitHub OAuth, shipped when the deployment configures `OXSUM_GITHUB_CLIENT_ID`, `OXSUM_GITHUB_CLIENT_SECRET` and `OXSUM_PUBLIC_URL` together (issue #152). These are browser redirects, not JSON: the caller is a browser mid-flow, so every failure answers `303` back to `/login?error=oauth` and the detail goes to the logs rather than the query string. The `state` is `oxo-` plus 32 random bytes, stored only as its SHA-256, single-use and ten-minute-lived — the callback's consumption stamps the spend in the same statement that checks it live, so a replayed or raced callback redeems nothing.
+
+- `GET /api/v1/auth/methods` — which login methods the deployment offers: `{"oauthGithub": bool}`. The login page's only unauthenticated read; it draws the GitHub button from it.
+- `GET /api/v1/auth/oauth/github` — the start: `303` to the provider's authorize page (`scope=read:user user:email`) carrying the minted state. `404` on a deployment without the pair configured.
+- `GET /api/v1/auth/oauth/github/callback?code=…&state=…` — the finish: consumes the state, exchanges the code, and resolves the account — a linked `oauth_accounts` row first, then a primary-or-verified email match that records the link, otherwise a registration when signup is `open`. Success answers `303` to `/dashboard` with the session `Set-Cookie`; the provider's own `error` parameter, a bad state, a failed exchange, and an identity with no verified email all answer `303` to `/login?error=oauth`.
+
+An account the callback creates has no known password — the stored hash is argon2 over a random secret nobody holds, so the password path can never open it; a mailed or admin reset sets a real one. Its email lands `emailVerified` because the provider's report already did that work, and the link rows in `oxsum.oauth_accounts` key on the provider's own user id — never the email, which the provider may reassign.
+
 ## Membership management
 
 A tenant is an organization and its memberships carry a role (owner, admin, member). Managing them is a *person's* action: these four endpoints require the session cookie and refuse a bearer API key, because a key is not a person and names no role. This is the one place a key does not act with the organization's full authority (docs/decisions.md, "membership management is a person's action"). The rules are enforced in `crates/core/src/orgs.rs`, so the members page's server functions refuse exactly what these endpoints refuse.
