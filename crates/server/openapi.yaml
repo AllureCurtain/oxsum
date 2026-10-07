@@ -1,14 +1,15 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.32.0
+  version: 0.33.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
     Three surfaces, deliberately different:
 
     - `/api/v1/*` is oxsum's own API: enveloped responses (`{"data": …}`), oxsum error codes, camelCase.
-    - `/v1/*` is the OpenAI-compatible gateway: OpenAI's request and response shapes, OpenAI's error
+    - `/v1/*` is the protocol-native gateway: `POST /v1/chat/completions` answers in OpenAI's shapes,
+      `POST /v1/messages` in Anthropic's, and each surface answers errors the way its own SDK parses them
       object, and everything the gateway does not understand is passed upstream unchanged, so an OpenAI
       SDK works by changing `base_url` only. A gateway request freezes credit before upstream is
       contacted and settles against the usage upstream reports.
@@ -127,10 +128,26 @@ info:
     spendable balance left after it — and `x-oxsum-charged-minor` once
     the turn settled, a header on non-streamed answers and on refusals
     that happened after the hold, and an HTTP trailer on streamed ones.
+    0.32.0 dead-letters a hold watch after ten failed sweeps: the row
+    records `sweepAttempts`, `lastError` and `deadAt`, leaves the
+    per-minute queue for an hourly retry, and shows up in the
+    reconciliation report as the `holds_dead_lettered` class, in the
+    admin holds payload, and in the `oxsum_holds_dead_lettered_total`
+    and `oxsum_dead_holds` metrics. 0.33.0 adds the second protocol
+    surface, `POST /v1/messages`: Anthropic's Messages shape, served
+    only by channels whose `protocol` is `anthropic`, under the same
+    freeze-then-settle contract. An API key is accepted as
+    `Authorization: Bearer` or `x-api-key` on `/v1`, and
+    `anthropic-version`/`anthropic-beta` pass through to upstream.
+    Usage normalization follows Anthropic's report: `input_tokens` plus
+    both cache counts make the billed input total, and the
+    5-minute/1-hour cache-write tiers come from
+    `cache_creation.ephemeral_*_input_tokens`.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie, except
     `/api/v1/auth/login`, `/api/v1/auth/logout` and `/api/v1/auth/register`, which take no
-    credential at all. The cookie is never accepted on `/v1`: the gateway takes an API key only.
+    credential at all. The cookie is never accepted on `/v1`: the gateway takes an API key only —
+    `Authorization: Bearer` or `x-api-key`.
 servers:
   - url: http://localhost:3000
 security:
@@ -1801,6 +1818,90 @@ paths:
         "429": { $ref: "#/components/responses/GatewayError" }
         "500": { $ref: "#/components/responses/GatewayError" }
         "502": { $ref: "#/components/responses/GatewayError" }
+  /v1/messages:
+    post:
+      summary: Anthropic Messages turn, billed by freezing credit first and settling against upstream usage
+      description: |
+        The same freeze-then-settle contract as `/v1/chat/completions`, in Anthropic's
+        request and response shapes. The surface serves only channels whose `protocol` is
+        `anthropic`: a model that no anthropic channel serves is refused 400, exactly as an
+        unserved model is on the OpenAI surface — there is no cross-protocol translation.
+        Errors are answered in Anthropic's shape, `{"type": "error", "error": {…}}`, and
+        `error.code` still carries oxsum's own code.
+
+        The credential is the same organization API key, presented either as
+        `Authorization: Bearer` or `x-api-key`. `anthropic-version` and `anthropic-beta`
+        are forwarded to upstream; when no `anthropic-version` is sent, `2023-06-01` is
+        sent in its place. Upstream is called at `{baseUrl}/messages` and is authenticated
+        with the channel credential as `x-api-key`.
+
+        Upstream's request always carries the output upper bound as `max_tokens`, so
+        upstream cannot return more than the freeze was computed for. Usage normalization
+        follows Anthropic's report: `usage.input_tokens` excludes the cached counts, so the
+        billed input total is `input_tokens + cache_read_input_tokens +
+        cache_creation_input_tokens`; `cache_creation.ephemeral_5m_input_tokens` and
+        `ephemeral_1h_input_tokens` split the write into the two cache-write dimensions,
+        and a `cache_creation_input_tokens` lump without the split counts toward the
+        5-minute tier. On a stream, `message_start` carries the input side and each
+        `message_delta` carries cumulative `output_tokens`; the last report wins per field.
+
+        Content is text-computable: a `text` block contributes its `text`, a
+        `tool_use`/`tool_result`/`thinking` block contributes its serialized JSON, and a
+        media block (`image`, `document`, `audio`, `video`) has no computable bound and is
+        refused 400. `system` accepts a string or an array of `text` blocks. Attributing a
+        turn is `metadata.user_id`, which lands on the usage record's `endUser`.
+
+        A `stream: true` response relays Anthropic's event stream unchanged and ends with
+        `message_stop`. The cost headers are the same three: `x-oxsum-freeze-minor` and
+        `x-oxsum-balance-minor` on the head, `x-oxsum-charged-minor` on a non-streamed head
+        or a streamed trailer. `Idempotency-Key` behaves exactly as it does on
+        `/v1/chat/completions`.
+      security: [{ bearer: [] }, { apiKeyHeader: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - name: anthropic-version
+          in: header
+          required: false
+          schema: { type: string, default: "2023-06-01" }
+          description: forwarded to upstream; `2023-06-01` is sent when absent
+        - name: anthropic-beta
+          in: header
+          required: false
+          schema: { type: string }
+          description: forwarded to upstream unchanged when present
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MessagesRequest" }
+      responses:
+        "200":
+          description: >-
+            Upstream's message, passed through unchanged — or, for a replayed
+            `Idempotency-Key`, the stored response or the settled receipt, marked
+            `Idempotent-Replayed: true`
+          headers:
+            x-oxsum-request-id: { $ref: "#/components/headers/RequestId" }
+            x-oxsum-freeze-minor: { $ref: "#/components/headers/FreezeMinor" }
+            x-oxsum-balance-minor: { $ref: "#/components/headers/BalanceMinor" }
+            x-oxsum-charged-minor: { $ref: "#/components/headers/ChargedMinor" }
+            Trailer: { schema: { type: string, example: "x-oxsum-charged-minor" }, description: "on a streamed answer, announces the settled charge arrives as a trailer" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AnthropicMessage" }
+            text/event-stream:
+              schema:
+                type: string
+                description: "Anthropic SSE events, passed through unchanged, ending with `message_stop`"
+        "400": { $ref: "#/components/responses/AnthropicError" }
+        "401": { $ref: "#/components/responses/AnthropicError" }
+        "402": { $ref: "#/components/responses/AnthropicError" }
+        "403": { $ref: "#/components/responses/AnthropicError" }
+        "409": { $ref: "#/components/responses/AnthropicError" }
+        "422": { $ref: "#/components/responses/AnthropicError" }
+        "429": { $ref: "#/components/responses/AnthropicError" }
+        "500": { $ref: "#/components/responses/AnthropicError" }
+        "502": { $ref: "#/components/responses/AnthropicError" }
 components:
   securitySchemes:
     bearer:
@@ -1824,6 +1925,13 @@ components:
         deployment sets `OXSUM_SESSION_COOKIE_SECURE`). The database keeps only its SHA-256 hash.
         Accepted on `/api/v1` wherever a bearer key is; never accepted on `/v1`, where the gateway
         takes an API key only.
+    apiKeyHeader:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: >-
+        The same organization API key as `bearer`, in the spelling an Anthropic SDK sends.
+        Accepted on `/v1`; an explicitly presented bearer token wins over it.
   parameters:
     KeyId:
       name: keyId
@@ -2038,9 +2146,9 @@ components:
       required: [name, baseUrl, apiKey]
       properties:
         name: { type: string, minLength: 1, maxLength: 40, pattern: "^[A-Za-z0-9._-]+$", description: the channel's identity; posting an existing name replaces its connection }
-        baseUrl: { type: string, format: uri, description: "where the OpenAI-compatible surface lives, http or https; `/chat/completions` is appended to it" }
-        apiKey: { type: string, minLength: 1, description: "the upstream credential; sealed with OXSUM_SECRET_KEY, only its last four characters readable afterwards" }
-        protocol: { type: string, description: "the upstream protocol the channel speaks, which selects the usage adapter its reports are normalized by; defaults to `openai`, the only protocol this version knows — any other name is VALIDATION_ERROR" }
+        baseUrl: { type: string, format: uri, description: "where the upstream surface lives, http or https; the protocol's path (`/chat/completions`, `/messages`) is appended to it" }
+        apiKey: { type: string, minLength: 1, description: "the upstream credential; sealed with OXSUM_SECRET_KEY, only its last four characters readable afterwards. Sent upstream as `Authorization: Bearer` on an `openai` channel and as `x-api-key` on an `anthropic` one" }
+        protocol: { type: string, enum: [openai, anthropic], description: "the upstream protocol the channel speaks, which selects the usage adapter its reports are normalized by and which `/v1` surface serves its models; defaults to `openai` — any other name is VALIDATION_ERROR" }
     Channel:
       type: object
       required: [name, baseUrl, protocol, apiKeyLast4, createdAt, models]
@@ -2528,6 +2636,76 @@ components:
             completion_tokens: { type: integer, format: int64 }
             total_tokens: { type: integer, format: int64 }
       additionalProperties: true
+    MessagesRequest:
+      type: object
+      required: [model, messages]
+      description: |
+        The fields the gateway acts on. Everything else is forwarded to upstream unchanged —
+        `temperature`, `tools`, `top_k`, `stop_sequences` and the rest — which is what keeps
+        an Anthropic SDK working here.
+      properties:
+        model: { type: string, description: "must be a model an anthropic-protocol channel serves with a configured price" }
+        messages:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/AnthropicMessageParam" }
+        system:
+          type: [string, array, "null"]
+          description: "a string or an array of content blocks, counted like message content toward the input bound"
+        stream: { type: [boolean, "null"], default: false, description: "absent or null counts as false; a stream ends with `message_stop`" }
+        max_tokens: { type: [integer, "null"], format: int64, minimum: 1, description: "the output upper bound the freeze uses; absent or null means the model's configured maximum, and a value below 1 is 400. Upstream requires it, so the gateway always sends the bound it computed" }
+        metadata:
+          type: [object, "null"]
+          description: "only `user_id` is read: the caller's own end-user id, recorded on the turn's usage record for attribution; everything else is forwarded unchanged"
+          properties:
+            user_id: { type: [string, "null"], maxLength: 128 }
+          additionalProperties: true
+      additionalProperties: true
+    AnthropicMessageParam:
+      type: object
+      description: |
+        One message, as the gateway reads it. What it does not read — `role` included — is
+        forwarded upstream unchanged. `content` is read to compute the input bound: a string,
+        or an array of blocks where a `text` block contributes its `text`, a
+        `tool_use`/`tool_result`/`thinking`-style block contributes its serialized JSON, and
+        a media block (`image`, `document`, `audio`, `video`) is refused 400 because it has
+        no computable bound. Absent or null `content` contributes nothing.
+      properties:
+        role: { type: string, description: "sent upstream as written; the gateway accepts any role and validates none" }
+        content:
+          type: [string, array, "null"]
+          description: "text or an array of content blocks; a number, an object, or a media block is 400"
+          items:
+            type: object
+            required: [type]
+            properties:
+              type: { type: string }
+              text: { type: string }
+    AnthropicMessage:
+      type: object
+      description: |
+        Upstream's response, passed through unchanged. The only field oxsum reads is `usage`;
+        without it the turn settles on local estimation.
+      properties:
+        id: { type: string }
+        type: { type: string, const: message }
+        role: { type: string, const: assistant }
+        model: { type: string }
+        content: { type: array, items: { type: object } }
+        stop_reason: { type: [string, "null"] }
+        usage:
+          type: object
+          properties:
+            input_tokens: { type: integer, format: int64, description: "excludes the cached counts; the billed input adds them" }
+            output_tokens: { type: integer, format: int64 }
+            cache_read_input_tokens: { type: integer, format: int64 }
+            cache_creation_input_tokens: { type: integer, format: int64 }
+            cache_creation:
+              type: object
+              properties:
+                ephemeral_5m_input_tokens: { type: integer, format: int64 }
+                ephemeral_1h_input_tokens: { type: integer, format: int64 }
+      additionalProperties: true
     ModelList:
       type: object
       required: [object, data]
@@ -2575,6 +2753,34 @@ components:
                 refusal carries; a key past its request or concurrency allowance
                 arrives as 429 with the `rate_limit_exceeded` type and the
                 `Retry-After`/`X-RateLimit-*` headers.
+    AnthropicError:
+      type: object
+      required: [type, error]
+      description: >-
+        Anthropic's error envelope, because that is what an Anthropic SDK shows its
+        caller. `error.type` maps from the OpenAI spelling: `insufficient_quota` and
+        `rate_limit_exceeded` become `invalid_request_error` and `rate_limit_error`;
+        `error.code` still carries oxsum's own code.
+      properties:
+        type: { type: string, const: error }
+        error:
+          type: object
+          required: [message, type]
+          properties:
+            message: { type: string }
+            type:
+              type: string
+              enum:
+                - invalid_request_error
+                - authentication_error
+                - permission_error
+                - not_found_error
+                - rate_limit_error
+                - overloaded_error
+                - api_error
+            code:
+              type: [string, "null"]
+              description: "oxsum's own code — the same list the `GatewayError` schema documents"
   responses:
     Receipt:
       description: The ledger receipt
@@ -2595,3 +2801,8 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/GatewayError" }
+    AnthropicError:
+      description: An Anthropic-shaped error
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/AnthropicError" }
