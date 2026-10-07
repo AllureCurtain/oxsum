@@ -97,6 +97,9 @@ metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 futures-util = "0.3"
 tokio-tungstenite = "0.29"
+# Outbound mail for the verification and password-reset flows: async SMTP over native TLS.
+# `smtps://` connects wrapped; `smtp://` upgrades with STARTTLS when the server offers it.
+lettre = { version = "0.11", features = ["tokio1-native-tls"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -13,6 +13,7 @@ use oxsum_core::{
     UserOrganization, Wallet, WalletError, WebhookDelivery, WebhookEndpoint, signing_key,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -46,6 +47,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/session", get(session))
         .route("/session/organization", post(switch_organization))
+        // Requesting a verification mail is the session user's own action; the
+        // handler refuses an API key, which names no user.
+        .route("/auth/verify/request", post(request_verification))
         .route("/topups", post(top_up))
         .route("/redemptions", post(redeem))
         .route("/holds", post(hold))
@@ -72,6 +76,11 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/register", post(register))
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
+        // The email flows: verification consumes a mailed token, and the reset
+        // pair is open by design — the token is the credential.
+        .route("/auth/verify", post(verify_email))
+        .route("/auth/password/forgot", post(forgot_password))
+        .route("/auth/password/reset", post(reset_password))
         // Registration through an invitation link: the token is the credential, so it
         // stays open in invite mode too — that mode exists for this.
         .route("/invitations/redeem", post(redeem_invitation))
@@ -279,7 +288,7 @@ async fn register(
             "this deployment registers by invitation only".into(),
         ));
     }
-    let registration = state
+    let mut registration = state
         .db
         .register(NewUser {
             email: r.email,
@@ -288,7 +297,29 @@ async fn register(
         })
         .await?;
     grant_signup_bonus(&state, &registration).await?;
+    registration.verification_sent = send_verification(&state, registration.user.id).await;
     ok(registration)
+}
+
+/// Mints a verify token and mails it — when the deployment has a mailer. A send
+/// failure logs and answers `false` rather than failing the request it rode in
+/// on: the account stands, the mail is retried through `auth/verify/request`.
+async fn send_verification(state: &AppState, user_id: Uuid) -> bool {
+    let Some(mailer) = state.config.mailer() else {
+        return false;
+    };
+    let Ok(Some(minted)) = state
+        .db
+        .mint_email_token(user_id, oxsum_core::EmailPurpose::Verify)
+        .await
+    else {
+        return false;
+    };
+    if let Err(error) = mailer.send_verification(&minted.email, &minted.token).await {
+        tracing::warn!(%error, "the verification mail was not sent");
+        return false;
+    }
+    true
 }
 
 /// The signup bonus: `OXSUM_SIGNUP_BONUS_MINOR` credits a brand-new organization's
@@ -501,7 +532,7 @@ async fn redeem_invitation(
     State(state): State<AppState>,
     ApiJson(request): ApiJson<RedeemReq>,
 ) -> ApiResult<Registration> {
-    ok(state
+    let mut registration = state
         .db
         .redeem_invitation(
             &request.token,
@@ -511,7 +542,158 @@ async fn redeem_invitation(
                 organization_name: None,
             },
         )
-        .await?)
+        .await?;
+    registration.verification_sent = send_verification(&state, registration.user.id).await;
+    ok(registration)
+}
+
+/// What `POST /api/v1/auth/verify/request` answers: whether a verification mail
+/// went out, or that the address was verified already.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VerifyRequestRes {
+    sent: bool,
+    already_verified: bool,
+}
+
+/// Mails the session user a verification link. The one email-flow endpoint that
+/// reports a missing mailer: sending the mail is its whole job (`SERVICE_UNAVAILABLE`).
+/// A resend inside the sixty-second cooldown mints and mails nothing (`sent: false`).
+async fn request_verification(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+) -> ApiResult<VerifyRequestRes> {
+    let Some(user) = principal.user() else {
+        return Err(ApiError::Forbidden(
+            "verifying an email is a person's action: an API key names no user".into(),
+        ));
+    };
+    let Some(mailer) = state.config.mailer() else {
+        return Err(ApiError::ServiceUnavailable(
+            "email is not configured on this deployment".into(),
+        ));
+    };
+    if user.email_verified {
+        return ok(VerifyRequestRes {
+            sent: false,
+            already_verified: true,
+        });
+    }
+    let Some(minted) = state
+        .db
+        .mint_email_token(user.id, oxsum_core::EmailPurpose::Verify)
+        .await?
+    else {
+        return ok(VerifyRequestRes {
+            sent: false,
+            already_verified: false,
+        });
+    };
+    mailer
+        .send_verification(&minted.email, &minted.token)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "the verification mail was not sent");
+            ApiError::Internal
+        })?;
+    ok(VerifyRequestRes {
+        sent: true,
+        already_verified: false,
+    })
+}
+
+/// The body of `POST /api/v1/auth/verify`: the mailed token.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct VerifyEmailReq {
+    token: String,
+}
+
+/// What `POST /api/v1/auth/verify` answers.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VerifiedRes {
+    verified: bool,
+}
+
+/// Consumes a verification token and marks its user's email verified. An unknown,
+/// spent or expired token is `NOT_FOUND` — which is wrong is the holder's business.
+async fn verify_email(
+    State(state): State<AppState>,
+    ApiJson(r): ApiJson<VerifyEmailReq>,
+) -> ApiResult<VerifiedRes> {
+    let Some(user_id) = state
+        .db
+        .consume_email_token(&r.token, oxsum_core::EmailPurpose::Verify)
+        .await?
+    else {
+        return Err(ApiError::NotFound("not found".into()));
+    };
+    state.db.mark_email_verified(user_id).await?;
+    ok(VerifiedRes { verified: true })
+}
+
+/// The body of `POST /api/v1/auth/password/forgot`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ForgotPasswordReq {
+    email: String,
+}
+
+/// Mails a reset link when the address has an account — and answers the same
+/// empty 200 when it does not, so the endpoint enumerates no accounts.
+async fn forgot_password(
+    State(state): State<AppState>,
+    ApiJson(r): ApiJson<ForgotPasswordReq>,
+) -> Result<Response, ApiError> {
+    if let Some(mailer) = state.config.mailer()
+        && let Some(minted) = state
+            .db
+            .mint_email_token_for_address(&r.email, oxsum_core::EmailPurpose::Reset)
+            .await?
+        && let Err(error) = mailer
+            .send_password_reset(&minted.email, &minted.token)
+            .await
+    {
+        // A send failure still answers 200: the answer must not say whether the
+        // account exists, and the next request mints a fresh link.
+        tracing::warn!(%error, "the reset mail was not sent");
+    }
+    Ok(Json(Data { data: json!({}) }).into_response())
+}
+
+/// The body of `POST /api/v1/auth/password/reset`: the mailed token and the new
+/// password.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ResetPasswordReq {
+    token: String,
+    password: String,
+}
+
+/// What `POST /api/v1/auth/password/reset` answers: how many sessions died with
+/// the old password.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ResetPasswordRes {
+    sessions_revoked: u64,
+}
+
+/// Consumes a reset token, sets the new password and revokes every session the
+/// user holds — the admin reset's semantics, self-served through the mail.
+async fn reset_password(
+    State(state): State<AppState>,
+    ApiJson(r): ApiJson<ResetPasswordReq>,
+) -> ApiResult<ResetPasswordRes> {
+    let Some(user_id) = state
+        .db
+        .consume_email_token(&r.token, oxsum_core::EmailPurpose::Reset)
+        .await?
+    else {
+        return Err(ApiError::NotFound("not found".into()));
+    };
+    let sessions_revoked = state.db.reset_password(user_id, &r.password).await?;
+    ok(ResetPasswordRes { sessions_revoked })
 }
 
 async fn create_key(

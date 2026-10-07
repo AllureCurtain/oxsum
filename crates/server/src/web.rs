@@ -34,6 +34,7 @@ pub fn mount(router: Router<AppState>, state: &AppState) -> Router<AppState> {
     let db = state.db.clone();
     let tenants = state.tenants.clone();
     let head_seed = state.config.head_signing_seed();
+    let mail_configured = state.config.mailer().is_some();
     let options = state.leptos_options.clone();
     let router = router.route_service(
         &leptos_axum::site_pkg_dir_service_route_path(&options),
@@ -46,6 +47,7 @@ pub fn mount(router: Router<AppState>, state: &AppState) -> Router<AppState> {
             provide_context(db.clone());
             provide_context(tenants.clone());
             provide_context(oxsum_web::heads::HeadSeed(head_seed));
+            provide_context(oxsum_web::MailConfigured(mail_configured));
         },
         move || view! { <oxsum_web::Shell options=options.clone()/> },
     )
