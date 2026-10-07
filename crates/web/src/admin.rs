@@ -206,6 +206,9 @@ struct InFlightHoldView {
     price_version: i64,
     freeze_minor: i64,
     opened_at: String,
+    sweep_attempts: i64,
+    last_error: Option<String>,
+    dead_at: Option<String>,
 }
 
 /// One model's price at a version, as the admin API returns it.
@@ -1135,7 +1138,18 @@ pub fn AdminInFlightPage() -> impl IntoView {
                                                 <td class="mono num pending">
                                                     {crate::app::credits(hold.freeze_minor)}
                                                 </td>
-                                                <td class="mono">{hold.opened_at}</td>
+                                                <td class="mono">
+                                                    {hold.opened_at}
+                                                    {hold
+                                                        .dead_at
+                                                        .map(|_| {
+                                                            view! {
+                                                                <span class="error" title=hold.last_error.clone()>
+                                                                    {format!(" dead ({} failed sweeps)", hold.sweep_attempts)}
+                                                                </span>
+                                                            }
+                                                        })}
+                                                </td>
                                             </tr>
                                         }
                                     })
@@ -1344,6 +1358,7 @@ fn drift_label(class: &str) -> &'static str {
         "deposits_stuck" => "Deposits confirmed but never credited or reversed",
         "watches_orphaned" => "Hold watches with no live reservation",
         "holds_unwatched" => "Pending holds the sweeper cannot see",
+        "holds_dead_lettered" => "Holds whose sweep failed ten times — an operator's problem",
         "log_gaps" => "Log positions that are not dense",
         _ => "Unclassified drift",
     }
