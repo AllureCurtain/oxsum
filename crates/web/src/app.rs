@@ -71,6 +71,9 @@ pub fn App() -> impl IntoView {
                 // Public: anyone holding a bill and its content hash can verify it, no
                 // session needed. Verification runs in the browser, not on the server.
                 <Route path=path!("/verify") view=VerifyPage/>
+                // The device grant's approval page: a tool's `userCode` lands here —
+                // session-gated inside the page, which sends visitors to /login first.
+                <Route path=path!("/device") view=DevicePage/>
                 // The deployment's surface: the operator token gates it in the browser,
                 // and the admin endpoints refuse what the gate missed (issue #57).
                 <ParentRoute path=path!("/admin") view=AdminLayout>
@@ -107,6 +110,15 @@ fn NotFound() -> impl IntoView {
             <p><A href="/dashboard">"Back to the dashboard"</A></p>
         </main>
     }
+}
+
+/// A pending device request as the approval page shows it (issue #156). Lives
+/// outside `mod browser` because the page's signal type compiles for SSR too.
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceRequestInfo {
+    pub user_code: String,
+    pub expires_at: String,
 }
 
 /// Browser-only calls to the session endpoints. The cookie is `HttpOnly`, so these go
@@ -172,6 +184,91 @@ mod browser {
         match Request::get("/api/v1/auth/methods").send().await {
             Ok(response) if response.ok() => response.json::<Envelope>().await.ok().map(|e| e.data),
             _ => None,
+        }
+    }
+
+    /// The session's current organization name — what a device grant's key
+    /// would land in (issue #156). `None` without a live session.
+    pub async fn session_organization() -> Option<String> {
+        #[derive(serde::Deserialize)]
+        struct Envelope {
+            data: SessionData,
+        }
+        #[derive(serde::Deserialize)]
+        struct SessionData {
+            organization: OrgData,
+        }
+        #[derive(serde::Deserialize)]
+        struct OrgData {
+            name: String,
+        }
+        match Request::get("/api/v1/session").send().await {
+            Ok(response) if response.ok() => response
+                .json::<Envelope>()
+                .await
+                .ok()
+                .map(|e| e.data.organization.name),
+            _ => None,
+        }
+    }
+
+    use crate::app::DeviceRequestInfo;
+
+    /// The pending request a user code names; the server's own message on 404.
+    pub async fn device_request(code: &str) -> Result<DeviceRequestInfo, String> {
+        let response = Request::get(&format!("/api/v1/device/request?code={code}"))
+            .send()
+            .await
+            .map_err(|_| "the server could not be reached".to_owned())?;
+        if response.ok() {
+            #[derive(serde::Deserialize)]
+            struct Envelope {
+                data: DeviceRequestInfo,
+            }
+            return response
+                .json::<Envelope>()
+                .await
+                .map(|e| e.data)
+                .map_err(|_| "the answer could not be read".to_owned());
+        }
+        match response.json::<ErrorBody>().await {
+            Ok(body) => Err(body.error.message),
+            Err(_) => Err("the request failed".to_owned()),
+        }
+    }
+
+    /// The verdict on a device request: approve mints the key on the tool's
+    /// next poll; deny is terminal.
+    pub async fn device_authorize(code: &str, approve: bool) -> Result<DeviceRequestInfo, String> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct AuthorizeBody<'a> {
+            user_code: &'a str,
+            approve: bool,
+        }
+        let response = Request::post("/api/v1/device/authorize")
+            .json(&AuthorizeBody {
+                user_code: code,
+                approve,
+            })
+            .map_err(|_| "could not build the request".to_owned())?
+            .send()
+            .await
+            .map_err(|_| "the server could not be reached".to_owned())?;
+        if response.ok() {
+            #[derive(serde::Deserialize)]
+            struct Envelope {
+                data: DeviceRequestInfo,
+            }
+            return response
+                .json::<Envelope>()
+                .await
+                .map(|e| e.data)
+                .map_err(|_| "the answer could not be read".to_owned());
+        }
+        match response.json::<ErrorBody>().await {
+            Ok(body) => Err(body.error.message),
+            Err(_) => Err("the request failed".to_owned()),
         }
     }
 
@@ -871,6 +968,159 @@ fn RegisterPage() -> impl IntoView {
                     .into_any()
                 }}
             </form>
+        </main>
+    }
+}
+
+/// The device grant's approval page (`/device?code=…`): a CLI or other tool
+/// printed a user code and is polling; the signed-in user confirms the key it
+/// will receive (issue #156). Without a session the page defers to `/login` —
+/// approving is a person's action.
+#[component]
+fn DevicePage() -> impl IntoView {
+    let query = use_query_map();
+    let navigate = use_navigate();
+    let (code, set_code) = signal(query.read().get("code").unwrap_or_default());
+    let (organization, set_organization) = signal(Option::<String>::None);
+    // None while looking the code up, Some((request, decided)) once it answers.
+    let (request, set_request) = signal(Option::<(DeviceRequestInfo, bool)>::None);
+    let (error, set_error) = signal(Option::<String>::None);
+    let (busy, set_busy) = signal(false);
+
+    Effect::new(move |_| {
+        #[cfg(feature = "hydrate")]
+        {
+            let navigate = navigate.clone();
+            leptos::task::spawn_local(async move {
+                if !browser::session_ok().await {
+                    navigate("/login", Default::default());
+                    return;
+                }
+                set_organization.set(browser::session_organization().await);
+                let typed = query.read().get("code").unwrap_or_default();
+                if !typed.is_empty() {
+                    match browser::device_request(&typed).await {
+                        Ok(info) => set_request.set(Some((info, false))),
+                        Err(message) => set_error.set(Some(message)),
+                    }
+                }
+            });
+        }
+        #[cfg(not(feature = "hydrate"))]
+        let _ = (&navigate, &set_organization, &set_request, &set_error);
+    });
+
+    let lookup = move |ev: web_sys::SubmitEvent| {
+        ev.prevent_default();
+        #[cfg(feature = "hydrate")]
+        {
+            let code = code.get_untracked();
+            leptos::task::spawn_local(async move {
+                set_busy.set(true);
+                set_error.set(None);
+                set_request.set(None);
+                match browser::device_request(&code).await {
+                    Ok(info) => set_request.set(Some((info, false))),
+                    Err(message) => set_error.set(Some(message)),
+                }
+                set_busy.set(false);
+            });
+        }
+        #[cfg(not(feature = "hydrate"))]
+        let _ = (&set_busy, &set_error, &set_request);
+    };
+
+    let decide = move |approve: bool| {
+        #[cfg(feature = "hydrate")]
+        {
+            let Some((info, _)) = request.get_untracked() else {
+                return;
+            };
+            let user_code = info.user_code.clone();
+            leptos::task::spawn_local(async move {
+                set_busy.set(true);
+                set_error.set(None);
+                match browser::device_authorize(&user_code, approve).await {
+                    Ok(info) => set_request.set(Some((info, true))),
+                    Err(message) => set_error.set(Some(message)),
+                }
+                set_busy.set(false);
+            });
+        }
+        #[cfg(not(feature = "hydrate"))]
+        let _ = approve;
+    };
+
+    view! {
+        <main class="center">
+            <div class="card">
+                <h1>"Authorize a device"</h1>
+                {move || {
+                    if let Some((info, decided)) = request.get() {
+                        if decided {
+                            return view! {
+                                <p class="success" role="status">
+                                    "Done — the tool receives its API key when it next polls, or nothing if you denied it. The key is listed under"
+                                    {organization.get().unwrap_or_else(|| "the organization".to_owned())}
+                                    " on the keys page, where you can revoke it."
+                                </p>
+                            }
+                            .into_any();
+                        }
+                        return view! {
+                            <p class="muted">
+                                "A tool asked for an API key under code "
+                                <code>{info.user_code.clone()}</code>
+                                ". Approving grants it a key for "
+                                {organization.get().unwrap_or_else(|| "your current organization".to_owned())}
+                                " — the key lands when the tool polls, and is revocable like any other."
+                            </p>
+                            <p class="muted">"The request lapses at " {info.expires_at.clone()} "."</p>
+                            {move || error.get().map(|message| view! { <p class="error" role="alert">{message}</p> })}
+                            <div class="row">
+                                <button
+                                    prop:disabled=move || busy.get()
+                                    on:click=move |_| decide(true)
+                                >
+                                    "Approve"
+                                </button>
+                                <button
+                                    class="link"
+                                    prop:disabled=move || busy.get()
+                                    on:click=move |_| decide(false)
+                                >
+                                    "Deny"
+                                </button>
+                            </div>
+                        }
+                        .into_any();
+                    }
+                    view! {
+                        <form method="post" on:submit=lookup>
+                            <p class="muted">
+                                "Enter the code the tool printed, like "
+                                <code>"ABCD-EFGH"</code>
+                                "."
+                            </p>
+                            {move || error.get().map(|message| view! { <p class="error" role="alert">{message}</p> })}
+                            <label>
+                                "Code"
+                                <input
+                                    name="code"
+                                    autocomplete="off"
+                                    required
+                                    prop:value=move || code.get()
+                                    on:input=move |ev| set_code.set(event_target_value(&ev))
+                                />
+                            </label>
+                            <button type="submit" prop:disabled=move || busy.get()>
+                                {move || if busy.get() { "Checking…" } else { "Continue" }}
+                            </button>
+                        </form>
+                    }
+                    .into_any()
+                }}
+            </div>
         </main>
     }
 }
