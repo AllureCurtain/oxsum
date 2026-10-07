@@ -395,6 +395,47 @@ form.row label {
     font-size: 12px;
 }
 
+/* The usage page's token mix: a stacked bar of the billed volume's four parts.
+   Shares are sized by width; the legend repeats every segment's count and
+   percentage in text, so the colour is never the only signal (DESIGN.md). */
+
+.token-mix {
+    display: flex;
+    height: 24px;
+    border-radius: 4px;
+    overflow: hidden;
+    margin-top: 16px;
+}
+
+.token-mix .segment.mix-input { background: var(--primary); }
+.token-mix .segment.mix-cached { background: var(--pending); }
+.token-mix .segment.mix-output { background: var(--success); }
+.token-mix .segment.mix-reasoning { background: var(--text-muted); }
+
+.token-mix-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 20px;
+    list-style: none;
+    padding: 0;
+    margin: 8px 0 24px;
+    font-size: 13px;
+    color: var(--text-muted);
+}
+
+.token-mix-legend .swatch {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    margin-right: 6px;
+}
+
+.token-mix-legend .swatch.mix-input { background: var(--primary); }
+.token-mix-legend .swatch.mix-cached { background: var(--pending); }
+.token-mix-legend .swatch.mix-output { background: var(--success); }
+.token-mix-legend .swatch.mix-reasoning { background: var(--text-muted); }
+
 /* The chat page */
 
 .section-head {
