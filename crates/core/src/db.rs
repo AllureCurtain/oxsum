@@ -93,6 +93,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0018_webhooks",
         include_str!("../migrations/0018_webhooks.sql"),
     ),
+    (
+        "0019_email_tokens",
+        include_str!("../migrations/0019_email_tokens.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.
