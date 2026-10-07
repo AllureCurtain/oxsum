@@ -427,6 +427,8 @@ async fn sweep_one(
         usage: &usage,
         lines: &lines,
         matched_rule: None,
+        // A swept turn charges zero — a discount would change nothing.
+        discount_percent: None,
         charged: 0,
         freeze: hold.freeze_minor,
     }

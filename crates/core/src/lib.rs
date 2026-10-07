@@ -13,6 +13,7 @@ mod channels;
 mod db;
 mod deposits;
 mod device;
+mod discounts;
 mod email_tokens;
 mod error;
 mod heads;
@@ -28,6 +29,7 @@ mod reconcile;
 mod sessions;
 mod statements;
 mod tenants;
+mod tiers;
 mod usage;
 mod users;
 mod wallet;
@@ -43,6 +45,7 @@ pub use channels::{CatalogModel, Channel, ModelPrice, SecretKey, Serving};
 pub use db::{Db, SCHEMA};
 pub use deposits::{CodeBatch, MAX_BATCH, Redemption};
 pub use device::{DeviceGrant, DevicePoll, DeviceRequest, POLL_INTERVAL, PollError};
+pub use discounts::{Discount, NewDiscount};
 pub use doubleentry::{ConsistencyProof, EntryId, Hash, Seal, TreeHead};
 pub use email_tokens::{EmailPurpose, MintedEmailToken};
 pub use error::WalletError;
@@ -73,6 +76,7 @@ pub use statements::{
     PaymentStatus, Statement, StatementLine, StatementPeriod, StatementStatus, statement_period,
 };
 pub use tenants::Tenants;
+pub use tiers::TierProfile;
 pub use usage::{
     Attribution, MAX_CONTEXT_NAME, MAX_END_USER, MAX_TAG, MAX_TAGS, Margin, UsageDay, UsageRecord,
     UsageRow, validate_attribution,

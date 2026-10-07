@@ -267,6 +267,10 @@ pub struct RequestEntry {
     pub output_tokens: i64,
     /// What the settlement charged, in minor units.
     pub charged_minor: i64,
+    /// The discount the turn's organization qualified for (issue #158) — the
+    /// percent the settlement description snapshots. `None` when none applied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub discount_percent: Option<i64>,
     /// The API key that paid the turn, as its id in uuid simple form: the hold's provenance
     /// actor, copied onto the settlement. `None` for a turn held without key attribution.
     pub key_id: Option<String>,
@@ -2224,6 +2228,7 @@ impl Wallet {
                 input_tokens: turn.record.input_tokens,
                 output_tokens: turn.record.output_tokens,
                 charged_minor: turn.record.charged,
+                discount_percent: turn.record.discount_percent,
                 key_id: turn.key_id,
             }))
     }

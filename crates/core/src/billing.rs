@@ -486,20 +486,50 @@ pub struct ItemizedCharge {
 }
 
 impl ItemizedCharge {
+    /// The lines' summed cost before the division — what `total_minor` and the
+    /// discount variant divide once.
+    fn numerator(&self) -> i128 {
+        let mut numerator: i128 = 0;
+        for line in &self.lines {
+            numerator += i128::from(line.units) * i128::from(line.price_per_m);
+        }
+        numerator
+    }
+
     /// The charge the lines sum to, ceiling-divided as one amount.
     ///
     /// # Errors
     ///
     /// Refuses a total that does not fit in 64 bits.
     pub fn total_minor(&self) -> Result<i64, WalletError> {
-        let mut numerator: i128 = 0;
-        for line in &self.lines {
-            numerator += i128::from(line.units) * i128::from(line.price_per_m);
+        Self::ceiling(self.numerator(), i128::from(PER_MILLION))
+    }
+
+    /// The charge after an organization discount (issue #158): the single most
+    /// favorable applicable discount, taken off the priced sum — the numerator
+    /// scaled by `100 - percent` before the one ceiling division, the same rule
+    /// `verify_charge`'s v4 recompute applies. `percent` is 1..=100 — a
+    /// `pricing_discounts` check constrains it — and 100 settles at zero.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a percent outside 1..=100 or a total that does not fit in 64 bits.
+    pub fn discounted_minor(&self, percent: i64) -> Result<i64, WalletError> {
+        if !(1..=100).contains(&percent) {
+            return Err(WalletError::InvalidInput(
+                "a discount percent is 1..=100".into(),
+            ));
         }
-        // Ceiling division, by hand: both sides are non-negative (validated above), and
-        // `i128::div_ceil` is still unstable.
-        let per_million = i128::from(PER_MILLION);
-        let minor = (numerator + per_million - 1) / per_million;
+        Self::ceiling(
+            self.numerator() * i128::from(100 - percent),
+            i128::from(PER_MILLION) * 100,
+        )
+    }
+
+    /// One ceiling division, by hand: both sides are non-negative, and
+    /// `i128::div_ceil` is still unstable.
+    fn ceiling(numerator: i128, denominator: i128) -> Result<i64, WalletError> {
+        let minor = (numerator + denominator - 1) / denominator;
         i64::try_from(minor)
             .map_err(|_| WalletError::InvalidInput("the amount does not fit in 64 bits".into()))
     }
@@ -834,12 +864,13 @@ impl SettlementKind {
 /// The channel and the version are what keep those prices checkable later: a price change appends a
 /// version rather than replacing one (docs/product.md, "Channels and prices"), so "this turn was
 /// priced by version 3" stays a statement about a row that is still there.
-/// The version the settlement description writes on the wire, and the only
-/// version [`SettlementRecord::parse`] reads. A record that names another one —
-/// older or newer — is not this build's to interpret: `oxsum_verify`'s
+/// The version the settlement description writes on the wire.
+/// [`SettlementRecord::parse`] reads this and v3 — the shape it superseded,
+/// which differs only by the absent `discountPercent`. A record that names
+/// another one is not this build's to interpret: `oxsum_verify`'s
 /// `verify_charge` dispatches on `v` and leaves those to inclusion proof alone
 /// (docs/decisions.md, T1-2).
-const DESCRIPTION_VERSION: i64 = 3;
+const DESCRIPTION_VERSION: i64 = 4;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -867,6 +898,10 @@ pub struct Settlement<'a> {
     /// The match that chose the set, when a conditional rule priced the turn:
     /// the audit answer to "which rule hit", recorded under the hash.
     pub matched_rule: Option<&'a RuleMatch>,
+    /// The discount the turn's organization qualified for (issue #158):
+    /// snapshotted because the row may change or end after — the multiplier in
+    /// D10's `price × multiplier`. Absent when none applied.
+    pub discount_percent: Option<i64>,
     /// What was charged, never more than `freeze`.
     pub charged: i64,
     /// What was frozen before the call.
@@ -996,7 +1031,7 @@ impl<'de> Deserialize<'de> for BillLine {
 /// A settlement's description on the wire, versioned.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SettlementV3<'a> {
+struct SettlementV4<'a> {
     /// The schema version — [`DESCRIPTION_VERSION`]. Spelled `v` on the wire.
     v: i64,
     request: &'a str,
@@ -1008,6 +1043,10 @@ struct SettlementV3<'a> {
     lines: &'a [BillLine],
     #[serde(skip_serializing_if = "Option::is_none")]
     matched_rule: Option<&'a RuleMatch>,
+    /// The multiplier the priced sum was scaled by, v4's addition: the applied
+    /// discount's percent, absent when none applied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    discount_percent: Option<i64>,
     charged: i64,
     freeze: i64,
 }
@@ -1022,7 +1061,7 @@ impl Settlement<'_> {
     /// Refuses a description that cannot be serialised, which cannot happen for these fields; the
     /// `Result` keeps the caller honest rather than unwrapping a formality.
     pub fn description(&self) -> Result<String, WalletError> {
-        serde_json::to_string(&SettlementV3 {
+        serde_json::to_string(&SettlementV4 {
             v: DESCRIPTION_VERSION,
             request: self.request,
             channel: self.channel,
@@ -1032,6 +1071,7 @@ impl Settlement<'_> {
             usage: MeteredUsage::from(self.usage),
             lines: self.lines,
             matched_rule: self.matched_rule,
+            discount_percent: self.discount_percent,
             charged: self.charged,
             freeze: self.freeze,
         })
@@ -1084,12 +1124,16 @@ pub struct SettlementRecord {
     pub lines: Vec<BillLine>,
     /// The rule that priced the turn, when one did.
     pub matched_rule: Option<RuleMatch>,
+    /// The discount the settlement applied (v4); `None` when none did — and for
+    /// a v3 record, which never carried one.
+    pub discount_percent: Option<i64>,
 }
 
-/// The v3 wire [`SettlementRecord::parse`] reads: [`SettlementV3`] owned.
+/// The wire [`SettlementRecord::parse`] reads: [`SettlementV4`] owned, tolerant
+/// of v3 — its only difference is the `discountPercent` it never carried.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SettlementRecordV3 {
+struct SettlementRecordWire {
     v: i64,
     request: String,
     channel: String,
@@ -1099,6 +1143,7 @@ struct SettlementRecordV3 {
     usage: MeteredUsage,
     lines: Vec<BillLine>,
     matched_rule: Option<RuleMatch>,
+    discount_percent: Option<i64>,
     charged: i64,
     freeze: i64,
 }
@@ -1109,8 +1154,8 @@ impl SettlementRecord {
     /// write, or text from a writer that is not this one.
     #[must_use]
     pub fn parse(description: &str) -> Option<Self> {
-        let wire: SettlementRecordV3 = serde_json::from_str(description).ok()?;
-        if wire.v != DESCRIPTION_VERSION {
+        let wire: SettlementRecordWire = serde_json::from_str(description).ok()?;
+        if !(3..=DESCRIPTION_VERSION).contains(&wire.v) {
             return None;
         }
         let price_of = |item: &str| {
@@ -1134,6 +1179,7 @@ impl SettlementRecord {
             usage: wire.usage,
             lines: wire.lines,
             matched_rule: wire.matched_rule,
+            discount_percent: wire.discount_percent,
         })
     }
 }
@@ -1720,13 +1766,14 @@ mod tests {
             usage: &usage,
             lines: &lines,
             matched_rule: None,
+            discount_percent: None,
             charged: 316,
             freeze: 400,
         };
         let json = settlement.description().unwrap();
         assert_eq!(
             json,
-            r#"{"v":3,"request":"abc","channel":"deepseek","model":"deepseek-chat","priceVersion":3,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100},"lines":[["input",116,1000000],["output",100,2000000]],"charged":316,"freeze":400}"#
+            r#"{"v":4,"request":"abc","channel":"deepseek","model":"deepseek-chat","priceVersion":3,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100},"lines":[["input",116,1000000],["output",100,2000000]],"charged":316,"freeze":400}"#
         );
         // Within the ledger's limit, whatever the model is called.
         assert!(json.len() < 512);
@@ -1752,6 +1799,7 @@ mod tests {
             usage: &usage,
             lines: &lines,
             matched_rule: Some(&matched),
+            discount_percent: None,
             charged: 316,
             freeze: 400,
         }
@@ -1798,6 +1846,7 @@ mod tests {
             usage: &usage,
             lines: &lines,
             matched_rule: None,
+            discount_percent: None,
             charged: 1,
             freeze: 1,
         }
@@ -1826,6 +1875,7 @@ mod tests {
             usage: &usage,
             lines: &lines,
             matched_rule: None,
+            discount_percent: None,
             charged: 316,
             freeze: 400,
         };
@@ -1877,10 +1927,16 @@ mod tests {
         // build's to read: no `v`, no interpretation (docs/decisions.md, T1-2).
         assert!(SettlementRecord::parse(r#"{"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","inputTokens":1,"outputTokens":1,"inputPrice":1,"outputPrice":1,"charged":1,"freeze":1}"#).is_none());
         // Neither is one from the future, one written before the itemized book
-        // (v2), or one whose priced lines are missing.
+        // (v2), or one whose priced lines are missing. A v3 record parses — the
+        // reader tolerates the shape v4 superseded — but one that lacks the
+        // lines the prices are read out of still cannot.
         assert!(SettlementRecord::parse(r#"{"v":9,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[["input",1,1],["output",0,1]],"charged":1,"freeze":1}"#).is_none());
         assert!(SettlementRecord::parse(r#"{"v":2,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[{"item":"input","units":1,"pricePerM":1},{"item":"output","units":1,"pricePerM":1}],"charged":1,"freeze":1}"#).is_none());
         assert!(SettlementRecord::parse(r#"{"v":3,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[],"charged":1,"freeze":1}"#).is_none());
+        assert!(
+            SettlementRecord::parse(r#"{"v":3,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[["input",1,1],["output",0,1]],"charged":1,"freeze":1}"#).is_some(),
+            "v3 descriptions still read back"
+        );
         // An unknown settlement kind is not one this build can price.
         assert!(SettlementRecord::parse(r#"{"v":3,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"teleported","usage":{},"lines":[["input",0,1],["output",0,1]],"charged":0,"freeze":1}"#).is_none());
     }
