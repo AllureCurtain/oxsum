@@ -48,6 +48,7 @@ leptos_axum.workspace = true
 # Process telemetry: the recorder and its render handle live in AppState (see src/metrics.rs).
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
+lettre.workspace = true
 
 [dev-dependencies]
 dotenvy.workspace = true

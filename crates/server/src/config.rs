@@ -146,6 +146,7 @@ pub struct Config {
     hold_timeout: Duration,
     session_cookie_secure: bool,
     signup_bonus_minor: i64,
+    mailer: Option<crate::mail::Mailer>,
 }
 
 impl Config {
@@ -160,7 +161,17 @@ impl Config {
             hold_timeout: DEFAULT_HOLD_TIMEOUT,
             session_cookie_secure: false,
             signup_bonus_minor: 0,
+            mailer: None,
         }
+    }
+
+    /// Sets the mailer. Tests use this; the server reads `OXSUM_SMTP_URL`,
+    /// `OXSUM_MAIL_FROM` and `OXSUM_PUBLIC_URL` together — any subset is a
+    /// startup error, because a half-configured mailer only fails at send time.
+    #[must_use]
+    pub fn with_mailer(mut self, mailer: crate::mail::Mailer) -> Self {
+        self.mailer = Some(mailer);
+        self
     }
 
     /// Sets the key that seals upstream credentials. Required as soon as a channel exists.
@@ -231,6 +242,7 @@ impl Config {
             .map(signup_bonus_of)
             .transpose()?
             .unwrap_or(0);
+        let mailer = mailer_of()?;
         Ok(Self {
             signup,
             gateway: Gateway::from_env()?,
@@ -240,6 +252,7 @@ impl Config {
             hold_timeout,
             session_cookie_secure,
             signup_bonus_minor,
+            mailer,
         })
     }
 
@@ -259,6 +272,14 @@ impl Config {
     #[must_use]
     pub fn secret(&self) -> Option<&SecretKey> {
         self.secret.as_ref()
+    }
+
+    /// The mailer, or `None` when the deployment sends no email: every email
+    /// surface then behaves as documented — registration sends nothing, forgot
+    /// is indistinguishable, and `verify/request` alone reports the absence.
+    #[must_use]
+    pub fn mailer(&self) -> Option<&crate::mail::Mailer> {
+        self.mailer.as_ref()
     }
 
     /// The operator token, or `None` when the admin surface is closed.
@@ -389,6 +410,30 @@ fn hold_timeout_of(raw: String) -> Result<Duration, String> {
         ));
     }
     Ok(timeout)
+}
+
+/// Parses the mailer trio: `OXSUM_SMTP_URL`, `OXSUM_MAIL_FROM` and
+/// `OXSUM_PUBLIC_URL`. All three or none — a subset is a startup error, because
+/// a half-configured mailer only fails at send time, inside a request, where the
+/// operator is not watching.
+fn mailer_of() -> Result<Option<crate::mail::Mailer>, String> {
+    let smtp_url = var("OXSUM_SMTP_URL");
+    let from = var("OXSUM_MAIL_FROM");
+    let public_url = var("OXSUM_PUBLIC_URL");
+    if smtp_url.is_none() && from.is_none() && public_url.is_none() {
+        return Ok(None);
+    }
+    let (smtp_url, from, public_url) = match (smtp_url, from, public_url) {
+        (Some(u), Some(f), Some(p)) => (u, f, p),
+        _ => {
+            return Err(
+                "OXSUM_SMTP_URL, OXSUM_MAIL_FROM and OXSUM_PUBLIC_URL are set together, \
+                 or none of them"
+                    .into(),
+            );
+        }
+    };
+    crate::mail::Mailer::new(&smtp_url, &from, &public_url).map(Some)
 }
 
 #[cfg(test)]

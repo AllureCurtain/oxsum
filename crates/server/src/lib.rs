@@ -7,6 +7,7 @@ mod bills;
 mod config;
 mod error;
 mod gateway;
+pub mod mail;
 mod metrics;
 mod routes;
 mod web;
@@ -24,6 +25,7 @@ use tokio::sync::broadcast;
 
 pub use billing::BillingEvent;
 pub use config::{Config, Gateway, Signup};
+pub use mail::Mailer;
 pub use metrics::Metrics;
 
 /// Everything a request handler may need.
