@@ -466,6 +466,26 @@ impl Db {
         .bind(&receipt)
         .execute(&mut *tx)
         .await?;
+        // Webhook subscribers hear about the turn in the same transaction, so a
+        // landed settlement and its notification can never diverge — and the
+        // early return on a replayed row above keeps the queue free of
+        // duplicates (issue #144).
+        Self::enqueue_request_settled(
+            &mut tx,
+            &row.tenant_id,
+            serde_json::json!({
+                "requestId": row.request_id,
+                "model": row.model,
+                "channel": row.channel,
+                "kind": row.kind.as_str(),
+                "chargedMinor": row.charged_minor,
+                "freezeMinor": row.freeze_minor,
+                "settlementEntryId": row.entry_id,
+                "inputTokens": row.usage.input_tokens,
+                "outputTokens": row.usage.output_tokens,
+            }),
+        )
+        .await?;
         tx.commit().await?;
         Ok(())
     }

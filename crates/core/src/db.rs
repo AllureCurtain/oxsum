@@ -89,6 +89,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0017_dead_holds",
         include_str!("../migrations/0017_dead_holds.sql"),
     ),
+    (
+        "0018_webhooks",
+        include_str!("../migrations/0018_webhooks.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.

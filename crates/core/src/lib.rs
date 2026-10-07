@@ -28,6 +28,7 @@ mod tenants;
 mod usage;
 mod users;
 mod wallet;
+mod webhooks;
 
 pub use adapters::{ANTHROPIC, OPENAI, UsageAdapter, adapter_for};
 pub use billing::{
@@ -74,4 +75,8 @@ pub use users::{NewUser, Registration, User};
 pub use wallet::{
     Credits, ListPage, LogEntry, Receipt, RequestEntry, SCALE, SettledEntry, SettledTurn,
     TransactionEntry, TransactionKind, Wallet, entry_id_for, settlement_key_for,
+};
+pub use webhooks::{
+    CreatedWebhook, DeliveryOutcome, DueDelivery, MAX_DELIVERY_ATTEMPTS, REQUEST_SETTLED,
+    WebhookDelivery, WebhookEndpoint, retry_delay_secs, signature,
 };

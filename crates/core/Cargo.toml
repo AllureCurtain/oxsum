@@ -12,6 +12,7 @@ aes-gcm.workspace = true
 base64.workspace = true
 doubleentry.workspace = true
 oxsum-verify.workspace = true
+hmac.workspace = true
 password-auth.workspace = true
 rand.workspace = true
 serde.workspace = true

@@ -83,7 +83,8 @@ impl SecretKey {
     ///
     /// A fresh random nonce per value, so sealing the same credential twice produces two different
     /// records — the nonce is not a secret, but reusing one under one key is how AES-GCM breaks.
-    fn seal(&self, plaintext: &str) -> Result<String, WalletError> {
+    /// `pub` because webhook signing secrets get the same protection.
+    pub fn seal(&self, plaintext: &str) -> Result<String, WalletError> {
         let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&self.0));
         let mut nonce_bytes = [0u8; NONCE_BYTES];
         rand::rng().fill(&mut nonce_bytes);
@@ -101,7 +102,7 @@ impl SecretKey {
     /// AES-GCM authenticates as well as it encrypts, so a record sealed under another key, or
     /// changed since it was written, fails here rather than turning into a plausible wrong
     /// credential.
-    fn open(&self, sealed: &str) -> Result<String, WalletError> {
+    pub fn open(&self, sealed: &str) -> Result<String, WalletError> {
         let record = BASE64.decode(sealed.trim()).map_err(|error| {
             WalletError::Misconfigured(format!(
                 "a stored upstream credential is not base64: {error}"

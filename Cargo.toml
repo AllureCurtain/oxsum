@@ -57,6 +57,8 @@ rand = "0.10"
 # patterns, rather than a substring that a rename would keep satisfying.
 regex = "1"
 sha2 = "0.11"
+# HMAC-SHA256 over the delivered webhook body — the version pairs with sha2 0.11's digest.
+hmac = "0.13"
 # The operator token on the admin surface is compared in constant time, so a wrong guess learns
 # nothing from how long the comparison took.
 subtle = "2"
