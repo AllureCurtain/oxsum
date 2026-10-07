@@ -1030,3 +1030,16 @@ Four judgment calls, recorded:
 - **Unconfigured means unchecked, not half-checked.** The `OXSUM_TURNSTILE_SITE_KEY`/`OXSUM_TURNSTILE_SECRET_KEY` pair is all-or-none at boot — a subset is a startup error, because a half-configured check would only fail inside a registration. `OXSUM_TURNSTILE_VERIFY_URL` overrides the siteverify endpoint so a test stands a stub where Cloudflare would be; the widget script and page integration are hydrate-only, SSR emits the form without it.
 
 Pinned by `crates/server/tests/antibot.rs` — end to end through a stub `siteverify` on a loopback port: `auth/methods` publishes the site key when configured and `null` when not, registration and redemption refuse a missing or forged token with `FORBIDDEN` and accept the stub's good token, and an unconfigured deployment registers unchecked.
+
+## 2026-10-10 — The device grant mints the key at the poll, not the approval (roadmap P6-4, issue #156)
+
+A CLI needs an API key and cannot paste one, so the grant is RFC 8628-shaped: `POST /api/v1/device/code` mints a two-code request — the tool's `oxd-` device code for polling and the `XXXX-XXXX` user code the approval page takes — and `POST /api/v1/device/token` is the poll. Both are SHA-256 at rest and lapse fifteen minutes after minting. The user leg is session-only (`GET /api/v1/device/request`, `POST /api/v1/device/authorize`), because a verdict is a person's action and an API key names no user.
+
+Four judgment calls, recorded:
+
+- **The secret is minted at the poll, never stored.** Approving stamps only `approved_by` and `organization_id` on the request row; the API key is created inside the first successful poll's transaction and delivered once. A code nobody polls expires holding nothing, and a `delivered` row answers `consumed` forever after — there is no plaintext waiting in a table for a grant that stalled.
+- **Approval grants into the session's current organization.** The verdict records the organization the session acts in, so an approver can only ever grant a key where they act — there is no `organizationId` in the request to lie about. The minted key is ordinary in every other way: `created_by` names the approver, the keys page lists and revokes it.
+- **Unknown, expired and decided are one answer.** `NOT_FOUND` covers all three on both legs — the lookup cannot be probed for which codes are live, and a raced second verdict spends nothing.
+- **The interval is a throttle, not a hint.** `last_poll_at` stamps every accepted poll; one inside `interval` is 429 `SLOW_DOWN` with `Retry-After` and does not count as a visit. `OXSUM_PUBLIC_URL` feeds `verificationUri` when set, else the answer is the relative `/device` — the grant needs no new environment.
+
+Pinned by `crates/core/tests/device.rs` (pending lookup, delivery-once, denial, expiry, second-verdict `NotFound`, interval throttling) and `crates/server/tests/device.rs` — the full loop over the real router: mint, session-gated lookup, approve, slowed-down poll, the delivered key authenticating against `/api/v1/balance`.

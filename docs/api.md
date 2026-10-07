@@ -201,6 +201,17 @@ GitHub OAuth, shipped when the deployment configures `OXSUM_GITHUB_CLIENT_ID`, `
 
 An account the callback creates has no known password — the stored hash is argon2 over a random secret nobody holds, so the password path can never open it; a mailed or admin reset sets a real one. Its email lands `emailVerified` because the provider's report already did that work, and the link rows in `oxsum.oauth_accounts` key on the provider's own user id — never the email, which the provider may reassign.
 
+## Device authorization
+
+The device grant (issue #156) — an RFC 8628-flavored flow for a CLI or any input-constrained tool to receive an API key through a browser session, without a secret crossing a terminal. The tool leg is public, the user leg is session-only.
+
+- `POST /api/v1/device/code` — mints the request: `{deviceCode, userCode, verificationUri, expiresIn, interval}`. The tool keeps the `deviceCode` (`oxd-` plus 32 random bytes, SHA-256 at rest) and shows the `userCode` (`XXXX-XXXX`, unambiguous alphabet) to the user. Both lapse fifteen minutes after minting.
+- `GET /api/v1/device/request?code=…` — session only; reads the pending request for the approval page. Unknown, expired and decided codes are all `NOT_FOUND`.
+- `POST /api/v1/device/authorize` — session only; `{userCode, approve}` stamps the verdict atomically. Approving records the session's user and current organization — the key mints there, so an approver can only grant into an organization they act in. A raced or spent code is `NOT_FOUND`.
+- `POST /api/v1/device/token` — the tool's poll: `{status: "pending"|"denied"|"consumed"}`, or `{status: "approved", apiKey}` on the first poll after approval — the key is minted inside that transaction, so its secret is never at rest. Polling inside `interval` is 429 `SLOW_DOWN` with `Retry-After`; unknown, expired and already-consumed codes are `NOT_FOUND`.
+
+A delivered key is an ordinary organization key — `createdBy` names the approver, listed and revocable like any other.
+
 ### Anti-bot check
 
 Cloudflare Turnstile on the two public account-creation endpoints, shipped when the deployment configures `OXSUM_TURNSTILE_SITE_KEY` and `OXSUM_TURNSTILE_SECRET_KEY` together — one of the pair alone is a startup error (issue #154). The page learns the site key from `GET /api/v1/auth/methods`, renders the widget from it, and sends the widget's answer as `turnstileToken` in the registration or redemption body; the server verifies it against `siteverify` before the account is touched. The field is ignored on an unconfigured deployment — it is required only where the check exists — and a missing token or a `success: false` verdict both answer `FORBIDDEN` without hinting which leg failed, while a verifier that cannot be reached answers `SERVICE_UNAVAILABLE`: the check fails closed, never open.

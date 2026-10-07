@@ -63,6 +63,12 @@ password; `/dashboard` is the overview. `/logout` logs out.
 - **API keys**: list, mint and revoke. The same role rules as the API apply: members
   see and revoke only the keys they created, owners and admins see all. A freshly
   minted secret is shown once — store it then, it is never shown again.
+  - A CLI or other tool without a keyboard-friendly way to paste a key uses the
+    device grant: it prints a short code like `ABCD-EFGH` and a link to `/device`;
+    sign in, open the page, type the code, confirm it names the organization you
+    expect, and approve or deny. Approved, the tool receives a key named
+    `device ABCD-EFGH` on its next poll — listed under API keys and revocable
+    like any other. The code lapses fifteen minutes after the tool minted it.
 - **Members**: everyone in the organization, with their role and join date. Every member
   sees the list. Owners and admins also manage it, from the controls on each row:
   - **Add member**: enter the email of an account that already exists. The page says

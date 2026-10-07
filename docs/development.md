@@ -74,7 +74,7 @@ Copy `.env.example` to `.env` and the server and the tests pick it up automatica
 | `OXSUM_SESSION_COOKIE_SECURE` | Optional; whether the session cookie carries the `Secure` attribute: `true` or `false`, default `false`. A deployment behind TLS must set it to `true`, or browsers will not send the cookie back over https; `false` is what makes local http development work. Anything else refuses to start |
 | `OXSUM_SMTP_URL` | Optional; the lettre connection string for outbound mail — `smtps://user:pass@host` for implicit TLS, `smtp://user:pass@host` for STARTTLS-when-offered. The credentials live in the URL, so keep it out of logs the way `OXSUM_SECRET_KEY` is kept |
 | `OXSUM_MAIL_FROM` | Optional; the `From:` mailbox of the verification and reset mails, e.g. `oxsum <noreply@example.com>` |
-| `OXSUM_PUBLIC_URL` | Optional; the deployment's public base URL the mailed links and the OAuth callback are built on, e.g. `https://wallet.example.com` — no trailing path |
+| `OXSUM_PUBLIC_URL` | Optional on its own, required by the mailer and OAuth client; the deployment's public base URL the mailed links, the OAuth callback and the device grant's `verificationUri` are built on, e.g. `https://wallet.example.com` — no trailing path |
 | `OXSUM_GITHUB_CLIENT_ID` | Optional; the GitHub OAuth app's client id — set together with `OXSUM_GITHUB_CLIENT_SECRET` and `OXSUM_PUBLIC_URL`. The callback the GitHub app registers is `<public-url>/api/v1/auth/oauth/github/callback` |
 | `OXSUM_GITHUB_CLIENT_SECRET` | Optional; the OAuth app's client secret — keep it out of logs the way `OXSUM_SECRET_KEY` is kept |
 | `OXSUM_GITHUB_WEB_URL` | Tests only; the provider's web origin the authorize redirect and token exchange go to, default `https://github.com` — a stub stands there |
