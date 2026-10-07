@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.38.0
+  version: 0.39.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -184,10 +184,23 @@ info:
     `GET /api/v1/auth/methods` gains `turnstileSiteKey` — the site key is
     public by design, it is what the page hands the widget.
 
-    Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie, except
-    `/api/v1/auth/login`, `/api/v1/auth/logout` and `/api/v1/auth/register`, which take no
-    credential at all. The cookie is never accepted on `/v1`: the gateway takes an API key only —
-    `Authorization: Bearer` or `x-api-key`.
+    0.39.0 adds the device authorization grant (issue #154's sibling, #156):
+    a CLI or other input-constrained tool POSTs `/api/v1/device/code`, shows
+    the short `userCode` to the signed-in user at `verificationUri`, and polls
+    `/api/v1/device/token` until the user approves on `/device` —
+    `GET /api/v1/device/request` reads the pending request for the approval
+    page and `POST /api/v1/device/authorize` stamps the session's verdict.
+    The approved key is minted inside the successful poll, so its secret is
+    never at rest, and every code expires unconsumed after fifteen minutes.
+
+    Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
+    endpoints that take no credential at all are the ones whose credential is in the body or
+    whose job precedes authentication: `/api/v1/auth/login`, `/api/v1/auth/logout`,
+    `/api/v1/auth/register`, `/api/v1/auth/oauth/github`, `/api/v1/auth/oauth/github/callback`,
+    `/api/v1/auth/methods`, `/api/v1/auth/verify`, `/api/v1/auth/password/forgot`,
+    `/api/v1/auth/password/reset`, `/api/v1/invitations/redeem`, `/api/v1/device/code`,
+    `/api/v1/device/token` and `/api/v1/log/key`. The cookie is never accepted on `/v1`: the
+    gateway takes an API key only — `Authorization: Bearer` or `x-api-key`.
 servers:
   - url: http://localhost:3000
 security:
@@ -357,6 +370,117 @@ paths:
                 required: [data]
                 properties:
                   data: { $ref: "#/components/schemas/AuthMethods" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/device/code:
+    post:
+      summary: Start a device authorization
+      description: |
+        The first leg of the device grant (RFC 8628-flavored): a CLI or other
+        input-constrained tool mints a request, shows the `userCode` to a
+        signed-in user at `verificationUri`, then polls
+        `/api/v1/device/token`. The `deviceCode` proves the tool still owns
+        the request — it is `oxd-` plus 32 random bytes and only its SHA-256
+        is stored — and the `userCode` (`XXXX-XXXX`, unambiguous alphabet) is
+        what the user types. Both expire `expiresIn` seconds after minting;
+        `interval` is the minimum seconds between polls.
+      security: []
+      responses:
+        "200":
+          description: The minted device request
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/DeviceCodeResponse" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/device/request:
+    get:
+      summary: Read a pending device request
+      description: |
+        What the approval page reads before showing the decision: the request
+        the typed `code` names, or `404 NOT_FOUND` for a code that never
+        existed, expired, or already carries a verdict — the page cannot tell
+        them apart, and neither can someone guessing codes.
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema: { type: string, description: "the user code, `XXXX-XXXX`; dashes and case are ignored" }
+      responses:
+        "200":
+          description: The pending request
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/DeviceRequest" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/device/authorize:
+    post:
+      summary: Approve or deny a device request
+      description: |
+        The signed-in user's verdict on the request the `userCode` names.
+        `approve: true` marks the request approved for the session's current
+        organization with the session user as the key's creator — the API key
+        itself is minted later, inside the tool's successful
+        `/api/v1/device/token` poll, so its secret is never at rest.
+        `approve: false` denies it. Either way the stamp is atomic: a raced
+        second verdict answers `404` like a spent code, and so does a code
+        that expired or never existed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeviceAuthorizeRequest" }
+      responses:
+        "200":
+          description: The request after the verdict
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/DeviceRequest" }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/device/token:
+    post:
+      summary: Poll a device authorization
+      description: |
+        The tool's second leg, polled no faster than `interval`. While the
+        request waits the answer is `{"status": "pending"}`; a denied request
+        answers `{"status": "denied"}`. The first poll after approval answers
+        `{"status": "approved", "apiKey"}` with the key minted for the
+        approver's organization in that same transaction — the secret is
+        answered once and never stored — and every poll after that answers
+        `{"status": "consumed"}`. An unknown, expired or already-consumed
+        `deviceCode` is `404 NOT_FOUND`; polling inside `interval` is 429
+        `RATE_LIMITED` with `Retry-After`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeviceTokenRequest" }
+      responses:
+        "200":
+          description: The request's current standing
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/DeviceTokenResponse" }
+        "404": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/auth/oauth/github:
     get:
@@ -2490,6 +2614,47 @@ components:
         verificationSent:
           type: boolean
           description: whether a verification mail went out — always false on a deployment without a mailer
+    DeviceCodeResponse:
+      type: object
+      required: [deviceCode, userCode, verificationUri, expiresIn, interval]
+      properties:
+        deviceCode:
+          type: string
+          description: "the tool's credential for polling, `oxd-` plus 32 random bytes — only its SHA-256 is stored"
+        userCode:
+          type: string
+          description: "what the user types at the approval page, `XXXX-XXXX` — only its SHA-256 is stored"
+        verificationUri: { type: string, description: "the page that takes the user code; built from OXSUM_PUBLIC_URL" }
+        expiresIn: { type: integer, description: "seconds until both codes lapse" }
+        interval: { type: integer, description: "minimum seconds between token polls" }
+    DeviceRequest:
+      type: object
+      required: [userCode, createdAt, expiresAt]
+      properties:
+        userCode: { type: string, description: "the code as it was minted, `XXXX-XXXX`" }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+    DeviceAuthorizeRequest:
+      type: object
+      required: [userCode, approve]
+      properties:
+        userCode: { type: string, description: "the code the user typed; dashes and case are ignored" }
+        approve: { type: boolean, description: "true grants a key into the session's organization; false denies the request" }
+    DeviceTokenRequest:
+      type: object
+      required: [deviceCode]
+      properties:
+        deviceCode: { type: string }
+    DeviceTokenResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [pending, denied, approved, consumed]
+          description: "pending waits on the user; denied is final; approved carries the minted key, once; consumed means the key was already delivered"
+        apiKey:
+          $ref: "#/components/schemas/CreatedApiKey"
     User:
       type: object
       required: [id, email, emailVerified]
