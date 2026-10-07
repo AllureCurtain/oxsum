@@ -585,6 +585,43 @@ impl Price {
         asked_output: Option<i64>,
         service_tier: Option<&str>,
     ) -> Result<i64, WalletError> {
+        self.bound(input_upper_bound(texts), asked_output, service_tier)
+    }
+
+    /// The same upper bound for a declared token shape — what `estimate-price`
+    /// answers without a request ever running.
+    ///
+    /// The arithmetic is `freeze_minor`'s own: the input count stands in for the
+    /// text upper bound, so the estimate is exactly what the gateway would freeze
+    /// for a request that spent this shape, and a real settle never exceeds it.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a negative input, a non-positive or overflowing output, and an
+    /// amount that does not fit in 64 bits.
+    pub fn estimate_minor(
+        &self,
+        input_tokens: i64,
+        asked_output: Option<i64>,
+        service_tier: Option<&str>,
+    ) -> Result<i64, WalletError> {
+        if input_tokens < 0 {
+            return Err(WalletError::InvalidInput(
+                "inputTokens must be zero or more".into(),
+            ));
+        }
+        self.bound(input_tokens, asked_output, service_tier)
+    }
+
+    /// Dearest-candidate arithmetic behind `freeze_minor` and `estimate_minor`:
+    /// the dearest rate any still-applicable set bills each side at, the highest
+    /// flat fee, and `asked` clamped to the widest output ceiling.
+    fn bound(
+        &self,
+        input: i64,
+        asked_output: Option<i64>,
+        service_tier: Option<&str>,
+    ) -> Result<i64, WalletError> {
         let base = self.set();
         let candidates = std::iter::once(&base).chain(
             self.rules
@@ -599,7 +636,6 @@ impl Price {
             flat = flat.max(set.cost_per_request.unwrap_or(0));
             ceiling = ceiling.max(set.max_output_tokens);
         }
-        let input = input_upper_bound(texts);
         let asked = asked_output.unwrap_or(ceiling);
         if asked <= 0 {
             return Err(WalletError::InvalidInput(
@@ -1283,6 +1319,27 @@ mod tests {
         // An empty message is still the per-message overhead in input tokens, which at one minor
         // unit per million tokens is a millionth of a minor unit — and that still rounds up to one.
         assert_eq!(cheap.freeze_minor(&[""], None, None).unwrap(), 1);
+    }
+
+    #[test]
+    fn the_estimate_is_the_freeze_arithmetic_on_a_declared_shape() {
+        // 100 declared input tokens at 1 credit/mtok + 100 output at 2 credits/mtok,
+        // the same number freeze_minor would compute for a request whose text bound
+        // came to 100 input tokens.
+        let price = price();
+        assert_eq!(price.estimate_minor(100, Some(100), None).unwrap(), 300);
+        assert_eq!(
+            price.estimate_minor(100, Some(100), None).unwrap(),
+            price.bound(100, Some(100), None).unwrap()
+        );
+        // The output clamps to the ceiling exactly like the freeze.
+        assert_eq!(
+            price.estimate_minor(0, Some(1_000_000), None).unwrap(),
+            price.estimate_minor(0, Some(8_000), None).unwrap()
+        );
+        // A negative input is refused, not zero-priced.
+        assert!(price.estimate_minor(-1, Some(1), None).is_err());
+        assert!(price.estimate_minor(0, Some(0), None).is_err());
     }
 
     #[test]

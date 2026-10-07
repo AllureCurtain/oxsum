@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.34.0
+  version: 0.35.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -149,7 +149,13 @@ info:
     posts `{id, type, created_at, org_id, data}` with `x-oxsum-signature`
     (HMAC-SHA256 of `t.body`) until delivered, backing off through ten
     attempts before the delivery fails. `GET
-    /api/v1/webhooks/{endpointId}/deliveries` lists the attempts.
+    /api/v1/webhooks/{endpointId}/deliveries` lists the attempts. 0.35.0 opens the
+    programmatic read surface: `GET /api/v1/usage` answers the daily rollup,
+    `GET /api/v1/billing-records` pages settled turns newest-first by the
+    `before` cursor, `POST /api/v1/estimate-price` prices a declared token
+    shape through the same arithmetic the gateway freezes on, and `GET
+    /api/v1/pricing` answers the public catalog — every model's current price
+    version, without channel credentials.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie, except
     `/api/v1/auth/login`, `/api/v1/auth/logout` and `/api/v1/auth/register`, which take no
@@ -1000,6 +1006,150 @@ paths:
                         format: int64
                         minimum: 0
                         description: the drawn plus reserved part of the credit line, in minor units
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/usage:
+    get:
+      summary: Daily usage rollup
+      description: |
+        The `oxsum.usage_daily` rows the dashboard sums, answered as data: one row per
+        `(day, keyId, channel, model)` bucket with settled-turn and token sums and the
+        charged total. `from` and `to` are inclusive dates; `to` defaults to today and
+        `from` to 31 days before it, and the window is bounded to 92 days — a wider
+        span, an inverted span, or a malformed date answers `VALIDATION`.
+      parameters:
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+          description: first day of the window, inclusive; defaults to `to` minus 31 days
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+          description: last day of the window, inclusive; defaults to today
+      responses:
+        "200":
+          description: Daily rows, ordered by day
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [days]
+                    properties:
+                      days:
+                        type: array
+                        items: { $ref: "#/components/schemas/UsageDay" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/billing-records:
+    get:
+      summary: Settled turns, newest first
+      description: |
+        The same page the dashboard's requests view reads: every settled gateway turn,
+        newest first, with the request id its ledger entries are keyed by — the proof of
+        any charge is `GET /api/v1/entries/{entryId}/proof` on `req-<requestId>:settle`.
+        `before` is the log index to resume above, and the page answers `nextCursor`
+        until the walk reaches the log's start.
+      parameters:
+        - name: before
+          in: query
+          schema: { type: integer, format: int64, minimum: 0 }
+          description: page to entries older than this log index; omit for the newest page
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+          description: rows per page
+      responses:
+        "200":
+          description: One page of settled turns
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [rows]
+                    properties:
+                      rows:
+                        type: array
+                        items: { $ref: "#/components/schemas/BillingRecord" }
+                      nextCursor:
+                        type: integer
+                        format: int64
+                        description: the log index the next page resumes above; absent at the log's start
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/estimate-price:
+    post:
+      summary: Price a declared token shape
+      description: |
+        The number the gateway would freeze for a request with this shape: the dearest
+        applicable price set over the declared input tokens and the output ceiling
+        (`outputTokens` clamped to the model's `maxOutputTokens`). Nothing is held or
+        charged — the answer is the upper bound a real request could cost, and a real
+        settle never exceeds it. An unknown model answers `VALIDATION`; a shape the
+        model's price cannot express answers the same.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EstimatePriceRequest" }
+      responses:
+        "200":
+          description: The freeze estimate
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [estimateMinor, model, version]
+                    properties:
+                      estimateMinor:
+                        type: integer
+                        format: int64
+                        description: the most a real request with this shape can settle for
+                      model: { type: string }
+                      version:
+                        type: integer
+                        format: int64
+                        description: the price version the estimate was computed from
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/pricing:
+    get:
+      summary: The public price catalog
+      description: |
+        Every model the operator sells, its channel, protocol and current price version —
+        the same rows `POST /v1/chat/completions` is priced by, without the channel's
+        credential. A caller that wants a version's full rule set reads the flattened
+        price on each row; estimate-price answers what one shape costs.
+      responses:
+        "200":
+          description: The catalog, one row per model
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [models]
+                    properties:
+                      models:
+                        type: array
+                        items: { $ref: "#/components/schemas/PricedModel" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/entries/{entryId}/proof:
@@ -2386,6 +2536,70 @@ components:
       properties:
         model: { type: string }
         version: { type: integer, minimum: 1, description: the version this change appended }
+    UsageDay:
+      type: object
+      required: [day, channel, model, turns, inputTokens, outputTokens, cachedTokens, reasoningTokens, chargedMinor]
+      properties:
+        day: { type: string, format: date, description: the booking date these turns settled under }
+        keyId:
+          type: string
+          format: uuid
+          description: the key that paid; absent for shared unattributed usage
+        channel: { type: string }
+        model: { type: string }
+        turns: { type: integer, format: int64, description: settled turns the bucket sums }
+        inputTokens: { type: integer, format: int64 }
+        outputTokens: { type: integer, format: int64 }
+        cachedTokens: { type: integer, format: int64 }
+        reasoningTokens: { type: integer, format: int64 }
+        chargedMinor: { type: integer, format: int64 }
+    BillingRecord:
+      type: object
+      required: [bookedOn, requestId, model, kind, inputTokens, outputTokens, chargedMinor]
+      properties:
+        bookedOn: { type: string, format: date, description: the server's UTC date the settlement was written }
+        requestId:
+          type: string
+          description: the caller's request id; the settlement entry is `req-<requestId>:settle`
+        model: { type: string }
+        kind:
+          type: string
+          enum: [usage, estimated, client_cancelled, upstream_error, upstream_unreachable, capped, swept, unpriced]
+          description: how the turn was priced
+        inputTokens: { type: integer, format: int64, description: tokens billed as input }
+        outputTokens: { type: integer, format: int64, description: tokens billed as output }
+        chargedMinor: { type: integer, format: int64 }
+        keyId:
+          type: string
+          format: uuid
+          description: the key that paid; absent for an unattributed hold
+    EstimatePriceRequest:
+      type: object
+      required: [model]
+      properties:
+        model: { type: string, minLength: 1, maxLength: 200 }
+        inputTokens:
+          type: integer
+          format: int64
+          minimum: 0
+          description: the input side of the shape; omit for a prompt-empty estimate
+        outputTokens:
+          type: integer
+          format: int64
+          description: the output the shape asks for; omit to estimate against the model's `maxOutputTokens` ceiling
+        serviceTier:
+          type: string
+          description: the conditional-pricing dimension, as a chat completion's `service_tier`
+    PricedModel:
+      allOf:
+        - $ref: "#/components/schemas/ModelPrice"
+        - type: object
+          required: [channel, protocol]
+          properties:
+            channel: { type: string, description: the channel the model is sold through }
+            protocol:
+              type: string
+              description: the upstream protocol — the surface `model` answers on, `openai` or `anthropic`
     AdjustOrganizationRequest:
       type: object
       required: [amountMinor, reason, idempotencyKey]

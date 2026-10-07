@@ -249,7 +249,8 @@ const REQUESTS_SCAN: usize = 512;
 /// One gateway request as the dashboard's requests page lists it, read from the ledger's
 /// settlement entries: what the turn was, how it was priced, what it used, what it charged
 /// and which key paid it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RequestEntry {
     /// The booking date: the server's UTC date when the settlement was written. The ledger
     /// records no time of day.

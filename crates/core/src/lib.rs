@@ -36,7 +36,7 @@ pub use billing::{
     RuleMatch, Settlement, SettlementKind, SettlementRecord, UpstreamPrices, estimate_tokens,
     hold_description, input_upper_bound,
 };
-pub use channels::{Channel, ModelPrice, SecretKey, Serving};
+pub use channels::{CatalogModel, Channel, ModelPrice, SecretKey, Serving};
 pub use db::{Db, SCHEMA};
 pub use deposits::{CodeBatch, MAX_BATCH, Redemption};
 pub use doubleentry::{ConsistencyProof, EntryId, Hash, Seal, TreeHead};
