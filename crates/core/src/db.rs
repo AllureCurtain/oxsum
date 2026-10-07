@@ -102,6 +102,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0021_device_codes",
         include_str!("../migrations/0021_device_codes.sql"),
     ),
+    (
+        "0022_tiers_and_discounts",
+        include_str!("../migrations/0022_tiers_and_discounts.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.
