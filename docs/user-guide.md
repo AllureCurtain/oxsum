@@ -397,6 +397,23 @@ Steps:
    endpoints; `DELETE /api/v1/webhooks/{endpointId}` removes one and stops its
    queued deliveries.
 
+## Reading billing data from scripts
+
+Purpose: pull usage, bills and prices into a pipeline instead of scraping the
+dashboard — all four are ordinary `GET`/`POST` calls under the organization's
+API key, and a member session sees its own keys' rows plus the shared ones.
+
+- `GET /api/v1/usage?from=YYYY-MM-DD&to=YYYY-MM-DD` — the daily rollup rows
+  the usage page sums (bounded to a 92-day window).
+- `GET /api/v1/billing-records?limit=…&before=…` — settled turns newest-first;
+  follow `nextCursor` until it disappears, and any row's `requestId` names the
+  settlement entry `req-<requestId>:settle` a proof can be fetched for.
+- `POST /api/v1/estimate-price` — `{"model", "inputTokens", "outputTokens"}`
+  answers `estimateMinor`: the most a real request of that shape could be
+  charged, computed by the same arithmetic the gateway freezes with.
+- `GET /api/v1/pricing` — every model's current price version, with the channel
+  and protocol it is served through.
+
 ## Verifying a bill
 
 Purpose: confirm a recorded transaction has not been altered since.

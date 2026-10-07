@@ -59,6 +59,17 @@ Delivery: the event is enqueued inside the settlement's own transaction, so a se
 
 The `request.settled` envelope is `{id, type, created_at, org_id, data}`; `data` names the request (`requestId`, `model`, `channel`), the settlement (`kind`, `chargedMinor`, `freezeMinor`, `settlementEntryId`) and the usage (`inputTokens`, `outputTokens`) — enough to recompute or dispute the bill without another call.
 
+## Programmatic reads
+
+Four read endpoints put the data the dashboard pages show behind the organization's API key too, so a billing pipeline does not have to scrape HTML (issue #146).
+
+- `GET /api/v1/usage?from=…&to=…` — the `usage_daily` rollup as rows: one per `(day, keyId, channel, model)` with `turns`, the four token sums and `chargedMinor`. `from`/`to` are inclusive `YYYY-MM-DD` dates; `to` defaults to today and `from` to 31 days earlier, and the window is bounded to 92 days.
+- `GET /api/v1/billing-records?before=…&limit=…` — settled turns newest-first, one page at a time: `bookedOn`, `requestId`, `model`, `kind`, `inputTokens`, `outputTokens`, `chargedMinor`, `keyId`, and `nextCursor` while more remain. `limit` is 1–200, default 50; `before` resumes above a log index. Each row's request id is the proof key — `GET /api/v1/entries/{entryId}/proof` on `req-<requestId>:settle`.
+- `POST /api/v1/estimate-price` — `{"model", "inputTokens"?, "outputTokens"?, "serviceTier"?}` answers `{estimateMinor, model, version}`: the number the gateway's hold path would freeze for that shape, computed by the same dearest-applicable-set arithmetic (output clamps to the model's `maxOutputTokens`). Nothing is held or charged, an unknown model is `VALIDATION_ERROR`, and a real settle never exceeds the estimate.
+- `GET /api/v1/pricing` — the public catalog: every model's current price version flattened into a row with `channel`, `protocol`, `version`, `createdAt` and the price fields (`inputPricePerMillion`, `outputPricePerMillion`, `maxOutputTokens`, the cache and reasoning rates, `costPerRequest`, `mode`, `rules`). The query never selects channel credentials — the catalog carries nothing to withhold.
+
+Scoping follows the dashboard's rule: an API key or an owner/admin session reads all of the organization's rows; a member's session reads their own keys' rows plus the unattributed shared ones.
+
 ## OpenAI-compatible gateway (`/v1`)
 
 Point an OpenAI client's `base_url` at `/v1` and everything else stays the client's own.
