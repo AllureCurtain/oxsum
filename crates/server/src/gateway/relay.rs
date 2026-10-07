@@ -123,7 +123,8 @@ struct Frames {
 
 impl Frames {
     /// Reads one chunk and reports whether it contained the stream's own terminator.
-    /// `adapter` reads each frame's usage report in the channel's own protocol.
+    /// `adapter` reads each frame in the channel's own protocol: its usage report,
+    /// its answer text, and what counts as the end.
     fn observe(&mut self, chunk: &[u8], adapter: &dyn UsageAdapter) -> bool {
         self.buffer.extend_from_slice(chunk);
         let mut terminated = false;
@@ -135,7 +136,7 @@ impl Frames {
                 continue;
             };
             let payload = payload.trim();
-            if payload == "[DONE]" {
+            if adapter.ends_stream(payload) {
                 terminated = true;
                 continue;
             }
@@ -143,9 +144,16 @@ impl Frames {
                 continue;
             };
             if let Some(usage) = adapter.usage(&value) {
-                self.usage = Some(usage);
+                // A protocol may report usage across several events — Anthropic's
+                // `message_start` knows the input side, `message_delta` the output
+                // side — so a later report folds into the running one rather than
+                // replacing it.
+                match self.usage.as_mut() {
+                    Some(known) => known.merge_report(&usage),
+                    None => self.usage = Some(usage),
+                }
             }
-            let text = completion_text(&value);
+            let text = adapter.answer_text(&value);
             self.push_text(&text);
         }
         terminated
@@ -205,6 +213,16 @@ impl Turn {
                 progress_chars: 0,
             }),
         }
+    }
+
+    /// The frame that ends this protocol's stream when upstream ended without
+    /// terminating it — `data: [DONE]` for OpenAI, `message_stop` for Anthropic.
+    /// Read before `settle`, which gives the plan up.
+    #[must_use]
+    pub fn closing_frame(&self) -> &'static [u8] {
+        self.plan
+            .as_ref()
+            .map_or(b"data: [DONE]\n\n", |plan| plan.adapter.closing_frame())
     }
 
     /// What this turn is charged for if upstream just ended: its usage, or an estimate.
@@ -498,12 +516,14 @@ pub fn stream(
         }
         // Upstream is done, whatever the client does next: what ends here is a finished turn.
         turn.note_upstream_end();
+        // Read the closing frame before `settle` gives the plan up.
+        let closing_frame = turn.closing_frame();
         let (kind, charge) = turn.closing();
         let charged = turn.settle(kind, charge).await;
         if !terminated {
             // Upstream ended without its own terminator, so an SSE reader would wait for an event
-            // that is never coming. Close the stream for it.
-            yield Ok(Frame::data(Bytes::from_static(b"data: [DONE]\n\n")));
+            // that is never coming. Close the stream for it, in the protocol's own spelling.
+            yield Ok(Frame::data(Bytes::from_static(closing_frame)));
         }
         // The trailer is last: the data frames must all be out before it. A settlement
         // that did not land reports no number rather than a wrong one.
@@ -517,29 +537,6 @@ pub fn stream(
     }
 }
 
-/// The answer text in a chunk or a body: the delta of a streamed chunk, or the message of a whole
-/// completion. Used only for the local estimate.
-pub(crate) fn completion_text(value: &Value) -> String {
-    let mut text = String::new();
-    let Some(choices) = value.get("choices").and_then(Value::as_array) else {
-        return text;
-    };
-    for choice in choices {
-        let part = choice
-            .get("delta")
-            .and_then(|delta| delta.get("content"))
-            .or_else(|| {
-                choice
-                    .get("message")
-                    .and_then(|message| message.get("content"))
-            });
-        if let Some(Value::String(part)) = part {
-            text.push_str(part);
-        }
-    }
-    text
-}
-
 #[cfg(test)]
 mod tests {
     // The tests may unwrap: a panic here is a failing test, which is what a test is for.
@@ -548,10 +545,12 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// Every frame these tests feed the scanner is in the one protocol this build
-    /// knows.
     fn adapter() -> &'static dyn UsageAdapter {
         oxsum_core::adapter_for(oxsum_core::OPENAI).expect("the OpenAI adapter")
+    }
+
+    fn anthropic() -> &'static dyn UsageAdapter {
+        oxsum_core::adapter_for(oxsum_core::ANTHROPIC).expect("the Anthropic adapter")
     }
 
     #[test]
@@ -573,19 +572,20 @@ mod tests {
     #[test]
     fn the_answer_text_is_read_from_a_delta_or_a_message() {
         assert_eq!(
-            completion_text(&json!({"choices": [{"delta": {"content": "he"}}]})),
+            adapter().answer_text(&json!({"choices": [{"delta": {"content": "he"}}]})),
             "he"
         );
         assert_eq!(
-            completion_text(&json!({"choices": [{"delta": {"content": "llo"}}, {"delta": {}}]})),
+            adapter()
+                .answer_text(&json!({"choices": [{"delta": {"content": "llo"}}, {"delta": {}}]})),
             "llo"
         );
         assert_eq!(
-            completion_text(&json!({"choices": [{"message": {"content": "whole"}}]})),
+            adapter().answer_text(&json!({"choices": [{"message": {"content": "whole"}}]})),
             "whole"
         );
-        assert_eq!(completion_text(&json!({"choices": []})), "");
-        assert_eq!(completion_text(&json!({"error": "no"})), "");
+        assert_eq!(adapter().answer_text(&json!({"choices": []})), "");
+        assert_eq!(adapter().answer_text(&json!({"error": "no"})), "");
     }
 
     #[test]
@@ -623,5 +623,45 @@ mod tests {
         frames.push_text(&"y".repeat(ESTIMATE_WINDOW));
         frames.push_text("more");
         assert_eq!(frames.output.len(), ESTIMATE_WINDOW);
+    }
+
+    /// Anthropic reports usage twice on a stream — `message_start` knows the input
+    /// side, `message_delta` the cumulative output side — and the scanner folds the
+    /// two into one record.
+    #[test]
+    fn anthropic_reports_merge_across_frames() {
+        let adapter = anthropic();
+        let mut frames = Frames::default();
+        assert!(!frames.observe(
+            b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":50,\"output_tokens\":1,\"cache_read_input_tokens\":10}}}\n\n",
+            adapter
+        ));
+        frames.observe(
+            b"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n",
+            adapter,
+        );
+        assert!(frames.observe(
+            b"event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":42}}\n\n\
+              event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+            adapter
+        ));
+        let usage = frames.usage.expect("the merged report is kept");
+        assert_eq!(usage.input_tokens, 60);
+        assert_eq!(usage.cached_tokens, 10);
+        assert_eq!(usage.output_tokens, 42);
+        // The provider's raw object kept both frames' fields.
+        let raw = &usage.usage_details.as_ref().unwrap()["provider_raw"];
+        assert_eq!(raw["input_tokens"], 50);
+        assert_eq!(raw["output_tokens"], 42);
+        assert_eq!(frames.output, "hi");
+    }
+
+    /// The OpenAI terminator is opaque to the Anthropic scanner, and vice versa:
+    /// each protocol ends only on its own close.
+    #[test]
+    fn a_terminator_belongs_to_its_protocol() {
+        let mut frames = Frames::default();
+        assert!(!frames.observe(b"data: [DONE]\n\n", anthropic()));
+        assert!(!frames.observe(b"data: {\"type\":\"message_stop\"}\n\n", adapter()));
     }
 }
