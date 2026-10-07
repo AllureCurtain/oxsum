@@ -112,8 +112,9 @@ by registration or by `POST /api/v1/org/keys`. The plaintext secret is returned 
 The process's own telemetry is scraped at `GET /metrics` (Prometheus exposition format), gated
 by the same `OXSUM_ADMIN_TOKEN` as the admin surface — a scrape config carries it as
 `bearer_token`. HTTP request counts and durations by route, the gateway's holds, settlements,
-charges and tokens, upstream response latency, rate-limit and idempotency outcomes, and
-scrape-time gauges for open holds and the connection pool are all under the `oxsum_` prefix:
+charges and tokens, upstream response latency, rate-limit and idempotency outcomes, the
+sweeper's releases and dead-letter transitions, and scrape-time gauges for open and
+dead-lettered holds and the connection pool are all under the `oxsum_` prefix:
 
 ```bash
 curl -H "authorization: Bearer $OXSUM_ADMIN_TOKEN" http://127.0.0.1:3000/metrics
