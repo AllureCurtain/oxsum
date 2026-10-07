@@ -85,6 +85,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0016_idempotency_records",
         include_str!("../migrations/0016_idempotency_records.sql"),
     ),
+    (
+        "0017_dead_holds",
+        include_str!("../migrations/0017_dead_holds.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.31.0
+  version: 0.32.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -1352,7 +1352,9 @@ paths:
         than the deposit expected), `deposits_stuck` (confirmed by the rail
         but never credited or reversed), `watches_orphaned` (a hold watch
         row with no pending posting behind it), `holds_unwatched` (a pending
-        hold no watch row covers — invisible to the sweeper) and `log_gaps`
+        hold no watch row covers — invisible to the sweeper),
+        `holds_dead_lettered` (a watched hold whose sweep has failed ten
+        times — it retries hourly and needs an operator) and `log_gaps`
         (a ledger log whose positions are not dense). Each class carries a
         count and a bounded sample of the offending identifiers. The report
         is read-only: drift is for an operator to read, never for the
@@ -2229,6 +2231,9 @@ components:
         priceVersion: { type: integer, minimum: 1, description: the version the turn froze at }
         freezeMinor: { type: integer, format: int64, minimum: 1, description: what was frozen, in minor units }
         openedAt: { type: string, format: date-time, description: when the hold was taken }
+        sweepAttempts: { type: integer, minimum: 0, description: how many sweep passes have tried to settle it }
+        lastError: { type: string, nullable: true, description: "the last failed settle's error, so the operator sees what is stuck" }
+        deadAt: { type: string, format: date-time, nullable: true, description: "set once the hold has failed ten sweeps — the dead-letter marker; the sweeper retries it hourly from then on" }
     AdminAnomaly:
       type: object
       required: [organization, requestId, model, channel, priceVersion, kind, chargedMinor, freezeMinor, bookedOn]
@@ -2270,7 +2275,7 @@ components:
       properties:
         class:
           type: string
-          enum: [usage_orphans, settlements_unrecorded, deposits_unbooked, deposits_mismatched, deposits_stuck, watches_orphaned, holds_unwatched, log_gaps]
+          enum: [usage_orphans, settlements_unrecorded, deposits_unbooked, deposits_mismatched, deposits_stuck, watches_orphaned, holds_unwatched, holds_dead_lettered, log_gaps]
         count: { type: integer, format: int64, minimum: 0, description: how much drift the class holds }
         samples:
           type: array

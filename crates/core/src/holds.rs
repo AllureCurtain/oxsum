@@ -52,6 +52,16 @@ pub struct OpenHold {
     pub end_user: Option<String>,
     pub service_tier: Option<String>,
     pub tags: BTreeMap<String, String>,
+    /// How many sweep attempts have failed on this hold.
+    pub sweep_attempts: i32,
+    /// The last failed attempt's error — what an operator needs to see the
+    /// failure mode, truncated at the column's size.
+    pub last_error: Option<String>,
+    /// Set once, when `sweep_attempts` reached [`DEAD_AFTER_SWEEP_ATTEMPTS`]:
+    /// the dead-letter marker. A dead hold still retries, hourly instead of
+    /// every pass, so a fixed cause still self-heals.
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub dead_at: Option<OffsetDateTime>,
 }
 
 impl Db {
@@ -101,6 +111,21 @@ impl Db {
             .map_err(Into::into)
     }
 
+    /// How many watched holds are dead-lettered right now — the `/metrics`
+    /// gauge, refreshed per scrape like [`Self::open_hold_count`].
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn dead_hold_count(&self) -> Result<i64, WalletError> {
+        sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM oxsum.open_holds WHERE dead_at IS NOT NULL",
+        )
+        .fetch_one(self.pool())
+        .await
+        .map_err(Into::into)
+    }
+
     /// Stops watching a hold. Idempotent: deleting a row that is already gone is not an error,
     /// because the sweeper and the settling turn both clear it.
     ///
@@ -115,7 +140,47 @@ impl Db {
         Ok(())
     }
 
+    /// Records one failed sweep attempt against a watched hold: bumps
+    /// `sweep_attempts`, stores the error and, the first time the count reaches
+    /// [`DEAD_AFTER_SWEEP_ATTEMPTS`], sets `dead_at` — the dead-letter marker.
+    /// Returns the new attempt count; the caller reads `DEAD_AFTER_SWEEP_ATTEMPTS`
+    /// off it to tell the transition into dead from every other failure.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`]. A hold_key nobody watches is
+    /// not an error — it answers 0, like a row nobody ever wrote.
+    pub async fn note_sweep_failure(
+        &self,
+        hold_key: &str,
+        error: &str,
+    ) -> Result<i32, WalletError> {
+        sqlx::query_scalar(
+            "UPDATE oxsum.open_holds \
+             SET sweep_attempts = sweep_attempts + 1, \
+                 last_error = left($2, 500), \
+                 last_attempt_at = now(), \
+                 dead_at = CASE WHEN dead_at IS NULL \
+                                AND sweep_attempts + 1 >= $3 THEN now() \
+                                ELSE dead_at END \
+             WHERE hold_key = $1 \
+             RETURNING sweep_attempts",
+        )
+        .bind(hold_key)
+        .bind(error)
+        .bind(DEAD_AFTER_SWEEP_ATTEMPTS)
+        .fetch_optional(self.pool())
+        .await
+        .map(|attempts: Option<i32>| attempts.unwrap_or_default())
+        .map_err(Into::into)
+    }
+
     /// The watched holds older than `older_than`: what the sweeper may release.
+    ///
+    /// A dead-lettered row is skipped unless its last attempt is an hour old:
+    /// the sweeper keeps a dead hold on an hourly retry instead of tripping
+    /// over it every pass, so a fixed cause still self-heals without the
+    /// minute cadence's noise.
     ///
     /// # Errors
     ///
@@ -127,8 +192,11 @@ impl Db {
         let rows = sqlx::query(
             "SELECT hold_key, tenant_id, request_id, model, channel, \
              price_version, input_price, output_price, freeze_minor, key_id, \
-             end_user, service_tier, tags \
-             FROM oxsum.open_holds WHERE opened_at < $1 ORDER BY opened_at",
+             end_user, service_tier, tags, sweep_attempts, last_error, dead_at \
+             FROM oxsum.open_holds \
+             WHERE opened_at < $1 \
+               AND (dead_at IS NULL OR last_attempt_at < now() - interval '1 hour') \
+             ORDER BY opened_at",
         )
         .bind(older_than)
         .fetch_all(self.pool())
@@ -152,7 +220,7 @@ impl Db {
         let rows = sqlx::query(
             "SELECT hold_key, tenant_id, request_id, model, channel, \
              price_version, input_price, output_price, freeze_minor, key_id, \
-             end_user, service_tier, tags \
+             end_user, service_tier, tags, sweep_attempts, last_error, dead_at \
              FROM oxsum.open_holds WHERE tenant_id = $1 ORDER BY opened_at DESC",
         )
         .bind(tenant_id)
@@ -176,7 +244,8 @@ impl Db {
     pub async fn open_holds(&self) -> Result<Vec<InFlightHold>, WalletError> {
         let rows = sqlx::query(
             "SELECT h.request_id, h.model, h.channel, h.price_version, h.freeze_minor, \
-             h.opened_at, coalesce(o.name, h.tenant_id) AS organization \
+             h.opened_at, h.sweep_attempts, h.last_error, h.dead_at, \
+             coalesce(o.name, h.tenant_id) AS organization \
              FROM oxsum.open_holds h \
              LEFT JOIN oxsum.organizations o ON o.tenant_id = h.tenant_id \
              ORDER BY h.opened_at DESC",
@@ -193,6 +262,9 @@ impl Db {
                 price_version: row.try_get("price_version")?,
                 freeze_minor: row.try_get("freeze_minor")?,
                 opened_at: row.try_get("opened_at")?,
+                sweep_attempts: row.try_get("sweep_attempts")?,
+                last_error: row.try_get("last_error")?,
+                dead_at: row.try_get("dead_at")?,
             });
         }
         Ok(holds)
@@ -219,6 +291,13 @@ pub struct InFlightHold {
     /// When the hold was taken; how stale it is is the admin's first question.
     #[serde(with = "time::serde::rfc3339")]
     pub opened_at: OffsetDateTime,
+    /// How many sweep attempts have failed on it.
+    pub sweep_attempts: i32,
+    /// The last failed attempt's error.
+    pub last_error: Option<String>,
+    /// When it was dead-lettered — `None` while the sweeper retries every pass.
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub dead_at: Option<OffsetDateTime>,
 }
 
 /// Maps one `oxsum.open_holds` row to [`OpenHold`].
@@ -238,18 +317,35 @@ fn open_hold_from_row(row: &sqlx::postgres::PgRow) -> Result<OpenHold, WalletErr
         end_user: row.try_get("end_user")?,
         service_tier: row.try_get("service_tier")?,
         tags: serde_json::from_value(tags).unwrap_or_default(),
+        sweep_attempts: row.try_get("sweep_attempts")?,
+        last_error: row.try_get("last_error")?,
+        dead_at: row.try_get("dead_at")?,
     })
 }
 
+/// What one sweep pass did: the stale holds it resolved and the ones whose
+/// failure count crossed into the dead-letter state this pass.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SweepReport {
+    /// Holds released — settled, found already settled, or never taken.
+    pub resolved: usize,
+    /// Holds whose `sweep_attempts` just reached [`DEAD_AFTER_SWEEP_ATTEMPTS`]:
+    /// the pass that dead-letters a hold counts it once, so the number is
+    /// transitions, not attempts.
+    pub dead_lettered: usize,
+}
+
 /// Settles every watched hold older than `older_than` at 0 with kind [`SettlementKind::Swept`],
-/// releasing the whole freeze, and returns how many rows were resolved.
+/// releasing the whole freeze, and reports what the pass did.
 ///
 /// A hold that is old but already settled — the turn's own settlement landed first — is not
 /// settled twice: the sweeper names the same settlement entry the turn would have (the
 /// idempotency key is [`crate::settlement_key_for`] of the hold's key), so the ledger's
 /// idempotency gate refuses the second write and the row is just cleaned up. A hold that was
-/// never taken leaves no write behind either. A hold whose settlement fails for any other reason
-/// stays watched for the next pass.
+/// never taken leaves no write behind either. A hold whose settlement fails for any other
+/// reason stays watched: [`Db::note_sweep_failure`] counts the attempt, keeps the error and,
+/// at [`DEAD_AFTER_SWEEP_ATTEMPTS`] failures, dead-letters the row — it then retries hourly
+/// instead of every pass and shows up in the admin holds list and the reconciliation report.
 ///
 /// `on` is the posting date of the sweep entries: the server's current UTC date, like every
 /// other write (crates/server/AGENTS.md).
@@ -263,18 +359,37 @@ pub async fn sweep_stale_holds(
     tenants: &Tenants,
     older_than: OffsetDateTime,
     on: Date,
-) -> Result<usize, WalletError> {
-    let mut resolved = 0;
+) -> Result<SweepReport, WalletError> {
+    let mut report = SweepReport::default();
     for hold in db.stale_open_holds(older_than).await? {
         match sweep_one(db, tenants, &hold, on).await {
-            Ok(()) => resolved += 1,
+            Ok(()) => report.resolved += 1,
             Err(error) => {
-                tracing::error!(%error, hold_key = %hold.hold_key,
-                    "sweeping a stale hold failed; it stays watched for the next pass");
+                match db
+                    .note_sweep_failure(&hold.hold_key, &error.to_string())
+                    .await
+                {
+                    // `attempts == DEAD_AFTER_SWEEP_ATTEMPTS` happens exactly
+                    // once per hold — the update that set `dead_at`.
+                    Ok(DEAD_AFTER_SWEEP_ATTEMPTS) => {
+                        report.dead_lettered += 1;
+                        tracing::error!(%error, hold_key = %hold.hold_key,
+                            "a stale hold's settlement failed the tenth sweep; it is \
+                             dead-lettered — hourly retries from here, and an operator's problem");
+                    }
+                    Ok(attempts) => {
+                        tracing::error!(%error, attempts, hold_key = %hold.hold_key,
+                            "sweeping a stale hold failed; it stays watched for the next pass");
+                    }
+                    Err(note_error) => {
+                        tracing::error!(%error, %note_error, hold_key = %hold.hold_key,
+                            "sweeping a stale hold failed and the failure could not be recorded");
+                    }
+                }
             }
         }
     }
-    Ok(resolved)
+    Ok(report)
 }
 
 /// Releases one stale hold and stops watching it.
@@ -378,3 +493,8 @@ pub const DEFAULT_HOLD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// The sweeper's pass interval: how often it looks for stale holds.
 pub const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
+
+/// The number of failed sweeps that dead-letters a hold. Below it a hold is a
+/// transient failure worth an immediate retry; at it the failure is persistent,
+/// the row is marked dead, and the cadence drops to hourly.
+pub const DEAD_AFTER_SWEEP_ATTEMPTS: i32 = 10;
