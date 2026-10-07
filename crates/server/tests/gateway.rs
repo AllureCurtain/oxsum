@@ -50,12 +50,21 @@ enum Answer {
     Refuse { status: u16, body: Value },
     /// A 200 whose body is not JSON at all.
     Garbage,
+    /// A whole Anthropic message — what `/v1/messages` upstreams answer with.
+    Messages { usage: Option<Value> },
+    /// An Anthropic event stream; `terminated` says whether upstream ends it with
+    /// `message_stop`.
+    MessagesStream { terminated: bool },
+    /// Upstream refuses, in Anthropic's own error shape.
+    MessagesRefuse { status: u16, body: Value },
 }
 
 /// One request upstream received.
 #[derive(Clone)]
 struct Seen {
     authorization: Option<String>,
+    api_key: Option<String>,
+    anthropic_version: Option<String>,
     body: Value,
 }
 
@@ -83,11 +92,13 @@ impl Script {
 
 /// Starts the scripted upstream and returns its base URL, as a deployment would configure it.
 ///
-/// The base URL ends in `/v1` because that is what an OpenAI-compatible provider publishes, and the
-/// gateway appends `/chat/completions` to whatever it is given.
+/// The base URL ends in `/v1` because that is what a provider publishes, and the gateway
+/// appends the protocol's own path — `/chat/completions` or `/messages` — to whatever
+/// it is given.
 async fn start_upstream(script: Script) -> String {
     let app = Router::new()
         .route("/v1/chat/completions", post(upstream))
+        .route("/v1/messages", post(messages_upstream))
         .with_state(script);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -99,18 +110,31 @@ async fn start_upstream(script: Script) -> String {
     format!("http://{address}/v1")
 }
 
-async fn upstream(
-    State(script): State<Script>,
-    headers: HeaderMap,
-    axum::Json(body): axum::Json<Value>,
-) -> Response {
+/// Records one upstream request: the credential spellings and the body.
+fn note(script: &Script, headers: &HeaderMap, body: &Value) {
     script.seen.lock().unwrap().push(Seen {
         authorization: headers
             .get("authorization")
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned),
+        api_key: headers
+            .get("x-api-key")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned),
+        anthropic_version: headers
+            .get("anthropic-version")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned),
         body: body.clone(),
     });
+}
+
+async fn upstream(
+    State(script): State<Script>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    note(&script, &headers, &body);
     let model = body["model"].as_str().unwrap_or_default().to_owned();
     let answer = script.answers.lock().unwrap().get(&model).cloned();
     let Some(answer) = answer else {
@@ -166,6 +190,75 @@ async fn upstream(
             StatusCode::OK,
             [("content-type", "text/plain")],
             "not json at all",
+        )
+            .into_response(),
+        Answer::Messages { .. } | Answer::MessagesStream { .. } | Answer::MessagesRefuse { .. } => (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error": {"message": "an anthropic answer was scripted on the openai path"}})),
+        )
+            .into_response(),
+    }
+}
+
+/// The `/v1/messages` side of the scripted upstream, in Anthropic's shapes.
+async fn messages_upstream(
+    State(script): State<Script>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    note(&script, &headers, &body);
+    let model = body["model"].as_str().unwrap_or_default().to_owned();
+    let answer = script.answers.lock().unwrap().get(&model).cloned();
+    let Some(answer) = answer else {
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(json!({"type": "error", "error": {"type": "not_found_error", "message": "no script for this model"}})),
+        )
+            .into_response();
+    };
+    match answer {
+        Answer::Messages { usage } => {
+            let mut message = json!({
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": model,
+                "content": [{"type": "text", "text": "Hello there"}],
+                "stop_reason": "end_turn",
+            });
+            if let Some(usage) = usage {
+                message["usage"] = usage;
+            }
+            axum::Json(message).into_response()
+        }
+        Answer::MessagesStream { terminated } => {
+            let mut frames = String::from(
+                "event: message_start\n\
+                 data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"usage\":{\"input_tokens\":40,\"output_tokens\":1,\"cache_read_input_tokens\":8,\"cache_creation_input_tokens\":2}}}\n\n\
+                 event: content_block_start\n\
+                 data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\
+                 event: content_block_delta\n\
+                 data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n\
+                 event: content_block_delta\n\
+                 data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" there\"}}\n\n\
+                 event: message_delta\n\
+                 data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":4}}\n\n",
+            );
+            if terminated {
+                frames.push_str(
+                    "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+                );
+            }
+            sse(Body::from(frames))
+        }
+        Answer::MessagesRefuse { status, body } => (
+            StatusCode::from_u16(status).expect("the test's own status"),
+            axum::Json(body),
+        )
+            .into_response(),
+        _ => (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({"type": "error", "error": {"type": "invalid_request_error", "message": "an openai answer was scripted on the anthropic path"}})),
         )
             .into_response(),
     }
@@ -328,10 +421,15 @@ fn url() -> Option<String> {
 }
 
 /// A world with `top_up` minor units of credit, or an early return when there is no database.
+/// The second spelling picks the channel's protocol — `world!(n, "anthropic")` for the
+/// `/v1/messages` tests.
 macro_rules! world {
     ($top_up:expr) => {
+        world!($top_up, "openai")
+    };
+    ($top_up:expr, $protocol:expr) => {
         match url() {
-            Some(url) => world_for(&url, $top_up).await,
+            Some(url) => world_for(&url, $top_up, $protocol).await,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");
                 return;
@@ -340,7 +438,7 @@ macro_rules! world {
     };
 }
 
-async fn world_for(url: &str, top_up: i64) -> World {
+async fn world_for(url: &str, top_up: i64, protocol: &str) -> World {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
         .connect(url)
@@ -358,7 +456,7 @@ async fn world_for(url: &str, top_up: i64) -> World {
         .expect("the test's own prices parse");
     // The channel and its prices are rows, the way an operator's would be: the gateway reads the
     // database, and the environment is only what a brand-new deployment seeds its first channel with.
-    db.set_channel(&channel, &base_url, "upstream-secret", "openai", &secret)
+    db.set_channel(&channel, &base_url, "upstream-secret", protocol, &secret)
         .await
         .expect("the channel is written");
     for (model, price) in book.models() {
@@ -493,6 +591,32 @@ async fn chat(app: &Router, key: &str, body: Value) -> Response {
 /// A chat request with a message that costs a known little: two bytes of input.
 fn simple(model: &str) -> Value {
     json!({"model": model, "messages": [{"role": "user", "content": "hi"}]})
+}
+
+/// A messages request against the Anthropic surface, credentialed the way an
+/// Anthropic SDK sends it: `x-api-key`, plus the version header.
+async fn messages(app: &Router, key: &str, body: Value) -> Response {
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/messages")
+        .header("content-type", "application/json")
+        .header("x-api-key", key)
+        .header("anthropic-version", "2023-06-01")
+        .body(Body::from(body.to_string()))
+        .expect("the test's own request");
+    app.clone()
+        .oneshot(request)
+        .await
+        .expect("the router answers")
+}
+
+/// The same little message in Anthropic's shape.
+fn simple_message(model: &str) -> Value {
+    json!({
+        "model": model,
+        "max_tokens": 100,
+        "messages": [{"role": "user", "content": "hi"}],
+    })
 }
 
 /// The freeze `simple()` should produce, computed the way the request path computes it.
@@ -2348,4 +2472,171 @@ async fn a_post_hold_refusal_reports_a_zero_charge() {
             .and_then(|value| value.parse::<i64>().ok()),
         Some(freeze)
     );
+}
+
+// ── the Anthropic surface ────────────────────────────────────────────────────
+
+/// A messages turn on an `anthropic` channel freezes, forwards in Anthropic's
+/// spelling (`/messages`, `x-api-key`, `anthropic-version`), and settles against
+/// the normalized usage — cache counts folded into the input total (P5-1).
+#[tokio::test]
+async fn an_anthropic_turn_freezes_then_settles_against_its_usage() {
+    let world = world!(1_000_000, "anthropic");
+    world.answers(
+        "ok",
+        Answer::Messages {
+            usage: Some(json!({
+                "input_tokens": 10,
+                "output_tokens": 2,
+                "cache_read_input_tokens": 4,
+                "cache_creation_input_tokens": 6,
+                "cache_creation": {
+                    "ephemeral_5m_input_tokens": 4,
+                    "ephemeral_1h_input_tokens": 2,
+                },
+            })),
+        },
+    );
+
+    let response = messages(&world.app, &world.key, simple_message(&world.model("ok"))).await;
+    let id = request_id(&response);
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+    // The message is passed through untouched, in Anthropic's shape.
+    assert_eq!(body["type"], "message");
+    assert_eq!(body["content"][0]["text"], "Hello there");
+
+    // Upstream saw the protocol's own path and credential spelling, the
+    // caller's version header, and the freeze's output ceiling.
+    let seen = world.script.seen();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].api_key.as_deref(), Some("upstream-secret"));
+    assert_eq!(seen[0].anthropic_version.as_deref(), Some("2023-06-01"));
+    assert!(seen[0].authorization.is_none());
+    assert_eq!(seen[0].body["max_tokens"], 100);
+
+    // Anthropic's input excludes the cache counts; the billed input folds them
+    // in: 10 + 4 + 6 = 20 input tokens, 2 output, at one minor unit each.
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["kind"], "usage");
+    assert_eq!(record["usage"]["inputTokens"], 20);
+    assert_eq!(record["usage"]["cachedTokens"], 4);
+    assert_eq!(record["usage"]["cacheWrite5mTokens"], 4);
+    assert_eq!(record["usage"]["cacheWrite1hTokens"], 2);
+    assert_eq!(record["usage"]["outputTokens"], 2);
+    assert_eq!(record["charged"], 22);
+}
+
+/// A streamed Anthropic turn merges `message_start`'s input side with
+/// `message_delta`'s cumulative output, relays the events unchanged, ends on
+/// `message_stop`, and reports the charge as a trailer.
+#[tokio::test]
+async fn an_anthropic_stream_merges_the_usage_reports() {
+    let world = world!(1_000_000, "anthropic");
+    world.answers("stream", Answer::MessagesStream { terminated: true });
+
+    let mut request = simple_message(&world.model("stream"));
+    request["stream"] = json!(true);
+    let response = messages(&world.app, &world.key, request).await;
+    let id = request_id(&response);
+    assert_eq!(response.status(), StatusCode::OK);
+    let collected = response
+        .into_body()
+        .collect()
+        .await
+        .expect("collects the stream");
+    let text = String::from_utf8(collected.to_bytes().to_vec()).expect("utf-8 frames");
+    assert!(text.contains("event: message_start"), "{text}");
+    assert!(text.contains("text_delta"), "{text}");
+    assert!(text.contains("message_stop"), "{text}");
+    assert!(!text.contains("[DONE]"), "{text}");
+
+    // 40 + 8 + 2 = 50 input tokens, 4 output — merged across the two events.
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["kind"], "usage");
+    assert_eq!(record["usage"]["inputTokens"], 50);
+    assert_eq!(record["usage"]["cachedTokens"], 8);
+    assert_eq!(record["usage"]["outputTokens"], 4);
+    assert_eq!(record["charged"], 54);
+}
+
+/// A media block has no computable input bound: the refusal is 400 in
+/// Anthropic's error envelope — `type: "error"`, with oxsum's code kept.
+#[tokio::test]
+async fn an_anthropic_refusal_answers_in_anthropics_shape() {
+    let world = world!(1_000_000, "anthropic");
+    let response = messages(
+        &world.app,
+        &world.key,
+        json!({
+            "model": world.model("ok"),
+            "max_tokens": 10,
+            "messages": [{"role": "user", "content": [
+                {"type": "image", "source": {"type": "base64", "data": "…"}},
+            ]}],
+        }),
+    )
+    .await;
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["type"], "error");
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+    // Nothing was asked of upstream.
+    assert!(world.script.seen().is_empty());
+}
+
+/// A model an `openai` channel serves is not served on the Anthropic surface:
+/// surfaces are protocol-native, never translated.
+#[tokio::test]
+async fn a_model_is_not_served_across_protocols() {
+    let world = world!(1_000_000);
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+
+    let response = messages(&world.app, &world.key, simple_message(&world.model("ok"))).await;
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["type"], "error");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("not served")
+    );
+    assert!(world.script.seen().is_empty());
+}
+
+/// Upstream's own anthropic refusal passes through unchanged — the gateway
+/// answers 502, the body is upstream's `type: "error"` object, and the settled
+/// charge is zero.
+#[tokio::test]
+async fn an_anthropic_upstream_error_is_passed_through() {
+    let world = world!(1_000_000, "anthropic");
+    world.answers(
+        "refuse",
+        Answer::MessagesRefuse {
+            status: 529,
+            body: json!({"type": "error", "error": {"type": "overloaded_error", "message": "overloaded"}}),
+        },
+    );
+
+    let response = messages(
+        &world.app,
+        &world.key,
+        simple_message(&world.model("refuse")),
+    )
+    .await;
+    let id = request_id(&response);
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(body["type"], "error");
+    assert_eq!(body["error"]["type"], "overloaded_error");
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["kind"], "upstream_error");
+    assert_eq!(record["charged"], 0);
 }

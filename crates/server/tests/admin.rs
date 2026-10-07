@@ -160,7 +160,7 @@ async fn a_channel_is_created_priced_and_listed() {
             "name": fresh("admin"),
             "baseUrl": "https://upstream.example/v1",
             "apiKey": "sk-upstream-abcd1234",
-            "protocol": "anthropic",
+            "protocol": "gemini",
         })),
     )
     .await;
