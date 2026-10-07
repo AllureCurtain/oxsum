@@ -127,10 +127,14 @@ password; `/dashboard` is the overview. `/logout` logs out.
   not here — the overview shows those live.
 - **Usage**: the organization's settled usage aggregated by day
   (`/dashboard/usage`): a bar chart of what each of the last 30 days charged in
-  credits — the day is the settlement's ledger booking date — and a table summing
-  the same window by channel and model, with turns and the token counts. A quiet
-  day draws a zero-height bar, and a member's page sums their own keys' usage plus
-  the organization's shared rows, the same scope the bills page applies.
+  credits — the day is the settlement's ledger booking date — a token-mix bar
+  splitting the window's billed volume into fresh input, cached reads, output and
+  reasoning, a table summing the window by the key that paid — labelled by the
+  key's name, or its prefix when unnamed, with shared unattributed usage a row of
+  its own — and a table summing the same window by channel and model, with turns
+  and the token counts. A quiet day draws a zero-height bar, and a member's page
+  sums their own keys' usage plus the organization's shared rows, the same scope
+  the bills page applies — so a member's by-key table names only their own keys.
 
 - **Organization**: the top-right corner of every dashboard page names the
   organization the session acts as. Choosing another one from the select switches it —

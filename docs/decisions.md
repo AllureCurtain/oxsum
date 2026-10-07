@@ -976,3 +976,15 @@ Three judgment calls, recorded:
 - **`estimate-price` takes a shape, not a request.** Declared `inputTokens`/`outputTokens`/`serviceTier` rather than an OpenAI-shaped body keeps the endpoint protocol-neutral — the Anthropic surface asks the same question — and `Price::bound` (the extracted freeze arithmetic) guarantees the answer and a real hold can never diverge.
 
 Pinned by `crates/server/tests/apis.rs`: the rollup filtered to the credential's organization, the window's bounds, the paged walk and the other-organization isolation, the estimate matching the freeze arithmetic (clamp included), and the catalog carrying a credential-free payload.
+
+## 2026-10-09 — The usage page's analytics are cuts of the rollup it already reads (roadmap P5-4, issue #148)
+
+The usage page gained its analytics layer — a token-mix bar and a by-key breakdown — without a new table, a new endpoint, or a chart library: both views group the same scoped `usage_daily` rows the daily chart already sums. `key_id` was already on the rollup (issue #126) and on the REST row (#146); the page payload now carries it plus a `keyLabel` the server resolves from the keys list the scope check already fetches — a key's name, or its prefix when unnamed — so the by-key table reads "prod key" rather than a uuid. Shared unattributed usage is a row of its own, labelled "Shared (no key)", because it is nobody's key — folding it into a "misc" bucket would hide the exact spend a member is allowed to see but cannot attribute.
+
+Three judgment calls, recorded:
+
+- **The token mix is disjoint on purpose.** `cachedTokens` is a subset of `inputTokens`, so the bar shows `input − cached` beside the cached share — four segments that sum to the billed volume, matching the lines the price book bills rather than double-counting the cached part.
+- **The bar is hand-drawn like the daily chart, and never color-alone.** Segments are flex-width divs over the existing palette tokens (`--primary`, `--pending`, `--success`, `--text-muted`), each carrying a visually-hidden text span and a title; the legend repeats every segment's count and percentage. No chart library — the standing decision against one (the bundle ships to the browser) holds.
+- **Scope is visible in the table, not just enforced above it.** The by-key table sums under the same scope filter the rows already passed, so a member sees their own keys and the shared row — the place where "you cannot see other members' spend" reads as data rather than as an absence.
+
+Pinned by `crates/server/tests/usage.rs`: the pinned row fields (keyed rows carry `keyId`/`keyLabel`, shared rows neither), the keyed row naming the paying key, and the member page naming only the member's key.
