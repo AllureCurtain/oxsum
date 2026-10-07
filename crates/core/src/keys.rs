@@ -34,6 +34,25 @@ const KEY_COLS: &str = "key_id, name, prefix, created_by, created_at, expires_at
                         revoked_at, spend_limit_minor, budget_duration, model_allowlist, \
                         requests_per_minute, max_concurrent_holds";
 
+/// The rule every model allowlist follows — a key's own, or a tier's: null or a
+/// non-empty list of non-empty model names.
+pub(crate) fn validate_model_allowlist(models: &[String]) -> Result<(), WalletError> {
+    if models.is_empty() {
+        return Err(WalletError::InvalidInput(
+            "modelAllowlist must be null or name at least one model".into(),
+        ));
+    }
+    if models
+        .iter()
+        .any(|m| m.trim().is_empty() || m.len() > MAX_MODEL)
+    {
+        return Err(WalletError::InvalidInput(format!(
+            "a modelAllowlist entry is a model name, 1..={MAX_MODEL} bytes"
+        )));
+    }
+    Ok(())
+}
+
 /// The window a periodic spend limit applies to. Without one the limit is cumulative.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -108,19 +127,7 @@ impl KeyConstraints {
             ));
         }
         if let Some(models) = &self.model_allowlist {
-            if models.is_empty() {
-                return Err(WalletError::InvalidInput(
-                    "modelAllowlist must be null or name at least one model".into(),
-                ));
-            }
-            if models
-                .iter()
-                .any(|m| m.trim().is_empty() || m.len() > MAX_MODEL)
-            {
-                return Err(WalletError::InvalidInput(format!(
-                    "a modelAllowlist entry is a model name, 1..={MAX_MODEL} bytes"
-                )));
-            }
+            validate_model_allowlist(models)?;
         }
         for (name, value) in [
             ("requestsPerMinute", self.requests_per_minute),
