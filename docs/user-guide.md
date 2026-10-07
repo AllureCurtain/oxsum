@@ -370,6 +370,33 @@ credit line first, and repayments always land on the oldest open statement — s
 reads `pending` until the due date has passed (then `overdue`), `suspended` while
 the platform holds the bill, and `paid` once repayments cover it.
 
+## Webhooks
+
+Purpose: be notified when a request settles, without polling the API.
+
+Steps:
+
+1. Register an endpoint: `POST /api/v1/webhooks` with
+   `{"url": "https://your-server/hook", "events": ["request.settled"]}`. The URL
+   must be HTTPS — HTTP is allowed only to localhost for development. The answer
+   carries `secret`, a `whsec-` string shown exactly once; store it, afterwards
+   the API shows only `secretLast4`.
+2. Receive `POST`s at that URL. Each is a JSON envelope
+   `{id, type, created_at, org_id, data}`; for `request.settled` the `data`
+   names the request (`requestId`, `model`, `channel`), the charge (`kind`,
+   `chargedMinor`, `freezeMinor`, `settlementEntryId`) and the token counts.
+3. Verify every delivery before acting on it: read `x-oxsum-signature`
+   (`t=<unix>,v1=<hex>`), recompute HMAC-SHA256 of `"{t}.{raw body}"` with the
+   stored secret, compare in constant time, and reject timestamps older than a
+   few minutes. `x-oxsum-delivery` is the delivery's id — dedupe on it, because
+   a receiver that is slow or answers non-2xx sees the same delivery retried
+   (10s, 1m, 5m, 15m, 30m, then hourly; ten attempts before the row is `failed`).
+4. Inspect recent deliveries per endpoint with
+   `GET /api/v1/webhooks/{endpointId}/deliveries` — status, attempt count, the
+   receiver's last answer and the last error. `GET /api/v1/webhooks` lists the
+   endpoints; `DELETE /api/v1/webhooks/{endpointId}` removes one and stops its
+   queued deliveries.
+
 ## Verifying a bill
 
 Purpose: confirm a recorded transaction has not been altered since.
