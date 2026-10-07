@@ -347,6 +347,35 @@ async fn run(
     surface: Surface,
 ) -> Result<Response, GatewayError> {
     let request = GatewayRequest::parse(body, surface)?;
+    // The organization's tier is a capability package — limits and allowlists,
+    // never a pricing input (issue #158): its model allowlist refuses 403 and
+    // its rolling-minute allowance is one window shared by every key of the
+    // organization, consumed at admission like the key's own below.
+    if let Some(profile) = state.db.tier_of(organization.id).await? {
+        if let Some(allowlist) = &profile.model_allowlist
+            && !allowlist.iter().any(|allowed| allowed == &request.model)
+        {
+            return Err(GatewayError::Forbidden(format!(
+                "the organization's tier does not allow {}",
+                request.model
+            )));
+        }
+        if let Some(rpm) = profile.requests_per_minute
+            && rpm > 0
+            && let Err(limited) =
+                state
+                    .rate_limiter
+                    .admit(organization.id, rpm as u32, std::time::Instant::now())
+        {
+            crate::metrics::rate_limited(&state.metrics, "gateway");
+            return Err(GatewayError::RateLimited {
+                message: format!("the organization's tier is limited to {rpm} requests per minute"),
+                code: "RATE_LIMITED",
+                limit: i64::from(rpm),
+                retry_after_secs: limited.retry_after.as_secs(),
+            });
+        }
+    }
     // The key's rolling-minute allowance is consumed at admission, before any
     // money moves: a refused request never reaches the wallet. A client retry is
     // a new request (the id is minted here), so it rightly spends another slot.
@@ -389,6 +418,14 @@ async fn run(
         .into());
     };
     let price = serving.price.clone();
+    // The discount resolves once here, beside the price version: the turn
+    // settles under the percent in force when it started, whatever the rows do
+    // later — the snapshot the settlement description writes (issue #158).
+    let discount_percent = state
+        .db
+        .discount_percent(organization.id, &request.model)
+        .await?
+        .map(i64::from);
     let output_bound = price.output_upper_bound(request.max_tokens)?;
     let texts: Vec<&str> = request.texts.iter().map(String::as_str).collect();
     let freeze = price.freeze_minor(
@@ -473,6 +510,7 @@ async fn run(
         &request.model,
         &serving,
         freeze,
+        discount_percent,
         request.texts.clone(),
         &organization.tenant_id,
         state.billing.clone(),
