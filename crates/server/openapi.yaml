@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.39.0
+  version: 0.40.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -192,6 +192,24 @@ info:
     page and `POST /api/v1/device/authorize` stamps the session's verdict.
     The approved key is minted inside the successful poll, so its secret is
     never at rest, and every code expires unconsumed after fifteen minutes.
+
+    0.40.0 adds the two halves of per-organization commercial terms
+    (issue #158). Discounts: `GET`/`POST /api/v1/admin/discounts` manage
+    `pricing_discounts` rows — an organization and/or model scope, a
+    percent, and a validity window — and `DELETE
+    /api/v1/admin/discounts/{discountId}` ends one early. A settlement
+    applies the single most favorable discount whose scope and window the
+    turn matches — discounts never stack — and snapshots the percent into
+    its description (`v` 4, `discountPercent`), so the charge still
+    recomputes from the description alone; the freeze stays the
+    undiscounted bound. Tiers: `tier_profiles` name capability packages —
+    an organization-wide `requestsPerMinute` and a `modelAllowlist` —
+    managed through `GET`/`PUT`/`DELETE /api/v1/admin/tiers` and assigned
+    by `tier` on `PATCH /api/v1/admin/organizations/{organizationId}`
+    (null clears it). A tier is never a pricing input: the gateway
+    enforces its limits at admission — 429 `RATE_LIMITED` over the
+    organization allowance, 403 `FORBIDDEN` for a model the allowlist
+    does not name — and an organization without a tier behaves as before.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -2329,6 +2347,191 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/tiers:
+    get:
+      summary: List the tier profiles
+      description: |
+        Every tier profile, name first, with the count of organizations
+        assigned to it. A tier is a capability package — limits and
+        allowlists the gateway enforces at admission — never a pricing
+        input.
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: The tier profiles
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/TierProfile" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/tiers/{tier}:
+    put:
+      summary: Write a tier profile
+      description: |
+        Creates the named tier profile, or replaces the one that exists
+        under the name — the request names the whole package, so a field
+        left out clears rather than keeps its old value. A `PUT` to the
+        same name with the same body is the natural replay: it changes
+        nothing, which is why the request carries no idempotency key.
+
+        `requestsPerMinute` is one rolling-minute allowance shared by
+        every key of every organization on the tier — counted at
+        admission, refused 429 `RATE_LIMITED` — and `modelAllowlist`
+        bounds the models those organizations may call; `null` means all
+        models the deployment serves. `400` answers a malformed name, a
+        non-positive allowance or a malformed allowlist.
+      security:
+        - adminToken: []
+      parameters:
+        - name: tier
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-z0-9](-?[a-z0-9])*$'
+            maxLength: 40
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SetTierRequest" }
+      responses:
+        "200":
+          description: The tier profile as it now stands
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/TierProfile" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    delete:
+      summary: Retire a tier profile
+      description: |
+        Removes the named tier. A tier organizations are still assigned
+        to refuses `409 CONFLICT` — reassign or clear them first, so a
+        deleted package never silently uncaps its members.
+      security:
+        - adminToken: []
+      parameters:
+        - name: tier
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The tier is gone
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { type: object }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/discounts:
+    get:
+      summary: List the pricing discounts
+      description: |
+        Every discount row, newest first, ended or not — the full history,
+        because a settlement snapshots only the percent and the list is
+        how an operator reads back why a period billed what it did.
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: The discounts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/Discount" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Create a pricing discount
+      description: |
+        Grants a discount to an organization and/or a model — both absent
+        means every organization on every model — over a validity window
+        (`validFrom` defaults to now, `validUntil` absent means it does
+        not expire). When several rows match a turn the single most
+        favorable applies; discounts never stack. `percent` is 1 to 100 —
+        100 settles at zero, recorded as a discount, not as an unpriced
+        anomaly.
+
+        The settlement snapshots the percent into its description, so a
+        later change here rewrites no bill. `400` answers a percent out
+        of range, a window that ends before it starts, or an organization
+        that does not exist. A retry with the same `idempotencyKey` and
+        the same fields answers the row it created; the same key with
+        different fields is `409 CONFLICT`.
+      security:
+        - adminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateDiscountRequest" }
+      responses:
+        "200":
+          description: The discount row — the created one, or the one its idempotency key already wrote
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/Discount" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/discounts/{discountId}:
+    delete:
+      summary: End a discount early
+      description: |
+        Sets the discount's `validUntil` to now: it stops applying to
+        turns that start after the call, and stays in the list — the
+        history a settled bill's `discountPercent` points back at.
+        Deleting an already-ended or expired discount is the same answer;
+        an unknown id is `404`.
+      security:
+        - adminToken: []
+      parameters:
+        - name: discountId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The discount, now ended
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/Discount" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /v1/models:
     get:
       summary: List the served models, in OpenAI's shape
@@ -2996,6 +3199,11 @@ components:
         inputTokens: { type: integer, format: int64, description: tokens billed as input }
         outputTokens: { type: integer, format: int64, description: tokens billed as output }
         chargedMinor: { type: integer, format: int64 }
+        discountPercent:
+          type: integer
+          minimum: 1
+          maximum: 100
+          description: the discount applied between the priced sum and the cap — absent when none applied
         keyId:
           type: string
           format: uuid
@@ -3059,11 +3267,15 @@ components:
           format: int32
           minimum: 0
           description: days a finalized statement's payment has before it falls due — snapshotted onto each statement at finalization
+        tier:
+          type: string
+          nullable: true
+          description: the tier profile to assign — a capability package, never a pricing input; an explicit null clears it
         idempotencyKey:
           type: string
           minLength: 1
           maxLength: 200
-          description: a retry writes no second entry; the same key replays the same change. At least one of creditLimitMinor and paymentTermsDays must be present.
+          description: a retry writes no second entry; the same key replays the same change. At least one of creditLimitMinor, paymentTermsDays and tier must be present.
     PasswordResetRequest:
       type: object
       required: [newPassword]
@@ -3093,7 +3305,7 @@ components:
           description: the organization's available balance after the adjustment
     AdminCreditLimit:
       type: object
-      required: [organizationId, creditLimitMinor, creditUsedMinor, availableMinor, paymentTermsDays]
+      required: [organizationId, creditLimitMinor, creditUsedMinor, availableMinor, paymentTermsDays, tier]
       properties:
         entryId:
           type: string
@@ -3110,6 +3322,10 @@ components:
           format: int32
           minimum: 0
           description: days a finalized statement's payment has before it falls due
+        tier:
+          type: string
+          nullable: true
+          description: the tier profile the organization is assigned to — null when it carries none
     AdminOrganization:
       type: object
       required: [id, name, kind, members, createdAt, availableMinor, reservedMinor, creditLimitMinor, creditUsedMinor]
@@ -3123,6 +3339,10 @@ components:
         reservedMinor: { type: integer, format: int64, minimum: 0, description: the sum of the organization's outstanding holds }
         creditLimitMinor: { type: integer, format: int64, minimum: 0, description: the credit limit the operator granted }
         creditUsedMinor: { type: integer, format: int64, minimum: 0, description: the drawn plus reserved part of the credit line }
+        tier:
+          type: string
+          nullable: true
+          description: the tier profile assigned — its limits and allowlist gate the organization's requests; null when none
     AdminHold:
       type: object
       required: [organization, requestId, model, channel, priceVersion, freezeMinor, openedAt]
@@ -3137,6 +3357,106 @@ components:
         sweepAttempts: { type: integer, minimum: 0, description: how many sweep passes have tried to settle it }
         lastError: { type: string, nullable: true, description: "the last failed settle's error, so the operator sees what is stuck" }
         deadAt: { type: string, format: date-time, nullable: true, description: "set once the hold has failed ten sweeps — the dead-letter marker; the sweeper retries it hourly from then on" }
+    TierProfile:
+      type: object
+      required: [name, requestsPerMinute, modelAllowlist, organizations]
+      properties:
+        name: { type: string, description: the package's slug — `organizations.tier` references it }
+        requestsPerMinute:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: one rolling-minute allowance shared by every key of the assigned organizations; null uncapped
+        modelAllowlist:
+          type: array
+          nullable: true
+          items: { type: string }
+          description: the models the assigned organizations may call; null means all served models
+        organizations: { type: integer, format: int64, minimum: 0, description: how many organizations are assigned the tier }
+    SetTierRequest:
+      type: object
+      properties:
+        requestsPerMinute:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: the organization-wide rolling-minute allowance; absent or null uncaps
+        modelAllowlist:
+          type: array
+          nullable: true
+          items: { type: string }
+          description: the models the tier may call; absent or null means all served models
+    Discount:
+      type: object
+      required: [discountId, percent, validFrom, createdAt]
+      properties:
+        discountId: { type: string, format: uuid }
+        organizationId:
+          type: string
+          format: uuid
+          nullable: true
+          description: the organization the discount applies to; null is every organization
+        organization:
+          type: string
+          nullable: true
+          description: the scoped organization's name — the operator's label for the row
+        model:
+          type: string
+          nullable: true
+          description: the model the discount applies to; null is every model
+        percent:
+          type: integer
+          minimum: 1
+          maximum: 100
+          description: the percent taken off the priced sum, applied before the freeze cap; 100 settles at zero
+        label:
+          type: string
+          nullable: true
+          description: why the discount exists — the operator's own words, for the audit of a bill that cites it
+        validFrom: { type: string, format: date-time, description: turns starting at or after this qualify }
+        validUntil:
+          type: string
+          format: date-time
+          nullable: true
+          description: turns starting at or after this do not qualify; null does not expire
+        createdAt: { type: string, format: date-time }
+    CreateDiscountRequest:
+      type: object
+      required: [percent, idempotencyKey]
+      properties:
+        percent:
+          type: integer
+          minimum: 1
+          maximum: 100
+          description: the percent taken off the priced sum
+        organizationId:
+          type: string
+          format: uuid
+          nullable: true
+          description: scope the discount to one organization; absent scopes it to all
+        model:
+          type: string
+          nullable: true
+          description: scope the discount to one model; absent scopes it to all
+        label:
+          type: string
+          maxLength: 200
+          nullable: true
+          description: why the discount exists — recorded for the audit
+        validFrom:
+          type: string
+          format: date-time
+          description: defaults to now
+        validUntil:
+          type: string
+          format: date-time
+          nullable: true
+          description: the end of the window; absent does not expire
+        idempotencyKey:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: a retry answers the row it created; the same key under different fields is 409
     AdminAnomaly:
       type: object
       required: [organization, requestId, model, channel, priceVersion, kind, chargedMinor, freezeMinor, bookedOn]

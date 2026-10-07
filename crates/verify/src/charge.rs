@@ -19,7 +19,7 @@ use serde_json::Value;
 /// written before descriptions were versioned counts as older; every `v` above
 /// this is newer than this build. Versions it does know each get their own
 /// rule: an old bill stays recomputable after the writer has moved on.
-const KNOWN_VERSION: i64 = 3;
+const KNOWN_VERSION: i64 = 4;
 
 /// The line items the input side prices: their units must account for the
 /// whole `inputTokens`, between them and the usage record — cached reads and
@@ -91,7 +91,8 @@ pub fn verify_charge(description: &str) -> ChargeCheck {
         None => ChargeCheck::OlderSchema,
         Some(version) => match version.as_i64() {
             Some(2) => recompute_v2(&value),
-            Some(KNOWN_VERSION) => recompute_v3(&value),
+            Some(3) => recompute_v3(&value),
+            Some(KNOWN_VERSION) => recompute_v4(&value),
             Some(v) if v > KNOWN_VERSION => ChargeCheck::NewerSchema { version: v },
             Some(_) => ChargeCheck::OlderSchema,
             // A `v` that names no version is a broken record, not an old one.
@@ -169,47 +170,89 @@ fn recompute_v2(value: &Value) -> ChargeCheck {
 /// a record that disagrees with itself. A bound item may appear once; an item
 /// this verifier does not know is unbound and still joins the sum. A `request`
 /// line is the flat fee: one per billed turn, zero on a turn nothing ran for.
+/// The v3 rule: the same ceiling-and-cap as v2 over the itemized lines
+/// [`checked_sum_v3`] binds — `ceil(sum / million)` capped at `freeze`.
 fn recompute_v3(value: &Value) -> ChargeCheck {
-    let integer = |value: &Value, key: &str| value.get(key).and_then(Value::as_i64);
-    let Some(usage) = value.get("usage") else {
+    let Some((numerator, charged, freeze)) = checked_sum_v3(value) else {
         return ChargeCheck::Mismatch;
     };
+    let expected = ((numerator + PER_MILLION - 1) / PER_MILLION).min(i128::from(freeze));
+    if i128::from(charged) == expected {
+        ChargeCheck::Recomputed
+    } else {
+        ChargeCheck::Mismatch
+    }
+}
+
+/// The v4 rule: v3's line arithmetic and binding, then the multiplier the
+/// description snapshots (issue #158). `discountPercent` scales the numerator
+/// before the one ceiling — `ceil(sum * (100 - percent) / (million * 100))` —
+/// and the cap on the undiscounted freeze still holds: a discount only ever
+/// lowers a charge. Absent means none applied; a present value outside
+/// 1..=100 is not an honest write.
+fn recompute_v4(value: &Value) -> ChargeCheck {
+    let percent = match value.get("discountPercent") {
+        None => 0_i64,
+        Some(percent) => match percent.as_i64() {
+            Some(percent) if (1..=100).contains(&percent) => percent,
+            _ => return ChargeCheck::Mismatch,
+        },
+    };
+    let Some((numerator, charged, freeze)) = checked_sum_v3(value) else {
+        return ChargeCheck::Mismatch;
+    };
+    let scaled = numerator * i128::from(100 - percent);
+    let divisor = PER_MILLION * 100;
+    let expected = ((scaled + divisor - 1) / divisor).min(i128::from(freeze));
+    if i128::from(charged) == expected {
+        ChargeCheck::Recomputed
+    } else {
+        ChargeCheck::Mismatch
+    }
+}
+
+/// The checks both itemized schemas share: the usage totals bind the *sum* of
+/// each side's lines, and a line spells itself as the tuple
+/// `[item, units, pricePerMillion]` — the ledger's description limit cannot
+/// afford an object's repeated keys. The itemized price book splits `input`
+/// into `input` plus `cache_read` and the cache-write tiers, and `output` into
+/// `output` plus `reasoning`, so each side's lines must account for the whole
+/// usage count — a line that counts other tokens than the usage describes is
+/// a record that disagrees with itself. A bound item may appear once; an item
+/// this verifier does not know is unbound and still joins the sum. A `request`
+/// line is the flat fee: one per billed turn, zero on a turn nothing ran for.
+///
+/// Answers the summed numerator and the record's `charged`/`freeze`, or `None`
+/// when any check failed — the callers map that to [`ChargeCheck::Mismatch`].
+fn checked_sum_v3(value: &Value) -> Option<(i128, i64, i64)> {
+    let integer = |value: &Value, key: &str| value.get(key).and_then(Value::as_i64);
+    let usage = value.get("usage")?;
     let usage_count = |key: &str| match usage.get(key) {
         None => Some(0),
         Some(count) => count.as_i64(),
     };
-    let (Some(input), Some(output)) = (usage_count("inputTokens"), usage_count("outputTokens"))
-    else {
-        return ChargeCheck::Mismatch;
-    };
-    let (Some(charged), Some(freeze)) = (integer(value, "charged"), integer(value, "freeze"))
-    else {
-        return ChargeCheck::Mismatch;
-    };
+    let (input, output) = (usage_count("inputTokens")?, usage_count("outputTokens")?);
+    let (charged, freeze) = (integer(value, "charged")?, integer(value, "freeze")?);
     if input < 0 || output < 0 || charged < 0 || freeze < 0 {
-        return ChargeCheck::Mismatch;
+        return None;
     }
     // A flat fee bills a turn that ran; a failed or swept one owes nothing.
     let billable = matches!(
         value.get("kind").and_then(Value::as_str),
         Some("usage" | "estimated" | "client_cancelled" | "capped" | "unpriced")
     );
-    let Some(lines) = value.get("lines").and_then(Value::as_array) else {
-        return ChargeCheck::Mismatch;
-    };
+    let lines = value.get("lines")?.as_array()?;
     let (mut input_sum, mut output_sum) = (0_i64, 0_i64);
     let mut bound_seen: u8 = 0;
     let mut numerator: i128 = 0;
     for line in lines {
         let item = line.get(0).and_then(Value::as_str);
-        let (Some(units), Some(price)) = (
-            line.get(1).and_then(Value::as_i64),
-            line.get(2).and_then(Value::as_i64),
-        ) else {
-            return ChargeCheck::Mismatch;
-        };
+        let (units, price) = (
+            line.get(1).and_then(Value::as_i64)?,
+            line.get(2).and_then(Value::as_i64)?,
+        );
         if units < 0 || price < 0 {
-            return ChargeCheck::Mismatch;
+            return None;
         }
         match item {
             Some(item) if INPUT_ITEMS.contains(&item) || OUTPUT_ITEMS.contains(&item) => {
@@ -221,7 +264,7 @@ fn recompute_v3(value: &Value) -> ChargeCheck {
                     .map(|index| 1_u8 << index)
                     .unwrap_or(0);
                 if bound_seen & bit != 0 {
-                    return ChargeCheck::Mismatch;
+                    return None;
                 }
                 bound_seen |= bit;
                 if INPUT_ITEMS.contains(&item) {
@@ -230,20 +273,15 @@ fn recompute_v3(value: &Value) -> ChargeCheck {
                     output_sum += units;
                 }
             }
-            Some("request") if units > i64::from(billable) => return ChargeCheck::Mismatch,
+            Some("request") if units > i64::from(billable) => return None,
             _ => {}
         }
         numerator += i128::from(units) * i128::from(price);
     }
     if input_sum != input || output_sum != output {
-        return ChargeCheck::Mismatch;
+        return None;
     }
-    let expected = ((numerator + PER_MILLION - 1) / PER_MILLION).min(i128::from(freeze));
-    if i128::from(charged) == expected {
-        ChargeCheck::Recomputed
-    } else {
-        ChargeCheck::Mismatch
-    }
+    Some((numerator, charged, freeze))
 }
 
 #[cfg(test)]
@@ -273,6 +311,50 @@ mod tests {
         // And a wrong total is a mismatch, not a pass.
         let wrong = V3.replacen(r#""charged":250"#, r#""charged":300"#, 1);
         assert_eq!(verify_charge(&wrong), ChargeCheck::Mismatch);
+    }
+
+    /// The V3 turn at v4 with a 10% discount: the numerator scales by 90 before
+    /// the one ceiling — 249.6 × 0.9 = 224.64 → 225 (issue #158).
+    const V4: &str = r#"{"v":4,"request":"req-abc","channel":"deepseek","model":"deepseek-chat","priceVersion":4,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100,"cachedTokens":96,"reasoningTokens":20},"matchedRule":{"minInputTokens":100},"lines":[["input",20,1000000],["cache_read",96,100000],["output",80,2000000],["reasoning",20,3000000]],"discountPercent":10,"charged":225,"freeze":400}"#;
+
+    #[test]
+    fn a_genuine_v4_record_recomputes() {
+        assert_eq!(verify_charge(V4), ChargeCheck::Recomputed);
+        // The same turn without a discount is the v3 sum.
+        let plain = V4.replacen(r#""discountPercent":10,"#, "", 1).replacen(
+            r#""charged":225"#,
+            r#""charged":250"#,
+            1,
+        );
+        assert_eq!(verify_charge(&plain), ChargeCheck::Recomputed);
+        // A hundred-percent discount settles at zero — recorded, not unpriced.
+        let free = V4
+            .replacen(r#""discountPercent":10"#, r#""discountPercent":100"#, 1)
+            .replacen(r#""charged":225"#, r#""charged":0"#, 1);
+        assert_eq!(verify_charge(&free), ChargeCheck::Recomputed);
+    }
+
+    #[test]
+    fn a_v4_record_binds_the_discount() {
+        // The undiscounted total under a claimed discount is a mismatch.
+        let undiscounted = V4.replacen(r#""charged":225"#, r#""charged":250"#, 1);
+        assert_eq!(verify_charge(&undiscounted), ChargeCheck::Mismatch);
+        // And so is a percent the rule does not admit.
+        for percent in ["0", "101", "-5", "\"twenty\""] {
+            let bad = V4.replacen(
+                r#""discountPercent":10"#,
+                &format!("\"discountPercent\":{percent}"),
+                1,
+            );
+            assert_eq!(verify_charge(&bad), ChargeCheck::Mismatch, "{percent}");
+        }
+        // A discount never lifts the freeze cap: 1% off 249.6e6 → 248, still
+        // over a 240 freeze, so the freeze is what was charged.
+        let capped = V4
+            .replacen(r#""discountPercent":10"#, r#""discountPercent":1"#, 1)
+            .replacen(r#""charged":225"#, r#""charged":240"#, 1)
+            .replacen(r#""freeze":400"#, r#""freeze":240"#, 1);
+        assert_eq!(verify_charge(&capped), ChargeCheck::Recomputed);
     }
 
     #[test]

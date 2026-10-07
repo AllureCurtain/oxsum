@@ -15,10 +15,11 @@ use axum::extract::{Path, Query, Request, State};
 use axum::http::header::AUTHORIZATION;
 use axum::middleware::Next;
 use axum::response::Response;
-use axum::routing::{get, patch, post};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Router, middleware};
 use oxsum_core::{
-    Channel, InFlightHold, Kind, ModelPrice, Price, Reconciliation, Seal, SettlementKind,
+    Channel, Discount, InFlightHold, Kind, ModelPrice, NewDiscount, Price, Reconciliation, Seal,
+    SettlementKind, TierProfile,
 };
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq as _;
@@ -50,6 +51,10 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/margin", get(margin))
         .route("/reconciliation", get(reconciliation))
         .route("/redemption-codes", post(mint_codes))
+        .route("/tiers", get(tiers))
+        .route("/tiers/{tier}", put(set_tier).delete(delete_tier))
+        .route("/discounts", get(discounts).post(create_discount))
+        .route("/discounts/{discount_id}", delete(end_discount))
         .route("/closings", get(closings).post(close_month))
         .route("/statements", get(statements).post(generate_statements))
         .route("/statements/{statement_id}", get(statement))
@@ -197,6 +202,8 @@ struct OrganizationRes {
     credit_limit_minor: i64,
     /// The drawn plus reserved part of the credit line.
     credit_used_minor: i64,
+    /// The tier profile assigned — its limits gate admission (issue #158).
+    tier: Option<String>,
 }
 
 /// The organizations query string: the page size, and where the walk resumes — an
@@ -250,6 +257,7 @@ async fn organizations(
             reserved_minor: wallet.reserved().await?,
             credit_limit_minor: wallet.credit_limit().await?,
             credit_used_minor: wallet.credit_used().await?,
+            tier: organization.tier.clone(),
         });
     }
     ok(OrganizationsPageRes {
@@ -329,14 +337,31 @@ async fn adjust_organization(
 }
 
 /// The body of `PATCH …/organizations/{id}`: the billing terms to set — the credit
-/// line absolute, the payment-terms day count — and the idempotency key that makes
-/// a retried credit-limit change the same entry.
+/// line absolute, the payment-terms day count, the tier assignment — and the
+/// idempotency key that makes a retried credit-limit change the same entry.
+///
+/// `tier` is a double option: absent leaves the assignment alone, an explicit
+/// null clears it, a name assigns it.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct UpdateOrganizationReq {
     credit_limit_minor: Option<i64>,
     payment_terms_days: Option<i32>,
+    #[serde(default, deserialize_with = "double_option")]
+    tier: Option<Option<String>>,
     idempotency_key: String,
+}
+
+/// Peels one option layer serde does not: a bare `Option<Option<T>>` field
+/// answers `None` for both an absent field and an explicit `null`, while the
+/// PATCH needs `null` to mean "clear the tier". With `default` covering the
+/// absent case, a present field always yields `Some(…)` — `Some(None)` when
+/// it was `null`.
+fn double_option<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
 }
 
 /// The billing terms as they stand after the write, as the endpoint answers it.
@@ -352,6 +377,8 @@ struct BillingTermsRes {
     credit_used_minor: i64,
     /// Days a finalized statement's payment has before it falls due.
     payment_terms_days: i32,
+    /// The tier profile the organization is assigned to; `None` when none.
+    tier: Option<String>,
     /// The organization's spendable balance after the change, own funds plus
     /// undrawn credit.
     available_minor: i64,
@@ -372,14 +399,23 @@ async fn update_organization(
     Path(organization_id): Path<Uuid>,
     ApiJson(request): ApiJson<UpdateOrganizationReq>,
 ) -> ApiResult<BillingTermsRes> {
-    if request.credit_limit_minor.is_none() && request.payment_terms_days.is_none() {
+    if request.credit_limit_minor.is_none()
+        && request.payment_terms_days.is_none()
+        && request.tier.is_none()
+    {
         return Err(ApiError::Validation(
-            "at least one of creditLimitMinor and paymentTermsDays must be present".into(),
+            "at least one of creditLimitMinor, paymentTermsDays and tier must be present".into(),
         ));
     }
     let organization = state.db.organization_by_id(organization_id).await?;
     if let Some(days) = request.payment_terms_days {
         state.db.set_payment_terms(organization_id, days).await?;
+    }
+    if let Some(tier) = request.tier {
+        state
+            .db
+            .set_organization_tier(organization_id, tier.as_deref())
+            .await?;
     }
     let wallet = state.tenants.get(&organization.tenant_id).await?;
     let receipt = match request.credit_limit_minor {
@@ -390,18 +426,116 @@ async fn update_organization(
         }
         None => None,
     };
+    let updated = state.db.organization_by_id(organization_id).await?;
     ok(BillingTermsRes {
         entry_id: receipt.map(|r| r.entry_id.to_string()),
         organization_id,
         credit_limit_minor: wallet.credit_limit().await?,
         credit_used_minor: wallet.credit_used().await?,
-        payment_terms_days: state
-            .db
-            .organization_by_id(organization_id)
-            .await?
-            .payment_terms_days,
+        payment_terms_days: updated.payment_terms_days,
+        tier: updated.tier,
         available_minor: wallet.available().await?,
     })
+}
+
+/// The body of `PUT …/tiers/{tier}`: the whole capability package — the write
+/// replaces, so an absent field clears its old value rather than keeping it.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SetTierReq {
+    requests_per_minute: Option<i32>,
+    model_allowlist: Option<Vec<String>>,
+}
+
+/// Every tier profile, with the count of organizations assigned to it.
+async fn tiers(State(state): State<AppState>) -> ApiResult<Vec<TierProfile>> {
+    ok(state.db.tiers().await?)
+}
+
+/// Creates or replaces a tier profile. A `PUT` by name is naturally
+/// idempotent: replaying the same body writes the same package, so the
+/// request carries no idempotency key.
+async fn set_tier(
+    State(state): State<AppState>,
+    Path(tier): Path<String>,
+    ApiJson(request): ApiJson<SetTierReq>,
+) -> ApiResult<TierProfile> {
+    ok(state
+        .db
+        .set_tier(&tier, request.requests_per_minute, request.model_allowlist)
+        .await?)
+}
+
+/// Retires a tier profile. A tier organizations are still assigned to refuses —
+/// a deleted package never silently uncaps its members.
+async fn delete_tier(
+    State(state): State<AppState>,
+    Path(tier): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    state
+        .db
+        .delete_tier(&tier)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    ok(serde_json::json!({}))
+}
+
+/// The body of `POST …/discounts`: scope, percent, window, label — and the
+/// idempotency key that makes a retry the same row.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CreateDiscountReq {
+    percent: i32,
+    organization_id: Option<Uuid>,
+    model: Option<String>,
+    label: Option<String>,
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    valid_from: Option<OffsetDateTime>,
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    valid_until: Option<OffsetDateTime>,
+    idempotency_key: String,
+}
+
+/// Every discount, newest first, ended or not — the history a settled bill's
+/// `discountPercent` points back at.
+async fn discounts(State(state): State<AppState>) -> ApiResult<Vec<Discount>> {
+    ok(state.db.discounts().await?)
+}
+
+/// Creates a discount: the percent off the priced sum that matching turns
+/// settle at, snapshotted into the settlement description when it applies.
+/// The idempotency key's replay answers the row it created; under different
+/// fields it is a conflict.
+async fn create_discount(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<CreateDiscountReq>,
+) -> ApiResult<Discount> {
+    ok(state
+        .db
+        .create_discount(
+            &request.idempotency_key,
+            &NewDiscount {
+                percent: request.percent,
+                organization_id: request.organization_id,
+                model: request.model,
+                label: request.label,
+                valid_from: request.valid_from,
+                valid_until: request.valid_until,
+            },
+        )
+        .await?)
+}
+
+/// Ends a discount early: turns starting after the call no longer qualify, and
+/// the row stays in the list — the history a settled bill cites.
+async fn end_discount(
+    State(state): State<AppState>,
+    Path(discount_id): Path<Uuid>,
+) -> ApiResult<Discount> {
+    match state.db.end_discount(discount_id).await? {
+        Some(discount) => ok(discount),
+        None => Err(ApiError::not_found()),
+    }
 }
 
 /// The body of `POST …/password-reset`: the replacement password. The same

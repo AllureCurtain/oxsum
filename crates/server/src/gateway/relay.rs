@@ -90,6 +90,11 @@ struct Plan {
     model: String,
     price: Price,
     freeze: i64,
+    /// The discount the organization qualified for when the turn started
+    /// (issue #158): snapshotted like the price version, applied to the priced
+    /// sum before the freeze cap, and written into the settlement description
+    /// so the charge recomputes after the row has changed.
+    discount_percent: Option<i64>,
     /// The key that took the hold: what the usage row records as its payer.
     key_id: uuid::Uuid,
     /// The caller's attribution on the turn, merged into the settled usage record.
@@ -181,6 +186,7 @@ impl Turn {
         model: &str,
         serving: &Serving,
         freeze: i64,
+        discount_percent: Option<i64>,
         texts: Vec<String>,
         tenant_id: &str,
         billing: broadcast::Sender<BillingEvent>,
@@ -204,6 +210,7 @@ impl Turn {
                 model: model.to_owned(),
                 price: serving.price.clone(),
                 freeze,
+                discount_percent,
                 key_id,
                 attribution,
                 adapter,
@@ -381,7 +388,14 @@ impl Plan {
             SettlementKind::UpstreamError | SettlementKind::UpstreamUnreachable
         );
         let itemized = self.price.itemize(&usage, billable)?;
-        let cost = itemized.total_minor()?;
+        // The single most favorable discount the turn's organization qualified
+        // for, applied after the gross lines — never stacked (docs/decisions.md).
+        // The freeze stays the undiscounted bound: `cost.min(freeze)` below
+        // holds under it.
+        let cost = match self.discount_percent {
+            Some(percent) => itemized.discounted_minor(percent)?,
+            None => itemized.total_minor()?,
+        };
         // Fail closed on what the price book cannot cover: a usage report naming a
         // dimension outside every price set settles for the computable part and is
         // recorded `unpriced` — the anomaly the admin page reviews — never billed at
@@ -405,6 +419,7 @@ impl Plan {
             usage: &usage,
             lines: &itemized.lines,
             matched_rule: itemized.matched_rule.as_ref(),
+            discount_percent: self.discount_percent,
             charged,
             freeze: self.freeze,
         };
