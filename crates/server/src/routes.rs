@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::header::SET_COOKIE;
 use axum::http::{HeaderMap, HeaderValue};
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router, middleware};
 use oxsum_core::{
@@ -76,6 +76,14 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/register", post(register))
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
+        // OAuth is a browser redirect, not a JSON endpoint: the provider sends
+        // the browser here, so both answers are `Location` headers, and every
+        // failure lands back on /login rather than on an error body.
+        .route("/auth/oauth/github", get(oauth_github))
+        .route("/auth/oauth/github/callback", get(oauth_github_callback))
+        // Which login methods the deployment offers: the login page's only
+        // unauthenticated read, so it knows whether to draw the GitHub button.
+        .route("/auth/methods", get(auth_methods))
         // The email flows: verification consumes a mailed token, and the reset
         // pair is open by design — the token is the credential.
         .route("/auth/verify", post(verify_email))
@@ -407,6 +415,108 @@ fn clear_session_cookie(secure: bool) -> String {
         cookie.push_str("; Secure");
     }
     cookie
+}
+
+/// What `GET /api/v1/auth/methods` answers (issue #152).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthMethods {
+    oauth_github: bool,
+}
+
+/// The login page's discovery read: no credential, because it runs before the
+/// user has one to present.
+async fn auth_methods(State(state): State<AppState>) -> Json<Data<AuthMethods>> {
+    Json(Data {
+        data: AuthMethods {
+            oauth_github: state.config.github().is_some(),
+        },
+    })
+}
+
+/// Starts a GitHub OAuth login (issue #152): mints the single-use CSRF state
+/// and answers `303` to the provider's authorize page. A deployment without
+/// the provider pair configured answers 404 — the login page draws no button
+/// for it either, so this is the path a hand-typed URL takes.
+async fn oauth_github(State(state): State<AppState>) -> Result<Response, ApiError> {
+    let Some(github) = state.config.github() else {
+        return Err(ApiError::NotFound("not found".into()));
+    };
+    let oauth_state = state.db.mint_oauth_state(crate::oauth::PROVIDER).await?;
+    Ok(Redirect::to(&github.authorize_url(&oauth_state)).into_response())
+}
+
+/// What the provider's redirect carries: `code` and `state` on success,
+/// `error` when it refuses (the user declined, the app was mis-registered).
+#[derive(Deserialize)]
+struct OAuthCallbackQuery {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+}
+
+/// Finishes a GitHub OAuth login. The caller is a browser mid-redirect, so the
+/// answer is always a `Location` — `/dashboard` with the session cookie on
+/// success, `/login?error=oauth` on any failure; the detail goes to the logs,
+/// never to the query string the page would show.
+async fn oauth_github_callback(
+    State(state): State<AppState>,
+    Query(query): Query<OAuthCallbackQuery>,
+) -> Response {
+    match oauth_github_finish(&state, &query).await {
+        Ok(response) => response,
+        Err(why) => {
+            tracing::warn!(error = %why, "github oauth login failed");
+            Redirect::to("/login?error=oauth").into_response()
+        }
+    }
+}
+
+/// The callback's legs, each one a possible refusal: the provider's own
+/// `error`, a spent or expired state, the token exchange, the verified-email
+/// requirement, and the account resolution — which itself refuses when the
+/// deployment registers by invitation only and the identity is new.
+async fn oauth_github_finish(
+    state: &AppState,
+    query: &OAuthCallbackQuery,
+) -> Result<Response, String> {
+    let Some(github) = state.config.github() else {
+        return Err("provider not configured".to_owned());
+    };
+    if let Some(error) = &query.error {
+        return Err(format!("provider refused: {error}"));
+    }
+    let (Some(code), Some(oauth_state)) = (&query.code, &query.state) else {
+        return Err("callback carried no code or state".to_owned());
+    };
+    let spent = state
+        .db
+        .consume_oauth_state(oauth_state, crate::oauth::PROVIDER)
+        .await
+        .map_err(|e| e.to_string())?;
+    if !spent {
+        return Err("unknown, spent or expired state".to_owned());
+    }
+    let token = github.exchange(&state.http, code).await.map_err(|e| e.0)?;
+    let identity = github
+        .identity(&state.http, &token)
+        .await
+        .map_err(|e| e.0)?;
+    let created = state
+        .db
+        .oauth_login(&identity, state.config.signup() == Signup::Open)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut response = Redirect::to("/dashboard").into_response();
+    response.headers_mut().insert(
+        SET_COOKIE,
+        HeaderValue::from_str(&session_cookie(
+            &created.token,
+            state.config.session_cookie_secure(),
+        ))
+        .map_err(|_| "cookie header rejected the token".to_owned())?,
+    );
+    Ok(response)
 }
 
 /// The current session: who is logged in, as which organization, in which role.

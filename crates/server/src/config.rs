@@ -147,6 +147,7 @@ pub struct Config {
     session_cookie_secure: bool,
     signup_bonus_minor: i64,
     mailer: Option<crate::mail::Mailer>,
+    github: Option<crate::oauth::GitHub>,
 }
 
 impl Config {
@@ -162,7 +163,18 @@ impl Config {
             session_cookie_secure: false,
             signup_bonus_minor: 0,
             mailer: None,
+            github: None,
         }
+    }
+
+    /// Sets the GitHub OAuth client. Tests use this; the server reads
+    /// `OXSUM_GITHUB_CLIENT_ID`, `OXSUM_GITHUB_CLIENT_SECRET` and
+    /// `OXSUM_PUBLIC_URL` together — a subset is a startup error, because a
+    /// half-configured provider only fails inside a callback.
+    #[must_use]
+    pub fn with_github(mut self, github: crate::oauth::GitHub) -> Self {
+        self.github = Some(github);
+        self
     }
 
     /// Sets the mailer. Tests use this; the server reads `OXSUM_SMTP_URL`,
@@ -243,6 +255,7 @@ impl Config {
             .transpose()?
             .unwrap_or(0);
         let mailer = mailer_of()?;
+        let github = github_of()?;
         Ok(Self {
             signup,
             gateway: Gateway::from_env()?,
@@ -253,6 +266,7 @@ impl Config {
             session_cookie_secure,
             signup_bonus_minor,
             mailer,
+            github,
         })
     }
 
@@ -280,6 +294,14 @@ impl Config {
     #[must_use]
     pub fn mailer(&self) -> Option<&crate::mail::Mailer> {
         self.mailer.as_ref()
+    }
+
+    /// The GitHub OAuth client, or `None` when the provider pair is not
+    /// configured — in which case the start endpoint answers 404 and the
+    /// callback redirects home, and the login page draws no GitHub button.
+    #[must_use]
+    pub fn github(&self) -> Option<&crate::oauth::GitHub> {
+        self.github.as_ref()
     }
 
     /// The operator token, or `None` when the admin surface is closed.
@@ -434,6 +456,41 @@ fn mailer_of() -> Result<Option<crate::mail::Mailer>, String> {
         }
     };
     crate::mail::Mailer::new(&smtp_url, &from, &public_url).map(Some)
+}
+
+/// Parses the GitHub OAuth configuration: `OXSUM_GITHUB_CLIENT_ID`,
+/// `OXSUM_GITHUB_CLIENT_SECRET` and `OXSUM_PUBLIC_URL` — the client pair set
+/// together, and the public origin the callback URL is built from required
+/// alongside, because a pair without it can only fail inside the callback.
+/// `OXSUM_GITHUB_WEB_URL` and `OXSUM_GITHUB_API_URL` override the provider's
+/// base URLs; nothing but a test points them anywhere else.
+fn github_of() -> Result<Option<crate::oauth::GitHub>, String> {
+    let client_id = var("OXSUM_GITHUB_CLIENT_ID");
+    let client_secret = var("OXSUM_GITHUB_CLIENT_SECRET");
+    if client_id.is_none() && client_secret.is_none() {
+        return Ok(None);
+    }
+    let public_url = var("OXSUM_PUBLIC_URL");
+    let (client_id, client_secret, public_url) = match (client_id, client_secret, public_url) {
+        (Some(i), Some(s), Some(p)) => (i, s, p),
+        _ => {
+            return Err(
+                "OXSUM_GITHUB_CLIENT_ID and OXSUM_GITHUB_CLIENT_SECRET are set together, \
+                 and both require OXSUM_PUBLIC_URL"
+                    .into(),
+            );
+        }
+    };
+    let web_url = var("OXSUM_GITHUB_WEB_URL").unwrap_or_else(|| "https://github.com".to_owned());
+    let api_url =
+        var("OXSUM_GITHUB_API_URL").unwrap_or_else(|| "https://api.github.com".to_owned());
+    Ok(Some(crate::oauth::GitHub::new(
+        client_id,
+        client_secret,
+        public_url,
+        web_url,
+        api_url,
+    )))
 }
 
 #[cfg(test)]
