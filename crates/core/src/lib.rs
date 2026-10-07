@@ -44,7 +44,10 @@ pub use heads::{
     Consistency, HeadSigningKey, KeyPublication, SignedHead, origin_for, seed_from_base64,
     sign_head, signing_key,
 };
-pub use holds::{DEFAULT_HOLD_TIMEOUT, InFlightHold, OpenHold, SWEEP_INTERVAL, sweep_stale_holds};
+pub use holds::{
+    DEAD_AFTER_SWEEP_ATTEMPTS, DEFAULT_HOLD_TIMEOUT, InFlightHold, OpenHold, SWEEP_INTERVAL,
+    SweepReport, sweep_stale_holds,
+};
 pub use idempotency::{Claim, fingerprint};
 pub use invitations::CreatedInvitation;
 pub use keys::{ActingKey, ApiKey, BudgetDuration, CreatedApiKey, KeyConstraints};

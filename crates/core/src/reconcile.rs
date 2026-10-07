@@ -15,7 +15,7 @@
 //! margin view carries `untrackedTurns`: no upstream rail exposes a bill to check
 //! — `upstream_cost_minor` stays the estimate.
 //!
-//! The eight classes, as [`DriftKind`] names them:
+//! The nine classes, as [`DriftKind`] names them:
 //!
 //! - `UsageOrphans` — a usage row whose settlement entry is not on the books
 //!   (including rows naming a tenant whose ledger does not exist)
@@ -33,6 +33,8 @@
 //!   in the ledger (a stale row the sweeper will keep tripping over)
 //! - `HoldsUnwatched` — a live pending `req-*:hold` with no watch row:
 //!   invisible to the sweeper, so the freeze can never be collected
+//! - `HoldsDeadLettered` — a watch row whose settlement failed ten sweeps:
+//!   the freeze is stuck, the row retries hourly, and it needs an operator
 //! - `LogGaps` — a log whose `log_index` positions are not dense from zero, or
 //!   entries still unsequenced past the grace window
 
@@ -60,11 +62,12 @@ pub enum DriftKind {
     DepositsStuck,
     WatchesOrphaned,
     HoldsUnwatched,
+    HoldsDeadLettered,
     LogGaps,
 }
 
 /// The classes, in the fixed order the report answers them.
-const DRIFT_KINDS: [DriftKind; 8] = [
+const DRIFT_KINDS: [DriftKind; 9] = [
     DriftKind::UsageOrphans,
     DriftKind::SettlementsUnrecorded,
     DriftKind::DepositsUnbooked,
@@ -72,6 +75,7 @@ const DRIFT_KINDS: [DriftKind; 8] = [
     DriftKind::DepositsStuck,
     DriftKind::WatchesOrphaned,
     DriftKind::HoldsUnwatched,
+    DriftKind::HoldsDeadLettered,
     DriftKind::LogGaps,
 ];
 
@@ -223,10 +227,11 @@ impl Db {
             }
         }
 
-        // The deposit classes that need no ledger read run once across all rows.
+        // The classes that need no ledger read run once across all rows.
         self.deposits_unbooked(&tenants, &mut classes).await?;
         self.deposits_mismatched(&mut classes).await?;
         self.deposits_stuck(&mut classes).await?;
+        self.holds_dead_lettered(&mut classes).await?;
 
         let classes = classes.0;
         let clean = classes.iter().all(|class| class.count == 0);
@@ -545,6 +550,40 @@ impl Db {
         }
         for row in &rows {
             let class = classes.class(DriftKind::DepositsStuck);
+            if class.samples.len() >= SAMPLE_LIMIT as usize {
+                break;
+            }
+            class.samples.push(DriftSample {
+                organization: row.try_get("organization")?,
+                detail: row.try_get("detail")?,
+            });
+        }
+        Ok(())
+    }
+
+    /// Dead-lettered holds: watch rows whose sweep failed ten times. The sample
+    /// carries the hold key with the error that killed it, because the failure
+    /// mode is the first thing an operator asks. A row whose organization is
+    /// gone still reports under its raw tenant id.
+    async fn holds_dead_lettered(&self, classes: &mut Classes) -> Result<(), WalletError> {
+        let rows = sqlx::query(
+            "SELECT coalesce(o.name, h.tenant_id) AS organization, \
+                    h.hold_key || ' — ' || coalesce(h.last_error, 'no error recorded') AS detail, \
+                    count(*) OVER() AS total \
+             FROM oxsum.open_holds h \
+             LEFT JOIN oxsum.organizations o ON o.tenant_id = h.tenant_id \
+             WHERE h.dead_at IS NOT NULL \
+             ORDER BY h.dead_at DESC LIMIT $1",
+        )
+        .bind(SAMPLE_LIMIT)
+        .fetch_all(self.pool())
+        .await?;
+        if let Some(first) = rows.first() {
+            classes.class(DriftKind::HoldsDeadLettered).count +=
+                first.try_get::<i64, _>("total")?;
+        }
+        for row in &rows {
+            let class = classes.class(DriftKind::HoldsDeadLettered);
             if class.samples.len() >= SAMPLE_LIMIT as usize {
                 break;
             }
