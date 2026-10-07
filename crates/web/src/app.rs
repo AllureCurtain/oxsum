@@ -1764,12 +1764,14 @@ fn UsagePage() -> impl IntoView {
         <section class="card" aria-label="Usage">
             <h1>"Usage"</h1>
             <p class="muted">
-                "This organization's settled usage over the last 30 days, by ledger booking date: the chart sums each day's charge in credits (1 credit = 1,000,000), the table sums the window by channel and model. Members see their own keys' usage plus the organization's shared rows."
+                "This organization's settled usage over the last 30 days, by ledger booking date: the chart sums each day's charge in credits (1 credit = 1,000,000), the token mix splits the billed volume into input, cached read, output and reasoning, and the tables sum the window by key and by channel and model. Members see their own keys' usage plus the organization's shared rows."
             </p>
             <Suspense fallback=move || view! { <p class="muted">"Loading…"</p> }>
                 {move || usage.get().map(|result| match result {
                     Ok(usage) => view! {
                         <UsageChart days=usage.days.clone() rows=usage.rows.clone()/>
+                        <UsageTokenMix rows=usage.rows.clone()/>
+                        <UsageKeysTable rows=usage.rows.clone()/>
                         <UsageTable rows=usage.rows/>
                     }
                         .into_any(),
@@ -1886,6 +1888,170 @@ fn UsageTable(rows: Vec<UsageDayView>) -> impl IntoView {
                                 <td class="num">{row.cached_tokens}</td>
                                 <td class="num">{row.output_tokens}</td>
                                 <td class="num">{row.reasoning_tokens}</td>
+                                <td class="num mono">{credits(row.charged_minor)}</td>
+                            </tr>
+                        </For>
+                    }
+                        .into_any()
+                }}
+            </tbody>
+        </table>
+    }
+}
+
+/// The window's token mix: what share of the billed volume was fresh input,
+/// cached reads, output and reasoning — a stacked bar beside its own numbers,
+/// so the split is readable without the colour (issue #148).
+#[component]
+fn UsageTokenMix(rows: Vec<UsageDayView>) -> impl IntoView {
+    let (mut input, mut cached, mut output, mut reasoning) = (0_i64, 0_i64, 0_i64, 0_i64);
+    for row in &rows {
+        input += row.input_tokens;
+        cached += row.cached_tokens;
+        output += row.output_tokens;
+        reasoning += row.reasoning_tokens;
+    }
+    // Cached input is a subset of the input total, so the mix shows the
+    // non-cached share — four disjoint parts that sum to the billed volume.
+    let fresh = input - cached;
+    let total = (fresh + cached + output + reasoning).max(1);
+    let segments = [
+        ("Input", fresh, "mix-input"),
+        ("Cached read", cached, "mix-cached"),
+        ("Output", output, "mix-output"),
+        ("Reasoning", reasoning, "mix-reasoning"),
+    ];
+    // Cumulative rounding: each width is the share's running-total difference, so
+    // the four always fill the bar to exactly 100% and no segment is more than a
+    // rounding step off.
+    let mut cumulative = 0_i64;
+    let bars: Vec<(&str, i64, &str, u64)> = segments
+        .iter()
+        .map(|(name, count, class)| {
+            let before = cumulative * 100 / total;
+            cumulative += count;
+            let width = (cumulative * 100 / total - before) as u64;
+            (*name, *count, *class, width)
+        })
+        .collect();
+    view! {
+        <h2>"Token mix"</h2>
+        {if rows.is_empty() {
+            view! { <p class="muted">"No usage in the last 30 days."</p> }.into_any()
+        } else {
+            view! {
+                <div
+                    class="token-mix"
+                    role="img"
+                    aria-label="Token mix over the last 30 days"
+                >
+                    {bars
+                        .iter()
+                        .map(|(name, count, class, width)| {
+                            view! {
+                                <div
+                                    class=format!("segment {class}")
+                                    style=format!("width:{width}%")
+                                    title=format!("{name}: {count} tokens")
+                                >
+                                    <span class="visually-hidden">
+                                        {format!("{name}: {count} tokens")}
+                                    </span>
+                                </div>
+                            }
+                        })
+                        .collect::<Vec<_>>()}
+                </div>
+                <ul class="token-mix-legend">
+                    {segments
+                        .iter()
+                        .map(|(name, count, class)| {
+                            let share = *count * 100 / total;
+                            view! {
+                                <li>
+                                    <span class=format!("swatch {class}")></span>
+                                    {format!("{name}: {count} tokens ({share}%)")}
+                                </li>
+                            }
+                        })
+                        .collect::<Vec<_>>()}
+                </ul>
+            }
+                .into_any()
+        }}
+    }
+}
+
+/// The window's rollup by key: the same per-bucket sums the model table shows,
+/// grouped by the key that paid so an owner sees which key spends. Shared
+/// unattributed usage is a row of its own — it is nobody's key (issue #148).
+#[component]
+fn UsageKeysTable(rows: Vec<UsageDayView>) -> impl IntoView {
+    #[derive(Clone)]
+    struct KeySum {
+        id: String,
+        label: String,
+        turns: i64,
+        input: i64,
+        output: i64,
+        charged_minor: i64,
+    }
+    let mut by_key: std::collections::BTreeMap<String, KeySum> = Default::default();
+    for row in &rows {
+        let id = row.key_id.clone().unwrap_or_default();
+        let entry = by_key.entry(id.clone()).or_insert_with(|| KeySum {
+            id,
+            label: row
+                .key_label
+                .clone()
+                .unwrap_or_else(|| "Shared (no key)".to_owned()),
+            turns: 0,
+            input: 0,
+            output: 0,
+            charged_minor: 0,
+        });
+        entry.turns += row.turns;
+        entry.input += row.input_tokens;
+        entry.output += row.output_tokens;
+        entry.charged_minor += row.charged_minor;
+    }
+    // The table answers "which key spends most", so it sorts by charge, not name.
+    let mut rows: Vec<KeySum> = by_key.into_values().collect();
+    rows.sort_by_key(|sum| std::cmp::Reverse(sum.charged_minor));
+    view! {
+        <h2>"By key"</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th scope="col">"Key"</th>
+                    <th scope="col" class="num">"Turns"</th>
+                    <th scope="col" class="num">"Input tokens"</th>
+                    <th scope="col" class="num">"Output tokens"</th>
+                    <th scope="col" class="num">"Cost (credits)"</th>
+                </tr>
+            </thead>
+            <tbody>
+                {if rows.is_empty() {
+                    view! {
+                        <tr>
+                            <td colspan="5" class="muted">
+                                "No usage in the last 30 days."
+                            </td>
+                        </tr>
+                    }
+                        .into_any()
+                } else {
+                    view! {
+                        <For
+                            each=move || rows.clone()
+                            key=|row| row.id.clone()
+                            let(row)
+                        >
+                            <tr>
+                                <td>{row.label.clone()}</td>
+                                <td class="num">{row.turns}</td>
+                                <td class="num">{row.input}</td>
+                                <td class="num">{row.output}</td>
                                 <td class="num mono">{credits(row.charged_minor)}</td>
                             </tr>
                         </For>
