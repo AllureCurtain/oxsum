@@ -218,7 +218,7 @@ settlement yourself. Both are billed the same way.
 
 ### Through the gateway (recommended)
 
-Purpose: point an OpenAI client at oxsum and have every turn frozen and charged for you.
+Purpose: point an OpenAI or Anthropic client at oxsum and have every turn frozen and charged for you.
 
 Steps:
 
@@ -234,6 +234,25 @@ Steps:
        max_tokens=200,
    )
    ```
+
+   Or Anthropic's SDK — `POST /v1/messages` speaks Anthropic's Messages format,
+   served by the channels whose protocol is `anthropic`:
+
+   ```python
+   from anthropic import Anthropic
+
+   client = Anthropic(base_url="http://127.0.0.1:3000", api_key="oxs-…")
+   answer = client.messages.create(
+       model="claude-sonnet",
+       max_tokens=200,
+       messages=[{"role": "user", "content": "Explain holds in one sentence."}],
+   )
+   ```
+
+   Each surface serves only the channels that speak its protocol: a model behind an
+   `openai` channel is not served on `/v1/messages`, and the reverse — there is no
+   translation between the two. Errors come back in the surface's own envelope, and
+   the oxsum key travels as `x-api-key`, exactly as the SDK sends it.
 
 2. Every response carries an `x-oxsum-request-id` header. That id is how the turn is found in the
    ledger: its entries are keyed `req-<id>:hold` and the settlement derived from it
