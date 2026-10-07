@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.37.0
+  version: 0.38.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -174,6 +174,15 @@ info:
     JSON: a failure answers `303` back to `/login`, not an error body. The same
     release adds `GET /api/v1/auth/methods`, the unauthenticated discovery the
     login page reads to know which buttons to draw.
+    0.38.0 adds the env-gated anti-bot check (Cloudflare Turnstile) on the two
+    public account-creation surfaces: `POST /api/v1/auth/register` and
+    `POST /api/v1/invitations/redeem` accept an optional `turnstileToken`,
+    required whenever `OXSUM_TURNSTILE_SITE_KEY`/`OXSUM_TURNSTILE_SECRET_KEY`
+    are configured — a missing token or a `success: false` siteverify answers
+    `FORBIDDEN`, and a siteverify that cannot be reached answers
+    `SERVICE_UNAVAILABLE`, because the check never fails open.
+    `GET /api/v1/auth/methods` gains `turnstileSiteKey` — the site key is
+    public by design, it is what the page hands the widget.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie, except
     `/api/v1/auth/login`, `/api/v1/auth/logout` and `/api/v1/auth/register`, which take no
@@ -2462,6 +2471,7 @@ components:
         token: { type: string, description: "the invitation link's token" }
         email: { type: string, maxLength: 320 }
         password: { type: string, minLength: 12, maxLength: 256 }
+        turnstileToken: { type: [string, "null"], description: "the widget's response token — required when the deployment configures the anti-bot check" }
     RegisterRequest:
       type: object
       required: [email, password]
@@ -2469,6 +2479,7 @@ components:
         email: { type: string, format: email, maxLength: 320 }
         password: { type: string, minLength: 12, maxLength: 256, description: at least 12 characters }
         organizationName: { type: string, minLength: 1, maxLength: 80, description: name of the personal organization; defaults to the local part of the email }
+        turnstileToken: { type: [string, "null"], description: "the widget's response token — required when the deployment configures the anti-bot check" }
     Registration:
       type: object
       required: [user, organization, apiKey, verificationSent]
@@ -2560,6 +2571,7 @@ components:
       required: [oauthGithub]
       properties:
         oauthGithub: { type: boolean, description: "true when the GitHub OAuth client pair is configured" }
+        turnstileSiteKey: { type: [string, "null"], description: "the Turnstile site key when the anti-bot check is configured — public by design, the page hands it to the widget" }
     Organization:
       type: object
       required: [id, name, tenantId, kind, createdAt]

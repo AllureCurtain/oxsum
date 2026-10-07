@@ -148,6 +148,7 @@ pub struct Config {
     signup_bonus_minor: i64,
     mailer: Option<crate::mail::Mailer>,
     github: Option<crate::oauth::GitHub>,
+    turnstile: Option<crate::antibot::Turnstile>,
 }
 
 impl Config {
@@ -164,7 +165,18 @@ impl Config {
             signup_bonus_minor: 0,
             mailer: None,
             github: None,
+            turnstile: None,
         }
+    }
+
+    /// Sets the anti-bot check. Tests use this; the server reads
+    /// `OXSUM_TURNSTILE_SITE_KEY` and `OXSUM_TURNSTILE_SECRET_KEY` together —
+    /// a lone key is a startup error, because a half-configured check only
+    /// fails inside a registration.
+    #[must_use]
+    pub fn with_turnstile(mut self, turnstile: crate::antibot::Turnstile) -> Self {
+        self.turnstile = Some(turnstile);
+        self
     }
 
     /// Sets the GitHub OAuth client. Tests use this; the server reads
@@ -256,6 +268,7 @@ impl Config {
             .unwrap_or(0);
         let mailer = mailer_of()?;
         let github = github_of()?;
+        let turnstile = turnstile_of()?;
         Ok(Self {
             signup,
             gateway: Gateway::from_env()?,
@@ -267,6 +280,7 @@ impl Config {
             signup_bonus_minor,
             mailer,
             github,
+            turnstile,
         })
     }
 
@@ -302,6 +316,14 @@ impl Config {
     #[must_use]
     pub fn github(&self) -> Option<&crate::oauth::GitHub> {
         self.github.as_ref()
+    }
+
+    /// The anti-bot check, or `None` when the pair is not configured — the
+    /// two registration surfaces then run unchecked, exactly as before the
+    /// check existed.
+    #[must_use]
+    pub fn turnstile(&self) -> Option<&crate::antibot::Turnstile> {
+        self.turnstile.as_ref()
     }
 
     /// The operator token, or `None` when the admin surface is closed.
@@ -490,6 +512,31 @@ fn github_of() -> Result<Option<crate::oauth::GitHub>, String> {
         public_url,
         web_url,
         api_url,
+    )))
+}
+
+/// Parses the Turnstile pair: `OXSUM_TURNSTILE_SITE_KEY` and
+/// `OXSUM_TURNSTILE_SECRET_KEY` together or not at all — a lone key is a
+/// startup error, because a half-configured check only fails inside a
+/// registration. `OXSUM_TURNSTILE_VERIFY_URL` overrides the siteverify
+/// endpoint; nothing but a test points it anywhere else.
+fn turnstile_of() -> Result<Option<crate::antibot::Turnstile>, String> {
+    let site_key = var("OXSUM_TURNSTILE_SITE_KEY");
+    let secret_key = var("OXSUM_TURNSTILE_SECRET_KEY");
+    if site_key.is_none() && secret_key.is_none() {
+        return Ok(None);
+    }
+    let (Some(site_key), Some(secret_key)) = (site_key, secret_key) else {
+        return Err(
+            "OXSUM_TURNSTILE_SITE_KEY and OXSUM_TURNSTILE_SECRET_KEY are set together, \
+             or neither"
+                .into(),
+        );
+    };
+    let verify_url = var("OXSUM_TURNSTILE_VERIFY_URL")
+        .unwrap_or_else(|| "https://challenges.cloudflare.com/turnstile/v0/siteverify".to_owned());
+    Ok(Some(crate::antibot::Turnstile::new(
+        site_key, secret_key, verify_url,
     )))
 }
 

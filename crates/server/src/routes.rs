@@ -154,6 +154,9 @@ struct RegisterReq {
     email: String,
     password: String,
     organization_name: Option<String>,
+    /// The Turnstile widget's answer — required when the deployment configures
+    /// the anti-bot check, ignored when it does not (issue #154).
+    turnstile_token: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -296,6 +299,7 @@ async fn register(
             "this deployment registers by invitation only".into(),
         ));
     }
+    require_bot_check(&state, r.turnstile_token.as_deref()).await?;
     let mut registration = state
         .db
         .register(NewUser {
@@ -422,6 +426,7 @@ fn clear_session_cookie(secure: bool) -> String {
 #[serde(rename_all = "camelCase")]
 struct AuthMethods {
     oauth_github: bool,
+    turnstile_site_key: Option<String>,
 }
 
 /// The login page's discovery read: no credential, because it runs before the
@@ -430,8 +435,34 @@ async fn auth_methods(State(state): State<AppState>) -> Json<Data<AuthMethods>> 
     Json(Data {
         data: AuthMethods {
             oauth_github: state.config.github().is_some(),
+            turnstile_site_key: state.config.turnstile().map(|t| t.site_key().to_owned()),
         },
     })
+}
+
+/// The env-gated anti-bot check both account-creation endpoints run (issue
+/// #154). Unconfigured, it is a no-op; configured, a missing answer or a
+/// `success: false` verdict is `FORBIDDEN`, and a verifier that cannot be
+/// reached is `SERVICE_UNAVAILABLE` — the check never fails open.
+async fn require_bot_check(state: &AppState, token: Option<&str>) -> Result<(), ApiError> {
+    let Some(turnstile) = state.config.turnstile() else {
+        return Ok(());
+    };
+    let Some(token) = token.filter(|t| !t.is_empty()) else {
+        return Err(ApiError::Forbidden("the anti-bot check is required".into()));
+    };
+    match turnstile.verify(&state.http, token).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(ApiError::Forbidden(
+            "the anti-bot check did not pass".into(),
+        )),
+        Err(why) => {
+            tracing::warn!(error = %why.0, "the anti-bot verifier could not be reached");
+            Err(ApiError::ServiceUnavailable(
+                "the anti-bot check could not be reached".into(),
+            ))
+        }
+    }
 }
 
 /// Starts a GitHub OAuth login (issue #152): mints the single-use CSRF state
@@ -614,6 +645,9 @@ struct RedeemReq {
     token: String,
     email: String,
     password: String,
+    /// The Turnstile widget's answer — required when the deployment configures
+    /// the anti-bot check, ignored when it does not (issue #154).
+    turnstile_token: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -642,6 +676,10 @@ async fn redeem_invitation(
     State(state): State<AppState>,
     ApiJson(request): ApiJson<RedeemReq>,
 ) -> ApiResult<Registration> {
+    // Before touching the invitation: a forged token costs the check a
+    // verifier call, which the verifier rate-limits far better than our
+    // redemption table would take it.
+    require_bot_check(&state, request.turnstile_token.as_deref()).await?;
     let mut registration = state
         .db
         .redeem_invitation(

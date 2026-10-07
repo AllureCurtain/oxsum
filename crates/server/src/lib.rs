@@ -1,6 +1,7 @@
 //! oxsum HTTP layer: routing, auth, error mapping. Business logic lives in oxsum-core.
 
 mod admin;
+pub mod antibot;
 mod auth;
 mod billing;
 mod bills;
