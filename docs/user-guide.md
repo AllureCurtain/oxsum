@@ -16,6 +16,10 @@ Steps:
      owner or admin of the organization hands you a link (`/register?invite=…`); it
      registers one account, expires seven days after it was minted, and cannot be
      reused. The same page also serves `open` deployments for invitees who prefer it.
+   - Deployments that run the anti-bot check draw a small Turnstile widget on the
+     register page — solve it once and submit; a missing or expired answer answers
+     `FORBIDDEN`, so redo the widget and resend. Send its token as `turnstileToken`
+     when calling the API directly.
 2. Use `apiKey.secret` as the Bearer credential from then on.
 
 ## Log in and out
