@@ -988,3 +988,17 @@ Three judgment calls, recorded:
 - **Scope is visible in the table, not just enforced above it.** The by-key table sums under the same scope filter the rows already passed, so a member sees their own keys and the shared row — the place where "you cannot see other members' spend" reads as data rather than as an absence.
 
 Pinned by `crates/server/tests/usage.rs`: the pinned row fields (keyed rows carry `keyId`/`keyLabel`, shared rows neither), the keyed row naming the paying key, and the member page naming only the member's key.
+
+## 2026-10-09 — The email flows are one token table behind an optional mailer (roadmap P6-1, issue #150)
+
+Verification and password recovery needed outbound mail, and the deployment question came first: many oxsum installs will never configure an SMTP relay, so mail is opt-in and every surface degrades deliberately rather than partially. `OXSUM_SMTP_URL`, `OXSUM_MAIL_FROM` and `OXSUM_PUBLIC_URL` configure together — a subset refuses to boot, because a half-configured mailer would only fail at send time, inside a request, where nobody is watching. The transport is lettre's async SMTP; the mails are plain text carrying a link under the public URL, never a bare token.
+
+One table, `oxsum.email_tokens`, serves both mails. A token is `oxt-` plus 32 random bytes — recognizable in logs like `oxi-` and `oxs-` — stored only as its SHA-256, so a database dump verifies no address and resets no password. A `purpose` column gates consumption, so a verify link cannot reset a password; consumption is one `UPDATE … RETURNING` that checks live-and-unused and stamps the spend atomically, redeeming once ever against raced double clicks.
+
+Three judgment calls, recorded:
+
+- **A failed mail never fails its request.** Registration and invitation redemption mint and send after the account exists; a send error logs and answers `verificationSent: false` — the account stands and the resend endpoint is the retry. `forgot` answers its indistinguishable empty 200 regardless, because the response must never say whether the account exists; only `verify/request`, whose whole job is sending, reports a missing mailer as 503.
+- **The resend cooldown lives in the mint, not the route.** `mint_email_token` refuses a second live token for one `(user, purpose)` inside sixty seconds — the check counts live tokens only, so a clicked link frees the resend instead of muting it. That placement makes the cooldown a property of the storage, safe however many routes mint.
+- **The reset is the admin reset, self-served.** Consuming a reset token runs the same `reset_password` the operator endpoint runs: new password in, every session revoked, `sessionsRevoked` answered — the old credential dies with the password it was made under. The dashboard's reminder exists only when `MailConfigured` is provided true, so a mailer-less deployment never nags about a mail it cannot send.
+
+Pinned by `crates/core/tests/email_tokens.rs` (consume-once, expiry, purpose isolation, the cooldown and its freeing on spend, case-insensitive address minting) and `crates/server/tests/email.rs` — end to end through a stub SMTP receiver, so the token under test is the one the mail actually carried: registration and redemption mail the link, the link verifies, resend honours the cooldown, forgot is indistinguishable, and the mailed reset revokes the sessions.

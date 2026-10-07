@@ -72,8 +72,13 @@ Copy `.env.example` to `.env` and the server and the tests pick it up automatica
 | `OXSUM_UPSTREAM_NAME` | Optional; the bootstrap channel's name, reported as `owned_by` in `GET /v1/models`. Defaults to `upstream` |
 | `OXSUM_HOLD_TIMEOUT` | Optional; how long a gateway hold may sit unsettled before the background sweeper releases it at 0 with settlement kind `swept` (recorded as an anomaly). A number of seconds with an optional `s`/`m`/`h` suffix; defaults to `30m`. Validated at startup: it must parse and be at least 60s. It must exceed the longest possible single request — anything older is abandoned by definition, so a hold that is old but whose request is still streaming cannot exist under a correct configuration. The sweeper passes every 60s |
 | `OXSUM_SESSION_COOKIE_SECURE` | Optional; whether the session cookie carries the `Secure` attribute: `true` or `false`, default `false`. A deployment behind TLS must set it to `true`, or browsers will not send the cookie back over https; `false` is what makes local http development work. Anything else refuses to start |
+| `OXSUM_SMTP_URL` | Optional; the lettre connection string for outbound mail — `smtps://user:pass@host` for implicit TLS, `smtp://user:pass@host` for STARTTLS-when-offered. The credentials live in the URL, so keep it out of logs the way `OXSUM_SECRET_KEY` is kept |
+| `OXSUM_MAIL_FROM` | Optional; the `From:` mailbox of the verification and reset mails, e.g. `oxsum <noreply@example.com>` |
+| `OXSUM_PUBLIC_URL` | Optional; the deployment's public base URL the mailed links point at, e.g. `https://wallet.example.com` — no trailing path |
 | `RUST_LOG` | Optional `tracing-subscriber` filter; defaults to `info` |
 | `LEPTOS_OUTPUT_NAME` | Build-time, not a server setting, and deliberately not in `.env.example`: it is set in `.cargo/config.toml` for every cargo invocation in the workspace, because leptos reads it with `option_env!` *while it is compiled* and the shell it compiles into the server is what names the wasm module the browser loads. See "Web dashboard" |
+
+The mailer trio is all three or none: a subset refuses to boot, because a half-configured mailer would only fail at send time inside a request. Unset, the deployment sends no email — registration answers `verificationSent: false`, forgot-password still answers its indistinguishable 200, and `POST /api/v1/auth/verify/request` alone reports the absence with 503.
 
 A deployment's channels and their prices live in the database, and the environment only seeds a
 database that has none. Prices are append-only versions: `POST /api/v1/admin/channels/{name}/prices`
