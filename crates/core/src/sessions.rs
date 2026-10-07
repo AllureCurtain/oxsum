@@ -216,11 +216,34 @@ impl Db {
         if verify_password(password, &password_hash).is_err() {
             return Err(WalletError::InvalidCredentials);
         }
+        self.session_for(user.id).await
+    }
 
-        // The organization the session acts as: the user's oldest membership. Invitation
-        // flows that create a second membership are a later item, and switching between
-        // several arrives with the dashboard — today this is always the personal
-        // organization signup created.
+    /// Mints a session for a user whose credential was already checked — the
+    /// password path's tail, and the whole of an OAuth login's second half
+    /// (issue #152).
+    ///
+    /// The organization the session acts as is the user's oldest membership.
+    /// A user with no membership cannot produce this state through any flow,
+    /// so `InvalidCredentials` stands in — no better answer exists for it.
+    ///
+    /// # Errors
+    ///
+    /// `WalletError::InvalidCredentials` for a memberless user; storage failures
+    /// surface as `WalletError`.
+    pub(crate) async fn session_for(&self, user_id: Uuid) -> Result<CreatedSession, WalletError> {
+        let row = sqlx::query(
+            "SELECT email, (email_verified_at IS NOT NULL) AS email_verified \
+             FROM oxsum.users WHERE user_id = $1",
+        )
+        .bind(user_id)
+        .fetch_one(self.pool())
+        .await?;
+        let user = User {
+            id: user_id,
+            email: row.try_get("email")?,
+            email_verified: row.try_get("email_verified")?,
+        };
         let row = sqlx::query(
             "SELECT m.role, o.organization_id, o.name, o.tenant_id, o.kind, o.created_at \
              FROM oxsum.memberships m JOIN oxsum.organizations o USING (organization_id) \

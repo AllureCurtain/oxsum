@@ -22,7 +22,7 @@ const MAX_PASSWORD: usize = 256;
 const MAX_EMAIL: usize = 320;
 const MAX_ORG_NAME: usize = 80;
 /// The name of the key signup mints, so the list has something readable in it.
-const FIRST_KEY_NAME: &str = "default";
+pub(crate) const FIRST_KEY_NAME: &str = "default";
 
 /// A user as the API presents it.
 #[derive(Debug, Clone, Serialize)]
@@ -188,7 +188,7 @@ pub(crate) fn validate_password(password: &str) -> Result<(), WalletError> {
 }
 
 /// The personal organization's name: the caller's choice, or the email's local part.
-fn organization_name(given: Option<&str>, email: &str) -> Result<String, WalletError> {
+pub(crate) fn organization_name(given: Option<&str>, email: &str) -> Result<String, WalletError> {
     if let Some(given) = given.map(str::trim).filter(|name| !name.is_empty()) {
         if given.chars().count() > MAX_ORG_NAME {
             return Err(WalletError::InvalidInput(format!(

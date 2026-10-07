@@ -33,5 +33,7 @@ workspace = true
 [dev-dependencies]
 dotenvy.workspace = true
 proptest.workspace = true
+# The OAuth tests expire a specific state row by its stored digest.
+sha2.workspace = true
 tokio.workspace = true
 uuid.workspace = true

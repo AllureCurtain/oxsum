@@ -19,6 +19,7 @@ mod holds;
 mod idempotency;
 mod invitations;
 mod keys;
+mod oauth;
 mod orgs;
 mod proof;
 mod ratelimit;
@@ -54,6 +55,7 @@ pub use holds::{
 pub use idempotency::{Claim, fingerprint};
 pub use invitations::CreatedInvitation;
 pub use keys::{ActingKey, ApiKey, BudgetDuration, CreatedApiKey, KeyConstraints};
+pub use oauth::OAuthIdentity;
 pub use orgs::{
     AdminOrganization, Kind, Member, MembershipActor, Organization, Ownership, Role,
     UserOrganization,
