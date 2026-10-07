@@ -499,6 +499,8 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "idempotency_records".to_owned(),
             "invitations".to_owned(),
             "memberships".to_owned(),
+            "oauth_accounts".to_owned(),
+            "oauth_states".to_owned(),
             "open_holds".to_owned(),
             "organizations".to_owned(),
             "redemption_codes".to_owned(),
