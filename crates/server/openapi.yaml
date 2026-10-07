@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.33.0
+  version: 0.34.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -142,7 +142,14 @@ info:
     Usage normalization follows Anthropic's report: `input_tokens` plus
     both cache counts make the billed input total, and the
     5-minute/1-hour cache-write tiers come from
-    `cache_creation.ephemeral_*_input_tokens`.
+    `cache_creation.ephemeral_*_input_tokens`. 0.34.0 adds outbound
+    webhooks: `/api/v1/webhooks` registers an HTTPS endpoint per
+    organization for `request.settled`, each settlement enqueues a signed
+    delivery in the same transaction as its usage row, and a worker
+    posts `{id, type, created_at, org_id, data}` with `x-oxsum-signature`
+    (HMAC-SHA256 of `t.body`) until delivered, backing off through ten
+    attempts before the delivery fails. `GET
+    /api/v1/webhooks/{endpointId}/deliveries` lists the attempts.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie, except
     `/api/v1/auth/login`, `/api/v1/auth/logout` and `/api/v1/auth/register`, which take no
@@ -704,6 +711,103 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/webhooks:
+    get:
+      summary: List the organization's webhook endpoints
+      description: |
+        Every endpoint the caller's organization registered, newest first. A listing
+        never carries a signing secret — only `secretLast4`; the full secret is
+        returned once, at creation.
+      responses:
+        "200":
+          description: The organization's endpoints
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/WebhookEndpoint" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Register a webhook endpoint
+      description: |
+        `url` is the HTTPS (or HTTP, for a receiver on localhost) address oxsum posts
+        signed events to; `events` lists the event types it subscribes to —
+        `request.settled` is the event this build sends. The answer carries the signing
+        secret once, under `secret`; store it there, because a listing only ever
+        shows `secretLast4`. The secret seals under `OXSUM_SECRET_KEY` at rest, the
+        same as a channel's upstream credential.
+
+        A delivery POSTs `{id, type, created_at, org_id, data}` with
+        `x-oxsum-event` naming the type and `x-oxsum-signature` carrying
+        `t=<unix>,v1=<hex HMAC-SHA256 of "t.body" under the endpoint secret>`. A
+        2xx answers delivered; anything else retries on a backoff for ten attempts
+        before the delivery is marked `failed`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateWebhookRequest" }
+      responses:
+        "200":
+          description: The endpoint and its secret, shown only here
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/CreatedWebhook" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/webhooks/{endpointId}:
+    delete:
+      summary: Delete a webhook endpoint
+      description: |
+        Permanent. Undelivered deliveries of the endpoint go with it. An endpoint
+        belonging to another organization is `NOT_FOUND`.
+      parameters: [{ $ref: "#/components/parameters/EndpointId" }]
+      responses:
+        "200":
+          description: The deleted endpoint
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/WebhookEndpoint" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/webhooks/{endpointId}/deliveries:
+    get:
+      summary: List an endpoint's recent deliveries
+      description: |
+        The fifty most recent attempts, newest first: each delivery's status, its
+        attempt count, the response upstream answered, and when it is due next. An
+        endpoint belonging to another organization is `NOT_FOUND`.
+      parameters: [{ $ref: "#/components/parameters/EndpointId" }]
+      responses:
+        "200":
+          description: The endpoint's deliveries, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/WebhookDelivery" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/topups:
     post:
@@ -1950,6 +2054,12 @@ components:
       required: true
       schema: { type: string, pattern: "^[A-Za-z0-9._-]{1,40}$" }
       description: the channel's name, which is its identity
+    EndpointId:
+      name: endpointId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+      description: the webhook endpoint's id
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -2141,6 +2251,50 @@ components:
       properties:
         owner: { $ref: "#/components/schemas/Member", description: "the new owner, in the owner role" }
         previousOwner: { $ref: "#/components/schemas/Member", description: "the owner who transferred it, now an admin" }
+    WebhookEndpoint:
+      type: object
+      required: [id, url, events, enabled, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        url: { type: string, format: uri, description: "where signed events are posted" }
+        events:
+          type: array
+          items: { type: string, enum: [request.settled] }
+          description: the event types this endpoint is subscribed to
+        enabled: { type: boolean, description: "a disabled endpoint enqueues nothing" }
+        secretLast4: { type: string, description: "the last four characters of the signing secret, for recognizing it" }
+        createdAt: { type: string, format: date-time }
+    CreateWebhookRequest:
+      type: object
+      required: [url, events]
+      properties:
+        url: { type: string, format: uri, minLength: 1, maxLength: 500, description: "the HTTPS (or localhost HTTP) address events are posted to" }
+        events:
+          type: array
+          minItems: 1
+          items: { type: string, enum: [request.settled] }
+          description: "the event types to subscribe; `request.settled` is the event this build sends"
+    CreatedWebhook:
+      allOf:
+        - $ref: "#/components/schemas/WebhookEndpoint"
+        - type: object
+          required: [secret]
+          properties:
+            secret: { type: string, description: "the signing secret (`whsec-…`); shown once, stored sealed under OXSUM_SECRET_KEY" }
+    WebhookDelivery:
+      type: object
+      required: [id, eventType, status, attempts, nextAttemptAt, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        endpointId: { type: string, format: uuid }
+        eventType: { type: string, enum: [request.settled] }
+        status: { type: string, enum: [pending, sending, delivered, failed], description: "sending is a worker's claim in flight; delivered means a 2xx; failed means the ten-attempt budget ran out" }
+        attempts: { type: integer, minimum: 0 }
+        nextAttemptAt: { type: string, format: date-time, description: "when the worker next tries a pending delivery; the creation time for a finished one" }
+        responseStatus: { type: [integer, "null"], description: "the HTTP status the receiver last answered, when it answered at all" }
+        lastError: { type: [string, "null"], description: "the last failure, when the last attempt failed before a response" }
+        createdAt: { type: string, format: date-time }
+        deliveredAt: { type: [string, "null"], format: date-time }
     ChannelRequest:
       type: object
       required: [name, baseUrl, apiKey]
