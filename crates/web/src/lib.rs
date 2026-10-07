@@ -32,6 +32,9 @@ mod usage;
 
 pub use app::{App, Shell};
 pub use chat::ChatPage;
+// The deployment flag the server provides into server-function context.
+#[cfg(feature = "ssr")]
+pub use api::MailConfigured;
 
 /// The browser entry point.
 ///

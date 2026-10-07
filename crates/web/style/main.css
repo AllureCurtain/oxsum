@@ -297,6 +297,22 @@ button:disabled {
     cursor: not-allowed;
 }
 
+/* An inline action that should read as a link, not a button — used inside copy
+   ("Resend it") where a bordered control would break the sentence. */
+button.link {
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--primary);
+    font-size: inherit;
+    text-decoration: underline;
+}
+
+button.link:hover {
+    background: none;
+    color: var(--primary-hover);
+}
+
 button.danger {
     background: var(--danger);
     padding: 4px 8px;

@@ -64,6 +64,10 @@ pub fn App() -> impl IntoView {
                 // Public: the invitee follows a link an owner or admin handed them.
                 <Route path=path!("/register") view=RegisterPage/>
                 <Route path=path!("/logout") view=LogoutPage/>
+                // Public: the mailed links land here, so they take no session.
+                <Route path=path!("/verify-email") view=VerifyEmailPage/>
+                <Route path=path!("/forgot-password") view=ForgotPasswordPage/>
+                <Route path=path!("/reset-password") view=ResetPasswordPage/>
                 // Public: anyone holding a bill and its content hash can verify it, no
                 // session needed. Verification runs in the browser, not on the server.
                 <Route path=path!("/verify") view=VerifyPage/>
@@ -163,6 +167,8 @@ mod browser {
     pub struct Redeemed {
         pub organization: RedeemedOrganization,
         pub api_key: RedeemedKey,
+        #[serde(default)]
+        pub verification_sent: bool,
     }
 
     #[derive(serde::Deserialize)]
@@ -209,6 +215,124 @@ mod browser {
             Ok(body) => Err(body.error.message),
             Err(_) => Err("registration failed; try again.".to_owned()),
         }
+    }
+
+    /// The email flows, called with the mailed token or an address — all public
+    /// endpoints, so they run as browser fetches like the session calls above.
+
+    #[derive(Serialize)]
+    struct TokenBody<'a> {
+        token: &'a str,
+    }
+
+    /// Consumes a verification token. `Ok` means the address is verified; the
+    /// error is the endpoint's own message (unknown, spent and expired all read
+    /// the same).
+    pub async fn verify_email(token: &str) -> Result<(), String> {
+        let response = Request::post("/api/v1/auth/verify")
+            .json(&TokenBody { token })
+            .map_err(|_| "could not build the request".to_owned())?
+            .send()
+            .await
+            .map_err(|_| "the server could not be reached".to_owned())?;
+        if response.ok() {
+            return Ok(());
+        }
+        match response.json::<ErrorBody>().await {
+            Ok(body) => Err(body.error.message),
+            Err(_) => Err("the link could not be verified; try again.".to_owned()),
+        }
+    }
+
+    #[derive(Serialize)]
+    struct ForgotBody<'a> {
+        email: &'a str,
+    }
+
+    /// Asks for a reset mail. Always `Ok` when the call completes — the endpoint
+    /// is deliberately indistinguishable about whether the address has an
+    /// account, and the page's message says so.
+    pub async fn forgot_password(email: &str) -> Result<(), String> {
+        let response = Request::post("/api/v1/auth/password/forgot")
+            .json(&ForgotBody { email })
+            .map_err(|_| "could not build the request".to_owned())?
+            .send()
+            .await
+            .map_err(|_| "the server could not be reached".to_owned())?;
+        if response.ok() {
+            return Ok(());
+        }
+        match response.json::<ErrorBody>().await {
+            Ok(body) => Err(body.error.message),
+            Err(_) => Err("the request failed; try again.".to_owned()),
+        }
+    }
+
+    #[derive(Serialize)]
+    struct ResetBody<'a> {
+        token: &'a str,
+        password: &'a str,
+    }
+
+    /// Consumes a reset token and sets the new password.
+    pub async fn reset_password(token: &str, password: &str) -> Result<(), String> {
+        let response = Request::post("/api/v1/auth/password/reset")
+            .json(&ResetBody { token, password })
+            .map_err(|_| "could not build the request".to_owned())?
+            .send()
+            .await
+            .map_err(|_| "the server could not be reached".to_owned())?;
+        if response.ok() {
+            return Ok(());
+        }
+        match response.json::<ErrorBody>().await {
+            Ok(body) => Err(body.error.message),
+            Err(_) => Err("the reset failed; try again.".to_owned()),
+        }
+    }
+
+    /// The resend banner's call: mails the session user a fresh verification
+    /// link. The answer distinguishes the three outcomes the contract names.
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct VerifyRequestData {
+        sent: bool,
+        already_verified: bool,
+    }
+
+    /// The API envelope: `{"data": …}`.
+    #[derive(serde::Deserialize)]
+    struct DataWrap {
+        data: VerifyRequestData,
+    }
+
+    /// `Some(message)` is what the banner says; `Err` only when the call itself
+    /// failed, since the endpoint's own answers are all 200 here.
+    pub async fn request_verification() -> Result<Option<String>, String> {
+        let response = Request::post("/api/v1/auth/verify/request")
+            .send()
+            .await
+            .map_err(|_| "the server could not be reached".to_owned())?;
+        if response.status() == 503 {
+            return Err("email is not configured on this deployment".to_owned());
+        }
+        if !response.ok() {
+            return match response.json::<ErrorBody>().await {
+                Ok(body) => Err(body.error.message),
+                Err(_) => Err("the request failed; try again.".to_owned()),
+            };
+        }
+        let data = response
+            .json::<DataWrap>()
+            .await
+            .map_err(|_| "the server answered in an unexpected shape".to_owned())?;
+        Ok(Some(if data.data.already_verified {
+            "This address is already verified.".to_owned()
+        } else if data.data.sent {
+            "Sent — check your inbox.".to_owned()
+        } else {
+            "A verification mail went out moments ago — check your inbox.".to_owned()
+        }))
     }
 }
 
@@ -297,6 +421,200 @@ fn LoginPage() -> impl IntoView {
                 <button type="submit" prop:disabled=move || busy.get()>
                     {move || if busy.get() { "Logging in…" } else { "Log in" }}
                 </button>
+                <p class="muted">
+                    <A href="/forgot-password">"Forgot your password?"</A>
+                </p>
+            </form>
+        </main>
+    }
+}
+
+/// The verification mail's landing page: reads `?token=` and consumes it once,
+/// on mount — a refresh answers the token's spent state, which is honest.
+#[component]
+fn VerifyEmailPage() -> impl IntoView {
+    let query = use_query_map();
+    let token = move || query.read().get("token").unwrap_or_default();
+    let (message, set_message) = signal("Verifying…".to_owned());
+
+    #[cfg(feature = "hydrate")]
+    Effect::new(move |_| {
+        let token = token();
+        leptos::task::spawn_local(async move {
+            if token.is_empty() {
+                set_message.set(
+                    "This link carries no token — open the whole link from the mail.".to_owned(),
+                );
+                return;
+            }
+            match browser::verify_email(&token).await {
+                Ok(()) => set_message.set("Email verified.".to_owned()),
+                Err(_) => set_message.set(
+                    "This link is not usable — it was already used, it expired, or it is not a \
+                     verification link."
+                        .to_owned(),
+                ),
+            }
+        });
+    });
+    #[cfg(not(feature = "hydrate"))]
+    let _ = (&set_message, &token);
+
+    view! {
+        <main class="center">
+            <section class="card" aria-label="Verify email">
+                <h1>"Verify email"</h1>
+                <p>{move || message.get()}</p>
+                <p class="muted">
+                    <A href="/login">"Log in"</A>
+                </p>
+            </section>
+        </main>
+    }
+}
+
+/// The forgot-password page: an address in, the indistinguishable answer out —
+/// the mail either went out or it did not, and the page cannot and does not say
+/// which.
+#[component]
+fn ForgotPasswordPage() -> impl IntoView {
+    let (email, set_email) = signal(String::new());
+    let (done, set_done) = signal(false);
+    let (error, set_error) = signal(Option::<String>::None);
+    let (busy, set_busy) = signal(false);
+
+    let submit = move |ev: web_sys::SubmitEvent| {
+        ev.prevent_default();
+        #[cfg(feature = "hydrate")]
+        leptos::task::spawn_local(async move {
+            set_busy.set(true);
+            set_error.set(None);
+            match browser::forgot_password(&email.get_untracked()).await {
+                Ok(()) => set_done.set(true),
+                Err(message) => {
+                    set_error.set(Some(message));
+                    set_busy.set(false);
+                }
+            }
+        });
+        #[cfg(not(feature = "hydrate"))]
+        let _ = (&set_done, &set_busy, &set_error, &email);
+    };
+
+    view! {
+        <main class="center">
+            <form class="card" method="post" on:submit=submit aria-label="Forgot password">
+                <h1>"Reset password"</h1>
+                {move || {
+                    if done.get() {
+                        view! {
+                            <p>
+                                "If that address has an account, a reset link is on its way — it works once, for one hour."
+                            </p>
+                            <p class="muted">
+                                <A href="/login">"Back to log in"</A>
+                            </p>
+                        }
+                            .into_any()
+                    } else {
+                        view! {
+                            <p class="muted">"The account's email address."</p>
+                            {move || {
+                                error.get().map(|message| {
+                                    view! { <p class="error" role="alert">{message}</p> }
+                                })
+                            }}
+                            <label>
+                                "Email"
+                                <input
+                                    type="email"
+                                    name="email"
+                                    autocomplete="username"
+                                    required
+                                    prop:value=move || email.get()
+                                    on:input=move |ev| set_email.set(event_target_value(&ev))
+                                />
+                            </label>
+                            <button type="submit" prop:disabled=move || busy.get()>
+                                {move || if busy.get() { "Sending…" } else { "Send reset link" }}
+                            </button>
+                        }
+                            .into_any()
+                    }
+                }}
+            </form>
+        </main>
+    }
+}
+
+/// The reset mail's landing page: `?token=` plus the new password. A spent or
+/// expired token fails on submit with the endpoint's own message.
+#[component]
+fn ResetPasswordPage() -> impl IntoView {
+    let query = use_query_map();
+    let token = move || query.read().get("token").unwrap_or_default();
+    let (password, set_password) = signal(String::new());
+    let (done, set_done) = signal(false);
+    let (error, set_error) = signal(Option::<String>::None);
+    let (busy, set_busy) = signal(false);
+
+    let submit = move |ev: web_sys::SubmitEvent| {
+        ev.prevent_default();
+        #[cfg(feature = "hydrate")]
+        leptos::task::spawn_local(async move {
+            set_busy.set(true);
+            set_error.set(None);
+            match browser::reset_password(&token(), &password.get_untracked()).await {
+                Ok(()) => set_done.set(true),
+                Err(message) => {
+                    set_error.set(Some(message));
+                    set_busy.set(false);
+                }
+            }
+        });
+        #[cfg(not(feature = "hydrate"))]
+        let _ = (&set_done, &set_busy, &set_error, &password, &token);
+    };
+
+    view! {
+        <main class="center">
+            <form class="card" method="post" on:submit=submit aria-label="Reset password">
+                <h1>"Choose a new password"</h1>
+                {move || {
+                    if done.get() {
+                        view! {
+                            <p>"The password is changed; every existing session was logged out."</p>
+                            <p class="muted">
+                                <A href="/login">"Log in"</A>
+                            </p>
+                        }
+                            .into_any()
+                    } else {
+                        view! {
+                            {move || {
+                                error.get().map(|message| {
+                                    view! { <p class="error" role="alert">{message}</p> }
+                                })
+                            }}
+                            <label>
+                                "New password"
+                                <input
+                                    type="password"
+                                    name="password"
+                                    autocomplete="new-password"
+                                    required
+                                    minlength="12"
+                                    prop:value=move || password.get()
+                                    on:input=move |ev| set_password.set(event_target_value(&ev))
+                                />
+                            </label>
+                            <button type="submit" prop:disabled=move || busy.get()>
+                                {move || if busy.get() { "Resetting…" } else { "Reset password" }}
+                            </button>
+                        }
+                            .into_any()
+                    }
+                }}
             </form>
         </main>
     }
@@ -316,7 +634,7 @@ fn RegisterPage() -> impl IntoView {
     // The account once it exists: the organization it joined and its first API key.
     // The secret is shown here and nowhere else, like every key the API mints.
     #[cfg(feature = "hydrate")]
-    let (joined, set_joined) = signal(Option::<(String, String)>::None);
+    let (joined, set_joined) = signal(Option::<(String, String, bool)>::None);
 
     let submit = move |ev: web_sys::SubmitEvent| {
         ev.prevent_default();
@@ -329,9 +647,11 @@ fn RegisterPage() -> impl IntoView {
                 match browser::redeem(&token, &email.get_untracked(), &password.get_untracked())
                     .await
                 {
-                    Ok(redeemed) => {
-                        set_joined.set(Some((redeemed.organization.name, redeemed.api_key.secret)))
-                    }
+                    Ok(redeemed) => set_joined.set(Some((
+                        redeemed.organization.name,
+                        redeemed.api_key.secret,
+                        redeemed.verification_sent,
+                    ))),
                     Err(message) => {
                         set_error.set(Some(message));
                         set_busy.set(false);
@@ -352,11 +672,16 @@ fn RegisterPage() -> impl IntoView {
                 <h1>"oxsum"</h1>
                 {move || {
                     #[cfg(feature = "hydrate")]
-                    if let Some((organization, secret)) = joined.get() {
+                    if let Some((organization, secret, verification_sent)) = joined.get() {
                         return view! {
                             <p class="success" role="status">
                                 "Your account is part of " {organization} "."
                             </p>
+                            {verification_sent.then(|| view! {
+                                <p class="muted">
+                                    "A verification link is on its way to your inbox — open it within seven days."
+                                </p>
+                            })}
                             <p class="muted">
                                 "Your first API key — keep it, it is shown only once:"
                             </p>
@@ -630,6 +955,45 @@ fn OverviewPage() -> impl IntoView {
     }
 }
 
+/// The unverified-address reminder: one muted line with a resend, shown only
+/// when a mail can actually go out (`email_flows` — a deployment without a
+/// mailer never nags about a mail it cannot send). The button's result replaces
+/// the line, including the cooldown answer.
+#[component]
+fn VerifyBanner(show: bool) -> impl IntoView {
+    let (message, set_message) = signal(Option::<String>::None);
+    let resend = move |_| {
+        #[cfg(feature = "hydrate")]
+        leptos::task::spawn_local(async move {
+            match browser::request_verification().await {
+                Ok(message) => set_message.set(message),
+                Err(error) => set_message.set(Some(error)),
+            }
+        });
+        #[cfg(not(feature = "hydrate"))]
+        let _ = &set_message;
+    };
+    view! {
+        {move || {
+            if let Some(text) = message.get() {
+                view! { <p class="muted">{text}</p> }.into_any()
+            } else if show {
+                view! {
+                    <p class="muted">
+                        "This email is not verified. "
+                        <button type="button" class="link" on:click=resend>
+                            "Resend the verification mail"
+                        </button>
+                    </p>
+                }
+                    .into_any()
+            } else {
+                ().into_any()
+            }
+        }}
+    }
+}
+
 /// The overview card: who is logged in, the available balance, the frozen total, this
 /// month's spend. The in-flight holds and the newest entries follow it.
 #[component]
@@ -669,6 +1033,7 @@ fn Overview(data: DashboardData) -> impl IntoView {
                         </p>
                     }
                 })}
+            <VerifyBanner show=!data.email_verified && data.email_flows/>
         </section>
         <HoldsSection initial=data.holds.clone()/>
         <section class="card" aria-label="Recent entries">

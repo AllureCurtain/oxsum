@@ -26,6 +26,14 @@ use crate::heads::HeadSeed;
 #[cfg(feature = "ssr")]
 use crate::requests::RequestFilters;
 
+/// Whether this deployment sends email (`OXSUM_SMTP_URL`/`OXSUM_MAIL_FROM`/
+/// `OXSUM_PUBLIC_URL` together), provided into server-function context by
+/// `crates/server/src/web.rs` the way `HeadSeed` is. The verification banner
+/// exists only when the mail can actually go out (issue #150).
+#[cfg(feature = "ssr")]
+#[derive(Debug, Clone, Copy)]
+pub struct MailConfigured(pub bool);
+
 use crate::heads::{ConsistencyView, SignedHeadView};
 
 #[cfg(feature = "ssr")]
@@ -63,6 +71,11 @@ pub struct DashboardData {
     pub credit_limit_minor: i64,
     /// The drawn plus reserved part of the credit line, in minor units.
     pub credit_used_minor: i64,
+    /// Whether the session user's address is verified — the banner's question.
+    pub email_verified: bool,
+    /// Whether a verification mail can be sent at all on this deployment: the
+    /// banner is only worth showing when the resend button can work.
+    pub email_flows: bool,
     pub holds: Vec<HoldView>,
     pub entries: Vec<EntryView>,
 }
@@ -325,6 +338,12 @@ pub async fn get_dashboard() -> Result<DashboardData, ServerFnError> {
         month_spend_minor,
         credit_limit_minor,
         credit_used_minor,
+        email_verified: principal.user.email_verified,
+        // No context in a test or a bare SSR render reads as "no mailer": the
+        // banner stays off rather than offering a resend that cannot work.
+        email_flows: use_context::<MailConfigured>()
+            .map(|m| m.0)
+            .unwrap_or(false),
         holds: holds.iter().map(HoldView::from).collect(),
         entries: entries.iter().map(EntryView::from).collect(),
     })
