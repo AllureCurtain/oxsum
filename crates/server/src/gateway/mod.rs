@@ -1,8 +1,11 @@
-//! The OpenAI-compatible gateway: `POST /v1/chat/completions` and `GET /v1/models`.
+//! The protocol-native gateway: `POST /v1/chat/completions`, `POST /v1/messages` and
+//! `GET /v1/models`.
 //!
 //! A request is frozen before upstream is contacted and settled after it answers, so the wallet
 //! never has to trust the network. The order is the promise: the hold is taken first, upstream
-//! second, the settlement third, and each step has one place where it happens.
+//! second, the settlement third, and each step has one place where it happens. The two POST
+//! surfaces run that same pipeline in their own wire dialect — OpenAI's or Anthropic's — and
+//! each serves only the channels that declare its protocol.
 
 pub(crate) mod error;
 mod relay;
@@ -28,7 +31,7 @@ use crate::AppState;
 use crate::auth::require_key_gateway;
 use crate::gateway::error::{BALANCE_MINOR, CHARGED_MINOR, FREEZE_MINOR, GatewayError, REQUEST_ID};
 use crate::gateway::relay::{Charge, Turn};
-use crate::gateway::request::ChatRequest;
+use crate::gateway::request::{GatewayRequest, Surface};
 use crate::today;
 
 /// How long the connection to upstream may take to establish.
@@ -52,6 +55,7 @@ pub fn router(state: AppState) -> Router<AppState> {
     Router::new()
         .route("/models", get(models))
         .route("/chat/completions", post(chat))
+        .route("/messages", post(messages))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_key_gateway,
@@ -113,8 +117,32 @@ const IDEMPOTENCY_KEY: &str = "idempotency-key";
 /// Marks a response answered from the idempotency record rather than run again.
 const IDEMPOTENT_REPLAYED: &str = "idempotent-replayed";
 
-/// One chat completion: freeze, relay, settle.
+/// One chat completion: freeze, relay, settle — OpenAI's surface.
 async fn chat(
+    state: State<AppState>,
+    organization: Extension<Organization>,
+    key: Extension<ActingKey>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    gateway(Surface::OpenAi, state, organization, key, headers, body).await
+}
+
+/// One messages turn: freeze, relay, settle — Anthropic's surface.
+async fn messages(
+    state: State<AppState>,
+    organization: Extension<Organization>,
+    key: Extension<ActingKey>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    gateway(Surface::Anthropic, state, organization, key, headers, body).await
+}
+
+/// The shared turn handler: the same claim-freeze-settle pipeline under either surface's
+/// wire dialect.
+async fn gateway(
+    surface: Surface,
     State(state): State<AppState>,
     Extension(organization): Extension<Organization>,
     Extension(key): Extension<ActingKey>,
@@ -144,14 +172,14 @@ async fn chat(
                 Ok(Claim::InFlight) => {
                     crate::metrics::claim(&state.metrics, "in_flight");
                     return with_request_id(
-                        GatewayError::idempotency_in_flight().into_response(),
+                        error_response(GatewayError::idempotency_in_flight(), surface),
                         &minted_id,
                     );
                 }
                 Ok(Claim::Mismatch) => {
                     crate::metrics::claim(&state.metrics, "mismatch");
                     return with_request_id(
-                        GatewayError::idempotency_mismatch().into_response(),
+                        error_response(GatewayError::idempotency_mismatch(), surface),
                         &minted_id,
                     );
                 }
@@ -164,7 +192,10 @@ async fn chat(
                     return replay(status, body, &request_id);
                 }
                 Err(error) => {
-                    return with_request_id(GatewayError::from(error).into_response(), &minted_id);
+                    return with_request_id(
+                        error_response(GatewayError::from(error), surface),
+                        &minted_id,
+                    );
                 }
             }
         }
@@ -182,14 +213,32 @@ async fn chat(
                 param: None,
             };
             return with_request_id(
-                settle_claim(&state, &organization, claim, Err(error)).await,
+                settle_claim(&state, &organization, claim, Err(error), surface).await,
                 &request_id,
             );
         }
     };
-    let outcome = run(&state, &organization, &key, body, &request_id).await;
-    let response = settle_claim(&state, &organization, claim, outcome).await;
+    let outcome = run(
+        &state,
+        &organization,
+        &key,
+        body,
+        &request_id,
+        &headers,
+        surface,
+    )
+    .await;
+    let response = settle_claim(&state, &organization, claim, outcome, surface).await;
     with_request_id(response, &request_id)
+}
+
+/// The error envelope the surface's SDK parses: OpenAI's `{"error": {…}}` on
+/// `/v1/chat/completions`, Anthropic's `{"type": "error", "error": {…}}` on `/v1/messages`.
+fn error_response(error: GatewayError, surface: Surface) -> Response {
+    match surface {
+        Surface::OpenAi => error.into_response(),
+        Surface::Anthropic => error.into_anthropic_response(),
+    }
 }
 
 /// Writes the idempotency record its answer, or releases the claim.
@@ -204,11 +253,12 @@ async fn settle_claim(
     organization: &Organization,
     claim: Option<(String, String)>,
     outcome: Result<Response, GatewayError>,
+    surface: Surface,
 ) -> Response {
     let Some((key, _)) = claim else {
         return match outcome {
             Ok(response) => response,
-            Err(error) => error.into_response(),
+            Err(error) => error_response(error, surface),
         };
     };
     match outcome {
@@ -217,13 +267,13 @@ async fn settle_claim(
         // The turn ran and settled — upstream failing after the hold is an answer worth
         // replaying, because running it again would freeze and charge again.
         Err(error @ GatewayError::Upstream { .. }) => {
-            complete_claim(state, organization, &key, error.into_response()).await
+            complete_claim(state, organization, &key, error_response(error, surface)).await
         }
         Err(error) => {
             if let Err(error) = state.db.release_request(organization.id, &key).await {
                 tracing::error!(%error, "releasing an idempotency claim failed");
             }
-            error.into_response()
+            error_response(error, surface)
         }
     }
 }
@@ -293,8 +343,10 @@ async fn run(
     key: &ActingKey,
     body: Value,
     request_id: &str,
+    headers: &HeaderMap,
+    surface: Surface,
 ) -> Result<Response, GatewayError> {
-    let request = ChatRequest::parse(body)?;
+    let request = GatewayRequest::parse(body, surface)?;
     // The key's rolling-minute allowance is consumed at admission, before any
     // money moves: a refused request never reaches the wallet. A client retry is
     // a new request (the id is minted here), so it rightly spends another slot.
@@ -318,6 +370,12 @@ async fn run(
     let Some(serving) = serving(state, &request.model).await? else {
         return Err(GatewayError::model_not_served(&request.model));
     };
+    // A surface serves only the channels that speak its protocol: an `anthropic`
+    // channel's model is not served on the OpenAI surface, and vice versa — surfaces
+    // are protocol-native, there is no translation between them.
+    if serving.protocol != surface.protocol() {
+        return Err(GatewayError::model_not_served(&request.model));
+    }
     // The channel's protocol selects the adapter that reads its usage reports. A name
     // the registry does not know is refused when the channel is written, so reaching
     // here means the row was edited by hand — a deployment problem, not the caller's.
@@ -436,13 +494,26 @@ async fn run(
             freeze_minor: freeze,
         });
     let upstream_started = Instant::now();
-    let upstream = state
+    // The channel credential goes upstream in the protocol's own spelling:
+    // `Authorization: Bearer` for OpenAI, `x-api-key` for Anthropic — which also
+    // wants its version header, forwarded when the caller sent one.
+    let mut call = state
         .http
-        .post(format!("{}/chat/completions", serving.base_url))
-        .bearer_auth(&serving.api_key)
-        .json(&request.forwarded(output_bound))
-        .send()
-        .await;
+        .post(format!("{}/{}", serving.base_url, adapter.upstream_path()))
+        .json(&request.forwarded(output_bound));
+    call = match surface {
+        Surface::OpenAi => call.bearer_auth(&serving.api_key),
+        Surface::Anthropic => {
+            let call = call
+                .header("x-api-key", &serving.api_key)
+                .header("anthropic-version", anthropic_version(headers));
+            match headers.get("anthropic-beta").and_then(|v| v.to_str().ok()) {
+                Some(beta) => call.header("anthropic-beta", beta),
+                None => call,
+            }
+        }
+    };
+    let upstream = call.send().await;
 
     let response = match upstream {
         Err(error) => {
@@ -460,12 +531,14 @@ async fn run(
             // a response rather than the error so the head can be stamped here, where the
             // numbers are. The claim still stores it: a finished non-streamed answer is
             // completed either way.
-            let mut response = GatewayError::upstream(
-                StatusCode::BAD_GATEWAY,
-                format!("upstream is unreachable: {error}"),
-                None,
-            )
-            .into_response();
+            let mut response = error_response(
+                GatewayError::upstream(
+                    StatusCode::BAD_GATEWAY,
+                    format!("upstream is unreachable: {error}"),
+                    None,
+                ),
+                surface,
+            );
             cost.stamp(&mut response);
             stamp_charged(&mut response, charged);
             return Ok(response);
@@ -482,14 +555,16 @@ async fn run(
                 .settle(SettlementKind::UpstreamError, Charge::Nothing)
                 .await;
             // Upstream's own refusal is the honest answer, and it is already in the caller's format.
-            let mut response = GatewayError::upstream(
-                StatusCode::BAD_GATEWAY,
-                format!("upstream answered {status}: {text}"),
-                serde_json::from_str::<Value>(&text)
-                    .ok()
-                    .filter(|body| body.get("error").is_some()),
-            )
-            .into_response();
+            let mut response = error_response(
+                GatewayError::upstream(
+                    StatusCode::BAD_GATEWAY,
+                    format!("upstream answered {status}: {text}"),
+                    serde_json::from_str::<Value>(&text)
+                        .ok()
+                        .filter(|body| body.get("error").is_some()),
+                ),
+                surface,
+            );
             cost.stamp(&mut response);
             stamp_charged(&mut response, charged);
             return Ok(response);
@@ -518,7 +593,7 @@ async fn run(
                         if let Some(usage) = adapter.usage(&value) {
                             turn.note_usage(usage);
                         }
-                        turn.note_text(&relay::completion_text(&value));
+                        turn.note_text(&adapter.answer_text(&value));
                         let (kind, charge) = turn.closing();
                         let charged = turn.settle(kind, charge).await;
                         let mut response = Json(value).into_response();
@@ -533,12 +608,16 @@ async fn run(
                         let charged = turn
                             .settle(SettlementKind::Estimated, Charge::Estimated)
                             .await;
-                        let mut response = GatewayError::upstream(
-                            StatusCode::BAD_GATEWAY,
-                            format!("upstream answered 200 with a body that is not JSON: {error}"),
-                            None,
-                        )
-                        .into_response();
+                        let mut response = error_response(
+                            GatewayError::upstream(
+                                StatusCode::BAD_GATEWAY,
+                                format!(
+                                    "upstream answered 200 with a body that is not JSON: {error}"
+                                ),
+                                None,
+                            ),
+                            surface,
+                        );
                         cost.stamp(&mut response);
                         stamp_charged(&mut response, charged);
                         return Ok(response);
@@ -548,6 +627,17 @@ async fn run(
         }
     };
     Ok(response)
+}
+
+/// The `anthropic-version` upstream is told: the caller's when it sent one, the version
+/// this deployment speaks when it did not — Anthropic refuses a request without one.
+fn anthropic_version(headers: &HeaderMap) -> &str {
+    headers
+        .get("anthropic-version")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|version| !version.is_empty())
+        .unwrap_or("2023-06-01")
 }
 
 /// An SSE response: upstream's bytes, streamed, with the content type an OpenAI client

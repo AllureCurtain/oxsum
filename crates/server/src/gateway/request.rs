@@ -1,20 +1,49 @@
-//! The OpenAI chat request, as far as the gateway reads it.
+//! A gateway request, as far as the gateway reads it.
 //!
-//! Everything the gateway does not act on is forwarded upstream unchanged, which is what keeps an
-//! SDK working here by changing `base_url` only. The fields it does act on are taken out and
-//! validated once, so the rest of the request path never has to pick apart JSON.
+//! Two surfaces parse into the same shape: `/v1/chat/completions` speaks OpenAI's wire
+//! format, `/v1/messages` Anthropic's. Everything the gateway does not act on is forwarded
+//! upstream unchanged, which is what keeps an SDK working here by changing `base_url` only.
+//! The fields it does act on are taken out and validated once, so the rest of the request
+//! path never has to pick apart JSON.
 
-use oxsum_core::{Attribution, MAX_CONTEXT_NAME, MAX_END_USER, MAX_TAG, MAX_TAGS};
+use oxsum_core::{
+    ANTHROPIC, Attribution, MAX_CONTEXT_NAME, MAX_END_USER, MAX_TAG, MAX_TAGS, OPENAI,
+};
 use serde_json::{Map, Value, json};
 
 use super::error::GatewayError;
 
-/// One parsed chat request: the body to forward, and the parts the freeze depends on.
+/// Which client protocol a request arrived under. Both surfaces run the same
+/// freeze-then-settle pipeline; the surface chooses the request's dialect, which
+/// channels may serve it, and which error envelope the client reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Surface {
+    /// `POST /v1/chat/completions` — OpenAI's shapes, served by `openai` channels.
+    OpenAi,
+    /// `POST /v1/messages` — Anthropic's shapes, served by `anthropic` channels.
+    Anthropic,
+}
+
+impl Surface {
+    /// The protocol name a serving channel must declare for this surface. A model
+    /// an `anthropic` channel serves is not served on the OpenAI surface, and vice
+    /// versa: surfaces are protocol-native, never translated.
+    pub fn protocol(self) -> &'static str {
+        match self {
+            Self::OpenAi => OPENAI,
+            Self::Anthropic => ANTHROPIC,
+        }
+    }
+}
+
+/// One parsed gateway request: the body to forward, and the parts the freeze depends on.
 #[derive(Debug, Clone)]
-pub struct ChatRequest {
+pub struct GatewayRequest {
     /// The caller's body, minus nothing: what is sent upstream is this, with the output ceiling
     /// written into it.
     body: Map<String, Value>,
+    /// The surface the request arrived under.
+    surface: Surface,
     /// The model the caller asked for, which must have a configured price.
     pub model: String,
     /// Whether the caller asked for a streamed answer.
@@ -24,22 +53,22 @@ pub struct ChatRequest {
     pub texts: Vec<String>,
     /// The output ceiling the caller asked for, if it asked for one.
     pub max_tokens: Option<i64>,
-    /// The caller's attribution on the turn: `user` becomes the end user, `metadata`
-    /// the tags, `service_tier` the tier slot — recorded on the usage row, never
-    /// an input to the freeze or the price.
+    /// The caller's attribution on the turn: OpenAI's `user`/`metadata`/`service_tier`,
+    /// Anthropic's `metadata.user_id` — recorded on the usage row, never an input
+    /// to the freeze or the price.
     pub attribution: Attribution,
 }
 
-impl ChatRequest {
-    /// Reads a request body.
+impl GatewayRequest {
+    /// Reads a request body in the surface's own dialect.
     ///
     /// # Errors
     ///
     /// Refuses a body that is not an object, a missing or empty `model`, a missing or empty
-    /// `messages`, a non-boolean `stream`, a non-integer output ceiling, and any content that is not
-    /// text: v1 prices chat text only, and the freeze is only a promise if the input bound is
-    /// computable (product.md).
-    pub fn parse(body: Value) -> Result<Self, GatewayError> {
+    /// `messages`, a non-boolean `stream`, a non-integer output ceiling, and any content without
+    /// a computable input bound: v1 prices chat text only, and the freeze is only a promise if
+    /// the input bound is computable (product.md).
+    pub fn parse(body: Value, surface: Surface) -> Result<Self, GatewayError> {
         let Value::Object(body) = body else {
             return Err(invalid("the request body must be a JSON object"));
         };
@@ -57,11 +86,21 @@ impl ChatRequest {
             Some(Value::Bool(true)) => true,
             Some(_) => return Err(param("stream", "stream must be a boolean")),
         };
-        let texts = texts_of(&body)?;
-        let max_tokens = output_ceiling(&body)?;
-        let attribution = attribution_of(&body)?;
+        let (texts, max_tokens, attribution) = match surface {
+            Surface::OpenAi => (
+                texts_of(&body)?,
+                output_ceiling(&body)?,
+                attribution_of(&body)?,
+            ),
+            Surface::Anthropic => (
+                anthropic_texts(&body)?,
+                int_ceiling(&body, "max_tokens")?,
+                anthropic_attribution(&body)?,
+            ),
+        };
         Ok(Self {
             body,
+            surface,
             model,
             stream,
             texts,
@@ -73,15 +112,17 @@ impl ChatRequest {
     /// The body to send upstream: the caller's, with the output upper bound written in and usage
     /// reporting switched on for a stream.
     ///
-    /// The bound is written as `max_tokens` and any `max_completion_tokens` is dropped, so upstream
-    /// sees exactly one ceiling — the one the freeze was computed for. A stream always asks for
-    /// usage, because the last chunk is where this gateway gets the numbers it settles against.
+    /// The bound is written as `max_tokens` — the field both protocols name — and any
+    /// `max_completion_tokens` is dropped, so upstream sees exactly one ceiling, the one the
+    /// freeze was computed for. An OpenAI stream asks for usage explicitly, because the last
+    /// chunk is where that protocol reports it; Anthropic reports usage on every stream
+    /// already, so nothing is added there.
     #[must_use]
     pub fn forwarded(&self, output_bound: i64) -> Value {
         let mut body = self.body.clone();
         body.insert("max_tokens".to_owned(), json!(output_bound));
         body.remove("max_completion_tokens");
-        if self.stream {
+        if self.stream && self.surface == Surface::OpenAi {
             let mut options = body
                 .get("stream_options")
                 .and_then(Value::as_object)
@@ -148,6 +189,125 @@ fn texts_of(body: &Map<String, Value>) -> Result<Vec<String>, GatewayError> {
         }
     }
     Ok(texts)
+}
+
+/// The text of an Anthropic request: `system` plus every message's content.
+///
+/// The content-block rule is the OpenAI surface's rule widened one notch: a `text`
+/// block contributes its `text`; a block with any other non-media `type` — a tool
+/// call, a tool result, a thinking block — contributes its serialized JSON, because
+/// that is a computable bound for whatever it carries; a media block (`image`,
+/// `document`, `audio`, `video`) has no computable bound and is refused.
+fn anthropic_texts(body: &Map<String, Value>) -> Result<Vec<String>, GatewayError> {
+    let mut texts = Vec::new();
+    match body.get("system") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(text)) => texts.push(text.clone()),
+        Some(Value::Array(blocks)) => anthropic_blocks(blocks, "system", &mut texts)?,
+        Some(_) => {
+            return Err(param(
+                "system",
+                "system must be a string or an array of content blocks",
+            ));
+        }
+    }
+    let Some(messages) = body.get("messages") else {
+        return Err(param("messages", "messages is required"));
+    };
+    let Value::Array(messages) = messages else {
+        return Err(param("messages", "messages must be an array"));
+    };
+    if messages.is_empty() {
+        return Err(param("messages", "messages must not be empty"));
+    }
+    for message in messages {
+        let Value::Object(message) = message else {
+            return Err(param("messages", "every message must be an object"));
+        };
+        match message.get("content") {
+            None | Some(Value::Null) => {}
+            Some(Value::String(text)) => texts.push(text.clone()),
+            Some(Value::Array(blocks)) => anthropic_blocks(blocks, "messages", &mut texts)?,
+            Some(_) => {
+                return Err(param(
+                    "messages",
+                    "message content must be a string or an array of content blocks",
+                ));
+            }
+        }
+    }
+    Ok(texts)
+}
+
+/// Folds one array of Anthropic content blocks into the request's texts.
+fn anthropic_blocks(
+    blocks: &[Value],
+    field: &'static str,
+    texts: &mut Vec<String>,
+) -> Result<(), GatewayError> {
+    for block in blocks {
+        let Value::Object(block) = block else {
+            return Err(param(field, "a content block must be an object"));
+        };
+        match block.get("type").and_then(Value::as_str) {
+            Some("text") => match block.get("text") {
+                Some(Value::String(text)) => texts.push(text.clone()),
+                _ => {
+                    return Err(param(field, "a text block must carry a text string"));
+                }
+            },
+            Some("image" | "document" | "audio" | "video") => {
+                return Err(param(
+                    field,
+                    "only text-computable content is supported: a media block has no \
+                     computable input bound, so it cannot be frozen",
+                ));
+            }
+            // A `tool_use` input, a `tool_result`, a thinking block: serialized JSON is
+            // the computable bound for whatever the block carries.
+            _ => texts.push(Value::Object(block.clone()).to_string()),
+        }
+    }
+    Ok(())
+}
+
+/// Anthropic's attribution: `metadata.user_id` is the only field the surface reads,
+/// landing on the usage record's `end_user`; the rest of `metadata` is upstream's.
+fn anthropic_attribution(body: &Map<String, Value>) -> Result<Attribution, GatewayError> {
+    let end_user = match body.get("metadata") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(metadata)) => match metadata.get("user_id") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(user)) if user.len() <= MAX_END_USER => Some(user.clone()),
+            Some(Value::String(_)) => {
+                return Err(param(
+                    "metadata",
+                    "metadata.user_id is at most 128 characters",
+                ));
+            }
+            Some(_) => return Err(param("metadata", "metadata.user_id must be a string")),
+        },
+        Some(_) => return Err(param("metadata", "metadata must be an object")),
+    };
+    Ok(Attribution {
+        end_user,
+        ..Attribution::default()
+    })
+}
+
+/// One integer output ceiling under a single name — Anthropic's `max_tokens`.
+/// `null` counts as absent, because SDKs send unset optional fields that way.
+fn int_ceiling(body: &Map<String, Value>, name: &'static str) -> Result<Option<i64>, GatewayError> {
+    match body.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => match value.as_i64() {
+            Some(asked) => Ok(Some(asked)),
+            None => Err(param(
+                name,
+                "max_tokens must be an integer number of tokens",
+            )),
+        },
+    }
 }
 
 /// The caller's output ceiling: `max_completion_tokens` if it used the newer spelling, else
@@ -249,8 +409,12 @@ mod tests {
 
     use super::*;
 
-    fn request(body: Value) -> Result<ChatRequest, GatewayError> {
-        ChatRequest::parse(body)
+    fn request(body: Value) -> Result<GatewayRequest, GatewayError> {
+        GatewayRequest::parse(body, Surface::OpenAi)
+    }
+
+    fn messages_request(body: Value) -> Result<GatewayRequest, GatewayError> {
+        GatewayRequest::parse(body, Surface::Anthropic)
     }
 
     #[test]
@@ -448,5 +612,89 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn reads_an_anthropic_request() {
+        let parsed = messages_request(json!({
+            "model": "claude-x",
+            "system": "be brief",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 64,
+            "metadata": {"user_id": "u_42"},
+            "temperature": 0.2,
+        }))
+        .unwrap();
+        assert_eq!(parsed.model, "claude-x");
+        // `system` counts toward the input bound too.
+        assert_eq!(parsed.texts, ["be brief", "hi"]);
+        assert_eq!(parsed.max_tokens, Some(64));
+        assert_eq!(parsed.attribution.end_user.as_deref(), Some("u_42"));
+        let forwarded = parsed.forwarded(64);
+        assert_eq!(forwarded["max_tokens"], 64);
+        assert_eq!(forwarded["temperature"], 0.2);
+        // Anthropic reports usage on every stream; no stream_options is added.
+        assert!(forwarded.get("stream_options").is_none());
+    }
+
+    #[test]
+    fn anthropic_blocks_contribute_their_computable_text() {
+        let parsed = messages_request(json!({
+            "model": "m",
+            "system": [{"type": "text", "text": "sys"}],
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "text", "text": "hi"},
+                    {"type": "tool_use", "name": "lookup", "input": {"q": "x"}},
+                ]},
+                {"role": "assistant", "content": null},
+            ],
+        }))
+        .unwrap();
+        // The text block contributes its text; the tool block its serialized
+        // JSON — a computable bound for whatever it carries.
+        let tool_use = json!({"type": "tool_use", "name": "lookup", "input": {"q": "x"}});
+        assert_eq!(parsed.texts, ["sys", "hi", &tool_use.to_string()]);
+    }
+
+    #[test]
+    fn an_anthropic_media_block_is_refused() {
+        let error = messages_request(json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": [
+                {"type": "image", "source": {"type": "base64", "data": "…"}},
+            ]}],
+        }))
+        .expect_err("an image has no computable input bound");
+        let GatewayError::Invalid { message, param } = error else {
+            panic!("expected an invalid-request error");
+        };
+        assert_eq!(param, Some("messages"));
+        assert!(message.contains("media block"), "{message}");
+    }
+
+    #[test]
+    fn anthropic_refusals_and_bounds() {
+        for body in [
+            json!({"model": "m"}),
+            json!({"model": "m", "messages": []}),
+            json!({"model": "m", "messages": [{"role": "user", "content": {"x": 1}}]}),
+            json!({"model": "m", "system": 7, "messages": [{"content": "hi"}]}),
+            json!({"model": "m", "messages": [{"content": "hi"}], "max_tokens": "a lot"}),
+            json!({"model": "m", "messages": [{"content": "hi"}], "metadata": {"user_id": "u".repeat(129)}}),
+        ] {
+            assert!(messages_request(body).is_err());
+        }
+        // `stream_options` sent on this surface is not ours to strip — but
+        // `stream: null` still counts as false.
+        let parsed = messages_request(json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": null,
+            "max_tokens": null,
+        }))
+        .unwrap();
+        assert!(!parsed.stream);
+        assert_eq!(parsed.max_tokens, None);
     }
 }

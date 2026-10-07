@@ -78,8 +78,11 @@ async fn resolve(state: &AppState, headers: &HeaderMap) -> Option<Principal> {
 
 /// The organization the presented API key spends for, and the key that acted, if the
 /// credential is a usable one.
+///
+/// The credential arrives as `Authorization: Bearer`, or as `x-api-key` — the spelling an
+/// Anthropic SDK sends; both name the same organization key on `/v1`.
 async fn resolve_key(state: &AppState, headers: &HeaderMap) -> Option<(Organization, ActingKey)> {
-    let presented = bearer(headers)?;
+    let presented = bearer(headers).or_else(|| api_key_header(headers))?;
     state.db.authenticate(presented).await.ok().flatten()
 }
 
@@ -90,6 +93,17 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
         .to_str()
         .ok()?
         .strip_prefix("Bearer ")
+        .map(str::trim)
+        .filter(|secret| !secret.is_empty())
+}
+
+/// The `x-api-key` credential, if the header is there and readable — Anthropic's spelling
+/// of the same API key the Bearer scheme carries.
+fn api_key_header(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get("x-api-key")?
+        .to_str()
+        .ok()
         .map(str::trim)
         .filter(|secret| !secret.is_empty())
 }

@@ -298,6 +298,96 @@ impl IntoResponse for GatewayError {
     }
 }
 
+impl GatewayError {
+    /// The same error in Anthropic's envelope, for `/v1/messages`: an Anthropic SDK
+    /// reads `{"type": "error", "error": {"type": …, "message": …}}`, so the variant
+    /// maps to Anthropic's spelling while `code` keeps oxsum's own. Statuses and the
+    /// rate-limit headers are unchanged — the shapes differ, the answer does not.
+    pub fn into_anthropic_response(self) -> Response {
+        let (status, message, kind, code) = match self {
+            Self::Invalid { message, .. } => (
+                StatusCode::BAD_REQUEST,
+                message,
+                "invalid_request_error",
+                "VALIDATION_ERROR",
+            ),
+            Self::InsufficientFunds(message) => (
+                StatusCode::PAYMENT_REQUIRED,
+                message,
+                "invalid_request_error",
+                "INSUFFICIENT_FUNDS",
+            ),
+            Self::KeyLimitExceeded(message) => (
+                StatusCode::TOO_MANY_REQUESTS,
+                message,
+                "invalid_request_error",
+                "KEY_LIMIT_EXCEEDED",
+            ),
+            Self::RateLimited {
+                message,
+                code,
+                limit,
+                retry_after_secs,
+            } => {
+                let body = anthropic_error(&message, "rate_limit_error", code);
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    [
+                        ("retry-after", retry_after_secs.max(1).to_string()),
+                        ("x-ratelimit-limit", limit.to_string()),
+                        ("x-ratelimit-remaining", "0".to_owned()),
+                        ("x-ratelimit-reset", retry_after_secs.max(1).to_string()),
+                    ],
+                    Json(body),
+                )
+                    .into_response();
+            }
+            Self::Idempotency {
+                status,
+                message,
+                code,
+            } => (status, message, "invalid_request_error", code),
+            Self::Unauthorized => (
+                StatusCode::UNAUTHORIZED,
+                "missing or invalid API key".to_owned(),
+                "authentication_error",
+                "UNAUTHORIZED",
+            ),
+            Self::Forbidden(message) => (
+                StatusCode::FORBIDDEN,
+                message,
+                "permission_error",
+                "FORBIDDEN",
+            ),
+            Self::Conflict(message) => (
+                StatusCode::CONFLICT,
+                message,
+                "invalid_request_error",
+                "CONFLICT",
+            ),
+            Self::Upstream {
+                status,
+                message,
+                body,
+            } => match body {
+                // Upstream already speaks this format — Anthropic's error object carries
+                // `error` just like OpenAI's — so its own answer is passed through.
+                Some(body) if body.get("error").is_some() => {
+                    return (status, Json(body)).into_response();
+                }
+                _ => (status, message, "api_error", "UPSTREAM_ERROR"),
+            },
+            Self::Internal => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal error".to_owned(),
+                "api_error",
+                "INTERNAL_ERROR",
+            ),
+        };
+        (status, Json(anthropic_error(&message, kind, code))).into_response()
+    }
+}
+
 /// The OpenAI error object.
 fn error_response(
     status: StatusCode,
@@ -315,6 +405,19 @@ fn error_response(
         }
     });
     (status, Json(body)).into_response()
+}
+
+/// The Anthropic error envelope: `{"type": "error", "error": {…}}`, with oxsum's
+/// own code kept on `error.code` — extra fields do not disturb an Anthropic SDK.
+fn anthropic_error(message: &str, kind: &str, code: &str) -> Value {
+    json!({
+        "type": "error",
+        "error": {
+            "type": kind,
+            "message": message,
+            "code": code,
+        }
+    })
 }
 
 #[cfg(test)]
@@ -397,5 +500,49 @@ mod tests {
         let (status, body) = body_of(GatewayError::Internal).await;
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(body["error"]["message"], "internal error");
+    }
+
+    /// `/v1/messages` answers in Anthropic's envelope: `type: "error"` wrapping an
+    /// error object whose type is Anthropic's spelling, with oxsum's code kept.
+    #[tokio::test]
+    async fn errors_carry_the_anthropic_shape_on_the_messages_surface() {
+        let response = GatewayError::model_not_served("nope").into_anthropic_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("collects the test's own body")
+            .to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).expect("the error body is JSON");
+        assert_eq!(body["type"], "error");
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+
+        // A rate-limit refusal keeps its headers and maps to `rate_limit_error`.
+        let response = GatewayError::RateLimited {
+            message: "slow down".to_owned(),
+            code: "RATE_LIMITED",
+            limit: 10,
+            retry_after_secs: 7,
+        }
+        .into_anthropic_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok()),
+            Some("7")
+        );
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("collects the test's own body")
+            .to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).expect("the error body is JSON");
+        assert_eq!(body["error"]["type"], "rate_limit_error");
+        assert_eq!(body["error"]["code"], "RATE_LIMITED");
     }
 }
