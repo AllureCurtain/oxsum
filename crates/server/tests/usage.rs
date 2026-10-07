@@ -323,6 +323,7 @@ async fn seed_request(
         usage: &usage,
         lines: &lines,
         matched_rule: None,
+        discount_percent: None,
         charged: cost_minor,
         freeze: freeze_minor,
     };

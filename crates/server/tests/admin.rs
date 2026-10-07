@@ -853,6 +853,7 @@ async fn the_anomalies_list_shows_the_turns_that_did_not_price_cleanly() {
             usage: &usage,
             lines: &lines,
             matched_rule: None,
+            discount_percent: None,
             charged: 60,
             freeze: 900_000,
         }
