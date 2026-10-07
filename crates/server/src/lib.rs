@@ -10,6 +10,7 @@ mod gateway;
 mod metrics;
 mod routes;
 mod web;
+pub mod webhooks;
 mod ws;
 
 use std::sync::Arc;

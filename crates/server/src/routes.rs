@@ -7,10 +7,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router, middleware};
 use oxsum_core::{
-    ApiKey, Consistency, CreatedApiKey, CreatedInvitation, CreatedSession, HeadSigningKey,
-    KeyPublication, Member, NewUser, Organization, Ownership, Principal, Registration, Role,
-    SESSION_COOKIE, Session, SessionPrincipal, SignedHead, Tenants, User, UserOrganization, Wallet,
-    WalletError, signing_key,
+    ApiKey, Consistency, CreatedApiKey, CreatedInvitation, CreatedSession, CreatedWebhook,
+    HeadSigningKey, KeyPublication, Member, NewUser, Organization, Ownership, Principal,
+    Registration, Role, SESSION_COOKIE, Session, SessionPrincipal, SignedHead, Tenants, User,
+    UserOrganization, Wallet, WalletError, WebhookDelivery, WebhookEndpoint, signing_key,
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -38,6 +38,12 @@ pub fn router(state: AppState) -> Router {
             delete(remove_member).patch(change_member_role),
         )
         .route("/org/ownership", post(transfer_ownership))
+        .route("/webhooks", get(list_webhooks).post(create_webhook))
+        .route("/webhooks/{endpoint_id}", delete(delete_webhook))
+        .route(
+            "/webhooks/{endpoint_id}/deliveries",
+            get(webhook_deliveries),
+        )
         .route("/session", get(session))
         .route("/session/organization", post(switch_organization))
         .route("/topups", post(top_up))
@@ -465,6 +471,13 @@ struct RedeemReq {
     password: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateWebhookReq {
+    url: String,
+    events: Vec<String>,
+}
+
 /// Mints an invitation link into the session's organization: the token is answered
 /// once, here. Owner or admin only — the same rule every membership write follows.
 async fn create_invitation(
@@ -677,6 +690,66 @@ async fn transfer_ownership(
         .db
         .transfer_ownership(principal.organization().id, actor, r.user_id)
         .await?)
+}
+
+/// Register a webhook endpoint; the signing secret is answered once, here.
+async fn create_webhook(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    ApiJson(r): ApiJson<CreateWebhookReq>,
+) -> ApiResult<CreatedWebhook> {
+    // Signing needs the sealing key; a deployment without one cannot register an
+    // endpoint it could never sign for.
+    let Some(secret) = state.config.secret() else {
+        return Err(WalletError::Misconfigured(
+            "webhooks need OXSUM_SECRET_KEY to sign deliveries".to_owned(),
+        )
+        .into());
+    };
+    ok(state
+        .db
+        .create_webhook(principal.organization().id, &r.url, &r.events, secret)
+        .await?)
+}
+
+/// The organization's webhook endpoints, newest first.
+async fn list_webhooks(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+) -> ApiResult<Vec<WebhookEndpoint>> {
+    ok(state.db.list_webhooks(principal.organization().id).await?)
+}
+
+/// Delete an endpoint — an id of another organization is not found, not forbidden.
+async fn delete_webhook(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(endpoint_id): Path<Uuid>,
+) -> ApiResult<WebhookEndpoint> {
+    match state
+        .db
+        .delete_webhook(principal.organization().id, endpoint_id)
+        .await?
+    {
+        Some(endpoint) => ok(endpoint),
+        None => Err(ApiError::not_found()),
+    }
+}
+
+/// An endpoint's recent deliveries — an id of another organization is not found.
+async fn webhook_deliveries(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(endpoint_id): Path<Uuid>,
+) -> ApiResult<Vec<WebhookDelivery>> {
+    match state
+        .db
+        .webhook_deliveries(principal.organization().id, endpoint_id)
+        .await?
+    {
+        Some(deliveries) => ok(deliveries),
+        None => Err(ApiError::not_found()),
+    }
 }
 
 /// Top up the acting organization's wallet.
