@@ -8,7 +8,7 @@ Every page and flow below carries a status: **shipped** means this repository do
 
 ## One-liner
 
-An OpenAI-compatible AI gateway. Users point base_url at oxsum and keep using any OpenAI client; every request freezes credit first, then settles against real usage. Every bill can be verified in the browser.
+An OpenAI- and Anthropic-compatible AI gateway. Users point base_url at oxsum and keep using either client's SDK; every request freezes credit first, then settles against real usage. Every bill can be verified in the browser.
 
 ## Demo path
 
@@ -113,15 +113,18 @@ v1 has no payment integration. Credit has four designed sources; the table says 
 
 ### Supported endpoints (shipped)
 
-- `POST /v1/chat/completions`, streaming and non-streaming
+- `POST /v1/chat/completions`, streaming and non-streaming — the OpenAI surface, served by `openai` channels
+- `POST /v1/messages`, streaming and non-streaming — the Anthropic Messages surface, served by `anthropic` channels, with errors in Anthropic's own envelope and `x-api-key` accepted as the credential spelling
 - `GET /v1/models`: lists only models with configured prices
-- `Idempotency-Key` on the chat endpoint makes a client retry the same turn: the identical request replays the first response (or the settled receipt for a streamed turn), a different body under the same key is refused 422, and a retry while the first turn still runs is refused 409. A retry never produces a second hold or charge.
+- `Idempotency-Key` on either turn endpoint makes a client retry the same turn: the identical request replays the first response (or the settled receipt for a streamed turn), a different body under the same key is refused 422, and a retry while the first turn still runs is refused 409. A retry never produces a second hold or charge.
 
-v1 has no embeddings, images, audio, Responses API or Anthropic Messages format. Request content is text-only; messages containing images get a 400. This is decided: the input token upper bound must be computable for the freeze promise to hold (see "How much to freeze" below). Image support is re-evaluated post-v1.
+The surfaces are protocol-native, never translated: a model an `openai` channel serves is not served on `/v1/messages`, and vice versa. On Anthropic's surface, `system` accepts a string or text blocks; a `tool_use`/`tool_result`/`thinking` content block contributes its serialized JSON to the input bound, and a media block (`image`, `document`, `audio`, `video`) is refused 400 — the same rule the OpenAI surface applies to its content parts. The normalization follows Anthropic's report: `input_tokens` excludes the cache counts, so the billed input adds `cache_read_input_tokens` and `cache_creation_input_tokens` back in, and the 5-minute/1-hour write tiers come from `cache_creation.ephemeral_*_input_tokens`.
+
+v1 has no embeddings, images, audio or Responses API. Request content is limited to what has a computable input bound; messages containing images get a 400. This is decided: the input token upper bound must be computable for the freeze promise to hold (see "How much to freeze" below). Image support is re-evaluated post-v1.
 
 ### Channels and prices (shipped)
 
-- Channels are configured by the platform admin: name, upstream base_url, upstream API key, served models, and the upstream protocol the channel speaks — `openai` today; the protocol selects the adapter that normalizes its usage reports, and a name with no adapter is refused at write time.
+- Channels are configured by the platform admin: name, upstream base_url, upstream API key, served models, and the upstream protocol the channel speaks — `openai` or `anthropic`; the protocol selects the adapter that normalizes its usage reports and the `/v1` surface its models answer on, and a name with no adapter is refused at write time.
 - In v1 one model maps to exactly one channel; no load balancing, no failover. The gateway never retries upstream automatically, because a retry might charge upstream twice.
 - Upstream API keys are stored encrypted; the admin API and the channels page show only the last 4 characters.
 - Each model's price is a full price set, not just two rates: the input and output prices (minor units per million tokens) and the model's max output, plus any of the priced dimensions — a cached-input rate, cache-write rates for the 5-minute and 1-hour provider tiers, a reasoning-token rate, and a flat per-request fee. A dimension with no rate folds into its side's base line: cached input bills at the input price, reasoning at the output price. The set may also carry the upstream's own prices for the same usage — the data the margin view reads; an organization's bill never shows it. Every price declares a billing `mode` (`chat` today; the field reserves embeddings, rerank and the rest).
