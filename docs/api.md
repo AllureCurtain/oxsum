@@ -46,6 +46,19 @@ An organization that draws its credit line settles monthly (issue #124): the pla
 
 Payments are not something the organization makes against a statement directly: any top-up or redemption repays the drawn credit line first, and the reconciliation that follows every money-in applies it to the oldest open statement — so paying off a bill is just funding the wallet.
 
+## Webhooks
+
+An organization registers HTTPS endpoints and oxsum POSTs a signed event to each one when money moves (issue #144). Endpoints live under the same credential check as the rest of the organization surface.
+
+- `POST /api/v1/webhooks` — register an endpoint: `{"url", "events"}`. `url` must be HTTPS, or HTTP only to localhost; `events` names the catalog entries it subscribes to (`request.settled` today). The answer carries `secret` — `whsec-` plus 48 hex — exactly once; afterwards only `secretLast4` is readable.
+- `GET /api/v1/webhooks` — the organization's endpoints, newest first, never the secret.
+- `DELETE /api/v1/webhooks/{endpointId}` — removes the endpoint; its queued deliveries go with it (the endpoint stops being called). Another organization's id is `NOT_FOUND`, not `FORBIDDEN`.
+- `GET /api/v1/webhooks/{endpointId}/deliveries` — the 50 most recent delivery records for the endpoint: `status` (`pending`, `sending`, `delivered`, `failed`), `attempts`, `responseStatus`, `lastError`, `nextAttemptAt`, `deliveredAt`.
+
+Delivery: the event is enqueued inside the settlement's own transaction, so a settled turn and its notification can never diverge, and a replayed settlement enqueues nothing twice. A background worker claims due rows (`FOR UPDATE SKIP LOCKED`, so workers never double-deliver), signs the stored payload bytes with the endpoint's secret and POSTs it with `x-oxsum-event`, `x-oxsum-delivery` and `x-oxsum-signature` headers. The signature is Stripe-shaped: `t=<unix>,v1=<hex>` where `v1` is HMAC-SHA256 of `"{t}.{body}"` — a receiver recomputes it over the raw body and compares in constant time; reject anything older than a few minutes. A non-2xx answer or an unreachable receiver reschedules on a backoff (10s, 1m, 5m, 15m, 30m, hourly) and the row is `failed` after ten attempts; a worker that dies mid-flight loses its lease after two minutes and the delivery is re-claimed.
+
+The `request.settled` envelope is `{id, type, created_at, org_id, data}`; `data` names the request (`requestId`, `model`, `channel`), the settlement (`kind`, `chargedMinor`, `freezeMinor`, `settlementEntryId`) and the usage (`inputTokens`, `outputTokens`) — enough to recompute or dispute the bill without another call.
+
 ## OpenAI-compatible gateway (`/v1`)
 
 Point an OpenAI client's `base_url` at `/v1` and everything else stays the client's own.
