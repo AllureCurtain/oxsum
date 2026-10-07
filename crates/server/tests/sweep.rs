@@ -233,6 +233,7 @@ fn usage_settlement(request_id: &str, charged: i64, freeze: i64) -> String {
         usage: &usage,
         lines: &lines,
         matched_rule: None,
+        discount_percent: None,
         charged,
         freeze,
     }

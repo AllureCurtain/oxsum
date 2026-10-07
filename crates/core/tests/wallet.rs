@@ -641,6 +641,7 @@ async fn a_gateway_settlement_names_its_key_and_its_record() {
         usage: &usage,
         lines: &lines,
         matched_rule: None,
+        discount_percent: None,
         charged: 77,
         freeze: 5 * ONE,
     };
@@ -800,6 +801,7 @@ async fn request_pages_walk_only_settled_turns() {
             usage: &usage,
             lines: &lines,
             matched_rule: None,
+            discount_percent: None,
             charged: ONE,
             freeze: ONE,
         };

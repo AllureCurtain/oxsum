@@ -329,6 +329,8 @@ struct World {
     app: Router,
     tenants: Tenants,
     tenant_id: String,
+    /// The registered organization's id — what the admin surface addresses it by.
+    organization_id: String,
     key: String,
     /// The first key's id, for the key-management endpoints.
     key_id: String,
@@ -480,6 +482,10 @@ async fn world_for(url: &str, top_up: i64, protocol: &str) -> World {
         .as_str()
         .expect("registration names a tenant")
         .to_owned();
+    let organization_id = registration["organization"]["id"]
+        .as_str()
+        .expect("registration names the organization")
+        .to_owned();
     let key_id = registration["apiKey"]["id"]
         .as_str()
         .expect("registration names the key")
@@ -498,6 +504,7 @@ async fn world_for(url: &str, top_up: i64, protocol: &str) -> World {
         app,
         tenants,
         tenant_id,
+        organization_id,
         key,
         key_id,
         script,
@@ -831,7 +838,7 @@ async fn a_conditional_price_bills_each_dimension_on_its_own_line() {
     // 2 reasoning at 8e6, and the 100-minor flat fee spelled per-million — one
     // ceiling over the sum.
     let record = world.settlement(&id).await.expect("the turn settled");
-    assert_eq!(record["v"], 3);
+    assert_eq!(record["v"], 4);
     assert_eq!(record["priceVersion"], 2);
     assert_eq!(record["matchedRule"]["serviceTier"], "priority");
     let lines = record["lines"].as_array().expect("itemized lines");
@@ -2639,4 +2646,199 @@ async fn an_anthropic_upstream_error_is_passed_through() {
     let record = world.settlement(&id).await.expect("the turn settled");
     assert_eq!(record["kind"], "upstream_error");
     assert_eq!(record["charged"], 0);
+}
+
+/// An organization discount lowers what its turns settle at: the gross lines
+/// still name the priced sum, `discountPercent` snapshots the percent that
+/// applied, and the verifier recomputes the discounted charge from the
+/// description alone (issue #158).
+#[tokio::test]
+async fn a_discounted_turn_charges_the_discounted_price() {
+    let world = world!(1_000_000);
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+
+    // Twenty percent off this organization's turns, written through the admin
+    // surface the way an operator writes it.
+    let admin = admin_app(&world);
+    let (status, body) = call(
+        &admin,
+        "POST",
+        "/api/v1/admin/discounts",
+        Some(json!({
+            "idempotencyKey": format!("disc-{}", world.suffix),
+            "organizationId": world.organization_id,
+            "percent": 20,
+        })),
+        Some(OPERATOR_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
+    let id = request_id(&response);
+    let (status, _) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Ten input tokens and two output tokens at one minor unit each is a gross
+    // of 12; the snapshot percent takes it to ceil(12 * 80 / 100) = 10.
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["kind"], "usage");
+    assert_eq!(record["discountPercent"], 20);
+    assert_eq!(record["charged"], 10);
+
+    let description = world
+        .settlement_description(&id)
+        .await
+        .expect("the turn settled");
+    assert!(description.contains("\"v\":4"), "{description}");
+    assert_eq!(
+        oxsum_core::verify_charge(&description),
+        oxsum_core::ChargeCheck::Recomputed
+    );
+
+    let wallet = world.wallet().await;
+    assert_eq!(wallet.reserved().await.unwrap(), 0);
+    assert_eq!(wallet.settled().await.unwrap(), 1_000_000 - 10);
+}
+
+/// A discount resolved when the turn starts is the percent the settlement
+/// snapshots: ending the row mid-turn does not change a turn already priced,
+/// and a turn starting after the end settles gross (issue #158).
+#[tokio::test]
+async fn a_discount_applies_at_the_turns_start() {
+    let world = world!(1_000_000);
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+    let admin = admin_app(&world);
+    let key = format!("disc-{}", world.suffix);
+    let (status, body) = call(
+        &admin,
+        "POST",
+        "/api/v1/admin/discounts",
+        Some(json!({
+            "idempotencyKey": key,
+            "organizationId": world.organization_id,
+            "percent": 50,
+        })),
+        Some(OPERATOR_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let discount_id = body["data"]["discountId"].as_str().unwrap().to_owned();
+
+    // End it, then turn: no percent applies to a turn starting after the end.
+    let (status, _) = call(
+        &admin,
+        "DELETE",
+        &format!("/api/v1/admin/discounts/{discount_id}"),
+        None,
+        Some(OPERATOR_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
+    let id = request_id(&response);
+    let (status, _) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["discountPercent"], Value::Null);
+    assert_eq!(record["charged"], 12);
+}
+
+/// A tier's model allowlist is enforced at admission: a model the package does
+/// not name is refused before the wallet is asked, and upstream never sees it
+/// (issue #158).
+#[tokio::test]
+async fn a_tier_allowlist_refuses_other_models() {
+    let world = world!(1_000_000);
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+
+    let admin = admin_app(&world);
+    let tier = format!("allow-{}", world.suffix);
+    let (status, body) = call(
+        &admin,
+        "PUT",
+        &format!("/api/v1/admin/tiers/{tier}"),
+        Some(json!({"modelAllowlist": ["some-other-model"]})),
+        Some(OPERATOR_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = call(
+        &admin,
+        "PATCH",
+        &format!("/api/v1/admin/organizations/{}", world.organization_id),
+        Some(json!({"idempotencyKey": format!("patch-{}", world.suffix), "tier": tier})),
+        Some(OPERATOR_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(world.script.seen().is_empty());
+    // A refused request never reaches the wallet: nothing reserved, nothing
+    // settled.
+    let wallet = world.wallet().await;
+    assert_eq!(wallet.reserved().await.unwrap(), 0);
+}
+
+/// A tier's requests-per-minute is one window shared by the organization, spent
+/// at admission beside the key's own allowance (issue #158).
+#[tokio::test]
+async fn a_tier_rate_limit_is_one_window_per_organization() {
+    let world = world!(1_000_000);
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+
+    let admin = admin_app(&world);
+    let tier = format!("rpm-{}", world.suffix);
+    let (status, body) = call(
+        &admin,
+        "PUT",
+        &format!("/api/v1/admin/tiers/{tier}"),
+        Some(json!({"requestsPerMinute": 1})),
+        Some(OPERATOR_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = call(
+        &admin,
+        "PATCH",
+        &format!("/api/v1/admin/organizations/{}", world.organization_id),
+        Some(json!({"idempotencyKey": format!("patch-{}", world.suffix), "tier": tier})),
+        Some(OPERATOR_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // The first request spends the window's only slot.
+    let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
+    let (status, _) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // The second, immediately after, does not fit the one-per-minute window.
+    let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
 }
