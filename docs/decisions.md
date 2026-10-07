@@ -928,3 +928,15 @@ Two judgment calls, recorded:
 - **Refusals after the hold answer through `Ok`, not `Err`.** A post-hold upstream failure needs the head stamped with the settled charge (`0`), but `GatewayError::into_response` is called downstream of where the number exists — so those arms build and stamp the response themselves. Nothing is lost: the idempotency claim stores a finished non-streamed answer whether it arrives as `Ok` or as `Err(Upstream)`, so replay semantics are unchanged.
 
 The balance is read once at hold time — not twice, not on a timer — so a failed read omits the header rather than reporting a made-up number. Pinned by `crates/server/tests/gateway.rs` (headers on a non-streamed turn, the trailer on a streamed one, `charged: 0` on a post-hold refusal).
+
+## 2026-10-07 — A hold that cannot settle dead-letters instead of retrying forever (roadmap P4-4, issue #140)
+
+A watched hold whose settlement keeps failing used to retry every sweep pass indefinitely: the error went to the log, the row stayed, and the next minute tried again — no terminal state, no recorded failure mode, nothing on the operator's dashboard. `oxsum.open_holds` now carries the sweeper's bookkeeping (`sweep_attempts`, `last_error`, `last_attempt_at`, `dead_at`): every failed settle is counted and keeps its error, and at ten failures the row is dead-lettered.
+
+Three judgment calls, recorded:
+
+- **Dead-lettering slows the retry; it does not stop it.** A dead hold drops out of the minute cadence and retries once an hour (`last_attempt_at` is the gate), because most persistent failures are transient at that scale — a wedged ledger the operator fixes, a locked row that clears — and a stopped retry would strand the freeze forever once the cause is gone. `dead_at` is the first death, never refreshed: it says when the hold went bad, while `sweep_attempts` keeps counting the retries.
+- **The watch row, not a jobs table, owns the state.** The P8-1 jobs layer will generalize retries; the dead state could have waited for it, but a per-row flag on the table the sweeper already scans is one migration and needs no queue. When the jobs layer lands, `dead_at` reads as a task's dead state rather than a separate mechanism.
+- **The surface is the reconciliation report, not a new anomaly page.** Dead-lettered holds are drift by definition — a watched hold that refuses to settle — so they answer as the ninth class `holds_dead_lettered`, with `hold_key — last_error` as the sample detail. The in-flight admin list shows the same row with `deadAt`, `sweepAttempts` and `lastError`; the metrics scrape carries `oxsum_holds_dead_lettered_total` (transitions, counted once per hold at its tenth failure) and the `oxsum_dead_holds` gauge.
+
+Pinned by `crates/server/tests/sweep.rs` (a persistently failing hold dead-letters, leaves the minute pass, re-enters on the hourly gate, and lands in the report), `crates/server/tests/admin.rs` (the payload fields) and `crates/server/tests/metrics.rs` (the gauge).
