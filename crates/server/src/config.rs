@@ -257,7 +257,7 @@ impl Config {
     /// The key that opens sealed channel credentials, or `None` when none is configured — in which
     /// case this deployment can hold no channels at all ([`crate::app`] enforces that).
     #[must_use]
-    pub(crate) fn secret(&self) -> Option<&SecretKey> {
+    pub fn secret(&self) -> Option<&SecretKey> {
         self.secret.as_ref()
     }
 

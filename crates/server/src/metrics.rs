@@ -55,6 +55,8 @@ const HOLDS_DEAD_LETTERED: &str = "oxsum_holds_dead_lettered_total";
 const OPEN_HOLDS: &str = "oxsum_open_holds";
 /// Dead-lettered watch rows right now — refreshed on each scrape like [`OPEN_HOLDS`].
 const DEAD_HOLDS: &str = "oxsum_dead_holds";
+/// Webhook deliveries attempted, by `outcome` (`delivered`/`retried`/`failed`).
+const WEBHOOK_DELIVERIES: &str = "oxsum_webhook_deliveries_total";
 /// The shared connection pool, by `state` (`open`/`idle`) — refreshed on each scrape.
 const POOL_CONNECTIONS: &str = "oxsum_db_pool_connections";
 
@@ -177,6 +179,10 @@ impl Metrics {
                 HOLDS_DEAD_LETTERED,
                 "Holds whose sweep failures dead-lettered them.",
             ),
+            (
+                WEBHOOK_DELIVERIES,
+                "Webhook deliveries attempted, by outcome.",
+            ),
         ];
         for (name, help) in DESCRIPTIONS {
             self.recorder
@@ -283,6 +289,12 @@ pub(crate) fn rate_limited(metrics: &Metrics, surface: &'static str) {
 /// What the gateway records for an `Idempotency-Key` claim's outcome.
 pub(crate) fn claim(metrics: &Metrics, outcome: &'static str) {
     metrics.count(IDEMPOTENCY_CLAIMS, 1, &[("outcome", outcome.to_owned())]);
+}
+
+/// What the webhook worker records after a delivery attempt — `delivered`,
+/// `retried` (inside the budget) or `failed` (the budget ran out).
+pub(crate) fn webhook_delivery(metrics: &Metrics, outcome: &'static str) {
+    metrics.count(WEBHOOK_DELIVERIES, 1, &[("outcome", outcome.to_owned())]);
 }
 
 /// What the relay records at settlement: the kind, the charge, the tokens and the turn's age.

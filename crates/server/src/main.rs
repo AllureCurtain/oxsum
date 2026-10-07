@@ -45,7 +45,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // A crashed gateway turn leaves its hold outstanding; the sweeper releases holds older than
     // the configured timeout, every minute. It also runs once right away, so a restart heals
     // what the crashed process left behind without waiting for the first interval.
-    let _sweeper = spawn_sweeper(db, config.hold_timeout(), metrics);
+    let _sweeper = spawn_sweeper(db.clone(), config.hold_timeout(), metrics.clone());
+    // The webhook worker signs and posts queued deliveries; it needs the sealing
+    // key to open endpoint secrets, so a deployment without OXSUM_SECRET_KEY runs
+    // without one — `POST /api/v1/webhooks` refuses there too.
+    let _webhook_worker = config.secret().cloned().map(|secret| {
+        oxsum_server::webhooks::spawn_worker(db, reqwest::Client::new(), secret, metrics)
+    });
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "oxsum listening");
     axum::serve(listener, app)
