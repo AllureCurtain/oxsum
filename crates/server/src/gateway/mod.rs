@@ -361,6 +361,9 @@ async fn run(
             end_user: request.attribution.end_user.clone(),
             service_tier: request.attribution.service_tier.clone(),
             tags: request.attribution.tags.clone(),
+            sweep_attempts: 0,
+            last_error: None,
+            dead_at: None,
         })
         .await
     {

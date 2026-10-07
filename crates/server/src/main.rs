@@ -70,10 +70,20 @@ fn spawn_sweeper(
             let older_than = OffsetDateTime::now_utc() - timeout;
             let on = OffsetDateTime::now_utc().date();
             match sweep_stale_holds(&db, &tenants, older_than, on).await {
-                Ok(resolved) => {
-                    if resolved > 0 {
-                        metrics.swept(resolved as u64);
-                        tracing::info!(resolved, "the hold sweeper resolved stale holds");
+                Ok(report) => {
+                    if report.resolved > 0 {
+                        metrics.swept(report.resolved as u64);
+                        tracing::info!(
+                            resolved = report.resolved,
+                            "the hold sweeper resolved stale holds"
+                        );
+                    }
+                    if report.dead_lettered > 0 {
+                        metrics.dead_lettered(report.dead_lettered as u64);
+                        tracing::warn!(
+                            dead_lettered = report.dead_lettered,
+                            "the hold sweeper dead-lettered holds whose settlement keeps failing"
+                        );
                     }
                 }
                 Err(error) => {
