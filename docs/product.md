@@ -48,7 +48,7 @@ Two shipped pages are readable more widely than the "Who" column suggests. The t
   - Both modes ship, and the links ship with them.
 - Registration takes a password of at least 12 characters. Length is the only rule: composition classes and expiry cost users more than they buy.
 - Passwords are hashed before the database transaction opens, so a slow argon2 hash never holds a connection.
-- GitHub login is post-v1. It suits a GitHub-hosted piece, but deployers would have to configure an OAuth app; v1 gets email login solid first.
+- GitHub OAuth login ships (issue #152) as a second credential beside the password, enabled only when the deployment configures the app pair (`OXSUM_GITHUB_CLIENT_ID`, `OXSUM_GITHUB_CLIENT_SECRET` and `OXSUM_PUBLIC_URL` together): the login page draws "Continue with GitHub", the flow mints its single-use CSRF state, and the callback resolves the provider-verified email — a linked `oauth_accounts` identity first, then an email match that links it, otherwise a registration when signup is `open` (an `invite` deployment refuses new accounts there but still logs existing ones in). The account the callback creates has no usable password — the reset flow is how one gets set — and its email lands verified because the provider already did that work. A deployment without the pair draws no button and answers the endpoints 404.
 
 ### Organizations
 

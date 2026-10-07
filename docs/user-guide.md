@@ -32,6 +32,7 @@ Steps:
 
 Notes:
 
+- When the deployment configures GitHub OAuth, the login page also shows **Continue with GitHub**: it takes you to GitHub and back, signs you into the account your verified GitHub email belongs to — or registers you when the deployment allows open signup — and the session that lands is the same `oxsum_session` cookie a password login mints. An account created this way has no password until you set one through the reset flow. The page learns whether the button exists from `GET /api/v1/auth/methods`, the one unauthenticated read the auth surface offers.
 - The session expires thirty days after login, and it stops working the moment your membership in the organization is gone.
 - When the deployment sends email, registration and an invitation's redemption mail a verification link; the dashboard shows an unverified address a reminder with a resend (a minute between mails), and the link verifies the address for good. `GET /api/v1/session` reports the state as `user.emailVerified`. A deployment without a mailer skips all of it — nothing is mailed, nothing is reminded.
 - Every `/api/v1` endpoint accepts the cookie wherever it accepts a Bearer key; the gateway (`/v1`) takes an API key only.
