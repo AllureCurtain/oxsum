@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.36.0
+  version: 0.37.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -165,6 +165,15 @@ info:
     revokes every session the user holds. A deployment without a mailer
     registers and logs in as before; `verify/request` is the one endpoint that
     answers `SERVICE_UNAVAILABLE` there, because the mail is the feature.
+    0.37.0 adds OAuth login, GitHub first: `GET /api/v1/auth/oauth/github`
+    redirects to the provider's authorize page carrying a single-use state, and
+    `GET /api/v1/auth/oauth/github/callback` consumes the code and the state,
+    resolves the account — a linked identity first, then a verified-email match,
+    and otherwise a registration that respects `OXSUM_SIGNUP` — mints a session
+    and redirects to the dashboard. Both endpoints are browser redirects, not
+    JSON: a failure answers `303` back to `/login`, not an error body. The same
+    release adds `GET /api/v1/auth/methods`, the unauthenticated discovery the
+    login page reads to know which buttons to draw.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie, except
     `/api/v1/auth/login`, `/api/v1/auth/logout` and `/api/v1/auth/register`, which take no
@@ -320,6 +329,82 @@ paths:
                 required: [data]
                 properties:
                   data: { $ref: "#/components/schemas/LogoutResponse" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/auth/methods:
+    get:
+      summary: Which login methods this deployment offers
+      description: |
+        The unauthenticated discovery the login page needs to know which
+        buttons to draw: `oauthGithub` is true when the GitHub OAuth pair is
+        configured and `/api/v1/auth/oauth/github` will answer its redirect.
+      security: []
+      responses:
+        "200":
+          description: The methods on offer
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/AuthMethods" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/auth/oauth/github:
+    get:
+      summary: Start a GitHub OAuth login
+      description: |
+        The first leg of the OAuth flow: answers `303 See Other` to GitHub's
+        authorize page with `scope=read:user user:email` and a `state` minted
+        server-side — single-use and ten-minute-lived, so a callback carries a
+        token that can be spent once ever. The callback URL is built from
+        `OXSUM_PUBLIC_URL`, which the OAuth configuration requires.
+        A deployment without the provider pair configured answers `404`, and
+        this route is only ever a browser redirect — no body.
+      security: []
+      responses:
+        "303":
+          description: Redirect to the provider's authorize page
+          headers:
+            Location:
+              description: "the authorize URL: `{authorize}?client_id=…&redirect_uri=…&scope=read:user user:email&state=…`"
+              schema: { type: string }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/auth/oauth/github/callback:
+    get:
+      summary: Finish a GitHub OAuth login
+      description: |
+        The provider's redirect lands here with `code` and `state`. The state is
+        consumed atomically — an unknown, spent or expired one rejects the whole
+        attempt — the code is exchanged for an access token, and the account
+        resolves by the primary **verified** email the provider reports: a
+        linked `oauth_accounts` row first, then an email match that links the
+        identity, and otherwise a registration when `OXSUM_SIGNUP=open` (an
+        `invite` deployment refuses new accounts here). Success mints a session
+        and answers `303` to `/dashboard` with the session `Set-Cookie`; every
+        failure answers `303` back to `/login?error=oauth`, because the caller
+        is a browser mid-redirect, not an API client.
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema: { type: string }
+        - name: state
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "303":
+          description: Redirect to `/dashboard` with the session cookie on success, to `/login?error=oauth` on any failure
+          headers:
+            Location:
+              description: "`/dashboard` or `/login?error=oauth`"
+              schema: { type: string }
+            Set-Cookie:
+              description: "the session cookie on success — `oxsum_session=<token>; Path=/; HttpOnly; SameSite=Lax`, plus `; Secure` when configured"
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/auth/verify/request:
     post:
@@ -2470,6 +2555,11 @@ components:
     LogoutResponse:
       type: object
       description: "empty: the logout is in the Set-Cookie header that clears the cookie"
+    AuthMethods:
+      type: object
+      required: [oauthGithub]
+      properties:
+        oauthGithub: { type: boolean, description: "true when the GitHub OAuth client pair is configured" }
     Organization:
       type: object
       required: [id, name, tenantId, kind, createdAt]
