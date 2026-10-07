@@ -234,6 +234,10 @@ async fn a_scrape_counts_requests_and_reports_the_pool() {
         sample(&body, "oxsum_open_holds", &[]).is_some(),
         "the open-holds gauge is reported:\n{body}"
     );
+    assert!(
+        sample(&body, "oxsum_dead_holds", &[]).is_some(),
+        "the dead-holds gauge is reported:\n{body}"
+    );
     let pool = sample(&body, "oxsum_db_pool_connections", &["state=\"open\""])
         .expect("the pool gauge is reported");
     assert!(value(pool) >= 1.0, "{pool}");

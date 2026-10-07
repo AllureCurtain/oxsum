@@ -435,6 +435,9 @@ async fn billing_socket_sends_a_snapshot_then_live_events() {
         end_user: None,
         service_tier: None,
         tags: Default::default(),
+        sweep_attempts: 0,
+        last_error: None,
+        dead_at: None,
     })
     .await
     .expect("the hold is watched");
