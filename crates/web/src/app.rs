@@ -152,26 +152,26 @@ mod browser {
         let _ = Request::post("/api/v1/auth/logout").send().await;
     }
 
-    /// Whether this deployment has GitHub OAuth configured — the login page's
-    /// only read before a credential exists (issue #152). Any failure reads as
-    /// "not configured": the button it gates is a courtesy, not the flow.
-    pub async fn github_oauth() -> bool {
-        #[derive(serde::Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Methods {
-            oauth_github: bool,
-        }
+    /// What `GET /api/v1/auth/methods` answers — the auth surface's only
+    /// unauthenticated read (issues #152, #154).
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct AuthMethods {
+        pub oauth_github: bool,
+        pub turnstile_site_key: Option<String>,
+    }
+
+    /// The methods on offer, or `None` when the read itself failed — callers
+    /// treat it as "not configured", because the surface it gates is a
+    /// courtesy, not the flow.
+    pub async fn auth_methods() -> Option<AuthMethods> {
         #[derive(serde::Deserialize)]
         struct Envelope {
-            data: Methods,
+            data: AuthMethods,
         }
         match Request::get("/api/v1/auth/methods").send().await {
-            Ok(response) if response.ok() => response
-                .json::<Envelope>()
-                .await
-                .map(|e| e.data.oauth_github)
-                .unwrap_or(false),
-            _ => false,
+            Ok(response) if response.ok() => response.json::<Envelope>().await.ok().map(|e| e.data),
+            _ => None,
         }
     }
 
@@ -181,6 +181,7 @@ mod browser {
         token: &'a str,
         email: &'a str,
         password: &'a str,
+        turnstile_token: Option<&'a str>,
     }
 
     /// The parts of a redeemed registration the page shows: where the account landed,
@@ -217,12 +218,18 @@ mod browser {
     }
 
     /// Registers through an invitation link: the token is the credential.
-    pub async fn redeem(token: &str, email: &str, password: &str) -> Result<Redeemed, String> {
+    pub async fn redeem(
+        token: &str,
+        email: &str,
+        password: &str,
+        turnstile_token: Option<&str>,
+    ) -> Result<Redeemed, String> {
         let response = Request::post("/api/v1/invitations/redeem")
             .json(&RedeemBody {
                 token,
                 email,
                 password,
+                turnstile_token,
             })
             .map_err(|_| "could not build the request".to_owned())?
             .send()
@@ -404,7 +411,12 @@ fn LoginPage() -> impl IntoView {
     Effect::new(move |_| {
         #[cfg(feature = "hydrate")]
         leptos::task::spawn_local(async move {
-            set_github.set(browser::github_oauth().await);
+            set_github.set(
+                browser::auth_methods()
+                    .await
+                    .map(|methods| methods.oauth_github)
+                    .unwrap_or(false),
+            );
         });
         #[cfg(not(feature = "hydrate"))]
         let _ = &set_github;
@@ -672,6 +684,50 @@ fn ResetPasswordPage() -> impl IntoView {
     }
 }
 
+/// Loads the Turnstile script once — tagged with a marker attribute, so a
+/// revisit does not stack another copy (issue #154).
+#[cfg(feature = "hydrate")]
+fn inject_turnstile() {
+    let Some(document) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+    if document
+        .query_selector("script[data-turnstile]")
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return;
+    }
+    if let (Ok(script), Some(head)) = (document.create_element("script"), document.head()) {
+        let _ = script.set_attribute(
+            "src",
+            "https://challenges.cloudflare.com/turnstile/v0/api.js",
+        );
+        let _ = script.set_attribute("async", "");
+        let _ = script.set_attribute("defer", "");
+        let _ = script.set_attribute("data-turnstile", "");
+        let _ = head.append_child(&script);
+    }
+}
+
+/// The widget's current answer: the hidden input it maintains inside its div.
+/// `None` when the check is not configured or the widget has not answered yet.
+#[cfg(feature = "hydrate")]
+fn turnstile_response() -> Option<String> {
+    use wasm_bindgen::JsCast;
+    let input = web_sys::window()?
+        .document()?
+        .query_selector("input[name=\"cf-turnstile-response\"]")
+        .ok()??
+        .dyn_into::<web_sys::HtmlInputElement>()
+        .ok()?;
+    // The widget keeps its answer on the element's `value` property, not the
+    // attribute — `get_attribute` would always read the empty initial markup.
+    let value = input.value();
+    (!value.is_empty()).then_some(value)
+}
+
 /// Registers through an invitation link (`/register?invite=<token>`), then offers the
 /// way to the login page. The link carries the credential, so this page works without
 /// a session — in an `invite`-mode deployment it is the only way in.
@@ -683,10 +739,32 @@ fn RegisterPage() -> impl IntoView {
     let (password, set_password) = signal(String::new());
     let (error, set_error) = signal(Option::<String>::None);
     let (busy, set_busy) = signal(false);
+    // The Turnstile site key when the deployment runs the anti-bot check —
+    // `auth/methods` answers it, and the widget renders only where the check
+    // exists (issue #154).
+    let (turnstile, set_turnstile) = signal(Option::<String>::None);
     // The account once it exists: the organization it joined and its first API key.
     // The secret is shown here and nowhere else, like every key the API mints.
     #[cfg(feature = "hydrate")]
     let (joined, set_joined) = signal(Option::<(String, String, bool)>::None);
+
+    Effect::new(move |_| {
+        #[cfg(feature = "hydrate")]
+        leptos::task::spawn_local(async move {
+            if let Some(key) = browser::auth_methods()
+                .await
+                .and_then(|methods| methods.turnstile_site_key)
+            {
+                set_turnstile.set(Some(key));
+                // The widget's script goes in after the div lands: api.js
+                // implicit-renders `.cf-turnstile` elements present when it
+                // executes, and the signal set above is synchronous.
+                inject_turnstile();
+            }
+        });
+        #[cfg(not(feature = "hydrate"))]
+        let _ = &set_turnstile;
+    });
 
     let submit = move |ev: web_sys::SubmitEvent| {
         ev.prevent_default();
@@ -696,8 +774,13 @@ fn RegisterPage() -> impl IntoView {
             leptos::task::spawn_local(async move {
                 set_busy.set(true);
                 set_error.set(None);
-                match browser::redeem(&token, &email.get_untracked(), &password.get_untracked())
-                    .await
+                match browser::redeem(
+                    &token,
+                    &email.get_untracked(),
+                    &password.get_untracked(),
+                    turnstile_response().as_deref(),
+                )
+                .await
                 {
                     Ok(redeemed) => set_joined.set(Some((
                         redeemed.organization.name,
@@ -776,6 +859,11 @@ fn RegisterPage() -> impl IntoView {
                                 on:input=move |ev| set_password.set(event_target_value(&ev))
                             />
                         </label>
+                        {move || turnstile.get().map(|key| view! {
+                            // The widget implicit-renders into this div and
+                            // writes its answer to a hidden input it owns.
+                            <div class="cf-turnstile" data-sitekey=key></div>
+                        })}
                         <button type="submit" prop:disabled=move || busy.get()>
                             {move || if busy.get() { "Registering…" } else { "Register" }}
                         </button>
