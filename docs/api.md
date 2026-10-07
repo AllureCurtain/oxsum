@@ -180,6 +180,17 @@ A user belongs to one organization per membership, and a session acts as exactly
 - `POST /api/v1/orgs` — create a `team` organization. Body `{"name": "…"}`, trimmed, 1–80 characters; the user becomes its owner. There is no `personal` kind to create — a personal organization is exactly what signup makes. The session keeps acting as the organization it had.
 - `POST /api/v1/session/organization` — switch the acting organization. Body `{"organizationId": "…"}` naming a membership; anything else is `NOT_FOUND`, so the answer never says whether an organization exists. The session row is updated: every request after this one, and every reload, acts as the chosen organization. Answers the `SessionInfo` now in force.
 
+## Email flows
+
+The verification and password-reset mails, shipped when the deployment configures a mailer (`OXSUM_SMTP_URL`, `OXSUM_MAIL_FROM` and `OXSUM_PUBLIC_URL` together — a subset is a startup error). A token is `oxt-` plus 32 random bytes, stored only as its SHA-256 and named for its purpose — a token minted for one mail serves no other. Consumption is a single statement that checks live-and-unused and stamps the spend, so a token redeems once ever; unknown, spent and expired all answer the same `NOT_FOUND`. A verification link lives seven days, a reset link one hour.
+
+- `POST /api/v1/auth/verify/request` — mail the session user a fresh verification link. Session-only: an API key names no user and is `FORBIDDEN`. Answers `{"sent", "alreadyVerified"}` — `sent: false` when the sixty-second resend cooldown since the last mint has not passed, `alreadyVerified: true` once the address is verified. The one endpoint that reports a deployment without a mailer: 503 `SERVICE_UNAVAILABLE`, because sending the mail is its whole job.
+- `POST /api/v1/auth/verify` — consume a verification token. Public: the token is the credential. Body `{"token": "…"}`; answers `{"verified": true}` and sets `emailVerified` on the user, which the session payload carries from then on.
+- `POST /api/v1/auth/password/forgot` — mail a reset link when the address has an account. Public, and deliberately indistinguishable: a known and an unknown address both answer an empty 200, and a send failure answers the same — the response never says whether the account exists.
+- `POST /api/v1/auth/password/reset` — consume a reset token and set the password. Body `{"token": "…", "password": "…"}`; answers `{"sessionsRevoked"}` — every session the user held dies with the old password, the admin reset's semantics self-served through the mail.
+
+Registration and invitation redemption mail the verification link themselves and say so in `verificationSent`; a send failure there logs and answers `false` rather than failing the request — the account stands, and `verify/request` is the retry.
+
 ## Membership management
 
 A tenant is an organization and its memberships carry a role (owner, admin, member). Managing them is a *person's* action: these four endpoints require the session cookie and refuse a bearer API key, because a key is not a person and names no role. This is the one place a key does not act with the organization's full authority (docs/decisions.md, "membership management is a person's action"). The rules are enforced in `crates/core/src/orgs.rs`, so the members page's server functions refuse exactly what these endpoints refuse.

@@ -33,6 +33,7 @@ Steps:
 Notes:
 
 - The session expires thirty days after login, and it stops working the moment your membership in the organization is gone.
+- When the deployment sends email, registration and an invitation's redemption mail a verification link; the dashboard shows an unverified address a reminder with a resend (a minute between mails), and the link verifies the address for good. `GET /api/v1/session` reports the state as `user.emailVerified`. A deployment without a mailer skips all of it — nothing is mailed, nothing is reminded.
 - Every `/api/v1` endpoint accepts the cookie wherever it accepts a Bearer key; the gateway (`/v1`) takes an API key only.
 - Members see and revoke only the keys they created; owners and admins see and revoke every key of the organization. Keys you mint while logged in record you as their creator.
 
@@ -457,7 +458,7 @@ The organizations page (`/admin/organizations`) lists every organization the led
 
 A deployment can also start each new organization's wallet with credits: `OXSUM_SIGNUP_BONUS_MINOR` (default 0) grants that amount at self-registration, booked as an adjustment whose reason is "signup bonus". An invited account joins an existing organization and is granted nothing.
 
-A forgotten password is recovered by the operator, not by the user — v1 sends no email, so there is no self-service reset. `POST /api/v1/admin/users/{userId}/password-reset` with `{"newPassword": "…"}` sets the replacement and revokes every session the user held at once; the answer's `sessionsRevoked` says how many died with it.
+A forgotten password resets itself when the deployment sends mail: the login page's "Forgot your password?" opens `/forgot-password`, the mailed link lands on `/reset-password`, and setting the new password revokes every session the account held — the admin reset's semantics, self-served. The forgot endpoint answers the same whether or not the address has an account, so it reveals nothing. A deployment without a mailer keeps the operator path: `POST /api/v1/admin/users/{userId}/password-reset` with `{"newPassword": "…"}` sets the replacement and revokes every session the user held at once; the answer's `sessionsRevoked` says how many died with it.
 
 The in-flight page (`/admin/in-flight`) lists every hold the platform is currently reserving, across all organizations and newest first — the organization, the request id, the model and channel, the price version the turn froze at, the frozen amount and when it opened. A hold that settled leaves the list; one older than the hold timeout (30 minutes) is one the sweeper is about to release as `swept`. A hold whose sweep keeps failing is marked `dead` after ten failed attempts — it retries hourly from then on, and the reconciliation page lists it under `holds_dead_lettered` for an operator to follow up.
 
