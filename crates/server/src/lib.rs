@@ -9,6 +9,7 @@ mod error;
 mod gateway;
 pub mod mail;
 mod metrics;
+pub mod oauth;
 mod routes;
 mod web;
 pub mod webhooks;

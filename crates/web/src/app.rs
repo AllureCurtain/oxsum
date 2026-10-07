@@ -152,6 +152,29 @@ mod browser {
         let _ = Request::post("/api/v1/auth/logout").send().await;
     }
 
+    /// Whether this deployment has GitHub OAuth configured — the login page's
+    /// only read before a credential exists (issue #152). Any failure reads as
+    /// "not configured": the button it gates is a courtesy, not the flow.
+    pub async fn github_oauth() -> bool {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Methods {
+            oauth_github: bool,
+        }
+        #[derive(serde::Deserialize)]
+        struct Envelope {
+            data: Methods,
+        }
+        match Request::get("/api/v1/auth/methods").send().await {
+            Ok(response) if response.ok() => response
+                .json::<Envelope>()
+                .await
+                .map(|e| e.data.oauth_github)
+                .unwrap_or(false),
+            _ => false,
+        }
+    }
+
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     struct RedeemBody<'a> {
@@ -344,6 +367,20 @@ fn LoginPage() -> impl IntoView {
     let (error, set_error) = signal(Option::<String>::None);
     let (busy, set_busy) = signal(false);
     let navigate = use_navigate();
+    let query = use_query_map();
+    // Whether the deployment offers GitHub OAuth: the unauthenticated
+    // `auth/methods` read, so the button only exists where the flow does.
+    let (github, set_github) = signal(false);
+
+    // A bounced OAuth callback lands back here with `?error=oauth`; the detail
+    // stays in the server's logs, the page just says the flow failed.
+    Effect::new(move |_| {
+        if query.read().get("error").as_deref() == Some("oauth") {
+            set_error.set(Some(
+                "GitHub sign-in did not complete — try again, or use your password.".to_owned(),
+            ));
+        }
+    });
 
     // Already logged in: the session endpoint says so, and there is nothing to do here.
     Effect::new({
@@ -362,6 +399,15 @@ fn LoginPage() -> impl IntoView {
             #[cfg(not(feature = "hydrate"))]
             let _ = &navigate;
         }
+    });
+
+    Effect::new(move |_| {
+        #[cfg(feature = "hydrate")]
+        leptos::task::spawn_local(async move {
+            set_github.set(browser::github_oauth().await);
+        });
+        #[cfg(not(feature = "hydrate"))]
+        let _ = &set_github;
     });
 
     let submit = move |ev: web_sys::SubmitEvent| {
@@ -421,6 +467,12 @@ fn LoginPage() -> impl IntoView {
                 <button type="submit" prop:disabled=move || busy.get()>
                     {move || if busy.get() { "Logging in…" } else { "Log in" }}
                 </button>
+                {move || github.get().then(|| view! {
+                    <p class="divider muted">"or"</p>
+                    <a class="oauth" href="/api/v1/auth/oauth/github">
+                        "Continue with GitHub"
+                    </a>
+                })}
                 <p class="muted">
                     <A href="/forgot-password">"Forgot your password?"</A>
                 </p>
