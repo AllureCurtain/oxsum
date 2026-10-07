@@ -1558,7 +1558,7 @@ async fn a_stalled_turn_is_swept_when_its_hold_times_out() {
         .execute(db.pool())
         .await
         .expect("ages the watch row");
-    let resolved = sweep_stale_holds(
+    let report = sweep_stale_holds(
         &db,
         &world.tenants,
         OffsetDateTime::now_utc() - Duration::from_secs(30 * 60),
@@ -1568,7 +1568,7 @@ async fn a_stalled_turn_is_swept_when_its_hold_times_out() {
     .expect("sweeps");
     // Not `== 1`: the count is every world's rows, and one another world left behind is this
     // pass's to resolve as well. What this test owns is checked below.
-    assert!(resolved >= 1, "the sweep resolved nothing at all");
+    assert!(report.resolved >= 1, "the sweep resolved nothing at all");
 
     let record = world.settlement_within(&id).await;
     assert_eq!(record["kind"], "swept");

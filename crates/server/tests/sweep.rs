@@ -97,6 +97,9 @@ fn watch(tenant: &str, n: u64, freeze: i64) -> (String, String, OpenHold) {
         end_user: None,
         service_tier: None,
         tags: Default::default(),
+        sweep_attempts: 0,
+        last_error: None,
+        dead_at: None,
     };
     (hold_key, request_id, hold)
 }
@@ -250,12 +253,12 @@ async fn a_stale_hold_is_swept_at_zero_and_recorded_as_an_anomaly() {
     assert_eq!(world.wallet.available().await.unwrap(), 600_000);
     age_row(&world.db, &hold_key, Duration::from_secs(3600)).await;
 
-    let resolved = sweep_stale_holds(&world.db, &world.tenants, stale_cutoff(), D)
+    let report = sweep_stale_holds(&world.db, &world.tenants, stale_cutoff(), D)
         .await
         .expect("sweeps");
     // This world's row is among those resolved. The count may also cover stale rows other worlds
     // left behind, which is correct, so it is not asserted exactly.
-    assert!(resolved >= 1, "the sweep resolved nothing at all");
+    assert!(report.resolved >= 1, "the sweep resolved nothing at all");
 
     // The whole freeze is released...
     assert_eq!(world.wallet.reserved().await.unwrap(), 0);
@@ -284,10 +287,10 @@ async fn a_stale_hold_is_swept_at_zero_and_recorded_as_an_anomaly() {
     );
     // A second pass finds nothing: the row is gone, and nothing can have aged a new one — only a
     // test ages rows, and this one still holds the sweep lock.
-    let resolved = sweep_stale_holds(&world.db, &world.tenants, stale_cutoff(), D)
+    let report = sweep_stale_holds(&world.db, &world.tenants, stale_cutoff(), D)
         .await
         .expect("sweeps again");
-    assert_eq!(resolved, 0);
+    assert_eq!(report.resolved, 0);
     assert!(!is_watched(&world.db, &hold_key).await);
 
     // The swept turn still left its usage row: zero counts and zero charge, but the
@@ -396,11 +399,11 @@ async fn a_watch_row_without_a_hold_is_cleaned_up_without_a_write() {
     age_row(&world.db, &hold_key, Duration::from_secs(3600)).await;
     let log_size = world.wallet.log_size().await.expect("the log size");
 
-    let resolved = sweep_stale_holds(&world.db, &world.tenants, stale_cutoff(), D)
+    let report = sweep_stale_holds(&world.db, &world.tenants, stale_cutoff(), D)
         .await
         .expect("sweeps");
     // This world's row is among those resolved, whatever else the shared table held.
-    assert!(resolved >= 1, "the sweep resolved nothing at all");
+    assert!(report.resolved >= 1, "the sweep resolved nothing at all");
     // No settlement was written for a hold that never existed...
     assert!(settlement_record(&world.wallet, &hold_key).await.is_none());
     assert_eq!(
@@ -437,7 +440,7 @@ async fn the_sweeper_and_a_late_settlement_cannot_both_take_effect() {
         );
         // The sweep resolves this round's row, among whatever else the shared table held.
         assert!(
-            swept.expect("the sweep runs") >= 1,
+            swept.expect("the sweep runs").resolved >= 1,
             "the sweep resolved nothing at all"
         );
 
@@ -470,4 +473,189 @@ async fn the_sweeper_and_a_late_settlement_cannot_both_take_effect() {
         assert!(!is_watched(&world.db, &hold_key).await);
     }
     unlock_sweeper(sweeper).await;
+}
+
+/// A hold whose sweep keeps failing is counted, keeps its last error, and at the tenth
+/// failure is dead-lettered: still watched, but retried hourly instead of every pass,
+/// and surfaced to the operator through the reconciliation report.
+#[tokio::test]
+async fn a_hold_that_keeps_failing_is_dead_lettered() {
+    let world = world!(1_000_000);
+    let sweeper = lock_sweeper(world.db.pool()).await;
+    // `bad tenant` fails `validate_tenant_id` inside `Wallet::open`, so every sweep of
+    // this row fails before it ever reaches `settle` — a persistent failure by
+    // construction rather than by a mock.
+    let (hold_key, _request_id, mut watch) = watch(&world.tenant, 9, 100_000);
+    watch.tenant_id = "bad tenant".to_owned();
+    world
+        .db
+        .note_open_hold(&watch)
+        .await
+        .expect("watches the hold");
+    age_row(&world.db, &hold_key, Duration::from_secs(3600)).await;
+
+    let mut dead_lettered = 0;
+    for _ in 0..oxsum_core::DEAD_AFTER_SWEEP_ATTEMPTS {
+        let report = sweep_stale_holds(&world.db, &world.tenants, stale_cutoff(), D)
+            .await
+            .expect("sweeps");
+        dead_lettered += report.dead_lettered;
+    }
+    // This world's row transitioned into dead exactly once; another world's row doing
+    // the same in the shared table would only add to the count.
+    assert!(dead_lettered >= 1, "nothing dead-lettered");
+
+    // The row is still watched — the freeze is still stranded — marked dead and
+    // holding the error that keeps killing it.
+    let row = sqlx::query(
+        "SELECT sweep_attempts, last_error, dead_at FROM oxsum.open_holds WHERE hold_key = $1",
+    )
+    .bind(&hold_key)
+    .fetch_one(world.db.pool())
+    .await
+    .expect("the dead row is still watched");
+    assert_eq!(
+        row.get::<i32, _>("sweep_attempts"),
+        oxsum_core::DEAD_AFTER_SWEEP_ATTEMPTS
+    );
+    assert!(
+        row.get::<Option<String>, _>("last_error")
+            .expect("the failure was recorded")
+            .contains("bad tenant"),
+        "the error says what is stuck"
+    );
+    let dead_at: Option<OffsetDateTime> = row.get("dead_at");
+    assert!(dead_at.is_some(), "the row is dead-lettered");
+
+    // The next minute pass leaves it alone: a dead row waits an hour between attempts.
+    let stale = world
+        .db
+        .stale_open_holds(stale_cutoff())
+        .await
+        .expect("stale list");
+    assert!(
+        !stale.iter().any(|h| h.hold_key == hold_key),
+        "a fresh dead row still swept every pass"
+    );
+
+    // An hour after the last failure it is eligible again — dead-lettering slows
+    // the retry, it does not abandon the hold.
+    sqlx::query(
+        "UPDATE oxsum.open_holds SET last_attempt_at = now() - interval '2 hours' \
+         WHERE hold_key = $1",
+    )
+    .bind(&hold_key)
+    .execute(world.db.pool())
+    .await
+    .expect("ages the last attempt");
+    let stale = world
+        .db
+        .stale_open_holds(stale_cutoff())
+        .await
+        .expect("stale list");
+    assert!(stale.iter().any(|h| h.hold_key == hold_key));
+
+    // The operator sees it two ways: the reconciliation report's ninth class and the
+    // admin holds list's dead marker.
+    let report = world.db.reconcile().await.expect("reconciles");
+    let class = report
+        .classes
+        .iter()
+        .find(|class| class.class == oxsum_core::DriftKind::HoldsDeadLettered)
+        .expect("the report carries the dead-letter class");
+    assert!(class.count >= 1, "the dead row is not drift");
+    assert!(
+        class.samples.iter().any(|s| s.detail.contains(&hold_key)),
+        "the sample names the dead hold: {:?}",
+        class.samples
+    );
+
+    // The row can never resolve — clean it up so later runs do not inherit it.
+    world
+        .db
+        .clear_open_hold(&hold_key)
+        .await
+        .expect("clears the dead row");
+    unlock_sweeper(sweeper).await;
+}
+
+/// The bookkeeping below the sweep: `note_sweep_failure` counts attempts, keeps the
+/// error, sets `dead_at` at the threshold and never resets it, and treats a key nobody
+/// watches as a no-op.
+#[tokio::test]
+async fn sweep_failure_bookkeeping_counts_to_dead() {
+    let world = world!(1);
+    let (hold_key, _request_id, watch) = watch(&world.tenant, 10, 100_000);
+    world
+        .db
+        .note_open_hold(&watch)
+        .await
+        .expect("watches the hold");
+
+    let attempts = world
+        .db
+        .note_sweep_failure(&hold_key, "the ledger is unreachable")
+        .await
+        .expect("records the failure");
+    assert_eq!(attempts, 1);
+    // A key nobody watches updates nothing and reads as zero attempts.
+    let attempts = world
+        .db
+        .note_sweep_failure("req-nobody:hold", "gone")
+        .await
+        .expect("a missing row is not an error");
+    assert_eq!(attempts, 0);
+
+    for _ in 1..oxsum_core::DEAD_AFTER_SWEEP_ATTEMPTS {
+        world
+            .db
+            .note_sweep_failure(&hold_key, "still down")
+            .await
+            .expect("records the failure");
+    }
+    let row = sqlx::query(
+        "SELECT sweep_attempts, last_error, dead_at FROM oxsum.open_holds WHERE hold_key = $1",
+    )
+    .bind(&hold_key)
+    .fetch_one(world.db.pool())
+    .await
+    .expect("the row");
+    assert_eq!(
+        row.get::<i32, _>("sweep_attempts"),
+        oxsum_core::DEAD_AFTER_SWEEP_ATTEMPTS
+    );
+    assert_eq!(
+        row.get::<Option<String>, _>("last_error").as_deref(),
+        Some("still down")
+    );
+    let dead_at: Option<OffsetDateTime> = row.get("dead_at");
+    let dead_at = dead_at.expect("the tenth failure dead-lettered the row");
+
+    // The marker is the first death, not the latest retry: one more failure bumps
+    // the count but keeps `dead_at`.
+    world
+        .db
+        .note_sweep_failure(&hold_key, "and again")
+        .await
+        .expect("records the failure");
+    let row =
+        sqlx::query("SELECT sweep_attempts, dead_at FROM oxsum.open_holds WHERE hold_key = $1")
+            .bind(&hold_key)
+            .fetch_one(world.db.pool())
+            .await
+            .expect("the row");
+    assert_eq!(
+        row.get::<i32, _>("sweep_attempts"),
+        oxsum_core::DEAD_AFTER_SWEEP_ATTEMPTS + 1
+    );
+    assert_eq!(
+        row.get::<Option<OffsetDateTime>, _>("dead_at"),
+        Some(dead_at)
+    );
+
+    world
+        .db
+        .clear_open_hold(&hold_key)
+        .await
+        .expect("clears the watch row");
 }
