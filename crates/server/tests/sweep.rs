@@ -155,7 +155,9 @@ async fn lock_sweeper(pool: &PgPool) -> sqlx::pool::PoolConnection<sqlx::Postgre
         .acquire()
         .await
         .expect("a connection for the sweep lock");
-    for _ in 0..600 {
+    // Three minutes, not one: the dead-letter test holds the lock through ten
+    // failing sweeps, which alone runs past a minute.
+    for _ in 0..1_800 {
         let locked: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
             .bind(SWEEP_LOCK)
             .fetch_one(&mut *conn)
@@ -166,7 +168,7 @@ async fn lock_sweeper(pool: &PgPool) -> sqlx::pool::PoolConnection<sqlx::Postgre
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!("could not take the sweep lock within a minute");
+    panic!("could not take the sweep lock within three minutes");
 }
 
 /// Releases the sweep lock.

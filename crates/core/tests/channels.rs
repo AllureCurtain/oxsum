@@ -147,6 +147,55 @@ async fn a_price_change_appends_a_version_and_leaves_the_old_one_readable() {
     );
 }
 
+/// The catalog reads the same current versions `serving` resolves, without the
+/// credential — `priced` for one model, `catalog` for all of them.
+#[tokio::test]
+async fn the_catalog_shows_the_current_price_and_no_credential() {
+    let url = db_or_skip!();
+    let db = db(&url).await;
+    let channel = fresh("cataloged");
+    let model = fresh("m");
+
+    db.set_channel(
+        &channel,
+        "https://upstream.example/v1",
+        "sk-hidden-9999",
+        "anthropic",
+        &key(),
+    )
+    .await
+    .unwrap();
+    db.append_price(&channel, &model, price(10, 20, 100))
+        .await
+        .unwrap();
+    let latest = db
+        .append_price(&channel, &model, price(30, 40, 200))
+        .await
+        .unwrap();
+
+    // `priced` resolves one model to its newest version, with channel and
+    // protocol and without opening the sealed credential.
+    let priced = db.priced(&model).await.unwrap().unwrap();
+    assert_eq!(priced.channel, channel);
+    assert_eq!(priced.protocol, "anthropic");
+    assert_eq!(priced.version, latest);
+    assert_eq!(priced.price, price(30, 40, 200));
+    assert!(db.priced(&fresh("absent")).await.unwrap().is_none());
+
+    // `catalog` is the same row for every model.
+    let catalog = db.catalog().await.unwrap();
+    let row = catalog.iter().find(|row| row.model == model).unwrap();
+    assert_eq!(row.channel, channel);
+    assert_eq!(row.version, latest);
+    // Every model appears once: the rollup picks the current version, not a row
+    // per version.
+    assert_eq!(catalog.iter().filter(|row| row.model == model).count(), 1);
+    // Nothing credential-shaped is on the row, and the payload serializes
+    // without it.
+    let json = serde_json::to_value(row).unwrap();
+    assert!(!json.to_string().contains("sk-hidden-9999"));
+}
+
 #[tokio::test]
 async fn the_price_table_refuses_to_be_rewritten() {
     let url = db_or_skip!();
