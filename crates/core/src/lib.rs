@@ -29,7 +29,7 @@ mod usage;
 mod users;
 mod wallet;
 
-pub use adapters::{OPENAI, UsageAdapter, adapter_for};
+pub use adapters::{ANTHROPIC, OPENAI, UsageAdapter, adapter_for};
 pub use billing::{
     BillLine, BillingMode, ItemizedCharge, MeteredUsage, Price, PriceBook, PriceRule, PriceSet,
     RuleMatch, Settlement, SettlementKind, SettlementRecord, UpstreamPrices, estimate_tokens,

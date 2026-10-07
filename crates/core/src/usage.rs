@@ -142,6 +142,65 @@ impl UsageRecord {
         self
     }
 
+    /// A stream that reports usage across several frames folds them into one record.
+    ///
+    /// Anthropic reports the input side in `message_start` and the output side,
+    /// cumulatively, in `message_delta`; OpenAI reports once. The merge is per
+    /// field: a count keeps the larger of the two reports, because the counts a
+    /// protocol reports mid-stream are cumulative, and the provider's raw object
+    /// merges shallowly so both frames' fields survive. A record produced this
+    /// way is validated exactly like a single-frame one before it is settled.
+    pub fn merge_report(&mut self, later: &Self) {
+        self.input_tokens = self.input_tokens.max(later.input_tokens);
+        self.output_tokens = self.output_tokens.max(later.output_tokens);
+        self.cached_tokens = self.cached_tokens.max(later.cached_tokens);
+        self.cache_write_5m_tokens = self.cache_write_5m_tokens.max(later.cache_write_5m_tokens);
+        self.cache_write_1h_tokens = self.cache_write_1h_tokens.max(later.cache_write_1h_tokens);
+        self.reasoning_tokens = self.reasoning_tokens.max(later.reasoning_tokens);
+        self.tool_calls = self.tool_calls.max(later.tool_calls);
+        self.image_input_tokens = self.image_input_tokens.max(later.image_input_tokens);
+        self.audio_input_tokens = self.audio_input_tokens.max(later.audio_input_tokens);
+        self.video_input_tokens = self.video_input_tokens.max(later.video_input_tokens);
+        self.image_output_tokens = self.image_output_tokens.max(later.image_output_tokens);
+        self.audio_output_tokens = self.audio_output_tokens.max(later.audio_output_tokens);
+        if later.service_tier.is_some() {
+            self.service_tier.clone_from(&later.service_tier);
+        }
+        if later.event_type.is_some() {
+            self.event_type.clone_from(&later.event_type);
+        }
+        if later.end_user.is_some() {
+            self.end_user.clone_from(&later.end_user);
+        }
+        self.tags.extend(
+            later
+                .tags
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone())),
+        );
+        if let Some(Value::Object(theirs)) = later.usage_details.as_ref() {
+            match self.usage_details.as_mut() {
+                Some(Value::Object(mine)) => {
+                    for (key, value) in theirs {
+                        // `provider_raw` is one object per frame: the two frames'
+                        // fields merge, so `message_start`'s input side survives
+                        // `message_delta`'s output side.
+                        if let (Some(Value::Object(existing)), Value::Object(incoming)) =
+                            (mine.get_mut(key.as_str()), value)
+                        {
+                            for (inner, incoming) in incoming {
+                                existing.insert(inner.clone(), incoming.clone());
+                            }
+                        } else {
+                            mine.insert(key.clone(), value.clone());
+                        }
+                    }
+                }
+                _ => self.usage_details.clone_from(&later.usage_details),
+            }
+        }
+    }
+
     /// Checks the invariants no downstream arithmetic can repair.
     ///
     /// # Errors
