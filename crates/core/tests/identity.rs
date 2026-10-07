@@ -495,6 +495,7 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "channel_prices".to_owned(),
             "channels".to_owned(),
             "deposits".to_owned(),
+            "device_codes".to_owned(),
             "email_tokens".to_owned(),
             "idempotency_records".to_owned(),
             "invitations".to_owned(),
