@@ -12,6 +12,7 @@ mod billing;
 mod channels;
 mod db;
 mod deposits;
+mod device;
 mod email_tokens;
 mod error;
 mod heads;
@@ -41,6 +42,7 @@ pub use billing::{
 pub use channels::{CatalogModel, Channel, ModelPrice, SecretKey, Serving};
 pub use db::{Db, SCHEMA};
 pub use deposits::{CodeBatch, MAX_BATCH, Redemption};
+pub use device::{DeviceGrant, DevicePoll, DeviceRequest, POLL_INTERVAL, PollError};
 pub use doubleentry::{ConsistencyProof, EntryId, Hash, Seal, TreeHead};
 pub use email_tokens::{EmailPurpose, MintedEmailToken};
 pub use error::WalletError;

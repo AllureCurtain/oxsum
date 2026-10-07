@@ -98,6 +98,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../migrations/0019_email_tokens.sql"),
     ),
     ("0020_oauth", include_str!("../migrations/0020_oauth.sql")),
+    (
+        "0021_device_codes",
+        include_str!("../migrations/0021_device_codes.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.
