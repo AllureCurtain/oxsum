@@ -507,6 +507,8 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "usage_daily".to_owned(),
             "usage_records".to_owned(),
             "users".to_owned(),
+            "webhook_deliveries".to_owned(),
+            "webhook_endpoints".to_owned(),
         ]
     );
 
