@@ -379,13 +379,29 @@ async fn usage(app: &Router, cookie: &str) -> Value {
 }
 
 /// The fields one rollup row carries, pinned: what the page sums, under the names the
-/// payload uses. A field added or renamed on either side fails here.
+/// payload uses. A field added or renamed on either side fails here. A keyed row
+/// carries `keyId` and `keyLabel` on top; the shared unattributed rows carry neither
+/// (issue #148).
 const ROW_FIELDS: [&str; 9] = [
     "cachedTokens",
     "channel",
     "chargedMinor",
     "day",
     "inputTokens",
+    "model",
+    "outputTokens",
+    "reasoningTokens",
+    "turns",
+];
+
+const KEYED_ROW_FIELDS: [&str; 11] = [
+    "cachedTokens",
+    "channel",
+    "chargedMinor",
+    "day",
+    "inputTokens",
+    "keyId",
+    "keyLabel",
     "model",
     "outputTokens",
     "reasoningTokens",
@@ -479,7 +495,12 @@ async fn the_usage_page_sums_the_window() {
 
     let rows = payload["rows"].as_array().expect("the rollup rows");
     for row in rows {
-        assert_eq!(fields_of(row), ROW_FIELDS, "a row's fields are pinned");
+        let expected = if row["keyId"].is_string() {
+            KEYED_ROW_FIELDS.to_vec()
+        } else {
+            ROW_FIELDS.to_vec()
+        };
+        assert_eq!(fields_of(row), expected, "a row's fields are pinned");
         assert_eq!(row["day"], json!(today));
     }
     let a: Vec<&Value> = rows.iter().filter(|row| row["model"] == "mock-a").collect();
@@ -488,9 +509,24 @@ async fn the_usage_page_sums_the_window() {
     assert_eq!(a[0]["inputTokens"], json!(316));
     assert_eq!(a[0]["outputTokens"], json!(150));
     assert_eq!(a[0]["chargedMinor"], json!(616));
+    assert_eq!(
+        a[0]["keyId"],
+        json!(owner.key_id.as_simple().to_string()),
+        "the keyed row names the key that paid"
+    );
+    assert!(
+        a[0]["keyLabel"]
+            .as_str()
+            .is_some_and(|label| !label.is_empty()),
+        "the keyed row carries the key's label"
+    );
     let b: Vec<&Value> = rows.iter().filter(|row| row["model"] == "mock-b").collect();
     assert_eq!(b.len(), 1);
     assert_eq!(b[0]["chargedMinor"], json!(100));
+    assert!(
+        b[0]["keyId"].is_null() && b[0]["keyLabel"].is_null(),
+        "the shared row names no key"
+    );
     assert!(
         rows.iter().all(|row| row["model"] != "mock-z"),
         "another organization's usage stays out"
@@ -550,9 +586,8 @@ async fn a_member_reads_own_usage_and_the_shared_rows() {
     .await;
 
     let payload = usage(&app, &member_cookie).await;
-    let models: Vec<&str> = payload["rows"]
-        .as_array()
-        .expect("the rollup rows")
+    let rows = payload["rows"].as_array().expect("the rollup rows");
+    let models: Vec<&str> = rows
         .iter()
         .filter_map(|row| row["model"].as_str())
         .collect();
@@ -565,4 +600,18 @@ async fn a_member_reads_own_usage_and_the_shared_rows() {
         !models.contains(&"mock-owner"),
         "the owner's spend stays out"
     );
+    let own = rows
+        .iter()
+        .find(|row| row["model"] == "mock-member")
+        .unwrap();
+    assert_eq!(
+        own["keyId"],
+        json!(member_key.as_simple().to_string()),
+        "the member's row names their key"
+    );
+    let shared = rows
+        .iter()
+        .find(|row| row["model"] == "mock-shared")
+        .unwrap();
+    assert!(shared["keyId"].is_null(), "the shared row names no key");
 }
