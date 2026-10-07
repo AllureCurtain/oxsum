@@ -594,7 +594,7 @@ pub async fn get_usage() -> Result<UsageView, ServerFnError> {
                 Some(id) => keys.iter().any(|key| key.id.as_simple() == id.as_simple()),
                 None => true,
             })
-            .map(UsageDayView::new)
+            .map(|row| UsageDayView::new(row, &keys))
             .collect(),
     })
 }

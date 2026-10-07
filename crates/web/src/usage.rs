@@ -34,6 +34,15 @@ pub struct UsageView {
 pub struct UsageDayView {
     /// The settlement entries' booking date, `YYYY-MM-DD`.
     pub day: String,
+    /// The key that paid, as its id in uuid simple form; `None` is the shared
+    /// unattributed usage every member reads.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_id: Option<String>,
+    /// The key's label for the breakdown table — its name, or its prefix when
+    /// unnamed; `None` for shared usage. Revoked keys still resolve: their rows
+    /// are history the table cannot drop.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_label: Option<String>,
     pub channel: String,
     pub model: String,
     /// The settled turns the row sums.
@@ -51,11 +60,18 @@ pub struct UsageDayView {
 impl UsageDayView {
     /// One row read from `oxsum.usage_daily`, shaped for the wire: the money
     /// stays an integer in minor units and the date a `YYYY-MM-DD` string, the
-    /// way the rest of the dashboard speaks.
+    /// way the rest of the dashboard speaks. `keys` is the scope-filtered list
+    /// the caller already fetched — the label the row carries is the key's
+    /// name or, unnamed, its prefix.
     #[must_use]
-    pub fn new(row: &oxsum_core::UsageDay) -> Self {
+    pub fn new(row: &oxsum_core::UsageDay, keys: &[oxsum_core::ApiKey]) -> Self {
+        let key = row
+            .key_id
+            .and_then(|id| keys.iter().find(|key| key.id == id));
         Self {
             day: row.day.to_string(),
+            key_id: row.key_id.map(|id| id.as_simple().to_string()),
+            key_label: key.map(|key| key.name.clone().unwrap_or_else(|| key.prefix.clone())),
             channel: row.channel.clone(),
             model: row.model.clone(),
             turns: row.turns,
