@@ -149,6 +149,10 @@ pub struct Config {
     mailer: Option<crate::mail::Mailer>,
     github: Option<crate::oauth::GitHub>,
     turnstile: Option<crate::antibot::Turnstile>,
+    /// The deployment's public origin, `OXSUM_PUBLIC_URL` — required by the
+    /// mailer and the OAuth client, optional on its own: the device grant
+    /// builds `verificationUri` from it when set (issue #156).
+    public_url: Option<String>,
 }
 
 impl Config {
@@ -166,6 +170,7 @@ impl Config {
             mailer: None,
             github: None,
             turnstile: None,
+            public_url: None,
         }
     }
 
@@ -269,6 +274,9 @@ impl Config {
         let mailer = mailer_of()?;
         let github = github_of()?;
         let turnstile = turnstile_of()?;
+        // Optional on its own: the mailer and the OAuth client each require it,
+        // and the device grant only prefers it for a stable `verificationUri`.
+        let public_url = var("OXSUM_PUBLIC_URL");
         Ok(Self {
             signup,
             gateway: Gateway::from_env()?,
@@ -281,6 +289,7 @@ impl Config {
             mailer,
             github,
             turnstile,
+            public_url,
         })
     }
 
@@ -324,6 +333,22 @@ impl Config {
     #[must_use]
     pub fn turnstile(&self) -> Option<&crate::antibot::Turnstile> {
         self.turnstile.as_ref()
+    }
+
+    /// `OXSUM_PUBLIC_URL` when set — the origin outward-facing links are built
+    /// from. `None` is legal: the device grant's `verificationUri` falls back
+    /// to the relative `/device`.
+    #[must_use]
+    pub fn public_url(&self) -> Option<&str> {
+        self.public_url.as_deref()
+    }
+
+    /// Sets the public origin. Tests use this; the server reads
+    /// `OXSUM_PUBLIC_URL`.
+    #[must_use]
+    pub fn with_public_url(mut self, url: impl Into<String>) -> Self {
+        self.public_url = Some(url.into());
+        self
     }
 
     /// The operator token, or `None` when the admin surface is closed.

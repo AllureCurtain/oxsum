@@ -40,6 +40,11 @@ pub enum ApiError {
         limit: i64,
         open: i64,
     },
+    /// A device-grant poll inside the published `interval`: RFC 8628's
+    /// `slow_down` — the answer carries `Retry-After` (issue #156).
+    PollTooFast {
+        retry_after_secs: u64,
+    },
     /// A feature the deployment did not configure: the wallet works, this surface does not.
     ServiceUnavailable(String),
     Internal,
@@ -173,6 +178,19 @@ impl IntoResponse for ApiError {
                 "TOO_MANY_HOLDS",
                 format!("this API key has {open} holds outstanding, at or over its cap of {limit}"),
             ),
+            Self::PollTooFast { retry_after_secs } => {
+                let body = json!({ "error": {
+                    "code": "SLOW_DOWN",
+                    "message": "polling faster than the grant's interval",
+                    "details": [],
+                } });
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    [("retry-after", retry_after_secs.max(1).to_string())],
+                    Json(body),
+                )
+                    .into_response();
+            }
             Self::ServiceUnavailable(m) => {
                 (StatusCode::SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE", m)
             }

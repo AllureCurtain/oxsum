@@ -8,9 +8,9 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router, middleware};
 use oxsum_core::{
     ApiKey, Consistency, CreatedApiKey, CreatedInvitation, CreatedSession, CreatedWebhook,
-    HeadSigningKey, KeyPublication, Member, NewUser, Organization, Ownership, Principal,
-    Registration, Role, SESSION_COOKIE, Session, SessionPrincipal, SignedHead, Tenants, User,
-    UserOrganization, Wallet, WalletError, WebhookDelivery, WebhookEndpoint, signing_key,
+    DeviceRequest, HeadSigningKey, KeyPublication, Member, NewUser, Organization, Ownership,
+    Principal, Registration, Role, SESSION_COOKIE, Session, SessionPrincipal, SignedHead, Tenants,
+    User, UserOrganization, Wallet, WalletError, WebhookDelivery, WebhookEndpoint, signing_key,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -50,6 +50,10 @@ pub fn router(state: AppState) -> Router {
         // Requesting a verification mail is the session user's own action; the
         // handler refuses an API key, which names no user.
         .route("/auth/verify/request", post(request_verification))
+        // The device grant's user leg — a person's verdict, so the handlers
+        // refuse an API key, which names no user (issue #156).
+        .route("/device/request", get(device_request))
+        .route("/device/authorize", post(device_authorize))
         .route("/topups", post(top_up))
         .route("/redemptions", post(redeem))
         .route("/holds", post(hold))
@@ -92,6 +96,10 @@ pub fn router(state: AppState) -> Router {
         // Registration through an invitation link: the token is the credential, so it
         // stays open in invite mode too — that mode exists for this.
         .route("/invitations/redeem", post(redeem_invitation))
+        // The device grant's tool leg: the device code is the credential, so
+        // both endpoints stay open in every signup mode (issue #156).
+        .route("/device/code", post(device_code))
+        .route("/device/token", post(device_token))
         // The operator's tree-head verifying key: a public key, so no credential.
         .route("/log/key", get(log_key));
 
@@ -463,6 +471,149 @@ async fn require_bot_check(state: &AppState, token: Option<&str>) -> Result<(), 
             ))
         }
     }
+}
+
+/// What `POST /api/v1/device/code` answers: the tool's polling credential, the
+/// user's short code, and where to take it (issue #156).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceCodeRes {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    expires_in: i64,
+    interval: i64,
+}
+
+/// Mints a device request. Public: a tool asking to be authorized holds no
+/// credential yet — that is what the grant produces.
+async fn device_code(State(state): State<AppState>) -> ApiResult<DeviceCodeRes> {
+    let grant = state.db.mint_device_request().await?;
+    let expires_in = (grant.expires_at - OffsetDateTime::now_utc()).whole_seconds();
+    ok(DeviceCodeRes {
+        device_code: grant.device_code,
+        user_code: grant.user_code,
+        verification_uri: verification_uri(&state),
+        expires_in,
+        interval: oxsum_core::POLL_INTERVAL.whole_seconds(),
+    })
+}
+
+/// The page a user code lands on. `OXSUM_PUBLIC_URL` when the deployment names
+/// one, else the relative path — the browser resolves either.
+fn verification_uri(state: &AppState) -> String {
+    match state.config.public_url() {
+        Some(base) => format!("{}/device", base.trim_end_matches('/')),
+        None => "/device".to_owned(),
+    }
+}
+
+/// The `code` query parameter of `GET /api/v1/device/request`.
+#[derive(Deserialize)]
+struct DeviceRequestQuery {
+    code: String,
+}
+
+/// The pending request the typed code names, for the approval page's confirm
+/// step. Session only — an API key is not a person and can approve nothing.
+async fn device_request(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Query(query): Query<DeviceRequestQuery>,
+) -> ApiResult<DeviceRequest> {
+    person_only(&principal)?;
+    ok(state.db.device_request(&query.code).await?)
+}
+
+/// The body of `POST /api/v1/device/authorize`: the user code plus the verdict.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DeviceAuthorizeReq {
+    user_code: String,
+    approve: bool,
+}
+
+/// The signed-in user's verdict on a device request. Approving records the
+/// session's user and current organization — the key mints there when the tool
+/// polls, so an approver can only ever grant into an organization they act in.
+async fn device_authorize(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    ApiJson(request): ApiJson<DeviceAuthorizeReq>,
+) -> ApiResult<DeviceRequest> {
+    let user_id = person_only(&principal)?;
+    ok(state
+        .db
+        .decide_device_request(
+            &request.user_code,
+            request.approve,
+            user_id,
+            principal.organization().id,
+        )
+        .await?)
+}
+
+/// The device-grant person check both user-side handlers share: a session
+/// names a user, an API key does not.
+fn person_only(principal: &Principal) -> Result<Uuid, ApiError> {
+    principal.user_id().ok_or_else(|| {
+        ApiError::Forbidden(
+            "a device request's verdict is a person's action: an API key names no user".into(),
+        )
+    })
+}
+
+/// The body of `POST /api/v1/device/token`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DeviceTokenReq {
+    device_code: String,
+}
+
+/// What a poll answers. `apiKey` rides along on `approved` only — and only on
+/// the first such poll, which is the one that minted it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceTokenRes {
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_key: Option<CreatedApiKey>,
+}
+
+/// The tool's poll. Public: the device code is the credential.
+async fn device_token(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<DeviceTokenReq>,
+) -> ApiResult<DeviceTokenRes> {
+    use oxsum_core::{DevicePoll, PollError};
+    let poll = state
+        .db
+        .poll_device(&request.device_code)
+        .await
+        .map_err(|e| match e {
+            PollError::NotFound => ApiError::not_found(),
+            PollError::TooFast { retry_after_secs } => ApiError::PollTooFast { retry_after_secs },
+            PollError::Wallet(w) => ApiError::from(w),
+        })?;
+    let res = match poll {
+        DevicePoll::Pending => DeviceTokenRes {
+            status: "pending",
+            api_key: None,
+        },
+        DevicePoll::Denied => DeviceTokenRes {
+            status: "denied",
+            api_key: None,
+        },
+        DevicePoll::Consumed => DeviceTokenRes {
+            status: "consumed",
+            api_key: None,
+        },
+        DevicePoll::Delivered(key) => DeviceTokenRes {
+            status: "approved",
+            api_key: Some(*key),
+        },
+    };
+    ok(res)
 }
 
 /// Starts a GitHub OAuth login (issue #152): mints the single-use CSRF state
