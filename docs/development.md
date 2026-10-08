@@ -17,6 +17,26 @@ docker compose up -d
 cargo build --workspace
 ```
 
+### Demo data
+
+`cargo run -p oxsum-server -- seed` fills a fresh deployment with a believable world and exits
+without serving: the `demo@oxsum.local` owner and a second member `dev@oxsum.local` (both under
+the password `demo-password-1234`), the member under a committed-spend budget, three API keys —
+the owner's full key, a `staging` key capped and allowlisted to the first catalog model, and the
+member's `experiments` key — three manual-rail top-ups, a month of settled gateway turns in every
+settlement kind (`usage`, `capped`, `unpriced`, all with real `Settlement` descriptions the
+verifier recomputes), one hold left in flight for the sweeper, an organization-scoped discount,
+and a finalized statement for the month that just ended. The run prints the login credentials and
+the owner key's secret — the only place that secret is ever shown.
+
+Seeded request ids are deterministic (`seed-<day>-<n>`) so the demo reads the same everywhere,
+and the seeded posting dates spread across the trailing thirty days, which is what fills the
+usage page's rollup and last month's statement. The command is idempotent: a second run finds the
+demo account and prints "already seeded" without writing anything. It needs `DATABASE_URL` and
+nothing else — with `OXSUM_SECRET_KEY` set it also runs the startup bootstrap so an environment
+channel is there for the turns to bill under; without one it seeds against whatever catalog the
+deployment already serves, or writes the world with no turns when the catalog is empty.
+
 ### Test residue in the development database
 
 The tests share the development database and never delete their fixtures: every test organization leaves a user, an organization and a `ledger_<tenant_id>` schema behind, and the server integration tests (`crates/server/tests/gateway.rs` and `crates/server/tests/admin.rs`) also write channels sealed with the tests' own key. Two consequences accumulate over time:
@@ -145,6 +165,7 @@ creates `ledger_<tenant_id>` on first use.
 | --- | --- |
 | Start the database | `docker compose up -d` |
 | Start the server | `cargo run -p oxsum-server` |
+| Seed the demo world | `cargo run -p oxsum-server -- seed` (populates, prints the credentials, exits — see "Demo data") |
 | Build the dashboard (SSR + WASM) | `cargo leptos build` |
 | Run the server with the dashboard, rebuilding on change | `cargo leptos serve` |
 | Check the built site against the browser contract | `OXSUM_SITE_DIR=target/site cargo test -p oxsum-server --test browser_contract -- --ignored --nocapture` (after `cargo leptos build`, see "Browser contract") |

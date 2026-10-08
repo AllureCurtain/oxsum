@@ -1087,3 +1087,17 @@ The judgment calls:
 - **The suspend write is its own webhook event, enqueued in the same transaction.** `org.suspended` joins `request.settled` in the outbox, with `changed` gating the enqueue — a replayed `suspended: true` lands the same state and announces nothing, so the flag, the audit row and the delivery stay one logical write. Reinstatement enqueues nothing; this build subscribes to suspensions only.
 
 Pinned by `crates/core/tests/suspension.rs` (the gate, the settle-while-suspended hold, the replay, the webhook enqueue, the member-budget sums over two keys and over settled spend, the validation surface) and `crates/server/tests/suspension.rs` (the PATCH round-trip, the 403s by key and by session, the budget set/clear, the `org.suspended` subscription and delivery).
+
+## 2026-10-08 — The demo seed writes the world the HTTP surface would (roadmap P7-4, issue #164)
+
+P7-4 adds `oxsum seed`, the binary's only subcommand: it fills a deployment with a believable demo world — two users, an organization, three keys, deposits, a month of settled turns, an open hold, a discount and a finalized statement — prints the credentials, and exits.
+
+The judgment calls:
+
+- **Every write goes through the domain APIs the real paths use.** `register`, `add_member`, `update_member`, `create_key`, `create_discount`, `top_up` + `record_manual_deposit`, `hold_for_key` + `settle` + `record_usage`, `close_month` + `generate_statement` + `finalize_statement` — no seeded row is a shape the HTTP surface could not produce, so the seeded bill verifies, the open hold is the sweeper's to manage, and the constraint surface (member budget, key limit, model allowlist) has real spend to count.
+- **The demo email's existence is the whole idempotency check.** `seed_demo` registers `demo@oxsum.local` first; a rerun — or a retry of a run that died mid-way — finds the account and reports `created: false` without writing anything. The seeded request ids (`seed-<day>-<n>`) and hold keys are deterministic, so a demo reads identically on every fresh deployment.
+- **Posting dates are chosen, not implied.** `top_up`, `hold` and `settle` all take the booking date — an operator tool, not the HTTP surface, so the server-UTC-date rule is untouched — and the seed spreads thirty days of turns backwards, which is what gives the usage rollup, the requests page and a just-ended month's statement anything to show.
+- **Seeding does not need `OXSUM_SECRET_KEY`.** The catalog read — channel names, models, price versions — opens no credentials, so `prepare` runs only when a secret is configured (to land the environment's bootstrap channel first). A deployment with channels but no key still seeds; a deployment with no catalog seeds the world minus the turns.
+- **The report is the only place the owner key's secret exists in plaintext.** `SeedReport.api_secret` rides `register`'s one-shot secret; a rerun answers `None`, and the run prints it once, `shown once`, exactly like the registration response it comes from.
+
+Pinned by `crates/core/tests/seed.rs` — one suite seeding the world and reading it back through the wallet, members, requests, rollup and statements surfaces, the other proving the rerun writes nothing; both teardown the world in foreign-key order so the suite is rerunnable on a shared development database.
