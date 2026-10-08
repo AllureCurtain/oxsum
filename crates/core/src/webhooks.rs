@@ -28,9 +28,11 @@ use crate::error::WalletError;
 /// `request.settled` of the event catalog in docs/decisions.md, opt-in per
 /// endpoint because per-request traffic is noisy by nature.
 pub const REQUEST_SETTLED: &str = "request.settled";
+/// The platform suspended an organization's spend (issue #162).
+pub const ORG_SUSPENDED: &str = "org.suspended";
 
 /// Every event name a subscription may carry.
-const KNOWN_EVENTS: &[&str] = &[REQUEST_SETTLED];
+const KNOWN_EVENTS: &[&str] = &[REQUEST_SETTLED, ORG_SUSPENDED];
 
 /// How many times a delivery is attempted before it is marked `failed` — the
 /// same budget the hold sweeper gives a settlement before dead-lettering.
@@ -413,19 +415,31 @@ impl Db {
         let Ok(organization) = Uuid::parse_str(tenant_id) else {
             return Ok(());
         };
+        Self::enqueue_event(tx, organization, REQUEST_SETTLED, data).await
+    }
+
+    /// Enqueues one delivery of `event_type` per enabled subscribed endpoint of the
+    /// organization, on the caller's transaction — the event and the change it
+    /// announces commit or roll back together.
+    pub(crate) async fn enqueue_event(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        organization: Uuid,
+        event_type: &str,
+        data: Value,
+    ) -> Result<(), WalletError> {
         let endpoints = sqlx::query(
             "SELECT endpoint_id FROM oxsum.webhook_endpoints \
              WHERE organization_id = $1 AND enabled AND $2 = ANY(events)",
         )
         .bind(organization)
-        .bind(REQUEST_SETTLED)
+        .bind(event_type)
         .fetch_all(&mut **tx)
         .await?;
         for endpoint in endpoints {
             use sqlx::Row;
             let endpoint_id: Uuid = endpoint.try_get("endpoint_id")?;
             let delivery_id = Uuid::new_v4();
-            let payload = event_envelope(delivery_id, REQUEST_SETTLED, organization, data.clone());
+            let payload = event_envelope(delivery_id, event_type, organization, data.clone());
             sqlx::query(
                 "INSERT INTO oxsum.webhook_deliveries \
                  (delivery_id, endpoint_id, organization_id, event_type, payload) \
@@ -434,7 +448,7 @@ impl Db {
             .bind(delivery_id)
             .bind(endpoint_id)
             .bind(organization)
-            .bind(REQUEST_SETTLED)
+            .bind(event_type)
             .bind(payload)
             .execute(&mut **tx)
             .await?;

@@ -694,7 +694,8 @@ impl Wallet {
     /// its write; the retry re-reads and splits again rather than refusing a
     /// request the combined balance could have served.
     /// Refused with [`WalletError::InsufficientFunds`] when the balance cannot
-    /// cover it.
+    /// cover it, and with [`WalletError::Forbidden`] when the organization is
+    /// suspended (issue #162) — suspension gates every hold, attributed or not.
     ///
     /// `description` is what the entry says it is, in the caller's words — for a gateway request, the
     /// record built by [`crate::hold_description`]. An empty description records none; either way it
@@ -717,6 +718,34 @@ impl Wallet {
         // conflict.
         if let Some(stored) = self.store.get(entry_id).await? {
             return self.hold_replay(&stored, &description, None, minor, key);
+        }
+        // The suspension check is a short transaction of its own (issue #162): the
+        // shared org-admission lock makes it wait for a suspension mid-commit, so a
+        // check that runs observes the settled flag — a hold decided before the
+        // suspension lands is an in-flight hold, which settles like every other.
+        // Unlike `hold_for_key` the lock is not held across the append: an
+        // unattributed hold has no per-key serialization to preserve anyway, and
+        // holding a connection through it would starve the pool the append draws on.
+        if let Ok(organization) = Uuid::parse_str(&self.tenant_id) {
+            let mut tx = self.store.pool().begin().await?;
+            sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1 || $2, 0))")
+                .bind(ORG_ADMISSION_LOCK)
+                .bind(organization.to_string())
+                .execute(&mut *tx)
+                .await?;
+            let suspended: bool = sqlx::query_scalar(
+                "SELECT suspended_at IS NOT NULL FROM oxsum.organizations \
+                 WHERE organization_id = $1",
+            )
+            .bind(organization)
+            .fetch_one(&mut *tx)
+            .await?;
+            drop(tx);
+            if suspended {
+                return Err(WalletError::Forbidden(
+                    "the organization is suspended".into(),
+                ));
+            }
         }
         let mut last_err = None;
         for _ in 0..POOL_SPLIT_ATTEMPTS {
@@ -905,12 +934,38 @@ impl Wallet {
                 .bind(limit_lock_key(&self.tenant_id, &key.key_id))
                 .execute(&mut *tx)
                 .await?;
+            // The org-admission lock, shared (issue #162): holds of one organization
+            // run in parallel, while `set_suspended`'s exclusive lock waits for every
+            // admitted hold and makes the next one observe the flag. It is taken
+            // before any row lock, so every transaction's order is advisory locks
+            // first, rows second — no cycle with the membership writers that take
+            // the organization and membership rows only.
+            sqlx::query(
+                "SELECT pg_advisory_xact_lock_shared(hashtextextended($2 || organization_id::text, 0)) \
+                 FROM oxsum.api_keys WHERE key_id = $1",
+            )
+            .bind(key.key_id)
+            .bind(ORG_ADMISSION_LOCK)
+            .execute(&mut *tx)
+            .await?;
             // The constraints in force now, not the ones the request authenticated with:
             // locked, so a PATCH landing between authentication and this hold cannot be missed.
+            // The join reads the organization's suspension and names the minting member
+            // (`created_by` names the member; a removed membership leaves the key
+            // unbudgeted); the membership row itself locks in a second read below,
+            // because FOR UPDATE cannot reach the nullable side of an outer join
+            // (issue #162).
             let constraints = sqlx::query(
-                "SELECT spend_limit_minor, budget_duration, model_allowlist, \
-                        max_concurrent_holds \
-                 FROM oxsum.api_keys WHERE key_id = $1 FOR UPDATE",
+                "SELECT k.spend_limit_minor, k.budget_duration, k.model_allowlist, \
+                        k.max_concurrent_holds, k.organization_id, \
+                        o.suspended_at IS NOT NULL AS suspended, \
+                        m.user_id AS budget_member \
+                 FROM oxsum.api_keys k \
+                 JOIN oxsum.organizations o ON o.organization_id = k.organization_id \
+                 LEFT JOIN oxsum.memberships m \
+                        ON m.organization_id = k.organization_id \
+                       AND m.user_id = k.created_by \
+                 WHERE k.key_id = $1 FOR UPDATE OF k",
             )
             .bind(key.key_id)
             .fetch_optional(&mut *tx)
@@ -919,6 +974,36 @@ impl Wallet {
                 // Keys are never deleted; a missing row means the credential died mid-request.
                 return Err(WalletError::Unauthenticated);
             };
+            // The minting member's row, locked for update so the budget read and the
+            // holds that check against it serialize: two racing holds of one member's
+            // keys cannot both fit under the cap.
+            let member_budget = {
+                use sqlx::Row;
+                let member: Option<Uuid> = constraints.try_get("budget_member")?;
+                let organization: Uuid = constraints.try_get("organization_id")?;
+                let mut member_budget: Option<i64> = None;
+                if let Some(member) = member {
+                    member_budget = sqlx::query_scalar(
+                        "SELECT budget_limit_minor FROM oxsum.memberships \
+                         WHERE organization_id = $1 AND user_id = $2 FOR UPDATE",
+                    )
+                    .bind(organization)
+                    .bind(member)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                }
+                (member, organization, member_budget)
+            };
+            {
+                use sqlx::Row;
+                // A suspended organization reserves nothing new; its in-flight
+                // holds still settle, and money-in still lands.
+                if constraints.try_get::<bool, _>("suspended")? {
+                    return Err(WalletError::Forbidden(
+                        "the organization is suspended".into(),
+                    ));
+                }
+            }
             let split = self.pool_split(&mut tx, minor).await?;
             let entry = self
                 .seal(self.hold_entry(idem_key, &description, split, Some(actor.clone()), on)?)
@@ -947,6 +1032,21 @@ impl Wallet {
                         .transpose()?
                         .map(|d| d.period_start(on));
                     let committed = self.key_committed_in(&mut tx, &key.key_id, since).await?;
+                    if committed + minor > limit {
+                        return Err(WalletError::KeyLimitExceeded {
+                            limit_minor: limit,
+                            committed_minor: committed,
+                        });
+                    }
+                }
+                // The member budget caps what the key's creator may commit across
+                // every key they minted — the membership row is locked above, so
+                // the sum and the append agree (issue #162).
+                let (member, organization, member_budget) = member_budget;
+                if let (Some(member), Some(limit)) = (member, member_budget) {
+                    let committed = self
+                        .member_committed_in(&mut tx, &organization, &member)
+                        .await?;
                     if committed + minor > limit {
                         return Err(WalletError::KeyLimitExceeded {
                             limit_minor: limit,
@@ -1036,6 +1136,50 @@ impl Wallet {
             ])
             .bind(key_id.as_simple().to_string())
             .bind(since)
+            .fetch_one(&mut *conn)
+            .await?;
+        Ok(committed)
+    }
+
+    /// What one member's keys have committed in total: the sum of
+    /// [`key_committed_in`](Self::key_committed_in) over every key they minted —
+    /// the member budget's denominator. The ledger attributes each posting to
+    /// the key's actor id, and `api_keys.created_by` maps keys to the member, so
+    /// the sum is the ledger's own figure for the member's spend (issue #162).
+    ///
+    /// Run inside the transaction holding the member's locked membership row, so
+    /// the sum and the hold append that follows it agree on what is committed.
+    /// Revoked keys still count: the money they spent stayed spent.
+    async fn member_committed_in(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        organization_id: &Uuid,
+        member: &Uuid,
+    ) -> Result<i64, WalletError> {
+        // The actor is the key id in uuid simple form, like `key_committed_in`.
+        let keys: Vec<String> = sqlx::query_scalar(
+            "SELECT replace(key_id::text, '-', '') FROM oxsum.api_keys \
+             WHERE organization_id = $1 AND created_by = $2",
+        )
+        .bind(organization_id)
+        .bind(member)
+        .fetch_all(&mut *conn)
+        .await?;
+        let sql = format!(
+            "SELECT COALESCE(SUM(CASE WHEN p.direction = 'D' THEN p.amount_minor \
+                              ELSE -p.amount_minor END), 0)::bigint AS committed \
+             FROM ledger_{schema}.postings p \
+             JOIN ledger_{schema}.entries e ON e.entry_id = p.entry_id \
+             WHERE p.account_index = ANY($1) AND e.provenance_actor = ANY($2)",
+            schema = self.tenant_id,
+        );
+        let committed: i64 = sqlx::query_scalar(&sql)
+            .bind(vec![
+                self.wallet.index() as i32,
+                self.bonus.index() as i32,
+                self.credit_line.index() as i32,
+            ])
+            .bind(keys)
             .fetch_one(&mut *conn)
             .await?;
         Ok(committed)
@@ -2457,6 +2601,12 @@ pub fn settlement_key_for(hold_key: &str) -> String {
 /// A stable hash of the tenant id and the key id: every process holding the same key
 /// computes the same lock, and a key of one tenant can never collide with a key of
 /// another. The domain prefix keeps it out of the engine's lock namespace.
+/// The advisory-lock namespace serializing hold admission against a suspension
+/// flip (issue #162): [`Wallet::hold_for_key`] takes it shared and
+/// `Db::set_suspended` takes it exclusive, both keyed by organization id, so a
+/// suspended flag that commits is the flag the next hold reads.
+pub(crate) const ORG_ADMISSION_LOCK: &str = "oxsum/org-admission/v1:";
+
 fn limit_lock_key(tenant_id: &str, key_id: &Uuid) -> i64 {
     let mut hasher = Sha256::new();
     hasher.update(b"oxsum/key-spend-limit/v1\0");

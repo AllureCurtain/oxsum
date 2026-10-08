@@ -36,7 +36,7 @@ pub fn router(state: AppState) -> Router {
         .route("/org/members", post(add_member))
         .route(
             "/org/members/{user_id}",
-            delete(remove_member).patch(change_member_role),
+            delete(remove_member).patch(update_member),
         )
         .route("/org/ownership", post(transfer_ownership))
         .route("/webhooks", get(list_webhooks).post(create_webhook))
@@ -1087,8 +1087,23 @@ struct AddMemberReq {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ChangeMemberRoleReq {
-    role: AssignableRole,
+struct UpdateMemberReq {
+    /// The role half of the change; absent leaves it.
+    role: Option<AssignableRole>,
+    /// The member budget half: absent leaves it, an explicit null clears it
+    /// (issue #162).
+    #[serde(default, deserialize_with = "double_option_i64")]
+    budget_limit_minor: Option<Option<i64>>,
+}
+
+/// Peels one option layer serde does not: a bare `Option<Option<i64>>` field
+/// answers `None` for both an absent field and an explicit `null`, while the
+/// PATCH needs `null` to mean "clear the budget" (issue #162).
+fn double_option_i64<'de, D>(deserializer: D) -> Result<Option<Option<i64>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<i64>::deserialize(deserializer).map(Some)
 }
 
 /// The roles a membership may be changed to.
@@ -1147,20 +1162,26 @@ async fn remove_member(
         .await?)
 }
 
-async fn change_member_role(
+/// Changes a member's role and/or spend budget in one PATCH.
+///
+/// `budgetLimitMinor` is a double option: absent leaves the cap alone, an
+/// explicit null clears it, a figure sets it. Both halves absent is the
+/// domain layer's validation error (issue #162).
+async fn update_member(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
     Path(user_id): Path<Uuid>,
-    ApiJson(r): ApiJson<ChangeMemberRoleReq>,
+    ApiJson(r): ApiJson<UpdateMemberReq>,
 ) -> ApiResult<Member> {
     let actor = principal.membership_actor()?;
     ok(state
         .db
-        .change_member_role(
+        .update_member(
             principal.organization().id,
             actor,
             user_id,
-            Role::from(r.role),
+            r.role.map(Role::from),
+            r.budget_limit_minor,
         )
         .await?)
 }

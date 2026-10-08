@@ -227,6 +227,11 @@ struct OrganizationRes {
     credit_used_minor: i64,
     /// The tier profile assigned — its limits gate admission (issue #158).
     tier: Option<String>,
+    /// Whether the organization's spend is suspended (issue #162).
+    suspended: bool,
+    /// When it was suspended; `None` while its spend runs normally.
+    #[serde(with = "time::serde::rfc3339::option")]
+    suspended_at: Option<OffsetDateTime>,
 }
 
 /// The organizations query string: the page size, and where the walk resumes — an
@@ -281,6 +286,8 @@ async fn organizations(
             credit_limit_minor: wallet.credit_limit().await?,
             credit_used_minor: wallet.credit_used().await?,
             tier: organization.tier.clone(),
+            suspended: organization.suspended_at.is_some(),
+            suspended_at: organization.suspended_at,
         });
     }
     ok(OrganizationsPageRes {
@@ -450,6 +457,9 @@ struct UpdateOrganizationReq {
     payment_terms_days: Option<i32>,
     #[serde(default, deserialize_with = "double_option")]
     tier: Option<Option<String>>,
+    /// `true` suspends the organization's spend, `false` reinstates it;
+    /// absent leaves it (issue #162).
+    suspended: Option<bool>,
     idempotency_key: String,
 }
 
@@ -480,6 +490,8 @@ struct BillingTermsRes {
     payment_terms_days: i32,
     /// The tier profile the organization is assigned to; `None` when none.
     tier: Option<String>,
+    /// Whether the organization's spend is suspended (issue #162).
+    suspended: bool,
     /// The organization's spendable balance after the change, own funds plus
     /// undrawn credit.
     available_minor: i64,
@@ -503,9 +515,11 @@ async fn update_organization(
     if request.credit_limit_minor.is_none()
         && request.payment_terms_days.is_none()
         && request.tier.is_none()
+        && request.suspended.is_none()
     {
         return Err(ApiError::Validation(
-            "at least one of creditLimitMinor, paymentTermsDays and tier must be present".into(),
+            "at least one of creditLimitMinor, paymentTermsDays, tier and suspended must be present"
+                .into(),
         ));
     }
     // The audit detail names what was sent, not what stands after: an absent
@@ -520,6 +534,9 @@ async fn update_organization(
     if let Some(tier) = &request.tier {
         detail.insert("tier".into(), serde_json::json!(tier));
     }
+    if let Some(suspended) = request.suspended {
+        detail.insert("suspended".into(), suspended.into());
+    }
     let organization = state.db.organization_by_id(organization_id).await?;
     if let Some(days) = request.payment_terms_days {
         state.db.set_payment_terms(organization_id, days).await?;
@@ -529,6 +546,11 @@ async fn update_organization(
             .db
             .set_organization_tier(organization_id, tier.as_deref())
             .await?;
+    }
+    if let Some(suspended) = request.suspended {
+        // A replayed flag writes nothing and enqueues no webhook — the
+        // transition, not the call, is what `org.suspended` announces.
+        state.db.set_suspended(organization_id, suspended).await?;
     }
     let wallet = state.tenants.get(&organization.tenant_id).await?;
     let receipt = match request.credit_limit_minor {
@@ -555,6 +577,7 @@ async fn update_organization(
         credit_used_minor: wallet.credit_used().await?,
         payment_terms_days: updated.payment_terms_days,
         tier: updated.tier,
+        suspended: updated.suspended_at.is_some(),
         available_minor: wallet.available().await?,
     })
 }

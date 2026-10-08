@@ -111,6 +111,9 @@ pub struct AdminOrganization {
     /// The tier profile assigned (issue #158): a capability package — limits and
     /// allowlists — never a pricing input. `None` when it carries none.
     pub tier: Option<String>,
+    /// When the platform suspended the organization's spend (issue #162);
+    /// `None` while it runs normally.
+    pub suspended_at: Option<OffsetDateTime>,
     pub created_at: OffsetDateTime,
 }
 
@@ -121,6 +124,9 @@ pub struct Member {
     pub user_id: Uuid,
     pub email: String,
     pub role: Role,
+    /// The member's committed-spend cap across every key they minted
+    /// (issue #162); `None` carries no cap.
+    pub budget_limit_minor: Option<i64>,
     #[serde(with = "time::serde::rfc3339")]
     pub joined_at: OffsetDateTime,
 }
@@ -193,6 +199,7 @@ pub(crate) fn admin_organization(
         members: row.try_get("members")?,
         payment_terms_days: row.try_get("payment_terms_days")?,
         tier: row.try_get("tier")?,
+        suspended_at: row.try_get("suspended_at")?,
         created_at: row.try_get("created_at")?,
     })
 }
@@ -207,7 +214,7 @@ impl Db {
     /// Storage failures surface as [`WalletError`].
     pub async fn organizations(&self) -> Result<Vec<AdminOrganization>, WalletError> {
         let rows = sqlx::query(
-            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, o.payment_terms_days, o.tier, \
+            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, o.payment_terms_days, o.tier, o.suspended_at, \
              count(m.user_id) AS members \
              FROM oxsum.organizations o LEFT JOIN oxsum.memberships m USING (organization_id) \
              GROUP BY o.organization_id ORDER BY o.created_at",
@@ -244,7 +251,7 @@ impl Db {
         let (created_at, id) = after.unzip();
         let wanted = limit.clamp(1, 100) as i64;
         let rows = sqlx::query(
-            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, o.payment_terms_days, o.tier, \
+            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, o.payment_terms_days, o.tier, o.suspended_at, \
              count(m.user_id) AS members \
              FROM oxsum.organizations o LEFT JOIN oxsum.memberships m USING (organization_id) \
              WHERE $1::timestamptz IS NULL OR o.created_at > $1 \
@@ -278,7 +285,7 @@ impl Db {
     /// failures surface as [`WalletError`].
     pub async fn organization_by_id(&self, id: Uuid) -> Result<AdminOrganization, WalletError> {
         let row = sqlx::query(
-            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, o.payment_terms_days, o.tier,              count(m.user_id) AS members              FROM oxsum.organizations o LEFT JOIN oxsum.memberships m USING (organization_id)              WHERE o.organization_id = $1 GROUP BY o.organization_id",
+            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, o.payment_terms_days, o.tier, o.suspended_at,              count(m.user_id) AS members              FROM oxsum.organizations o LEFT JOIN oxsum.memberships m USING (organization_id)              WHERE o.organization_id = $1 GROUP BY o.organization_id",
         )
         .bind(id)
         .fetch_optional(self.pool())
@@ -358,7 +365,7 @@ impl Db {
     /// Storage failures surface as [`WalletError`].
     pub async fn members(&self, organization_id: Uuid) -> Result<Vec<Member>, WalletError> {
         let rows = sqlx::query(
-            "SELECT m.user_id, u.email, m.role, m.created_at \
+            "SELECT m.user_id, u.email, m.role, m.budget_limit_minor, m.created_at \
              FROM oxsum.memberships m JOIN oxsum.users u USING (user_id) \
              WHERE m.organization_id = $1 ORDER BY m.created_at",
         )
@@ -424,6 +431,7 @@ impl Db {
             user_id,
             email: stored_email,
             role: Role::Member,
+            budget_limit_minor: None,
             joined_at,
         })
     }
@@ -487,35 +495,146 @@ impl Db {
         user_id: Uuid,
         role: Role,
     ) -> Result<Member, WalletError> {
+        self.update_member(organization_id, acting, user_id, Some(role), None)
+            .await
+    }
+
+    /// Changes a member's role and/or spend budget in one write (issue #162).
+    ///
+    /// `role` is the [`change_member_role`](Self::change_member_role) change — `None`
+    /// leaves it; `budget` is the double option the PATCH needs: `None` leaves the
+    /// cap alone, `Some(None)` clears it, `Some(Some(limit))` sets it. The cap is
+    /// what the member's keys may commit in total — settled charges plus
+    /// outstanding holds — enforced inside `hold_for_key`'s locked window.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::InvalidInput`] when neither field is present, when the role is
+    /// `owner`, or when the budget is negative; the membership rules of
+    /// [`change_member_role`](Self::change_member_role) hold for the role half, and a
+    /// budget change on anyone carries no owner restriction — a cap never promotes.
+    pub async fn update_member(
+        &self,
+        organization_id: Uuid,
+        acting: MembershipActor,
+        user_id: Uuid,
+        role: Option<Role>,
+        budget: Option<Option<i64>>,
+    ) -> Result<Member, WalletError> {
         let acting = acting.authorized()?;
-        let role = assignable(role)?;
+        if role.is_none() && budget.is_none() {
+            return Err(WalletError::InvalidInput(
+                "at least one of role and budgetLimitMinor must be present".into(),
+            ));
+        }
+        let role = role.map(assignable).transpose()?;
+        if let Some(Some(limit)) = budget
+            && limit < 0
+        {
+            return Err(WalletError::InvalidInput(
+                "budgetLimitMinor may not be negative".into(),
+            ));
+        }
         let mut tx = self.pool().begin().await?;
         lock_organization(&mut tx, organization_id).await?;
         let mut target = locked_member(&mut tx, organization_id, user_id)
             .await?
             .ok_or_else(not_a_member)?;
-        if target.role == Role::Owner {
-            if acting.role == Role::Admin {
-                return Err(admin_on_owner("change the role of"));
+        if let Some(role) = role {
+            if target.role == Role::Owner {
+                if acting.role == Role::Admin {
+                    return Err(admin_on_owner("change the role of"));
+                }
+                if owner_count(&mut tx, organization_id).await? <= 1 {
+                    return Err(last_owner("demoted"));
+                }
             }
-            if owner_count(&mut tx, organization_id).await? <= 1 {
-                return Err(last_owner("demoted"));
+            if target.role != role {
+                sqlx::query(
+                    "UPDATE oxsum.memberships SET role = $3 \
+                     WHERE organization_id = $1 AND user_id = $2",
+                )
+                .bind(organization_id)
+                .bind(user_id)
+                .bind(role.as_str())
+                .execute(&mut *tx)
+                .await?;
+                target.role = role;
             }
         }
-        if target.role != role {
+        if let Some(budget) = budget
+            && target.budget_limit_minor != budget
+        {
             sqlx::query(
-                "UPDATE oxsum.memberships SET role = $3 \
+                "UPDATE oxsum.memberships SET budget_limit_minor = $3 \
                  WHERE organization_id = $1 AND user_id = $2",
             )
             .bind(organization_id)
             .bind(user_id)
-            .bind(role.as_str())
+            .bind(budget)
             .execute(&mut *tx)
             .await?;
-            target.role = role;
+            target.budget_limit_minor = budget;
         }
         tx.commit().await?;
         Ok(target)
+    }
+
+    /// Suspends or reinstates an organization's spend (issue #162).
+    ///
+    /// Suspension stamps `suspended_at`; reinstatement clears it. A suspended
+    /// organization's new holds refuse while its in-flight holds still settle,
+    /// and money-in still lands so the line can be repaid — the flag gates
+    /// admission, not the ledger. Answers whether the state actually changed:
+    /// a replayed suspend is the same state and emits nothing.
+    ///
+    /// Suspending enqueues one `org.suspended` delivery per subscribed webhook
+    /// endpoint inside the same transaction, so the flag and the notification
+    /// commit or roll back together.
+    ///
+    /// The flip serializes against hold admission through the org-admission
+    /// advisory lock: `hold_for_key` holds it shared for its whole check, so an
+    /// exclusive waiter here means a hold either admitted before the flag or
+    /// reads it — no hold slips between the read and the commit.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::NotFound`] when no organization carries the id; storage
+    /// failures surface as [`WalletError`].
+    pub async fn set_suspended(
+        &self,
+        organization_id: Uuid,
+        suspended: bool,
+    ) -> Result<bool, WalletError> {
+        let mut tx = self.pool().begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1 || $2::text, 0))")
+            .bind(crate::wallet::ORG_ADMISSION_LOCK)
+            .bind(organization_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        let changed = sqlx::query(
+            "UPDATE oxsum.organizations \
+             SET suspended_at = CASE WHEN $2 THEN COALESCE(suspended_at, now()) END \
+             WHERE organization_id = $1 \
+               AND (suspended_at IS NOT NULL) <> $2 \
+             RETURNING organization_id",
+        )
+        .bind(organization_id)
+        .bind(suspended)
+        .fetch_optional(&mut *tx)
+        .await?
+        .is_some();
+        if changed && suspended {
+            Self::enqueue_event(
+                &mut tx,
+                organization_id,
+                crate::webhooks::ORG_SUSPENDED,
+                serde_json::json!({ "organizationId": organization_id }),
+            )
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(changed)
     }
 
     /// Transfers ownership: the named member becomes the owner and the acting owner becomes
@@ -633,7 +752,7 @@ async fn locked_member(
     user_id: Uuid,
 ) -> Result<Option<Member>, WalletError> {
     let row = sqlx::query(
-        "SELECT m.user_id, u.email, m.role, m.created_at \
+        "SELECT m.user_id, u.email, m.role, m.budget_limit_minor, m.created_at \
          FROM oxsum.memberships m JOIN oxsum.users u USING (user_id) \
          WHERE m.organization_id = $1 AND m.user_id = $2 FOR UPDATE OF m",
     )
@@ -650,6 +769,7 @@ fn member_from_row(row: &sqlx::postgres::PgRow) -> Result<Member, WalletError> {
         user_id: row.try_get("user_id")?,
         email: row.try_get("email")?,
         role: Role::parse(&row.try_get::<String, _>("role")?)?,
+        budget_limit_minor: row.try_get("budget_limit_minor")?,
         joined_at: row.try_get("created_at")?,
     })
 }

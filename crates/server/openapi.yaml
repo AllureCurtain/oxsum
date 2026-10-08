@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.41.0
+  version: 0.42.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -218,6 +218,19 @@ info:
     like the organizations list. The row is written only after the
     mutation commits, so the log can omit on a crash but never invent;
     credentials (a channel's `apiKey`) never enter `detail`.
+
+    0.42.0 adds organization suspension and member budgets (issue #162).
+    `suspended` on `PATCH /api/v1/admin/organizations/{organizationId}` flips
+    `organizations.suspended_at`: a suspended organization's new holds refuse
+    with 403 — on `/v1` and `POST /api/v1/holds` alike — while its in-flight
+    holds settle, and money-in still lands so the line can be repaid.
+    Suspending enqueues `org.suspended` for the organization's subscribed
+    webhook endpoints; the event joins the subscription catalog.
+    `budgetLimitMinor` on `PATCH /api/v1/org/members/{userId}` caps a member's
+    committed spend — settled charges plus outstanding holds summed over every
+    key they minted — enforced inside the same locked window as the key's own
+    limits. `role` on that endpoint is now optional beside it; at least one of
+    the two is required.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -996,12 +1009,18 @@ paths:
   /api/v1/org/members/{userId}:
     parameters: [{ $ref: "#/components/parameters/UserId" }]
     patch:
-      summary: Change a member's role
+      summary: Change a member's role or budget
       description: |
         `role` is `admin` or `member`, and there is deliberately no `owner` value: ownership is a
         single seat, moved by `POST /api/v1/org/ownership`, so no role change can promote anyone to
         owner (a body naming `owner` is `VALIDATION_ERROR`, not a promotion). Only an owner or an
         admin, and only a session: an API key or a member is refused.
+
+        `budgetLimitMinor` caps what the member may commit — settled charges plus outstanding
+        holds summed over every key they minted (`created_by`). A key whose creator is over its
+        budget cannot take a new hold (`402 KEY_LIMIT_EXCEEDED`, the same refusal a key's own
+        spendLimitMinor raises); an explicit `null` clears the cap. At least one of `role` and
+        `budgetLimitMinor` is required.
 
         An admin may not change an owner's role (403 `FORBIDDEN`) — an admin manages members, not
         the owner — and the last owner of an organization cannot be demoted (409 `CONFLICT`): an
@@ -1012,10 +1031,10 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/ChangeMemberRoleRequest" }
+            schema: { $ref: "#/components/schemas/UpdateMemberRequest" }
       responses:
         "200":
-          description: The membership with its new role
+          description: The membership as it stands after the change
           content:
             application/json:
               schema:
@@ -1116,7 +1135,7 @@ paths:
       description: |
         `url` is the HTTPS (or HTTP, for a receiver on localhost) address oxsum posts
         signed events to; `events` lists the event types it subscribes to —
-        `request.settled` is the event this build sends. The answer carries the signing
+        `request.settled` and `org.suspended` are what this build sends. The answer carries the signing
         secret once, under `secret`; store it there, because a listing only ever
         shows `secretLast4`. The secret seals under `OXSUM_SECRET_KEY` at rest, the
         same as a channel's upstream credential.
@@ -3054,6 +3073,12 @@ components:
         userId: { type: string, format: uuid, description: "the user's id, which the membership endpoints address a member by" }
         email: { type: string }
         role: { type: string, enum: [owner, admin, member], description: "the member's role in this organization; a platform admin is a deployment identity, not a role here" }
+        budgetLimitMinor:
+          type: integer
+          format: int64
+          nullable: true
+          minimum: 0
+          description: "the member's committed-spend cap across every key they minted; null carries none"
         joinedAt: { type: string, format: date-time, description: when the membership was created }
     AddMemberRequest:
       type: object
@@ -3067,9 +3092,8 @@ components:
             email no account holds is `NOT_FOUND` — a person without an account is invited by link
             (`POST /api/v1/org/invitations`) — and one that is already a member of this organization
             is `CONFLICT`.
-    ChangeMemberRoleRequest:
+    UpdateMemberRequest:
       type: object
-      required: [role]
       properties:
         role:
           type: string
@@ -3077,6 +3101,14 @@ components:
           description: |
             the member's new role. `owner` is not a value here on purpose: ownership is a single
             seat moved by `POST /api/v1/org/ownership`, so this endpoint cannot promote anyone.
+        budgetLimitMinor:
+          type: integer
+          format: int64
+          nullable: true
+          minimum: 0
+          description: |
+            the member's committed-spend cap across every key they minted — absent leaves it, an
+            explicit null clears it. At least one of `role` and `budgetLimitMinor` is required.
     TransferOwnershipRequest:
       type: object
       required: [userId]
@@ -3096,7 +3128,7 @@ components:
         url: { type: string, format: uri, description: "where signed events are posted" }
         events:
           type: array
-          items: { type: string, enum: [request.settled] }
+          items: { type: string, enum: [request.settled, org.suspended] }
           description: the event types this endpoint is subscribed to
         enabled: { type: boolean, description: "a disabled endpoint enqueues nothing" }
         secretLast4: { type: string, description: "the last four characters of the signing secret, for recognizing it" }
@@ -3109,8 +3141,8 @@ components:
         events:
           type: array
           minItems: 1
-          items: { type: string, enum: [request.settled] }
-          description: "the event types to subscribe; `request.settled` is the event this build sends"
+          items: { type: string, enum: [request.settled, org.suspended] }
+          description: "the event types to subscribe; this build sends `request.settled` and `org.suspended`"
     CreatedWebhook:
       allOf:
         - $ref: "#/components/schemas/WebhookEndpoint"
@@ -3124,7 +3156,7 @@ components:
       properties:
         id: { type: string, format: uuid }
         endpointId: { type: string, format: uuid }
-        eventType: { type: string, enum: [request.settled] }
+        eventType: { type: string, enum: [request.settled, org.suspended] }
         status: { type: string, enum: [pending, sending, delivered, failed], description: "sending is a worker's claim in flight; delivered means a 2xx; failed means the ten-attempt budget ran out" }
         attempts: { type: integer, minimum: 0 }
         nextAttemptAt: { type: string, format: date-time, description: "when the worker next tries a pending delivery; the creation time for a finished one" }
@@ -3328,11 +3360,18 @@ components:
           type: string
           nullable: true
           description: the tier profile to assign — a capability package, never a pricing input; an explicit null clears it
+        suspended:
+          type: boolean
+          description: |
+            suspend the organization's spend (true) or reinstate it (false). A suspended
+            organization's new holds refuse — 403 on `/v1` and `POST /api/v1/holds` alike —
+            while its in-flight holds still settle and money-in still lands; suspending enqueues
+            `org.suspended` to its subscribed webhook endpoints.
         idempotencyKey:
           type: string
           minLength: 1
           maxLength: 200
-          description: a retry writes no second entry; the same key replays the same change. At least one of creditLimitMinor, paymentTermsDays and tier must be present.
+          description: a retry writes no second entry; the same key replays the same change. At least one of creditLimitMinor, paymentTermsDays, tier and suspended must be present.
     PasswordResetRequest:
       type: object
       required: [newPassword]
@@ -3362,7 +3401,7 @@ components:
           description: the organization's available balance after the adjustment
     AdminCreditLimit:
       type: object
-      required: [organizationId, creditLimitMinor, creditUsedMinor, availableMinor, paymentTermsDays, tier]
+      required: [organizationId, creditLimitMinor, creditUsedMinor, availableMinor, paymentTermsDays, tier, suspended]
       properties:
         entryId:
           type: string
@@ -3383,9 +3422,12 @@ components:
           type: string
           nullable: true
           description: the tier profile the organization is assigned to — null when it carries none
+        suspended:
+          type: boolean
+          description: whether the organization's spend is suspended — new holds refuse, in-flight holds settle
     AdminOrganization:
       type: object
-      required: [id, name, kind, members, createdAt, availableMinor, reservedMinor, creditLimitMinor, creditUsedMinor]
+      required: [id, name, kind, members, createdAt, availableMinor, reservedMinor, creditLimitMinor, creditUsedMinor, suspended]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
@@ -3400,6 +3442,11 @@ components:
           type: string
           nullable: true
           description: the tier profile assigned — its limits and allowlist gate the organization's requests; null when none
+        suspendedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: when the organization was suspended — null while its spend runs normally
     AdminHold:
       type: object
       required: [organization, requestId, model, channel, priceVersion, freezeMinor, openedAt]
