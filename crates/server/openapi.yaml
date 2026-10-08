@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.40.0
+  version: 0.41.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -210,6 +210,14 @@ info:
     enforces its limits at admission — 429 `RATE_LIMITED` over the
     organization allowance, 403 `FORBIDDEN` for a model the allowlist
     does not name — and an organization without a tier behaves as before.
+
+    0.41.0 adds the admin audit log (issue #160): every mutating
+    `/api/v1/admin` call appends one `oxsum.admin_audit` row — the action,
+    its target, the redacted detail and the request's idempotency key —
+    readable newest-first through `GET /api/v1/admin/audit`, cursor-paged
+    like the organizations list. The row is written only after the
+    mutation commits, so the log can omit on a crash but never invent;
+    credentials (a channel's `apiKey`) never enter `detail`.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -2532,6 +2540,55 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/audit:
+    get:
+      summary: Read the admin audit log
+      description: |
+        Every mutating call on this surface appends one row to
+        `oxsum.admin_audit`: the action (`channel.set`, `organization.adjust`,
+        `tier.delete`, …), what it acted on, the request's detail with
+        credentials redacted, and the idempotency key it carried. Rows are
+        written only after the mutation commits, so a crash may omit one but
+        the log never describes a change that did not happen. Newest first;
+        a full page answers `nextCursor`, echoed back as `cursor` — opaque,
+        never constructed by hand; absent means the log is read out.
+        `action` narrows to one action's rows exactly.
+      security:
+        - adminToken: []
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 100 }
+        - name: cursor
+          in: query
+          description: An earlier answer's `nextCursor`, echoed verbatim.
+          schema: { type: string }
+        - name: action
+          in: query
+          description: Narrow the page to one action, exactly.
+          schema: { type: string }
+      responses:
+        "200":
+          description: One page of audit rows, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [entries]
+                    properties:
+                      entries:
+                        type: array
+                        items: { $ref: "#/components/schemas/AuditEntry" }
+                      nextCursor:
+                        type: string
+                        description: The cursor the next page asks with; absent at the log's end.
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /v1/models:
     get:
       summary: List the served models, in OpenAI's shape
@@ -3457,6 +3514,29 @@ components:
           minLength: 1
           maxLength: 200
           description: a retry answers the row it created; the same key under different fields is 409
+    AuditEntry:
+      type: object
+      required: [auditId, recordedAt, actor, action, detail]
+      properties:
+        auditId: { type: string, format: uuid }
+        recordedAt: { type: string, format: date-time }
+        actor:
+          type: string
+          description: who acted — "operator" today; the single admin token is the only admin identity
+        action:
+          type: string
+          description: the mutating call, as a dotted name — channel.set, channel.price.append, organization.adjust, organization.update, tier.set, tier.delete, discount.create, discount.end, user.password_reset, codes.mint, closing.close, statement.generate, statement.finalize, statement.payment, statement.suspend
+        target:
+          type: string
+          nullable: true
+          description: what the action acted on — a channel name, an organization id, a statement id
+        detail:
+          type: object
+          description: the request's fields that are safe to show — credentials (a channel's apiKey) are never recorded
+        idempotencyKey:
+          type: string
+          nullable: true
+          description: the key the request carried, when it did — the write it names replays rather than doubles
     AdminAnomaly:
       type: object
       required: [organization, requestId, model, channel, priceVersion, kind, chargedMinor, freezeMinor, bookedOn]
