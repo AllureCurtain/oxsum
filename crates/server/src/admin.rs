@@ -18,8 +18,8 @@ use axum::response::Response;
 use axum::routing::{delete, get, patch, post, put};
 use axum::{Router, middleware};
 use oxsum_core::{
-    Channel, Discount, InFlightHold, Kind, ModelPrice, NewDiscount, Price, Reconciliation, Seal,
-    SettlementKind, TierProfile,
+    AuditEntry, Channel, Discount, InFlightHold, Kind, ModelPrice, NewDiscount, Price,
+    Reconciliation, Seal, SettlementKind, TierProfile, audit_action,
 };
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq as _;
@@ -55,6 +55,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/tiers/{tier}", put(set_tier).delete(delete_tier))
         .route("/discounts", get(discounts).post(create_discount))
         .route("/discounts/{discount_id}", delete(end_discount))
+        .route("/audit", get(audit))
         .route("/closings", get(closings).post(close_month))
         .route("/statements", get(statements).post(generate_statements))
         .route("/statements/{statement_id}", get(statement))
@@ -146,6 +147,17 @@ async fn set(
         .into_iter()
         .find(|channel| channel.name == request.name)
         .ok_or(ApiError::Internal)?;
+    record(
+        &state,
+        audit_action::CHANNEL_SET,
+        Some(channel.name.clone()),
+        serde_json::json!({
+            "baseUrl": channel.base_url,
+            "protocol": channel.protocol,
+        }),
+        None,
+    )
+    .await?;
     ok(channel)
 }
 
@@ -177,6 +189,17 @@ async fn append(
         rules: request.rules,
     };
     let version = state.db.append_price(&name, &request.model, price).await?;
+    record(
+        &state,
+        audit_action::CHANNEL_PRICE_APPEND,
+        Some(name),
+        serde_json::json!({
+            "model": request.model,
+            "version": version,
+        }),
+        None,
+    )
+    .await?;
     ok(VersionRes {
         model: request.model,
         version,
@@ -283,6 +306,72 @@ fn decode_organization_cursor(text: &str) -> Result<(OffsetDateTime, Uuid), ApiE
     Ok((created_at, id))
 }
 
+/// Records one admin write in the audit log, after the mutation it describes
+/// has committed (issue #160). The row is awaited rather than spawned: the
+/// writes it follows are all idempotent, so a client that retries a 500 lands
+/// the same mutation and its audit row together.
+async fn record(
+    state: &AppState,
+    action: &str,
+    target: Option<String>,
+    detail: serde_json::Value,
+    idempotency_key: Option<&str>,
+) -> Result<(), ApiError> {
+    state
+        .db
+        .record_audit(action, target.as_deref(), detail, idempotency_key)
+        .await?;
+    Ok(())
+}
+
+/// The audit query string: the page size, where the walk resumes, and an
+/// optional exact action to narrow to.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AuditQuery {
+    limit: Option<usize>,
+    cursor: Option<String>,
+    action: Option<String>,
+}
+
+/// One page of audit rows, as the endpoint answers it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AuditPageRes {
+    entries: Vec<AuditEntry>,
+    /// The cursor the next page asks with; absent at the log's end.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_cursor: Option<String>,
+}
+
+/// The audit log, newest first — every mutating call on this surface, one row
+/// each, written after the mutation committed. `action` narrows to one exact
+/// action name; an unknown one is a 400, not an empty page masquerading as
+/// quiet.
+async fn audit(
+    State(state): State<AppState>,
+    Query(query): Query<AuditQuery>,
+) -> ApiResult<AuditPageRes> {
+    if let Some(action) = &query.action
+        && !audit_action::ALL.contains(&action.as_str())
+    {
+        return Err(ApiError::Validation(format!("unknown action: {action:?}")));
+    }
+    let after = query
+        .cursor
+        .as_deref()
+        .map(decode_organization_cursor)
+        .transpose()?;
+    let page = state
+        .db
+        .audit_page(after, query.action.as_deref(), query.limit.unwrap_or(100))
+        .await?;
+    ok(AuditPageRes {
+        entries: page.rows,
+        next_cursor: page.next_cursor.map(encode_organization_cursor),
+    })
+}
+
 /// The body of `POST …/adjustments`: a signed amount, the reason it moved, and the
 /// idempotency key that makes a retry the same entry.
 #[derive(Deserialize)]
@@ -327,6 +416,18 @@ async fn adjust_organization(
             today(),
         )
         .await?;
+    record(
+        &state,
+        audit_action::ORGANIZATION_ADJUST,
+        Some(organization_id.to_string()),
+        serde_json::json!({
+            "amountMinor": request.amount_minor,
+            "reason": request.reason,
+            "entryId": receipt.entry_id,
+        }),
+        Some(&request.idempotency_key),
+    )
+    .await?;
     ok(AdjustmentRes {
         entry_id: receipt.entry_id.to_string(),
         organization_id,
@@ -407,6 +508,18 @@ async fn update_organization(
             "at least one of creditLimitMinor, paymentTermsDays and tier must be present".into(),
         ));
     }
+    // The audit detail names what was sent, not what stands after: an absent
+    // field is a field the call never meant to touch.
+    let mut detail = serde_json::Map::new();
+    if let Some(limit) = request.credit_limit_minor {
+        detail.insert("creditLimitMinor".into(), limit.into());
+    }
+    if let Some(days) = request.payment_terms_days {
+        detail.insert("paymentTermsDays".into(), days.into());
+    }
+    if let Some(tier) = &request.tier {
+        detail.insert("tier".into(), serde_json::json!(tier));
+    }
     let organization = state.db.organization_by_id(organization_id).await?;
     if let Some(days) = request.payment_terms_days {
         state.db.set_payment_terms(organization_id, days).await?;
@@ -426,6 +539,14 @@ async fn update_organization(
         }
         None => None,
     };
+    record(
+        &state,
+        audit_action::ORGANIZATION_UPDATE,
+        Some(organization_id.to_string()),
+        serde_json::Value::Object(detail),
+        Some(&request.idempotency_key),
+    )
+    .await?;
     let updated = state.db.organization_by_id(organization_id).await?;
     ok(BillingTermsRes {
         entry_id: receipt.map(|r| r.entry_id.to_string()),
@@ -460,10 +581,22 @@ async fn set_tier(
     Path(tier): Path<String>,
     ApiJson(request): ApiJson<SetTierReq>,
 ) -> ApiResult<TierProfile> {
-    ok(state
+    let profile = state
         .db
         .set_tier(&tier, request.requests_per_minute, request.model_allowlist)
-        .await?)
+        .await?;
+    record(
+        &state,
+        audit_action::TIER_SET,
+        Some(tier),
+        serde_json::json!({
+            "requestsPerMinute": profile.requests_per_minute,
+            "modelAllowlist": profile.model_allowlist,
+        }),
+        None,
+    )
+    .await?;
+    ok(profile)
 }
 
 /// Retires a tier profile. A tier organizations are still assigned to refuses —
@@ -477,6 +610,14 @@ async fn delete_tier(
         .delete_tier(&tier)
         .await?
         .ok_or_else(ApiError::not_found)?;
+    record(
+        &state,
+        audit_action::TIER_DELETE,
+        Some(tier),
+        serde_json::json!({}),
+        None,
+    )
+    .await?;
     ok(serde_json::json!({}))
 }
 
@@ -510,7 +651,7 @@ async fn create_discount(
     State(state): State<AppState>,
     ApiJson(request): ApiJson<CreateDiscountReq>,
 ) -> ApiResult<Discount> {
-    ok(state
+    let discount = state
         .db
         .create_discount(
             &request.idempotency_key,
@@ -518,12 +659,21 @@ async fn create_discount(
                 percent: request.percent,
                 organization_id: request.organization_id,
                 model: request.model,
-                label: request.label,
+                label: request.label.clone(),
                 valid_from: request.valid_from,
                 valid_until: request.valid_until,
             },
         )
-        .await?)
+        .await?;
+    record(
+        &state,
+        audit_action::DISCOUNT_CREATE,
+        request.organization_id.map(|id| id.to_string()),
+        serde_json::to_value(&discount).map_err(|_| ApiError::Internal)?,
+        Some(&request.idempotency_key),
+    )
+    .await?;
+    ok(discount)
 }
 
 /// Ends a discount early: turns starting after the call no longer qualify, and
@@ -533,7 +683,17 @@ async fn end_discount(
     Path(discount_id): Path<Uuid>,
 ) -> ApiResult<Discount> {
     match state.db.end_discount(discount_id).await? {
-        Some(discount) => ok(discount),
+        Some(discount) => {
+            record(
+                &state,
+                audit_action::DISCOUNT_END,
+                Some(discount_id.to_string()),
+                serde_json::json!({}),
+                None,
+            )
+            .await?;
+            ok(discount)
+        }
         None => Err(ApiError::not_found()),
     }
 }
@@ -566,6 +726,14 @@ async fn reset_password(
         .db
         .reset_password(user_id, &request.new_password)
         .await?;
+    record(
+        &state,
+        audit_action::USER_PASSWORD_RESET,
+        Some(user_id.to_string()),
+        serde_json::json!({ "sessionsRevoked": sessions_revoked }),
+        None,
+    )
+    .await?;
     ok(PasswordResetRes {
         user_id,
         sessions_revoked,
@@ -748,6 +916,14 @@ async fn close_month(
         let seal = wallet.close_month(first).await?;
         answer.push(ClosingRes::of(&organization.name, &seal));
     }
+    record(
+        &state,
+        audit_action::CLOSING_CLOSE,
+        Some(request.month.clone()),
+        serde_json::json!({ "organizations": answer.len() }),
+        None,
+    )
+    .await?;
     ok(answer)
 }
 
@@ -826,6 +1002,17 @@ async fn generate_statements(
             answer.push(statement);
         }
     }
+    record(
+        &state,
+        audit_action::STATEMENT_GENERATE,
+        Some(request.period.clone()),
+        serde_json::json!({
+            "organizationId": request.organization_id,
+            "statements": answer.len(),
+        }),
+        None,
+    )
+    .await?;
     ok(answer)
 }
 
@@ -891,10 +1078,19 @@ async fn finalize_statement(
         .organization_by_id(existing.organization_id)
         .await?;
     let wallet = state.tenants.get(&organization.tenant_id).await?;
-    ok(state
+    let statement = state
         .db
         .finalize_statement(statement_id, &wallet, today())
-        .await?)
+        .await?;
+    record(
+        &state,
+        audit_action::STATEMENT_FINALIZE,
+        Some(statement_id.to_string()),
+        serde_json::json!({ "paymentStatus": statement.payment_status }),
+        Some(&request.idempotency_key),
+    )
+    .await?;
+    ok(statement)
 }
 
 /// The body of `POST …/statements/{id}/payments`: the amount the organization paid
@@ -984,6 +1180,17 @@ async fn record_payment(
         .statement_by_id(statement_id)
         .await?
         .ok_or_else(ApiError::not_found)?;
+    record(
+        &state,
+        audit_action::STATEMENT_PAYMENT,
+        Some(statement_id.to_string()),
+        serde_json::json!({
+            "amountMinor": request.amount_minor,
+            "entryId": receipt.entry_id,
+        }),
+        Some(&request.idempotency_key),
+    )
+    .await?;
     ok(PaymentRes {
         statement,
         entry_id: receipt.entry_id.to_string(),
@@ -1002,7 +1209,16 @@ async fn suspend_statement(
     // A pending statement whose due date has passed is overdue first — suspending
     // it lands from the standing it actually holds.
     state.db.flip_overdue(today()).await?;
-    ok(state.db.suspend_statement(statement_id).await?)
+    let statement = state.db.suspend_statement(statement_id).await?;
+    record(
+        &state,
+        audit_action::STATEMENT_SUSPEND,
+        Some(statement_id.to_string()),
+        serde_json::json!({}),
+        Some(&request.idempotency_key),
+    )
+    .await?;
+    ok(statement)
 }
 
 /// Every version of every model of one channel, newest first.
@@ -1054,10 +1270,25 @@ async fn mint_codes(
     State(state): State<AppState>,
     ApiJson(request): ApiJson<MintCodesReq>,
 ) -> ApiResult<oxsum_core::CodeBatch> {
-    ok(state
+    let batch = state
         .db
         .mint_codes(request.count, request.amount_minor, request.expires_at)
-        .await?)
+        .await?;
+    // The codes themselves are secrets held by their recipients — the audit row
+    // records the batch, never what was in it.
+    record(
+        &state,
+        audit_action::CODES_MINT,
+        Some(batch.batch_id.to_string()),
+        serde_json::json!({
+            "count": batch.count,
+            "amountMinor": batch.amount_minor,
+            "expiresAt": batch.expires_at,
+        }),
+        None,
+    )
+    .await?;
+    ok(batch)
 }
 
 /// Whether a presented token is the configured one, in time that does not depend on how much of it
