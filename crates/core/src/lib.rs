@@ -8,6 +8,7 @@
 //! see [`Db`].
 
 mod adapters;
+mod audit;
 mod billing;
 mod channels;
 mod db;
@@ -36,6 +37,7 @@ mod wallet;
 mod webhooks;
 
 pub use adapters::{ANTHROPIC, OPENAI, UsageAdapter, adapter_for};
+pub use audit::{AuditEntry, AuditPage, action as audit_action};
 pub use billing::{
     BillLine, BillingMode, ItemizedCharge, MeteredUsage, Price, PriceBook, PriceRule, PriceSet,
     RuleMatch, Settlement, SettlementKind, SettlementRecord, UpstreamPrices, estimate_tokens,
