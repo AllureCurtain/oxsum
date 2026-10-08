@@ -110,6 +110,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0023_admin_audit",
         include_str!("../migrations/0023_admin_audit.sql"),
     ),
+    (
+        "0024_suspension_and_member_budgets",
+        include_str!("../migrations/0024_suspension_and_member_budgets.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.
