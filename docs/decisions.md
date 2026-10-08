@@ -1073,3 +1073,17 @@ Five judgment calls, recorded:
 - **The read is operator-only, like the writes it indexes.** The endpoint sits inside the admin router behind the same token middleware, and there is no web page — consistent with margin and reconciliation, which are API-only surfaces too.
 
 Pinned by `crates/core/tests/audit.rs` (insert, newest-first order, cursor walk, keyed dedupe, unkeyed always-records) and `crates/server/tests/audit.rs` (a write leaving a row with its detail, cursor paging, malformed cursor and unknown action as 400, keyed replay auditing once, the credential-free channel and password rows, the token guard).
+
+## 2026-10-12 — Suspension gates admission; member budgets read the ledger (roadmap P7-3, issue #162)
+
+P7-3 adds the two operator levers that stop spend without touching the books: `organizations.suspended_at`, flippable through the same admin PATCH as the other billing terms, and `memberships.budget_limit_minor`, set on the same member PATCH a role change uses.
+
+The judgment calls:
+
+- **Suspension is a flag on admission, never a ledger event.** A suspended organization's new holds refuse `FORBIDDEN` — `/v1`, `/messages` and `POST /api/v1/holds` share `hold_for_key` and `hold`, so the check lives in the wallet, below the routes — while holds already open settle normally and money-in still lands, because the flag writes nothing into the ledger and every reserve/settle rule is unchanged.
+- **The flag read serializes against the flip through a dedicated advisory lock, not a row lock.** `hold_for_key` holds the org-admission lock *shared* for its check window; `set_suspended` takes it *exclusive* before stamping the row. Holds of one organization still run in parallel, but a hold either observes `suspended_at` or committed before it — locking the organization row itself would have serialized all holds of an organization against each other.
+- **A member budget is spend attributed to a person, not a key.** `hold_for_key` locks the minting member's row (`api_keys.created_by` → `memberships`), then sums `key_committed_in` over every key they minted — settled charges plus outstanding holds, the ledger's own figure, so the cap cannot drift from the books. Two of the member's keys cannot both fit under the cap because the membership row is locked for the whole check.
+- **A removed member's keys keep their history, lose their cap.** The membership row is what the budget hangs on; deleting it unbudgets the keys it attributed — deliberate, since a cap on nobody's spend has no owner to appeal to. `created_by` null (keys minted by an API key, or a since-deleted account) is unbudgeted the same way.
+- **The suspend write is its own webhook event, enqueued in the same transaction.** `org.suspended` joins `request.settled` in the outbox, with `changed` gating the enqueue — a replayed `suspended: true` lands the same state and announces nothing, so the flag, the audit row and the delivery stay one logical write. Reinstatement enqueues nothing; this build subscribes to suspensions only.
+
+Pinned by `crates/core/tests/suspension.rs` (the gate, the settle-while-suspended hold, the replay, the webhook enqueue, the member-budget sums over two keys and over settled spend, the validation surface) and `crates/server/tests/suspension.rs` (the PATCH round-trip, the 403s by key and by session, the budget set/clear, the `org.suspended` subscription and delivery).
