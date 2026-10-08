@@ -89,6 +89,6 @@ pub use wallet::{
     TransactionEntry, TransactionKind, Wallet, entry_id_for, settlement_key_for,
 };
 pub use webhooks::{
-    CreatedWebhook, DeliveryOutcome, DueDelivery, MAX_DELIVERY_ATTEMPTS, REQUEST_SETTLED,
-    WebhookDelivery, WebhookEndpoint, retry_delay_secs, signature,
+    CreatedWebhook, DeliveryOutcome, DueDelivery, MAX_DELIVERY_ATTEMPTS, ORG_SUSPENDED,
+    REQUEST_SETTLED, WebhookDelivery, WebhookEndpoint, retry_delay_secs, signature,
 };

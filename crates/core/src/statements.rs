@@ -251,7 +251,7 @@ impl Db {
     ) -> Result<Vec<crate::orgs::AdminOrganization>, WalletError> {
         let rows = sqlx::query(
             "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, \
-             o.payment_terms_days, o.tier, count(m.user_id) AS members \
+             o.payment_terms_days, o.tier, o.suspended_at, count(m.user_id) AS members \
              FROM oxsum.organizations o \
              LEFT JOIN oxsum.memberships m USING (organization_id) \
              WHERE EXISTS (SELECT 1 FROM oxsum.usage_records u \
