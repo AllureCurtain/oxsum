@@ -27,6 +27,7 @@ mod orgs;
 mod proof;
 mod ratelimit;
 mod reconcile;
+mod seed;
 mod sessions;
 mod statements;
 mod tenants;
@@ -70,6 +71,7 @@ pub use orgs::{
 pub use proof::{ChargeCheck, ProofBundle, verify_bundle, verify_charge};
 pub use ratelimit::{RateAllowance, RateLimited, RateLimiter, SlidingWindow};
 pub use reconcile::{DriftClass, DriftKind, DriftSample, Reconciliation};
+pub use seed::{DEMO_EMAIL, DEMO_ORGANIZATION, DEMO_PASSWORD, MEMBER_EMAIL, SeedReport};
 pub use sessions::{
     CreatedSession, KeyPrincipal, KeyScope, Principal, SESSION_COOKIE, SESSION_LIFETIME, Session,
     SessionPrincipal,
