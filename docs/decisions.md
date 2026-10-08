@@ -1059,3 +1059,17 @@ Five judgment calls, recorded:
 One implementation note worth keeping: `tier` in the PATCH body is `Option<Option<String>>` with a hand-peeled deserialize — serde answers `None` for both an absent field and an explicit `null`, and the endpoint must tell "leave the assignment alone" from "clear it".
 
 Pinned by `crates/core/tests/terms.rs` (tier validation, assignment, in-use deletion refusal, discount scoping/windows/most-favorable/non-stacking, replay and conflict), `crates/server/tests/terms.rs` (every new endpoint plus the PATCH's tier triple-state), `crates/server/tests/gateway.rs` (a discounted turn settling discounted, a post-end turn settling gross, allowlist and shared-window refusal), the verifier's v4 recompute-and-tamper tests, and the billing round-trip.
+
+## 2026-10-12 — The admin audit log records calls, after they land (roadmap P7-2, issue #160)
+
+P7-2 gives the operator surface a memory: an append-only `oxsum.admin_audit` table, one row per mutating `/api/v1/admin` call, and a cursor-paged `GET /api/v1/admin/audit` to read it back newest first.
+
+Five judgment calls, recorded:
+
+- **The row is written after the mutation commits, not inside its transaction.** The mutations live in different stores — a channel row, a tenant ledger entry, a discount row — and no transaction spans them. Writing the audit row second means a crash may omit an event but the log can never describe a change that did not happen; the writes it follows are all idempotent, so a client that retries a failed response lands the mutation and its audit row together.
+- **`detail` is an allowlist, not the request body.** Each handler names the fields safe to keep — amounts, reasons, percents, windows, the tier package — and credentials never qualify: a channel's `apiKey`, a reset's `newPassword` and a minted batch's `codes` are deliberately absent. The operator token itself is never stored; `actor` is the literal `operator` today, a column the multi-identity surface inherits rather than rebuilds for.
+- **A keyed write's replay is the same event.** The `(action, idempotency_key)` unique index absorbs a retried insert — `ON CONFLICT DO NOTHING` — so `discount.create`, `organization.adjust` and the statement transitions audit once per logical write, and the row joins back to the ledger entry the key names. Unkeyed calls (a tier `PUT`, a batch mint, a discount `DELETE`) are each their own event.
+- **Reads are keyset pages over `(recorded_at, audit_id) DESC`, filtered by exact `action`.** The cursor is the same opaque `nanos:id` the organizations endpoint already serves — echoed, never constructed — and an unknown `action` is a 400, so a mistyped filter cannot masquerade as a quiet log.
+- **The read is operator-only, like the writes it indexes.** The endpoint sits inside the admin router behind the same token middleware, and there is no web page — consistent with margin and reconciliation, which are API-only surfaces too.
+
+Pinned by `crates/core/tests/audit.rs` (insert, newest-first order, cursor walk, keyed dedupe, unkeyed always-records) and `crates/server/tests/audit.rs` (a write leaving a row with its detail, cursor paging, malformed cursor and unknown action as 400, keyed replay auditing once, the credential-free channel and password rows, the token guard).
