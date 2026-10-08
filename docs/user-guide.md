@@ -79,8 +79,14 @@ password; `/dashboard` is the overview. `/logout` logs out.
     organization as a member, expires seven days after minting, and is shown once.
   - **Make admin** / **Make member**: change a member's role. This never grants
     ownership; see below.
+  - **Member budget**: the same member PATCH (`/api/v1/org/members/{userId}`)
+    takes `budgetLimitMinor` — a cap on what the member may commit across every
+    key they minted, settled charges and outstanding holds counted together.
+    Send `null` to clear it. The members page does not render the control yet;
+    the API enforces it.
   - **Remove**: take the membership away. The person's account and their own personal
     organization stay, and if they were logged in, that session stops working.
+    The member's keys keep their history but lose the cap a budget gave them.
   - **Make owner**: transfer ownership. You become an admin and the member you chose
     becomes the owner, in one step — the organization always has exactly one owner.
     Only an owner sees this control.
@@ -367,6 +373,11 @@ drawn line before it adds purchased balance. The admin lowers the limit only aft
 the drawn part is repaid — shrinking below the debt is refused, and a top-up is how
 the debt shrinks.
 
+If the platform suspends the organization, the balance still reads and money still
+lands — but new holds refuse `FORBIDDEN`, so gateway calls and `POST /api/v1/holds`
+fail until the operator reinstates it. Holds already open still settle, and a
+subscribed webhook hears `org.suspended` at the moment it happens.
+
 ## Statements
 
 Purpose: read the monthly bill for what the credit line carried.
@@ -393,14 +404,17 @@ Purpose: be notified when a request settles, without polling the API.
 Steps:
 
 1. Register an endpoint: `POST /api/v1/webhooks` with
-   `{"url": "https://your-server/hook", "events": ["request.settled"]}`. The URL
-   must be HTTPS — HTTP is allowed only to localhost for development. The answer
-   carries `secret`, a `whsec-` string shown exactly once; store it, afterwards
-   the API shows only `secretLast4`.
+   `{"url": "https://your-server/hook", "events": ["request.settled", "org.suspended"]}`
+   — subscribe to either or both. The URL must be HTTPS — HTTP is allowed only
+   to localhost for development. The answer carries `secret`, a `whsec-` string
+   shown exactly once; store it, afterwards the API shows only `secretLast4`.
 2. Receive `POST`s at that URL. Each is a JSON envelope
    `{id, type, created_at, org_id, data}`; for `request.settled` the `data`
    names the request (`requestId`, `model`, `channel`), the charge (`kind`,
-   `chargedMinor`, `freezeMinor`, `settlementEntryId`) and the token counts.
+   `chargedMinor`, `freezeMinor`, `settlementEntryId`) and the token counts;
+   for `org.suspended` it is just `{organizationId}` — the platform suspended
+   the organization's spend, and new holds will refuse `FORBIDDEN` until an
+   operator reinstates it.
 3. Verify every delivery before acting on it: read `x-oxsum-signature`
    (`t=<unix>,v1=<hex>`), recompute HMAC-SHA256 of `"{t}.{raw body}"` with the
    stored secret, compare in constant time, and reject timestamps older than a
