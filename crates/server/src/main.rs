@@ -18,9 +18,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let database_url = required_env("DATABASE_URL")?;
-    let addr: SocketAddr = std::env::var("OXSUM_ADDR")
-        .unwrap_or_else(|_| "127.0.0.1:3000".into())
-        .parse()?;
     let config = Config::from_env()?;
 
     // One pool for the whole database, shared by every tenant. Each PostgreSQL connection
@@ -32,9 +29,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(%max_connections, "database pool ready");
 
     // oxsum's own tables (users, organizations, memberships, API keys, channels and their prices)
-    // before serving: a registration that arrives first must find them.
+    // before anything else: a registration or a seed that arrives first must find them.
     db.migrate().await?;
     tracing::info!("oxsum schema ready");
+
+    // `oxsum seed` fills the database with the demo world and exits — it shares this boot path so
+    // a seeded deployment looks exactly like one the server has been running on.
+    match std::env::args().nth(1).as_deref() {
+        Some("seed") => {
+            // Seeding reads only the catalog — channels and prices, never the
+            // credentials — so it does not need OXSUM_SECRET_KEY the way serving
+            // does. With one configured, `prepare` still runs so the bootstrap
+            // channel lands before the demo turns pick models from it.
+            if config.secret().is_some() {
+                oxsum_server::prepare(&db, &config).await?;
+            }
+            return seed(&db).await;
+        }
+        Some(other) => {
+            return Err(
+                format!("unknown argument {other:?}: the only subcommand is `seed`").into(),
+            );
+        }
+        None => {}
+    }
+
+    let addr: SocketAddr = std::env::var("OXSUM_ADDR")
+        .unwrap_or_else(|_| "127.0.0.1:3000".into())
+        .parse()?;
 
     // Seeding the bootstrap channel and opening every stored channel credential happen before the
     // listener: a deployment that cannot open its channels must not accept a request at all.
@@ -99,6 +121,42 @@ fn spawn_sweeper(
             tokio::time::sleep(SWEEP_INTERVAL).await;
         }
     })
+}
+
+/// `oxsum seed` (roadmap P7-4): populates the demo world and prints the logins
+/// and the first key's secret — the only place the secret is ever visible.
+async fn seed(db: &Db) -> Result<(), Box<dyn std::error::Error>> {
+    let report = db.seed_demo().await?;
+    if !report.created {
+        println!(
+            "already seeded — log in as {} / {} (the API key secret was printed on the first run)",
+            report.email,
+            oxsum_core::DEMO_PASSWORD
+        );
+        return Ok(());
+    }
+    println!(
+        "seeded {:?}: {} turns settled ({} of {} minor spent), statement {}",
+        report.organization,
+        report.turns,
+        report.spent_minor,
+        report.topped_up_minor,
+        report.statement.as_deref().unwrap_or("none"),
+    );
+    println!(
+        "  log in as  {} / {}",
+        report.email,
+        oxsum_core::DEMO_PASSWORD
+    );
+    println!(
+        "  member     {} / {}",
+        report.member_email,
+        oxsum_core::DEMO_PASSWORD
+    );
+    if let Some(secret) = &report.api_secret {
+        println!("  api key    {secret}  (shown once)");
+    }
+    Ok(())
 }
 
 /// The shared pool's size, from `OXSUM_DB_MAX_CONNECTIONS` (default 10).
