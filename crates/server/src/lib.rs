@@ -10,6 +10,7 @@ mod error;
 mod gateway;
 pub mod jobs;
 pub mod mail;
+mod metering;
 mod metrics;
 pub mod oauth;
 mod routes;

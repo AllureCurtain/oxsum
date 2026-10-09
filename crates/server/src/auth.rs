@@ -57,6 +57,25 @@ pub async fn require_key_gateway(
     Ok(next.run(request).await)
 }
 
+/// The metering surface's gate: a service credential, and only a service
+/// credential (issue #172). An organization's API key fails the same lookup a
+/// made-up secret does — its hash is in no `service_credentials` row — so an
+/// organization can never report its own usage, and the session cookie is not
+/// even read here.
+pub async fn require_service(
+    State(state): State<AppState>,
+    mut request: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let service = match bearer(request.headers()) {
+        Some(secret) => state.db.authenticate_service(secret).await.ok().flatten(),
+        None => None,
+    }
+    .ok_or(ApiError::Unauthorized)?;
+    request.extensions_mut().insert(service);
+    Ok(next.run(request).await)
+}
+
 /// The principal the presented credential authenticates, if it authenticates one.
 ///
 /// A bearer token wins over the cookie: the explicitly supplied credential beats the

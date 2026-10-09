@@ -105,6 +105,10 @@ pub fn router(state: AppState) -> Router {
 
     // The platform admin: an operator token, not an organization key, and its own middleware.
     let admin = crate::admin::router(state.clone());
+    // The metering surface's own credential: a service credential, never an
+    // organization's key or a session — an organization can never report its
+    // own usage (issue #172).
+    let metering = crate::metering::router(state.clone());
 
     // The metrics scrape sits at the conventional path rather than under /api/v1/admin, but
     // it answers to the same operator token — a Prometheus scrape config carries it as
@@ -130,7 +134,12 @@ pub fn router(state: AppState) -> Router {
             "/dashboard/bills/export.json",
             get(crate::bills::export_json),
         )
-        .nest("/api/v1", open.merge(authenticated).nest("/admin", admin))
+        .nest(
+            "/api/v1",
+            open.merge(authenticated)
+                .nest("/admin", admin)
+                .nest("/metering", metering),
+        )
         // The OpenAI-compatible surface, which brings its own auth and its own error format.
         .nest("/v1", crate::gateway::router(state.clone()));
     // The Leptos pages and their server functions, served by the same binary.
