@@ -1901,7 +1901,7 @@ async fn the_reconciliation_report_names_the_drift() {
     let report = &body["data"];
     assert_eq!(report["clean"], false);
     let classes = report["classes"].as_array().expect("the class list");
-    assert_eq!(classes.len(), 9, "{report}");
+    assert_eq!(classes.len(), 10, "{report}");
     let unbooked = classes
         .iter()
         .find(|class| class["class"] == "deposits_unbooked")
