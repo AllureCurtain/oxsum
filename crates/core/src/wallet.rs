@@ -711,6 +711,44 @@ impl Wallet {
         minor: i64,
         on: Date,
     ) -> Result<Receipt, WalletError> {
+        self.hold_inner(key, description, minor, None, on).await
+    }
+
+    /// A hold attributed to a service credential: the metering API's hold
+    /// (issue #172). The credential is the entry's provenance actor —
+    /// `svc-<credential id>` — so the hold and its settlement name the
+    /// reporting service the way a key hold names the key. Everything else is
+    /// [`hold`](Self::hold): the same pool split, the same suspension gate.
+    ///
+    /// # Errors
+    ///
+    /// As [`hold`](Self::hold).
+    pub async fn hold_for_service(
+        &self,
+        service: &Uuid,
+        key: &str,
+        description: &str,
+        minor: i64,
+        on: Date,
+    ) -> Result<Receipt, WalletError> {
+        let actor = Provenance::none()
+            .with_actor(&format!("svc-{}", service.as_simple()))
+            .map_err(invalid)?;
+        self.hold_inner(key, description, minor, Some(actor), on)
+            .await
+    }
+
+    /// The body [`hold`](Self::hold) and [`hold_for_service`](Self::hold_for_service)
+    /// share: `actor` is the provenance the hold entry carries, `None` for an
+    /// unattributed one.
+    async fn hold_inner(
+        &self,
+        key: &str,
+        description: &str,
+        minor: i64,
+        actor: Option<Provenance>,
+        on: Date,
+    ) -> Result<Receipt, WalletError> {
         positive(minor)?;
         let description = description_of(description)?;
         let entry_id = entry_id_for(key);
@@ -721,7 +759,7 @@ impl Wallet {
         // another request under the same key — is the engine's key-reuse
         // conflict.
         if let Some(stored) = self.store.get(entry_id).await? {
-            return self.hold_replay(&stored, &description, None, minor, key);
+            return self.hold_replay(&stored, &description, actor.as_ref(), minor, key);
         }
         // The suspension check is a short transaction of its own (issue #162): the
         // shared org-admission lock makes it wait for a suspension mid-commit, so a
@@ -761,7 +799,7 @@ impl Wallet {
                 self.pool_split(&mut conn, minor).await?
             };
             let receipt = self
-                .append(self.hold_entry(key, &description, split, None, on)?)
+                .append(self.hold_entry(key, &description, split, actor.clone(), on)?)
                 .await;
             match receipt {
                 Err(error @ WalletError::InsufficientFunds) => last_err = Some(error),
@@ -769,7 +807,9 @@ impl Wallet {
                 // racing copy of this same request or by a different one.
                 Err(WalletError::Conflict(_)) => {
                     return match self.store.get(entry_id).await? {
-                        Some(stored) => self.hold_replay(&stored, &description, None, minor, key),
+                        Some(stored) => {
+                            self.hold_replay(&stored, &description, actor.as_ref(), minor, key)
+                        }
                         None => Err(WalletError::Conflict(format!(
                             "idempotency key {key:?} is already taken"
                         ))),
@@ -1333,6 +1373,29 @@ impl Wallet {
             }
             other => other,
         }
+    }
+
+    /// The settlement record a hold's settlement committed, when it did: how a
+    /// replayed settlement answers the original outcome — the settlement entry
+    /// id derives from the hold's key, so the read is one probe (issue #172).
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn settled_record(
+        &self,
+        hold_key: &str,
+    ) -> Result<Option<crate::SettlementRecord>, WalletError> {
+        let Some(stored) = self
+            .store
+            .get(entry_id_for(&settlement_key_for(hold_key)))
+            .await?
+        else {
+            return Ok(None);
+        };
+        Ok(crate::SettlementRecord::parse(
+            stored.entry.description().as_str(),
+        ))
     }
 
     /// Available balance in minor units = settled balance - unsettled holds.

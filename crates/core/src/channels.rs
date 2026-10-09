@@ -654,6 +654,49 @@ async fn current_prices(db: &Db, channel_id: Uuid) -> Result<Vec<ModelPrice>, Wa
     prices_of(db, channel_id, Some(1)).await
 }
 
+/// The `event`-mode price a metering call resolves: `channel`'s price for
+/// `code` — exactly `pinned` when a hold pinned a version, the latest
+/// event-mode version otherwise (issue #172). Versions of other modes do not
+/// count: a code's event price is only the rows written for metering.
+///
+/// # Errors
+///
+/// [`WalletError::Misconfigured`] on a stored row this build cannot read;
+/// storage failures surface as [`WalletError`].
+pub async fn event_price(
+    db: &Db,
+    channel: &str,
+    code: &str,
+    pinned: Option<i64>,
+) -> Result<Option<ModelPrice>, WalletError> {
+    let row = sqlx::query(
+        "SELECT p.model, p.version, p.weight, p.input_price_per_million, \
+                p.output_price_per_million, p.max_output_tokens, \
+                p.cache_read_price_per_million, p.cache_write_5m_price_per_million, \
+                p.cache_write_1h_price_per_million, p.reasoning_price_per_million, \
+                p.cost_per_request, p.mode, p.upstream_prices, p.rules, p.created_at \
+         FROM oxsum.channel_prices p JOIN oxsum.channels c USING (channel_id) \
+         WHERE c.name = $1 AND p.model = $2 AND p.mode = 'event' \
+           AND ($3::int IS NULL OR p.version = $3) \
+         ORDER BY p.version DESC LIMIT 1",
+    )
+    .bind(channel)
+    .bind(code)
+    .bind(pinned.map(|v| v as i32))
+    .fetch_optional(db.pool())
+    .await?;
+    row.map(|row| {
+        Ok(ModelPrice {
+            model: row.try_get("model")?,
+            version: i64::from(row.try_get::<i32, _>("version")?),
+            weight: i64::from(row.try_get::<i32, _>("weight")?),
+            price: price_from_row(&row)?,
+            created_at: row.try_get("created_at")?,
+        })
+    })
+    .transpose()
+}
+
 /// One version per model (`latest`), or all of them.
 async fn prices_of(
     db: &Db,

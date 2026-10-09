@@ -80,6 +80,7 @@ pub(crate) fn status(kind: oxsum_core::SettlementKind) -> String {
         SettlementKind::Capped => "capped",
         SettlementKind::Swept => "swept",
         SettlementKind::Unpriced => "unpriced",
+        SettlementKind::Released => "released",
     }
     .to_owned()
 }

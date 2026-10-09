@@ -37,6 +37,12 @@ pub enum BillingMode {
     Embeddings,
     /// A rerank call: the query plus documents tokenize as input (issue #170).
     Rerank,
+    /// An external billable event a service reports on `/api/v1/metering`
+    /// (issue #172): nothing is forwarded, so there is no output bound — the
+    /// declared usage is the event's own units, in the billableCode's
+    /// denomination, and an output side is still allowed when the service
+    /// meters one.
+    Event,
 }
 
 impl BillingMode {
@@ -47,6 +53,7 @@ impl BillingMode {
             Self::Chat => "chat",
             Self::Embeddings => "embeddings",
             Self::Rerank => "rerank",
+            Self::Event => "event",
         }
     }
 
@@ -58,14 +65,23 @@ impl BillingMode {
             "chat" => Some(Self::Chat),
             "embeddings" => Some(Self::Embeddings),
             "rerank" => Some(Self::Rerank),
+            "event" => Some(Self::Event),
             _ => None,
         }
     }
 
-    /// Whether the mode meters an output side: only `chat` does, so the
+    /// Whether the mode meters an output side: `chat` and `event` do, so the
     /// input-only modes freeze and bill with the output count at zero.
     #[must_use]
     pub fn meters_output(&self) -> bool {
+        matches!(self, Self::Chat | Self::Event)
+    }
+
+    /// Whether the mode forwards a request and so needs a `maxOutputTokens`
+    /// ceiling to bound it: only `chat` does. `event` usage is declared after
+    /// the fact — a ceiling would bound nothing.
+    #[must_use]
+    pub fn needs_output_ceiling(&self) -> bool {
         matches!(self, Self::Chat)
     }
 }
@@ -593,19 +609,23 @@ impl Price {
             rule.cond.validate()?;
             rule.price.validate()?;
         }
-        let mode_error = |set: &PriceSet| {
-            if self.mode.meters_output() {
-                if set.max_output_tokens <= 0 {
-                    return Some("a chat price needs a positive maxOutputTokens".to_owned());
-                }
-            } else if set.output_price_per_million != 0 || set.max_output_tokens != 0 {
-                return Some(
+        let mode_error = |set: &PriceSet| match self.mode {
+            BillingMode::Chat if set.max_output_tokens <= 0 => {
+                Some("a chat price needs a positive maxOutputTokens".to_owned())
+            }
+            BillingMode::Embeddings | BillingMode::Rerank
+                if set.output_price_per_million != 0 || set.max_output_tokens != 0 =>
+            {
+                Some(
                     "an embeddings or rerank price has no output side: outputPricePerMillion and \
                      maxOutputTokens are absent or zero"
                         .to_owned(),
-                );
+                )
             }
-            None
+            BillingMode::Event if set.max_output_tokens != 0 => Some(
+                "an event price is never forwarded: maxOutputTokens is absent or zero".to_owned(),
+            ),
+            _ => None,
         };
         if let Some(error) = mode_error(&self.set()) {
             return Err(error);
@@ -834,7 +854,9 @@ impl Price {
                 }
             }
         }
-        if usage.event_type.is_some() {
+        // On an `event` price the eventType is what is being billed, not a
+        // foreign dimension; on every gateway-served mode it is one (issue #172).
+        if self.mode != BillingMode::Event && usage.event_type.is_some() {
             unpriced.push("eventType");
         }
         unpriced
@@ -905,6 +927,10 @@ pub enum SettlementKind {
     /// flagged for the anomalies page rather than billed at zero or at a rate
     /// the dimension does not belong to (fail-closed, roadmap P1-5).
     Unpriced,
+    /// A metering hold the reporting service let go: the event never billed,
+    /// settled at zero on the service's own word — deliberate, unlike `swept`,
+    /// which is the sweeper's answer to a hold nobody settled (issue #172).
+    Released,
 }
 
 impl SettlementKind {
@@ -920,6 +946,7 @@ impl SettlementKind {
             Self::Capped => "capped",
             Self::Swept => "swept",
             Self::Unpriced => "unpriced",
+            Self::Released => "released",
         }
     }
 }
@@ -1159,6 +1186,102 @@ impl Settlement<'_> {
     }
 }
 
+/// The version a metered event's settlement description writes on the wire.
+/// v6 differs from v5 by what a metering turn does not have: `upstreamAttempts`
+/// is absent — nothing was relayed — and `service` names the credential that
+/// reported the event (issue #172). The arithmetic a verifier recomputes is
+/// unchanged.
+const METERED_DESCRIPTION_VERSION: i64 = 6;
+
+/// What a metered event's settlement entry records, serialised into its
+/// description — [`Settlement`]'s shape for a turn no upstream served.
+///
+/// The same self-containment rules apply: every input the charge recomputes
+/// from sits inside the entry's content hash, and the record is built only
+/// from what the request decided, so a retried call reproduces the same entry.
+/// `request` carries the service's event id (the hold key when it named none);
+/// `model` carries the billableCode, which is the price book's model name.
+#[derive(Debug, Clone)]
+pub struct MeteredSettlement<'a> {
+    /// The event's identifier on the service's side.
+    pub request: &'a str,
+    /// The reporting credential's display name — who wrote this charge.
+    pub service: &'a str,
+    /// The channel whose `event` price applied.
+    pub channel: &'a str,
+    /// The billable code the event priced under.
+    pub model: &'a str,
+    /// The price version in force — pinned at hold time, or latest for a
+    /// one-shot settlement.
+    pub price_version: i64,
+    /// How the event settled: `usage`, `capped` or `released`.
+    pub kind: SettlementKind,
+    /// The usage the service declared, written as [`MeteredUsage`].
+    pub usage: &'a UsageRecord,
+    /// The priced lines the charge decomposes into.
+    pub lines: &'a [BillLine],
+    /// The rule that priced the event, when one did.
+    pub matched_rule: Option<&'a RuleMatch>,
+    /// The discount the organization qualified for; absent when none applied.
+    pub discount_percent: Option<i64>,
+    /// What was charged, never more than `freeze`.
+    pub charged: i64,
+    /// What the hold froze — the charged amount itself on a one-shot.
+    pub freeze: i64,
+}
+
+/// The wire [`MeteredSettlement`] writes.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MeteredSettlementV6<'a> {
+    v: i64,
+    request: &'a str,
+    /// The reporting service credential's name, v6's addition: the actor an
+    /// upstream-served turn's description cannot have, because a gateway turn
+    /// has no reporter.
+    service: &'a str,
+    channel: &'a str,
+    model: &'a str,
+    price_version: i64,
+    kind: SettlementKind,
+    usage: MeteredUsage,
+    lines: &'a [BillLine],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    matched_rule: Option<&'a RuleMatch>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    discount_percent: Option<i64>,
+    charged: i64,
+    freeze: i64,
+}
+
+impl MeteredSettlement<'_> {
+    /// The compact JSON the settlement entry's description carries — v6, the
+    /// metering shape of [`Settlement::description`].
+    ///
+    /// # Errors
+    ///
+    /// Refuses a description that cannot be serialised, which cannot happen for
+    /// these fields; the `Result` keeps the caller honest.
+    pub fn description(&self) -> Result<String, WalletError> {
+        serde_json::to_string(&MeteredSettlementV6 {
+            v: METERED_DESCRIPTION_VERSION,
+            request: self.request,
+            service: self.service,
+            channel: self.channel,
+            model: self.model,
+            price_version: self.price_version,
+            kind: self.kind,
+            usage: MeteredUsage::from(self.usage),
+            lines: self.lines,
+            matched_rule: self.matched_rule,
+            discount_percent: self.discount_percent,
+            charged: self.charged,
+            freeze: self.freeze,
+        })
+        .map_err(|error| WalletError::InvalidInput(format!("settlement record: {error}")))
+    }
+}
+
 /// A settlement entry's description, read back into owned fields.
 ///
 /// The reader of [`Settlement`], in the same module as the writer so the two shapes are
@@ -1208,12 +1331,16 @@ pub struct SettlementRecord {
     /// a v3 record, which never carried one.
     pub discount_percent: Option<i64>,
     /// How many upstream calls the turn made (v5, issue #168); a v3/v4 record
-    /// predates failover, so it reads back as 1 — the one attempt it made.
+    /// predates failover, so it reads back as 1 — the one attempt it made. A
+    /// metered event (v6) called no upstream, so it reads back as 0.
     pub upstream_attempts: i64,
+    /// The reporting service credential's name (v6, issue #172); `None` on a
+    /// gateway turn's record, which has no reporter.
+    pub service: Option<String>,
 }
 
 /// The wire [`SettlementRecord::parse`] reads: [`SettlementV5`] owned, tolerant
-/// of v3 and v4 — the differences are fields the older writers never carried.
+/// of v3, v4 and v6 — the differences are fields the other writers never carried.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SettlementRecordWire {
@@ -1228,6 +1355,7 @@ struct SettlementRecordWire {
     matched_rule: Option<RuleMatch>,
     discount_percent: Option<i64>,
     upstream_attempts: Option<i64>,
+    service: Option<String>,
     charged: i64,
     freeze: i64,
 }
@@ -1239,7 +1367,7 @@ impl SettlementRecord {
     #[must_use]
     pub fn parse(description: &str) -> Option<Self> {
         let wire: SettlementRecordWire = serde_json::from_str(description).ok()?;
-        if !(3..=DESCRIPTION_VERSION).contains(&wire.v) {
+        if !(3..=METERED_DESCRIPTION_VERSION).contains(&wire.v) {
             return None;
         }
         let price_of = |item: &str| {
@@ -1264,7 +1392,12 @@ impl SettlementRecord {
             lines: wire.lines,
             matched_rule: wire.matched_rule,
             discount_percent: wire.discount_percent,
-            upstream_attempts: wire.upstream_attempts.unwrap_or(1),
+            // The absent field means what the version knows: a gateway record
+            // predating v5 made the one attempt; a metered event made none.
+            upstream_attempts: wire
+                .upstream_attempts
+                .unwrap_or(if wire.v >= 6 { 0 } else { 1 }),
+            service: wire.service,
         })
     }
 }
@@ -1864,6 +1997,96 @@ mod tests {
         // Within the ledger's limit, whatever the model is called.
         assert!(json.len() < 512);
         assert_eq!(json, settlement.description().unwrap());
+    }
+
+    /// The metering shape: v6 carries `service` instead of `upstreamAttempts`
+    /// — a metered event names its reporter and called no upstream
+    /// (issue #172). The record reads both fields back for what they are.
+    #[test]
+    fn the_metered_description_carries_its_reporter() {
+        let usage = UsageRecord {
+            input_tokens: 116,
+            event_type: Some("mail.send".into()),
+            ..UsageRecord::default()
+        };
+        let lines = [
+            BillLine {
+                item: "input".into(),
+                units: 116,
+                price_per_m: 1_000_000,
+            },
+            BillLine {
+                item: "output".into(),
+                units: 0,
+                price_per_m: 0,
+            },
+        ];
+        let settlement = MeteredSettlement {
+            request: "evt-42",
+            service: "mailer",
+            channel: "internal",
+            model: "mail.send",
+            price_version: 2,
+            kind: SettlementKind::Usage,
+            usage: &usage,
+            lines: &lines,
+            matched_rule: None,
+            discount_percent: None,
+            charged: 116,
+            freeze: 400,
+        };
+        let json = settlement.description().unwrap();
+        assert_eq!(
+            json,
+            r#"{"v":6,"request":"evt-42","service":"mailer","channel":"internal","model":"mail.send","priceVersion":2,"kind":"usage","usage":{"inputTokens":116,"eventType":"mail.send"},"lines":[["input",116,1000000],["output",0,0]],"charged":116,"freeze":400}"#
+        );
+        assert!(json.len() < 512);
+        // The record reads the reporter back, and the absent attempt count
+        // reads as what a metered event is: no upstream call.
+        let record = SettlementRecord::parse(&json).unwrap();
+        assert_eq!(record.service.as_deref(), Some("mailer"));
+        assert_eq!(record.upstream_attempts, 0);
+        assert_eq!(record.kind, SettlementKind::Usage);
+    }
+
+    /// A released metering hold settles at zero: deliberate, where `swept` is
+    /// the sweeper's answer to a hold nobody closed. Its lines are zero units
+    /// at the pinned rates — the price the hold carried, nothing billed.
+    #[test]
+    fn a_released_metered_hold_records_zero() {
+        let usage = UsageRecord::default();
+        let lines = [
+            BillLine {
+                item: "input".into(),
+                units: 0,
+                price_per_m: 1_000_000,
+            },
+            BillLine {
+                item: "output".into(),
+                units: 0,
+                price_per_m: 2_000_000,
+            },
+        ];
+        let json = MeteredSettlement {
+            request: "evt-7",
+            service: "mailer",
+            channel: "internal",
+            model: "mail.send",
+            price_version: 2,
+            kind: SettlementKind::Released,
+            usage: &usage,
+            lines: &lines,
+            matched_rule: None,
+            discount_percent: None,
+            charged: 0,
+            freeze: 400,
+        }
+        .description()
+        .unwrap();
+        let record = SettlementRecord::parse(&json).unwrap();
+        assert_eq!(record.kind, SettlementKind::Released);
+        assert_eq!(record.charged, 0);
+        assert_eq!(record.freeze, 400);
     }
 
     /// A rule hit lands in the record: `matchedRule` is the match itself, so
