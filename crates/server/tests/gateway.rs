@@ -67,6 +67,20 @@ enum Answer {
     MessagesStream { terminated: bool },
     /// Upstream refuses, in Anthropic's own error shape.
     MessagesRefuse { status: u16, body: Value },
+    /// A whole embeddings answer: vectors plus a `prompt_tokens` usage report,
+    /// or no report at all when `tokens` is `None` (issue #170).
+    Embeddings { tokens: Option<i64> },
+    /// A whole rerank answer: ranked results plus a `total_tokens` usage report
+    /// (issue #170).
+    Rerank { tokens: Option<i64> },
+    /// [`Answer::Flaky`] for the embeddings path: refuses `refuse` requests,
+    /// then answers a report-carrying embeddings body. Failover on the
+    /// input-only surfaces is driven deterministically the same way (issue #170).
+    EmbeddingsFlaky {
+        refuse: u32,
+        status: u16,
+        retry_after_secs: Option<u64>,
+    },
 }
 
 /// One request upstream received.
@@ -109,6 +123,8 @@ async fn start_upstream(script: Script) -> String {
     let app = Router::new()
         .route("/v1/chat/completions", post(upstream))
         .route("/v1/messages", post(messages_upstream))
+        .route("/v1/embeddings", post(aux_upstream))
+        .route("/v1/rerank", post(aux_upstream))
         .with_state(script);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -240,12 +256,105 @@ async fn upstream(
             "not json at all",
         )
             .into_response(),
-        Answer::Messages { .. } | Answer::MessagesStream { .. } | Answer::MessagesRefuse { .. } => (
+        _ => (
             StatusCode::BAD_REQUEST,
-            axum::Json(json!({"error": {"message": "an anthropic answer was scripted on the openai path"}})),
+            axum::Json(json!({"error": {"message": "a foreign answer was scripted on the openai chat path"}})),
         )
             .into_response(),
     }
+}
+
+/// The `/v1/embeddings` and `/v1/rerank` side of the scripted upstream — one
+/// handler, because both surfaces share the OpenAI protocol and differ only in
+/// the body they answer (issue #170).
+async fn aux_upstream(
+    State(script): State<Script>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    note(&script, &headers, &body);
+    let model = body["model"].as_str().unwrap_or_default().to_owned();
+    let answer = script.answers.lock().unwrap().get(&model).cloned();
+    let Some(answer) = answer else {
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(json!({"error": {"message": "no script for this model"}})),
+        )
+            .into_response();
+    };
+    match answer {
+        Answer::Embeddings { tokens } => embeddings_answer(&model, tokens),
+        Answer::EmbeddingsFlaky {
+            refuse,
+            status,
+            retry_after_secs,
+        } => {
+            let asked = script
+                .seen
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|seen| seen.body["model"].as_str() == Some(model.as_str()))
+                .count() as u32;
+            if asked <= refuse {
+                let mut refusal = (
+                    StatusCode::from_u16(status).expect("the test's own status"),
+                    axum::Json(json!({"error": {"message": "scripted refusal"}})),
+                )
+                    .into_response();
+                if let Some(secs) = retry_after_secs {
+                    refusal.headers_mut().insert(
+                        axum::http::header::RETRY_AFTER,
+                        secs.to_string().parse().unwrap(),
+                    );
+                }
+                refusal
+            } else {
+                embeddings_answer(&model, Some(7))
+            }
+        }
+        Answer::Rerank { tokens } => {
+            let mut rerank = json!({
+                "id": "rerank-1",
+                "model": model,
+                "results": [{"index": 0, "relevance_score": 0.98, "document": {"text": "a document"}}],
+            });
+            if let Some(tokens) = tokens {
+                rerank["usage"] = json!({"total_tokens": tokens});
+            }
+            axum::Json(rerank).into_response()
+        }
+        Answer::Refuse { status, body } => (
+            StatusCode::from_u16(status).expect("the test's own status"),
+            axum::Json(body),
+        )
+            .into_response(),
+        Answer::Garbage => (
+            StatusCode::OK,
+            [("content-type", "text/plain")],
+            "not json at all",
+        )
+            .into_response(),
+        _ => (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error": {"message": "a foreign answer was scripted on the input-only path"}})),
+        )
+            .into_response(),
+    }
+}
+
+/// A whole embeddings answer in OpenAI's shape, with a `prompt_tokens` usage
+/// report when `tokens` names one (issue #170).
+fn embeddings_answer(model: &str, tokens: Option<i64>) -> Response {
+    let mut answer = json!({
+        "object": "list",
+        "data": [{"object": "embedding", "index": 0, "embedding": [0.1, -0.2, 0.3]}],
+        "model": model,
+    });
+    if let Some(tokens) = tokens {
+        answer["usage"] = json!({"prompt_tokens": tokens, "total_tokens": tokens});
+    }
+    axum::Json(answer).into_response()
 }
 
 /// The `/v1/messages` side of the scripted upstream, in Anthropic's shapes.
@@ -712,6 +821,86 @@ fn simple_message(model: &str) -> Value {
         "max_tokens": 100,
         "messages": [{"role": "user", "content": "hi"}],
     })
+}
+
+/// An embeddings request against the input-only OpenAI surface (issue #170).
+async fn embeddings(app: &Router, key: &str, body: Value) -> Response {
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/embeddings")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {key}"))
+        .body(Body::from(body.to_string()))
+        .expect("the test's own request");
+    app.clone()
+        .oneshot(request)
+        .await
+        .expect("the router answers")
+}
+
+/// A rerank request against the Jina/Cohere-shaped surface (issue #170).
+async fn rerank(app: &Router, key: &str, body: Value) -> Response {
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/rerank")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {key}"))
+        .body(Body::from(body.to_string()))
+        .expect("the test's own request");
+    app.clone()
+        .oneshot(request)
+        .await
+        .expect("the router answers")
+}
+
+/// Prices `name` on the world's own channel under a non-chat billing mode — one
+/// minor unit per input token, no output side — and returns the model name the
+/// gateway and upstream see (issue #170).
+async fn aux_model(world: &World, name: &str, mode: oxsum_core::BillingMode) -> String {
+    let db = Db::from_pool(world.pool.clone());
+    let price: oxsum_core::Price = serde_json::from_value(json!({
+        "inputPricePerMillion": 1_000_000,
+        "mode": mode,
+    }))
+    .expect("the test's own price parses");
+    let model = world.model(name);
+    db.append_price(&world.channel, &model, price, 100)
+        .await
+        .expect("the price is written");
+    model
+}
+
+/// A second channel serving `model` under an input-only billing mode, behind
+/// its own scripted upstream — [`second_route`] for the surfaces this feature
+/// adds (issue #170).
+async fn aux_route(
+    world: &World,
+    model: &str,
+    mode: oxsum_core::BillingMode,
+    weight: i64,
+) -> (String, Script) {
+    let db = Db::from_pool(world.pool.clone());
+    let secret = oxsum_core::SecretKey::from_bytes([7; 32]);
+    let channel = format!("aux-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let script = Script::default();
+    let base_url = start_upstream(script.clone()).await;
+    db.set_channel(&channel, &base_url, "aux-secret", "openai", &secret)
+        .await
+        .expect("the auxiliary channel is written");
+    let price: oxsum_core::Price = serde_json::from_value(json!({
+        "inputPricePerMillion": 1_000_000,
+        "mode": mode,
+    }))
+    .expect("the test's own price parses");
+    // Two versions, like second_route's: a settlement naming this route is
+    // provably its lineage.
+    db.append_price(&channel, model, price.clone(), weight)
+        .await
+        .expect("the first version is written");
+    db.append_price(&channel, model, price, weight)
+        .await
+        .expect("the second version is written");
+    (channel, script)
 }
 
 /// The freeze `simple()` should produce, computed the way the request path computes it.
@@ -3292,4 +3481,430 @@ async fn a_route_on_the_other_protocol_is_not_a_candidate() {
     assert_eq!(world.script.seen().len(), 1, "only the first turn asked it");
     let record = world.settlement(&id).await.expect("the turn settled");
     assert_eq!(record["channel"], backup);
+}
+
+// ── the input-only surfaces (issue #170) ─────────────────────────────────────
+
+/// An embeddings turn runs the same freeze → relay → settle pipeline as chat,
+/// metered on the input side alone: the freeze is the input bound, the
+/// settlement bills `prompt_tokens`, and no output bound is forwarded because
+/// the surface has none (issue #170).
+#[tokio::test]
+async fn an_embeddings_turn_bills_the_reported_input() {
+    let world = world!(1_000_000);
+    let model = aux_model(&world, "emb", oxsum_core::BillingMode::Embeddings).await;
+    world
+        .script
+        .answers(&model, Answer::Embeddings { tokens: Some(20) });
+
+    let response = embeddings(
+        &world.app,
+        &world.key,
+        json!({"model": model, "input": "embed me"}),
+    )
+    .await;
+    let id = request_id(&response);
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // The answer is passed through untouched, in OpenAI's own shape.
+    assert_eq!(body["data"][0]["embedding"], json!([0.1, -0.2, 0.3]));
+    assert_eq!(body["usage"]["prompt_tokens"], 20);
+
+    // Upstream saw the caller's own key — and no output bound: the surface has
+    // no output side, so `max_tokens` is never injected.
+    let seen = world.script.seen();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(
+        seen[0].authorization.as_deref(),
+        Some("Bearer upstream-secret")
+    );
+    assert!(
+        seen[0].body.get("max_tokens").is_none(),
+        "the forwarded body carries no output ceiling: {:?}",
+        seen[0].body
+    );
+
+    // The freeze was the input bound alone — "embed me" is 8 bytes plus the
+    // 16-byte message overhead, at one minor unit per token.
+    let hold = world.hold(&id).await.expect("the hold is recorded");
+    assert_eq!(hold["freeze"], input_upper_bound(&["embed me"]));
+
+    // Twenty reported input tokens at one minor unit each.
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["kind"], "usage");
+    assert_eq!(record["usage"]["inputTokens"], 20);
+    assert!(
+        record["usage"]["outputTokens"].is_null(),
+        "no output side is recorded on an input-only turn"
+    );
+    assert_eq!(record["charged"], 20);
+    assert_eq!(record["upstreamAttempts"], 1);
+    let description = world
+        .settlement_description(&id)
+        .await
+        .expect("the turn settled");
+    assert_eq!(
+        oxsum_core::verify_charge(&description),
+        oxsum_core::ChargeCheck::Recomputed
+    );
+
+    let wallet = world.wallet().await;
+    assert_eq!(wallet.reserved().await.unwrap(), 0);
+    assert_eq!(wallet.settled().await.unwrap(), 1_000_000 - 20);
+}
+
+/// A token-array `input` freezes at its exact count — the ids are already
+/// tokens, so the bound is their length rather than a text estimate — and a
+/// matching report settles inside it (issue #170).
+#[tokio::test]
+async fn a_token_array_input_freezes_at_its_exact_count() {
+    let world = world!(1_000_000);
+    let model = aux_model(&world, "emb", oxsum_core::BillingMode::Embeddings).await;
+    world
+        .script
+        .answers(&model, Answer::Embeddings { tokens: Some(5) });
+
+    // A flat token array: five ids, frozen and billed at five.
+    let response = embeddings(
+        &world.app,
+        &world.key,
+        json!({"model": model, "input": [10, 20, 30, 40, 50]}),
+    )
+    .await;
+    let id = request_id(&response);
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let hold = world.hold(&id).await.expect("the hold is recorded");
+    assert_eq!(hold["freeze"], 5, "the token count is the exact bound");
+    assert_eq!(
+        world.settlement(&id).await.expect("the turn settled")["charged"],
+        5
+    );
+
+    // An array of token arrays counts every entry: two plus three is five.
+    let response = embeddings(
+        &world.app,
+        &world.key,
+        json!({"model": model, "input": [[10, 20], [30, 40, 50]]}),
+    )
+    .await;
+    let id = request_id(&response);
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let hold = world.hold(&id).await.expect("the hold is recorded");
+    assert_eq!(hold["freeze"], 5);
+}
+
+/// An embeddings answer that reports no usage settles on the local estimate of
+/// the input text — the count a token-free request still lets the gateway
+/// compute (issue #170).
+#[tokio::test]
+async fn a_reportless_embeddings_turn_settles_estimated() {
+    let world = world!(1_000_000);
+    let model = aux_model(&world, "emb", oxsum_core::BillingMode::Embeddings).await;
+    world
+        .script
+        .answers(&model, Answer::Embeddings { tokens: None });
+
+    let response = embeddings(
+        &world.app,
+        &world.key,
+        json!({"model": model, "input": "embed me"}),
+    )
+    .await;
+    let id = request_id(&response);
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["kind"], "estimated");
+    // The estimate prices the input text, never the freeze's upper bound.
+    let charged = record["charged"].as_i64().expect("a minor-unit charge");
+    assert!(charged > 0 && charged <= input_upper_bound(&["embed me"]));
+}
+
+/// A rerank turn bills query and documents together: the surface's bound is
+/// every text the request carries, and `usage.total_tokens` is the input count
+/// (issue #170).
+#[tokio::test]
+async fn a_rerank_turn_bills_query_and_documents_together() {
+    let world = world!(1_000_000);
+    let model = aux_model(&world, "rank", oxsum_core::BillingMode::Rerank).await;
+    world
+        .script
+        .answers(&model, Answer::Rerank { tokens: Some(42) });
+
+    let response = rerank(
+        &world.app,
+        &world.key,
+        json!({
+            "model": model,
+            "query": "what is oxsum",
+            "documents": ["a billing gateway", {"text": "a credit wallet"}],
+        }),
+    )
+    .await;
+    let id = request_id(&response);
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["results"][0]["relevance_score"], 0.98);
+
+    // The freeze covered query plus both document texts; the report settled
+    // under it, billed at the input rate alone.
+    let hold = world.hold(&id).await.expect("the hold is recorded");
+    assert_eq!(
+        hold["freeze"],
+        input_upper_bound(&["what is oxsum", "a billing gateway", "a credit wallet"])
+    );
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["kind"], "usage");
+    assert_eq!(record["charged"], 42);
+    assert_eq!(record["upstreamAttempts"], 1);
+    let description = world
+        .settlement_description(&id)
+        .await
+        .expect("the turn settled");
+    assert_eq!(
+        oxsum_core::verify_charge(&description),
+        oxsum_core::ChargeCheck::Recomputed
+    );
+}
+
+/// A price's mode is what makes its rates mean the surface's counts: a model
+/// priced for chat is not an embeddings route, and an embeddings-priced model
+/// is not a chat route — each surface fails closed with `model_not_served`
+/// (issue #170).
+#[tokio::test]
+async fn a_mode_mismatch_is_not_a_candidate() {
+    let world = world!(1_000_000);
+    let emb = aux_model(&world, "emb", oxsum_core::BillingMode::Embeddings).await;
+
+    // The world's chat-priced model does not answer the embeddings surface.
+    let response = embeddings(
+        &world.app,
+        &world.key,
+        json!({"model": world.model("ok"), "input": "hi"}),
+    )
+    .await;
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+    assert_eq!(body["error"]["param"], "model");
+
+    // And the embeddings-priced model does not answer the chat surface.
+    let response = chat(&world.app, &world.key, simple(&emb)).await;
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+    assert!(world.script.seen().is_empty(), "upstream was never asked");
+}
+
+/// The input-only surfaces have no output side and no stream: a `stream` flag
+/// is a refusal, and a body without a computable input bound is refused rather
+/// than priced blind (issue #170).
+#[tokio::test]
+async fn malformed_input_only_requests_are_refused() {
+    let world = world!(1_000_000);
+    let emb = aux_model(&world, "emb", oxsum_core::BillingMode::Embeddings).await;
+    let rank = aux_model(&world, "rank", oxsum_core::BillingMode::Rerank).await;
+
+    for body in [
+        // No input, an empty input, a mixed array, a negative token id.
+        json!({"model": emb}),
+        json!({"model": emb, "input": []}),
+        json!({"model": emb, "input": ["text", 42]}),
+        json!({"model": emb, "input": [1, -2]}),
+        json!({"model": emb, "input": {"not": "an input"}}),
+        // The surface never streams.
+        json!({"model": emb, "input": "hi", "stream": true}),
+    ] {
+        let response = embeddings(&world.app, &world.key, body.clone()).await;
+        let (status, answer) = json_of(response).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {answer}");
+    }
+
+    for body in [
+        json!({"model": rank, "documents": ["a"]}),
+        json!({"model": rank, "query": "q"}),
+        json!({"model": rank, "query": "q", "documents": []}),
+        json!({"model": rank, "query": "q", "documents": [{"url": "x"}]}),
+        json!({"model": rank, "query": "q", "documents": ["a"], "stream": true}),
+    ] {
+        let response = rerank(&world.app, &world.key, body.clone()).await;
+        let (status, answer) = json_of(response).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {answer}");
+    }
+    assert!(world.script.seen().is_empty(), "upstream was never asked");
+}
+
+/// Failover is not chat's alone: an embeddings route that refuses yields to
+/// the next channel serving the model, under the one hold, and the settlement
+/// names the route that answered (issues #168, #170). Both routes are scripted
+/// to refuse once — the leader is a weighted pick, so the test is
+/// deterministic only when either order works: whoever leads refuses, the
+/// other route refuses as the last one, its `Retry-After` is honored once, and
+/// its retry answers.
+#[tokio::test]
+async fn the_input_only_surfaces_fail_over_between_routes() {
+    let world = world!(1_000_000);
+    let emb = aux_model(&world, "emb", oxsum_core::BillingMode::Embeddings).await;
+    let (backup, backup_script) =
+        aux_route(&world, &emb, oxsum_core::BillingMode::Embeddings, 900).await;
+    let flaky = Answer::EmbeddingsFlaky {
+        refuse: 1,
+        status: 429,
+        retry_after_secs: Some(1),
+    };
+    world.script.answers(&emb, flaky.clone());
+    backup_script.answers(&emb, flaky);
+
+    let response = embeddings(&world.app, &world.key, json!({"model": emb, "input": "hi"})).await;
+    let id = request_id(&response);
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Three calls under the one hold: the leader's refusal, the other's
+    // refusal, and the retry that answered — whichever channel led.
+    let primary_seen = world.script.seen().len();
+    let backup_seen = backup_script.seen().len();
+    assert_eq!(primary_seen + backup_seen, 3, "every attempt was recorded");
+    assert!(
+        primary_seen >= 1 && backup_seen >= 1,
+        "both routes were tried"
+    );
+    let (answered, answered_seen) = if backup_seen > primary_seen {
+        (backup.clone(), backup_seen)
+    } else {
+        (world.channel.clone(), primary_seen)
+    };
+    assert_eq!(answered_seen, 2, "the answering route is the one retried");
+
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["kind"], "usage");
+    assert_eq!(record["channel"], answered);
+    assert_eq!(
+        record["priceVersion"],
+        if answered == backup { 2 } else { 1 },
+        "the answering route's own version priced the turn"
+    );
+    assert_eq!(record["upstreamAttempts"], 3);
+    assert_eq!(record["charged"], 7);
+}
+
+/// A rerank turn fails over the same way: the route that always refuses is
+/// never the one the settlement names, whichever order the weights picked
+/// (issues #168, #170).
+#[tokio::test]
+async fn a_rerank_turn_fails_over_to_the_answering_route() {
+    let world = world!(1_000_000);
+    let rank = aux_model(&world, "rank", oxsum_core::BillingMode::Rerank).await;
+    let (backup, backup_script) =
+        aux_route(&world, &rank, oxsum_core::BillingMode::Rerank, 900).await;
+    world.script.answers(
+        &rank,
+        Answer::Refuse {
+            status: 503,
+            body: json!({"error": {"message": "overloaded"}}),
+        },
+    );
+    backup_script.answers(&rank, Answer::Rerank { tokens: Some(42) });
+
+    let response = rerank(
+        &world.app,
+        &world.key,
+        json!({"model": rank, "query": "q", "documents": ["a document"]}),
+    )
+    .await;
+    let id = request_id(&response);
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(backup_script.seen().len(), 1, "the backup carried the turn");
+
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["kind"], "usage");
+    // The refusing route is never the one named — whether it led and yielded,
+    // or the backup simply led.
+    assert_eq!(record["channel"], backup);
+    assert_eq!(record["priceVersion"], 2);
+    assert_eq!(
+        record["upstreamAttempts"].as_i64().unwrap() as usize,
+        world.script.seen().len() + 1,
+        "every attempt is counted"
+    );
+    assert_eq!(record["charged"], 42);
+}
+
+/// The bounded `Retry-After` wait applies on the last input-only route too: a
+/// lone embeddings channel that 429s once is retried after the wait it named,
+/// and the turn answers (issue #170).
+#[tokio::test]
+async fn a_bounded_retry_after_recovers_an_embeddings_turn() {
+    let world = world!(1_000_000);
+    let emb = aux_model(&world, "emb", oxsum_core::BillingMode::Embeddings).await;
+    world.script.answers(
+        &emb,
+        Answer::EmbeddingsFlaky {
+            refuse: 1,
+            status: 429,
+            retry_after_secs: Some(1),
+        },
+    );
+
+    let response = embeddings(&world.app, &world.key, json!({"model": emb, "input": "hi"})).await;
+    let id = request_id(&response);
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(world.script.seen().len(), 2, "refused once, answered once");
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["upstreamAttempts"], 2);
+    assert_eq!(record["charged"], 7);
+}
+
+/// An embeddings request under an `Idempotency-Key` replays like a chat one:
+/// the stored body, the original request id, no second call upstream, no
+/// second charge (issues #132, #170).
+#[tokio::test]
+async fn a_retried_embeddings_turn_replays_its_answer() {
+    let world = world!(1_000_000);
+    let emb = aux_model(&world, "emb", oxsum_core::BillingMode::Embeddings).await;
+    world
+        .script
+        .answers(&emb, Answer::Embeddings { tokens: Some(11) });
+    let request = |key: &str| {
+        Request::builder()
+            .method("POST")
+            .uri("/v1/embeddings")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {key}"))
+            .header("idempotency-key", "emb-1")
+            .body(Body::from(json!({"model": emb, "input": "hi"}).to_string()))
+            .expect("the test's own request")
+    };
+
+    let first = world
+        .app
+        .clone()
+        .oneshot(request(&world.key))
+        .await
+        .expect("the router answers");
+    let first_id = request_id(&first);
+    let (status, answer) = json_of(first).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+
+    let second = world
+        .app
+        .clone()
+        .oneshot(request(&world.key))
+        .await
+        .expect("the router answers");
+    assert!(replayed(&second));
+    assert_eq!(request_id(&second), first_id);
+    let (status, replay) = json_of(second).await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    assert_eq!(replay, answer);
+    assert_eq!(world.script.seen().len(), 1);
+    assert_eq!(
+        world.settlement(&first_id).await.expect("the turn settled")["charged"],
+        11
+    );
 }

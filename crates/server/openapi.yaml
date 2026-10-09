@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.44.0
+  version: 0.45.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -11,7 +11,9 @@ info:
     - `/v1/*` is the protocol-native gateway: `POST /v1/chat/completions` answers in OpenAI's shapes,
       `POST /v1/messages` in Anthropic's, and each surface answers errors the way its own SDK parses them
       object, and everything the gateway does not understand is passed upstream unchanged, so an OpenAI
-      SDK works by changing `base_url` only. A gateway request freezes credit before upstream is
+      SDK works by changing `base_url` only. `POST /v1/embeddings` and `POST /v1/rerank` are the
+      input-only surfaces — metered by the tokens they embed or rank, settled against upstream's
+      usage the same way. A gateway request freezes credit before upstream is
       contacted and settles against the usage upstream reports.
     - `/api/v1/admin/*` is the platform admin's surface: whoever deploys oxsum manages channels and
       their prices with an operator token, not with an organization's API key.
@@ -245,6 +247,20 @@ info:
     under the same hold, and the settlement records how many upstream calls
     were made — `upstreamAttempts` on the billing record and the settlement
     description's v5. The catalog lists one row per route.
+
+    0.45.0 meters the input-only endpoints (issue #170): `POST
+    /v1/embeddings` (OpenAI's shape — `input` a string, an array of strings,
+    or token arrays, which freeze at their exact count) and `POST /v1/rerank`
+    (Jina/Cohere's shape — `query` plus `documents`) join the gateway, priced
+    by price versions whose `mode` is `embeddings` or `rerank`. A non-chat
+    price is input-only: `outputPricePerMillion` and `maxOutputTokens` are
+    absent or zero, and a `costPerRequest` still applies once per billed
+    turn. A model priced only for `chat` is not served on the new surfaces
+    and vice versa; the freeze, failover and `Idempotency-Key` semantics are
+    the shared pipeline's, unchanged. Embeddings usage settles against
+    `usage.prompt_tokens`, rerank against `usage.total_tokens`; a report that
+    never arrives settles `estimated` from the request's own input bound.
+    `POST /api/v1/estimate-price` takes an optional `mode` beside the model.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -2804,6 +2820,95 @@ paths:
         "429": { $ref: "#/components/responses/AnthropicError" }
         "500": { $ref: "#/components/responses/AnthropicError" }
         "502": { $ref: "#/components/responses/AnthropicError" }
+  /v1/embeddings:
+    post:
+      summary: Embeddings, billed by freezing the input bound first and settling against upstream usage
+      description: |
+        The input-only half of the gateway (issue #170), in OpenAI's request and response
+        shapes, served only by `openai` channels whose price for the model carries
+        `mode: embeddings`. The turn freezes the input bound — token-array `input` counts
+        exactly, string input at the usual text bound — plus the flat fee before upstream is
+        contacted, and settles against `usage.prompt_tokens` afterward, capped at the freeze.
+
+        There is no output side: `stream` is refused, and no `max_tokens` is injected into the
+        forwarded body. The failover, bounded `Retry-After`, `Idempotency-Key` and
+        cost-header contract is the shared pipeline's — `x-oxsum-freeze-minor` and
+        `x-oxsum-balance-minor` on the head, `x-oxsum-charged-minor` once the turn settled.
+
+        Upstream is called at `{baseUrl}/embeddings` with the channel credential as
+        `Authorization: Bearer`. A response without a usage report settles `estimated`,
+        priced from the request's own input bound.
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EmbeddingsRequest" }
+      responses:
+        "200":
+          description: >-
+            Upstream's embeddings response, passed through unchanged — or, for a replayed
+            `Idempotency-Key`, the stored response or the settled receipt, marked
+            `Idempotent-Replayed: true`
+          headers:
+            x-oxsum-request-id: { $ref: "#/components/headers/RequestId" }
+            x-oxsum-freeze-minor: { $ref: "#/components/headers/FreezeMinor" }
+            x-oxsum-balance-minor: { $ref: "#/components/headers/BalanceMinor" }
+            x-oxsum-charged-minor: { $ref: "#/components/headers/ChargedMinor" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EmbeddingsResponse" }
+        "400": { $ref: "#/components/responses/GatewayError" }
+        "401": { $ref: "#/components/responses/GatewayError" }
+        "402": { $ref: "#/components/responses/GatewayError" }
+        "403": { $ref: "#/components/responses/GatewayError" }
+        "409": { $ref: "#/components/responses/GatewayError" }
+        "422": { $ref: "#/components/responses/GatewayError" }
+        "429": { $ref: "#/components/responses/GatewayError" }
+        "500": { $ref: "#/components/responses/GatewayError" }
+        "502": { $ref: "#/components/responses/GatewayError" }
+  /v1/rerank:
+    post:
+      summary: Rerank, billed by freezing the input bound first and settling against upstream usage
+      description: |
+        The second input-only surface (issue #170), in the shape Jina and Cohere speak:
+        `query` plus a `documents` array — strings or `{"text": …}` objects — whose combined
+        text gives the input bound. The turn freezes that bound plus the flat fee under a
+        `mode: rerank` price and settles against `usage.total_tokens`, capped at the freeze.
+
+        The failover, bounded `Retry-After`, `Idempotency-Key` and cost-header contract is the
+        shared pipeline's, unchanged. Upstream is called at `{baseUrl}/rerank` with the
+        channel credential as `Authorization: Bearer`; a response without a usage report
+        settles `estimated` from the request's own input bound.
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RerankRequest" }
+      responses:
+        "200":
+          description: >-
+            Upstream's rerank response, passed through unchanged — or, for a replayed
+            `Idempotency-Key`, the stored response or the settled receipt, marked
+            `Idempotent-Replayed: true`
+          headers:
+            x-oxsum-request-id: { $ref: "#/components/headers/RequestId" }
+            x-oxsum-freeze-minor: { $ref: "#/components/headers/FreezeMinor" }
+            x-oxsum-balance-minor: { $ref: "#/components/headers/BalanceMinor" }
+            x-oxsum-charged-minor: { $ref: "#/components/headers/ChargedMinor" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RerankResponse" }
+        "400": { $ref: "#/components/responses/GatewayError" }
+        "401": { $ref: "#/components/responses/GatewayError" }
+        "402": { $ref: "#/components/responses/GatewayError" }
+        "403": { $ref: "#/components/responses/GatewayError" }
+        "409": { $ref: "#/components/responses/GatewayError" }
+        "422": { $ref: "#/components/responses/GatewayError" }
+        "429": { $ref: "#/components/responses/GatewayError" }
+        "500": { $ref: "#/components/responses/GatewayError" }
+        "502": { $ref: "#/components/responses/GatewayError" }
 components:
   securitySchemes:
     bearer:
@@ -3210,11 +3315,12 @@ components:
           items: { $ref: "#/components/schemas/ModelPrice" }
     PriceSet:
       type: object
-      required: [inputPricePerMillion, outputPricePerMillion, maxOutputTokens]
+      required: [inputPricePerMillion]
+      description: "the rates one request bills at under one mode. `outputPricePerMillion` and `maxOutputTokens` are required on a `chat` price and absent or zero on the input-only modes (`embeddings`, `rerank`) — there is no output side to price."
       properties:
         inputPricePerMillion: { type: integer, format: int64, minimum: 0, description: minor units per million input tokens }
-        outputPricePerMillion: { type: integer, format: int64, minimum: 0, description: minor units per million output tokens }
-        maxOutputTokens: { type: integer, format: int64, minimum: 1, description: "the most output the model may produce; also the ceiling a caller's max_tokens is clamped to" }
+        outputPricePerMillion: { type: integer, format: int64, minimum: 0, description: "minor units per million output tokens; required on `chat`, absent or zero on the input-only modes" }
+        maxOutputTokens: { type: integer, format: int64, minimum: 0, description: "the most output the model may produce; also the ceiling a caller's max_tokens is clamped to — positive on `chat`, absent or zero on the input-only modes" }
         cacheReadPricePerMillion: { type: integer, format: int64, minimum: 0, description: "minor units per million cached input tokens; absent bills the cached part at the input price" }
         cacheWrite5mPricePerMillion: { type: integer, format: int64, minimum: 0, description: "minor units per million tokens written into the 5-minute provider cache tier; absent bills them at the input price" }
         cacheWrite1hPricePerMillion: { type: integer, format: int64, minimum: 0, description: "as cacheWrite5mPricePerMillion, for the 1-hour tier" }
@@ -3259,7 +3365,7 @@ components:
               minimum: 1
               maximum: 1000
               description: "the route's relative preference for leading a request against other channels serving the same model (issue #168)"
-            mode: { type: string, enum: [chat], description: "the billing mode this price applies to; only chat is priced today, the field reserves the others" }
+            mode: { type: string, enum: [chat, embeddings, rerank], description: "the billing mode this price applies to — which surface may serve it and what its counts mean" }
             rules:
               type: array
               description: "the conditional price sets; empty when every request pays the base set"
@@ -3278,7 +3384,11 @@ components:
               maximum: 1000
               default: 100
               description: "the route's relative preference for leading a request; absent means 100"
-            mode: { type: string, enum: [chat], description: "the billing mode; only chat is priced today, and the field defaults to it" }
+            mode:
+              type: string
+              enum: [chat, embeddings, rerank]
+              default: chat
+              description: "the billing mode the price serves; absent means `chat`. `embeddings` and `rerank` prices are input-only: `outputPricePerMillion` and `maxOutputTokens` must be absent or zero"
             rules:
               type: array
               description: "conditional price sets, evaluated most-specific-wins; two rules that could match the same request at the same specificity are refused"
@@ -3341,6 +3451,11 @@ components:
       required: [model]
       properties:
         model: { type: string, minLength: 1, maxLength: 200 }
+        mode:
+          type: string
+          enum: [chat, embeddings, rerank]
+          default: chat
+          description: "which billing mode's routes to price against — an `embeddings` estimate reads the model's embeddings prices, ignoring `outputTokens`"
         inputTokens:
           type: integer
           format: int64
@@ -3349,7 +3464,7 @@ components:
         outputTokens:
           type: integer
           format: int64
-          description: the output the shape asks for; omit to estimate against the model's `maxOutputTokens` ceiling
+          description: the output the shape asks for; omit to estimate against the model's `maxOutputTokens` ceiling — unused by the input-only modes
         serviceTier:
           type: string
           description: the conditional-pricing dimension, as a chat completion's `service_tier`
@@ -3991,6 +4106,117 @@ components:
               properties:
                 ephemeral_5m_input_tokens: { type: integer, format: int64 }
                 ephemeral_1h_input_tokens: { type: integer, format: int64 }
+      additionalProperties: true
+    EmbeddingsRequest:
+      type: object
+      required: [model, input]
+      description: |
+        The fields the gateway acts on. Everything else is forwarded to upstream unchanged —
+        `dimensions`, `encoding_format` and the rest. `input` may be a string, an array of
+        strings, an array of token ids, or an array of token-id arrays: token arrays freeze at
+        their exact count, string input at the text bound. There is no output side, so `stream`
+        is refused rather than ignored.
+      properties:
+        model: { type: string, description: "must be a model an openai channel prices with `mode: embeddings`" }
+        input:
+          description: "a string, an array of strings, an array of token ids, or an array of token-id arrays; anything else is 400"
+          oneOf:
+            - { type: string }
+            - type: array
+              minItems: 1
+              items: { type: string }
+            - type: array
+              minItems: 1
+              items: { type: integer, format: int64 }
+            - type: array
+              minItems: 1
+              items:
+                type: array
+                minItems: 1
+                items: { type: integer, format: int64 }
+        stream: { type: [boolean, "null"], default: false, description: "embeddings do not stream; true is 400" }
+        user: { type: [string, "null"], maxLength: 128, description: "the caller's own end-user id, recorded on the turn's usage record for attribution; never priced on. Longer than 128 characters is 400" }
+        metadata:
+          type: [object, "null"]
+          description: "the caller's own tags on the turn, recorded on its usage record: at most 10 key/value pairs, keys and values at most 64 characters and strings only; anything else is 400"
+          additionalProperties: { type: string, maxLength: 64 }
+        service_tier: { type: [string, "null"], maxLength: 64, description: "the service tier the caller asks for, recorded on the turn's usage record; no tier is priced until a channel prices one" }
+      additionalProperties: true
+    EmbeddingsResponse:
+      type: object
+      description: |
+        Upstream's response, passed through unchanged. The only field oxsum reads is `usage`;
+        without it the turn settles `estimated` from the request's own input bound.
+      properties:
+        object: { type: string }
+        model: { type: string }
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              object: { type: string }
+              index: { type: integer }
+              embedding: { type: array, items: { type: number } }
+        usage:
+          type: object
+          description: "what settles the turn: `prompt_tokens` is the billed input total"
+          properties:
+            prompt_tokens: { type: integer, format: int64 }
+            total_tokens: { type: integer, format: int64 }
+      additionalProperties: true
+    RerankRequest:
+      type: object
+      required: [model, query, documents]
+      description: |
+        The fields the gateway acts on, in the shape Jina and Cohere speak. Everything else —
+        `top_n`, `return_documents` and the rest — is forwarded unchanged. `documents` may be
+        strings or `{"text": …}` objects; their text plus `query` gives the input bound. There
+        is no output side, so `stream` is refused rather than ignored.
+      properties:
+        model: { type: string, description: "must be a model an openai channel prices with `mode: rerank`" }
+        query: { type: string, description: "what the documents are ranked against" }
+        documents:
+          type: array
+          minItems: 1
+          description: "strings or `{\"text\": …}` objects; a document of any other shape has no computable bound and is 400"
+          items:
+            oneOf:
+              - { type: string }
+              - type: object
+                required: [text]
+                properties:
+                  text: { type: string }
+                additionalProperties: true
+        top_n: { type: [integer, "null"], format: int64, minimum: 1 }
+        stream: { type: [boolean, "null"], default: false, description: "rerank does not stream; true is 400" }
+        user: { type: [string, "null"], maxLength: 128, description: "the caller's own end-user id, recorded on the turn's usage record for attribution; never priced on. Longer than 128 characters is 400" }
+        metadata:
+          type: [object, "null"]
+          description: "the caller's own tags on the turn, recorded on its usage record: at most 10 key/value pairs, keys and values at most 64 characters and strings only; anything else is 400"
+          additionalProperties: { type: string, maxLength: 64 }
+        service_tier: { type: [string, "null"], maxLength: 64, description: "the service tier the caller asks for, recorded on the turn's usage record; no tier is priced until a channel prices one" }
+      additionalProperties: true
+    RerankResponse:
+      type: object
+      description: |
+        Upstream's response, passed through unchanged. The only field oxsum reads is `usage`;
+        without it the turn settles `estimated` from the request's own input bound.
+      properties:
+        model: { type: string }
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              index: { type: integer }
+              relevance_score: { type: number }
+              document: { type: object }
+        usage:
+          type: object
+          description: "what settles the turn: `total_tokens` — query and documents together — is the billed input"
+          properties:
+            total_tokens: { type: integer, format: int64 }
       additionalProperties: true
     ModelList:
       type: object

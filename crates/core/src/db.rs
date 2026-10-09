@@ -119,6 +119,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0026_failover",
         include_str!("../migrations/0026_failover.sql"),
     ),
+    (
+        "0027_billing_modes",
+        include_str!("../migrations/0027_billing_modes.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.

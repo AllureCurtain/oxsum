@@ -73,6 +73,25 @@ pub fn adapter_for(protocol: &str) -> Option<&'static dyn UsageAdapter> {
     }
 }
 
+/// Resolves the upstream endpoint a request is relayed to — one protocol can
+/// carry several: OpenAI-shaped channels answer chat completions, embeddings
+/// and rerank, and each endpoint reports usage in its own shape (issue #170).
+///
+/// `endpoint` is the surface's own path spelling — `chat/completions`,
+/// `messages`, `embeddings`, `rerank` — which the adapters also report through
+/// [`UsageAdapter::upstream_path`]. `None` names a pairing this build cannot
+/// meter: a surface never reaches one, because its own path is in the list.
+#[must_use]
+pub fn adapter_for_endpoint(protocol: &str, endpoint: &str) -> Option<&'static dyn UsageAdapter> {
+    match (protocol, endpoint) {
+        (OPENAI, "chat/completions") => Some(&OpenAiChat),
+        (OPENAI, "embeddings") => Some(&OpenAiEmbeddings),
+        (OPENAI, "rerank") => Some(&OpenAiRerank),
+        (ANTHROPIC, "messages") => Some(&AnthropicMessages),
+        _ => None,
+    }
+}
+
 /// The OpenAI chat-completions protocol — and the OpenAI-compatible providers that
 /// speak it (DeepSeek, Groq and friends).
 struct OpenAiChat;
@@ -141,6 +160,96 @@ impl UsageAdapter for OpenAiChat {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    fn ends_stream(&self, payload: &str) -> bool {
+        payload == "[DONE]"
+    }
+
+    fn closing_frame(&self) -> &'static [u8] {
+        b"data: [DONE]\n\n"
+    }
+}
+
+/// The OpenAI embeddings endpoint (issue #170): the same protocol as chat —
+/// Bearer credential, OpenAI-shaped errors — metered on input alone. Its usage
+/// report is `usage.prompt_tokens`; `total_tokens` stands in when the prompt
+/// count is absent, and the embeddings themselves are vectors, never answer
+/// text, so a missing report settles estimated on the request's own bound.
+struct OpenAiEmbeddings;
+
+impl UsageAdapter for OpenAiEmbeddings {
+    fn protocol(&self) -> &'static str {
+        OPENAI
+    }
+
+    fn upstream_path(&self) -> &'static str {
+        "embeddings"
+    }
+
+    fn usage(&self, body: &Value) -> Option<UsageRecord> {
+        let usage = body.get("usage")?;
+        let input = usage
+            .get("prompt_tokens")
+            .or_else(|| usage.get("total_tokens"))
+            .and_then(Value::as_i64)?;
+        let record = UsageRecord {
+            input_tokens: input,
+            usage_details: Some(serde_json::json!({"provider_raw": usage.clone()})),
+            ..UsageRecord::default()
+        }
+        .clamped();
+        record.validate().ok()?;
+        Some(record)
+    }
+
+    /// An embeddings answer is vectors, not text: nothing to estimate from.
+    fn answer_text(&self, _body: &Value) -> String {
+        String::new()
+    }
+
+    /// The surface never streams, so no payload ends one; the impls exist for
+    /// the trait's shape, not the wire's.
+    fn ends_stream(&self, payload: &str) -> bool {
+        payload == "[DONE]"
+    }
+
+    fn closing_frame(&self) -> &'static [u8] {
+        b"data: [DONE]\n\n"
+    }
+}
+
+/// The OpenAI-compatible rerank endpoint (issue #170): Jina's and Cohere's
+/// shared shape — `query` plus `documents`, ranked back with a
+/// `usage.total_tokens` report that counts query and documents together as the
+/// billed input.
+struct OpenAiRerank;
+
+impl UsageAdapter for OpenAiRerank {
+    fn protocol(&self) -> &'static str {
+        OPENAI
+    }
+
+    fn upstream_path(&self) -> &'static str {
+        "rerank"
+    }
+
+    fn usage(&self, body: &Value) -> Option<UsageRecord> {
+        let usage = body.get("usage")?;
+        let input = usage.get("total_tokens").and_then(Value::as_i64)?;
+        let record = UsageRecord {
+            input_tokens: input,
+            usage_details: Some(serde_json::json!({"provider_raw": usage.clone()})),
+            ..UsageRecord::default()
+        }
+        .clamped();
+        record.validate().ok()?;
+        Some(record)
+    }
+
+    /// A rerank answer is scores, not text: nothing to estimate from.
+    fn answer_text(&self, _body: &Value) -> String {
+        String::new()
     }
 
     fn ends_stream(&self, payload: &str) -> bool {
@@ -510,5 +619,89 @@ mod tests {
             anthropic().closing_frame(),
             b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
         );
+    }
+
+    // ── the input-only endpoints (issue #170) ────────────────────────────────
+
+    #[test]
+    fn the_endpoint_registry_pairs_protocols_and_paths() {
+        assert_eq!(
+            adapter_for_endpoint(OPENAI, "chat/completions")
+                .unwrap()
+                .upstream_path(),
+            "chat/completions"
+        );
+        assert_eq!(
+            adapter_for_endpoint(OPENAI, "embeddings")
+                .unwrap()
+                .upstream_path(),
+            "embeddings"
+        );
+        assert_eq!(
+            adapter_for_endpoint(OPENAI, "rerank")
+                .unwrap()
+                .upstream_path(),
+            "rerank"
+        );
+        assert_eq!(
+            adapter_for_endpoint(ANTHROPIC, "messages")
+                .unwrap()
+                .upstream_path(),
+            "messages"
+        );
+        // Crossed pairings name nothing this build meters.
+        assert!(adapter_for_endpoint(ANTHROPIC, "embeddings").is_none());
+        assert!(adapter_for_endpoint(OPENAI, "messages").is_none());
+        assert!(adapter_for_endpoint("gemini", "embeddings").is_none());
+    }
+
+    #[test]
+    fn embeddings_usage_reads_the_prompt_count() {
+        let adapter = adapter_for_endpoint(OPENAI, "embeddings").unwrap();
+        let usage = adapter
+            .usage(&json!({
+                "object": "list",
+                "data": [{"object": "embedding", "index": 0, "embedding": [0.1]}],
+                "model": "text-embedding-3-small",
+                "usage": {"prompt_tokens": 25, "total_tokens": 25},
+            }))
+            .expect("an embeddings answer reports usage");
+        assert_eq!(usage.input_tokens, 25);
+        assert_eq!(usage.output_tokens, 0);
+        // The provider's raw report rides usage_details for the anomalies view.
+        assert_eq!(
+            usage.usage_details.unwrap()["provider_raw"]["total_tokens"],
+            25
+        );
+
+        // `total_tokens` stands in when `prompt_tokens` is absent — some
+        // providers report only the total.
+        assert_eq!(
+            adapter
+                .usage(&json!({"usage": {"total_tokens": 9}}))
+                .unwrap()
+                .input_tokens,
+            9
+        );
+        // No usage object is no report: the turn settles estimated.
+        assert!(adapter.usage(&json!({"data": []})).is_none());
+        // Vectors are not answer text — nothing to estimate an answer from.
+        assert_eq!(adapter.answer_text(&json!({"data": []})), "");
+    }
+
+    #[test]
+    fn rerank_usage_reads_the_total_count() {
+        let adapter = adapter_for_endpoint(OPENAI, "rerank").unwrap();
+        let usage = adapter
+            .usage(&json!({
+                "model": "rerank-v3.5",
+                "results": [{"index": 0, "relevance_score": 0.9}],
+                "usage": {"total_tokens": 42},
+            }))
+            .expect("a rerank answer reports usage");
+        assert_eq!(usage.input_tokens, 42);
+        assert_eq!(usage.output_tokens, 0);
+        assert!(adapter.usage(&json!({"results": []})).is_none());
+        assert_eq!(adapter.answer_text(&json!({"results": []})), "");
     }
 }

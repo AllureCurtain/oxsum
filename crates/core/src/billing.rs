@@ -25,14 +25,18 @@ const PER_MESSAGE_OVERHEAD: i64 = 16;
 // ── prices ───────────────────────────────────────────────────────────────────
 
 /// The billing mode a price applies to: what the usage record's counts mean.
-/// Only `chat` exists today; the field is versioned with the price so a new
-/// mode is an addition, not a reinterpretation of an old row.
+/// The field is versioned with the price so a new mode is an addition, not a
+/// reinterpretation of an old row.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BillingMode {
-    /// A chat-completion turn, priced on token usage.
+    /// A chat-completion turn, priced on token usage both ways.
     #[default]
     Chat,
+    /// An embeddings call: input tokens only, no output side (issue #170).
+    Embeddings,
+    /// A rerank call: the query plus documents tokenize as input (issue #170).
+    Rerank,
 }
 
 impl BillingMode {
@@ -41,6 +45,8 @@ impl BillingMode {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Chat => "chat",
+            Self::Embeddings => "embeddings",
+            Self::Rerank => "rerank",
         }
     }
 
@@ -50,8 +56,17 @@ impl BillingMode {
     pub fn parse(text: &str) -> Option<Self> {
         match text {
             "chat" => Some(Self::Chat),
+            "embeddings" => Some(Self::Embeddings),
+            "rerank" => Some(Self::Rerank),
             _ => None,
         }
+    }
+
+    /// Whether the mode meters an output side: only `chat` does, so the
+    /// input-only modes freeze and bill with the output count at zero.
+    #[must_use]
+    pub fn meters_output(&self) -> bool {
+        matches!(self, Self::Chat)
     }
 }
 
@@ -118,9 +133,13 @@ impl UpstreamPrices {
 pub struct PriceSet {
     /// Minor units per million input tokens.
     pub input_price_per_million: i64,
-    /// Minor units per million output tokens.
+    /// Minor units per million output tokens. Absent and zero on an input-only
+    /// mode's set — there is no output side to price (issue #170).
+    #[serde(default)]
     pub output_price_per_million: i64,
     /// The most output the model may produce; the ceiling `max_tokens` clamps to.
+    /// Absent and zero on an input-only mode's set.
+    #[serde(default)]
     pub max_output_tokens: i64,
     /// Minor units per million cached input tokens, when the cached part prices
     /// differently from fresh input.
@@ -163,8 +182,8 @@ impl PriceSet {
                 return Err("prices must be zero or more minor units per million units".into());
             }
         }
-        if self.max_output_tokens <= 0 {
-            return Err("maxOutputTokens must be positive".into());
+        if self.max_output_tokens < 0 {
+            return Err("maxOutputTokens cannot be negative".into());
         }
         // The flat fee rides a line whose rate is per million requests, so the
         // encode must still fit a minor unit count.
@@ -441,9 +460,13 @@ pub struct PriceRule {
 pub struct Price {
     /// Minor units per million input tokens. Zero is a model that is free to prompt.
     pub input_price_per_million: i64,
-    /// Minor units per million output tokens.
+    /// Minor units per million output tokens. Zero on the input-only modes:
+    /// embeddings and rerank bill no output side (issue #170).
+    #[serde(default)]
     pub output_price_per_million: i64,
     /// The most output the model can produce. A request asking for more, or for nothing, gets this.
+    /// Zero on the input-only modes, which have no output ceiling.
+    #[serde(default)]
     pub max_output_tokens: i64,
     /// Minor units per million cached input tokens, when the cached part prices
     /// differently from fresh input.
@@ -465,7 +488,9 @@ pub struct Price {
     /// What upstream charges for the same usage.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub upstream: Option<UpstreamPrices>,
-    /// The billing mode; only `chat` is priced today.
+    /// The billing mode: which surface serves the model and what its usage
+    /// counts mean. `chat` prices both token sides; `embeddings` and `rerank`
+    /// price the input side only (issue #170).
     #[serde(default)]
     pub mode: BillingMode,
     /// The conditional price sets, resolved most-specific-wins.
@@ -552,19 +577,43 @@ impl Price {
     }
 
     /// Checks the parts of a price that no arithmetic downstream can repair:
-    /// the base set's sanity, every rule's match and set, and that no two rules
+    /// the base set's sanity, every rule's match and set, the mode's own field
+    /// rules — a `chat` set needs a positive output ceiling and the input-only
+    /// modes carry no output rate or ceiling at all — and that no two rules
     /// could match the same request at the same specificity — an ambiguous
     /// price book is refused when it is written, not discovered at a bill.
     ///
     /// # Errors
     ///
-    /// Names the field when a rate is negative, the output ceiling is not
-    /// positive, a rule is malformed, or two rules overlap ambiguously.
+    /// Names the field when a rate is negative, the output ceiling does not
+    /// fit the mode, a rule is malformed, or two rules overlap ambiguously.
     pub fn validate(&self) -> Result<(), String> {
         self.set().validate()?;
         for rule in &self.rules {
             rule.cond.validate()?;
             rule.price.validate()?;
+        }
+        let mode_error = |set: &PriceSet| {
+            if self.mode.meters_output() {
+                if set.max_output_tokens <= 0 {
+                    return Some("a chat price needs a positive maxOutputTokens".to_owned());
+                }
+            } else if set.output_price_per_million != 0 || set.max_output_tokens != 0 {
+                return Some(
+                    "an embeddings or rerank price has no output side: outputPricePerMillion and \
+                     maxOutputTokens are absent or zero"
+                        .to_owned(),
+                );
+            }
+            None
+        };
+        if let Some(error) = mode_error(&self.set()) {
+            return Err(error);
+        }
+        for rule in &self.rules {
+            if let Some(error) = mode_error(&rule.price) {
+                return Err(error);
+            }
         }
         for (index, rule) in self.rules.iter().enumerate() {
             for other in &self.rules[index + 1..] {
@@ -582,11 +631,15 @@ impl Price {
 
     /// The output upper bound for one request: what the caller asked for, or the model's ceiling,
     /// and never more than the ceiling — the freeze is only a promise if upstream cannot exceed it.
+    /// An input-only mode has no output side: the bound is zero.
     ///
     /// # Errors
     ///
     /// Refuses a `max_tokens` of zero or less; the caller asked for a completion it cannot get.
     pub fn output_upper_bound(&self, asked: Option<i64>) -> Result<i64, WalletError> {
+        if !self.mode.meters_output() {
+            return Ok(0);
+        }
         let asked = asked.unwrap_or(self.max_output_tokens);
         if asked <= 0 {
             return Err(WalletError::InvalidInput(
@@ -666,13 +719,19 @@ impl Price {
             flat = flat.max(set.cost_per_request.unwrap_or(0));
             ceiling = ceiling.max(set.max_output_tokens);
         }
-        let asked = asked_output.unwrap_or(ceiling);
-        if asked <= 0 {
-            return Err(WalletError::InvalidInput(
-                "max_tokens must be positive".into(),
-            ));
-        }
-        let output = asked.min(ceiling);
+        // The input-only modes have no output side: nothing is asked and
+        // nothing is priced there (issue #170).
+        let output = if self.mode.meters_output() {
+            let asked = asked_output.unwrap_or(ceiling);
+            if asked <= 0 {
+                return Err(WalletError::InvalidInput(
+                    "max_tokens must be positive".into(),
+                ));
+            }
+            asked.min(ceiling)
+        } else {
+            0
+        };
         // i128 so the multiplication cannot overflow before the division brings it back down.
         let numerator = i128::from(input) * i128::from(input_rate)
             + i128::from(output) * i128::from(output_rate)
@@ -760,6 +819,19 @@ impl Price {
         ] {
             if count > 0 {
                 unpriced.push(name);
+            }
+        }
+        // The input-only modes have no output rate, so an output report on an
+        // embeddings or rerank turn is a dimension the book cannot bill —
+        // flagged, never billed at zero (issue #170).
+        if !self.mode.meters_output() {
+            for (name, count) in [
+                ("outputTokens", usage.output_tokens),
+                ("reasoningTokens", usage.reasoning_tokens),
+            ] {
+                if count > 0 {
+                    unpriced.push(name);
+                }
             }
         }
         if usage.event_type.is_some() {
@@ -2020,5 +2092,170 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    // ── billing modes (issue #170) ───────────────────────────────────────────
+
+    /// An embeddings price: input rate only, no output side at all.
+    fn embeddings_price() -> Price {
+        Price {
+            input_price_per_million: 1_000_000,
+            output_price_per_million: 0,
+            max_output_tokens: 0,
+            cache_read_price_per_million: None,
+            cache_write_5m_price_per_million: None,
+            cache_write_1h_price_per_million: None,
+            reasoning_price_per_million: None,
+            cost_per_request: None,
+            upstream: None,
+            mode: BillingMode::Embeddings,
+            rules: Vec::new(),
+        }
+    }
+
+    /// The mode rule is on both sides: input-only sets carry no output rate or
+    /// ceiling, and a chat set cannot omit them — a chat price that defaulted
+    /// its output side to zero would silently make output free (issue #170).
+    #[test]
+    fn a_price_validates_against_its_mode() {
+        assert!(embeddings_price().validate().is_ok());
+        assert!(
+            Price {
+                mode: BillingMode::Rerank,
+                ..embeddings_price()
+            }
+            .validate()
+            .is_ok()
+        );
+
+        // An input-only price with an output side is refused.
+        for bad in [
+            Price {
+                output_price_per_million: 1,
+                ..embeddings_price()
+            },
+            Price {
+                max_output_tokens: 8,
+                ..embeddings_price()
+            },
+            Price {
+                mode: BillingMode::Rerank,
+                max_output_tokens: 8,
+                ..embeddings_price()
+            },
+        ] {
+            assert!(bad.validate().is_err(), "{bad:?}");
+        }
+
+        // A chat price needs both its output fields — zero on either reads as
+        // free output, which is exactly what the mode guard exists to refuse.
+        assert!(
+            Price {
+                max_output_tokens: 0,
+                ..price()
+            }
+            .validate()
+            .is_err()
+        );
+
+        // A rule set answers to the same mode rule as the base.
+        let mut ruled = embeddings_price();
+        ruled.rules.push(PriceRule {
+            cond: RuleMatch {
+                service_tier: Some("priority".into()),
+                ..RuleMatch::default()
+            },
+            price: PriceSet {
+                input_price_per_million: 2_000_000,
+                output_price_per_million: 5,
+                max_output_tokens: 0,
+                cache_read_price_per_million: None,
+                cache_write_5m_price_per_million: None,
+                cache_write_1h_price_per_million: None,
+                reasoning_price_per_million: None,
+                cost_per_request: None,
+                upstream: None,
+            },
+        });
+        assert!(ruled.validate().is_err());
+    }
+
+    /// The mode spellings round-trip: the stored column, the wire name and the
+    /// parsed form are one thing (issue #170).
+    #[test]
+    fn billing_mode_spellings_round_trip() {
+        for (mode, spelling) in [
+            (BillingMode::Chat, "chat"),
+            (BillingMode::Embeddings, "embeddings"),
+            (BillingMode::Rerank, "rerank"),
+        ] {
+            assert_eq!(mode.as_str(), spelling);
+            assert_eq!(BillingMode::parse(spelling), Some(mode));
+            assert_eq!(
+                serde_json::to_value(mode).unwrap(),
+                serde_json::json!(spelling)
+            );
+        }
+        assert_eq!(BillingMode::parse("nope"), None);
+        assert!(BillingMode::Chat.meters_output());
+        assert!(!BillingMode::Embeddings.meters_output());
+        assert!(!BillingMode::Rerank.meters_output());
+    }
+
+    /// An input-only turn's bound is the input alone: the output bound is zero,
+    /// a caller's `max_tokens` prices nothing, and the freeze is the input's
+    /// own figure (issue #170).
+    #[test]
+    fn the_input_only_bound_is_input_alone() {
+        let price = embeddings_price();
+        assert_eq!(price.output_upper_bound(Some(500)).unwrap(), 0);
+        assert_eq!(price.output_upper_bound(None).unwrap(), 0);
+        // "hi" bounds at 2 bytes + 16 overhead = 18 tokens at 1 minor each.
+        assert_eq!(price.freeze_minor(&["hi"], Some(500), None).unwrap(), 18);
+        assert_eq!(price.freeze_minor(&["hi"], None, None).unwrap(), 18);
+        // The token-array path freezes at the exact count the caller sent.
+        assert_eq!(price.estimate_minor(42, None, None).unwrap(), 42);
+        assert_eq!(price.estimate_minor(42, Some(9_999), None).unwrap(), 42);
+        // The flat fee still applies to the input-only modes.
+        let flat = Price {
+            cost_per_request: Some(500),
+            ..embeddings_price()
+        };
+        assert_eq!(flat.estimate_minor(42, None, None).unwrap(), 542);
+    }
+
+    /// An input-only charge is the input line alone: no output line can carry
+    /// units under a mode that meters none (issue #170).
+    #[test]
+    fn an_input_only_charge_has_no_output_side() {
+        let charge = itemize(&embeddings_price(), &UsageRecord::tokens(25, 0).unwrap());
+        assert_eq!(
+            charge
+                .lines
+                .iter()
+                .map(|line| (line.item.as_str(), line.units, line.price_per_m))
+                .collect::<Vec<_>>(),
+            vec![("input", 25, 1_000_000), ("output", 0, 0)]
+        );
+        assert_eq!(charge.total_minor().unwrap(), 25);
+    }
+
+    /// An output report on an input-only turn is a dimension the book cannot
+    /// cover: named as unpriced, never billed at zero (issue #170).
+    #[test]
+    fn an_output_report_on_an_input_only_turn_is_flagged() {
+        let price = embeddings_price();
+        assert!(
+            price
+                .unpriced_dimensions(&UsageRecord::tokens(25, 0).unwrap())
+                .is_empty()
+        );
+        assert_eq!(
+            price.unpriced_dimensions(&UsageRecord::tokens(25, 3).unwrap()),
+            vec!["outputTokens"]
+        );
+        let mut usage = UsageRecord::tokens(25, 0).unwrap();
+        usage.reasoning_tokens = 2;
+        assert_eq!(price.unpriced_dimensions(&usage), vec!["reasoningTokens"]);
     }
 }

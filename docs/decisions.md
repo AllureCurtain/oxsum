@@ -1138,3 +1138,23 @@ Rejected:
 - **Retrying mid-stream**: a partial answer plus a fresh response is a corrupted reply to the client and a potential double charge upstream. Bytes started means the turn is committed to that channel.
 - **Honoring `Retry-After` without a bound**: upstream would hold the caller's request open on its own schedule; 3 seconds is long enough for a rate-limit window to free and short enough to stay a failover feature, not a queue.
 - **Health tracking or a channel circuit breaker**: worth having, and deliberately not in this PR — attempts are recorded (`upstream_attempts` is the evidence such a feature would read), but routing stays stateless per request.
+
+## 2026-10-13 — The billing `mode` picks the surface; input-only modes price one side (roadmap P8-3, issue #170)
+
+P8-3 puts the reserved `channel_prices.mode` column to work: `embeddings` and `rerank` join `chat`, and the gateway grows the two surfaces they serve — `POST /v1/embeddings` in OpenAI's shape and `POST /v1/rerank` in the Jina/Cohere shape. Both run the shared claim → freeze → relay → settle pipeline; what differs is which routes are candidates and what the usage count means.
+
+The judgment calls:
+
+- **The mode is the surface's filter, not a price hint.** A route is a candidate only when the channel's protocol *and* the price's mode both match the surface — a chat-priced model is `model_not_served` on `/v1/embeddings`, and an embeddings-priced one on `/v1/chat/completions`. Rates never reinterpret across modes: `inputPricePerMillion` on an embeddings price prices embedded tokens, the same spelling on a chat price prices prompt tokens, and the only safe way to keep those apart is to refuse the pairing.
+- **Absent is never free.** On the wire, `outputPricePerMillion`/`maxOutputTokens` became optional *so that* an input-only price can omit its output side — and `Price::validate` now holds both directions: an input-only set with either field nonzero is refused, and a `chat` set without a positive `maxOutputTokens` is refused. The admin surface rejects a chat body missing the fields outright, before `validate` ever sees it. Migration 0027 relaxes the column check to `>= 0`; the mode rule in core is what keeps `0` from meaning "free output."
+- **The freeze has no output side on the new surfaces.** `max_tokens` is not injected into a forwarded embeddings/rerank body — there is nothing it could bound — and `stream: true` is refused rather than ignored. An embeddings `input` of token ids freezes at its exact count (the ids are already tokens); strings and rerank's `query`+`documents` texts freeze at the byte bound like chat input.
+- **One protocol, three usage dialects.** `adapter_for_endpoint(protocol, path)` replaces the protocol-only lookup: OpenAI carries chat completions, embeddings and rerank, each reporting usage its own way (`prompt_tokens`, with `total_tokens` standing in; `total_tokens` alone). A missing report settles `estimated` from the request's own input bound — the adapters have no answer text to estimate an output from, because there is none.
+- **Settlement arithmetic is unchanged.** The description stays at v5: an input-only turn's itemization is an `input` line (plus the flat fee when the set carries one), and `verify_charge` recomputes it with the same arithmetic — mode changes which routes may serve, never how a record proves its total.
+
+Rejected:
+
+- **Metering embeddings through the chat surface** (`POST /v1/chat/completions` answering embeddings shapes): the freeze would still be right, but the client contract would not be — SDKs call `/embeddings`, and a surface that translates between unrelated request shapes is exactly the never-translated rule broken quietly.
+- **A separate `nonStreaming` flag or a `mode: input_only` umbrella**: the mode already carries everything the pipeline needs — which surface, which adapter, whether an output bound exists. A second axis would only restate it.
+- **Reading `usage.data[i].embedding` lengths as the input count**: vector dimensions are not tokens, and upstream's own report is right there. The provider's count settles the turn; the estimate exists only for a report that never arrives.
+
+Pinned by `crates/core` unit tests (mode validation both directions, input-only bounds and itemization, the unpriced-output flag), `crates/server/tests/gateway.rs` (both surfaces end-to-end — usage, token-array freeze, estimate fallback, mode mismatch, malformed input, failover, bounded `Retry-After`, idempotent replay), `crates/server/tests/admin.rs` (the mode'd write and its refusals) and `crates/server/tests/apis.rs` (the `mode` parameter on estimate-price).

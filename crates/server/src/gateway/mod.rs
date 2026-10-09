@@ -1,11 +1,12 @@
-//! The protocol-native gateway: `POST /v1/chat/completions`, `POST /v1/messages` and
-//! `GET /v1/models`.
+//! The protocol-native gateway: `POST /v1/chat/completions`, `POST /v1/messages`,
+//! `POST /v1/embeddings`, `POST /v1/rerank` and `GET /v1/models`.
 //!
 //! A request is frozen before upstream is contacted and settled after it answers, so the wallet
 //! never has to trust the network. The order is the promise: the hold is taken first, upstream
-//! second, the settlement third, and each step has one place where it happens. The two POST
-//! surfaces run that same pipeline in their own wire dialect — OpenAI's or Anthropic's — and
-//! each serves only the channels that declare its protocol.
+//! second, the settlement third, and each step has one place where it happens. The POST
+//! surfaces run that same pipeline in their own wire dialect — OpenAI's, Anthropic's, or the
+//! input-only embeddings/rerank shapes — and each serves only the channels that declare its
+//! protocol, priced under the surface's own billing mode.
 
 pub(crate) mod error;
 mod relay;
@@ -21,8 +22,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router, middleware};
 use http_body_util::{BodyExt, StreamBody};
 use oxsum_core::{
-    ActingKey, Claim, OpenHold, Organization, Serving, SettlementKind, WalletError, adapter_for,
-    fingerprint, hold_description, route_order,
+    ActingKey, Claim, OpenHold, Organization, Serving, SettlementKind, WalletError, fingerprint,
+    hold_description, route_order,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -62,6 +63,8 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/models", get(models))
         .route("/chat/completions", post(chat))
         .route("/messages", post(messages))
+        .route("/embeddings", post(embeddings))
+        .route("/rerank", post(rerank))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_key_gateway,
@@ -157,6 +160,30 @@ async fn messages(
     body: Bytes,
 ) -> Response {
     gateway(Surface::Anthropic, state, organization, key, headers, body).await
+}
+
+/// One embeddings call: freeze the input bound, relay, settle — the first of
+/// the input-only surfaces (issue #170).
+async fn embeddings(
+    state: State<AppState>,
+    organization: Extension<Organization>,
+    key: Extension<ActingKey>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    gateway(Surface::Embeddings, state, organization, key, headers, body).await
+}
+
+/// One rerank call: freeze the input bound, relay, settle — the second
+/// input-only surface, in the Jina/Cohere shape (issue #170).
+async fn rerank(
+    state: State<AppState>,
+    organization: Extension<Organization>,
+    key: Extension<ActingKey>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    gateway(Surface::Rerank, state, organization, key, headers, body).await
 }
 
 /// The shared turn handler: the same claim-freeze-settle pipeline under either surface's
@@ -256,7 +283,7 @@ async fn gateway(
 /// `/v1/chat/completions`, Anthropic's `{"type": "error", "error": {…}}` on `/v1/messages`.
 fn error_response(error: GatewayError, surface: Surface) -> Response {
     match surface {
-        Surface::OpenAi => error.into_response(),
+        Surface::OpenAi | Surface::Embeddings | Surface::Rerank => error.into_response(),
         Surface::Anthropic => error.into_anthropic_response(),
     }
 }
@@ -418,20 +445,26 @@ async fn run(
     // frozen: this turn is priced by the versions in force when it starts,
     // whatever happens to prices later. A surface serves only the channels
     // that speak its protocol — an `anthropic` route is not a candidate on the
-    // OpenAI surface, and vice versa (issue #168).
+    // OpenAI surface, and vice versa (issue #168) — and only prices of the
+    // surface's own billing mode: a chat-priced model is not an embeddings
+    // route, because its rates do not mean the same counts (issue #170).
     let candidates = servings(state, &request.model).await?;
     let candidates: Vec<Serving> = candidates
         .into_iter()
-        .filter(|serving| serving.protocol == surface.protocol())
+        .filter(|serving| {
+            serving.protocol == surface.protocol() && serving.price.mode == surface.billing_mode()
+        })
         .collect();
     if candidates.is_empty() {
         return Err(GatewayError::model_not_served(&request.model));
     }
-    // The protocol selects the adapter that reads usage reports — every
-    // candidate speaks it after the filter. A name the registry does not know
-    // is refused when the channel is written, so reaching here means a row was
-    // edited by hand — a deployment problem, not the caller's.
-    let Some(adapter) = adapter_for(surface.protocol()) else {
+    // The surface selects the adapter that reads usage reports — every
+    // candidate speaks its protocol after the filter. A name the registry does
+    // not know is refused when the channel is written, so reaching here means
+    // a row was edited by hand — a deployment problem, not the caller's.
+    let Some(adapter) =
+        oxsum_core::adapter_for_endpoint(surface.protocol(), surface.upstream_path())
+    else {
         tracing::error!(protocol = %surface.protocol(),
             "the surface names a protocol this build has no usage adapter for");
         return Err(WalletError::Misconfigured(format!(
@@ -452,15 +485,21 @@ async fn run(
     // The freeze is the conservative bound across every route a failover could
     // land on: the dearest candidate's upper bound, and `max_tokens` forwards
     // at the tightest ceiling so no route can bill what its own price would
-    // not have covered.
+    // not have covered. A token-array request already counted its input —
+    // `counted_input` is that exact figure, not a text estimate (issue #170).
     let freeze = candidates
         .iter()
-        .map(|serving| {
-            serving.price.freeze_minor(
+        .map(|serving| match request.counted_input {
+            Some(count) => serving.price.estimate_minor(
+                count,
+                request.max_tokens,
+                request.attribution.service_tier.as_deref(),
+            ),
+            None => serving.price.freeze_minor(
                 &texts,
                 request.max_tokens,
                 request.attribution.service_tier.as_deref(),
-            )
+            ),
         })
         .collect::<Result<Vec<i64>, _>>()?
         .into_iter()
@@ -569,6 +608,7 @@ async fn run(
         adapter,
         state.metrics.clone(),
     );
+    turn.note_input_count(request.counted_input);
     // The dashboard's live section sees the turn from here: the hold is taken, upstream is
     // next. Best-effort — a missed event is a missed live update, not lost state.
     crate::metrics::hold(&state.metrics, &primary.channel, &request.model);
@@ -605,11 +645,13 @@ async fn run(
             .post(format!(
                 "{}/{}",
                 candidate.base_url,
-                adapter.upstream_path()
+                surface.upstream_path()
             ))
             .json(&forwarded);
         call = match surface {
-            Surface::OpenAi => call.bearer_auth(&candidate.api_key),
+            Surface::OpenAi | Surface::Embeddings | Surface::Rerank => {
+                call.bearer_auth(&candidate.api_key)
+            }
             Surface::Anthropic => {
                 let call = call
                     .header("x-api-key", &candidate.api_key)
