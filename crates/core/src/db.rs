@@ -123,6 +123,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0027_billing_modes",
         include_str!("../migrations/0027_billing_modes.sql"),
     ),
+    (
+        "0028_service_credentials",
+        include_str!("../migrations/0028_service_credentials.sql"),
+    ),
+    (
+        "0029_metering_attempts",
+        include_str!("../migrations/0029_metering_attempts.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.
