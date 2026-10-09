@@ -1158,3 +1158,23 @@ Rejected:
 - **Reading `usage.data[i].embedding` lengths as the input count**: vector dimensions are not tokens, and upstream's own report is right there. The provider's count settles the turn; the estimate exists only for a report that never arrives.
 
 Pinned by `crates/core` unit tests (mode validation both directions, input-only bounds and itemization, the unpriced-output flag), `crates/server/tests/gateway.rs` (both surfaces end-to-end — usage, token-array freeze, estimate fallback, mode mismatch, malformed input, failover, bounded `Retry-After`, idempotent replay), `crates/server/tests/admin.rs` (the mode'd write and its refusals) and `crates/server/tests/apis.rs` (the `mode` parameter on estimate-price).
+
+## 2026-10-14 — Services bill through a credential, not an organization (roadmap P8-4, issue #172)
+
+P8-4 opens the metering core the roadmap promised: a deployer-owned service reports billable events — work no upstream LLM performed — against a named organization's wallet over `POST /api/v1/metering/{holds,settle,release,settlements}`.
+
+The judgment calls:
+
+- **A service credential is a third credential kind, not an API key.** `oxsum.service_credentials` stores `oxs-svc-` plus 32 CSPRNG bytes as SHA-256 only, answered once at mint under the admin token. It binds to no organization — the request body names whose wallet pays — because the reporting service serves every customer; and it opens only `/api/v1/metering/*`, so the highest-power credential on the platform authenticates on exactly four routes. The mirror holds too: an organization's API key can never call metering, so a customer cannot report their own charges — self-reporting is a deployer privilege by construction, not by a flag someone might misset.
+- **`billableCode` resolves into the price book, not beside it.** A metered event prices through `(channel, billableCode)` → the channel's `mode: event` price — the same append-only versioned rows the gateway reads, so a metered charge and a gateway charge are priced by the same machinery and audited by the same `priceVersion` pin. A dimension the price cannot bill is refused, not silently zeroed.
+- **The wallet's own hold/settle primitives carry the money.** A metering hold is an ordinary hold whose actor is `svc-<credentialId>` instead of a key, watched by the same `open_holds` sweeper table; settle charges actual usage capped at the freeze, release settles at zero, and the one-shot `settlements` call derives its hold key (`metering:<idempotencyKey>:hold`) and still watches for the operation's span, so a crash between the two writes is swept rather than leaked.
+- **Replay reads the committed outcome, not just the watch row.** A retried settle/release after the watch row cleared answers from the settlement record itself — parsed out of the ledger, which is why released records carry zero-unit priced lines: `SettlementRecord::parse` needs a record it can reconstruct. A settle on a released hold (or vice versa) is `409`, not a replay — different operation, different answer.
+- **The description gets a schema (v6), not an overload.** Metered settlements name the reporting `service` and omit `upstreamAttempts` — there were none; the usage row records `0` through migration 0029's relaxed check. `verify_charge` recomputes v6 with the same arithmetic, and a newer unknown schema still degrades to inclusion-only.
+
+Rejected:
+
+- **An organization-scoped metering key** (`api_keys` with a `can_meter` flag): it would let a customer report their own usage — the exact failure the surface exists to prevent — and a flag on the principal everyone already holds is one admin misclick from a trust breach.
+- **A separate `metering_holds`/`metering_settlements` table pair**: the ledger's hold/settle pair already carries everything — idempotency, the freeze cap, the sweep — and a parallel table would need its own sweeper, its own proofs and its own drift class for no new semantics.
+- **Reusing the v5 description with `service` wedged into `metadata`**: the reporter is first-class audit data — who billed this is the question a disputed metered bill answers — and description fields are cheap; an optional off to the side is how fields get lost.
+
+Pinned by `crates/core/tests/metering.rs` (hold/settle/release/one-shot, replay after watch-row cleanup, pinned versions, suspension, insolvency, unpriced dimensions, the sweep), `crates/server/tests/metering.rs` (all four endpoints, the credential lifecycle, wrong-surface refusals, 402/409 paths, the billing-record read-back) and `crates/verify`'s v6 cases.
