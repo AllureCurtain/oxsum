@@ -464,7 +464,8 @@ async fn what_could_not_be_used_is_refused_in_oxsums_shape() {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {body}");
     }
 
-    // A model another channel already serves is a conflict: one model belongs to one channel.
+    // A model another channel already serves is a second route, not a conflict:
+    // failover lets several channels carry one model.
     let owner = fresh("owner");
     let shared = fresh("shared");
     for name in [&owner, &channel] {
@@ -502,8 +503,8 @@ async fn what_could_not_be_used_is_refused_in_oxsums_shape() {
         Some(price),
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    assert_eq!(body["error"]["code"], "CONFLICT");
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["version"], 1, "{body}");
 }
 
 /// One GET whose body is kept as bytes: the server-rendered pages are HTML, and the
@@ -856,6 +857,7 @@ async fn the_anomalies_list_shows_the_turns_that_did_not_price_cleanly() {
             discount_percent: None,
             charged: 60,
             freeze: 900_000,
+            upstream_attempts: 1,
         }
         .description()
         .expect("the settlement record serializes");
@@ -948,6 +950,7 @@ async fn the_margin_view_sums_charges_against_upstream_costs() {
             charged_minor: *charged,
             freeze_minor: 100,
             upstream_cost_minor: *upstream,
+            upstream_attempts: 1,
         })
         .await
         .expect("the row is written");

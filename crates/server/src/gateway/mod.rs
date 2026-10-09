@@ -22,7 +22,7 @@ use axum::{Json, Router, middleware};
 use http_body_util::{BodyExt, StreamBody};
 use oxsum_core::{
     ActingKey, Claim, OpenHold, Organization, Serving, SettlementKind, WalletError, adapter_for,
-    fingerprint, hold_description,
+    fingerprint, hold_description, route_order,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -39,6 +39,12 @@ use crate::today;
 /// There is deliberately no read timeout: the gaps between stream chunks are upstream's guarantee,
 /// and the hold timeout is the backstop (docs/decisions.md, "gateway HTTP client").
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The longest `Retry-After` the gateway holds a request for (issue #168): a
+/// 429 that names a shorter wait gets one delayed retry on the last route —
+/// failover first, a bounded wait last. A longer wait is answered as a
+/// refusal: the caller's own retry policy is the right place for it.
+const RETRY_AFTER_MAX: Duration = Duration::from_secs(3);
 
 /// The HTTP client every gateway request shares, so connections are pooled and the timeout is set
 /// once. A client that cannot be built would have no TLS backend at all; the default is the same
@@ -66,7 +72,8 @@ pub fn router(state: AppState) -> Router<AppState> {
 ///
 /// Only models with a price appear: a model the gateway cannot price cannot be frozen, so it is not
 /// served at all. `created` is when the version in force was written — the closest thing a price row
-/// has to a creation time — and `owned_by` is the channel that serves it.
+/// has to a creation time — and `owned_by` is the channel that serves it. A model served by
+/// several channels lists once, under the route that leads it (issue #168).
 async fn models(State(state): State<AppState>) -> Response {
     let channels = match state.db.channels().await {
         Ok(channels) => channels,
@@ -82,33 +89,46 @@ async fn models(State(state): State<AppState>) -> Response {
             .into_response();
         }
     };
-    let data: Vec<Value> = channels
-        .into_iter()
-        .flat_map(|channel| {
-            channel.models.into_iter().map(move |model| {
+    // A model served by several channels lists once, under the route with the
+    // greatest weight — the one most likely to lead a request.
+    let mut listed: std::collections::BTreeMap<String, (i64, Value)> = Default::default();
+    for channel in channels {
+        for model in channel.models {
+            let entry = (
+                model.weight,
                 json!({
                     "id": model.model,
                     "object": "model",
                     "created": model.created_at.unix_timestamp(),
                     "owned_by": channel.name,
+                }),
+            );
+            listed
+                .entry(model.model.clone())
+                .and_modify(|(weight, kept)| {
+                    if model.weight > *weight {
+                        *weight = entry.0;
+                        *kept = entry.1.clone();
+                    }
                 })
-            })
-        })
-        .collect();
+                .or_insert(entry);
+        }
+    }
+    let data: Vec<Value> = listed.into_values().map(|(_, entry)| entry).collect();
     Json(json!({ "object": "list", "data": data })).into_response()
 }
 
-/// The channel and price version that serve a model, or `None` when nothing does.
+/// The routes a request for this model may take, or none when nothing serves it.
 ///
 /// A deployment with no sealing key serves no channel at all: `app` refuses to start when channels
 /// exist without one, so this is the "the wallet is running, the gateway is not configured" case.
 /// A credential that will not open is [`oxsum_core::WalletError::Misconfigured`], which becomes a
 /// 500: the operator's mistake, not the caller's.
-async fn serving(state: &AppState, model: &str) -> Result<Option<Serving>, GatewayError> {
+async fn servings(state: &AppState, model: &str) -> Result<Vec<Serving>, GatewayError> {
     let Some(secret) = state.config.secret() else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
-    Ok(state.db.serving(model, secret).await?)
+    Ok(state.db.servings(model, secret).await?)
 }
 
 /// The header a retry carries to claim the same turn, Stripe-shaped.
@@ -394,31 +414,33 @@ async fn run(
             retry_after_secs: limited.retry_after.as_secs(),
         });
     }
-    // The channel and the price version are resolved once, here, before anything is frozen: this
-    // turn is priced by the version in force when it starts, whatever happens to prices later.
-    let Some(serving) = serving(state, &request.model).await? else {
-        return Err(GatewayError::model_not_served(&request.model));
-    };
-    // A surface serves only the channels that speak its protocol: an `anthropic`
-    // channel's model is not served on the OpenAI surface, and vice versa — surfaces
-    // are protocol-native, there is no translation between them.
-    if serving.protocol != surface.protocol() {
+    // The routes for this model are resolved once, here, before anything is
+    // frozen: this turn is priced by the versions in force when it starts,
+    // whatever happens to prices later. A surface serves only the channels
+    // that speak its protocol — an `anthropic` route is not a candidate on the
+    // OpenAI surface, and vice versa (issue #168).
+    let candidates = servings(state, &request.model).await?;
+    let candidates: Vec<Serving> = candidates
+        .into_iter()
+        .filter(|serving| serving.protocol == surface.protocol())
+        .collect();
+    if candidates.is_empty() {
         return Err(GatewayError::model_not_served(&request.model));
     }
-    // The channel's protocol selects the adapter that reads its usage reports. A name
-    // the registry does not know is refused when the channel is written, so reaching
-    // here means the row was edited by hand — a deployment problem, not the caller's.
-    let Some(adapter) = adapter_for(&serving.protocol) else {
-        tracing::error!(channel = %serving.channel, protocol = %serving.protocol,
-            "the channel names a protocol this build has no usage adapter for");
+    // The protocol selects the adapter that reads usage reports — every
+    // candidate speaks it after the filter. A name the registry does not know
+    // is refused when the channel is written, so reaching here means a row was
+    // edited by hand — a deployment problem, not the caller's.
+    let Some(adapter) = adapter_for(surface.protocol()) else {
+        tracing::error!(protocol = %surface.protocol(),
+            "the surface names a protocol this build has no usage adapter for");
         return Err(WalletError::Misconfigured(format!(
-            "channel {} names an unknown protocol: {}",
-            serving.channel, serving.protocol
+            "surface {} names an unknown protocol",
+            surface.protocol()
         ))
         .into());
     };
-    let price = serving.price.clone();
-    // The discount resolves once here, beside the price version: the turn
+    // The discount resolves once here, beside the price versions: the turn
     // settles under the percent in force when it started, whatever the rows do
     // later — the snapshot the settlement description writes (issue #158).
     let discount_percent = state
@@ -426,13 +448,41 @@ async fn run(
         .discount_percent(organization.id, &request.model)
         .await?
         .map(i64::from);
-    let output_bound = price.output_upper_bound(request.max_tokens)?;
     let texts: Vec<&str> = request.texts.iter().map(String::as_str).collect();
-    let freeze = price.freeze_minor(
-        &texts,
-        request.max_tokens,
-        request.attribution.service_tier.as_deref(),
-    )?;
+    // The freeze is the conservative bound across every route a failover could
+    // land on: the dearest candidate's upper bound, and `max_tokens` forwards
+    // at the tightest ceiling so no route can bill what its own price would
+    // not have covered.
+    let freeze = candidates
+        .iter()
+        .map(|serving| {
+            serving.price.freeze_minor(
+                &texts,
+                request.max_tokens,
+                request.attribution.service_tier.as_deref(),
+            )
+        })
+        .collect::<Result<Vec<i64>, _>>()?
+        .into_iter()
+        .max()
+        .unwrap_or(0);
+    let output_bound = candidates
+        .iter()
+        .map(|serving| serving.price.output_upper_bound(request.max_tokens))
+        .collect::<Result<Vec<i64>, _>>()?
+        .into_iter()
+        .min()
+        .unwrap_or(0);
+    // Attempt order: a weighted pick leads — the rollout of `weight` is a real
+    // proportional preference — and the rest follow in descending weight, so a
+    // failed attempt falls over to the next-most-preferred route (issue #168).
+    let ordered = route_order(candidates, rand::random::<f64>());
+    // The intended route: what the watch row and the live event name, and what
+    // a swept turn's settlement records. A failover reroutes the turn before
+    // it settles, so the bill always names the channel that answered.
+    let Some(primary) = ordered.first() else {
+        return Err(GatewayError::model_not_served(&request.model));
+    };
 
     let wallet = state.tenants.get(&organization.tenant_id).await?;
     let hold_key = format!("req-{request_id}:hold");
@@ -447,10 +497,10 @@ async fn run(
             tenant_id: organization.tenant_id.clone(),
             request_id: request_id.to_owned(),
             model: request.model.clone(),
-            channel: serving.channel.clone(),
-            price_version: serving.version,
-            input_price: price.input_price_per_million,
-            output_price: price.output_price_per_million,
+            channel: primary.channel.clone(),
+            price_version: primary.version,
+            input_price: primary.price.input_price_per_million,
+            output_price: primary.price.output_price_per_million,
             freeze_minor: freeze,
             key_id: Some(key.key_id),
             end_user: request.attribution.end_user.clone(),
@@ -508,7 +558,7 @@ async fn run(
         wallet,
         request_id,
         &request.model,
-        &serving,
+        primary,
         freeze,
         discount_percent,
         request.texts.clone(),
@@ -521,98 +571,152 @@ async fn run(
     );
     // The dashboard's live section sees the turn from here: the hold is taken, upstream is
     // next. Best-effort — a missed event is a missed live update, not lost state.
-    crate::metrics::hold(&state.metrics, &serving.channel, &request.model);
+    crate::metrics::hold(&state.metrics, &primary.channel, &request.model);
     let _ = state
         .billing
         .send(crate::billing::BillingEvent::TurnStarted {
             tenant_id: organization.tenant_id.clone(),
             request_id: request_id.to_owned(),
             model: request.model.clone(),
-            channel: serving.channel.clone(),
+            channel: primary.channel.clone(),
             freeze_minor: freeze,
         });
-    let upstream_started = Instant::now();
-    // The channel credential goes upstream in the protocol's own spelling:
-    // `Authorization: Bearer` for OpenAI, `x-api-key` for Anthropic — which also
-    // wants its version header, forwarded when the caller sent one.
-    let mut call = state
-        .http
-        .post(format!("{}/{}", serving.base_url, adapter.upstream_path()))
-        .json(&request.forwarded(output_bound));
-    call = match surface {
-        Surface::OpenAi => call.bearer_auth(&serving.api_key),
-        Surface::Anthropic => {
-            let call = call
-                .header("x-api-key", &serving.api_key)
-                .header("anthropic-version", anthropic_version(headers));
-            match headers.get("anthropic-beta").and_then(|v| v.to_str().ok()) {
-                Some(beta) => call.header("anthropic-beta", beta),
-                None => call,
+    let forwarded = request.forwarded(output_bound);
+    // The attempt loop: a retriable failure before any answer bytes —
+    // unreachable, 429, or 5xx — rotates to the next route under the same
+    // hold; a 4xx fails fast, since the same refusal would come back from
+    // everywhere. When the last route's refusal is a 429 naming a short
+    // `Retry-After`, the wait is honored once rather than answered on the
+    // spot: failover first, a bounded wait last (issue #168). A failure after
+    // bytes started flowing is never retried — the client already holds a
+    // partial answer, and replaying upstream could double-bill the platform.
+    let mut attempts: i64 = 0;
+    let mut retried_429 = false;
+    let mut index = 0;
+    let (served_at, upstream) = loop {
+        let candidate = &ordered[index];
+        attempts += 1;
+        let attempt_started = Instant::now();
+        // The channel credential goes upstream in the protocol's own spelling:
+        // `Authorization: Bearer` for OpenAI, `x-api-key` for Anthropic — which
+        // also wants its version header, forwarded when the caller sent one.
+        let mut call = state
+            .http
+            .post(format!(
+                "{}/{}",
+                candidate.base_url,
+                adapter.upstream_path()
+            ))
+            .json(&forwarded);
+        call = match surface {
+            Surface::OpenAi => call.bearer_auth(&candidate.api_key),
+            Surface::Anthropic => {
+                let call = call
+                    .header("x-api-key", &candidate.api_key)
+                    .header("anthropic-version", anthropic_version(headers));
+                match headers.get("anthropic-beta").and_then(|v| v.to_str().ok()) {
+                    Some(beta) => call.header("anthropic-beta", beta),
+                    None => call,
+                }
+            }
+        };
+        match call.send().await {
+            Ok(response) if response.status().is_success() => {
+                crate::metrics::upstream_response(
+                    &state.metrics,
+                    "ok",
+                    attempt_started.elapsed().as_secs_f64(),
+                );
+                break (index, Ok(response));
+            }
+            Ok(response) => {
+                let status = response.status();
+                crate::metrics::upstream_response(
+                    &state.metrics,
+                    "error",
+                    attempt_started.elapsed().as_secs_f64(),
+                );
+                let retriable = status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
+                if retriable && index + 1 < ordered.len() {
+                    tracing::warn!(channel = %candidate.channel, %status,
+                        "upstream refused before answering; failing over");
+                    index += 1;
+                    continue;
+                }
+                // The last route's bounded 429 wait: upstream named the delay
+                // and nothing else remains, so the wait is honored once.
+                let retry_after = retry_after(&response);
+                if status == StatusCode::TOO_MANY_REQUESTS
+                    && !retried_429
+                    && retry_after.is_some_and(|delay| delay <= RETRY_AFTER_MAX)
+                {
+                    retried_429 = true;
+                    tokio::time::sleep(retry_after.unwrap_or_default()).await;
+                    continue;
+                }
+                let text = response.text().await.unwrap_or_default();
+                break (
+                    index,
+                    Err((
+                        GatewayError::upstream(
+                            StatusCode::BAD_GATEWAY,
+                            format!("upstream answered {status}: {text}"),
+                            serde_json::from_str::<Value>(&text)
+                                .ok()
+                                .filter(|body| body.get("error").is_some()),
+                        ),
+                        SettlementKind::UpstreamError,
+                    )),
+                );
+            }
+            Err(error) => {
+                crate::metrics::upstream_response(
+                    &state.metrics,
+                    "unreachable",
+                    attempt_started.elapsed().as_secs_f64(),
+                );
+                if index + 1 < ordered.len() {
+                    tracing::warn!(channel = %candidate.channel, %error,
+                        "upstream is unreachable; failing over");
+                    index += 1;
+                    continue;
+                }
+                tracing::warn!(%error, "upstream is unreachable");
+                break (
+                    index,
+                    Err((
+                        GatewayError::upstream(
+                            StatusCode::BAD_GATEWAY,
+                            format!("upstream is unreachable: {error}"),
+                            None,
+                        ),
+                        SettlementKind::UpstreamUnreachable,
+                    )),
+                );
             }
         }
     };
-    let upstream = call.send().await;
+    turn.note_attempts(attempts);
+    if served_at != 0 {
+        // The settlement names the route that answered: a failover settles
+        // under that channel's price and version, inside the same freeze.
+        turn.reroute(&ordered[served_at]);
+    }
 
     let response = match upstream {
-        Err(error) => {
-            crate::metrics::upstream_response(
-                &state.metrics,
-                "unreachable",
-                upstream_started.elapsed().as_secs_f64(),
-            );
+        Err((error, kind)) => {
             // Nothing was received, so nothing is charged and the whole freeze goes back.
-            tracing::warn!(%error, "upstream is unreachable");
-            let charged = turn
-                .settle(SettlementKind::UpstreamUnreachable, Charge::Nothing)
-                .await;
+            let charged = turn.settle(kind, Charge::Nothing).await;
             // The answer is upstream's refusal shape with the cost head on it — returned as
             // a response rather than the error so the head can be stamped here, where the
             // numbers are. The claim still stores it: a finished non-streamed answer is
             // completed either way.
-            let mut response = error_response(
-                GatewayError::upstream(
-                    StatusCode::BAD_GATEWAY,
-                    format!("upstream is unreachable: {error}"),
-                    None,
-                ),
-                surface,
-            );
-            cost.stamp(&mut response);
-            stamp_charged(&mut response, charged);
-            return Ok(response);
-        }
-        Ok(response) if !response.status().is_success() => {
-            let status = response.status();
-            crate::metrics::upstream_response(
-                &state.metrics,
-                "error",
-                upstream_started.elapsed().as_secs_f64(),
-            );
-            let text = response.text().await.unwrap_or_default();
-            let charged = turn
-                .settle(SettlementKind::UpstreamError, Charge::Nothing)
-                .await;
-            // Upstream's own refusal is the honest answer, and it is already in the caller's format.
-            let mut response = error_response(
-                GatewayError::upstream(
-                    StatusCode::BAD_GATEWAY,
-                    format!("upstream answered {status}: {text}"),
-                    serde_json::from_str::<Value>(&text)
-                        .ok()
-                        .filter(|body| body.get("error").is_some()),
-                ),
-                surface,
-            );
+            let mut response = error_response(error, surface);
             cost.stamp(&mut response);
             stamp_charged(&mut response, charged);
             return Ok(response);
         }
         Ok(response) => {
-            crate::metrics::upstream_response(
-                &state.metrics,
-                "ok",
-                upstream_started.elapsed().as_secs_f64(),
-            );
             if request.stream {
                 // StreamBody rather than from_stream: the items are Frames, so the turn's
                 // settled charge can ride the end of the stream as an HTTP trailer.
@@ -665,6 +769,20 @@ async fn run(
         }
     };
     Ok(response)
+}
+
+/// The `Retry-After` an upstream refusal named, as a wait. Only the seconds
+/// form is honored; an HTTP-date is declined rather than parsed loosely.
+fn retry_after(response: &reqwest::Response) -> Option<Duration> {
+    response
+        .headers()
+        .get(header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(Duration::from_secs)
 }
 
 /// The `anthropic-version` upstream is told: the caller's when it sent one, the version

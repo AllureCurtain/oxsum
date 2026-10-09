@@ -1591,26 +1591,39 @@ struct EstimateRes {
 /// The freeze a request of this shape would take — `Price::estimate_minor`, the
 /// same arithmetic the gateway's hold path runs, so the number is the settle's
 /// ceiling rather than a guess. Nothing is held and nothing is charged.
+///
+/// A model served by several channels estimates at the dearest route: the
+/// gateway freezes the max across candidates, so the estimate is the bound the
+/// hold would take (issue #168). `version` names the route that priced it.
 async fn estimate_price(
     State(state): State<AppState>,
     Extension(_principal): Extension<Principal>,
     ApiJson(r): ApiJson<EstimateReq>,
 ) -> ApiResult<EstimateRes> {
-    let Some(priced) = state.db.priced(&r.model).await? else {
+    let routes = state.db.routes(&r.model).await?;
+    if routes.is_empty() {
         return Err(ApiError::Validation(format!(
             "no channel serves model {:?}",
             r.model
         )));
-    };
-    let estimate = priced.price.estimate_minor(
-        r.input_tokens.unwrap_or(0),
-        r.output_tokens,
-        r.service_tier.as_deref(),
-    )?;
+    }
+    let mut estimate = i64::MIN;
+    let mut version = routes[0].version;
+    for route in &routes {
+        let priced = route.price.estimate_minor(
+            r.input_tokens.unwrap_or(0),
+            r.output_tokens,
+            r.service_tier.as_deref(),
+        )?;
+        if priced > estimate {
+            estimate = priced;
+            version = route.version;
+        }
+    }
     ok(EstimateRes {
         estimate_minor: estimate,
         model: r.model,
-        version: priced.version,
+        version,
     })
 }
 

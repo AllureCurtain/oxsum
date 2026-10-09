@@ -84,7 +84,8 @@ struct Plan {
     /// When the turn's hold was taken — the `turn_seconds` histogram's start.
     started: std::time::Instant,
     /// The channel that served the request, and the price version it was priced by. Both go into the
-    /// settlement, so a bill says which version priced it and not only at what price.
+    /// settlement, so a bill says which version priced it and not only at what price. A failover
+    /// swaps them for the route that answered (`Turn::reroute`, issue #168).
     channel: String,
     version: i64,
     model: String,
@@ -111,6 +112,11 @@ struct Plan {
     /// Set once upstream has ended and only the local write is left. A client that goes away then
     /// has not cut the turn short: the turn is billed as the finished turn it is.
     finished: bool,
+    /// How many upstream calls the turn made under the one hold (issue #168):
+    /// above 1 means it failed over between channels, or waited out a bounded
+    /// `Retry-After` on a lone channel's 429. Written into the settlement
+    /// description and the usage row.
+    upstream_attempts: i64,
 }
 
 /// The SSE scanner: chunks in, usage and answer text out.
@@ -218,7 +224,29 @@ impl Turn {
                 frames: Frames::default(),
                 finished: false,
                 progress_chars: 0,
+                upstream_attempts: 1,
             }),
+        }
+    }
+
+    /// Switches the turn to the route that actually answered (issue #168): a
+    /// failover settles under that channel's price and version, so the bill
+    /// names the channel that served it, not the one the request started on.
+    /// Called between the last failure and the first answered attempt, before
+    /// any settlement.
+    pub fn reroute(&mut self, serving: &Serving) {
+        if let Some(plan) = self.plan.as_mut() {
+            plan.channel = serving.channel.clone();
+            plan.version = serving.version;
+            plan.price = serving.price.clone();
+        }
+    }
+
+    /// How many upstream calls the turn made — recorded on the settlement
+    /// description and the usage row.
+    pub fn note_attempts(&mut self, attempts: i64) {
+        if let Some(plan) = self.plan.as_mut() {
+            plan.upstream_attempts = attempts;
         }
     }
 
@@ -422,6 +450,7 @@ impl Plan {
             discount_percent: self.discount_percent,
             charged,
             freeze: self.freeze,
+            upstream_attempts: self.upstream_attempts,
         };
         let description = settlement.description()?;
         let outcome = self
@@ -455,6 +484,7 @@ impl Plan {
                             None
                         },
                     ),
+                    upstream_attempts: self.upstream_attempts,
                 };
                 if let Err(error) = self.db.record_usage(&row).await {
                     tracing::error!(%error, request = %self.request,

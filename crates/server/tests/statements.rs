@@ -183,6 +183,7 @@ async fn turn(
         charged_minor: charged,
         freeze_minor: freeze,
         upstream_cost_minor: None,
+        upstream_attempts: 1,
     })
     .await
     .expect("the usage row is written");

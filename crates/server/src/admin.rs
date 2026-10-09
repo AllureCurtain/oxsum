@@ -99,6 +99,9 @@ struct PriceReq {
     cost_per_request: Option<i64>,
     upstream: Option<oxsum_core::UpstreamPrices>,
     mode: Option<oxsum_core::BillingMode>,
+    /// The route's relative preference for leading a request; absent means 100
+    /// (issue #168). The bound is validated in core.
+    weight: Option<i64>,
     #[serde(default)]
     rules: Vec<oxsum_core::PriceRule>,
 }
@@ -188,7 +191,10 @@ async fn append(
         mode: request.mode.unwrap_or_default(),
         rules: request.rules,
     };
-    let version = state.db.append_price(&name, &request.model, price).await?;
+    let version = state
+        .db
+        .append_price(&name, &request.model, price, request.weight.unwrap_or(100))
+        .await?;
     record(
         &state,
         audit_action::CHANNEL_PRICE_APPEND,
@@ -793,6 +799,9 @@ struct AnomalyRes {
     channel: String,
     price_version: i64,
     kind: SettlementKind,
+    /// How many upstream calls the turn made (issue #168) — above 1 means it
+    /// failed over between channels.
+    upstream_attempts: i64,
     charged_minor: i64,
     freeze_minor: i64,
     /// The settlement's booking date, `YYYY-MM-DD`.
@@ -817,6 +826,7 @@ async fn anomalies(State(state): State<AppState>) -> ApiResult<Vec<AnomalyRes>> 
                 channel: turn.record.channel,
                 price_version: turn.record.price_version,
                 kind: turn.record.kind,
+                upstream_attempts: turn.record.upstream_attempts,
                 charged_minor: turn.record.charged,
                 freeze_minor: turn.record.freeze,
                 booked_on: turn.booked_on.to_string(),
