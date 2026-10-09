@@ -303,11 +303,20 @@ impl Turn {
 
     /// Reads one streamed chunk, reports whether it carried the stream's terminator,
     /// and publishes billing progress as the answer grows.
+    ///
+    /// Seeing the terminator marks the turn finished: upstream has said everything it will
+    /// say, whether or not its socket has closed yet — a real upstream keeps the body open
+    /// past `[DONE]`, and a client that hangs up on the terminator drops the generator while
+    /// it is suspended at the yield, before [`note_upstream_end`](Self::note_upstream_end)
+    /// could ever run (issue #178).
     pub fn observe(&mut self, chunk: &[u8]) -> bool {
         let Some(plan) = self.plan.as_mut() else {
             return false;
         };
         let terminated = plan.frames.observe(chunk, plan.adapter);
+        if terminated {
+            plan.finished = true;
+        }
         // Best-effort: a dashboard that is not listening misses a progress tick, and the
         // settlement at the end still carries the final charge.
         let output_chars = plan.frames.output.len();
