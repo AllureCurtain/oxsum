@@ -1,9 +1,7 @@
 use std::net::SocketAddr;
-use std::time::Duration;
 
-use oxsum_core::{Db, SWEEP_INTERVAL, Tenants, sweep_stale_holds};
+use oxsum_core::Db;
 use oxsum_server::Config;
-use time::OffsetDateTime;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -61,66 +59,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Seeding the bootstrap channel and opening every stored channel credential happen before the
     // listener: a deployment that cannot open its channels must not accept a request at all.
     oxsum_server::prepare(&db, &config).await?;
-    // The app's own metrics registry comes back out so the sweeper can count its passes into
+    // The app's own metrics registry comes back out so the jobs worker can count its passes into
     // the same registry `/metrics` renders.
     let (app, _events, metrics) = oxsum_server::app_with_billing(db.clone(), config.clone());
-    // A crashed gateway turn leaves its hold outstanding; the sweeper releases holds older than
-    // the configured timeout, every minute. It also runs once right away, so a restart heals
-    // what the crashed process left behind without waiting for the first interval.
-    let _sweeper = spawn_sweeper(db.clone(), config.hold_timeout(), metrics.clone());
-    // The webhook worker signs and posts queued deliveries; it needs the sealing
-    // key to open endpoint secrets, so a deployment without OXSUM_SECRET_KEY runs
-    // without one — `POST /api/v1/webhooks` refuses there too.
-    let _webhook_worker = config.secret().cloned().map(|secret| {
-        oxsum_server::webhooks::spawn_worker(db, reqwest::Client::new(), secret, metrics)
-    });
+    // One worker claims the periodic jobs off oxsum.jobs: the hold sweeper that
+    // releases crashed turns' holds, the webhook delivery pass (only when the
+    // sealing key can open endpoint secrets — `POST /api/v1/webhooks` refuses
+    // without it either), the daily reconcile/statements/retention passes.
+    let _jobs_worker = oxsum_server::jobs::spawn_worker(
+        db,
+        oxsum_server::jobs::JobContext {
+            hold_timeout: config.hold_timeout(),
+            metrics: metrics.clone(),
+            webhook: config
+                .secret()
+                .cloned()
+                .map(|secret| (reqwest::Client::new(), secret)),
+            retention: config.retention(),
+        },
+    );
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "oxsum listening");
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     Ok(())
-}
-
-/// The background job that releases holds whose request never settled: every [`SWEEP_INTERVAL`]
-/// it settles the watched holds older than `timeout` at 0 with kind `swept`.
-///
-/// The task ends with the process — a sweep is idempotent (a row is only cleared once its hold is
-/// settled or gone), so an interrupted pass is simply retried on the next start.
-fn spawn_sweeper(
-    db: Db,
-    timeout: Duration,
-    metrics: oxsum_server::Metrics,
-) -> tokio::task::JoinHandle<()> {
-    let tenants = Tenants::new(db.pool().clone());
-    tokio::spawn(async move {
-        loop {
-            let older_than = OffsetDateTime::now_utc() - timeout;
-            let on = OffsetDateTime::now_utc().date();
-            match sweep_stale_holds(&db, &tenants, older_than, on).await {
-                Ok(report) => {
-                    if report.resolved > 0 {
-                        metrics.swept(report.resolved as u64);
-                        tracing::info!(
-                            resolved = report.resolved,
-                            "the hold sweeper resolved stale holds"
-                        );
-                    }
-                    if report.dead_lettered > 0 {
-                        metrics.dead_lettered(report.dead_lettered as u64);
-                        tracing::warn!(
-                            dead_lettered = report.dead_lettered,
-                            "the hold sweeper dead-lettered holds whose settlement keeps failing"
-                        );
-                    }
-                }
-                Err(error) => {
-                    tracing::error!(%error, "the hold sweeper could not read its watch list");
-                }
-            }
-            tokio::time::sleep(SWEEP_INTERVAL).await;
-        }
-    })
 }
 
 /// `oxsum seed` (roadmap P7-4): populates the demo world and prints the logins

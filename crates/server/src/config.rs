@@ -153,6 +153,8 @@ pub struct Config {
     /// mailer and the OAuth client, optional on its own: the device grant
     /// builds `verificationUri` from it when set (issue #156).
     public_url: Option<String>,
+    /// The retention windows the `retention` job applies, `OXSUM_RETENTION_*`.
+    retention: oxsum_core::Retention,
 }
 
 impl Config {
@@ -171,6 +173,7 @@ impl Config {
             github: None,
             turnstile: None,
             public_url: None,
+            retention: oxsum_core::Retention::default(),
         }
     }
 
@@ -277,6 +280,11 @@ impl Config {
         // Optional on its own: the mailer and the OAuth client each require it,
         // and the device grant only prefers it for a stable `verificationUri`.
         let public_url = var("OXSUM_PUBLIC_URL");
+        let retention = oxsum_core::Retention {
+            provider_raw_days: retention_days("OXSUM_RETENTION_PROVIDER_RAW_DAYS")?.unwrap_or(7),
+            deliveries_days: retention_days("OXSUM_RETENTION_DELIVERIES_DAYS")?.unwrap_or(30),
+            jobs_days: retention_days("OXSUM_RETENTION_JOBS_DAYS")?.unwrap_or(90),
+        };
         Ok(Self {
             signup,
             gateway: Gateway::from_env()?,
@@ -290,6 +298,7 @@ impl Config {
             github,
             turnstile,
             public_url,
+            retention,
         })
     }
 
@@ -341,6 +350,21 @@ impl Config {
     #[must_use]
     pub fn public_url(&self) -> Option<&str> {
         self.public_url.as_deref()
+    }
+
+    /// The retention windows the `retention` job applies.
+    #[must_use]
+    pub fn retention(&self) -> oxsum_core::Retention {
+        self.retention
+    }
+
+    /// Sets the retention windows. Tests use this; the server reads
+    /// `OXSUM_RETENTION_PROVIDER_RAW_DAYS`, `OXSUM_RETENTION_DELIVERIES_DAYS`
+    /// and `OXSUM_RETENTION_JOBS_DAYS`.
+    #[must_use]
+    pub fn with_retention(mut self, retention: oxsum_core::Retention) -> Self {
+        self.retention = retention;
+        self
     }
 
     /// Sets the public origin. Tests use this; the server reads
@@ -423,6 +447,20 @@ fn session_cookie_secure_of(raw: String) -> Result<bool, String> {
             "OXSUM_SESSION_COOKIE_SECURE must be true or false, got {other:?}"
         )),
     }
+}
+
+/// Parses one `OXSUM_RETENTION_*` variable: a positive day count — `0` would
+/// erase history the retention spec calls permanent.
+fn retention_days(name: &str) -> Result<Option<i64>, String> {
+    var(name)
+        .map(|raw| {
+            raw.trim()
+                .parse::<i64>()
+                .ok()
+                .filter(|days| *days > 0)
+                .ok_or_else(|| format!("{name} must be a positive number of days, got {raw:?}"))
+        })
+        .transpose()
 }
 
 /// Parses `OXSUM_SIGNUP_BONUS_MINOR`: the credits a new organization starts with, in minor
