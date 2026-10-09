@@ -19,7 +19,7 @@ use serde_json::Value;
 /// written before descriptions were versioned counts as older; every `v` above
 /// this is newer than this build. Versions it does know each get their own
 /// rule: an old bill stays recomputable after the writer has moved on.
-const KNOWN_VERSION: i64 = 5;
+const KNOWN_VERSION: i64 = 6;
 
 /// The line items the input side prices: their units must account for the
 /// whole `inputTokens`, between them and the usage record — cached reads and
@@ -45,6 +45,7 @@ const SETTLEMENT_KINDS: &[&str] = &[
     "capped",
     "swept",
     "unpriced",
+    "released",
 ];
 
 /// What recomputing a settlement description's charge concluded.
@@ -93,7 +94,8 @@ pub fn verify_charge(description: &str) -> ChargeCheck {
             Some(2) => recompute_v2(&value),
             Some(3) => recompute_v3(&value),
             Some(4) => recompute_v4(&value),
-            Some(KNOWN_VERSION) => recompute_v5(&value),
+            Some(5) => recompute_v5(&value),
+            Some(KNOWN_VERSION) => recompute_v6(&value),
             Some(v) if v > KNOWN_VERSION => ChargeCheck::NewerSchema { version: v },
             Some(_) => ChargeCheck::OlderSchema,
             // A `v` that names no version is a broken record, not an old one.
@@ -219,6 +221,22 @@ fn recompute_v4(value: &Value) -> ChargeCheck {
 fn recompute_v5(value: &Value) -> ChargeCheck {
     match value.get("upstreamAttempts").and_then(Value::as_i64) {
         Some(attempts) if attempts >= 1 => recompute_v4(value),
+        _ => ChargeCheck::Mismatch,
+    }
+}
+
+/// The v6 rule: a metered event's record (issue #172) — v4's arithmetic, with
+/// the fields a turn no upstream served carries differently. `service` names
+/// the reporting credential as a non-empty string, and `upstreamAttempts` is
+/// absent rather than zero: nothing was relayed, so an honest write does not
+/// even claim the count. A `released` record bills nothing, so its lines are
+/// empty and its charge zero — the shared arithmetic checks both.
+fn recompute_v6(value: &Value) -> ChargeCheck {
+    if value.get("upstreamAttempts").is_some() {
+        return ChargeCheck::Mismatch;
+    }
+    match value.get("service").and_then(Value::as_str) {
+        Some(service) if !service.is_empty() => recompute_v4(value),
         _ => ChargeCheck::Mismatch,
     }
 }
@@ -394,6 +412,50 @@ mod tests {
         // nothing about the charge.
         let third = V5.replacen(r#""upstreamAttempts":2"#, r#""upstreamAttempts":3"#, 1);
         assert_eq!(verify_charge(&third), ChargeCheck::Recomputed);
+    }
+
+    /// A metered event's record (issue #172): `service` names the reporting
+    /// credential and `upstreamAttempts` is absent — nothing was relayed. 116
+    /// input at 1 credit per million is the whole charge under a 400 freeze.
+    const V6: &str = r#"{"v":6,"request":"evt-9f3a","service":"mailer","channel":"internal","model":"email.send","priceVersion":1,"kind":"usage","usage":{"inputTokens":116,"eventType":"email.send"},"lines":[["input",116,1000000]],"charged":116,"freeze":400}"#;
+
+    /// A hold the reporting service let go: no usage, no lines, no charge.
+    const V6_RELEASED: &str = r#"{"v":6,"request":"evt-9f3a","service":"mailer","channel":"internal","model":"email.send","priceVersion":1,"kind":"released","usage":{},"lines":[],"charged":0,"freeze":400}"#;
+
+    #[test]
+    fn a_genuine_v6_record_recomputes() {
+        assert_eq!(verify_charge(V6), ChargeCheck::Recomputed);
+        assert_eq!(verify_charge(V6_RELEASED), ChargeCheck::Recomputed);
+        // And a wrong total is a mismatch, not a pass.
+        let wrong = V6.replacen(r#""charged":116"#, r#""charged":200"#, 1);
+        assert_eq!(verify_charge(&wrong), ChargeCheck::Mismatch);
+    }
+
+    #[test]
+    fn a_v6_record_names_its_reporter_and_calls_no_upstream() {
+        // `service` missing, empty or not a string is not an honest v6 write.
+        for field in [r#""service":"","#, r#""service":7,"#, ""] {
+            let bad = V6.replacen(r#""service":"mailer","#, field, 1);
+            assert_eq!(verify_charge(&bad), ChargeCheck::Mismatch, "{field}");
+        }
+        // `upstreamAttempts` does not belong on a turn nothing relayed — even
+        // a zero claim is a v6 violation, where a missing claim is not.
+        let claimed = V6.replacen(
+            r#""charged":116"#,
+            r#""upstreamAttempts":0,"charged":116"#,
+            1,
+        );
+        assert_eq!(verify_charge(&claimed), ChargeCheck::Mismatch);
+    }
+
+    #[test]
+    fn a_released_record_bills_nothing() {
+        // A released record that charges is not honest.
+        let charged = V6_RELEASED.replacen(r#""charged":0"#, r#""charged":5"#, 1);
+        assert_eq!(verify_charge(&charged), ChargeCheck::Mismatch);
+        // And a request line cannot bill on a record that billed nothing.
+        let fee = V6_RELEASED.replacen(r#""lines":[]"#, r#""lines":[["request",1,500000000]]"#, 1);
+        assert_eq!(verify_charge(&fee), ChargeCheck::Mismatch);
     }
 
     #[test]
