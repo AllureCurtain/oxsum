@@ -46,6 +46,10 @@ enum Answer {
     Stream { usage: bool, terminated: bool },
     /// A stream that emits one chunk and then stays open, for as long as the client is there.
     Stall,
+    /// Usage, terminator, then a stream that never ends: how a real upstream looks to a
+    /// client that hangs up on `[DONE]` — the relay is suspended after the terminator,
+    /// not past the end of upstream's body (issue #178).
+    StreamThenStall,
     /// Upstream refuses, in OpenAI's own error shape.
     Refuse { status: u16, body: Value },
     /// Refuses this model's first `refuse` requests with `status` — optionally
@@ -200,6 +204,16 @@ async fn upstream(
             }
             sse(Body::from(frames))
         }
+        Answer::StreamThenStall => sse(Body::from_stream(async_stream::stream! {
+            yield Ok::<Bytes, std::io::Error>(Bytes::from_static(
+                b"data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}],\"usage\":null}\n\n\
+                  data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}\n\n\
+                  data: [DONE]\n\n",
+            ));
+            // The terminator is out but the body stays open — exactly what a real
+            // upstream's socket looks like to a client that leaves on `[DONE]`.
+            std::future::pending::<()>().await;
+        })),
         Answer::Stall => sse(Body::from_stream(async_stream::stream! {
             yield Ok::<Bytes, std::io::Error>(Bytes::from_static(
                 b"data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}],\"usage\":null}\n\n",
@@ -1874,6 +1888,66 @@ async fn a_client_that_hangs_up_at_the_terminator_still_gets_its_usage_bill() {
     drop(response);
 
     // The turn upstream had finished is billed as finished, from its own counts.
+    let record = world.settlement_within(&id).await;
+    assert_eq!(record["kind"], "usage", "{record}");
+    assert_eq!(record["usage"]["inputTokens"], 10);
+    assert_eq!(record["usage"]["outputTokens"], 2);
+    assert_eq!(record["charged"], 12);
+    let wallet = world.wallet().await;
+    assert_eq!(wallet.reserved().await.unwrap(), 0);
+    assert_eq!(wallet.settled().await.unwrap(), 1_000_000 - 12);
+}
+
+/// The same hang-up as the test above, but over an upstream whose body stays open after the
+/// terminator — what a real socket looks like. The relay is suspended on the frame *after*
+/// `[DONE]` when hyper drops it, so the turn used to settle `client_cancelled` even though
+/// upstream had already said everything it would (issue #178).
+#[tokio::test]
+async fn a_client_that_hangs_up_at_a_lingering_terminator_still_gets_its_usage_bill() {
+    let world = world!(1_000_000);
+    world.answers("stream", Answer::StreamThenStall);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("binds a free port");
+    let address = listener.local_addr().expect("the listener has an address");
+    let app = world.app.clone();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let mut response = reqwest::Client::new()
+        .post(format!("http://{address}/v1/chat/completions"))
+        .bearer_auth(&world.key)
+        .json(&json!({
+            "model": world.model("stream"),
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true,
+        }))
+        .send()
+        .await
+        .expect("the gateway answers");
+    assert_eq!(response.status(), StatusCode::OK);
+    let id = response
+        .headers()
+        .get("x-oxsum-request-id")
+        .expect("every response carries a request id")
+        .to_str()
+        .expect("the request id is ASCII")
+        .to_owned();
+
+    // Read exactly as far as the terminator, then hang up — the relay never reaches the
+    // end of upstream's body, because there is none.
+    let mut frames = String::new();
+    while let Some(chunk) = response.chunk().await.expect("the stream is readable") {
+        frames.push_str(&String::from_utf8_lossy(&chunk));
+        if frames.contains("[DONE]") {
+            break;
+        }
+    }
+    assert!(frames.contains("[DONE]"), "{frames}");
+    drop(response);
+
     let record = world.settlement_within(&id).await;
     assert_eq!(record["kind"], "usage", "{record}");
     assert_eq!(record["usage"]["inputTokens"], 10);
