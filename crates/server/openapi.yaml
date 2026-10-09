@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.42.0
+  version: 0.43.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -231,6 +231,13 @@ info:
     key they minted — enforced inside the same locked window as the key's own
     limits. `role` on that endpoint is now optional beside it; at least one of
     the two is required.
+
+    0.43.0 adds the jobs layer (issue #166): `oxsum.jobs` schedules the
+    periodic work — hold sweeping, webhook delivery, reconciliation, monthly
+    statement generation and retention cleanup — claimed with
+    `FOR UPDATE SKIP LOCKED`, retried on a backoff, and landed `dead` past
+    the attempt budget. Dead runs surface as the reconciliation report's new
+    `jobs_dead` class.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -2016,8 +2023,10 @@ paths:
         row with no pending posting behind it), `holds_unwatched` (a pending
         hold no watch row covers — invisible to the sweeper),
         `holds_dead_lettered` (a watched hold whose sweep has failed ten
-        times — it retries hourly and needs an operator) and `log_gaps`
-        (a ledger log whose positions are not dense). Each class carries a
+        times — it retries hourly and needs an operator), `log_gaps`
+        (a ledger log whose positions are not dense) and `jobs_dead` (a
+        periodic job run that exhausted its attempts — platform drift, not
+        any organization's). Each class carries a
         count and a bounded sample of the offending identifiers. The report
         is read-only: drift is for an operator to read, never for the
         reconciler to patch.
@@ -3625,7 +3634,7 @@ components:
       properties:
         class:
           type: string
-          enum: [usage_orphans, settlements_unrecorded, deposits_unbooked, deposits_mismatched, deposits_stuck, watches_orphaned, holds_unwatched, holds_dead_lettered, log_gaps]
+          enum: [usage_orphans, settlements_unrecorded, deposits_unbooked, deposits_mismatched, deposits_stuck, watches_orphaned, holds_unwatched, holds_dead_lettered, log_gaps, jobs_dead]
         count: { type: integer, format: int64, minimum: 0, description: how much drift the class holds }
         samples:
           type: array
