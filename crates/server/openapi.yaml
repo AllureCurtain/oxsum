@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.45.0
+  version: 0.46.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -261,6 +261,15 @@ info:
     `usage.prompt_tokens`, rerank against `usage.total_tokens`; a report that
     never arrives settles `estimated` from the request's own input bound.
     `POST /api/v1/estimate-price` takes an optional `mode` beside the model.
+
+    0.46.0 adds the metering surface (issue #172): the deployer's own services report billable
+    events under `/api/v1/metering` — `holds`, `settle`, `release` and one-shot `settlements`
+    — authenticated by a service credential (`oxs-svc-…`) the admin mints, never by an
+    organization's key or a session. A service names the `organizationId` it meters for, a
+    `channel` and a `billableCode`, which resolve to the channel's `mode: event` price version;
+    the declared `usage` is a UsageRecord in the code's own units, and every call carries an
+    `idempotencyKey`. Metered settlements enter the ledger and its proofs like gateway turns,
+    under a `v6` description that names the reporting service instead of upstream attempts.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -1698,6 +1707,144 @@ paths:
                   data: { $ref: "#/components/schemas/VerifyingKey" }
         "500": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /api/v1/metering/holds:
+    post:
+      summary: Freeze credit for a billable event a service will settle later
+      description: |
+        A service credential reports an event bound: the `billableCode` resolves to
+        `channel`'s latest `mode: event` price version, the declared `usage` is the
+        event's upper bound in the code's own units, and the freeze is that usage
+        itemized — a hold, never more, never silently zero. An `eventType` names what
+        the event is (`"inference"`, `"email.send"`, …); it rides the usage record and
+        the settlement's `usage.eventType`. Usage naming a dimension the price cannot
+        bill — a media token, a tool call — is refused, not partial-billed: the service
+        declares the usage, so it can fix the request. `organizationId` names whose
+        wallet freezes; a suspended organization answers `403` and an insolvent one
+        `402`, like every hold. The hold is watched by the sweeper: a hold that never
+        settles releases at zero with kind `swept`. Replay of the same
+        `idempotencyKey` answers the original hold.
+      security:
+        - serviceCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MeteringHoldRequest" }
+      responses:
+        "200":
+          description: The hold that froze the bound
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/MeteringHold" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "402": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/metering/settle:
+    post:
+      summary: Settle a metering hold against the event's actual usage
+      description: |
+        The service reports what the event consumed; the charge is that usage itemized
+        at the price version the hold froze, capped by the freeze — over-bound usage
+        charges the freeze and settles `capped`. Usage naming a dimension the price
+        cannot bill is refused like on `holds`. The settlement entry's idempotency key
+        is derived from the hold's, so the hold settles at most once: a retry of the
+        same body replays, a settled hold is 409, a hold that is not outstanding — of
+        this organization — is 404.
+      security:
+        - serviceCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MeteringSettleRequest" }
+      responses:
+        "200":
+          description: What the settlement charged
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/MeteringSettlement" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/metering/release:
+    post:
+      summary: Release a metering hold the event will never settle
+      description: >-
+        The work the hold froze for is not billing — it was abandoned or refunded — so
+        the hold settles at zero with kind `released`: deliberate, distinct from the
+        sweeper's `swept`. Naming a hold that is not outstanding in this
+        organization's ledger is 404; one already settled is 409.
+      security:
+        - serviceCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MeteringReleaseRequest" }
+      responses:
+        "200":
+          description: The release settlement
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/MeteringSettlement" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/metering/settlements:
+    post:
+      summary: Bill a completed event in one call
+      description: |
+        For an event that already ran there is nothing to freeze against — the
+        declared `usage` is the actual: the charge itemizes it at the code's latest
+        `mode: event` price version and lands as a hold settled in the same answer.
+        An organization without the funds answers `402` — a one-shot settlement can
+        never spend what was not there. Every other refusal is `holds`'s: unknown
+        organization, channel or code, unpriced usage, suspended organization. A
+        replay of the `idempotencyKey` answers the original settlement.
+      security:
+        - serviceCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MeteringSettlementRequest" }
+      responses:
+        "200":
+          description: What the settlement charged
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/MeteringSettlement" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "402": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/admin/channels:
     get:
       summary: List the channels, with the current price version of each of their models
@@ -2647,6 +2794,83 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/service-credentials:
+    get:
+      summary: List the metering service credentials
+      description: >-
+        Every service credential, newest first — metadata only: the secret exists
+        once, at mint. The list answers `prefix`, `createdAt` and `revokedAt`, so a
+        deployment can name which of its services may still meter.
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: The service credentials
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/ServiceCredential" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Mint a metering service credential
+      description: >-
+        The secret is answered exactly once, in this response — the database keeps
+        only its hash, like an API key's. `name` is what the settlement description
+        records as the reporting service, so name it for the service that will hold
+        it. The mint lands in the admin audit log.
+      security:
+        - adminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ServiceCredentialRequest" }
+      responses:
+        "200":
+          description: The credential, with its secret — the only answer that carries it
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/CreatedServiceCredential" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/service-credentials/{credentialId}:
+    delete:
+      summary: Revoke a service credential
+      description: >-
+        The credential authenticates nothing from the revocation on; nothing it
+        already wrote changes. Revoking an absent or already-revoked credential is
+        404. The revoke lands in the admin audit log.
+      security:
+        - adminToken: []
+      parameters:
+        - name: credentialId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The revoked credential
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ServiceCredential" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /v1/models:
     get:
       summary: List the served models, in OpenAI's shape
@@ -2922,6 +3146,14 @@ components:
         The operator token from `OXSUM_ADMIN_TOKEN`, at least 16 characters, compared in constant time.
         It is not an API key and belongs to no organization: it is whoever deploys oxsum. A deployment
         that sets no token has no admin surface at all.
+    serviceCredential:
+      type: http
+      scheme: bearer
+      description: |
+        A metering service credential: `oxs-svc-` followed by 32 random bytes, shown once when
+        the admin mints it. It authenticates `/api/v1/metering/*` and nothing else — an
+        organization's key and a session are refused there, because an organization can never
+        report its own usage (issue #172).
     sessionCookie:
       type: apiKey
       in: cookie
@@ -3365,7 +3597,7 @@ components:
               minimum: 1
               maximum: 1000
               description: "the route's relative preference for leading a request against other channels serving the same model (issue #168)"
-            mode: { type: string, enum: [chat, embeddings, rerank], description: "the billing mode this price applies to — which surface may serve it and what its counts mean" }
+            mode: { type: string, enum: [chat, embeddings, rerank, event], description: "the billing mode this price applies to — which surface may serve it and what its counts mean; `event` prices meter `/api/v1/metering` reports and serve no gateway surface" }
             rules:
               type: array
               description: "the conditional price sets; empty when every request pays the base set"
@@ -3386,9 +3618,9 @@ components:
               description: "the route's relative preference for leading a request; absent means 100"
             mode:
               type: string
-              enum: [chat, embeddings, rerank]
+              enum: [chat, embeddings, rerank, event]
               default: chat
-              description: "the billing mode the price serves; absent means `chat`. `embeddings` and `rerank` prices are input-only: `outputPricePerMillion` and `maxOutputTokens` must be absent or zero"
+              description: "the billing mode the price serves; absent means `chat`. `embeddings` and `rerank` prices are input-only: `outputPricePerMillion` and `maxOutputTokens` must be absent or zero. `event` prices are metered through `/api/v1/metering` only: `maxOutputTokens` must be absent or zero — nothing is forwarded, so there is no output bound — while `outputPricePerMillion` stays allowed for services that meter an output side"
             rules:
               type: array
               description: "conditional price sets, evaluated most-specific-wins; two rules that could match the same request at the same specificity are refused"
@@ -3427,7 +3659,7 @@ components:
         model: { type: string }
         kind:
           type: string
-          enum: [usage, estimated, client_cancelled, upstream_error, upstream_unreachable, capped, swept, unpriced]
+          enum: [usage, estimated, client_cancelled, upstream_error, upstream_unreachable, capped, swept, unpriced, released]
           description: how the turn was priced
         inputTokens: { type: integer, format: int64, description: tokens billed as input }
         outputTokens: { type: integer, format: int64, description: tokens billed as output }
@@ -3435,8 +3667,8 @@ components:
         upstreamAttempts:
           type: integer
           format: int64
-          minimum: 1
-          description: "how many upstream calls the turn made — above 1 means it failed over between channels (issue #168)"
+          minimum: 0
+          description: "how many upstream calls the turn made — above 1 means it failed over between channels (issue #168); a metered event never calls upstream, so it records 0"
         discountPercent:
           type: integer
           minimum: 1
@@ -3453,9 +3685,9 @@ components:
         model: { type: string, minLength: 1, maxLength: 200 }
         mode:
           type: string
-          enum: [chat, embeddings, rerank]
+          enum: [chat, embeddings, rerank, event]
           default: chat
-          description: "which billing mode's routes to price against — an `embeddings` estimate reads the model's embeddings prices, ignoring `outputTokens`"
+          description: "which billing mode's routes to price against — an `embeddings` estimate reads the model's embeddings prices, ignoring `outputTokens`; `event` prices a billableCode's declared units"
         inputTokens:
           type: integer
           format: int64
@@ -3751,8 +3983,8 @@ components:
         upstreamAttempts:
           type: integer
           format: int64
-          minimum: 1
-          description: "how many upstream calls the turn made — above 1 means it failed over between channels (issue #168)"
+          minimum: 0
+          description: "how many upstream calls the turn made — above 1 means it failed over between channels (issue #168); a metered event records 0"
         chargedMinor: { type: integer, format: int64, minimum: 0, description: what the settlement charged, in minor units }
         freezeMinor: { type: integer, format: int64, minimum: 1, description: what had been frozen, in minor units }
         bookedOn: { type: string, format: date, description: the settlement's booking date }
@@ -3891,6 +4123,110 @@ components:
       properties:
         holdKey: { type: string, minLength: 1, maxLength: 128, description: the idempotency key of the hold this settlement releases; the hold's amount is read from the ledger, and one hold settles at most once }
         actualMinor: { type: integer, format: int64, minimum: 0, description: actual usage, must not exceed the hold's amount }
+    EventUsage:
+      type: object
+      description: |
+        A metered event's usage, in the UsageRecord's own shape: the structured
+        fields are the token-metered dimensions — on an `event` price they are
+        the event's units in whatever denomination the billableCode's price
+        defines — plus the context slots. `eventType` names the event and is
+        required; a dimension the resolved price cannot bill is refused, never
+        billed at zero.
+      properties:
+        inputTokens: { type: integer, format: int64, minimum: 0 }
+        outputTokens: { type: integer, format: int64, minimum: 0 }
+        cachedTokens: { type: integer, format: int64, minimum: 0 }
+        cacheWrite5mTokens: { type: integer, format: int64, minimum: 0 }
+        cacheWrite1hTokens: { type: integer, format: int64, minimum: 0 }
+        reasoningTokens: { type: integer, format: int64, minimum: 0 }
+        toolCalls: { type: integer, format: int64, minimum: 0 }
+        imageInputTokens: { type: integer, format: int64, minimum: 0 }
+        audioInputTokens: { type: integer, format: int64, minimum: 0 }
+        videoInputTokens: { type: integer, format: int64, minimum: 0 }
+        imageOutputTokens: { type: integer, format: int64, minimum: 0 }
+        audioOutputTokens: { type: integer, format: int64, minimum: 0 }
+        serviceTier: { type: string, maxLength: 64, description: a pricing slot — rules may match on it }
+        eventType: { type: string, minLength: 1, maxLength: 64, description: what kind of billable event this is — required }
+        endUser: { type: string, maxLength: 128, description: the service's own end-user id, for attribution }
+        tags:
+          type: object
+          additionalProperties: { type: string, maxLength: 64 }
+          description: "cost-centre attribution; at most 10 pairs, keys and values 64 characters"
+        usageDetails:
+          type: object
+          description: "the escape hatch — provider extras that fit no column; never reaches the ledger description"
+    MeteringHoldRequest:
+      type: object
+      required: [idempotencyKey, organizationId, channel, billableCode, usage]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 128, description: "UTF-8 idempotency key; the hold entry's key is `metering:<key>:hold`" }
+        organizationId: { type: string, format: uuid, description: whose wallet freezes }
+        channel: { type: string, description: the channel whose `mode: event` price version for the code applies }
+        billableCode: { type: string, minLength: 1, maxLength: 200, description: "what is being billed — the price book's model name on that channel" }
+        eventId: { type: string, maxLength: 128, description: "the service's own identifier for the event, recorded as the usage row's request id; defaults to the hold key" }
+        usage: { $ref: "#/components/schemas/EventUsage" }
+    MeteringSettleRequest:
+      type: object
+      required: [organizationId, holdKey, usage]
+      properties:
+        organizationId: { type: string, format: uuid }
+        holdKey: { type: string, minLength: 1, description: the holdKey a `holds` answer returned }
+        eventId: { type: string, maxLength: 128, description: overrides the hold's eventId when the service learned a better identifier since }
+        usage: { $ref: "#/components/schemas/EventUsage" }
+    MeteringReleaseRequest:
+      type: object
+      required: [organizationId, holdKey]
+      properties:
+        organizationId: { type: string, format: uuid }
+        holdKey: { type: string, minLength: 1 }
+    MeteringSettlementRequest:
+      type: object
+      required: [idempotencyKey, organizationId, channel, billableCode, usage]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 128 }
+        organizationId: { type: string, format: uuid, description: whose wallet pays }
+        channel: { type: string }
+        billableCode: { type: string, minLength: 1, maxLength: 200 }
+        eventId: { type: string, maxLength: 128 }
+        usage: { $ref: "#/components/schemas/EventUsage" }
+    MeteringHold:
+      type: object
+      required: [holdKey, freezeMinor, priceVersion]
+      properties:
+        holdKey: { type: string, description: the key `settle` and `release` name }
+        freezeMinor: { type: integer, format: int64, minimum: 1, description: the frozen bound — the declared usage itemized at the pinned price }
+        priceVersion: { type: integer, minimum: 1, description: the code's price version in force, pinned to the hold }
+    MeteringSettlement:
+      type: object
+      required: [chargedMinor, kind, priceVersion]
+      properties:
+        chargedMinor: { type: integer, format: int64, minimum: 0, description: what the settlement charged — never more than the freeze }
+        kind:
+          type: string
+          enum: [usage, capped, released]
+          description: "`usage` when the declared usage priced inside the freeze, `capped` when it priced above and the freeze was charged, `released` when the hold was let go at zero"
+        priceVersion: { type: integer, minimum: 1, description: the price version the usage priced at — the hold's pin on `settle`/`release`, the latest on a one-shot }
+        settlementId: { type: string, format: uuid, description: the settlement ledger entry's id — derivable as `entry_id_for(settlement_key_for(holdKey))` }
+    ServiceCredentialRequest:
+      type: object
+      properties:
+        name: { type: string, maxLength: 80, description: "which service holds this credential — the name settlement descriptions record as the reporter" }
+    ServiceCredential:
+      type: object
+      required: [credentialId, prefix, createdAt]
+      properties:
+        credentialId: { type: string, format: uuid }
+        name: { type: [string, "null"], maxLength: 80 }
+        prefix: { type: string, description: "the secret's leading characters, for recognizing it in a list" }
+        createdAt: { type: string, format: date-time }
+        revokedAt: { type: [string, "null"], format: date-time }
+    CreatedServiceCredential:
+      allOf:
+        - $ref: "#/components/schemas/ServiceCredential"
+        - type: object
+          required: [secret]
+          properties:
+            secret: { type: string, description: "`oxs-svc-` plus 64 hex characters — answered once, never stored readable" }
     RedeemRequest:
       type: object
       required: [code]
