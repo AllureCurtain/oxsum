@@ -508,6 +508,7 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "organizations".to_owned(),
             "pricing_discounts".to_owned(),
             "redemption_codes".to_owned(),
+            "service_credentials".to_owned(),
             "sessions".to_owned(),
             "statement_lines".to_owned(),
             "statements".to_owned(),
