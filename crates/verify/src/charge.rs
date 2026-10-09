@@ -19,7 +19,7 @@ use serde_json::Value;
 /// written before descriptions were versioned counts as older; every `v` above
 /// this is newer than this build. Versions it does know each get their own
 /// rule: an old bill stays recomputable after the writer has moved on.
-const KNOWN_VERSION: i64 = 4;
+const KNOWN_VERSION: i64 = 5;
 
 /// The line items the input side prices: their units must account for the
 /// whole `inputTokens`, between them and the usage record — cached reads and
@@ -92,7 +92,8 @@ pub fn verify_charge(description: &str) -> ChargeCheck {
         Some(version) => match version.as_i64() {
             Some(2) => recompute_v2(&value),
             Some(3) => recompute_v3(&value),
-            Some(KNOWN_VERSION) => recompute_v4(&value),
+            Some(4) => recompute_v4(&value),
+            Some(KNOWN_VERSION) => recompute_v5(&value),
             Some(v) if v > KNOWN_VERSION => ChargeCheck::NewerSchema { version: v },
             Some(_) => ChargeCheck::OlderSchema,
             // A `v` that names no version is a broken record, not an old one.
@@ -208,6 +209,17 @@ fn recompute_v4(value: &Value) -> ChargeCheck {
         ChargeCheck::Recomputed
     } else {
         ChargeCheck::Mismatch
+    }
+}
+
+/// The v5 rule: v4's arithmetic unchanged, plus `upstreamAttempts` — how many
+/// upstream calls the turn made under the one hold (issue #168). It is not a
+/// price input, so it joins no sum: the rule is that an honest record carries
+/// it as a positive integer, and nothing more is claimed about it.
+fn recompute_v5(value: &Value) -> ChargeCheck {
+    match value.get("upstreamAttempts").and_then(Value::as_i64) {
+        Some(attempts) if attempts >= 1 => recompute_v4(value),
+        _ => ChargeCheck::Mismatch,
     }
 }
 
@@ -355,6 +367,33 @@ mod tests {
             .replacen(r#""charged":225"#, r#""charged":240"#, 1)
             .replacen(r#""freeze":400"#, r#""freeze":240"#, 1);
         assert_eq!(verify_charge(&capped), ChargeCheck::Recomputed);
+    }
+
+    /// The V4 turn at v5 after a failover: `upstreamAttempts` counts the calls
+    /// under the one hold without entering the arithmetic (issue #168).
+    const V5: &str = r#"{"v":5,"request":"req-abc","channel":"backup","model":"deepseek-chat","priceVersion":2,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100,"cachedTokens":96,"reasoningTokens":20},"lines":[["input",20,1000000],["cache_read",96,100000],["output",80,2000000],["reasoning",20,3000000]],"upstreamAttempts":2,"charged":250,"freeze":400}"#;
+
+    #[test]
+    fn a_genuine_v5_record_recomputes() {
+        assert_eq!(verify_charge(V5), ChargeCheck::Recomputed);
+    }
+
+    #[test]
+    fn a_v5_record_binds_the_attempt_count() {
+        // Missing, zero or non-integer attempt counts are not honest v5 writes.
+        for field in [
+            r#""upstreamAttempts":0,"#,
+            r#""upstreamAttempts":-1,"#,
+            r#""upstreamAttempts":"two","#,
+            "",
+        ] {
+            let bad = V5.replacen(r#""upstreamAttempts":2,"#, field, 1);
+            assert_eq!(verify_charge(&bad), ChargeCheck::Mismatch, "{field}");
+        }
+        // And the count is metadata, not a price input: changing it changes
+        // nothing about the charge.
+        let third = V5.replacen(r#""upstreamAttempts":2"#, r#""upstreamAttempts":3"#, 1);
+        assert_eq!(verify_charge(&third), ChargeCheck::Recomputed);
     }
 
     #[test]

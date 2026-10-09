@@ -644,6 +644,7 @@ async fn a_gateway_settlement_names_its_key_and_its_record() {
         discount_percent: None,
         charged: 77,
         freeze: 5 * ONE,
+        upstream_attempts: 1,
     };
     w.settle("req-9:hold", &record.description().unwrap(), 77, D)
         .await
@@ -804,6 +805,7 @@ async fn request_pages_walk_only_settled_turns() {
             discount_percent: None,
             charged: ONE,
             freeze: ONE,
+            upstream_attempts: 1,
         };
         w.settle(
             &format!("{request}:h"),

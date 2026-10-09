@@ -184,6 +184,7 @@ async fn serve_models(db: &Db) {
                 mode: Default::default(),
                 rules: Vec::new(),
             },
+            100,
         )
         .await
         .unwrap();

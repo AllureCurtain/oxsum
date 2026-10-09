@@ -334,6 +334,10 @@ pub struct UsageRow {
     /// untracked, not zero: a price with no `upstream` block, a swept turn
     /// whose watch row carries no price, or history from before the column.
     pub upstream_cost_minor: Option<i64>,
+    /// How many upstream calls the turn made (issue #168): above 1 means it
+    /// failed over between channels under the one hold, or waited out a
+    /// bounded `Retry-After` on a lone channel's 429.
+    pub upstream_attempts: i64,
 }
 
 impl Db {
@@ -362,9 +366,9 @@ impl Db {
               cache_write_1h_tokens, reasoning_tokens, tool_calls, image_input_tokens, \
               audio_input_tokens, video_input_tokens, image_output_tokens, \
               audio_output_tokens, service_tier, event_type, end_user, tags, usage_details, \
-              charged_minor, freeze_minor, upstream_cost_minor) \
+              charged_minor, freeze_minor, upstream_cost_minor, upstream_attempts) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, \
-                     $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28) \
+                     $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29) \
              ON CONFLICT (request_id) DO NOTHING",
         )
         .bind(&row.request_id)
@@ -395,6 +399,7 @@ impl Db {
         .bind(row.charged_minor)
         .bind(row.freeze_minor)
         .bind(row.upstream_cost_minor)
+        .bind(row.upstream_attempts)
         .execute(&mut *tx)
         .await?
         .rows_affected();

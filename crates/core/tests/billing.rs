@@ -81,6 +81,7 @@ fn golden(
         discount_percent: None,
         charged,
         freeze,
+        upstream_attempts: 1,
     }
     .description()
     .expect("the fixture serializes")
@@ -95,7 +96,7 @@ fn settlement_descriptions_are_byte_stable() {
         (
             SettlementKind::Usage,
             UsageRecord::tokens(10, 2).unwrap(),
-            r#"{"v":4,"request":"req-golden-usage","channel":"deepseek","model":"ds-chat","priceVersion":7,"kind":"usage","usage":{"inputTokens":10,"outputTokens":2},"lines":[["input",10,1000000],["output",2,2000000],["request",1,100000000]],"charged":114,"freeze":900000}"#,
+            r#"{"v":5,"request":"req-golden-usage","channel":"deepseek","model":"ds-chat","priceVersion":7,"kind":"usage","usage":{"inputTokens":10,"outputTokens":2},"lines":[["input",10,1000000],["output",2,2000000],["request",1,100000000]],"upstreamAttempts":1,"charged":114,"freeze":900000}"#,
         ),
         // An unpriced turn: the audio tokens sit in `usage` (they are metered
         // fact) but reach no line — nothing may claim them.
@@ -105,7 +106,7 @@ fn settlement_descriptions_are_byte_stable() {
                 audio_input_tokens: 300,
                 ..UsageRecord::tokens(10, 2).unwrap()
             },
-            r#"{"v":4,"request":"req-golden-unpriced","channel":"deepseek","model":"ds-chat","priceVersion":7,"kind":"unpriced","usage":{"inputTokens":10,"outputTokens":2,"audioInputTokens":300},"lines":[["input",10,1000000],["output",2,2000000],["request",1,100000000]],"charged":114,"freeze":900000}"#,
+            r#"{"v":5,"request":"req-golden-unpriced","channel":"deepseek","model":"ds-chat","priceVersion":7,"kind":"unpriced","usage":{"inputTokens":10,"outputTokens":2,"audioInputTokens":300},"lines":[["input",10,1000000],["output",2,2000000],["request",1,100000000]],"upstreamAttempts":1,"charged":114,"freeze":900000}"#,
         ),
     ];
     for (kind, usage, expected) in cases {
@@ -148,12 +149,13 @@ fn settlement_descriptions_are_byte_stable() {
         discount_percent: None,
         charged: 0,
         freeze: 900_000,
+        upstream_attempts: 1,
     }
     .description()
     .expect("the fixture serializes");
     assert_eq!(
         swept,
-        r#"{"v":4,"request":"req-golden-swept","channel":"deepseek","model":"ds-chat","priceVersion":7,"kind":"swept","usage":{},"lines":[["input",0,1000000],["output",0,2000000]],"charged":0,"freeze":900000}"#
+        r#"{"v":5,"request":"req-golden-swept","channel":"deepseek","model":"ds-chat","priceVersion":7,"kind":"swept","usage":{},"lines":[["input",0,1000000],["output",0,2000000]],"upstreamAttempts":1,"charged":0,"freeze":900000}"#
     );
     assert_eq!(verify_charge(&swept), ChargeCheck::Recomputed);
 }
@@ -215,12 +217,13 @@ fn a_rule_priced_description_names_its_match() {
         discount_percent: None,
         charged: 181,
         freeze: 900_000,
+        upstream_attempts: 1,
     }
     .description()
     .expect("the fixture serializes");
     assert_eq!(
         description,
-        r#"{"v":4,"request":"req-golden-rule","channel":"deepseek","model":"ds-chat","priceVersion":7,"kind":"usage","usage":{"inputTokens":100,"outputTokens":30,"cachedTokens":40,"reasoningTokens":5,"serviceTier":"priority"},"lines":[["input",60,500000],["cache_read",40,100000],["output",25,250000],["reasoning",5,8000000],["request",1,100000000]],"matchedRule":{"serviceTier":"priority"},"charged":181,"freeze":900000}"#
+        r#"{"v":5,"request":"req-golden-rule","channel":"deepseek","model":"ds-chat","priceVersion":7,"kind":"usage","usage":{"inputTokens":100,"outputTokens":30,"cachedTokens":40,"reasoningTokens":5,"serviceTier":"priority"},"lines":[["input",60,500000],["cache_read",40,100000],["output",25,250000],["reasoning",5,8000000],["request",1,100000000]],"matchedRule":{"serviceTier":"priority"},"upstreamAttempts":1,"charged":181,"freeze":900000}"#
     );
     // The description fits the ledger's 512-character limit even itemized.
     assert!(description.len() <= 512, "{}", description.len());
@@ -573,6 +576,7 @@ async fn every_settlement_kind_proves_and_recomputes() {
             discount_percent: None,
             charged,
             freeze: *freeze,
+            upstream_attempts: 1,
         }
         .description()
         .expect("the settlement serializes");
@@ -616,6 +620,7 @@ async fn every_settlement_kind_proves_and_recomputes() {
             charged_minor: charged,
             freeze_minor: *freeze,
             upstream_cost_minor: upstream_cost,
+            upstream_attempts: 1,
         })
         .await
         .expect("the usage row is written");

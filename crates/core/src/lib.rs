@@ -45,7 +45,9 @@ pub use billing::{
     RuleMatch, Settlement, SettlementKind, SettlementRecord, UpstreamPrices, estimate_tokens,
     hold_description, input_upper_bound,
 };
-pub use channels::{CatalogModel, Channel, ModelPrice, SecretKey, Serving};
+pub use channels::{
+    CatalogModel, Channel, MAX_WEIGHT, ModelPrice, SecretKey, Serving, route_order,
+};
 pub use db::{Db, SCHEMA};
 pub use deposits::{CodeBatch, MAX_BATCH, Redemption};
 pub use device::{DeviceGrant, DevicePoll, DeviceRequest, POLL_INTERVAL, PollError};

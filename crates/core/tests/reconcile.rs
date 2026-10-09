@@ -106,6 +106,7 @@ async fn a_clean_world_reports_no_drift() {
         charged_minor: 2,
         freeze_minor: 100,
         upstream_cost_minor: None,
+        upstream_attempts: 1,
     })
     .await
     .unwrap();
@@ -151,6 +152,7 @@ async fn each_drift_class_is_reported() {
         charged_minor: 1,
         freeze_minor: 1,
         upstream_cost_minor: None,
+        upstream_attempts: 1,
     })
     .await
     .unwrap();
@@ -286,6 +288,7 @@ async fn a_row_for_a_ledgerless_tenant_is_an_orphan() {
         charged_minor: 1,
         freeze_minor: 1,
         upstream_cost_minor: None,
+        upstream_attempts: 1,
     })
     .await
     .unwrap();

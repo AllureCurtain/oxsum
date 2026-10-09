@@ -271,6 +271,10 @@ pub struct RequestEntry {
     /// percent the settlement description snapshots. `None` when none applied.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub discount_percent: Option<i64>,
+    /// How many upstream calls the turn made under the one hold (issue #168):
+    /// above 1 means it failed over between channels. Records written before
+    /// failover existed read back as 1 — the one attempt they made.
+    pub upstream_attempts: i64,
     /// The API key that paid the turn, as its id in uuid simple form: the hold's provenance
     /// actor, copied onto the settlement. `None` for a turn held without key attribution.
     pub key_id: Option<String>,
@@ -2373,6 +2377,7 @@ impl Wallet {
                 output_tokens: turn.record.output_tokens,
                 charged_minor: turn.record.charged,
                 discount_percent: turn.record.discount_percent,
+                upstream_attempts: turn.record.upstream_attempts,
                 key_id: turn.key_id,
             }))
     }

@@ -156,6 +156,7 @@ async fn a_settled_usage_row_completes_the_claim() {
         charged_minor: 12,
         freeze_minor: 100,
         upstream_cost_minor: None,
+        upstream_attempts: 1,
     })
     .await
     .unwrap();

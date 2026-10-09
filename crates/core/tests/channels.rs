@@ -8,12 +8,12 @@
 //! HTTP surface over this store is tested in crates/server/tests/admin.rs.
 //!
 //! Every test names its channel *and* its model with a random suffix: the database is shared between
-//! tests, and a model belongs to one channel, so a shared model name would make the tests mean
-//! different things depending on which one ran first.
+//! tests, and though a model may be served by several channels, a shared model name would make
+//! the tests mean different things depending on which one ran first.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use oxsum_core::{Db, Price, PriceBook, SecretKey, WalletError};
+use oxsum_core::{Db, MAX_WEIGHT, Price, PriceBook, SecretKey, WalletError};
 use sqlx::PgPool;
 use std::collections::BTreeMap;
 
@@ -89,17 +89,23 @@ async fn a_price_change_appends_a_version_and_leaves_the_old_one_readable() {
     .await
     .unwrap();
     let first = db
-        .append_price(&channel, &model, price(10, 20, 100))
+        .append_price(&channel, &model, price(10, 20, 100), 100)
         .await
         .unwrap();
     let second = db
-        .append_price(&channel, &model, price(30, 40, 200))
+        .append_price(&channel, &model, price(30, 40, 200), 100)
         .await
         .unwrap();
     assert_eq!((first, second), (1, 2), "versions count up from one");
 
     // What a request starts on is the newest version…
-    let serving = db.serving(&model, &key()).await.unwrap().unwrap();
+    let serving = db
+        .servings(&model, &key())
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
     assert_eq!(serving.channel, channel);
     assert_eq!(serving.protocol, "openai");
     assert_eq!(serving.version, second);
@@ -140,10 +146,10 @@ async fn a_price_change_appends_a_version_and_leaves_the_old_one_readable() {
     );
     assert!(db.channel_prices(&fresh("absent")).await.unwrap().is_none());
     assert!(
-        db.serving(&fresh("absent"), &key())
+        db.servings(&fresh("absent"), &key())
             .await
             .unwrap()
-            .is_none()
+            .is_empty()
     );
 }
 
@@ -165,22 +171,22 @@ async fn the_catalog_shows_the_current_price_and_no_credential() {
     )
     .await
     .unwrap();
-    db.append_price(&channel, &model, price(10, 20, 100))
+    db.append_price(&channel, &model, price(10, 20, 100), 100)
         .await
         .unwrap();
     let latest = db
-        .append_price(&channel, &model, price(30, 40, 200))
+        .append_price(&channel, &model, price(30, 40, 200), 100)
         .await
         .unwrap();
 
     // `priced` resolves one model to its newest version, with channel and
     // protocol and without opening the sealed credential.
-    let priced = db.priced(&model).await.unwrap().unwrap();
+    let priced = db.routes(&model).await.unwrap().into_iter().next().unwrap();
     assert_eq!(priced.channel, channel);
     assert_eq!(priced.protocol, "anthropic");
     assert_eq!(priced.version, latest);
     assert_eq!(priced.price, price(30, 40, 200));
-    assert!(db.priced(&fresh("absent")).await.unwrap().is_none());
+    assert!(db.routes(&fresh("absent")).await.unwrap().is_empty());
 
     // `catalog` is the same row for every model.
     let catalog = db.catalog().await.unwrap();
@@ -212,7 +218,7 @@ async fn the_price_table_refuses_to_be_rewritten() {
     .await
     .unwrap();
     let version = db
-        .append_price(&channel, &model, price(10, 20, 100))
+        .append_price(&channel, &model, price(10, 20, 100), 100)
         .await
         .unwrap();
 
@@ -235,12 +241,16 @@ async fn the_price_table_refuses_to_be_rewritten() {
     assert_eq!(versions[0].price(), price(10, 20, 100));
 }
 
+/// Failover (issue #168): a model may be priced on several channels, each
+/// route carrying its own version lineage and weight. `servings` answers every
+/// candidate; `route_order` leads with a weighted pick and follows in
+/// descending weight.
 #[tokio::test]
-async fn one_model_belongs_to_one_channel() {
+async fn one_model_may_be_served_by_several_channels() {
     let url = db_or_skip!();
     let db = db(&url).await;
-    let first = fresh("owner");
-    let second = fresh("rival");
+    let first = fresh("primary");
+    let second = fresh("backup");
     let model = fresh("shared");
     db.set_channel(&first, "https://a.example/v1", "sk-a", "openai", &key())
         .await
@@ -248,24 +258,45 @@ async fn one_model_belongs_to_one_channel() {
     db.set_channel(&second, "https://b.example/v1", "sk-b", "openai", &key())
         .await
         .unwrap();
-    db.append_price(&first, &model, price(1, 2, 3))
+    db.append_price(&first, &model, price(1, 2, 3), 100)
+        .await
+        .unwrap();
+    // A second channel pricing the same model is a route, not a conflict.
+    db.append_price(&second, &model, price(2, 4, 6), 10)
         .await
         .unwrap();
 
-    // A second channel pricing the same model would make the gateway choose between two upstreams
-    // for one request, which v1 does not do (docs/product.md).
-    let refused = db
-        .append_price(&second, &model, price(1, 2, 3))
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(refused, WalletError::Conflict(_)),
-        "got {refused:?}"
-    );
-    // The same channel may of course change its own price.
-    db.append_price(&first, &model, price(5, 6, 7))
+    // Every route answers with its own version and weight.
+    let servings = db.servings(&model, &key()).await.unwrap();
+    assert_eq!(servings.len(), 2);
+    let routes = db.routes(&model).await.unwrap();
+    assert_eq!(routes.len(), 2, "routes lists one row per channel");
+    assert_eq!(routes[0].weight, 100, "weight desc first");
+    assert_eq!(routes[1].weight, 10);
+
+    // The catalog lists one row per route.
+    let catalog = db.catalog().await.unwrap();
+    assert_eq!(catalog.iter().filter(|row| row.model == model).count(), 2);
+
+    // The weighted pick walks the name-sorted candidates — backup (10) before
+    // primary (100) — so a roll under 10/110 leads with the backup, anything
+    // at or above leads with the primary, and the loser follows.
+    let ordered = oxsum_core::route_order(servings.clone(), 0.5);
+    assert_eq!(ordered[0].channel, first);
+    assert_eq!(ordered[1].channel, second);
+    let ordered = oxsum_core::route_order(servings, 0.05);
+    assert_eq!(ordered[0].channel, second);
+    assert_eq!(ordered[1].channel, first);
+
+    // The same channel may of course change its own price — and its weight,
+    // which versions with it.
+    db.append_price(&first, &model, price(5, 6, 7), 500)
         .await
         .unwrap();
+    let routes = db.routes(&model).await.unwrap();
+    let primary = routes.iter().find(|row| row.channel == first).unwrap();
+    assert_eq!(primary.version, 2);
+    assert_eq!(primary.weight, 500);
 }
 
 #[tokio::test]
@@ -300,11 +331,17 @@ async fn a_credential_that_does_not_open_is_a_deployment_failure_not_a_caller_er
 
     // A record changed after it was written fails the same way, rather than relaying with a
     // plausible wrong credential: AES-GCM authenticates as well as it encrypts.
-    db.append_price(&channel, &model, price(1, 2, 3))
+    db.append_price(&channel, &model, price(1, 2, 3), 100)
         .await
         .unwrap();
     assert_eq!(
-        db.serving(&model, &key()).await.unwrap().unwrap().api_key,
+        db.servings(&model, &key())
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap()
+            .api_key,
         "sk-secret"
     );
     sqlx::query("UPDATE oxsum.channels SET api_key_sealed = 'AAAA' WHERE name = $1")
@@ -312,7 +349,7 @@ async fn a_credential_that_does_not_open_is_a_deployment_failure_not_a_caller_er
         .execute(db.pool())
         .await
         .unwrap();
-    let error = db.serving(&model, &key()).await.unwrap_err();
+    let error = db.servings(&model, &key()).await.unwrap_err();
     assert!(
         matches!(error, WalletError::Misconfigured(_)),
         "got {error:?}"
@@ -328,7 +365,13 @@ async fn a_credential_that_does_not_open_is_a_deployment_failure_not_a_caller_er
     )
     .await
     .unwrap();
-    let serving = db.serving(&model, &key()).await.unwrap().unwrap();
+    let serving = db
+        .servings(&model, &key())
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
     assert_eq!(serving.api_key, "sk-rotated");
     assert_eq!(serving.base_url, "https://other.example/v1");
 }
@@ -356,8 +399,15 @@ async fn the_environment_seeds_an_empty_database_and_leaves_a_populated_one_alon
     assert!(!again, "a database with channels is left alone");
 
     if seeded {
-        // It only wins when it was the first channel in this database.
-        let serving = db.serving("m", &key()).await.unwrap().unwrap();
+        // It only wins when it was the first channel in this database. Other
+        // tests may serve a bare "m" too — find this channel's route among them.
+        let serving = db
+            .servings("m", &key())
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|serving| serving.channel == channel)
+            .unwrap();
         assert_eq!(serving.channel, channel);
         assert_eq!(
             serving.api_key, "sk-seed",
@@ -427,28 +477,40 @@ async fn names_addresses_and_prices_that_could_not_be_used_are_refused() {
         "a protocol with no adapter is refused: the channel could never normalize usage"
     );
     assert!(
-        db.append_price(&fresh("missing"), "m", price(1, 2, 3))
+        db.append_price(&fresh("missing"), "m", price(1, 2, 3), 100)
             .await
             .is_err(),
         "an unknown channel is refused"
     );
     assert!(
-        db.append_price(&channel, "m", price(-1, 0, 1))
+        db.append_price(&channel, "m", price(-1, 0, 1), 100)
             .await
             .is_err(),
         "a negative price is refused"
     );
     assert!(
-        db.append_price(&channel, "m", price(1, 0, 0))
+        db.append_price(&channel, "m", price(1, 0, 0), 100)
             .await
             .is_err(),
         "a price with no output ceiling is refused"
     );
     assert!(
-        db.append_price(&channel, " ", price(1, 0, 1))
+        db.append_price(&channel, " ", price(1, 0, 1), 100)
             .await
             .is_err(),
         "an empty model is refused"
+    );
+    assert!(
+        db.append_price(&channel, "m", price(1, 0, 1), 0)
+            .await
+            .is_err(),
+        "a zero weight is refused"
+    );
+    assert!(
+        db.append_price(&channel, "m", price(1, 0, 1), MAX_WEIGHT + 1)
+            .await
+            .is_err(),
+        "a weight above the bound is refused"
     );
 
     // A channel may not exceed what the admin URL path can carry.

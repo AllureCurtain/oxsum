@@ -431,6 +431,10 @@ async fn sweep_one(
         discount_percent: None,
         charged: 0,
         freeze: hold.freeze_minor,
+        // The turn's own count is lost with the process that died; the watch
+        // row only knows the hold existed, so the honest count is the one
+        // attempt that began it (issue #168).
+        upstream_attempts: 1,
     }
     .description()?;
     match wallet.settle(&hold.hold_key, &description, 0, on).await {
@@ -484,6 +488,7 @@ async fn record_swept_usage(db: &Db, hold: &OpenHold) -> Result<(), WalletError>
         // The watch row carries no price, so a swept turn's upstream cost is
         // untracked rather than zero — `upstream_cost_minor` stays NULL.
         upstream_cost_minor: None,
+        upstream_attempts: 1,
     })
     .await
 }

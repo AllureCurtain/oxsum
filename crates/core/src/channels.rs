@@ -39,6 +39,11 @@ const NONCE_BYTES: usize = 12;
 /// "Channels and prices".
 const LAST4: usize = 4;
 
+/// The largest routing weight a `(channel, model)` version may carry — a
+/// relative preference, so the bound keeps one route from drowning every other
+/// in an unrepresentable ratio.
+pub const MAX_WEIGHT: i64 = 1000;
+
 /// Serialises the one-time seeding of a channel across processes, so two servers starting against an
 /// empty database do not both insert the bootstrap channel.
 const SEED_LOCK: i64 = i64::from_be_bytes(*b"oxsumchn");
@@ -166,6 +171,8 @@ pub struct CatalogModel {
     pub model: String,
     /// The current price version; a settlement names the version that priced it.
     pub version: i64,
+    /// The route's relative preference for leading a request (issue #168).
+    pub weight: i64,
     /// The whole price this version carries, flattened into the record.
     #[serde(flatten)]
     pub price: Price,
@@ -180,6 +187,10 @@ pub struct CatalogModel {
 pub struct ModelPrice {
     pub model: String,
     pub version: i64,
+    /// The route's relative preference for leading a request — versioned with
+    /// the price, so the settlement names the routing in force by the same
+    /// version that priced it (issue #168).
+    pub weight: i64,
     /// The whole price this version carries, flattened into the record: the
     /// base set plus the mode and any conditional rules.
     #[serde(flatten)]
@@ -208,6 +219,8 @@ pub struct Serving {
     pub api_key: String,
     /// The price version this request is billed at, which the settlement records.
     pub version: i64,
+    /// The route's relative preference for leading a request (issue #168).
+    pub weight: i64,
     pub price: Price,
 }
 
@@ -259,21 +272,29 @@ impl Db {
     /// Appends a price version for one of a channel's models, and returns the version it wrote.
     ///
     /// Versions are allocated per `(channel, model)` under the channel's own row lock, so two
-    /// concurrent price changes produce two versions rather than one collision.
+    /// concurrent price changes produce two versions rather than one collision. A model may be
+    /// priced on several channels (issue #168): each route's `weight` is the relative preference
+    /// for leading a request, and a weight change alone is a price append like any other, so the
+    /// settlement names the routing in force by the same version that priced it.
     ///
     /// # Errors
     ///
-    /// Refuses an unknown channel, an unusable model name or price, and a model another channel
-    /// already serves — in v1 one model belongs to exactly one channel (docs/product.md), so the
-    /// gateway never has to choose between two upstreams for one request.
+    /// Refuses an unknown channel, an unusable model name or price, and a weight outside
+    /// 1..=[`MAX_WEIGHT`].
     pub async fn append_price(
         &self,
         channel: &str,
         model: &str,
         price: Price,
+        weight: i64,
     ) -> Result<i64, WalletError> {
         let model = model_name(model)?;
         price.validate().map_err(WalletError::InvalidInput)?;
+        if !(1..=MAX_WEIGHT).contains(&weight) {
+            return Err(WalletError::InvalidInput(format!(
+                "weight must be 1 to {MAX_WEIGHT}"
+            )));
+        }
         let mut tx = self.pool().begin().await?;
         let channel_id: Uuid =
             sqlx::query_scalar("SELECT channel_id FROM oxsum.channels WHERE name = $1 FOR UPDATE")
@@ -283,27 +304,15 @@ impl Db {
                 .ok_or_else(|| {
                     WalletError::InvalidInput(format!("no channel named {channel:?}"))
                 })?;
-        let elsewhere: Option<String> = sqlx::query_scalar(
-            "SELECT c.name FROM oxsum.channel_prices p JOIN oxsum.channels c USING (channel_id) \
-             WHERE p.model = $1 AND p.channel_id <> $2 LIMIT 1",
-        )
-        .bind(model)
-        .bind(channel_id)
-        .fetch_optional(&mut *tx)
-        .await?;
-        if let Some(other) = elsewhere {
-            return Err(WalletError::Conflict(format!(
-                "{model:?} is already served by channel {other:?}: one model belongs to one channel"
-            )));
-        }
         let version: i32 = sqlx::query_scalar(
             "INSERT INTO oxsum.channel_prices \
                  (channel_id, model, version, input_price_per_million, output_price_per_million, \
                   max_output_tokens, cache_read_price_per_million, \
                   cache_write_5m_price_per_million, cache_write_1h_price_per_million, \
-                  reasoning_price_per_million, cost_per_request, mode, upstream_prices, rules) \
+                  reasoning_price_per_million, cost_per_request, mode, upstream_prices, rules, \
+                  weight) \
              SELECT $1, $2, COALESCE(max(version), 0) + 1, $3, $4, $5, $6, $7, $8, $9, $10, $11, \
-                    $12, $13 \
+                    $12, $13, $14 \
              FROM oxsum.channel_prices WHERE channel_id = $1 AND model = $2 \
              RETURNING version",
         )
@@ -334,6 +343,7 @@ impl Db {
                     .map_err(|error| WalletError::InvalidInput(format!("price rules: {error}")))?,
             )
         })
+        .bind(weight)
         .fetch_one(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -381,87 +391,98 @@ impl Db {
         Ok(Some(prices_of(self, channel_id, None).await?))
     }
 
-    /// What a request for this model relays to and is charged by, or `None` when nothing serves it.
+    /// What a request for this model may relay to and be charged by: every
+    /// channel's current version of it, with the credentials opened.
     ///
-    /// The newest version of the model wins, and the credential is opened here: the caller holds the
-    /// plaintext for the length of one request and the database never holds it at all.
+    /// A model may be served by several channels (issue #168): the gateway
+    /// walks the routes in [`route_order`], so this answers every candidate.
+    /// The caller holds the plaintext credentials for the length of one
+    /// request and the database never holds them at all.
     ///
     /// # Errors
     ///
-    /// [`WalletError::Misconfigured`] when the stored credential does not open under `key`, which is
+    /// [`WalletError::Misconfigured`] when a stored credential does not open under `key`, which is
     /// a deployment that lost the key it wrote with rather than a caller's mistake.
-    pub async fn serving(
+    pub async fn servings(
         &self,
         model: &str,
         key: &SecretKey,
-    ) -> Result<Option<Serving>, WalletError> {
-        let row = sqlx::query(
-            "SELECT c.name, c.base_url, c.api_key_sealed, c.protocol, p.version, \
+    ) -> Result<Vec<Serving>, WalletError> {
+        let rows = sqlx::query(
+            "SELECT c.name, c.base_url, c.api_key_sealed, c.protocol, p.version, p.weight, \
                     p.input_price_per_million, p.output_price_per_million, p.max_output_tokens, \
                     p.cache_read_price_per_million, p.cache_write_5m_price_per_million, \
                     p.cache_write_1h_price_per_million, p.reasoning_price_per_million, \
                     p.cost_per_request, p.mode, p.upstream_prices, p.rules \
-             FROM oxsum.channel_prices p JOIN oxsum.channels c USING (channel_id) \
-             WHERE p.model = $1 \
-             ORDER BY p.version DESC, c.name \
-             LIMIT 1",
+             FROM (SELECT p.*, row_number() OVER (PARTITION BY channel_id ORDER BY version DESC) \
+                       AS rank \
+                   FROM oxsum.channel_prices p WHERE p.model = $1) p \
+             JOIN oxsum.channels c USING (channel_id) \
+             WHERE rank = 1 \
+             ORDER BY c.name",
         )
         .bind(model)
-        .fetch_optional(self.pool())
+        .fetch_all(self.pool())
         .await?;
-        let Some(row) = row else {
-            return Ok(None);
-        };
-        let sealed: String = row.try_get("api_key_sealed")?;
-        Ok(Some(Serving {
-            channel: row.try_get("name")?,
-            base_url: row.try_get("base_url")?,
-            protocol: row.try_get("protocol")?,
-            api_key: key.open(&sealed)?,
-            version: i64::from(row.try_get::<i32, _>("version")?),
-            price: price_from_row(&row)?,
-        }))
+        let mut servings = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let sealed: String = row.try_get("api_key_sealed")?;
+            servings.push(Serving {
+                channel: row.try_get("name")?,
+                base_url: row.try_get("base_url")?,
+                protocol: row.try_get("protocol")?,
+                api_key: key.open(&sealed)?,
+                version: i64::from(row.try_get::<i32, _>("version")?),
+                weight: i64::from(row.try_get::<i32, _>("weight")?),
+                price: price_from_row(row)?,
+            });
+        }
+        Ok(servings)
     }
 
-    /// The price a request for this model is billed at — channel, protocol and version
-    /// included — without opening the credential.
+    /// The prices a request for this model may be billed at — channel, protocol,
+    /// version and routing weight per route — without opening any credential.
     ///
     /// The estimate endpoint and any caller pricing a shape read this; only the
-    /// gateway's relay needs the credential `serving` opens. `None` when nothing
-    /// serves the model.
-    pub async fn priced(&self, model: &str) -> Result<Option<CatalogModel>, WalletError> {
-        let row = sqlx::query(
-            "SELECT c.name, c.protocol, p.model, p.version, \
+    /// gateway's relay needs the credentials `servings` opens. Empty when
+    /// nothing serves the model.
+    pub async fn routes(&self, model: &str) -> Result<Vec<CatalogModel>, WalletError> {
+        let rows = sqlx::query(
+            "SELECT c.name, c.protocol, p.model, p.version, p.weight, \
                     p.input_price_per_million, p.output_price_per_million, p.max_output_tokens, \
                     p.cache_read_price_per_million, p.cache_write_5m_price_per_million, \
                     p.cache_write_1h_price_per_million, p.reasoning_price_per_million, \
                     p.cost_per_request, p.mode, p.upstream_prices, p.rules, p.created_at \
-             FROM oxsum.channel_prices p JOIN oxsum.channels c USING (channel_id) \
-             WHERE p.model = $1 \
-             ORDER BY p.version DESC, c.name \
-             LIMIT 1",
+             FROM (SELECT p.*, row_number() OVER (PARTITION BY channel_id ORDER BY version DESC) \
+                       AS rank \
+                   FROM oxsum.channel_prices p WHERE p.model = $1) p \
+             JOIN oxsum.channels c USING (channel_id) \
+             WHERE rank = 1 \
+             ORDER BY p.weight DESC, c.name",
         )
         .bind(model)
-        .fetch_optional(self.pool())
+        .fetch_all(self.pool())
         .await?;
-        row.as_ref().map(catalog_from_row).transpose()
+        rows.iter().map(catalog_from_row).collect()
     }
 
-    /// Every model's current price version across all channels — the public catalog
-    /// `/api/v1/pricing` answers. Credentials never leave this layer: the query does
-    /// not select them.
+    /// Every model's current price version per route across all channels — the
+    /// public catalog `/api/v1/pricing` answers. A model served by several
+    /// channels lists one row per channel (issue #168). Credentials never
+    /// leave this layer: the query does not select them.
     pub async fn catalog(&self) -> Result<Vec<CatalogModel>, WalletError> {
         let rows = sqlx::query(
-            "SELECT c.name, c.protocol, p.model, p.version, \
+            "SELECT c.name, c.protocol, p.model, p.version, p.weight, \
                     p.input_price_per_million, p.output_price_per_million, p.max_output_tokens, \
                     p.cache_read_price_per_million, p.cache_write_5m_price_per_million, \
                     p.cache_write_1h_price_per_million, p.reasoning_price_per_million, \
                     p.cost_per_request, p.mode, p.upstream_prices, p.rules, p.created_at \
-             FROM (SELECT p.*, row_number() OVER (PARTITION BY model ORDER BY version DESC) AS rank \
+             FROM (SELECT p.*, row_number() OVER (PARTITION BY channel_id, model \
+                       ORDER BY version DESC) AS rank \
                    FROM oxsum.channel_prices p) p \
              JOIN oxsum.channels c USING (channel_id) \
              WHERE rank = 1 \
-             ORDER BY p.model, c.name",
+             ORDER BY p.model, p.weight DESC, c.name",
         )
         .fetch_all(self.pool())
         .await?;
@@ -598,6 +619,36 @@ impl Db {
     }
 }
 
+/// The order a request's candidate routes are tried in (issue #168): the first
+/// attempt is a weighted pick — `roll` scaled into the summed weights walks
+/// the candidates in name order — and the remainder follow in descending
+/// weight, so a failed attempt falls over to the next-most-preferred route.
+/// `roll` is a parameter rather than drawn here so a test can walk the whole
+/// range; the gateway passes a uniform `0.0 <= roll < 1.0`.
+#[must_use]
+pub fn route_order(servings: Vec<Serving>, roll: f64) -> Vec<Serving> {
+    let mut ordered = servings;
+    ordered.sort_by(|a, b| a.channel.cmp(&b.channel));
+    if ordered.len() > 1 {
+        let total: i64 = ordered.iter().map(|s| s.weight).sum();
+        let mut mark = (roll.clamp(0.0, 1.0 - f64::EPSILON) * total as f64) as i64;
+        let leader = ordered
+            .iter()
+            .position(|serving| {
+                mark -= serving.weight;
+                mark < 0
+            })
+            .unwrap_or(0);
+        ordered.swap(0, leader);
+        ordered[1..].sort_by(|a, b| {
+            b.weight
+                .cmp(&a.weight)
+                .then_with(|| a.channel.cmp(&b.channel))
+        });
+    }
+    ordered
+}
+
 /// The current version of every model of one channel.
 async fn current_prices(db: &Db, channel_id: Uuid) -> Result<Vec<ModelPrice>, WalletError> {
     prices_of(db, channel_id, Some(1)).await
@@ -610,7 +661,7 @@ async fn prices_of(
     latest: Option<i32>,
 ) -> Result<Vec<ModelPrice>, WalletError> {
     let rows = sqlx::query(
-        "SELECT model, version, input_price_per_million, output_price_per_million, \
+        "SELECT model, version, weight, input_price_per_million, output_price_per_million, \
                 max_output_tokens, cache_read_price_per_million, \
                 cache_write_5m_price_per_million, cache_write_1h_price_per_million, \
                 reasoning_price_per_million, cost_per_request, mode, upstream_prices, rules, \
@@ -629,6 +680,7 @@ async fn prices_of(
             Ok(ModelPrice {
                 model: row.try_get("model")?,
                 version: i64::from(row.try_get::<i32, _>("version")?),
+                weight: i64::from(row.try_get::<i32, _>("weight")?),
                 price: price_from_row(row)?,
                 created_at: row.try_get("created_at")?,
             })
@@ -679,6 +731,7 @@ fn catalog_from_row(row: &sqlx::postgres::PgRow) -> Result<CatalogModel, WalletE
         protocol: row.try_get("protocol")?,
         model: row.try_get("model")?,
         version: i64::from(row.try_get::<i32, _>("version")?),
+        weight: i64::from(row.try_get::<i32, _>("weight")?),
         price: price_from_row(row)?,
         created_at: row.try_get("created_at")?,
     })
