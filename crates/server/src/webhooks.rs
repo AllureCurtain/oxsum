@@ -14,7 +14,8 @@ use time::OffsetDateTime;
 
 use crate::metrics::Metrics;
 
-/// How often the worker looks for due deliveries.
+/// How far apart the `deliver-webhooks` job's passes run — mirrored in
+/// `oxsum_core::jobs::next_run`, which schedules each next occurrence.
 pub const DELIVERY_INTERVAL: Duration = Duration::from_secs(30);
 
 /// The longest a delivery POST may take before it counts as a failed attempt.
@@ -110,21 +111,4 @@ async fn deliver_one(
             attempt,
         },
     }
-}
-
-/// The background task: the queue is durable, so the interval only bounds how
-/// late a delivery is, never whether it happens. Retries come from each row's
-/// own `next_attempt_at`, not the interval.
-pub fn spawn_worker(
-    db: Db,
-    http: reqwest::Client,
-    secret: SecretKey,
-    metrics: Metrics,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        loop {
-            deliver_due(&db, &http, &secret, &metrics, None).await;
-            tokio::time::sleep(DELIVERY_INTERVAL).await;
-        }
-    })
 }

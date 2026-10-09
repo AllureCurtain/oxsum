@@ -8,6 +8,7 @@ mod bills;
 mod config;
 mod error;
 mod gateway;
+pub mod jobs;
 pub mod mail;
 mod metrics;
 pub mod oauth;

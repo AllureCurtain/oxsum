@@ -57,6 +57,8 @@ const OPEN_HOLDS: &str = "oxsum_open_holds";
 const DEAD_HOLDS: &str = "oxsum_dead_holds";
 /// Webhook deliveries attempted, by `outcome` (`delivered`/`retried`/`failed`).
 const WEBHOOK_DELIVERIES: &str = "oxsum_webhook_deliveries_total";
+/// Periodic job runs, by `kind` and `result` (`done`/`failed`/`dead`).
+const JOBS_RUNS: &str = "oxsum_jobs_runs_total";
 /// The shared connection pool, by `state` (`open`/`idle`) — refreshed on each scrape.
 const POOL_CONNECTIONS: &str = "oxsum_db_pool_connections";
 
@@ -137,6 +139,15 @@ impl Metrics {
         self.count(HOLDS_DEAD_LETTERED, holds, &[]);
     }
 
+    /// One periodic job run's outcome — the jobs worker's instrumentation call.
+    pub fn job_run(&self, kind: &str, result: &'static str) {
+        self.count(
+            JOBS_RUNS,
+            1,
+            &[("kind", kind.to_owned()), ("result", result.to_owned())],
+        );
+    }
+
     /// The HELP text of every series, so a scrape explains itself.
     fn describe(&self) {
         const DESCRIPTIONS: &[(&str, &str)] = &[
@@ -183,6 +194,7 @@ impl Metrics {
                 WEBHOOK_DELIVERIES,
                 "Webhook deliveries attempted, by outcome.",
             ),
+            (JOBS_RUNS, "Periodic job runs, by kind and result."),
         ];
         for (name, help) in DESCRIPTIONS {
             self.recorder
