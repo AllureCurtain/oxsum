@@ -21,6 +21,7 @@ mod heads;
 mod holds;
 mod idempotency;
 mod invitations;
+mod jobs;
 mod keys;
 mod oauth;
 mod orgs;
@@ -62,6 +63,10 @@ pub use holds::{
 };
 pub use idempotency::{Claim, fingerprint};
 pub use invitations::CreatedInvitation;
+pub use jobs::{
+    CLAIM_LEASE_SECS, DEAD_RESCHEDULE, Job, JobOutcome, MAX_ATTEMPTS, Retention, RetentionReport,
+    StatementReport, kinds, next_run,
+};
 pub use keys::{ActingKey, ApiKey, BudgetDuration, CreatedApiKey, KeyConstraints};
 pub use oauth::OAuthIdentity;
 pub use orgs::{

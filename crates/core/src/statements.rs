@@ -819,8 +819,8 @@ impl Db {
     /// # Errors
     ///
     /// Storage failures surface as [`WalletError`].
-    pub async fn flip_overdue(&self, today: Date) -> Result<(), WalletError> {
-        sqlx::query(
+    pub async fn flip_overdue(&self, today: Date) -> Result<i64, WalletError> {
+        let changed = sqlx::query(
             "UPDATE oxsum.statements SET payment_status = 'overdue', \
                  overdue_at = COALESCE(overdue_at, now()), updated_at = now() \
              WHERE status = 'finalized' AND payment_status = 'pending' \
@@ -829,7 +829,7 @@ impl Db {
         .bind(today)
         .execute(self.pool())
         .await?;
-        Ok(())
+        Ok(changed.rows_affected() as i64)
     }
 }
 
