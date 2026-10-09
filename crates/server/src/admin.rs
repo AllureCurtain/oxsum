@@ -56,6 +56,14 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/discounts", get(discounts).post(create_discount))
         .route("/discounts/{discount_id}", delete(end_discount))
         .route("/audit", get(audit))
+        .route(
+            "/service-credentials",
+            get(service_credentials).post(mint_service_credential),
+        )
+        .route(
+            "/service-credentials/{credential_id}",
+            delete(revoke_service_credential),
+        )
         .route("/closings", get(closings).post(close_month))
         .route("/statements", get(statements).post(generate_statements))
         .route("/statements/{statement_id}", get(statement))
@@ -396,6 +404,65 @@ async fn audit(
         entries: page.rows,
         next_cursor: page.next_cursor.map(encode_organization_cursor),
     })
+}
+
+/// Every service credential, newest first — metadata only; the secret exists
+/// once, at mint.
+async fn service_credentials(
+    State(state): State<AppState>,
+) -> ApiResult<Vec<oxsum_core::ServiceCredential>> {
+    ok(state.db.list_service_credentials().await?)
+}
+
+/// The body of `POST …/service-credentials`: which service holds the
+/// credential — the name settlement descriptions record as the reporter.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ServiceCredentialReq {
+    name: Option<String>,
+}
+
+/// Mints a service credential for the metering surface, and answers its secret
+/// the one time it exists readable.
+async fn mint_service_credential(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<ServiceCredentialReq>,
+) -> ApiResult<oxsum_core::CreatedServiceCredential> {
+    let created = state.db.create_service_credential(request.name).await?;
+    record(
+        &state,
+        audit_action::SERVICE_CREDENTIAL_MINT,
+        Some(created.credential.id.to_string()),
+        serde_json::json!({
+            "name": created.credential.name,
+            "prefix": created.credential.prefix,
+        }),
+        None,
+    )
+    .await?;
+    ok(created)
+}
+
+/// Revokes a service credential: it authenticates nothing from here on; what it
+/// already wrote stands.
+async fn revoke_service_credential(
+    State(state): State<AppState>,
+    Path(credential_id): Path<Uuid>,
+) -> ApiResult<oxsum_core::ServiceCredential> {
+    let credential = state
+        .db
+        .revoke_service_credential(credential_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    record(
+        &state,
+        audit_action::SERVICE_CREDENTIAL_REVOKE,
+        Some(credential_id.to_string()),
+        serde_json::json!({ "name": credential.name }),
+        None,
+    )
+    .await?;
+    ok(credential)
 }
 
 /// The body of `POST …/adjustments`: a signed amount, the reason it moved, and the
