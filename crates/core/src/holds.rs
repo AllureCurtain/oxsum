@@ -69,6 +69,9 @@ impl Db {
     /// itself (the sweeper deletes it when the hold is not there), while a hold without a row
     /// would be invisible to the sweeper if this process died.
     ///
+    /// Idempotent on `hold_key`: the metering surface replays a hold under the same
+    /// key (issue #172), and a replayed watch write is the same row, not a conflict.
+    ///
     /// # Errors
     ///
     /// Storage failures surface as [`WalletError`]; the gateway refuses the request rather
@@ -78,7 +81,8 @@ impl Db {
             "INSERT INTO oxsum.open_holds \
              (hold_key, tenant_id, request_id, model, channel, price_version, \
               input_price, output_price, freeze_minor, key_id, end_user, service_tier, tags) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
+             ON CONFLICT (hold_key) DO NOTHING",
         )
         .bind(&hold.hold_key)
         .bind(&hold.tenant_id)
@@ -124,6 +128,26 @@ impl Db {
         .fetch_one(self.pool())
         .await
         .map_err(Into::into)
+    }
+
+    /// The watch row one hold carries, when it is still watched — how a metering
+    /// settle reads the context the hold froze under: the pinned version, the
+    /// declared bound, the event's identifier (issue #172).
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn open_hold(&self, hold_key: &str) -> Result<Option<OpenHold>, WalletError> {
+        let row = sqlx::query(
+            "SELECT hold_key, tenant_id, request_id, model, channel, \
+             price_version, input_price, output_price, freeze_minor, key_id, \
+             end_user, service_tier, tags, sweep_attempts, last_error, dead_at \
+             FROM oxsum.open_holds WHERE hold_key = $1",
+        )
+        .bind(hold_key)
+        .fetch_optional(self.pool())
+        .await?;
+        row.as_ref().map(open_hold_from_row).transpose()
     }
 
     /// Stops watching a hold. Idempotent: deleting a row that is already gone is not an error,

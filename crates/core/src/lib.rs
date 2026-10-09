@@ -23,12 +23,14 @@ mod idempotency;
 mod invitations;
 mod jobs;
 mod keys;
+mod metering;
 mod oauth;
 mod orgs;
 mod proof;
 mod ratelimit;
 mod reconcile;
 mod seed;
+mod service_credentials;
 mod sessions;
 mod statements;
 mod tenants;
@@ -41,12 +43,12 @@ mod webhooks;
 pub use adapters::{ANTHROPIC, OPENAI, UsageAdapter, adapter_for, adapter_for_endpoint};
 pub use audit::{AuditEntry, AuditPage, action as audit_action};
 pub use billing::{
-    BillLine, BillingMode, ItemizedCharge, MeteredUsage, Price, PriceBook, PriceRule, PriceSet,
-    RuleMatch, Settlement, SettlementKind, SettlementRecord, UpstreamPrices, estimate_tokens,
-    hold_description, input_upper_bound,
+    BillLine, BillingMode, ItemizedCharge, MeteredSettlement, MeteredUsage, Price, PriceBook,
+    PriceRule, PriceSet, RuleMatch, Settlement, SettlementKind, SettlementRecord, UpstreamPrices,
+    estimate_tokens, hold_description, input_upper_bound,
 };
 pub use channels::{
-    CatalogModel, Channel, MAX_WEIGHT, ModelPrice, SecretKey, Serving, route_order,
+    CatalogModel, Channel, MAX_WEIGHT, ModelPrice, SecretKey, Serving, event_price, route_order,
 };
 pub use db::{Db, SCHEMA};
 pub use deposits::{CodeBatch, MAX_BATCH, Redemption};
@@ -70,6 +72,7 @@ pub use jobs::{
     StatementReport, kinds, next_run,
 };
 pub use keys::{ActingKey, ApiKey, BudgetDuration, CreatedApiKey, KeyConstraints};
+pub use metering::{MeteredEvent, MeteredHold, MeteredOutcome};
 pub use oauth::OAuthIdentity;
 pub use orgs::{
     AdminOrganization, Kind, Member, MembershipActor, Organization, Ownership, Role,
@@ -79,6 +82,7 @@ pub use proof::{ChargeCheck, ProofBundle, verify_bundle, verify_charge};
 pub use ratelimit::{RateAllowance, RateLimited, RateLimiter, SlidingWindow};
 pub use reconcile::{DriftClass, DriftKind, DriftSample, Reconciliation};
 pub use seed::{DEMO_EMAIL, DEMO_ORGANIZATION, DEMO_PASSWORD, MEMBER_EMAIL, SeedReport};
+pub use service_credentials::{ActingService, CreatedServiceCredential, ServiceCredential};
 pub use sessions::{
     CreatedSession, KeyPrincipal, KeyScope, Principal, SESSION_COOKIE, SESSION_LIFETIME, Session,
     SessionPrincipal,

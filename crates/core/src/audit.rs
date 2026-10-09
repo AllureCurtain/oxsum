@@ -58,6 +58,8 @@ pub mod action {
     pub const STATEMENT_FINALIZE: &str = "statement.finalize";
     pub const STATEMENT_PAYMENT: &str = "statement.payment";
     pub const STATEMENT_SUSPEND: &str = "statement.suspend";
+    pub const SERVICE_CREDENTIAL_MINT: &str = "service_credential.mint";
+    pub const SERVICE_CREDENTIAL_REVOKE: &str = "service_credential.revoke";
 
     /// Every action the surface writes — the `action` filter's vocabulary.
     pub const ALL: &[&str] = &[
@@ -76,6 +78,8 @@ pub mod action {
         STATEMENT_FINALIZE,
         STATEMENT_PAYMENT,
         STATEMENT_SUSPEND,
+        SERVICE_CREDENTIAL_MINT,
+        SERVICE_CREDENTIAL_REVOKE,
     ];
 }
 
