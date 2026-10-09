@@ -130,7 +130,7 @@ v1 has no embeddings, images, audio or Responses API. Request content is limited
 ### Channels and prices (shipped)
 
 - Channels are configured by the platform admin: name, upstream base_url, upstream API key, served models, and the upstream protocol the channel speaks — `openai` or `anthropic`; the protocol selects the adapter that normalizes its usage reports and the `/v1` surface its models answer on, and a name with no adapter is refused at write time.
-- In v1 one model maps to exactly one channel; no load balancing, no failover. The gateway never retries upstream automatically, because a retry might charge upstream twice.
+- One model may be served by several channels. Each route carries a `weight` — the relative preference for leading a request — versioned together with the price it was written beside. The first attempt is a weighted pick; a refusal that arrived before any answer bytes (upstream unreachable, 429, 5xx) rotates the turn to the next route under the same hold, and a lone or last route's 429 naming a short `Retry-After` is waited out once. A failure once bytes are flowing is never retried — the client already holds a partial answer, and a replay could charge upstream twice. The freeze is sized for the dearest candidate, so a bill never exceeds what was reserved whichever route answered, and the settlement names the channel that actually served the turn plus how many upstream calls it took (`upstreamAttempts`).
 - Upstream API keys are stored encrypted; the admin API and the channels page show only the last 4 characters.
 - Each model's price is a full price set, not just two rates: the input and output prices (minor units per million tokens) and the model's max output, plus any of the priced dimensions — a cached-input rate, cache-write rates for the 5-minute and 1-hour provider tiers, a reasoning-token rate, and a flat per-request fee. A dimension with no rate folds into its side's base line: cached input bills at the input price, reasoning at the output price. The set may also carry the upstream's own prices for the same usage — the data the margin view reads; an organization's bill never shows it. Every price declares a billing `mode` (`chat` today; the field reserves embeddings, rerank and the rest).
 - A price can also carry conditional rules: a `match` on the request's `serviceTier` or an input-token window picks a different whole set — a match swaps the set, never a single field. When several rules could apply the most specific one wins (the count of present conditions), and two rules that could match the same request at the same specificity are refused when the price is written — an ambiguous price book never reaches a bill.
@@ -262,7 +262,6 @@ Every mutating call on the admin surface is also audited (issue #160): one appen
 - Payments: a payment gateway, and any top-up path other than the organization's own credential. Self-service top-up itself is shipped and is *not* on this list (see "Where credit comes from").
 - Email: invitation emails — an owner or admin still passes the link along themselves (verification and password recovery shipped with the mailer, issue #150)
 - Multi-currency
-- Multi-channel load balancing and failover
 - Anything beyond text chat
 
 ## Planned, in one place

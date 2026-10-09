@@ -136,10 +136,11 @@ curl -X POST http://127.0.0.1:3000/api/v1/admin/channels/upstream/prices \
 
 The gateway's own tests need no provider and no network: `crates/server/tests/gateway.rs` starts a
 scripted upstream on a free port inside the test process and selects its answer by model name, so a
-refusal, a 200 that is not JSON and a stream that never finishes are all ordinary cases. They still
-need `DATABASE_URL`, because every turn freezes and settles real credit. A model belongs to one
-channel, so each test world gives its channel and models a random suffix: the shared database would
-otherwise make two worlds price the same model, which is the conflict rule working.
+refusal, a 200 that is not JSON and a stream that never finishes are all ordinary cases; the
+failover tests stand a second upstream beside the first and script the attempts each took. They still
+need `DATABASE_URL`, because every turn freezes and settles real credit. Each test world gives its
+channel and models a random suffix: a shared model name would otherwise make two worlds' routes
+candidates for the same request, which is failover working.
 
 There is no shared API token any more: every request carries an organization's API key, created
 by registration or by `POST /api/v1/org/keys`. The plaintext secret is returned exactly once.

@@ -1117,3 +1117,24 @@ The judgment calls:
 - **Retention is batched and windowed.** `OXSUM_RETENTION_PROVIDER_RAW_DAYS` (7) nulls `usage_details.provider_raw` — the privacy window, since the raw payload may carry prompt fragments — while the normalized columns stay forever; `OXSUM_RETENTION_DELIVERIES_DAYS` (30) drops terminal deliveries; `OXSUM_RETENTION_JOBS_DAYS` (90) drops finished job rows; expired `idempotency_records` go with their own `expires_at`. Each rule takes at most 10k rows a pass, so the daily cadence drains a backlog without one giant transaction.
 
 Pinned by `crates/core/tests/jobs.rs` (enqueue idempotency, the lease's claim-once and reclaim-after-lapse, claim-stamp fencing, the backoff-to-dead path, `jobs_dead` drift, the retention rules) and `crates/server/tests/jobs.rs` (a stale hold swept through `run_due` with the next run chained, a kind retrying to dead and recovering on the cooldown, an unknown kind failing its run without killing the worker, a retention pass's chain).
+
+
+## 2026-10-12 — One model to many channels: weights lead, failover follows (roadmap P8-2, issue #168)
+
+P8-2 retires the "one model, one channel" rule from the channel-and-price decision. A model may now be priced on several channels, and a request that a route refuses before answering rotates to the next one under the same hold.
+
+The judgment calls:
+
+- **Weight versions with the price.** `channel_prices.weight` (1..=1000, default 100, migration 0026) is part of the versioned row — a weight change alone is a new price version, so the settlement's `priceVersion` pins the routing in force exactly as it pins the rates. The old write-time `CONFLICT` on a second channel pricing a served model is gone; the conflict was the ambiguity ban, and weights are the answer to the ambiguity.
+- **The first attempt is a weighted pick, the rest are deterministic.** `route_order` draws the leader proportionally over the name-sorted candidates — the rollout of `weight` is a real preference, not decoration — and the followers run in descending weight, so a failed attempt falls over to the next-most-preferred route. `Db::servings` answers every route with its credential opened; only the gateway's relay sees them — `routes`/`catalog` expose the same rows without one.
+- **The freeze is the whole candidate set's bound.** The hold reserves the *dearest* route's upper bound and forwards `max_tokens` clamped at the *tightest* ceiling, so whichever route ends up answering, the turn's own freeze covers it — "settle never exceeds freeze" is preserved under failover, not weakened. `estimate-price` answers the same dearest-route number, so the estimate still bounds the settle.
+- **Only a failure before the first byte may rotate.** Unreachable, 429 and 5xx are retriable — none of them is an answer — and each rotates to the next route. A refusal the request caused (4xx) fails fast, since the same refusal would come back from everywhere. A failure once bytes are flowing is never retried: the client already holds a partial answer, and replaying upstream could bill the platform twice. When the *last* route's 429 names a `Retry-After` inside the bound (3s), the wait is honored once — failover first, a bounded wait last.
+- **The bill names who answered.** The turn reroutes before it settles, so the settlement's `channel` and `priceVersion` are the answering route's own — and on an all-refusals turn, the last route tried. The description is v5: `upstreamAttempts` counts the upstream calls the one hold made, joined into the usage row beside it, and into the billing-record and anomaly surfaces. It is metadata, not a price input — the verifier checks it is a positive integer and recomputes v4's arithmetic unchanged; v3/v4 records parse with an implicit 1.
+- **A shared model lists once.** `/v1/models` answers one entry per model — `owned_by` the route with the greatest weight, the one most likely to lead — while the admin channel card and the pricing catalog show every route.
+
+Rejected:
+
+- **Re-picking the price at failover time**: the hold is already taken; a different route's price could exceed it. Bounding the freeze across the candidate set is what keeps the promise while letting prices differ per route.
+- **Retrying mid-stream**: a partial answer plus a fresh response is a corrupted reply to the client and a potential double charge upstream. Bytes started means the turn is committed to that channel.
+- **Honoring `Retry-After` without a bound**: upstream would hold the caller's request open on its own schedule; 3 seconds is long enough for a rate-limit window to free and short enough to stay a failover feature, not a queue.
+- **Health tracking or a channel circuit breaker**: worth having, and deliberately not in this PR — attempts are recorded (`upstream_attempts` is the evidence such a feature would read), but routing stays stateless per request.
