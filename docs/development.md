@@ -252,6 +252,114 @@ Every pull request builds this image and smoke-tests it over HTTP against a real
 PostgreSQL, see "Continuous integration" below: the image is the only release
 artifact, and nothing else in the gates runs it.
 
+## Deployment runbook
+
+The deployment is one binary plus one PostgreSQL database; every operational
+procedure below is a property of those two pieces.
+
+### Backup
+
+Everything that matters lives in the database: the shared `oxsum` schema and one
+`ledger_<tenant_id>` schema per organization. A dump of the whole database is the
+backup — do not filter to the `oxsum` schema, or every organization's ledger
+comes back empty:
+
+```bash
+pg_dump --format=custom --file=oxsum.dump "$DATABASE_URL"
+```
+
+The ledgers are append-only, so a dump is a consistent snapshot by construction:
+nothing it captured is ever rewritten underneath the backup. Take the dump
+against a quiet hour if the database is busy — `pg_dump` holds its snapshot
+isolation for the run — and keep dumps long enough to cover the audit window the
+deployment answers for, because a restored ledger is the only way to re-prove an
+old bill after data is gone.
+
+Continuous archiving (WAL shipping / PITR) is the production-grade alternative
+and works unchanged — the database is ordinary PostgreSQL — but it is the
+operator's tooling to run; oxsum ships no backup machinery of its own.
+
+One non-database item survives a dump: nothing. Signing seeds, the credential
+seal and the admin token are environment configuration, not data — losing the
+dump loses the books; losing the environment loses only what "Key rotation"
+below spells out.
+
+### Restore
+
+Restore into an empty database of the same major PostgreSQL version, then start
+the server against it:
+
+```bash
+createdb oxsum-restored
+pg_restore --dbname=oxsum-restored --no-owner --no-privileges oxsum.dump
+# point DATABASE_URL at oxsum-restored and start the binary
+```
+
+`pg_restore` replays every schema — `oxsum`, every `ledger_*`, the migration
+ledger `oxsum._migrations` — so the server boots onto the restored state without
+a migrate step. Startup migrations are idempotent: a dump of an older release
+restores, then the newer binary's `Db::migrate` applies only what is missing.
+
+After a restore, in-flight state is what the dump held: open holds older than
+`OXSUM_HOLD_TIMEOUT` sweep to zero on the next pass, which is the designed answer
+to a gateway that went away mid-turn — the client's reservation releases, nothing
+is charged for a turn nobody can settle.
+
+### Migration ordering
+
+There is one ordering rule: **the newest binary migrates**. oxsum's own tables
+migrate inside `Db::migrate` at startup — `crates/core/migrations/` applied in
+file order, each file in one transaction with its `oxsum._migrations` row, under
+a database-wide advisory lock so two booting processes cannot race. Ledger
+schemas are lazier: doubleentry's `migrate` creates `ledger_<tenant_id>` the
+first time a wallet is opened — including at restore time, when a wallet opens
+on a schema that is already there and the check is a no-op.
+
+For an upgrade, that means: stop the old binary (or let the advisory lock queue
+the new boot behind a draining one), start the new binary, watch the log for the
+migration lines. A migration that fails refuses the boot and rolls its
+transaction back, so a bad migration file cannot leave a half-applied schema —
+but it does leave the service down; test upgrades on a restored dump first.
+
+### Upgrade and rollback
+
+Upgrade is pull the image, stop, start: migrations run, the pool opens, the
+server serves. The contract `openapi.yaml` versions additively, so a client that
+worked against release N works against N+1.
+
+Rollback is `docker run` the previous image — with one honest limit: migrations
+are forward-only. A release that added a table or relaxed a constraint leaves a
+database the older binary tolerates (the schema is a superset of what it
+expects), but a release that changed *behavior* — settlement semantics, a
+constraint tightened the other way — may not round-trip. The safe procedure:
+
+1. Dump the database before the upgrade (`pg_dump` above).
+2. Upgrade; verify `/healthz`, then a real turn.
+3. Roll back by restoring the pre-upgrade dump only when the release's changes
+   made the schema or the books incompatible — a plain revert keeps the data a
+   rollback would otherwise strand behind a constraint it predates.
+
+The CI gate builds and smoke-tests the image on every pull request, so a release
+that cannot boot never reaches the registry; what it cannot smoke-test is your
+traffic — the dump before the upgrade is the answer to that.
+
+### Key rotation
+
+| Secret | Rotates by | What it costs |
+| --- | --- | --- |
+| `OXSUM_ADMIN_TOKEN` | Restart with the new value | The running admin sessions — the token is the credential, so the old one simply stops working |
+| `OXSUM_HEAD_SIGNING_KEY` | Restart with the new seed | Old head signatures stop verifying under the new key. The verifying key is published at `GET /api/v1/log/key`, so verifiers fetch the new one — but a head a client archived under the old key is that client's trust anchor; publish rotations so archives know to re-anchor |
+| `OXSUM_SECRET_KEY` | **Not a restart** | It seals `oxsum.channels`' upstream credentials and `oxsum.webhook_endpoints`' signing secrets; a new value cannot open them. Rotate by re-entering every channel's upstream key and recreating the webhook endpoints, *then* restart with the new value — or lose the ability to read what was sealed |
+| Database credentials | PostgreSQL's own role/password machinery | Update `DATABASE_URL` and restart |
+| Organization API keys | `DELETE`/`POST /api/v1/org/keys` | Per-organization, self-service, no restart |
+| Service credentials | `DELETE`/`POST /api/v1/admin/service-credentials` | Mint a new one, deploy it to the service, revoke the old one — metered calls fail `UNAUTHORIZED` between revoke and redeploy |
+
+Two of these are the expensive ones by design: `OXSUM_SECRET_KEY` is the root of
+what the database holds sealed, and the head-signing seed is the root of what
+verifiers trust — both are the kind of secret a deployment protects in a vault,
+never rotates casually, and never loses without a plan for the re-entry the
+table above names.
+
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on every push to `main` and every pull request that
