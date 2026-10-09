@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.43.0
+  version: 0.44.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -238,6 +238,13 @@ info:
     `FOR UPDATE SKIP LOCKED`, retried on a backoff, and landed `dead` past
     the attempt budget. Dead runs surface as the reconciliation report's new
     `jobs_dead` class.
+    0.44.0 adds failover (issue #168): a model may be priced on several
+    channels, each route carrying a `weight` — the relative preference for
+    leading a request. A retriable upstream failure (unreachable, 429, 5xx)
+    before any answer bytes rotates the turn to the next weighted candidate
+    under the same hold, and the settlement records how many upstream calls
+    were made — `upstreamAttempts` on the billing record and the settlement
+    description's v5. The catalog lists one row per route.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -1528,13 +1535,16 @@ paths:
     get:
       summary: The public price catalog
       description: |
-        Every model the operator sells, its channel, protocol and current price version —
-        the same rows `POST /v1/chat/completions` is priced by, without the channel's
-        credential. A caller that wants a version's full rule set reads the flattened
-        price on each row; estimate-price answers what one shape costs.
+        Every route the operator sells — a model may be served by several
+        channels, and each `(model, channel)` pair lists its own row with the
+        current price version and the route's `weight`, the relative preference
+        for leading a request. These are the same rows `POST
+        /v1/chat/completions` is priced by, without the channel's credential. A
+        caller that wants a version's full rule set reads the flattened price on
+        each row; estimate-price answers what one shape costs.
       responses:
         "200":
-          description: The catalog, one row per model
+          description: The catalog, one row per route
           content:
             application/json:
               schema:
@@ -1757,8 +1767,12 @@ paths:
         that prices that request and the one its settlement names, so a price change lands on later
         requests and leaves in-flight turns and written bills untouched.
 
-        A model belongs to exactly one channel in v1 (docs/product.md), so pricing a model another
-        channel already serves is `CONFLICT`.
+        A model may be priced on several channels (issue #168): each row names
+        one route's version and `weight`, the relative preference for leading a
+        request — the first attempt is a weighted pick, the rest follow in
+        descending weight when a turn fails over. Changing the weight alone is
+        a price append like any other: the settlement names the version the
+        route carried.
       security:
         - adminToken: []
       parameters: [{ $ref: "#/components/parameters/ChannelName" }]
@@ -3236,10 +3250,15 @@ components:
       allOf:
         - $ref: "#/components/schemas/PriceSet"
         - type: object
-          required: [model, version, createdAt]
+          required: [model, version, weight, createdAt]
           properties:
             model: { type: string }
             version: { type: integer, minimum: 1, description: "counted per model from 1; a settlement names the version that priced it" }
+            weight:
+              type: integer
+              minimum: 1
+              maximum: 1000
+              description: "the route's relative preference for leading a request against other channels serving the same model (issue #168)"
             mode: { type: string, enum: [chat], description: "the billing mode this price applies to; only chat is priced today, the field reserves the others" }
             rules:
               type: array
@@ -3253,6 +3272,12 @@ components:
           required: [model]
           properties:
             model: { type: string, minLength: 1, maxLength: 200 }
+            weight:
+              type: integer
+              minimum: 1
+              maximum: 1000
+              default: 100
+              description: "the route's relative preference for leading a request; absent means 100"
             mode: { type: string, enum: [chat], description: "the billing mode; only chat is priced today, and the field defaults to it" }
             rules:
               type: array
@@ -3283,7 +3308,7 @@ components:
         chargedMinor: { type: integer, format: int64 }
     BillingRecord:
       type: object
-      required: [bookedOn, requestId, model, kind, inputTokens, outputTokens, chargedMinor]
+      required: [bookedOn, requestId, model, kind, inputTokens, outputTokens, chargedMinor, upstreamAttempts]
       properties:
         bookedOn: { type: string, format: date, description: the server's UTC date the settlement was written }
         requestId:
@@ -3297,6 +3322,11 @@ components:
         inputTokens: { type: integer, format: int64, description: tokens billed as input }
         outputTokens: { type: integer, format: int64, description: tokens billed as output }
         chargedMinor: { type: integer, format: int64 }
+        upstreamAttempts:
+          type: integer
+          format: int64
+          minimum: 1
+          description: "how many upstream calls the turn made — above 1 means it failed over between channels (issue #168)"
         discountPercent:
           type: integer
           minimum: 1
@@ -3595,7 +3625,7 @@ components:
           description: the key the request carried, when it did — the write it names replays rather than doubles
     AdminAnomaly:
       type: object
-      required: [organization, requestId, model, channel, priceVersion, kind, chargedMinor, freezeMinor, bookedOn]
+      required: [organization, requestId, model, channel, priceVersion, kind, upstreamAttempts, chargedMinor, freezeMinor, bookedOn]
       properties:
         organization: { type: string, description: the organization whose ledger recorded the turn }
         requestId: { type: string }
@@ -3603,6 +3633,11 @@ components:
         channel: { type: string, description: the channel that served the turn }
         priceVersion: { type: integer, minimum: 1 }
         kind: { type: string, enum: [capped, estimated, client_cancelled, swept, unpriced], description: how the turn was priced; the anomalous kinds }
+        upstreamAttempts:
+          type: integer
+          format: int64
+          minimum: 1
+          description: "how many upstream calls the turn made — above 1 means it failed over between channels (issue #168)"
         chargedMinor: { type: integer, format: int64, minimum: 0, description: what the settlement charged, in minor units }
         freezeMinor: { type: integer, format: int64, minimum: 1, description: what had been frozen, in minor units }
         bookedOn: { type: string, format: date, description: the settlement's booking date }
