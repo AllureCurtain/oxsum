@@ -276,6 +276,15 @@ Steps:
    translation between the two. Errors come back in the surface's own envelope, and
    the oxsum key travels as `x-api-key`, exactly as the SDK sends it.
 
+   The same key also opens the input-only surfaces. Embeddings go to
+   `POST /v1/embeddings` in OpenAI's shape — `input` may be a string, an array of
+   strings, or token arrays — and reranking to `POST /v1/rerank` in the shape Jina
+   and Cohere speak (`query` plus `documents`). Neither streams, and neither is a
+   chat price: a model is served there only when a channel prices it with
+   `mode: embeddings` or `mode: rerank`. The freeze reserves the input bound alone —
+   token arrays freeze at their exact count — and the turn settles against
+   upstream's usage report, estimated from the request's input when none arrives.
+
 2. Every response carries an `x-oxsum-request-id` header. That id is how the turn is found in the
    ledger: its entries are keyed `req-<id>:hold` and the settlement derived from it
    (`oxsum_core::settlement_key_for`).
