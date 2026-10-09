@@ -466,6 +466,58 @@ async fn estimate_price_is_the_freeze() {
     }
 }
 
+/// An estimate prices only the mode it names: an embeddings model has no
+/// `chat` routes to read, an `embeddings` estimate ignores the output shape,
+/// and a model whose routes all carry another mode answers the same
+/// `VALIDATION` as one that is not served at all (issue #170).
+#[tokio::test]
+async fn estimate_price_respects_the_billing_mode() {
+    let (app, db) = app_or_skip!();
+    let suffix = Uuid::new_v4().simple().to_string()[..8].to_owned();
+    let channel = format!("cat-{suffix}");
+    let model = format!("emb-{suffix}");
+    // 1 minor per input token, no output side — the mode is what makes that a
+    // price rather than a misconfiguration.
+    price_model(
+        &db,
+        &channel,
+        &model,
+        json!({"inputPricePerMillion": 1_000_000, "mode": "embeddings"}),
+    )
+    .await;
+    let (_tenant, key, _key_id) = register(&app, "estimate-mode").await;
+
+    // The mode's own shape: input alone prices the turn, an `outputTokens` a
+    // caller sent anyway is simply not a dimension the mode prices.
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/estimate-price",
+        Some(json!({
+            "model": model,
+            "mode": "embeddings",
+            "inputTokens": 30,
+            "outputTokens": 500,
+        })),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["estimateMinor"], 30, "{body}");
+
+    // Without the mode, the model is not a chat route: nothing to price with.
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/estimate-price",
+        Some(json!({"model": model, "inputTokens": 30, "outputTokens": 5})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR", "{body}");
+}
+
 // ── /api/v1/pricing ─────────────────────────────────────────────────────────
 
 /// The catalog lists every model's current version with its channel and

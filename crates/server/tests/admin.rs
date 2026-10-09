@@ -1936,3 +1936,86 @@ async fn the_reconciliation_report_names_the_drift() {
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
+
+/// An input-only price writes with no output side and lists its mode — and the
+/// mode rule refuses both directions of a malformed write: an embeddings price
+/// that names an output rate, and a chat price that drops its output fields,
+/// which would otherwise read as free output (issue #170).
+#[tokio::test]
+async fn an_input_only_price_carries_no_output_side() {
+    let (app, _pool) = app_or_skip!();
+    let channel = fresh("embed");
+    let model = fresh("emb");
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/admin/channels",
+        Some(json!({
+            "name": channel,
+            "baseUrl": "https://upstream.example/v1",
+            "apiKey": "sk-upstream-abcd1234",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let prices = format!("/api/v1/admin/channels/{channel}/prices");
+
+    // An embeddings price: the input rate alone, the mode named — no output
+    // fields at all.
+    let (status, body) = call(
+        &app,
+        "POST",
+        &prices,
+        Some(json!({
+            "model": model,
+            "inputPricePerMillion": 1_000_000,
+            "mode": "embeddings",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["version"], 1);
+
+    // The listing carries the mode and reads the absent side as zeros.
+    let (status, body) = call(&app, "GET", "/api/v1/admin/channels", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let listed = body["data"]
+        .as_array()
+        .expect("a list of channels")
+        .iter()
+        .find(|entry| entry["name"] == channel.as_str())
+        .expect("this test's channel is listed");
+    assert_eq!(listed["models"][0]["mode"], "embeddings");
+    assert_eq!(listed["models"][0]["outputPricePerMillion"], 0);
+    assert_eq!(listed["models"][0]["maxOutputTokens"], 0);
+
+    // A rerank price writes the same way.
+    let (status, body) = call(
+        &app,
+        "POST",
+        &prices,
+        Some(json!({
+            "model": fresh("rank"),
+            "inputPricePerMillion": 2_000_000,
+            "mode": "rerank",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Refusals, each in the API envelope's own shape.
+    for price in [
+        // An input-only price that names an output side is a misread rate.
+        json!({"model": model, "inputPricePerMillion": 1, "outputPricePerMillion": 1, "mode": "embeddings"}),
+        json!({"model": model, "inputPricePerMillion": 1, "maxOutputTokens": 8, "mode": "embeddings"}),
+        // A chat price that drops its output side is free output.
+        json!({"model": model, "inputPricePerMillion": 1}),
+        json!({"model": model, "inputPricePerMillion": 1, "outputPricePerMillion": 1}),
+        // A mode the build does not know is not a price at all.
+        json!({"model": model, "inputPricePerMillion": 1, "outputPricePerMillion": 1, "maxOutputTokens": 8, "mode": "nope"}),
+    ] {
+        let (status, body) = call(&app, "POST", &prices, Some(price.clone())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{price}: {body}");
+        assert_eq!(body["error"]["code"], "VALIDATION_ERROR", "{price}: {body}");
+    }
+}
