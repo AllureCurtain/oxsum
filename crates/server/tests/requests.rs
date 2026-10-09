@@ -282,6 +282,7 @@ async fn seed_request(
         discount_percent: None,
         charged: cost_minor,
         freeze: freeze_minor,
+        upstream_attempts: 1,
     };
     wallet
         .settle(

@@ -48,6 +48,16 @@ enum Answer {
     Stall,
     /// Upstream refuses, in OpenAI's own error shape.
     Refuse { status: u16, body: Value },
+    /// Refuses this model's first `refuse` requests with `status` — optionally
+    /// naming a `Retry-After` — then answers a normal completion. How failover
+    /// and bounded 429 waits are driven deterministically: the refusal count is
+    /// per upstream, so two routes scripted alike fail over and recover in a
+    /// fixed number of attempts (issue #168).
+    Flaky {
+        refuse: u32,
+        status: u16,
+        retry_after_secs: Option<u64>,
+    },
     /// A 200 whose body is not JSON at all.
     Garbage,
     /// A whole Anthropic message — what `/v1/messages` upstreams answer with.
@@ -186,6 +196,44 @@ async fn upstream(
             axum::Json(body),
         )
             .into_response(),
+        Answer::Flaky {
+            refuse,
+            status,
+            retry_after_secs,
+        } => {
+            // The current request is already in `seen`, so its count is this
+            // upstream's attempt number for the model.
+            let asked = script
+                .seen
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|seen| seen.body["model"].as_str() == Some(model.as_str()))
+                .count() as u32;
+            if asked <= refuse {
+                let mut refusal = (
+                    StatusCode::from_u16(status).expect("the test's own status"),
+                    axum::Json(json!({"error": {"message": "scripted refusal"}})),
+                )
+                    .into_response();
+                if let Some(secs) = retry_after_secs {
+                    refusal.headers_mut().insert(
+                        axum::http::header::RETRY_AFTER,
+                        secs.to_string().parse().unwrap(),
+                    );
+                }
+                refusal
+            } else {
+                completion(
+                    &model,
+                    Some(json!({
+                        "prompt_tokens": 10,
+                        "completion_tokens": 2,
+                        "total_tokens": 12,
+                    })),
+                )
+            }
+        }
         Answer::Garbage => (
             StatusCode::OK,
             [("content-type", "text/plain")],
@@ -256,6 +304,46 @@ async fn messages_upstream(
             axum::Json(body),
         )
             .into_response(),
+        Answer::Flaky {
+            refuse,
+            status,
+            retry_after_secs,
+        } => {
+            let asked = script
+                .seen
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|seen| seen.body["model"].as_str() == Some(model.as_str()))
+                .count() as u32;
+            if asked <= refuse {
+                let mut refusal = (
+                    StatusCode::from_u16(status).expect("the test's own status"),
+                    axum::Json(
+                        json!({"type": "error", "error": {"type": "api_error", "message": "scripted refusal"}}),
+                    ),
+                )
+                    .into_response();
+                if let Some(secs) = retry_after_secs {
+                    refusal.headers_mut().insert(
+                        axum::http::header::RETRY_AFTER,
+                        secs.to_string().parse().unwrap(),
+                    );
+                }
+                refusal
+            } else {
+                axum::Json(json!({
+                    "id": "msg_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": model,
+                    "content": [{"type": "text", "text": "Hello there"}],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 10, "output_tokens": 2},
+                }))
+                .into_response()
+            }
+        }
         _ => (
             StatusCode::BAD_REQUEST,
             axum::Json(json!({"type": "error", "error": {"type": "invalid_request_error", "message": "an openai answer was scripted on the anthropic path"}})),
@@ -462,7 +550,7 @@ async fn world_for(url: &str, top_up: i64, protocol: &str) -> World {
         .await
         .expect("the channel is written");
     for (model, price) in book.models() {
-        db.append_price(&channel, model, price.clone())
+        db.append_price(&channel, model, price.clone(), 100)
             .await
             .expect("the price is written");
     }
@@ -815,7 +903,7 @@ async fn a_conditional_price_bills_each_dimension_on_its_own_line() {
     }))
     .expect("the test's own price parses");
     let version = db
-        .append_price(&world.channel, &world.model("ok"), price)
+        .append_price(&world.channel, &world.model("ok"), price, 100)
         .await
         .expect("the price is written");
     assert_eq!(version, 2);
@@ -838,7 +926,7 @@ async fn a_conditional_price_bills_each_dimension_on_its_own_line() {
     // 2 reasoning at 8e6, and the 100-minor flat fee spelled per-million — one
     // ceiling over the sum.
     let record = world.settlement(&id).await.expect("the turn settled");
-    assert_eq!(record["v"], 4);
+    assert_eq!(record["v"], 5);
     assert_eq!(record["priceVersion"], 2);
     assert_eq!(record["matchedRule"]["serviceTier"], "priority");
     let lines = record["lines"].as_array().expect("itemized lines");
@@ -940,7 +1028,7 @@ async fn a_tracked_turns_upstream_cost_sits_beside_its_charge() {
     }))
     .expect("the test's own price parses");
     let version = db
-        .append_price(&world.channel, &world.model("ok"), price)
+        .append_price(&world.channel, &world.model("ok"), price, 100)
         .await
         .expect("the price is written");
     assert_eq!(version, 2);
@@ -1279,7 +1367,7 @@ async fn a_dimension_the_book_cannot_bill_settles_unpriced() {
         "costPerRequest": 50,
     }))
     .expect("the test's own price parses");
-    db.append_price(&world.channel, &world.model("ok"), price)
+    db.append_price(&world.channel, &world.model("ok"), price, 100)
         .await
         .expect("the price is written");
 
@@ -2695,7 +2783,7 @@ async fn a_discounted_turn_charges_the_discounted_price() {
         .settlement_description(&id)
         .await
         .expect("the turn settled");
-    assert!(description.contains("\"v\":4"), "{description}");
+    assert!(description.contains("\"v\":5"), "{description}");
     assert_eq!(
         oxsum_core::verify_charge(&description),
         oxsum_core::ChargeCheck::Recomputed
@@ -2841,4 +2929,367 @@ async fn a_tier_rate_limit_is_one_window_per_organization() {
     let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
     let (status, body) = json_of(response).await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+}
+
+// ── failover (issue #168) ────────────────────────────────────────────────────
+
+/// A second channel serving `model`, behind its own scripted upstream, so a
+/// test can watch which route a turn took. Returns the channel's name and its
+/// script — the credential it seals is distinct from the world's own, so a
+/// recorded request's auth header also says which channel carried it.
+async fn second_route(world: &World, model: &str, protocol: &str, weight: i64) -> (String, Script) {
+    let db = Db::from_pool(world.pool.clone());
+    let secret = oxsum_core::SecretKey::from_bytes([7; 32]);
+    let channel = format!("backup-{}", world.suffix);
+    let script = Script::default();
+    let base_url = start_upstream(script.clone()).await;
+    db.set_channel(
+        &channel,
+        &base_url,
+        "upstream-secret-backup",
+        protocol,
+        &secret,
+    )
+    .await
+    .expect("the second channel is written");
+    let price: oxsum_core::Price = serde_json::from_value(json!({
+        "inputPricePerMillion": 1_000_000,
+        "outputPricePerMillion": 1_000_000,
+        "maxOutputTokens": 1000,
+    }))
+    .expect("the test's own price parses");
+    // Two versions on this route, so a settlement that names it is provably
+    // its lineage and not the primary's.
+    db.append_price(&channel, model, price.clone(), weight)
+        .await
+        .expect("the first version is written");
+    db.append_price(&channel, model, price, weight)
+        .await
+        .expect("the second version is written");
+    (channel, script)
+}
+
+/// A turn where both routes refuse their first request under a short
+/// `Retry-After` runs failover *and* the one honored wait in any attempt
+/// order: the leader's refusal rotates to the other channel, its refusal is
+/// the last route's — so the wait it names is honored once — and its retry
+/// answers. What the bill then says is deterministic whichever led: the
+/// channel that answered, its own version, all three attempts (issue #168).
+#[tokio::test]
+async fn failover_and_a_bounded_retry_after_recover_the_turn() {
+    let world = world!(1_000_000);
+    let model = world.model("ok");
+    let (backup, backup_script) = second_route(&world, &model, "openai", 900).await;
+    world.answers(
+        "ok",
+        Answer::Flaky {
+            refuse: 1,
+            status: 429,
+            retry_after_secs: Some(1),
+        },
+    );
+    backup_script.answers(
+        &model,
+        Answer::Flaky {
+            refuse: 1,
+            status: 429,
+            retry_after_secs: Some(1),
+        },
+    );
+
+    let response = chat(&world.app, &world.key, simple(&model)).await;
+    let id = request_id(&response);
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["choices"][0]["message"]["content"], "Hello there");
+
+    // Three calls under the one hold: the leader's refusal, the other's
+    // refusal, and the retry that answered. Whichever channel led, the one
+    // that answered saw two of them.
+    let primary_seen = world.script.seen().len();
+    let backup_seen = backup_script.seen().len();
+    assert_eq!(primary_seen + backup_seen, 3, "every attempt was recorded");
+    assert!(
+        primary_seen >= 1 && backup_seen >= 1,
+        "both routes were tried"
+    );
+    let (answered, answered_seen) = if backup_seen > primary_seen {
+        (backup.clone(), backup_seen)
+    } else {
+        (world.channel.clone(), primary_seen)
+    };
+    assert_eq!(
+        answered_seen, 2,
+        "the answering channel is the one retried under its own Retry-After"
+    );
+
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["kind"], "usage");
+    assert_eq!(record["channel"], answered);
+    assert_eq!(
+        record["priceVersion"],
+        if answered == backup { 2 } else { 1 },
+        "the answering route's own version priced the turn"
+    );
+    assert_eq!(record["upstreamAttempts"], 3);
+    assert_eq!(record["charged"], 12);
+    // The usage row beside it carries the same count.
+    let row =
+        sqlx::query("SELECT upstream_attempts FROM oxsum.usage_records WHERE request_id = $1")
+            .bind(&id)
+            .fetch_one(&world.pool)
+            .await
+            .expect("the usage row exists");
+    assert_eq!(row.get::<i32, _>("upstream_attempts"), 3);
+}
+
+/// When every route 429s without a usable `Retry-After`, the turn fails after
+/// the last of them — the whole freeze goes back, and the settlement records
+/// all the attempts it made (issue #168).
+#[tokio::test]
+async fn when_every_route_refuses_the_turn_fails_after_them_all() {
+    let world = world!(1_000_000);
+    let model = world.model("ok");
+    let (_backup, backup_script) = second_route(&world, &model, "openai", 900).await;
+    world.answers(
+        "ok",
+        Answer::Flaky {
+            refuse: 100,
+            status: 429,
+            retry_after_secs: None,
+        },
+    );
+    backup_script.answers(
+        &model,
+        Answer::Flaky {
+            refuse: 100,
+            status: 429,
+            retry_after_secs: None,
+        },
+    );
+
+    let response = chat(&world.app, &world.key, simple(&model)).await;
+    let id = request_id(&response);
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+    assert_eq!(body["error"]["message"], "scripted refusal");
+
+    // Two routes, one refusal each — nothing answered, so nothing is charged.
+    assert_eq!(world.script.seen().len(), 1);
+    assert_eq!(backup_script.seen().len(), 1);
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["kind"], "upstream_error");
+    assert_eq!(record["upstreamAttempts"], 2);
+    assert_eq!(record["charged"], 0);
+    assert_eq!(world.wallet().await.reserved().await.unwrap(), 0);
+}
+
+/// A refusal that is not retriable — a 400 — fails the turn on the spot:
+/// rotating channels would only replay the same refusal (issue #168).
+#[tokio::test]
+async fn a_refusal_that_is_not_retriable_fails_without_failover() {
+    let world = world!(1_000_000);
+    let model = world.model("ok");
+    let (_backup, backup_script) = second_route(&world, &model, "openai", 900).await;
+    world.answers(
+        "ok",
+        Answer::Flaky {
+            refuse: 100,
+            status: 400,
+            retry_after_secs: None,
+        },
+    );
+    backup_script.answers(
+        &model,
+        Answer::Flaky {
+            refuse: 100,
+            status: 400,
+            retry_after_secs: None,
+        },
+    );
+
+    let response = chat(&world.app, &world.key, simple(&model)).await;
+    let id = request_id(&response);
+    let (status, _) = json_of(response).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+
+    // Exactly one upstream was asked: the 400 ended the turn where it landed.
+    assert_eq!(world.script.seen().len() + backup_script.seen().len(), 1);
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["kind"], "upstream_error");
+    assert_eq!(record["upstreamAttempts"], 1);
+}
+
+/// A lone channel's 429 that names a short `Retry-After` is waited out once,
+/// and the retry is a second attempt under the same hold (issue #168).
+#[tokio::test]
+async fn a_lone_channels_429_waits_out_a_bounded_retry_after() {
+    let world = world!(1_000_000);
+    world.answers(
+        "ok",
+        Answer::Flaky {
+            refuse: 1,
+            status: 429,
+            retry_after_secs: Some(1),
+        },
+    );
+
+    let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
+    let id = request_id(&response);
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(world.script.seen().len(), 2);
+
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["kind"], "usage");
+    assert_eq!(record["channel"], world.channel.as_str());
+    assert_eq!(record["upstreamAttempts"], 2);
+    assert_eq!(record["charged"], 12);
+}
+
+/// A `Retry-After` beyond the bound is not waited: the refusal is answered as
+/// it came, after one attempt (issue #168).
+#[tokio::test]
+async fn a_retry_after_beyond_the_bound_is_not_waited() {
+    let world = world!(1_000_000);
+    world.answers(
+        "ok",
+        Answer::Flaky {
+            refuse: 1,
+            status: 429,
+            retry_after_secs: Some(60),
+        },
+    );
+
+    let started = std::time::Instant::now();
+    let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
+    let id = request_id(&response);
+    let (status, _) = json_of(response).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert!(
+        started.elapsed() < Duration::from_secs(30),
+        "a 60s Retry-After must not be honored"
+    );
+
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["kind"], "upstream_error");
+    assert_eq!(record["upstreamAttempts"], 1);
+}
+
+/// The Anthropic surface fails over the same way: the second route's
+/// credential goes upstream in Anthropic's own spelling (issue #168).
+#[tokio::test]
+async fn the_messages_surface_fails_over_too() {
+    let world = world!(1_000_000, "anthropic");
+    let model = world.model("ok");
+    let (backup, backup_script) = second_route(&world, &model, "anthropic", 900).await;
+    world.answers(
+        "ok",
+        Answer::Flaky {
+            refuse: 100,
+            status: 429,
+            retry_after_secs: None,
+        },
+    );
+    backup_script.answers(
+        &model,
+        Answer::Messages {
+            usage: Some(json!({"input_tokens": 10, "output_tokens": 2})),
+        },
+    );
+
+    let response = messages(&world.app, &world.key, simple_message(&model)).await;
+    let id = request_id(&response);
+    let (status, body) = json_of(response).await;
+    // Whether the world's channel or the backup led, the turn can only have
+    // been answered by the backup — the primary refuses forever.
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["type"], "message");
+
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["channel"], backup);
+    assert_eq!(record["priceVersion"], 2);
+    assert_eq!(
+        record["upstreamAttempts"].as_i64().unwrap(),
+        (world.script.seen().len() + backup_script.seen().len()) as i64,
+    );
+    // The answering route carried its own credential, in Anthropic's spelling.
+    let seen = backup_script.seen();
+    assert!(!seen.is_empty());
+    assert_eq!(seen[0].api_key.as_deref(), Some("upstream-secret-backup"));
+    assert_eq!(seen[0].anthropic_version.as_deref(), Some("2023-06-01"));
+}
+
+/// A model served by several channels lists once in `/v1/models`, owned by the
+/// route most likely to lead — the greatest weight (issue #168).
+#[tokio::test]
+async fn a_shared_model_lists_once_under_its_heaviest_route() {
+    let world = world!(0);
+    let model = world.model("ok");
+    let (backup, _) = second_route(&world, &model, "openai", 900).await;
+
+    let request = Request::builder()
+        .uri("/v1/models")
+        .header("authorization", format!("Bearer {}", world.key))
+        .body(Body::empty())
+        .expect("the test's own request");
+    let (status, body) = json_of(
+        world
+            .app
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("the router answers"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let listed = body["data"].as_array().expect("a list of models");
+    let mine: Vec<&Value> = listed
+        .iter()
+        .filter(|entry| entry["id"] == model.as_str())
+        .collect();
+    assert_eq!(mine.len(), 1, "a shared model is listed once: {listed:?}");
+    assert_eq!(mine[0]["owned_by"], backup);
+}
+
+/// A channel that speaks another protocol is not a candidate on this surface:
+/// an `anthropic` route cannot answer an OpenAI-shaped request, and the openai
+/// channel is never asked by `/v1/messages` either (issue #168).
+#[tokio::test]
+async fn a_route_on_the_other_protocol_is_not_a_candidate() {
+    let world = world!(1_000_000);
+    let model = world.model("ok");
+    let (backup, script) = second_route(&world, &model, "anthropic", 900).await;
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+    script.answers(
+        &model,
+        Answer::Messages {
+            usage: Some(json!({"input_tokens": 10, "output_tokens": 2})),
+        },
+    );
+
+    // On the OpenAI surface only the openai channel is a candidate.
+    let response = chat(&world.app, &world.key, simple(&model)).await;
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        script.seen().is_empty(),
+        "the anthropic route was not asked"
+    );
+
+    // On the messages surface only the anthropic channel is: the openai
+    // upstream never sees the request at all.
+    let response = messages(&world.app, &world.key, simple_message(&model)).await;
+    let id = request_id(&response);
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(script.seen().len(), 1);
+    assert_eq!(world.script.seen().len(), 1, "only the first turn asked it");
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["channel"], backup);
 }

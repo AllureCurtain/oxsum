@@ -326,6 +326,7 @@ async fn seed_request(
         discount_percent: None,
         charged: cost_minor,
         freeze: freeze_minor,
+        upstream_attempts: 1,
     };
     wallet
         .settle(
@@ -353,6 +354,7 @@ async fn seed_request(
         charged_minor: cost_minor,
         freeze_minor,
         upstream_cost_minor: None,
+        upstream_attempts: 1,
     })
     .await
     .expect("the usage row is written");

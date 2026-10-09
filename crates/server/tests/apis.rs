@@ -147,7 +147,7 @@ async fn price_model(db: &Db, channel: &str, model: &str, price: Value) {
     let book = PriceBook::from_json(channel, &json!({ model: price }).to_string())
         .expect("the test's price parses");
     for (model, price) in book.models() {
-        db.append_price(channel, model, price.clone())
+        db.append_price(channel, model, price.clone(), 100)
             .await
             .expect("the price is written");
     }
@@ -217,6 +217,7 @@ async fn settle_request(
         discount_percent: None,
         charged,
         freeze,
+        upstream_attempts: 1,
     };
     wallet
         .settle(
@@ -242,6 +243,7 @@ async fn settle_request(
         charged_minor: charged,
         freeze_minor: freeze,
         upstream_cost_minor: None,
+        upstream_attempts: 1,
     })
     .await
     .expect("the usage row is written");

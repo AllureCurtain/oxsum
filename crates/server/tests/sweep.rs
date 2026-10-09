@@ -236,6 +236,7 @@ fn usage_settlement(request_id: &str, charged: i64, freeze: i64) -> String {
         discount_percent: None,
         charged,
         freeze,
+        upstream_attempts: 1,
     }
     .description()
     .expect("the test's own record builds")
@@ -345,6 +346,7 @@ async fn a_usage_row_replay_is_ignored() {
         charged_minor: 12,
         freeze_minor: 100,
         upstream_cost_minor: Some(4),
+        upstream_attempts: 1,
     };
     world.db.record_usage(&row).await.expect("writes the row");
     world
