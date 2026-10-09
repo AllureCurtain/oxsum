@@ -37,6 +37,8 @@
 //!   the freeze is stuck, the row retries hourly, and it needs an operator
 //! - `LogGaps` — a log whose `log_index` positions are not dense from zero, or
 //!   entries still unsequenced past the grace window
+//! - `JobsDead` — a `jobs` row whose run exhausted its attempts: the periodic
+//!   kind it carried has a broken link, and the row is the evidence of why
 
 use serde::Serialize;
 use sqlx::Row;
@@ -64,10 +66,11 @@ pub enum DriftKind {
     HoldsUnwatched,
     HoldsDeadLettered,
     LogGaps,
+    JobsDead,
 }
 
 /// The classes, in the fixed order the report answers them.
-const DRIFT_KINDS: [DriftKind; 9] = [
+const DRIFT_KINDS: [DriftKind; 10] = [
     DriftKind::UsageOrphans,
     DriftKind::SettlementsUnrecorded,
     DriftKind::DepositsUnbooked,
@@ -77,6 +80,7 @@ const DRIFT_KINDS: [DriftKind; 9] = [
     DriftKind::HoldsUnwatched,
     DriftKind::HoldsDeadLettered,
     DriftKind::LogGaps,
+    DriftKind::JobsDead,
 ];
 
 /// One offending identifier an operator follows — the request id, the hold key,
@@ -214,6 +218,19 @@ impl Db {
                 detail: row.get("request_id"),
             });
         }
+
+        // Dead job runs are platform drift — they belong to no tenant, so
+        // "platform" stands in for the organization the way the raw tenant id
+        // does for orphans. The sample names the kind and the run.
+        let dead_jobs = sqlx::query(
+            "SELECT kind || ':' || job_id AS detail, count(*) OVER() AS total \
+             FROM oxsum.jobs WHERE status = 'dead' \
+             ORDER BY finished_at DESC LIMIT $1",
+        )
+        .bind(SAMPLE_LIMIT)
+        .fetch_all(self.pool())
+        .await?;
+        classes.fold(DriftKind::JobsDead, "platform", &dead_jobs);
 
         for tenant in &tenants {
             let schema = format!("ledger_{}", tenant.tenant_id.replace('"', "\"\""));
