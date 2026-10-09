@@ -7,7 +7,7 @@
 //! path never has to pick apart JSON.
 
 use oxsum_core::{
-    ANTHROPIC, Attribution, MAX_CONTEXT_NAME, MAX_END_USER, MAX_TAG, MAX_TAGS, OPENAI,
+    ANTHROPIC, Attribution, BillingMode, MAX_CONTEXT_NAME, MAX_END_USER, MAX_TAG, MAX_TAGS, OPENAI,
 };
 use serde_json::{Map, Value, json};
 
@@ -22,16 +22,44 @@ pub enum Surface {
     OpenAi,
     /// `POST /v1/messages` — Anthropic's shapes, served by `anthropic` channels.
     Anthropic,
+    /// `POST /v1/embeddings` — OpenAI's input-only embeddings shape (issue #170).
+    Embeddings,
+    /// `POST /v1/rerank` — the Jina/Cohere-shaped rerank call (issue #170).
+    Rerank,
 }
 
 impl Surface {
     /// The protocol name a serving channel must declare for this surface. A model
     /// an `anthropic` channel serves is not served on the OpenAI surface, and vice
-    /// versa: surfaces are protocol-native, never translated.
+    /// versa: surfaces are protocol-native, never translated. The input-only
+    /// surfaces speak the OpenAI protocol — Bearer credential, OpenAI errors.
     pub fn protocol(self) -> &'static str {
         match self {
-            Self::OpenAi => OPENAI,
+            Self::OpenAi | Self::Embeddings | Self::Rerank => OPENAI,
             Self::Anthropic => ANTHROPIC,
+        }
+    }
+
+    /// The billing mode a serving price must carry: a model priced only for
+    /// chat is not served on the input-only surfaces, and vice versa — a mode
+    /// mismatch fails closed, never reinterprets a rate (issue #170).
+    pub fn billing_mode(self) -> BillingMode {
+        match self {
+            Self::OpenAi | Self::Anthropic => BillingMode::Chat,
+            Self::Embeddings => BillingMode::Embeddings,
+            Self::Rerank => BillingMode::Rerank,
+        }
+    }
+
+    /// The path under the channel's `base_url` the surface POSTs to — also the
+    /// key [`adapter_for_endpoint`](oxsum_core::adapter_for_endpoint) resolves
+    /// the usage dialect by.
+    pub fn upstream_path(self) -> &'static str {
+        match self {
+            Self::OpenAi => "chat/completions",
+            Self::Anthropic => "messages",
+            Self::Embeddings => "embeddings",
+            Self::Rerank => "rerank",
         }
     }
 }
@@ -51,8 +79,13 @@ pub struct GatewayRequest {
     /// The text of every message, for the input upper bound and the local estimate. A message with
     /// no text (an assistant turn that only calls a tool) contributes none.
     pub texts: Vec<String>,
-    /// The output ceiling the caller asked for, if it asked for one.
+    /// The output ceiling the caller asked for, if it asked for one. The
+    /// input-only surfaces have no output side, so this stays `None` there.
     pub max_tokens: Option<i64>,
+    /// The request's exact input token count when the caller sent token arrays
+    /// instead of text — an embeddings `input` of `[usize]` ids freezes at its
+    /// length, not at a text estimate (issue #170).
+    pub counted_input: Option<i64>,
     /// The caller's attribution on the turn: OpenAI's `user`/`metadata`/`service_tier`,
     /// Anthropic's `metadata.user_id` — recorded on the usage row, never an input
     /// to the freeze or the price.
@@ -65,9 +98,10 @@ impl GatewayRequest {
     /// # Errors
     ///
     /// Refuses a body that is not an object, a missing or empty `model`, a missing or empty
-    /// `messages`, a non-boolean `stream`, a non-integer output ceiling, and any content without
-    /// a computable input bound: v1 prices chat text only, and the freeze is only a promise if
-    /// the input bound is computable (product.md).
+    /// `messages`/`input`/`documents`, a non-boolean `stream` — true on the input-only
+    /// surfaces, which never stream — a non-integer output ceiling, and any content without
+    /// a computable input bound: the freeze is only a promise if the input bound is
+    /// computable (product.md).
     pub fn parse(body: Value, surface: Surface) -> Result<Self, GatewayError> {
         let Value::Object(body) = body else {
             return Err(invalid("the request body must be a JSON object"));
@@ -83,20 +117,33 @@ impl GatewayRequest {
         };
         let stream = match body.get("stream") {
             None | Some(Value::Null) | Some(Value::Bool(false)) => false,
-            Some(Value::Bool(true)) => true,
+            Some(Value::Bool(true)) => {
+                if surface.billing_mode().meters_output() {
+                    true
+                } else {
+                    return Err(param("stream", "this surface does not stream"));
+                }
+            }
             Some(_) => return Err(param("stream", "stream must be a boolean")),
         };
-        let (texts, max_tokens, attribution) = match surface {
+        let (texts, counted_input, max_tokens, attribution) = match surface {
             Surface::OpenAi => (
                 texts_of(&body)?,
+                None,
                 output_ceiling(&body)?,
                 attribution_of(&body)?,
             ),
             Surface::Anthropic => (
                 anthropic_texts(&body)?,
+                None,
                 int_ceiling(&body, "max_tokens")?,
                 anthropic_attribution(&body)?,
             ),
+            Surface::Embeddings => {
+                let (texts, counted) = embeddings_input(&body)?;
+                (texts, counted, None, attribution_of(&body)?)
+            }
+            Surface::Rerank => (rerank_texts(&body)?, None, None, attribution_of(&body)?),
         };
         Ok(Self {
             body,
@@ -105,6 +152,7 @@ impl GatewayRequest {
             stream,
             texts,
             max_tokens,
+            counted_input,
             attribution,
         })
     }
@@ -116,23 +164,145 @@ impl GatewayRequest {
     /// `max_completion_tokens` is dropped, so upstream sees exactly one ceiling, the one the
     /// freeze was computed for. An OpenAI stream asks for usage explicitly, because the last
     /// chunk is where that protocol reports it; Anthropic reports usage on every stream
-    /// already, so nothing is added there.
+    /// already, so nothing is added there. The input-only surfaces have no output
+    /// bound to write: their bodies forward untouched (issue #170).
     #[must_use]
     pub fn forwarded(&self, output_bound: i64) -> Value {
         let mut body = self.body.clone();
-        body.insert("max_tokens".to_owned(), json!(output_bound));
-        body.remove("max_completion_tokens");
-        if self.stream && self.surface == Surface::OpenAi {
-            let mut options = body
-                .get("stream_options")
-                .and_then(Value::as_object)
-                .cloned()
-                .unwrap_or_default();
-            options.insert("include_usage".to_owned(), Value::Bool(true));
-            body.insert("stream_options".to_owned(), Value::Object(options));
+        if self.surface.billing_mode().meters_output() {
+            body.insert("max_tokens".to_owned(), json!(output_bound));
+            body.remove("max_completion_tokens");
+            if self.stream && self.surface == Surface::OpenAi {
+                let mut options = body
+                    .get("stream_options")
+                    .and_then(Value::as_object)
+                    .cloned()
+                    .unwrap_or_default();
+                options.insert("include_usage".to_owned(), Value::Bool(true));
+                body.insert("stream_options".to_owned(), Value::Object(options));
+            }
         }
         Value::Object(body)
     }
+}
+
+/// The embeddings `input`: a string, an array of strings, an array of token
+/// ids, or an array of token-id arrays. Token arrays give an exact count for
+/// the freeze; strings give texts for the estimate bound (issue #170).
+fn embeddings_input(body: &Map<String, Value>) -> Result<(Vec<String>, Option<i64>), GatewayError> {
+    let Some(input) = body.get("input") else {
+        return Err(param("input", "input is required"));
+    };
+    match input {
+        Value::String(text) => Ok((vec![text.clone()], None)),
+        Value::Array(items) => {
+            if items.is_empty() {
+                return Err(param("input", "input must not be empty"));
+            }
+            match items.as_slice() {
+                // The all-integers spellings are token arrays: their count is
+                // exact, so the freeze uses it rather than a text estimate.
+                [Value::Array(_), ..] => {
+                    let mut total = 0_i64;
+                    for item in items {
+                        let Value::Array(tokens) = item else {
+                            return Err(param("input", "token inputs must be arrays of integers"));
+                        };
+                        if tokens.is_empty() {
+                            return Err(param("input", "a token array must not be empty"));
+                        }
+                        for token in tokens {
+                            if token.as_u64().is_none() {
+                                return Err(param(
+                                    "input",
+                                    "a token array carries non-negative integers",
+                                ));
+                            }
+                        }
+                        total = total
+                            .checked_add(
+                                i64::try_from(tokens.len())
+                                    .map_err(|_| invalid("input is too large"))?,
+                            )
+                            .ok_or_else(|| invalid("input is too large"))?;
+                    }
+                    Ok((Vec::new(), Some(total)))
+                }
+                [Value::Number(_), ..] => {
+                    for token in items {
+                        if token.as_u64().is_none() {
+                            return Err(param(
+                                "input",
+                                "a token array carries non-negative integers",
+                            ));
+                        }
+                    }
+                    let total =
+                        i64::try_from(items.len()).map_err(|_| invalid("input is too large"))?;
+                    Ok((Vec::new(), Some(total)))
+                }
+                _ => {
+                    let mut texts = Vec::with_capacity(items.len());
+                    for item in items {
+                        let Value::String(text) = item else {
+                            return Err(param(
+                                "input",
+                                "input must be a string, an array of strings, or token arrays",
+                            ));
+                        };
+                        texts.push(text.clone());
+                    }
+                    Ok((texts, None))
+                }
+            }
+        }
+        _ => Err(param(
+            "input",
+            "input must be a string, an array of strings, or token arrays",
+        )),
+    }
+}
+
+/// The rerank request's billable text: `query` plus every document's text —
+/// a string entry's own value, an object entry's `text`. A document of any
+/// other shape has no computable bound and is refused (issue #170).
+fn rerank_texts(body: &Map<String, Value>) -> Result<Vec<String>, GatewayError> {
+    let mut texts = Vec::new();
+    match body.get("query") {
+        Some(Value::String(query)) => texts.push(query.clone()),
+        Some(_) => return Err(param("query", "query must be a string")),
+        None => return Err(param("query", "query is required")),
+    }
+    match body.get("documents") {
+        Some(Value::Array(documents)) if !documents.is_empty() => {
+            for document in documents {
+                match document {
+                    Value::String(text) => texts.push(text.clone()),
+                    Value::Object(document) => match document.get("text") {
+                        Some(Value::String(text)) => texts.push(text.clone()),
+                        _ => {
+                            return Err(param(
+                                "documents",
+                                "a document object must carry a text string",
+                            ));
+                        }
+                    },
+                    _ => {
+                        return Err(param(
+                            "documents",
+                            "a document must be a string or an object carrying text",
+                        ));
+                    }
+                }
+            }
+        }
+        Some(Value::Array(_)) => {
+            return Err(param("documents", "documents must not be empty"));
+        }
+        Some(_) => return Err(param("documents", "documents must be an array")),
+        None => return Err(param("documents", "documents is required")),
+    }
+    Ok(texts)
 }
 
 /// The text of every message, refusing content that is not text.

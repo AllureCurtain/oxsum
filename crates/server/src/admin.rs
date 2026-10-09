@@ -90,8 +90,10 @@ struct ChannelReq {
 struct PriceReq {
     model: String,
     input_price_per_million: i64,
-    output_price_per_million: i64,
-    max_output_tokens: i64,
+    /// Required on `chat`, absent or zero on the input-only modes — the
+    /// mode-aware rule lives in `Price::validate` (issue #170).
+    output_price_per_million: Option<i64>,
+    max_output_tokens: Option<i64>,
     cache_read_price_per_million: Option<i64>,
     cache_write_5m_price_per_million: Option<i64>,
     cache_write_1h_price_per_million: Option<i64>,
@@ -178,10 +180,21 @@ async fn append(
     if state.db.channel_prices(&name).await?.is_none() {
         return Err(ApiError::not_found());
     }
+    // A chat price with no output rate declared reads as free output — an
+    // absent field must not silently mean zero (issue #170). The input-only
+    // modes carry none, so the field is optional on the wire and the mode rule
+    // is `Price::validate`'s.
+    if request.mode.unwrap_or_default() == oxsum_core::BillingMode::Chat
+        && (request.output_price_per_million.is_none() || request.max_output_tokens.is_none())
+    {
+        return Err(ApiError::Validation(
+            "a chat price needs outputPricePerMillion and maxOutputTokens".into(),
+        ));
+    }
     let price = Price {
         input_price_per_million: request.input_price_per_million,
-        output_price_per_million: request.output_price_per_million,
-        max_output_tokens: request.max_output_tokens,
+        output_price_per_million: request.output_price_per_million.unwrap_or(0),
+        max_output_tokens: request.max_output_tokens.unwrap_or(0),
         cache_read_price_per_million: request.cache_read_price_per_million,
         cache_write_5m_price_per_million: request.cache_write_5m_price_per_million,
         cache_write_1h_price_per_million: request.cache_write_1h_price_per_million,

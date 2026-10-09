@@ -1575,6 +1575,9 @@ struct RecordsRes {
 #[serde(rename_all = "camelCase")]
 struct EstimateReq {
     model: String,
+    /// Which billing mode's routes to price against; absent means `chat`
+    /// (issue #170).
+    mode: Option<oxsum_core::BillingMode>,
     input_tokens: Option<i64>,
     output_tokens: Option<i64>,
     service_tier: Option<String>,
@@ -1600,7 +1603,16 @@ async fn estimate_price(
     Extension(_principal): Extension<Principal>,
     ApiJson(r): ApiJson<EstimateReq>,
 ) -> ApiResult<EstimateRes> {
-    let routes = state.db.routes(&r.model).await?;
+    // Only the mode's own routes price the shape: an embeddings estimate reads
+    // `embeddings` prices, a chat estimate `chat` ones (issue #170).
+    let mode = r.mode.unwrap_or_default();
+    let routes: Vec<_> = state
+        .db
+        .routes(&r.model)
+        .await?
+        .into_iter()
+        .filter(|route| route.price.mode == mode)
+        .collect();
     if routes.is_empty() {
         return Err(ApiError::Validation(format!(
             "no channel serves model {:?}",

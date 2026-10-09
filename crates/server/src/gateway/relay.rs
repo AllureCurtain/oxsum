@@ -104,6 +104,10 @@ struct Plan {
     adapter: &'static dyn UsageAdapter,
     /// The input texts, for the estimate.
     texts: Vec<String>,
+    /// The request's exact input count when the caller sent token arrays —
+    /// an embeddings `input` of ids has no text to estimate over, so the
+    /// estimate is the count itself (issue #170).
+    counted_input: Option<i64>,
     /// What upstream said and what it emitted, for the estimate.
     frames: Frames,
     /// How many forwarded answer characters the last progress event covered: a new one
@@ -221,6 +225,7 @@ impl Turn {
                 attribution,
                 adapter,
                 texts,
+                counted_input: None,
                 frames: Frames::default(),
                 finished: false,
                 progress_chars: 0,
@@ -277,6 +282,14 @@ impl Turn {
     pub fn note_text(&mut self, text: &str) {
         if let Some(plan) = self.plan.as_mut() {
             plan.frames.push_text(text);
+        }
+    }
+
+    /// The exact input count a token-array request already carried — the
+    /// estimate for a reportless turn prices it instead of the texts.
+    pub fn note_input_count(&mut self, tokens: Option<i64>) {
+        if let Some(plan) = self.plan.as_mut() {
+            plan.counted_input = tokens;
         }
     }
 
@@ -397,9 +410,17 @@ impl Plan {
             Charge::Nothing => UsageRecord::tokens(0, 0)?,
             Charge::Usage(usage) => *usage,
             Charge::Estimated => {
-                let input: Vec<&str> = self.texts.iter().map(String::as_str).collect();
+                // A token-array request's input is counted, not estimated; the
+                // count stands in for the text bound (issue #170).
+                let input = match self.counted_input {
+                    Some(count) => count,
+                    None => {
+                        let texts: Vec<&str> = self.texts.iter().map(String::as_str).collect();
+                        estimate_tokens(&texts)
+                    }
+                };
                 let output = estimate_tokens(&[self.frames.output.as_str()]);
-                UsageRecord::tokens(estimate_tokens(&input), output)?
+                UsageRecord::tokens(input, output)?
             }
         };
         // The caller's attribution rides whatever the turn was charged for: it is

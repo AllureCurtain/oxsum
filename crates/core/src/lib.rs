@@ -38,7 +38,7 @@ mod users;
 mod wallet;
 mod webhooks;
 
-pub use adapters::{ANTHROPIC, OPENAI, UsageAdapter, adapter_for};
+pub use adapters::{ANTHROPIC, OPENAI, UsageAdapter, adapter_for, adapter_for_endpoint};
 pub use audit::{AuditEntry, AuditPage, action as audit_action};
 pub use billing::{
     BillLine, BillingMode, ItemizedCharge, MeteredUsage, Price, PriceBook, PriceRule, PriceSet,
