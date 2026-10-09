@@ -416,6 +416,8 @@ impl Db {
             discount_percent: discount,
             charged,
             freeze,
+            // A seeded turn is a single scripted call: no failover ever ran.
+            upstream_attempts: 1,
         }
         .description()?;
         world
@@ -436,6 +438,7 @@ impl Db {
             charged_minor: charged,
             freeze_minor: freeze,
             upstream_cost_minor,
+            upstream_attempts: 1,
         })
         .await?;
         Ok(Some(charged))

@@ -870,7 +870,7 @@ impl SettlementKind {
 /// another one is not this build's to interpret: `oxsum_verify`'s
 /// `verify_charge` dispatches on `v` and leaves those to inclusion proof alone
 /// (docs/decisions.md, T1-2).
-const DESCRIPTION_VERSION: i64 = 4;
+const DESCRIPTION_VERSION: i64 = 5;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -906,6 +906,10 @@ pub struct Settlement<'a> {
     pub charged: i64,
     /// What was frozen before the call.
     pub freeze: i64,
+    /// How many upstream calls the turn made under the one hold (issue #168):
+    /// above 1 means it failed over between channels, or waited out a bounded
+    /// `Retry-After` on a lone channel's 429. Written by the v5 description.
+    pub upstream_attempts: i64,
 }
 
 /// Whether a metered count is zero: zero fields are not written, so the common
@@ -1031,7 +1035,7 @@ impl<'de> Deserialize<'de> for BillLine {
 /// A settlement's description on the wire, versioned.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SettlementV4<'a> {
+struct SettlementV5<'a> {
     /// The schema version — [`DESCRIPTION_VERSION`]. Spelled `v` on the wire.
     v: i64,
     request: &'a str,
@@ -1047,6 +1051,9 @@ struct SettlementV4<'a> {
     /// discount's percent, absent when none applied.
     #[serde(skip_serializing_if = "Option::is_none")]
     discount_percent: Option<i64>,
+    /// How many upstream calls the turn made, v5's addition (issue #168):
+    /// failover between channels under the one hold, counted for the audit.
+    upstream_attempts: i64,
     charged: i64,
     freeze: i64,
 }
@@ -1061,7 +1068,7 @@ impl Settlement<'_> {
     /// Refuses a description that cannot be serialised, which cannot happen for these fields; the
     /// `Result` keeps the caller honest rather than unwrapping a formality.
     pub fn description(&self) -> Result<String, WalletError> {
-        serde_json::to_string(&SettlementV4 {
+        serde_json::to_string(&SettlementV5 {
             v: DESCRIPTION_VERSION,
             request: self.request,
             channel: self.channel,
@@ -1072,6 +1079,7 @@ impl Settlement<'_> {
             lines: self.lines,
             matched_rule: self.matched_rule,
             discount_percent: self.discount_percent,
+            upstream_attempts: self.upstream_attempts,
             charged: self.charged,
             freeze: self.freeze,
         })
@@ -1127,10 +1135,13 @@ pub struct SettlementRecord {
     /// The discount the settlement applied (v4); `None` when none did — and for
     /// a v3 record, which never carried one.
     pub discount_percent: Option<i64>,
+    /// How many upstream calls the turn made (v5, issue #168); a v3/v4 record
+    /// predates failover, so it reads back as 1 — the one attempt it made.
+    pub upstream_attempts: i64,
 }
 
-/// The wire [`SettlementRecord::parse`] reads: [`SettlementV4`] owned, tolerant
-/// of v3 — its only difference is the `discountPercent` it never carried.
+/// The wire [`SettlementRecord::parse`] reads: [`SettlementV5`] owned, tolerant
+/// of v3 and v4 — the differences are fields the older writers never carried.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SettlementRecordWire {
@@ -1144,6 +1155,7 @@ struct SettlementRecordWire {
     lines: Vec<BillLine>,
     matched_rule: Option<RuleMatch>,
     discount_percent: Option<i64>,
+    upstream_attempts: Option<i64>,
     charged: i64,
     freeze: i64,
 }
@@ -1180,6 +1192,7 @@ impl SettlementRecord {
             lines: wire.lines,
             matched_rule: wire.matched_rule,
             discount_percent: wire.discount_percent,
+            upstream_attempts: wire.upstream_attempts.unwrap_or(1),
         })
     }
 }
@@ -1769,11 +1782,12 @@ mod tests {
             discount_percent: None,
             charged: 316,
             freeze: 400,
+            upstream_attempts: 1,
         };
         let json = settlement.description().unwrap();
         assert_eq!(
             json,
-            r#"{"v":4,"request":"abc","channel":"deepseek","model":"deepseek-chat","priceVersion":3,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100},"lines":[["input",116,1000000],["output",100,2000000]],"charged":316,"freeze":400}"#
+            r#"{"v":5,"request":"abc","channel":"deepseek","model":"deepseek-chat","priceVersion":3,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100},"lines":[["input",116,1000000],["output",100,2000000]],"upstreamAttempts":1,"charged":316,"freeze":400}"#
         );
         // Within the ledger's limit, whatever the model is called.
         assert!(json.len() < 512);
@@ -1802,6 +1816,7 @@ mod tests {
             discount_percent: None,
             charged: 316,
             freeze: 400,
+            upstream_attempts: 1,
         }
         .description()
         .unwrap();
@@ -1849,6 +1864,7 @@ mod tests {
             discount_percent: None,
             charged: 1,
             freeze: 1,
+            upstream_attempts: 1,
         }
         .description()
         .unwrap();
@@ -1878,6 +1894,7 @@ mod tests {
             discount_percent: None,
             charged: 316,
             freeze: 400,
+            upstream_attempts: 2,
         };
         let record = SettlementRecord::parse(&settlement.description().unwrap()).unwrap();
         assert_eq!(record.request, "abc");
@@ -1891,6 +1908,7 @@ mod tests {
         assert_eq!(record.output_price, 2_000_000);
         assert_eq!(record.charged, 316);
         assert_eq!(record.freeze, 400);
+        assert_eq!(record.upstream_attempts, 2);
         assert_eq!(record.usage, MeteredUsage::from(&usage));
         assert_eq!(record.lines.len(), 2);
 
