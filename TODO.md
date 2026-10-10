@@ -14,6 +14,8 @@ Post-roadmap validation: a manual run against a real provider found the server c
 
 Post-roadmap validation: a manual run against a real provider found `/verify?entry=` fetching the bundle but leaving the content-hash field silently empty (#183, shipped: the page now says the hash is the half the verifier's own record must supply — the server cannot fill what the check exists to hold it to).
 
+Post-roadmap validation: a manual run against a real provider found `GET /v1/models` listing `event`-mode billable codes alongside servable models, so the chat picker offered requests that could only be refused (#180, in progress here: the list keeps only what a `/v1` surface can relay).
+
 ## Next
 
 The roadmap itself is the backlog, in order: P1 billing core (P1-1…P1-7), P2 pools and deposits, P3 controls, P4 reliability, then the P5–P8 productization batches — the full list and its decisions are in docs/decisions.md under 2026-10-05. The original phases below are done — A, B and C closed, most recently C-11 (the chat page, issue #39).

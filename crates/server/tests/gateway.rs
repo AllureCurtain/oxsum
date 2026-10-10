@@ -2214,6 +2214,63 @@ async fn the_model_list_is_what_this_deployment_serves() {
     }
 }
 
+/// An `event`-mode price is a billable code for the metering API, not a model a `/v1`
+/// surface can relay — listing it would invite a chat request that can only be refused
+/// (issue #180).
+#[tokio::test]
+async fn the_model_list_leaves_out_event_mode_prices() {
+    let world = world!(0);
+    let code = world.model("evt");
+    let db = Db::from_pool(world.pool.clone());
+    db.append_price(
+        &world.channel,
+        &code,
+        oxsum_core::Price {
+            input_price_per_million: 1_000_000,
+            output_price_per_million: 0,
+            max_output_tokens: 0,
+            cache_read_price_per_million: None,
+            cache_write_5m_price_per_million: None,
+            cache_write_1h_price_per_million: None,
+            reasoning_price_per_million: None,
+            cost_per_request: None,
+            upstream: None,
+            mode: oxsum_core::BillingMode::Event,
+            rules: vec![],
+        },
+        100,
+    )
+    .await
+    .expect("the event price appends");
+
+    let request = Request::builder()
+        .uri("/v1/models")
+        .header("authorization", format!("Bearer {}", world.key))
+        .body(Body::empty())
+        .expect("the test's own request");
+    let (status, body) = json_of(
+        world
+            .app
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("the router answers"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let listed = body["data"].as_array().expect("a list of models");
+    assert!(
+        listed.iter().all(|model| model["id"] != code.as_str()),
+        "an event-mode price is not a servable model: {listed:?}"
+    );
+    // Chat prices on the same channel still list.
+    assert!(
+        listed
+            .iter()
+            .any(|model| model["id"] == world.model("ok").as_str())
+    );
+}
+
 #[tokio::test]
 async fn a_deployment_whose_key_is_missing_refuses_to_start() {
     let world = world!(1_000_000);
