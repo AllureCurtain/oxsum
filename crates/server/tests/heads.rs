@@ -313,6 +313,19 @@ async fn consistency_refuses_the_cases_that_would_prove_nothing() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 
+    // Not a number at all: the serde rejection answers the same envelope, not
+    // axum's bare text a client parsing the error format would not read (issue #181).
+    let (status, body) = call(
+        &app,
+        "GET",
+        "/api/v1/log/consistency?from=abc",
+        None,
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"].as_str().unwrap(), "VALIDATION_ERROR");
+
     // From the current size: the trivial proof, empty path.
     let (status, body) = call(
         &app,
