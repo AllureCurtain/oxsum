@@ -3479,6 +3479,7 @@ dependencies = [
  "dotenvy",
  "doubleentry",
  "hmac 0.13.0",
+ "log",
  "oxsum-verify",
  "password-auth",
  "proptest",

@@ -1211,3 +1211,9 @@ the drain has a deadline.
 - **Rejected: waiting forever.** The previous behavior — drain with no deadline — is exactly
   the reported bug, and it silently turned `docker stop` into a 10-second SIGKILL delay on
   Linux too. A lingering connection has no business holding a deployment hostage.
+
+## 2026-10-15 — The pool's WARN thresholds are raised from sqlx's defaults (issue #182)
+
+A dev deployment against local Docker PostgreSQL logged multi-second WARN entries for statements and pool acquisitions that were not actually problems — startup migrations, cold-query plans, the jobs claim's `FOR UPDATE SKIP LOCKED` scan on a near-empty table. sqlx's defaults (`slow_statements_duration` 1s, `acquire_slow_threshold` 2s, both `Warn`) are tuned for a production SLA, not for a laptop's Docker volume or a cold start; at that level every boot prints warnings that mean nothing and an operator learns to ignore the signal entirely.
+
+The fix keeps the signal and drops the noise: both thresholds are raised to 10 seconds, the point at which a statement or a pool wait is genuinely worth looking at — a 10s query on this schema is either a missing index or a stalled lock, and a 10s pool wait means the pool is saturated or a backend is hung. `test_before_acquire` is turned on so a backend killed while idle (a restarted Docker container, a network blip) is detected on checkout rather than mid-query. The tier-profile query (`tier_of`) and the jobs claim are not individually slow — their WARN entries were threshold noise; the schema's indexes already cover the scans.
