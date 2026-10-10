@@ -11,7 +11,7 @@
 //! lands on later requests and leaves in-flight turns and old bills where they are. Web sessions
 //! (TODO item 4) and the dashboard (TODO item 5) drive these same endpoints.
 
-use axum::extract::{Path, Query, Request, State};
+use axum::extract::{Path, Request, State};
 use axum::http::header::AUTHORIZATION;
 use axum::middleware::Next;
 use axum::response::Response;
@@ -27,7 +27,7 @@ use time::OffsetDateTime;
 use time::{Date, Month};
 use uuid::Uuid;
 
-use crate::error::{ApiError, ApiJson};
+use crate::error::{ApiError, ApiJson, ApiQuery};
 use crate::routes::{ApiResult, ok};
 use crate::{AppState, today};
 
@@ -288,7 +288,7 @@ struct OrganizationsPageRes {
 /// response without bound: `nextCursor` names where the walk resumes.
 async fn organizations(
     State(state): State<AppState>,
-    Query(query): Query<OrganizationsQuery>,
+    ApiQuery(query): ApiQuery<OrganizationsQuery>,
 ) -> ApiResult<OrganizationsPageRes> {
     let after = query
         .cursor
@@ -384,7 +384,7 @@ struct AuditPageRes {
 /// quiet.
 async fn audit(
     State(state): State<AppState>,
-    Query(query): Query<AuditQuery>,
+    ApiQuery(query): ApiQuery<AuditQuery>,
 ) -> ApiResult<AuditPageRes> {
     if let Some(action) = &query.action
         && !audit_action::ALL.contains(&action.as_str())
@@ -1064,7 +1064,7 @@ struct StatementsQuery {
 /// `overdue` already.
 async fn statements(
     State(state): State<AppState>,
-    Query(query): Query<StatementsQuery>,
+    ApiQuery(query): ApiQuery<StatementsQuery>,
 ) -> ApiResult<Vec<oxsum_core::Statement>> {
     // The filter names a billing month; a malformed or still-running one is a
     // validation failure rather than an empty list, so a mistyped period does

@@ -1,7 +1,9 @@
 use axum::Json;
+use axum::extract::FromRequestParts;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{FromRequest, OptionalFromRequest, Request};
+use axum::extract::{FromRequest, OptionalFromRequest, Query, Request};
 use axum::http::StatusCode;
+use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
 use oxsum_core::WalletError;
 use serde::de::DeserializeOwned;
@@ -243,6 +245,27 @@ where
             Ok(Some(Json(value))) => Ok(Some(Self(value))),
             Ok(None) => Ok(None),
             Err(rejection) => Err(rejection.into()),
+        }
+    }
+}
+
+/// The query string of an `/api/v1` request: [`Query`], with axum's rejection replaced by
+/// [`ApiError`] — the same exchange [`ApiJson`] makes for bodies. A malformed `?from=abc`
+/// is the caller's mistake and answers the envelope's 400 rather than axum's plain text,
+/// which a client that parses the envelope on every refusal would not read (issue #181).
+pub(crate) struct ApiQuery<T>(pub(crate) T);
+
+impl<T, S> FromRequestParts<S> for ApiQuery<T>
+where
+    T: DeserializeOwned + Send,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        match <Query<T> as FromRequestParts<S>>::from_request_parts(parts, state).await {
+            Ok(Query(value)) => Ok(Self(value)),
+            Err(rejection) => Err(ApiError::Validation(rejection.body_text())),
         }
     }
 }
