@@ -106,6 +106,7 @@ Copy `.env.example` to `.env` and the server and the tests pick it up automatica
 | `OXSUM_TURNSTILE_SITE_KEY` | Optional; the Cloudflare Turnstile site key the register page hands the widget — set together with `OXSUM_TURNSTILE_SECRET_KEY`, a subset is a startup error. Public by design: `auth/methods` publishes it |
 | `OXSUM_TURNSTILE_SECRET_KEY` | Optional; the secret `siteverify` authenticates with — keep it out of logs the way `OXSUM_SECRET_KEY` is kept |
 | `OXSUM_TURNSTILE_VERIFY_URL` | Tests only; the siteverify endpoint, default `https://challenges.cloudflare.com/turnstile/v0/siteverify` — a stub stands there |
+| `OXSUM_E2E_UPSTREAM_BASE_URL`, `OXSUM_E2E_UPSTREAM_API_KEY`, `OXSUM_E2E_MODEL` | Tests only; all three together opt `crates/server/tests/real_upstream.rs` into reaching a real provider — the base URL, the provider's key, and the model name it serves. Unset, the test skips before touching the network; `cargo test` never sets them and neither does CI. Keep the key in the shell environment, never in `.env` or any tracked file — the test seals it into `oxsum.channels` like a real deployment |
 | `OXSUM_RETENTION_PROVIDER_RAW_DAYS` | Optional; days a usage row keeps `usage_details.provider_raw` before the daily `retention` job nulls it — the privacy window, since the raw payload may carry prompt fragments. Default 7; the normalized columns are kept forever |
 | `OXSUM_RETENTION_DELIVERIES_DAYS` | Optional; days a delivered or failed `webhook_deliveries` row is kept. Default 30 |
 | `OXSUM_RETENTION_JOBS_DAYS` | Optional; days a finished `oxsum.jobs` row is kept — `dead` rows included, so the window is also how long `jobs_dead` drift evidence survives. Default 90 |
@@ -181,6 +182,7 @@ creates `ledger_<tenant_id>` on first use.
 | oxsum only | `cargo test -p oxsum-core -p oxsum-server` |
 | Run the end-to-end demo | `python3 demo/demo.py` (needs `pip install -r demo/requirements.txt`; starts its own mock upstream and server) |
 | Generative sequences, quick run | `PROPTEST_CASES=50 cargo test -p oxsum-core --test generative` |
+| Real-provider end-to-end check | `cargo test -p oxsum-server --test real_upstream` (needs env vars — see "Real-provider smoke check") |
 | doubleentry's Postgres tests | `cargo test -p doubleentry --features postgres --test postgres` (spins up its own container via testcontainers) |
 | Verify doubleentry builds for the browser | `cargo build -p doubleentry --features serde --target wasm32-unknown-unknown` |
 | Format | `cargo fmt --all` |
@@ -486,6 +488,15 @@ is diagnosable from its own log rather than by re-running it.
   - `crates/server/tests/` covers the HTTP layer: key auth, error format, full request chains, and that one organization's key cannot reach another's ledger; `crates/server/tests/sessions.rs` covers the login/logout/session endpoints, the cookie attributes, and the member/owner key rules over HTTP. `crates/server/tests/dashboard.rs` covers the pages' own contract: the pages render server-side, the pkg bundle is served from the real site root, the billing socket refuses an unknown session, and the shell's markup asks for the wasm module the built site holds (`pkg/oxsum.wasm`, the name cargo-leptos writes — issue #65).
 - doubleentry's own tests: changing `crates/doubleentry` requires all of them passing, including its conformance suite.
 - E2E: the full top-up → call → verify flow is covered. `crates/server/tests/chat_flow.rs` drives login, a top-up, one streaming chat turn through a scripted upstream, the billing events, and then fetches the settlement's proof bundle and verifies it with `oxsum_verify::verify_bundle`; `demo/demo.py` runs the same flow end to end with the official OpenAI SDK and prints both proof bundles for `/verify` to check. TODO.md carries the current status.
+- Real-provider E2E: `crates/server/tests/real_upstream.rs` runs the same bill path against a provider that is not a stub — registration, a manual-rail top-up, the model catalog, one non-streaming and one streaming completion against the real upstream, then reads the billing record back and verifies the proof bundle, the charge recomputation and the operator-signed tree head with the same `oxsum_verify` calls the browser makes. It is `#[ignore]`d and additionally skips unless `OXSUM_E2E_UPSTREAM_BASE_URL`, `OXSUM_E2E_UPSTREAM_API_KEY` and `OXSUM_E2E_MODEL` are all set, so it never runs in the ordinary gate or CI; the provider key lives only in the shell environment. Run it against a clean development database — the suite writes a channel sealed with its own key and needs `prepare` to open every stored channel:
+
+  ```bash
+  docker exec -i oxsum-postgres-1 psql -U postgres -d oxsum -f - < scripts/reset-dev-database.sql
+  OXSUM_E2E_UPSTREAM_BASE_URL=https://api.stepfun.com/step_plan/v1 \
+  OXSUM_E2E_UPSTREAM_API_KEY=sk-... \
+  OXSUM_E2E_MODEL=step-5-preview \
+    cargo test -p oxsum-server --test real_upstream -- --ignored --nocapture
+  ```
 
 ## Regression checklist
 
