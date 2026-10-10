@@ -1190,3 +1190,24 @@ The tracked `.cargo/config.toml` now sets `[profile.dev] debug = 1` — line tab
 - **Splitting `oxsum-server`** is the honest long-term headroom — the crate carries the whole HTTP surface plus the Leptos shell — but it is a restructure, not a fix for a config gap.
 
 Anyone needing full debuginfo per build can still override with `CARGO_PROFILE_DEV_DEBUG=2`, accepting that the link may then fail on MSVC.
+
+## 2026-10-10 — Shutdown drains on three signals, bounded by a deadline (issue #179)
+
+A manual deployment run found the process surviving CTRL+C: the console event reached the
+handler — CTRL+BREAK's default kill proved delivery — yet the process stayed up for minutes
+with nothing in flight. Whether the wedged piece was the signal future or hyper's drain
+waiting on a connection its client never lets go of, one guarantee settles the whole class:
+the drain has a deadline.
+
+- **Three signals, one select.** `shutdown_signal` resolves on `CTRL_C`, `SIGTERM` (`docker
+  stop`, systemd), and `CTRL_BREAK` on Windows — the console event a deployment can always
+  raise, even onto a process group created with CTRL+C disabled. A listener that fails to
+  install pends rather than firing: a broken arm is not a shutdown request.
+- **The drain is bounded.** Nine seconds after the signal the process exits with open
+  connections still open — comfortably under `docker stop`'s ten-second SIGTERM grace, so a
+  supervisor's escalated kill and the in-built deadline answer the same way. A stream killed
+  mid-flight is not lost money: the sweeper settles the hold at zero, as it does for any
+  crash.
+- **Rejected: waiting forever.** The previous behavior — drain with no deadline — is exactly
+  the reported bug, and it silently turned `docker stop` into a 10-second SIGKILL delay on
+  Linux too. A lingering connection has no business holding a deployment hostage.

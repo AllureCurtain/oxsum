@@ -331,6 +331,14 @@ Upgrade is pull the image, stop, start: migrations run, the pool opens, the
 server serves. The contract `openapi.yaml` versions additively, so a client that
 worked against release N works against N+1.
 
+"Stop" is the first of the signals the server drains on: `SIGTERM` (what
+`docker stop` and systemd send), `CTRL_C` on an interactive console, or
+`CTRL_BREAK` on Windows. The listener closes and in-flight requests finish.
+The drain is bounded: a connection a client never lets go of cannot hold the
+process open, so nine seconds after the signal the process exits regardless —
+just under `docker stop`'s default SIGTERM grace — and the sweeper settles
+whatever the exit left in flight.
+
 Rollback is `docker run` the previous image — with one honest limit: migrations
 are forward-only. A release that added a table or relaxed a constraint leaves a
 database the older binary tolerates (the schema is a superset of what it
