@@ -10,7 +10,11 @@ Post-roadmap validation: a manual run against a real provider (StepFun) verified
 
 Post-roadmap validation: a manual run against a real provider found `GET /api/v1/log/consistency?from=abc` answering axum's bare text instead of the error envelope (#181, shipped: an `ApiQuery` extractor maps every query-string rejection onto `VALIDATION_ERROR`, the same exchange `ApiJson` made for bodies under #51).
 
+<<<<<<< HEAD
 Post-roadmap validation: a manual run against a real provider found the server could not be stopped gracefully in some environments (#179, in progress here: `shutdown_signal` now also drains on `SIGTERM` — what `docker stop` and systemd send — and on `CTRL_BREAK` on Windows, where a console can raise it even onto a CTRL+C-disabled process group, and the drain itself is bounded — nine seconds after the signal the process exits regardless of connections a client never lets go of).
+=======
+Post-roadmap validation: a manual run against a real provider found `/verify?entry=` fetching the bundle but leaving the content-hash field silently empty (#183, in progress here: the page now says the hash is the half the verifier's own record must supply — the server cannot fill what the check exists to hold it to).
+>>>>>>> 5380381 (Say why the prefilled verify page leaves the content hash empty)
 
 ## Next
 

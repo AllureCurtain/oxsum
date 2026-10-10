@@ -3089,6 +3089,22 @@ fn VerifyPage() -> impl IntoView {
                         "Verify"
                     </button>
                 </form>
+                {move || {
+                    // `?entry=` fetched the bundle but the hash stays empty on purpose: it
+                    // is the half of the check that must come from the verifier's own
+                    // record, because a hash this page fetched itself would prove nothing
+                    // about the server that answered (issue #183).
+                    (entry.get_value().is_some()
+                        && !bundle.get().trim().is_empty()
+                        && content_hash.get().trim().is_empty())
+                    .then(|| view! {
+                        <p class="muted" role="note">
+                            "The bundle was fetched for you; the content hash was not, on purpose — "
+                            "it is the half of the check that has to come from your own record, "
+                            "not from this server. Paste the hash saved with the bill."
+                        </p>
+                    })
+                }}
                 {move || outcome.get().map(|outcome| view! { <Verdict outcome=outcome/> })}
                 {move || load_error.get().map(|error| view! {
                     <p class="error" role="alert">
