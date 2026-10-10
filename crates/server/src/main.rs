@@ -80,19 +80,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "oxsum listening");
-    shutdown_signal().await;
-    // The drain is bounded: a connection the client never lets go of — a lingering
-    // keep-alive socket, a stream that outlives its requester — must not keep the
-    // process alive past the supervisor's patience (issue #179). After the grace
-    // window the process leaves anyway, and the sweeper settles what the exit left.
-    match tokio::time::timeout(
-        SHUTDOWN_GRACE,
-        axum::serve(listener, app).with_graceful_shutdown(std::future::ready(())),
-    )
-    .await
-    {
-        Ok(result) => result?,
-        Err(_) => tracing::warn!(
+    // The signal starts the drain; the deadline bounds it. A connection the client
+    // never lets go of — a lingering keep-alive socket, a stream that outlives its
+    // requester — must not keep the process alive past the supervisor's patience
+    // (issue #179): after the grace window the process leaves anyway, and the
+    // sweeper settles what the exit left.
+    tokio::select! {
+        result = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()) => result?,
+        () = drain_deadline() => tracing::warn!(
             secs = SHUTDOWN_GRACE.as_secs(),
             "shutdown drain timed out; exiting with connections still open"
         ),
@@ -105,6 +100,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// of SIGTERM grace before SIGKILL, Kubernetes 30 s, so a stream still in flight
 /// gets a real chance to settle).
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(9);
+
+/// The drain's deadline: starts counting only once a shutdown signal has arrived —
+/// every signal listener tokio registers receives the event, so this second
+/// subscription races nothing — and otherwise pends forever beside `axum::serve`.
+async fn drain_deadline() {
+    shutdown_signal().await;
+    tokio::time::sleep(SHUTDOWN_GRACE).await;
+}
 
 /// `oxsum seed` (roadmap P7-4): populates the demo world and prints the logins
 /// and the first key's secret — the only place the secret is ever visible.
