@@ -8,6 +8,8 @@ The productization roadmap (docs/decisions.md, 2026-10-05: P1-1 through P8-4) is
 
 Post-roadmap validation: a manual run against a real provider (StepFun) verified the whole bill path end to end and surfaced one defect — streaming turns that complete normally settle `client_cancelled` when the client closes at `[DONE]` (#178, in progress here: the terminator the relay already observes now marks the turn finished). Follow-ups: the opt-in real-provider E2E suite (#177) and the Windows dev-build `debug = 1` fix (#176).
 
+Post-roadmap validation: a manual run against a real provider found `GET /api/v1/log/consistency?from=abc` answering axum's bare text instead of the error envelope (#181, in progress here: an `ApiQuery` extractor maps every query-string rejection onto `VALIDATION_ERROR`, the same exchange `ApiJson` made for bodies under #51).
+
 ## Next
 
 The roadmap itself is the backlog, in order: P1 billing core (P1-1…P1-7), P2 pools and deposits, P3 controls, P4 reliability, then the P5–P8 productization batches — the full list and its decisions are in docs/decisions.md under 2026-10-05. The original phases below are done — A, B and C closed, most recently C-11 (the chat page, issue #39).
