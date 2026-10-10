@@ -1578,11 +1578,13 @@ async fn a_minted_code_redeems_once_into_the_purchased_pool() {
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
     assert_eq!(body["error"]["code"], "NOT_FOUND");
 
-    // An unknown code and a malformed one are the same answer.
-    for code in [
-        codes[0].as_str().unwrap().replace('a', "b"),
-        "oxr-short".to_owned(),
-    ] {
+    // An unknown code and a malformed one are the same answer. The unknown one is
+    // the minted code with its last hex digit flipped — a `replace` on a character
+    // the code happens not to contain would re-submit the real code (issue #185).
+    let mut unknown = codes[0].as_str().unwrap().to_owned();
+    let last = unknown.pop().expect("a minted code is never empty");
+    unknown.push(if last == 'f' { 'e' } else { 'f' });
+    for code in [unknown, "oxr-short".to_owned()] {
         let (status, body) = call_with(
             &app,
             "POST",
