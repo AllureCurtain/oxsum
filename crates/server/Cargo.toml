@@ -64,6 +64,8 @@ tower.workspace = true
 uuid.workspace = true
 # Integration tests verify tree-head notes and consistency proofs with the real types.
 doubleentry.workspace = true
+# `real_upstream.rs` runs the same signed-head check the browser runs.
+oxsum-verify.workspace = true
 # Decoding the published verifying key in the head tests.
 base64.workspace = true
 
