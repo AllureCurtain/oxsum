@@ -80,11 +80,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "oxsum listening");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    shutdown_signal().await;
+    // The drain is bounded: a connection the client never lets go of — a lingering
+    // keep-alive socket, a stream that outlives its requester — must not keep the
+    // process alive past the supervisor's patience (issue #179). After the grace
+    // window the process leaves anyway, and the sweeper settles what the exit left.
+    match tokio::time::timeout(
+        SHUTDOWN_GRACE,
+        axum::serve(listener, app).with_graceful_shutdown(std::future::ready(())),
+    )
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => tracing::warn!(
+            secs = SHUTDOWN_GRACE.as_secs(),
+            "shutdown drain timed out; exiting with connections still open"
+        ),
+    }
     Ok(())
 }
+
+/// How long a shutdown drain may hold the process open before it exits anyway —
+/// comfortably under a supervisor's kill timeout (`docker stop` defaults to 10 s
+/// of SIGTERM grace before SIGKILL, Kubernetes 30 s, so a stream still in flight
+/// gets a real chance to settle).
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(9);
 
 /// `oxsum seed` (roadmap P7-4): populates the demo world and prints the logins
 /// and the first key's secret — the only place the secret is ever visible.
@@ -145,8 +165,53 @@ fn required_env(name: &str) -> Result<String, String> {
     }
 }
 
+/// Resolves on the first shutdown signal the platform delivers: `CTRL_C` everywhere,
+/// `SIGTERM` where a service manager or `docker stop` sends it, and `CTRL_BREAK` on
+/// Windows — the console event a deployment can always raise, including onto a
+/// process group that was created with CTRL+C disabled (issue #179). A listener
+/// that fails to install pends instead of firing: a broken arm is not a shutdown
+/// request, and the other arms still work.
 async fn shutdown_signal() {
-    if let Err(e) = tokio::signal::ctrl_c().await {
-        tracing::error!(error = %e, "failed to listen for ctrl-c");
+    let ctrl_c = async {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            tracing::error!(error = %e, "failed to listen for ctrl-c");
+            std::future::pending::<()>().await;
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sigterm) => {
+                sigterm.recv().await;
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to listen for SIGTERM");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    #[cfg(windows)]
+    let ctrl_break = async {
+        match tokio::signal::windows::ctrl_break() {
+            Ok(mut sigbreak) => {
+                sigbreak.recv().await;
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to listen for ctrl-break");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(windows))]
+    let ctrl_break = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => tracing::info!("ctrl-c received; draining in-flight requests"),
+        _ = terminate => tracing::info!("SIGTERM received; draining in-flight requests"),
+        _ = ctrl_break => tracing::info!("ctrl-break received; draining in-flight requests"),
     }
 }
