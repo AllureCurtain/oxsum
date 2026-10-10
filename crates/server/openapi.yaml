@@ -2875,9 +2875,11 @@ paths:
     get:
       summary: List the served models, in OpenAI's shape
       description: |
-        Only models with a price are listed: a model the gateway cannot price cannot be frozen, so it
-        cannot be served. `owned_by` is the channel that serves the model, and `created` is when the
-        version in force was written.
+        Only models with a relayable price are listed: a model the gateway cannot price cannot be
+        frozen, so it cannot be served — and a `mode: event` price is a billable code for
+        `/api/v1/metering`, not a model any `/v1` surface relays, so it is not listed either.
+        `owned_by` is the channel that serves the model, and `created` is when the version in force
+        was written.
       responses:
         "200":
           description: The model list

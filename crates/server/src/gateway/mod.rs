@@ -22,8 +22,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router, middleware};
 use http_body_util::{BodyExt, StreamBody};
 use oxsum_core::{
-    ActingKey, Claim, OpenHold, Organization, Serving, SettlementKind, WalletError, fingerprint,
-    hold_description, route_order,
+    ActingKey, BillingMode, Claim, OpenHold, Organization, Serving, SettlementKind, WalletError,
+    fingerprint, hold_description, route_order,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -74,9 +74,12 @@ pub fn router(state: AppState) -> Router<AppState> {
 /// Lists the models this deployment can serve, in OpenAI's shape.
 ///
 /// Only models with a price appear: a model the gateway cannot price cannot be frozen, so it is not
-/// served at all. `created` is when the version in force was written — the closest thing a price row
-/// has to a creation time — and `owned_by` is the channel that serves it. A model served by
-/// several channels lists once, under the route that leads it (issue #168).
+/// served at all. An `event`-mode price is not a model at all — it is the billable code a service
+/// reports on `/api/v1/metering`, which no `/v1` surface relays — so it stays out of the list
+/// rather than inviting a chat request that can only be refused (issue #180). `created` is when
+/// the version in force was written — the closest thing a price row has to a creation time — and
+/// `owned_by` is the channel that serves it. A model served by several channels lists once, under
+/// the route that leads it (issue #168).
 async fn models(State(state): State<AppState>) -> Response {
     let channels = match state.db.channels().await {
         Ok(channels) => channels,
@@ -97,6 +100,9 @@ async fn models(State(state): State<AppState>) -> Response {
     let mut listed: std::collections::BTreeMap<String, (i64, Value)> = Default::default();
     for channel in channels {
         for model in channel.models {
+            if model.price.mode == BillingMode::Event {
+                continue;
+            }
             let entry = (
                 model.weight,
                 json!({
