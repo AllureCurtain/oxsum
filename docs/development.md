@@ -56,6 +56,10 @@ docker exec -i oxsum-postgres-1 psql -U postgres -d oxsum -f - < scripts/reset-d
 
 `crates/doubleentry` Postgres tests run against throwaway containers instead, started by testcontainers. They clean up after themselves, but an interrupted run or a Docker restart can leave the container behind; `docker container prune` and `docker volume prune` clear what is no longer attached.
 
+### Debug info in dev builds
+
+`.cargo/config.toml` sets `[profile.dev] debug = 1` — line tables, not full debuginfo. This is not a speed preference: at full `debug = 2` the `liboxsum_server` rlib grows past 4 GB, and the COFF archive index cannot address members beyond 4 GiB, so `cargo build -p oxsum-server` fails at link time with a hundred-odd unresolved oxsum_server symbols (issue #176). Line tables keep file:line in backtraces while staying well under the limit. Anyone who needs full debuginfo for a session can override per invocation — `CARGO_PROFILE_DEV_DEBUG=2 cargo build ...` — knowing the resulting rlib may not link on MSVC.
+
 ## Branch naming
 
 Each branch contains one issue or PR and uses lowercase ASCII in this form:

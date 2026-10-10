@@ -1178,3 +1178,15 @@ Rejected:
 - **Reusing the v5 description with `service` wedged into `metadata`**: the reporter is first-class audit data — who billed this is the question a disputed metered bill answers — and description fields are cheap; an optional off to the side is how fields get lost.
 
 Pinned by `crates/core/tests/metering.rs` (hold/settle/release/one-shot, replay after watch-row cleanup, pinned versions, suspension, insolvency, unpriced dimensions, the sweep), `crates/server/tests/metering.rs` (all four endpoints, the credential lifecycle, wrong-surface refusals, 402/409 paths, the billing-record read-back) and `crates/verify`'s v6 cases.
+
+## 2026-10-15 — Dev builds shrink debug info: the rlib must stay under 4 GiB (issue #176)
+
+A plain `cargo build -p oxsum-server` from the repository root on Windows failed deterministically: `link.exe` exit 1120 with ~98 unresolved externals, every one of them an `oxsum_server` monomorphization. The cause is size, not staleness — a full `cargo clean` and rebuild reproduced it byte for byte. With the default `debug = 2` the `liboxsum_server` rlib reaches about 4.6 GB, and the COFF archive's member index stores four-byte offsets: object members past the 4 GiB boundary exist on disk but are unreachable to the linker, producing a fixed set of missing symbols.
+
+The tracked `.cargo/config.toml` now sets `[profile.dev] debug = 1` — line tables instead of full debuginfo — mirroring what `.worktrees/.cargo/config.toml` has carried locally since the worktree flow began. The alternative cures were rejected:
+
+- **Package-scoped `debug`** (`profile.dev.package.oxsum-server`) narrows the blast radius but leaves the failure one dependency bump away: at `debug = 2` several rlibs grow multi-GB and any crate near the boundary breaks the same way. The uniform setting is also what the worktrees already proved — every test binary links `liboxsum_server` at `debug = 1` without issue.
+- **`strip = "debuginfo"`** applies to final artifacts, not to the objects packed inside an rlib, so it does not shrink the archive that overflows.
+- **Splitting `oxsum-server`** is the honest long-term headroom — the crate carries the whole HTTP surface plus the Leptos shell — but it is a restructure, not a fix for a config gap.
+
+Anyone needing full debuginfo per build can still override with `CARGO_PROFILE_DEV_DEBUG=2`, accepting that the link may then fail on MSVC.
