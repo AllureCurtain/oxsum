@@ -3516,6 +3516,7 @@ dependencies = [
  "metrics",
  "metrics-exporter-prometheus",
  "oxsum-core",
+ "oxsum-verify",
  "oxsum-web",
  "rand 0.10.3",
  "regex",
