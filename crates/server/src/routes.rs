@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use axum::extract::{Extension, Path, Query, State};
+use axum::extract::{Extension, Path, State};
 use axum::http::header::SET_COOKIE;
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Redirect, Response};
@@ -18,7 +18,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::auth::{require_principal, session_cookie_value};
-use crate::error::{ApiError, ApiJson};
+use crate::error::{ApiError, ApiJson, ApiQuery};
 use crate::{AppState, Signup, today};
 
 /// The `/api/v1` surface, plus the routes served outside it: health, the gateway, the
@@ -528,7 +528,7 @@ struct DeviceRequestQuery {
 async fn device_request(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
-    Query(query): Query<DeviceRequestQuery>,
+    ApiQuery(query): ApiQuery<DeviceRequestQuery>,
 ) -> ApiResult<DeviceRequest> {
     person_only(&principal)?;
     ok(state.db.device_request(&query.code).await?)
@@ -652,7 +652,7 @@ struct OAuthCallbackQuery {
 /// never to the query string the page would show.
 async fn oauth_github_callback(
     State(state): State<AppState>,
-    Query(query): Query<OAuthCallbackQuery>,
+    ApiQuery(query): ApiQuery<OAuthCallbackQuery>,
 ) -> Response {
     match oauth_github_finish(&state, &query).await {
         Ok(response) => response,
@@ -1495,7 +1495,7 @@ fn parse_day(value: &str) -> Result<time::Date, ApiError> {
 async fn usage(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
-    Query(query): Query<UsageQuery>,
+    ApiQuery(query): ApiQuery<UsageQuery>,
 ) -> ApiResult<UsageRes> {
     let to = query
         .to
@@ -1551,7 +1551,7 @@ struct RecordsQuery {
 async fn billing_records(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
-    Query(query): Query<RecordsQuery>,
+    ApiQuery(query): ApiQuery<RecordsQuery>,
 ) -> ApiResult<RecordsRes> {
     let limit = query.limit.unwrap_or(RECORDS_DEFAULT_LIMIT);
     if !(1..=RECORDS_MAX_LIMIT).contains(&limit) {
@@ -1817,7 +1817,7 @@ struct ConsistencyQuery {
 async fn log_consistency(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
-    Query(q): Query<ConsistencyQuery>,
+    ApiQuery(q): ApiQuery<ConsistencyQuery>,
 ) -> ApiResult<ConsistencyRes> {
     let key = head_signing_key(&state)?;
     let w = wallet(&state.tenants, principal.organization()).await?;
