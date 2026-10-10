@@ -13,6 +13,7 @@ base64.workspace = true
 doubleentry.workspace = true
 oxsum-verify.workspace = true
 hmac.workspace = true
+log.workspace = true
 password-auth.workspace = true
 rand.workspace = true
 serde.workspace = true

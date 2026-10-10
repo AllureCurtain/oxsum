@@ -7,7 +7,7 @@
 //! versioned here. The two never mix.
 
 use sqlx::postgres::PgPoolOptions;
-use sqlx::{Acquire, PgConnection, PgPool};
+use sqlx::{Acquire, ConnectOptions, PgConnection, PgPool};
 
 use crate::error::WalletError;
 
@@ -153,10 +153,25 @@ impl Db {
     /// `max_connections` is the process's whole connection budget, not a per-tenant or
     /// per-request allowance: each PostgreSQL connection is a backend process. See
     /// docs/decisions.md, "all tenants share one connection pool".
+    ///
+    /// The pool's slow-statement and slow-acquire WARN thresholds are raised from sqlx's
+    /// defaults (1s / 2s), which a local Docker or a cold start routinely trips without
+    /// meaning anything is wrong. 10 seconds is the point at which a statement or a
+    /// pool wait is actually worth an operator's look — anything shorter is noise on a
+    /// dev machine and still catches the real stall in production (issue #182).
     pub async fn connect(database_url: &str, max_connections: u32) -> Result<Self, WalletError> {
+        let options: sqlx::postgres::PgConnectOptions = database_url.parse()?;
+        let options = options
+            .log_slow_statements(log::LevelFilter::Warn, std::time::Duration::from_secs(10))
+            .application_name("oxsum");
         let pool = PgPoolOptions::new()
             .max_connections(max_connections)
-            .connect(database_url)
+            .acquire_slow_threshold(std::time::Duration::from_secs(10))
+            // A dropped connection gets detected on checkout, not on use: the
+            // pool pings before handing it over, so a stale backend never serves
+            // a query that then dies mid-flight.
+            .test_before_acquire(true)
+            .connect_with(options)
             .await?;
         Ok(Self { pool })
     }
