@@ -15,3 +15,12 @@
 # build is rebuilt when the value changes.
 [env]
 LEPTOS_OUTPUT_NAME = "oxsum"
+
+# Full debuginfo makes liboxsum_server-*.rlib about 4.6 GB, which crosses the
+# COFF archive member index's 4 GiB offset limit: link.exe then reports ~98
+# unresolved externals, all of them symbols living past the boundary — a
+# deterministic failure no amount of `cargo clean` fixes. Line tables keep
+# backtraces useful while shrinking rlibs below the limit; release builds keep
+# full fidelity because they ship without debug info anyway (issue #176).
+[profile.dev]
+debug = 1
