@@ -516,7 +516,10 @@ impl Plan {
                     ),
                     upstream_attempts: self.upstream_attempts,
                 };
-                if let Err(error) = self.db.record_usage(&row).await {
+                // The post-settle balance feeds `balance.low`; a read that
+                // fails skips the check rather than blocking the record.
+                let available = self.wallet.available().await.ok();
+                if let Err(error) = self.db.record_usage_balanced(&row, available).await {
                     tracing::error!(%error, request = %self.request,
                         "recording the settled turn's usage row failed");
                 }

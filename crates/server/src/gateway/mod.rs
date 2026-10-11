@@ -575,6 +575,15 @@ async fn run(
         if let Err(clear) = state.db.clear_open_hold(&hold_key).await {
             tracing::error!(%clear, "clearing a refused hold's watch row failed");
         }
+        if matches!(error, oxsum_core::WalletError::InsufficientFunds) {
+            // A credit-line organization's 402 announces itself
+            // (issue #200) — best-effort, since the refusal left no
+            // transaction to enqueue into.
+            state
+                .db
+                .notify_credit_limit_exceeded(organization.id, &wallet)
+                .await;
+        }
         return Err(match error {
             oxsum_core::WalletError::InsufficientFunds => {
                 // Reading the balance again can fail; saying so beats reporting a balance of zero.
