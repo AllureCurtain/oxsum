@@ -358,6 +358,23 @@ impl Db {
     ///
     /// Storage failures surface as [`WalletError`].
     pub async fn record_usage(&self, row: &UsageRow) -> Result<(), WalletError> {
+        self.record_usage_balanced(row, None).await
+    }
+
+    /// `record_usage` carrying the post-settle balance: `available` is the
+    /// organization's balance after this settlement, in minor units, when the
+    /// caller holds the wallet to read it — the figure `balance.low` judges its
+    /// threshold against (issue #200). `None` (a caller without the wallet in
+    /// hand) skips the check rather than guess at a balance.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn record_usage_balanced(
+        &self,
+        row: &UsageRow,
+        available: Option<i64>,
+    ) -> Result<(), WalletError> {
         let mut tx = self.pool().begin().await?;
         let inserted = sqlx::query(
             "INSERT INTO oxsum.usage_records \
@@ -491,6 +508,29 @@ impl Db {
             }),
         )
         .await?;
+        // An anomalous close is its own event (issue #200): a `usage` row and a
+        // zero-charge refusal carry no anomaly to report.
+        Self::enqueue_anomaly(
+            &mut tx,
+            &row.tenant_id,
+            row.kind,
+            serde_json::json!({
+                "requestId": row.request_id,
+                "model": row.model,
+                "channel": row.channel,
+                "kind": row.kind.as_str(),
+                "chargedMinor": row.charged_minor,
+                "freezeMinor": row.freeze_minor,
+                "settlementEntryId": row.entry_id,
+                "upstreamAttempts": row.upstream_attempts,
+            }),
+        )
+        .await?;
+        // balance.low judges the post-settle balance the caller measured against
+        // the endpoint's threshold, once per crossing (issue #200).
+        if let (Some(available), Ok(organization)) = (available, Uuid::parse_str(&row.tenant_id)) {
+            Self::enqueue_balance_low(&mut tx, organization, available).await?;
+        }
         tx.commit().await?;
         Ok(())
     }

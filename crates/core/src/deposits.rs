@@ -61,14 +61,26 @@ impl Db {
     /// `POST /topups` leaves a row here too, so `deposits` is the one table
     /// reconciliation (P4-1) reads for money in. The caller's idempotency key is the
     /// payment reference — a replayed top-up sees its own row and writes nothing.
+    ///
+    /// A landing deposit enqueues `deposit.credited` for every subscribed webhook
+    /// endpoint in the same transaction (issue #200), so the row and its
+    /// notification commit or roll back together — and a replayed top-up, which
+    /// inserts no row, enqueues nothing. The credit also clears every armed
+    /// `balance.low` latch the new balance now sits above.
+    ///
+    /// `available` is the wallet's balance after the credit, read by the caller
+    /// that holds the wallet; the latch clears only when the deposit lifted the
+    /// organization back over the line.
     pub async fn record_manual_deposit(
         &self,
         organization_id: Uuid,
         idempotency_key: &str,
         amount_minor: i64,
         entry_id: Uuid,
+        available: Option<i64>,
     ) -> Result<(), WalletError> {
-        sqlx::query(
+        let mut tx = self.pool().begin().await?;
+        let inserted = sqlx::query(
             "INSERT INTO oxsum.deposits \
                  (deposit_id, organization_id, rail, payment_ref, amount_minor, \
                   received_minor, status, entry_id) \
@@ -81,8 +93,27 @@ impl Db {
         .bind(idempotency_key)
         .bind(amount_minor)
         .bind(entry_id)
-        .execute(self.pool())
-        .await?;
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if inserted > 0 {
+            Self::enqueue_event(
+                &mut tx,
+                organization_id,
+                crate::webhooks::DEPOSIT_CREDITED,
+                serde_json::json!({
+                    "rail": RAIL_MANUAL,
+                    "paymentRef": idempotency_key,
+                    "amountMinor": amount_minor,
+                    "entryId": entry_id,
+                }),
+            )
+            .await?;
+            if let Some(available) = available {
+                Self::clear_balance_low(&mut tx, organization_id, available).await?;
+            }
+        }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -243,15 +274,39 @@ impl Db {
         let receipt = wallet
             .top_up(&redeem_key(code_id), amount_minor, on)
             .await?;
-        sqlx::query(
+        // The deposit flips to `credited`, the `deposit.credited` event and the
+        // `balance.low` latch-clear share the transaction (issue #200): a retried
+        // redeem whose deposit is already credited flips no row and enqueues
+        // nothing.
+        let mut tx = self.pool().begin().await?;
+        let flipped = sqlx::query(
             "UPDATE oxsum.deposits \
              SET status = 'credited', entry_id = $1, updated_at = now() \
-             WHERE deposit_id = $2",
+             WHERE deposit_id = $2 AND status <> 'credited'",
         )
         .bind(*receipt.entry_id.as_uuid())
         .bind(deposit_id)
-        .execute(self.pool())
-        .await?;
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if flipped > 0 {
+            Self::enqueue_event(
+                &mut tx,
+                organization_id,
+                crate::webhooks::DEPOSIT_CREDITED,
+                serde_json::json!({
+                    "rail": RAIL_REDEMPTION,
+                    "paymentRef": code_id.to_string(),
+                    "amountMinor": amount_minor,
+                    "entryId": receipt.entry_id.as_uuid(),
+                }),
+            )
+            .await?;
+            if let Ok(available) = wallet.available().await {
+                Self::clear_balance_low(&mut tx, organization_id, available).await?;
+            }
+        }
+        tx.commit().await?;
         Ok(Redemption {
             receipt,
             amount_minor,
