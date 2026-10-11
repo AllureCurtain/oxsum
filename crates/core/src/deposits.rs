@@ -34,6 +34,8 @@ pub const MAX_BATCH: i64 = 1000;
 pub const RAIL_MANUAL: &str = "manual";
 /// The rail redemption codes write under.
 pub const RAIL_REDEMPTION: &str = "redemption";
+/// The rail Stripe Checkout writes under (issue #201).
+pub const RAIL_STRIPE: &str = "stripe";
 
 /// A freshly minted batch: the only time the codes are visible.
 #[derive(Debug, Clone, Serialize)]
@@ -114,6 +116,270 @@ impl Db {
             }
         }
         tx.commit().await?;
+        Ok(())
+    }
+
+    /// Opens a Stripe-rail deposit before the checkout session exists: `pending`,
+    /// keyed by `payment_ref = <idempotency_key>`, which stays the row's anchor
+    /// for its whole life — the session id lands in `meta` when Stripe answers.
+    /// The caller's idempotency key makes the intent row itself replay-safe: a
+    /// retried `POST /topups/stripe` with the same key finds the same pending
+    /// deposit rather than opening a second one.
+    ///
+    /// The deposit must exist before the session is created: the session's
+    /// `client_reference_id` carries the deposit id, so a row must already be
+    /// there for the webhook to find.
+    ///
+    /// Returns `true` when the row was inserted — a `false` answer means the
+    /// idempotency key already opened this deposit, and the caller should look
+    /// up the existing row rather than open a second checkout session.
+    ///
+    /// A non-positive amount is refused the way every credit write is.
+    pub async fn open_stripe_deposit(
+        &self,
+        organization_id: Uuid,
+        deposit_id: Uuid,
+        idempotency_key: &str,
+        amount_minor: i64,
+    ) -> Result<bool, WalletError> {
+        if amount_minor <= 0 {
+            return Err(WalletError::InvalidInput(
+                "a deposit's amount must be positive".into(),
+            ));
+        }
+        let inserted = sqlx::query(
+            "INSERT INTO oxsum.deposits \
+                 (deposit_id, organization_id, rail, payment_ref, amount_minor, status) \
+             VALUES ($1, $2, $3, $4, $5, 'pending') \
+             ON CONFLICT (rail, organization_id, payment_ref) DO NOTHING",
+        )
+        .bind(deposit_id)
+        .bind(organization_id)
+        .bind(RAIL_STRIPE)
+        .bind(idempotency_key)
+        .bind(amount_minor)
+        .execute(self.pool())
+        .await?
+        .rows_affected();
+        Ok(inserted > 0)
+    }
+
+    /// Finds the pending deposit an idempotency key already opened — the lookup
+    /// `POST /topups/stripe` runs on a replayed intent, to answer the same
+    /// checkout URL instead of minting a second Stripe session. Returns the
+    /// deposit's id and the checkout URL Stripe answered when the session was
+    /// created (recorded in `meta`).
+    pub async fn find_stripe_deposit(
+        &self,
+        organization_id: Uuid,
+        idempotency_key: &str,
+    ) -> Result<Option<(Uuid, Option<String>)>, WalletError> {
+        let row = sqlx::query(
+            "SELECT deposit_id, meta->>'stripeCheckoutUrl' AS checkout_url \
+             FROM oxsum.deposits \
+             WHERE rail = $1 AND organization_id = $2 AND payment_ref = $3",
+        )
+        .bind(RAIL_STRIPE)
+        .bind(organization_id)
+        .bind(idempotency_key)
+        .fetch_optional(self.pool())
+        .await?;
+        match row {
+            Some(row) => {
+                use sqlx::Row;
+                Ok(Some((
+                    row.try_get("deposit_id")?,
+                    row.try_get("checkout_url")?,
+                )))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Records Stripe's session id and checkout URL in the deposit's metadata.
+    /// The `payment_ref` stays the caller's idempotency key — the UNIQUE
+    /// constraint is what makes a replayed intent idempotent — while
+    /// `meta.stripeSessionId` is the handle the webhook names when it comes
+    /// back, and `meta.stripeCheckoutUrl` is what a replayed intent answers.
+    pub async fn stripe_session_id(
+        &self,
+        deposit_id: Uuid,
+        session_id: &str,
+        checkout_url: &str,
+    ) -> Result<(), WalletError> {
+        sqlx::query(
+            "UPDATE oxsum.deposits \
+             SET meta = meta || jsonb_build_object(\
+                     'stripeSessionId', $1::text, \
+                     'stripeCheckoutUrl', $2::text\
+                 ), \
+                 updated_at = now() \
+             WHERE deposit_id = $3 AND rail = $4 AND status = 'pending'",
+        )
+        .bind(session_id)
+        .bind(checkout_url)
+        .bind(deposit_id)
+        .bind(RAIL_STRIPE)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
+    /// Finds the Stripe deposit a webhook names: `meta.stripeSessionId`
+    /// matches the session Stripe calls back for. `payment_ref` is the
+    /// caller's idempotency key, not the session id — the webhook identifies
+    /// the deposit through the session id, which the intent handler wrote
+    /// into metadata when the session was created.
+    pub async fn find_stripe_by_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<(Uuid, Uuid, String)>, WalletError> {
+        let row = sqlx::query(
+            "SELECT d.deposit_id, d.organization_id, o.tenant_id \
+             FROM oxsum.deposits d \
+             JOIN oxsum.organizations o ON o.organization_id = d.organization_id \
+             WHERE d.rail = $1 AND d.meta->>'stripeSessionId' = $2 \
+             ORDER BY d.created_at DESC LIMIT 1",
+        )
+        .bind(RAIL_STRIPE)
+        .bind(session_id)
+        .fetch_optional(self.pool())
+        .await?;
+        match row {
+            Some(row) => {
+                use sqlx::Row;
+                Ok(Some((
+                    row.try_get("deposit_id")?,
+                    row.try_get("organization_id")?,
+                    row.try_get("tenant_id")?,
+                )))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Moves a Stripe deposit to `confirmed` — the webhook's first act on
+    /// `checkout.session.completed`, before the ledger credit runs. The row is
+    /// taken `FOR UPDATE` so two concurrent webhook deliveries for the same
+    /// session cannot both proceed to credit.
+    ///
+    /// Returns `true` when the row moved, `false` when it was already past
+    /// `pending` — a replayed or raced webhook answers `false` and credits
+    /// nothing twice.
+    pub async fn confirm_stripe_deposit(&self, deposit_id: Uuid) -> Result<bool, WalletError> {
+        let flipped = sqlx::query(
+            "UPDATE oxsum.deposits \
+             SET status = 'confirmed', updated_at = now() \
+             WHERE deposit_id = $1 AND rail = $2 AND status = 'pending'",
+        )
+        .bind(deposit_id)
+        .bind(RAIL_STRIPE)
+        .execute(self.pool())
+        .await?
+        .rows_affected();
+        Ok(flipped > 0)
+    }
+
+    /// Credits the wallet for a confirmed Stripe deposit and flips the row to
+    /// `credited` — the same `deposit.credited` event and `balance.low`
+    /// latch-clear as every other rail, in the deposit-update transaction.
+    ///
+    /// The credit runs under the fixed key `stripe:<session_id>`: a replayed
+    /// webhook finds its own credited deposit and writes nothing twice, and a
+    /// crash between the ledger append and the row flip leaves a confirmed
+    /// deposit the retry resumes.
+    ///
+    /// `received_minor` is what Stripe reports the session paid: a number that
+    /// disagrees with `amount_minor` is recorded for a human, never
+    /// auto-patched (decision D2).
+    ///
+    /// Returns the receipt and organization id when a credit ran, `None` when
+    /// the deposit was already credited or was never confirmed.
+    pub async fn credit_stripe_deposit(
+        &self,
+        wallet: &Wallet,
+        deposit_id: Uuid,
+        session_id: &str,
+        received_minor: Option<i64>,
+        on: time::Date,
+    ) -> Result<Option<(Receipt, Uuid)>, WalletError> {
+        let mut tx = self.pool().begin().await?;
+        let row = sqlx::query(
+            "SELECT organization_id, amount_minor, status, payment_ref \
+             FROM oxsum.deposits \
+             WHERE deposit_id = $1 AND rail = $2 \
+             FOR UPDATE",
+        )
+        .bind(deposit_id)
+        .bind(RAIL_STRIPE)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        use sqlx::Row;
+        let organization_id: Uuid = row.try_get("organization_id")?;
+        let amount_minor: i64 = row.try_get("amount_minor")?;
+        let status: String = row.try_get("status")?;
+        let payment_ref: String = row.try_get("payment_ref")?;
+        // `confirmed` is the only state a credit proceeds from: `pending` was
+        // never confirmed (the session expired before paying), `credited` is
+        // already done.
+        if status != "confirmed" {
+            tx.commit().await?;
+            return Ok(None);
+        }
+        // The ledger append replays under the session id — a webhook retried
+        // after a crash finds its own entry rather than opening a second one.
+        let receipt = wallet
+            .top_up(&format!("stripe:{session_id}"), amount_minor, on)
+            .await?;
+        // Record what the rail reported paid; a mismatch with amount_minor is
+        // a human's call, never auto-patched (decision D2).
+        let flipped = sqlx::query(
+            "UPDATE oxsum.deposits \
+             SET status = 'credited', entry_id = $1, received_minor = $2, \
+                 updated_at = now() \
+             WHERE deposit_id = $3 AND status = 'confirmed'",
+        )
+        .bind(*receipt.entry_id.as_uuid())
+        .bind(received_minor)
+        .bind(deposit_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if flipped > 0 {
+            Self::enqueue_event(
+                &mut tx,
+                organization_id,
+                crate::webhooks::DEPOSIT_CREDITED,
+                serde_json::json!({
+                    "rail": RAIL_STRIPE,
+                    "paymentRef": payment_ref,
+                    "amountMinor": amount_minor,
+                    "entryId": receipt.entry_id.as_uuid(),
+                }),
+            )
+            .await?;
+            if let Ok(available) = wallet.available().await {
+                Self::clear_balance_low(&mut tx, organization_id, available).await?;
+            }
+        }
+        tx.commit().await?;
+        Ok(Some((receipt, organization_id)))
+    }
+
+    /// Moves a Stripe deposit to `expired` — the `checkout.session.expired`
+    /// webhook's terminal state, a no-op on a row that already ended its walk.
+    pub async fn expire_stripe_deposit(&self, deposit_id: Uuid) -> Result<(), WalletError> {
+        sqlx::query(
+            "UPDATE oxsum.deposits SET status = 'expired', updated_at = now() \
+             WHERE deposit_id = $1 AND rail = $2 AND status IN ('pending', 'confirmed')",
+        )
+        .bind(deposit_id)
+        .bind(RAIL_STRIPE)
+        .execute(self.pool())
+        .await?;
         Ok(())
     }
 
