@@ -4,7 +4,7 @@ Field definitions for each endpoint are authoritative in `crates/server/openapi.
 
 ## Basics
 
-- Prefix: `/api/v1`. `/healthz` needs no auth and sits outside the prefix; so do `POST /api/v1/auth/register`, when the deployment allows signup at all, and `POST /api/v1/invitations/redeem` — the invitation link's token is its credential.
+- Prefix: `/api/v1`. `/healthz` needs no auth and sits outside the prefix; so do `POST /api/v1/auth/register`, when the deployment allows signup at all, `POST /api/v1/invitations/redeem` — the invitation link's token is its credential — and `POST /api/v1/webhooks/stripe`, where the `Stripe-Signature` header is the credential.
 - Auth: two credentials, one principal. `Authorization: Bearer oxs-…` is an organization's API key; the `oxsum_session` cookie is a logged-in user's session (`POST /api/v1/auth/login`, `HttpOnly`, `SameSite=Lax`, `Path=/`, plus `Secure` when the deployment sets `OXSUM_SESSION_COOKIE_SECURE`). Both resolve to the organization the request acts for, so no endpoint takes a tenant from the caller; a session additionally carries the acting user and their role. An explicitly presented bearer token is resolved as a key and never falls through to the cookie. Unknown, revoked and expired credentials are all `UNAUTHORIZED`, with no hint which it was. The cookie is never accepted on `/v1`: the gateway takes an API key only, presented as `Authorization: Bearer` or — the spelling an Anthropic SDK sends — `x-api-key`.
 - Time: ISO 8601, UTC. The posting date is decided by the server.
 - Money: integers in minor units, 1 credit = 1_000_000. Field names end in `Minor`.
@@ -34,9 +34,11 @@ On timeout or network errors the client retries with the same key, never a new o
 
 ## Funding (deposits)
 
-Money arriving is one row on `oxsum.deposits` per rail payment, whatever the rail — `manual` today, `redemption` today, Stripe and a chain watcher when those rails land. `POST /api/v1/topups` is the manual rail: it takes `{"idempotencyKey", "amountMinor"}` and the key becomes the deposit's `payment_ref`, so a replayed top-up is the same row and the same entry.
+Money arriving is one row on `oxsum.deposits` per rail payment, whatever the rail — `manual`, `redemption` and `stripe` today, a chain watcher when that rail lands. `POST /api/v1/topups` is the manual rail: it takes `{"idempotencyKey", "amountMinor"}` and the key becomes the deposit's `payment_ref`, so a replayed top-up is the same row and the same entry.
 
 - `POST /api/v1/redemptions` — redeem an operator-minted code. Body `{"code"}`; answers the credit's `Receipt` plus `amountMinor` (the code does not name what it carries). The redeem is one atomic claim: the code's row is taken `FOR UPDATE`, its deposit is recorded `confirmed` and the ledger credits the purchased pool under `redemption:<code_id>`, so a retried redeem — the caller's or a second in-flight call — replays the same credit and one code credits once ever. Unknown, spent and expired codes are all `NOT_FOUND`, with no hint which; a code this same organization already redeemed replays its own receipt (`isNew: false`).
+- `POST /api/v1/topups/stripe` — open a Stripe Checkout deposit (issue #201; a deployment without `OXSUM_STRIPE_*` answers 503). Body `{"idempotencyKey", "amountMinor"}`: the key is the deposit's `payment_ref` — the `(rail, organization, payment_ref)` UNIQUE anchor — and the answer is `{"checkoutUrl", "depositId"}`. The first call creates a Stripe Checkout Session whose `client_reference_id` is the deposit id, stores the session id and URL on the deposit's `meta`, and redirects the user's browser to `checkoutUrl`; a replayed key answers the stored URL without calling Stripe again, so there is never a second session per intent. Money moves only on the webhook, never here.
+- `POST /api/v1/webhooks/stripe` — the provider's callback, no credential (`security: []`): the `Stripe-Signature` header *is* the authentication, verified as HMAC-SHA256 of `"{t}.{body}"` under `OXSUM_STRIPE_WEBHOOK_SECRET` in constant time. A missing or bad signature is 401; on a deployment without the rail the route itself 404s. A verified event is always answered 200 — anything else is Stripe's retry signal — and only two event types act: `checkout.session.completed` finds the pending deposit by `meta.stripeSessionId`, marks it `confirmed` and credits the purchased pool in one transaction under the fixed ledger key `stripe:<session_id>` (a replayed or raced delivery credits once ever, then enqueues `deposit.credited`); `checkout.session.expired` walks the deposit to `expired`. `data.object.amount_total` is recorded as `received_minor`; a mismatch with `expected_minor` is drift for the reconciler, never auto-patched (decision D2).
 
 ## Statements
 
@@ -180,7 +182,7 @@ Every failure on the envelope's surface is this shape, including a request body 
 | `NOT_FOUND` | 404 | resource does not exist, or belongs to another organization; a settlement naming a hold that is not outstanding |
 | `CONFLICT` | 409 | the value is already taken, or a key was reused for a different request; registering an email that exists; settling a hold that is already discharged |
 | `INTERNAL_ERROR` | 500 | server error; details only in logs |
-| `SERVICE_UNAVAILABLE` | 503 | a feature the deployment did not configure: the wallet works, this surface does not — today, the tree-head endpoints without `OXSUM_HEAD_SIGNING_KEY` |
+| `SERVICE_UNAVAILABLE` | 503 | a feature the deployment did not configure: the wallet works, this surface does not — the tree-head endpoints without `OXSUM_HEAD_SIGNING_KEY`, the Stripe top-up intent without `OXSUM_STRIPE_*` |
 
 ## API keys
 
