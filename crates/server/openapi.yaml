@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.47.0
+  version: 0.48.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -284,13 +284,22 @@ info:
     at-least-once exception: a hold refusal leaves no transaction to enqueue into, so
     it announces from the dispatch layer.
 
+    0.48.0 adds the Stripe deposit rail (issue #201): `POST /api/v1/topups/stripe` opens a
+    pending deposit, asks Stripe for a checkout session and answers the redirect URL —
+    `payment_ref` is the caller's `idempotencyKey`, so a replayed intent finds its own row.
+    `POST /api/v1/webhooks/stripe` is the provider's unauthenticated callback: the
+    `Stripe-Signature` header verifies against `OXSUM_STRIPE_WEBHOOK_SECRET`, then
+    `checkout.session.completed` confirms and credits the deposit under the session id's own
+    ledger key, and `checkout.session.expired` closes it. `received_minor` records what Stripe
+    reports paid; a mismatch with `amount_minor` is for a human, never auto-patched.
+
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
     whose job precedes authentication: `/api/v1/auth/login`, `/api/v1/auth/logout`,
     `/api/v1/auth/register`, `/api/v1/auth/oauth/github`, `/api/v1/auth/oauth/github/callback`,
     `/api/v1/auth/methods`, `/api/v1/auth/verify`, `/api/v1/auth/password/forgot`,
     `/api/v1/auth/password/reset`, `/api/v1/invitations/redeem`, `/api/v1/device/code`,
-    `/api/v1/device/token` and `/api/v1/log/key`. The cookie is never accepted on `/v1`: the
+    `/api/v1/device/token`, `/api/v1/log/key` and `/api/v1/webhooks/stripe`. The cookie is never accepted on `/v1`: the
     gateway takes an API key only — `Authorization: Bearer` or `x-api-key`.
 servers:
   - url: http://localhost:3000
@@ -1283,6 +1292,67 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/topups/stripe:
+    post:
+      summary: Open a Stripe checkout to top up
+      description: |
+        The `stripe` deposit rail: opens a `pending` deposit (`payment_ref` =
+        the `idempotencyKey`), asks Stripe for a checkout session and answers
+        the redirect URL. A replayed intent (same `idempotencyKey`) answers the
+        same checkout URL — the deposit's unique constraint is the idempotency
+        anchor, not a lookup. A deployment without `OXSUM_STRIPE_*` answers
+        503: the rail is configured or it is not.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AmountRequest" }
+      responses:
+        "200":
+          description: The checkout URL and the deposit id it credits
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [checkoutUrl, depositId]
+                    properties:
+                      checkoutUrl: { type: string, format: uri, description: "the hosted-payment-page URL the browser follows" }
+                      depositId: { type: string, format: uuid, description: "the pending deposit this session confirms" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/webhooks/stripe:
+    post:
+      summary: Stripe's deposit-rail callback
+      description: |
+        The provider's unauthenticated webhook: `Stripe-Signature` verifies
+        against `OXSUM_STRIPE_WEBHOOK_SECRET` (the same `t=<unix>,v1=<hex>`
+        shape oxsum's own outbound webhooks use). `checkout.session.completed`
+        confirms and credits the deposit the session names — the credit replays
+        under `stripe:<session_id>` so a retried or raced delivery writes
+        nothing twice — and `checkout.session.expired` closes it.
+        `received_minor` records what Stripe reports paid; a number that
+        disagrees with `amount_minor` is for a human, never auto-patched.
+        A deployment without `OXSUM_STRIPE_*` answers 404: an unconfigured
+        rail has no webhook to verify.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: the raw Stripe event envelope; `data.object.id` is the session
+      responses:
+        "200":
+          description: acknowledged — every verified event is answered 200 whether the deposit moved or not
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
   /api/v1/redemptions:
     post:
       summary: Redeem a code into the acting organization's wallet
