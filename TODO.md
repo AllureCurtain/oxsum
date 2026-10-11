@@ -28,7 +28,6 @@ Post-roadmap validation: a gate run found `a_settled_turn_enqueues_a_signed_deli
 
 Post-roadmap backlog, one issue per item:
 
-- #200 Webhooks: complete the decided event catalog (deposit.*, balance.low, statement.*, org.credit_limit_exceeded, anomaly.detected)
 - #201 Stripe rail: credit deposits through a checkout webhook
 - #202 Account deletion via pseudonymization
 - #203 TPM rate limits: token windows on settled usage
@@ -64,6 +63,8 @@ Closed. The chat page is built (issue #39): after login the user tops up, picks 
 Nothing.
 
 ## Recently completed
+
+- 2026-10-11 The webhook event catalog completed (issue #200): beside `request.settled` and `org.suspended`, endpoints may now subscribe to `deposit.credited`, `deposit.failed`, `deposit.reversed`, `balance.low`, `statement.finalized`, `statement.payment_overdue`, `statement.payment_status_updated`, `org.credit_limit_exceeded` and `anomaly.detected`. Every event that has a transaction rides inside it — the deposit's `credited` flip, finalization, the reconcile pass, `record_usage`'s tx; `balance.low` arms per endpoint via `balanceLowMinor` (migration 0030) and latches once-per-crossing until a deposit lifts the balance back over; `anomaly.detected` fires on the six odd settlement kinds plus a dead-lettered hold. `org.credit_limit_exceeded` is the one at-least-once exception — a refused hold leaves no transaction, so it announces from the dispatch layer, gated on a configured credit line. Contract `openapi.yaml` 0.47.0; pinned by the core webhook and statement suites plus the server webhook suite's refused-hold test.
 
 - 2026-10-15 Dev builds shrink debug info so the rlib stays under the COFF archive limit (issue #176): a plain `cargo build -p oxsum-server` on Windows failed deterministically — `liboxsum_server` reached ~4.6 GB at `debug = 2`, and the archive index cannot address members past 4 GiB, so link.exe reported ~98 unresolved symbols regardless of cache state. The tracked `.cargo/config.toml` now carries `[profile.dev] debug = 1` (line tables — file:line survives), the same setting the shared worktree config has used all along; `docs/decisions.md` records why package-scoped debug and `strip` were rejected.
 

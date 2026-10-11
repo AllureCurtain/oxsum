@@ -815,6 +815,9 @@ struct RedeemReq {
 struct CreateWebhookReq {
     url: String,
     events: Vec<String>,
+    /// The available-balance line `balance.low` fires below (issue #200);
+    /// absent or null is off.
+    balance_low_minor: Option<i64>,
 }
 
 /// Mints an invitation link into the session's organization: the token is answered
@@ -1223,7 +1226,13 @@ async fn create_webhook(
     };
     ok(state
         .db
-        .create_webhook(principal.organization().id, &r.url, &r.events, secret)
+        .create_webhook_with_threshold(
+            principal.organization().id,
+            &r.url,
+            &r.events,
+            r.balance_low_minor,
+            secret,
+        )
         .await?)
 }
 
@@ -1279,7 +1288,9 @@ async fn top_up(
         .await?;
     // The manual deposit rail: every funding event leaves a row on deposits for
     // reconciliation (decision D2). The caller's idempotency key is the payment
-    // reference, so a replayed top-up sees its own row.
+    // reference, so a replayed top-up sees its own row. The post-credit balance
+    // clears the `balance.low` latches it lifts above (issue #200).
+    let available = w.available().await.ok();
     state
         .db
         .record_manual_deposit(
@@ -1287,6 +1298,7 @@ async fn top_up(
             &r.idempotency_key,
             r.amount_minor,
             *receipt.entry_id.as_uuid(),
+            available,
         )
         .await?;
     // Whatever the deposit repaid counts against the statement book: open
@@ -1343,10 +1355,25 @@ async fn hold(
                 }
                 .into());
             }
-            ok(
-                w.hold_for_key(key, None, &r.idempotency_key, "", r.amount_minor, today())
-                    .await?,
-            )
+            match w
+                .hold_for_key(key, None, &r.idempotency_key, "", r.amount_minor, today())
+                .await
+            {
+                Ok(receipt) => ok(receipt),
+                Err(error) => {
+                    // A hold refused for funds while the organization lives on a
+                    // credit line is `org.credit_limit_exceeded` (issue #200) —
+                    // announced best-effort at the dispatch layer, since the
+                    // refusal surfaces outside any transaction to enqueue into.
+                    if matches!(error, WalletError::InsufficientFunds) {
+                        state
+                            .db
+                            .notify_credit_limit_exceeded(principal.organization().id, &w)
+                            .await;
+                    }
+                    Err(error.into())
+                }
+            }
         }
         None => ok(w
             .hold(&r.idempotency_key, "", r.amount_minor, today())

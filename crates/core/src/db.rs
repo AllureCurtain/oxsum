@@ -131,6 +131,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0029_metering_attempts",
         include_str!("../migrations/0029_metering_attempts.sql"),
     ),
+    (
+        "0030_webhook_balance_low",
+        include_str!("../migrations/0030_webhook_balance_low.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.

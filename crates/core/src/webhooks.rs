@@ -24,15 +24,51 @@ use crate::channels::SecretKey;
 use crate::db::Db;
 use crate::error::WalletError;
 
-/// The one event this build sends: a request's settlement landed — the
-/// `request.settled` of the event catalog in docs/decisions.md, opt-in per
-/// endpoint because per-request traffic is noisy by nature.
+/// A request's settlement landed — the `request.settled` of the event catalog
+/// in docs/decisions.md, opt-in per endpoint because per-request traffic is
+/// noisy by nature.
 pub const REQUEST_SETTLED: &str = "request.settled";
 /// The platform suspended an organization's spend (issue #162).
 pub const ORG_SUSPENDED: &str = "org.suspended";
+/// A deposit reached `credited` — money landed in the purchased pool.
+pub const DEPOSIT_CREDITED: &str = "deposit.credited";
+/// A deposit's rail reported it failed.
+pub const DEPOSIT_FAILED: &str = "deposit.failed";
+/// A deposit's rail reversed a credit it had already confirmed.
+pub const DEPOSIT_REVERSED: &str = "deposit.reversed";
+/// A settlement took the organization's available balance below the endpoint's
+/// `balanceLowMinor` threshold. Fires on the crossing only; the latch resets
+/// when a deposit credits back above the line.
+pub const BALANCE_LOW: &str = "balance.low";
+/// A statement was finalized — issued to the organization.
+pub const STATEMENT_FINALIZED: &str = "statement.finalized";
+/// A finalized statement's due date passed unpaid.
+pub const STATEMENT_OVERDUE: &str = "statement.payment_overdue";
+/// A statement's payment standing changed (to `paid` on a settlement, or
+/// through `suspended`).
+pub const STATEMENT_STATUS_UPDATED: &str = "statement.payment_status_updated";
+/// A hold was refused for insufficient funds while the organization carries a
+/// configured credit limit — the organization is living on the line and has
+/// hit it.
+pub const ORG_CREDIT_LIMIT_EXCEEDED: &str = "org.credit_limit_exceeded";
+/// A settled turn closed anomalously — `unpriced`, `capped`, `estimated`,
+/// `client_cancelled`, `swept`, or a hold that dead-lettered.
+pub const ANOMALY_DETECTED: &str = "anomaly.detected";
 
 /// Every event name a subscription may carry.
-const KNOWN_EVENTS: &[&str] = &[REQUEST_SETTLED, ORG_SUSPENDED];
+const KNOWN_EVENTS: &[&str] = &[
+    REQUEST_SETTLED,
+    ORG_SUSPENDED,
+    DEPOSIT_CREDITED,
+    DEPOSIT_FAILED,
+    DEPOSIT_REVERSED,
+    BALANCE_LOW,
+    STATEMENT_FINALIZED,
+    STATEMENT_OVERDUE,
+    STATEMENT_STATUS_UPDATED,
+    ORG_CREDIT_LIMIT_EXCEEDED,
+    ANOMALY_DETECTED,
+];
 
 /// How many times a delivery is attempted before it is marked `failed` — the
 /// same budget the hold sweeper gives a settlement before dead-lettering.
@@ -64,6 +100,8 @@ pub struct WebhookEndpoint {
     pub url: String,
     pub events: Vec<String>,
     pub enabled: bool,
+    /// The available-balance line `balance.low` fires below; `None` is off.
+    pub balance_low_minor: Option<i64>,
     pub secret_last4: String,
     pub created_at: OffsetDateTime,
 }
@@ -235,7 +273,8 @@ fn validate_events(events: &[String]) -> Result<(), WalletError> {
     Ok(())
 }
 
-const ENDPOINT_COLS: &str = "endpoint_id, url, events, enabled, secret_last4, created_at";
+const ENDPOINT_COLS: &str =
+    "endpoint_id, url, events, enabled, balance_low_minor, secret_last4, created_at";
 
 const DELIVERY_COLS: &str = "delivery_id, endpoint_id, event_type, status, attempts, \
      next_attempt_at, response_status, last_error, created_at, delivered_at, claimed_at";
@@ -247,6 +286,7 @@ fn endpoint_from_row(row: &sqlx::postgres::PgRow) -> Result<WebhookEndpoint, Wal
         url: row.try_get("url")?,
         events: row.try_get("events")?,
         enabled: row.try_get("enabled")?,
+        balance_low_minor: row.try_get("balance_low_minor")?,
         secret_last4: row.try_get("secret_last4")?,
         created_at: row.try_get("created_at")?,
     })
@@ -279,6 +319,12 @@ impl Db {
     /// [`WalletError::InvalidInput`] on a malformed URL, a non-HTTPS host, an
     /// empty or unknown event list, or the organization already carrying twenty
     /// endpoints; storage failures surface as [`WalletError`].
+    /// Registers an endpoint with no `balance.low` threshold armed — the form
+    /// every caller before the event catalog took (issue #200 adds the field).
+    ///
+    /// # Errors
+    ///
+    /// As [`create_webhook_with_threshold`](Self::create_webhook_with_threshold).
     pub async fn create_webhook(
         &self,
         organization: Uuid,
@@ -286,8 +332,37 @@ impl Db {
         events: &[String],
         secret_key: &SecretKey,
     ) -> Result<CreatedWebhook, WalletError> {
+        self.create_webhook_with_threshold(organization, url, events, None, secret_key)
+            .await
+    }
+
+    /// Registers an endpoint, optionally armed with the `balance.low` threshold
+    /// `balance_low_minor` — the available-balance line the event fires below.
+    /// `None` leaves the endpoint deaf to the balance.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::InvalidInput`] on a malformed URL, a non-HTTPS host, an
+    /// empty or unknown event list, a negative threshold, or the organization
+    /// already carrying twenty endpoints; storage failures surface as
+    /// [`WalletError`].
+    pub async fn create_webhook_with_threshold(
+        &self,
+        organization: Uuid,
+        url: &str,
+        events: &[String],
+        balance_low_minor: Option<i64>,
+        secret_key: &SecretKey,
+    ) -> Result<CreatedWebhook, WalletError> {
         let url = validate_url(url)?;
         validate_events(events)?;
+        if let Some(threshold) = balance_low_minor
+            && threshold < 0
+        {
+            return Err(WalletError::InvalidInput(
+                "balanceLowMinor must be zero or positive".to_owned(),
+            ));
+        }
         let count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM oxsum.webhook_endpoints WHERE organization_id = $1",
         )
@@ -305,8 +380,9 @@ impl Db {
         dedup.dedup();
         let row = sqlx::query(&format!(
             "INSERT INTO oxsum.webhook_endpoints \
-             (endpoint_id, organization_id, url, secret_sealed, secret_last4, events) \
-             VALUES ($1, $2, $3, $4, $5, $6) RETURNING {ENDPOINT_COLS}"
+             (endpoint_id, organization_id, url, secret_sealed, secret_last4, events, \
+              balance_low_minor) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING {ENDPOINT_COLS}"
         ))
         .bind(Uuid::new_v4())
         .bind(organization)
@@ -314,6 +390,7 @@ impl Db {
         .bind(secret_key.seal(&secret)?)
         .bind(&secret[secret.len() - 4..])
         .bind(&dedup)
+        .bind(balance_low_minor)
         .fetch_one(self.pool())
         .await?;
         Ok(CreatedWebhook {
@@ -454,6 +531,228 @@ impl Db {
             .await?;
         }
         Ok(())
+    }
+
+    /// Enqueues one delivery per endpoint subscribed to `event_type` — like
+    /// [`enqueue_event`](Self::enqueue_event), but on the pool rather than a
+    /// transaction: for the notifications that have no transaction of their own
+    /// (`org.credit_limit_exceeded`, fired at the dispatch layer after a hold
+    /// the engine's append refused).
+    ///
+    /// The enqueue is at-least-once: a crash between the refusal and this call
+    /// loses the event, and a retried refusal can enqueue twice. Delivery is
+    /// durable once written, and a receiver that cannot absorb a duplicate
+    /// `org.credit_limit_exceeded` is in worse shape than the missed one.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn notify_event(
+        &self,
+        organization: Uuid,
+        event_type: &str,
+        data: Value,
+    ) -> Result<(), WalletError> {
+        let endpoints = sqlx::query(
+            "SELECT endpoint_id FROM oxsum.webhook_endpoints \
+             WHERE organization_id = $1 AND enabled AND $2 = ANY(events)",
+        )
+        .bind(organization)
+        .bind(event_type)
+        .fetch_all(self.pool())
+        .await?;
+        for endpoint in endpoints {
+            use sqlx::Row;
+            let endpoint_id: Uuid = endpoint.try_get("endpoint_id")?;
+            let delivery_id = Uuid::new_v4();
+            let payload = event_envelope(delivery_id, event_type, organization, data.clone());
+            sqlx::query(
+                "INSERT INTO oxsum.webhook_deliveries \
+                 (delivery_id, endpoint_id, organization_id, event_type, payload) \
+                 VALUES ($1, $2, $3, $4, $5)",
+            )
+            .bind(delivery_id)
+            .bind(endpoint_id)
+            .bind(organization)
+            .bind(event_type)
+            .bind(payload)
+            .execute(self.pool())
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// `balance.low`: enqueues the event once per endpoint whose threshold the
+    /// organization's available balance has dropped under, and latches the row
+    /// so a balance that stays low does not re-fire on every settle. The latch
+    /// clears on the next deposit that credits the wallet back over the line.
+    ///
+    /// Called inside `record_usage`'s transaction with the post-settle balance
+    /// the settlement left — the caller reads it off the ledger entries the
+    /// same tx already sees, so the number the threshold is judged against is
+    /// the books', not a second opinion.
+    ///
+    /// `available` may be negative (a credit line takes it below zero); the
+    /// comparison is `<`, so a threshold of 0 still fires on debt.
+    pub(crate) async fn enqueue_balance_low(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        organization: Uuid,
+        available: i64,
+    ) -> Result<(), WalletError> {
+        // Endpoints subscribed and armed: threshold set, latch clear, and the
+        // balance under it. `FOR UPDATE` serializes the latch against a
+        // concurrent settle, so two settles cannot both pass the threshold and
+        // enqueue the event twice.
+        let endpoints = sqlx::query(
+            "SELECT endpoint_id, balance_low_minor FROM oxsum.webhook_endpoints \
+             WHERE organization_id = $1 AND enabled \
+               AND balance_low_minor IS NOT NULL \
+               AND NOT balance_low_sent \
+               AND $2 < balance_low_minor \
+               AND 'balance.low' = ANY(events) \
+             FOR UPDATE",
+        )
+        .bind(organization)
+        .bind(available)
+        .fetch_all(&mut **tx)
+        .await?;
+        for endpoint in endpoints {
+            use sqlx::Row;
+            let endpoint_id: Uuid = endpoint.try_get("endpoint_id")?;
+            let threshold: i64 = endpoint.try_get("balance_low_minor")?;
+            let delivery_id = Uuid::new_v4();
+            let payload = event_envelope(
+                delivery_id,
+                BALANCE_LOW,
+                organization,
+                serde_json::json!({
+                    "availableMinor": available,
+                    "thresholdMinor": threshold,
+                }),
+            );
+            sqlx::query(
+                "INSERT INTO oxsum.webhook_deliveries \
+                 (delivery_id, endpoint_id, organization_id, event_type, payload) \
+                 VALUES ($1, $2, $3, $4, $5)",
+            )
+            .bind(delivery_id)
+            .bind(endpoint_id)
+            .bind(organization)
+            .bind(BALANCE_LOW)
+            .bind(payload)
+            .execute(&mut **tx)
+            .await?;
+            // The latch is set with the delivery inside the same transaction:
+            // commit and they land together, roll back and neither does.
+            sqlx::query(
+                "UPDATE oxsum.webhook_endpoints SET balance_low_sent = TRUE \
+                 WHERE endpoint_id = $1",
+            )
+            .bind(endpoint_id)
+            .execute(&mut **tx)
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Clears the `balance.low` latch on every endpoint whose threshold the
+    /// organization's available balance has come back above — called where a
+    /// deposit credits the wallet, so the next drop below the line fires again.
+    ///
+    /// The event stays armed while the balance sits over a threshold it once
+    /// crossed: only a settle that takes it under again enqueues.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn clear_balance_low(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        organization: Uuid,
+        available: i64,
+    ) -> Result<(), WalletError> {
+        sqlx::query(
+            "UPDATE oxsum.webhook_endpoints SET balance_low_sent = FALSE \
+             WHERE organization_id = $1 AND balance_low_sent \
+               AND balance_low_minor IS NOT NULL AND $2 >= balance_low_minor",
+        )
+        .bind(organization)
+        .bind(available)
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
+    /// `org.credit_limit_exceeded`: announces a hold refused for insufficient
+    /// funds on an organization that carries a configured credit line — it is
+    /// living on the line and has hit it. No transaction exists to enqueue
+    /// inside (the refusal surfaces from the engine's append), so this is the
+    /// dispatch layer's at-least-once notification: a crash between the refusal
+    /// and the call loses the event, and a client retrying the refused request
+    /// re-raises it.
+    ///
+    /// Enqueues only when the organization actually has a credit limit — a
+    /// self-funded wallet's 402 is ordinary insufficient funds, not a credit
+    /// event. Errors are logged, not propagated: the 402 the caller is about to
+    /// answer is the fact that matters.
+    pub async fn notify_credit_limit_exceeded(
+        &self,
+        organization: Uuid,
+        wallet: &crate::wallet::Wallet,
+    ) {
+        match wallet.credit_limit().await {
+            Ok(limit) if limit > 0 => {
+                if let Err(error) = self
+                    .notify_event(
+                        organization,
+                        ORG_CREDIT_LIMIT_EXCEEDED,
+                        serde_json::json!({
+                            "organizationId": organization,
+                            "creditLimitMinor": limit,
+                        }),
+                    )
+                    .await
+                {
+                    tracing::error!(%error, %organization,
+                        "enqueueing org.credit_limit_exceeded failed");
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(%error, %organization,
+                    "the credit limit could not be read for a refused hold");
+            }
+        }
+    }
+
+    /// `anomaly.detected`: enqueues the event for a settled turn whose kind is
+    /// one the anomalies page reviews — `unpriced`, `capped`, `estimated`,
+    /// `client_cancelled`, `swept`, `released`. Called inside `record_usage`'s
+    /// transaction beside the `request.settled` enqueue; a clean `usage` or
+    /// zero-charge refusal kind (`upstream_error`, `upstream_unreachable`)
+    /// enqueues nothing.
+    pub(crate) async fn enqueue_anomaly(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tenant_id: &str,
+        kind: crate::billing::SettlementKind,
+        data: Value,
+    ) -> Result<(), WalletError> {
+        use crate::billing::SettlementKind;
+        let anomalous = matches!(
+            kind,
+            SettlementKind::Unpriced
+                | SettlementKind::Capped
+                | SettlementKind::Estimated
+                | SettlementKind::ClientCancelled
+                | SettlementKind::Swept
+                | SettlementKind::Released
+        );
+        if !anomalous {
+            return Ok(());
+        }
+        let Ok(organization) = Uuid::parse_str(tenant_id) else {
+            return Ok(());
+        };
+        Self::enqueue_event(tx, organization, ANOMALY_DETECTED, data).await
     }
 
     /// Claims the next batch of due deliveries for the calling worker: each row

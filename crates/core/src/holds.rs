@@ -21,7 +21,7 @@ use crate::db::Db;
 use crate::error::WalletError;
 use crate::tenants::Tenants;
 use crate::usage::{UsageRecord, UsageRow};
-use crate::wallet::{entry_id_for, settlement_key_for};
+use crate::wallet::{Wallet, entry_id_for, settlement_key_for};
 use crate::{Settlement, SettlementKind};
 
 /// One gateway hold the sweeper is watching: everything the swept settlement's record needs, so
@@ -400,6 +400,28 @@ pub async fn sweep_stale_holds(
                         tracing::error!(%error, hold_key = %hold.hold_key,
                             "a stale hold's settlement failed the tenth sweep; it is \
                              dead-lettered — hourly retries from here, and an operator's problem");
+                        // A dead-lettered hold is an `anomaly.detected` event
+                        // (issue #200): best-effort notify, since the dead mark
+                        // already committed outside any transaction to enqueue into.
+                        if let Ok(organization) = Uuid::parse_str(&hold.tenant_id) {
+                            db.notify_event(
+                                organization,
+                                crate::webhooks::ANOMALY_DETECTED,
+                                serde_json::json!({
+                                    "requestId": hold.request_id,
+                                    "model": hold.model,
+                                    "channel": hold.channel,
+                                    "kind": "dead_lettered",
+                                    "holdKey": hold.hold_key,
+                                    "sweepAttempts": DEAD_AFTER_SWEEP_ATTEMPTS,
+                                }),
+                            )
+                            .await
+                            .unwrap_or_else(|enqueue| {
+                                tracing::error!(%enqueue, hold_key = %hold.hold_key,
+                                    "enqueueing the dead-letter anomaly failed");
+                            });
+                        }
                     }
                     Ok(attempts) => {
                         tracing::error!(%error, attempts, hold_key = %hold.hold_key,
@@ -474,7 +496,7 @@ async fn sweep_one(
             // The usage row only when this sweep's settlement landed: on a conflict the
             // turn's own settlement wrote its record, and a hold that was never taken
             // billed nothing and records nothing.
-            if let Err(error) = record_swept_usage(db, hold).await {
+            if let Err(error) = record_swept_usage(db, &wallet, hold).await {
                 tracing::error!(%error, request_id = %hold.request_id,
                     "recording the swept turn's usage row failed");
             }
@@ -491,29 +513,35 @@ async fn sweep_one(
 
 /// The swept turn's usage row: zero counts and zero charge, with the attribution the
 /// watch row kept, so the row says whose turn timed out.
-async fn record_swept_usage(db: &Db, hold: &OpenHold) -> Result<(), WalletError> {
-    db.record_usage(&UsageRow {
-        request_id: hold.request_id.clone(),
-        tenant_id: hold.tenant_id.clone(),
-        key_id: hold.key_id,
-        model: hold.model.clone(),
-        channel: hold.channel.clone(),
-        price_version: hold.price_version,
-        kind: SettlementKind::Swept,
-        entry_id: *entry_id_for(&settlement_key_for(&hold.hold_key)).as_uuid(),
-        usage: UsageRecord {
-            end_user: hold.end_user.clone(),
-            service_tier: hold.service_tier.clone(),
-            tags: hold.tags.clone(),
-            ..UsageRecord::default()
+async fn record_swept_usage(db: &Db, wallet: &Wallet, hold: &OpenHold) -> Result<(), WalletError> {
+    // A swept turn frees the freeze back into available — the balance.low
+    // check reads what the release left.
+    let available = wallet.available().await.ok();
+    db.record_usage_balanced(
+        &UsageRow {
+            request_id: hold.request_id.clone(),
+            tenant_id: hold.tenant_id.clone(),
+            key_id: hold.key_id,
+            model: hold.model.clone(),
+            channel: hold.channel.clone(),
+            price_version: hold.price_version,
+            kind: SettlementKind::Swept,
+            entry_id: *entry_id_for(&settlement_key_for(&hold.hold_key)).as_uuid(),
+            usage: UsageRecord {
+                end_user: hold.end_user.clone(),
+                service_tier: hold.service_tier.clone(),
+                tags: hold.tags.clone(),
+                ..UsageRecord::default()
+            },
+            charged_minor: 0,
+            freeze_minor: hold.freeze_minor,
+            // The watch row carries no price, so a swept turn's upstream cost is
+            // untracked rather than zero — `upstream_cost_minor` stays NULL.
+            upstream_cost_minor: None,
+            upstream_attempts: 1,
         },
-        charged_minor: 0,
-        freeze_minor: hold.freeze_minor,
-        // The watch row carries no price, so a swept turn's upstream cost is
-        // untracked rather than zero — `upstream_cost_minor` stays NULL.
-        upstream_cost_minor: None,
-        upstream_attempts: 1,
-    })
+        available,
+    )
     .await
 }
 

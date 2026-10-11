@@ -11,9 +11,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use oxsum_core::{
-    AdminOrganization, Db, NewUser, PaymentStatus, SettlementKind, StatementStatus, UsageRecord,
-    UsageRow, Wallet, WalletError, statement_period,
+    AdminOrganization, Db, NewUser, PaymentStatus, SecretKey, SettlementKind, StatementStatus,
+    UsageRecord, UsageRow, Wallet, WalletError, statement_period,
 };
+use serde_json::json;
 use sqlx::PgPool;
 use time::macros::date;
 use time::{Date, Duration, OffsetDateTime};
@@ -508,4 +509,109 @@ async fn debt_through_a_period_counts_earlier_unbilled_draws() {
             .await
             .unwrap();
     assert_eq!(owed, 9 * ONE);
+}
+
+/// Statement lifecycle events (issue #200): `statement.finalized` lands inside
+/// finalization, the due-date flip enqueues `payment_overdue` and the standing
+/// `payment_status_updated`, a repayment turning it `paid` announces the same,
+/// and `suspend` names its standing.
+#[tokio::test]
+async fn statement_lifecycle_enqueues_its_events() {
+    let url = db_or_skip!();
+    let f = fixture(&url, "stmtwh").await;
+    let key = SecretKey::from_bytes([9; 32]);
+    let endpoint =
+        f.db.create_webhook(
+            f.org.id,
+            "https://receiver.example/hook",
+            &[
+                "statement.finalized".to_owned(),
+                "statement.payment_overdue".to_owned(),
+                "statement.payment_status_updated".to_owned(),
+            ],
+            &key,
+        )
+        .await
+        .unwrap();
+
+    f.wallet
+        .set_credit_limit("cl-1", 10 * ONE, AUG)
+        .await
+        .expect("the limit grants");
+    turn(&f, "r1", "openai", "gpt-4o", 5 * ONE, 3 * ONE, SEPT).await;
+    let draft =
+        f.db.generate_statement(&f.org, &f.wallet, &statement_period("2026-09").unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+    f.db.finalize_statement(draft.id, &f.wallet, today())
+        .await
+        .unwrap();
+
+    let read_events = || async {
+        f.db.webhook_deliveries(f.org.id, endpoint.endpoint.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .iter()
+            .map(|d| d.event_type.clone())
+            .collect::<Vec<_>>()
+    };
+    let events = read_events().await;
+    assert!(
+        events.iter().any(|e| e == "statement.finalized"),
+        "finalized enqueued: {events:?}"
+    );
+
+    // Past due: the reconcile flips it and announces both the specific and the
+    // generic standing event.
+    let past_due = today() + Duration::days(31);
+    f.db.reconcile_statements(f.org.id, &f.wallet, past_due)
+        .await
+        .unwrap();
+    let events = read_events().await;
+    assert!(
+        events.iter().any(|e| e == "statement.payment_overdue"),
+        "overdue enqueued: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| e == "statement.payment_status_updated"),
+        "the standing update enqueued: {events:?}"
+    );
+    let overdue: serde_json::Value = sqlx::query_scalar(
+        "SELECT payload FROM oxsum.webhook_deliveries d \
+         JOIN oxsum.webhook_endpoints e ON e.endpoint_id = d.endpoint_id \
+         WHERE d.event_type = 'statement.payment_overdue' AND e.endpoint_id = $1 \
+         ORDER BY d.created_at DESC LIMIT 1",
+    )
+    .bind(endpoint.endpoint.id)
+    .fetch_one(f.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(overdue["data"]["statementId"], json!(draft.id));
+    assert_eq!(overdue["data"]["period"], "2026-09");
+
+    // A second reconcile on the same date repeats no event — nothing changed.
+    let before = events.len();
+    f.db.reconcile_statements(f.org.id, &f.wallet, past_due)
+        .await
+        .unwrap();
+    assert_eq!(read_events().await.len(), before, "no change, no event");
+
+    // Repaying the line turns it paid — another standing update.
+    f.wallet
+        .top_up("pay", 3 * ONE, today())
+        .await
+        .expect("the payment books");
+    f.db.reconcile_statements(f.org.id, &f.wallet, past_due)
+        .await
+        .unwrap();
+    let events = read_events().await;
+    let paid_updates = events
+        .iter()
+        .filter(|e| *e == "statement.payment_status_updated")
+        .count();
+    assert_eq!(paid_updates, 2, "overdue then paid: {events:?}");
 }

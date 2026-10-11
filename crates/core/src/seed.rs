@@ -185,8 +185,15 @@ impl Db {
             let receipt = wallet
                 .top_up(&idem, *minor, today - Duration::days(*days_ago))
                 .await?;
-            self.record_manual_deposit(organization.id, &idem, *minor, *receipt.entry_id.as_uuid())
-                .await?;
+            let available = wallet.available().await.ok();
+            self.record_manual_deposit(
+                organization.id,
+                &idem,
+                *minor,
+                *receipt.entry_id.as_uuid(),
+                available,
+            )
+            .await?;
             topped_up += *minor;
         }
 
@@ -425,21 +432,25 @@ impl Db {
             .settle(&hold_key, &description, charged, on)
             .await?;
         let upstream_cost_minor = model.price.upstream_cost(&usage, true).unwrap_or(None);
-        self.record_usage(&UsageRow {
-            request_id: request.to_owned(),
-            tenant_id: world.organization.tenant_id.clone(),
-            key_id: Some(acting.key_id),
-            model: model.model.clone(),
-            channel: model.channel.clone(),
-            price_version: model.version,
-            kind,
-            entry_id: *entry_id_for(&settlement_key_for(&hold_key)).as_uuid(),
-            usage,
-            charged_minor: charged,
-            freeze_minor: freeze,
-            upstream_cost_minor,
-            upstream_attempts: 1,
-        })
+        let available = world.wallet.available().await.ok();
+        self.record_usage_balanced(
+            &UsageRow {
+                request_id: request.to_owned(),
+                tenant_id: world.organization.tenant_id.clone(),
+                key_id: Some(acting.key_id),
+                model: model.model.clone(),
+                channel: model.channel.clone(),
+                price_version: model.version,
+                kind,
+                entry_id: *entry_id_for(&settlement_key_for(&hold_key)).as_uuid(),
+                usage,
+                charged_minor: charged,
+                freeze_minor: freeze,
+                upstream_cost_minor,
+                upstream_attempts: 1,
+            },
+            available,
+        )
         .await?;
         Ok(Some(charged))
     }

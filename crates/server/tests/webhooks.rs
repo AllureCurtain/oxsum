@@ -409,3 +409,80 @@ async fn a_refusing_receiver_reschedules() {
     assert_eq!(delivery["attempts"], 1);
     assert_eq!(delivery["responseStatus"], 500);
 }
+
+/// `org.credit_limit_exceeded`: a hold refused for funds on a credit-line
+/// organization announces itself from the dispatch layer (issue #200) — the one
+/// event with no transaction to ride, so it is enqueued after the refusal.
+#[tokio::test]
+async fn a_refused_hold_on_credit_enqueues_credit_limit_exceeded() {
+    let Some((app, db, _metrics)) = world().await else {
+        return;
+    };
+    let key = register(&app).await;
+    let (url, _receiver) = stub().await;
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/webhooks",
+        Some(json!({"url": url, "events": ["org.credit_limit_exceeded"]})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let endpoint_id = body["data"]["id"].as_str().unwrap().to_owned();
+    let org = org_of(&db, &key).await;
+
+    // Grant the organization a credit line, then hold past it.
+    let (status, body) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/admin/organizations/{org}"),
+        Some(json!({"creditLimitMinor": 1_000_000, "idempotencyKey": "cl-1"})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // A hold inside the line lands; one past it is refused for funds and
+    // enqueues the event.
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/holds",
+        Some(json!({"idempotencyKey": "h-ok", "amountMinor": 500_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, _body) = call(
+        &app,
+        "POST",
+        "/api/v1/holds",
+        Some(json!({"idempotencyKey": "h-over", "amountMinor": 9_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYMENT_REQUIRED);
+
+    let deliveries = db
+        .webhook_deliveries(org, endpoint_id.parse().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    let exceeded: Vec<_> = deliveries
+        .iter()
+        .filter(|d| d.event_type == "org.credit_limit_exceeded")
+        .collect();
+    assert_eq!(
+        exceeded.len(),
+        1,
+        "one event per refused hold: {deliveries:?}"
+    );
+    let stored: Value =
+        sqlx::query_scalar("SELECT payload FROM oxsum.webhook_deliveries WHERE delivery_id = $1")
+            .bind(exceeded[0].id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(stored["data"]["creditLimitMinor"], 1_000_000);
+}

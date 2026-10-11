@@ -170,9 +170,16 @@ async fn metered_wallet(
 
 /// Writes the settled event's usage row and clears the hold's watch — the same
 /// pair a gateway turn writes; a failed write is drift for the reconciler, not
-/// a reason to retry the charge.
-async fn record_metered_usage(db: &Db, row: &crate::usage::UsageRow, hold_key: &str) {
-    if let Err(error) = db.record_usage(row).await {
+/// a reason to retry the charge. The wallet is in hand to read the post-settle
+/// balance `balance.low` thresholds judge against.
+async fn record_metered_usage(
+    db: &Db,
+    wallet: &crate::wallet::Wallet,
+    row: &crate::usage::UsageRow,
+    hold_key: &str,
+) {
+    let available = wallet.available().await.ok();
+    if let Err(error) = db.record_usage_balanced(row, available).await {
         tracing::error!(%error, hold_key, "recording the metered event's usage row failed");
     }
     if let Err(error) = db.clear_open_hold(hold_key).await {
@@ -429,6 +436,7 @@ impl Db {
             });
         record_metered_usage(
             self,
+            &wallet,
             &crate::usage::UsageRow {
                 request_id,
                 tenant_id,
@@ -522,6 +530,7 @@ impl Db {
         }
         record_metered_usage(
             self,
+            &wallet,
             &crate::usage::UsageRow {
                 request_id: watch.request_id.clone(),
                 tenant_id,
@@ -663,6 +672,7 @@ impl Db {
                 });
         record_metered_usage(
             self,
+            &wallet,
             &crate::usage::UsageRow {
                 request_id,
                 tenant_id,

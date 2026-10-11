@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.46.0
+  version: 0.47.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -270,6 +270,19 @@ info:
     the declared `usage` is a UsageRecord in the code's own units, and every call carries an
     `idempotencyKey`. Metered settlements enter the ledger and its proofs like gateway turns,
     under a `v6` description that names the reporting service instead of upstream attempts.
+
+    0.47.0 completes the webhook event catalog (issue #200): beside `request.settled` and
+    `org.suspended`, an endpoint may now subscribe to `deposit.credited`,
+    `deposit.failed`, `deposit.reversed`, `balance.low`, `statement.finalized`,
+    `statement.payment_overdue`, `statement.payment_status_updated`,
+    `org.credit_limit_exceeded` and `anomaly.detected`. Each is enqueued inside the
+    transaction of the state change it reports — `deposit.credited` beside the
+    `credited` flip, `statement.finalized` inside finalization, the payment-standing
+    events inside reconcile, `anomaly.detected` beside the anomalous usage row and the
+    dead-letter mark. `balance.low` is armed per endpoint by `balanceLowMinor` on
+    create and fires once per crossing. `org.credit_limit_exceeded` is the one
+    at-least-once exception: a hold refusal leaves no transaction to enqueue into, so
+    it announces from the dispatch layer.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -1173,8 +1186,14 @@ paths:
       summary: Register a webhook endpoint
       description: |
         `url` is the HTTPS (or HTTP, for a receiver on localhost) address oxsum posts
-        signed events to; `events` lists the event types it subscribes to —
-        `request.settled` and `org.suspended` are what this build sends. The answer carries the signing
+        signed events to; `events` lists the event types it subscribes to. The catalog
+        is `request.settled`, `org.suspended`, `deposit.credited`,
+        `deposit.failed`, `deposit.reversed`, `balance.low`, `statement.finalized`,
+        `statement.payment_overdue`, `statement.payment_status_updated`,
+        `org.credit_limit_exceeded` and `anomaly.detected`. `balanceLowMinor` arms the
+        `balance.low` threshold — the event fires once when a settlement drops the
+        organization's available balance under the line, and again only after a
+        deposit lifts it back over. The answer carries the signing
         secret once, under `secret`; store it there, because a listing only ever
         shows `secretLast4`. The secret seals under `OXSUM_SECRET_KEY` at rest, the
         same as a channel's upstream credential.
@@ -3490,9 +3509,27 @@ components:
         url: { type: string, format: uri, description: "where signed events are posted" }
         events:
           type: array
-          items: { type: string, enum: [request.settled, org.suspended] }
+          items:
+            type: string
+            enum:
+              - request.settled
+              - org.suspended
+              - deposit.credited
+              - deposit.failed
+              - deposit.reversed
+              - balance.low
+              - statement.finalized
+              - statement.payment_overdue
+              - statement.payment_status_updated
+              - org.credit_limit_exceeded
+              - anomaly.detected
           description: the event types this endpoint is subscribed to
         enabled: { type: boolean, description: "a disabled endpoint enqueues nothing" }
+        balanceLowMinor:
+          type: integer
+          format: int64
+          nullable: true
+          description: "the available-balance line `balance.low` fires below; absent or null leaves the endpoint deaf to the balance"
         secretLast4: { type: string, description: "the last four characters of the signing secret, for recognizing it" }
         createdAt: { type: string, format: date-time }
     CreateWebhookRequest:
@@ -3503,8 +3540,27 @@ components:
         events:
           type: array
           minItems: 1
-          items: { type: string, enum: [request.settled, org.suspended] }
-          description: "the event types to subscribe; this build sends `request.settled` and `org.suspended`"
+          items:
+            type: string
+            enum:
+              - request.settled
+              - org.suspended
+              - deposit.credited
+              - deposit.failed
+              - deposit.reversed
+              - balance.low
+              - statement.finalized
+              - statement.payment_overdue
+              - statement.payment_status_updated
+              - org.credit_limit_exceeded
+              - anomaly.detected
+          description: "the event types to subscribe; the catalog is listed under the operation's description"
+        balanceLowMinor:
+          type: integer
+          format: int64
+          minimum: 0
+          nullable: true
+          description: "the available-balance line `balance.low` fires below; absent or null leaves the endpoint deaf to the balance"
     CreatedWebhook:
       allOf:
         - $ref: "#/components/schemas/WebhookEndpoint"
@@ -3518,7 +3574,20 @@ components:
       properties:
         id: { type: string, format: uuid }
         endpointId: { type: string, format: uuid }
-        eventType: { type: string, enum: [request.settled, org.suspended] }
+        eventType:
+          type: string
+          enum:
+            - request.settled
+            - org.suspended
+            - deposit.credited
+            - deposit.failed
+            - deposit.reversed
+            - balance.low
+            - statement.finalized
+            - statement.payment_overdue
+            - statement.payment_status_updated
+            - org.credit_limit_exceeded
+            - anomaly.detected
         status: { type: string, enum: [pending, sending, delivered, failed], description: "sending is a worker's claim in flight; delivered means a 2xx; failed means the ten-attempt budget ran out" }
         attempts: { type: integer, minimum: 0 }
         nextAttemptAt: { type: string, format: date-time, description: "when the worker next tries a pending delivery; the creation time for a finished one" }

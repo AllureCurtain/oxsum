@@ -79,6 +79,17 @@ impl PaymentStatus {
             other => Err(malformed("statements.payment_status", other)),
         }
     }
+
+    /// The standing's stored spelling — the lowercase serde form.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Paid => "paid",
+            Self::Overdue => "overdue",
+            Self::Suspended => "suspended",
+        }
+    }
 }
 
 /// One line of a statement: the period's settled usage aggregated per channel and
@@ -625,6 +636,21 @@ impl Db {
                 .execute(&mut *tx)
                 .await?;
             }
+            // The statement issued: subscribers hear `statement.finalized` in the
+            // transaction that locked the document (issue #200).
+            Self::enqueue_event(
+                &mut tx,
+                existing.organization_id,
+                crate::webhooks::STATEMENT_FINALIZED,
+                serde_json::json!({
+                    "statementId": statement_id,
+                    "period": existing.period,
+                    "totalMinor": draft.total_minor,
+                    "creditDrawnMinor": draft.credit_drawn_minor,
+                    "dueDate": due_date.to_string(),
+                }),
+            )
+            .await?;
         }
         tx.commit().await?;
         self.statement_by_id(statement_id)
@@ -666,14 +692,30 @@ impl Db {
                 "a draft statement is not issued and cannot be suspended".into(),
             ));
         }
-        sqlx::query(
+        let mut tx = self.pool().begin().await?;
+        let moved = sqlx::query(
             "UPDATE oxsum.statements SET payment_status = 'suspended', \
                  suspended_at = now(), updated_at = now() \
              WHERE statement_id = $1 AND payment_status IN ('pending', 'overdue')",
         )
         .bind(statement_id)
-        .execute(self.pool())
-        .await?;
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if moved > 0 {
+            Self::enqueue_event(
+                &mut tx,
+                existing.organization_id,
+                crate::webhooks::STATEMENT_STATUS_UPDATED,
+                serde_json::json!({
+                    "statementId": statement_id,
+                    "period": existing.period,
+                    "paymentStatus": "suspended",
+                }),
+            )
+            .await?;
+        }
+        tx.commit().await?;
         self.statement_by_id(statement_id)
             .await?
             .ok_or_else(|| WalletError::NotFound("the statement is not known".into()))
@@ -736,6 +778,11 @@ impl Db {
             } else {
                 "pending"
             };
+            // The standing move and its announcement share a transaction: a
+            // statement that flips `overdue` or `paid` enqueues the event that
+            // names the new standing, and a reconcile that changes nothing
+            // enqueues nothing (issue #200).
+            let mut tx = self.pool().begin().await?;
             sqlx::query(
                 "UPDATE oxsum.statements SET paid_minor = $2, payment_status = $3, \
                      paid_at = CASE WHEN $3 = 'paid' THEN COALESCE(paid_at, now()) ELSE paid_at END, \
@@ -747,8 +794,41 @@ impl Db {
             .bind(statement.id)
             .bind(paid)
             .bind(status)
-            .execute(self.pool())
+            .execute(&mut *tx)
             .await?;
+            let standing_changed = status != statement.payment_status.as_str();
+            if standing_changed {
+                // `payment_overdue` is the specific flip a subscriber asks first;
+                // the generic `payment_status_updated` covers it and every other
+                // transition (to `paid`, back off `overdue`).
+                if status == "overdue" {
+                    Self::enqueue_event(
+                        &mut tx,
+                        organization_id,
+                        crate::webhooks::STATEMENT_OVERDUE,
+                        serde_json::json!({
+                            "statementId": statement.id,
+                            "period": statement.period,
+                            "dueDate": statement.due_date.map(|d| d.to_string()),
+                            "creditDrawnMinor": statement.credit_drawn_minor,
+                            "paidMinor": paid,
+                        }),
+                    )
+                    .await?;
+                }
+                Self::enqueue_event(
+                    &mut tx,
+                    organization_id,
+                    crate::webhooks::STATEMENT_STATUS_UPDATED,
+                    serde_json::json!({
+                        "statementId": statement.id,
+                        "period": statement.period,
+                        "paymentStatus": status,
+                    }),
+                )
+                .await?;
+            }
+            tx.commit().await?;
         }
         Ok(())
     }
