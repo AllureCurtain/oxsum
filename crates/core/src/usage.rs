@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::Row;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::billing::SettlementKind;
@@ -466,6 +467,38 @@ impl Db {
             .execute(&mut *tx)
             .await?;
         }
+        // A settled turn feeds its key's token window in the same transaction —
+        // the durable rolling-minute allowance `tokensPerMinute` checks (issue
+        // #203). The accrual keys on the settle's own instant (`now()`), because
+        // the window is when the spend landed, not the day the ledger books it
+        // under; a replayed write lands nothing, so the early return above keeps
+        // the window from double-counting. Holds never reach here — only a
+        // settle moves the window. Rows past the window are pruned as each
+        // settle lands, so the table stays bounded by what admission can still
+        // read.
+        if let Some(key_id) = row.key_id {
+            let tokens = row.usage.input_tokens + row.usage.output_tokens;
+            if tokens > 0 {
+                sqlx::query(
+                    "INSERT INTO oxsum.tpm_windows (key_id, window_start, tokens) \
+                     VALUES ($1, date_trunc('second', now()), $2) \
+                     ON CONFLICT (key_id, window_start) DO UPDATE SET \
+                         tokens = tpm_windows.tokens + EXCLUDED.tokens",
+                )
+                .bind(key_id)
+                .bind(tokens)
+                .execute(&mut *tx)
+                .await?;
+                sqlx::query(
+                    "DELETE FROM oxsum.tpm_windows \
+                     WHERE key_id = $1 \
+                       AND window_start <= now() - interval '60 seconds'",
+                )
+                .bind(key_id)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
         // A settled turn resolves the request's idempotency claim, whenever one was
         // made: a retry of a streamed turn cannot be handed the stream back, so it
         // is answered with this receipt (issue #132). Running here covers the
@@ -533,6 +566,44 @@ impl Db {
         }
         tx.commit().await?;
         Ok(())
+    }
+
+    /// How many tokens a key has settled inside the trailing minute, and when
+    /// the window next frees — the two figures a `tokensPerMinute` admission
+    /// check needs (issue #203).
+    ///
+    /// Returns `(settled_tokens, retry_after_secs)`: the sum over
+    /// `oxsum.tpm_windows` rows inside the window, and the seconds until the
+    /// oldest in-window row ages out — `0` on an empty window, so an admitted
+    /// request reads a harmless retry_after. Durable by design: RPM counts
+    /// requests spent at admission and lives in the in-process limiter, while
+    /// TPM counts tokens actually settled, so the read is a Postgres sum.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn tpm_window(&self, key_id: Uuid) -> Result<(i64, u64), WalletError> {
+        let row = sqlx::query(
+            "SELECT COALESCE(sum(tokens), 0)::bigint AS settled, \
+                    min(window_start) AS oldest \
+             FROM oxsum.tpm_windows \
+             WHERE key_id = $1 \
+               AND window_start > now() - interval '60 seconds'",
+        )
+        .bind(key_id)
+        .fetch_one(self.pool())
+        .await?;
+        let settled: i64 = row.try_get("settled")?;
+        // The row frees when it is 60s old. `whole_seconds` truncates, so the
+        // difference is already the ceiling; `.max(0)` guards clock skew, and
+        // the header site applies its own `.max(1)` floor.
+        let retry_after = match row.try_get::<Option<OffsetDateTime>, _>("oldest")? {
+            Some(oldest) => {
+                (60 - (OffsetDateTime::now_utc() - oldest).whole_seconds()).max(0) as u64
+            }
+            None => 0,
+        };
+        Ok((settled, retry_after))
     }
 
     /// One organization's daily usage rollup, `[from, to]` inclusive, as the
