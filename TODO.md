@@ -26,7 +26,16 @@ Post-roadmap validation: a gate run found `a_settled_turn_enqueues_a_signed_deli
 
 ## Next
 
-Nothing queued: the productization roadmap (P1-1…P8-4, decisions 2026-10-05) is closed and the post-roadmap validation items above all shipped. The next backlog comes from new issues as they are filed. The original phases below are done — A, B and C closed, most recently C-11 (the chat page, issue #39).
+Post-roadmap backlog, one issue per item:
+
+- #200 Webhooks: complete the decided event catalog (deposit.*, balance.low, statement.*, org.credit_limit_exceeded, anomaly.detected)
+- #201 Stripe rail: credit deposits through a checkout webhook
+- #202 Account deletion via pseudonymization
+- #203 TPM rate limits: token windows on settled usage
+- #204 Signed price catalog snapshots
+- #205 Statement PDF export
+
+The original phases below are done — A, B and C closed, most recently C-11 (the chat page, issue #39).
 
 ### A. Wallet service
 
