@@ -277,6 +277,4 @@ Every mutating call on the admin surface is also audited (issue #160): one appen
 
 ## Planned, in one place
 
-Everything this document describes but the code does not do yet, with the issue that tracks it:
-
-- Pagination for the lists that hard-truncate today: bills and both exports at 100 rows, the transaction log at 100 (25 on the overview), requests and the admin lists at their caps — issue #93
+Nothing this document describes is unbuilt: the last tracked gap — pagination of the hard-truncating lists (#93) — shipped. New planned work lands here as it is filed, tracked by issue as before.
