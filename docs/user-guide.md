@@ -41,6 +41,7 @@ Notes:
 - When the deployment sends email, registration and an invitation's redemption mail a verification link; the dashboard shows an unverified address a reminder with a resend (a minute between mails), and the link verifies the address for good. `GET /api/v1/session` reports the state as `user.emailVerified`. A deployment without a mailer skips all of it — nothing is mailed, nothing is reminded.
 - Every `/api/v1` endpoint accepts the cookie wherever it accepts a Bearer key; the gateway (`/v1`) takes an API key only.
 - Members see and revoke only the keys they created; owners and admins see and revoke every key of the organization. Keys you mint while logged in record you as their creator.
+- Deleting the account: `DELETE /api/v1/users/me` with `{"password": "…"}` — the session cookie plus your password, since the act is irreversible. Your email is tombstoned, every session and every key you minted dies at once, your memberships go, and the `endUser`/`tags` attribution on usage your keys paid is erased. Your personal organization is suspended and renamed rather than deleted — the ledger under it cannot be orphaned — and any organization where you are the last owner among remaining members refuses until you transfer the seat. Your bills still verify: the ledger is never touched. An account created through GitHub has no password until one is set through the reset flow, so it cannot confirm the delete before that.
 
 ## Dashboard
 
