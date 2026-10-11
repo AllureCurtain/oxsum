@@ -58,6 +58,17 @@ pub enum WalletError {
     #[error("key rate limit exceeded: {limit} requests per minute, retry in {retry_after_secs}s")]
     RateLimited { limit: i64, retry_after_secs: u64 },
 
+    /// A request would push the acting API key past its rolling-minute token
+    /// allowance — the settled input+output tokens inside the trailing minute
+    /// plus this request's estimate would exceed the cap (issue #203). TPM's own
+    /// variant, because a token cap and a request cap are different refusals:
+    /// the HTTP layer answers 429 with `Retry-After` and the `X-RateLimit-*`
+    /// headers, under its own code `TOKENS_PER_MINUTE`.
+    #[error(
+        "key token rate limit exceeded: {limit} tokens per minute, retry in {retry_after_secs}s"
+    )]
+    TokensPerMinute { limit: i64, retry_after_secs: u64 },
+
     /// A hold would push the acting API key past its outstanding-holds cap. The
     /// HTTP layer answers 429; the numbers are the key's own, so they are safe to
     /// show.

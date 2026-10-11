@@ -204,6 +204,7 @@ async fn settle_request(
                 key_id,
                 spend_limit_minor: None,
                 requests_per_minute: None,
+                tokens_per_minute: None,
             },
             Some("m"),
             &hold_key,

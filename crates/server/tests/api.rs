@@ -644,7 +644,8 @@ async fn key_constraints_round_trip() {
             "budgetDuration": "daily",
             "modelAllowlist": ["mock-a", "mock-b"],
             "requestsPerMinute": 60,
-            "maxConcurrentHolds": 4
+            "maxConcurrentHolds": 4,
+            "tokensPerMinute": 5000
         })),
         Some(&key),
     )
@@ -656,6 +657,7 @@ async fn key_constraints_round_trip() {
     assert_eq!(body["data"]["modelAllowlist"], json!(["mock-a", "mock-b"]));
     assert_eq!(body["data"]["requestsPerMinute"], 60);
     assert_eq!(body["data"]["maxConcurrentHolds"], 4);
+    assert_eq!(body["data"]["tokensPerMinute"], 5000);
 
     let (status, body) = call(&app, "GET", "/api/v1/org/keys", None, Some(&key)).await;
     assert_eq!(status, StatusCode::OK);
@@ -669,6 +671,7 @@ async fn key_constraints_round_trip() {
     assert_eq!(listed["modelAllowlist"], json!(["mock-a", "mock-b"]));
     assert_eq!(listed["requestsPerMinute"], 60);
     assert_eq!(listed["maxConcurrentHolds"], 4);
+    assert_eq!(listed["tokensPerMinute"], 5000);
 
     // A patch replaces the set wholesale: the fields it omits fall back to unset.
     let (status, body) = call(
@@ -685,13 +688,14 @@ async fn key_constraints_round_trip() {
     assert!(body["data"]["budgetDuration"].is_null());
     assert!(body["data"]["requestsPerMinute"].is_null());
     assert!(body["data"]["maxConcurrentHolds"].is_null());
+    assert!(body["data"]["tokensPerMinute"].is_null());
 
     // Every constraint clears with null.
     let (status, body) = call(
         &app,
         "PATCH",
         &format!("/api/v1/org/keys/{key_id}"),
-        Some(json!({"spendLimitMinor": null, "budgetDuration": null, "modelAllowlist": null, "requestsPerMinute": null, "maxConcurrentHolds": null})),
+        Some(json!({"spendLimitMinor": null, "budgetDuration": null, "modelAllowlist": null, "requestsPerMinute": null, "maxConcurrentHolds": null, "tokensPerMinute": null})),
         Some(&key),
     )
     .await;
@@ -699,6 +703,7 @@ async fn key_constraints_round_trip() {
     assert!(body["data"]["modelAllowlist"].is_null());
     assert!(body["data"]["requestsPerMinute"].is_null());
     assert!(body["data"]["maxConcurrentHolds"].is_null());
+    assert!(body["data"]["tokensPerMinute"].is_null());
 }
 
 /// The constraint boundary conditions: a window without a limit, a window spelled wrong,
@@ -716,6 +721,8 @@ async fn key_constraints_reject_malformed_input() {
         json!({"requestsPerMinute": 0}),
         json!({"requestsPerMinute": -5}),
         json!({"maxConcurrentHolds": 0}),
+        json!({"tokensPerMinute": 0}),
+        json!({"tokensPerMinute": -100}),
     ] {
         let (status, _) = call(
             &app,
@@ -889,6 +896,103 @@ async fn a_requests_per_minute_cap_refuses_at_admission() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+}
+
+/// A key's `tokensPerMinute` is judged at admission too (issue #203): an
+/// amount-only hold spends no tokens, so it is refused 429 `TOKENS_PER_MINUTE`
+/// only once the key's settled-token window is already full — the durable
+/// window the test seeds straight into `oxsum.tpm_windows`, the same rows a
+/// settlement would have written.
+#[tokio::test]
+async fn a_tokens_per_minute_cap_refuses_the_hold_when_the_window_is_full() {
+    let (app, pool) = app_or_skip!(Signup::Open);
+    let (_registration, key) = register(&app, "keytpm").await;
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/topups",
+        Some(json!({"idempotencyKey": "t1", "amountMinor": 10_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/org/keys",
+        Some(json!({"tokensPerMinute": 1000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let capped_secret = body["data"]["secret"].as_str().unwrap().to_owned();
+    let capped_id: uuid::Uuid = body["data"]["id"].as_str().unwrap().parse().unwrap();
+
+    // Below the cap the hold admits freely: the window has room.
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/holds",
+        Some(json!({"idempotencyKey": "h1", "amountMinor": 100_000})),
+        Some(&capped_secret),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Seed the window full, the way two settled turns would have left it: two
+    // one-second buckets inside the trailing minute (a plain `now()` pair can
+    // share a truncated second and collide on the primary key).
+    for (key_id, seconds_ago, tokens) in [(capped_id, 0i32, 600i64), (capped_id, 1, 500)] {
+        sqlx::query(
+            "INSERT INTO oxsum.tpm_windows (key_id, window_start, tokens) \
+             VALUES ($1, date_trunc('second', now()) - make_interval(secs => $2), $3)",
+        )
+        .bind(key_id)
+        .bind(seconds_ago)
+        .bind(tokens)
+        .execute(&pool)
+        .await
+        .expect("the window row lands");
+    }
+
+    // The window is full (1100 settled of 1000): the amount-only hold is refused.
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/holds")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {capped_secret}"))
+        .body(Body::from(
+            json!({"idempotencyKey": "h2", "amountMinor": 100_000}).to_string(),
+        ))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(response.headers().get("retry-after").is_some());
+    assert_eq!(response.headers().get("x-ratelimit-limit").unwrap(), "1000");
+    let body =
+        serde_json::from_slice::<Value>(&response.into_body().collect().await.unwrap().to_bytes())
+            .unwrap();
+    assert_eq!(body["error"]["code"], "TOKENS_PER_MINUTE");
+
+    // Age the window's rows out: deleting them is the stand-in for the wall-clock
+    // minute no test waits through — an UPDATE would merge the two buckets onto
+    // one timestamp and collide on the primary key.
+    sqlx::query("DELETE FROM oxsum.tpm_windows WHERE key_id = $1")
+        .bind(capped_id)
+        .execute(&pool)
+        .await
+        .expect("the rows age out");
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/holds",
+        Some(json!({"idempotencyKey": "h3", "amountMinor": 100_000})),
+        Some(&capped_secret),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "the window freed the key again");
 }
 
 /// A key's `maxConcurrentHolds` caps reservations outstanding at once: the

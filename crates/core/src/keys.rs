@@ -32,7 +32,7 @@ pub(crate) const MAX_MODEL: usize = 128;
 /// The columns every `ApiKey` read projects, in one place for select and returning.
 const KEY_COLS: &str = "key_id, name, prefix, created_by, created_at, expires_at, \
                         revoked_at, spend_limit_minor, budget_duration, model_allowlist, \
-                        requests_per_minute, max_concurrent_holds";
+                        requests_per_minute, max_concurrent_holds, tokens_per_minute";
 
 /// The rule every model allowlist follows — a key's own, or a tier's: null or a
 /// non-empty list of non-empty model names.
@@ -114,6 +114,10 @@ pub struct KeyConstraints {
     /// Holds the key may have outstanding at once, counted from the ledger's
     /// pending entries under the per-key lock. `None` is uncapped.
     pub max_concurrent_holds: Option<i32>,
+    /// Tokens the key's settled turns may burn inside a rolling minute, counted
+    /// from the durable window a settlement feeds — not from holds, which never
+    /// occupy it. `None` is uncapped (issue #203).
+    pub tokens_per_minute: Option<i32>,
 }
 
 impl KeyConstraints {
@@ -132,6 +136,7 @@ impl KeyConstraints {
         for (name, value) in [
             ("requestsPerMinute", self.requests_per_minute),
             ("maxConcurrentHolds", self.max_concurrent_holds),
+            ("tokensPerMinute", self.tokens_per_minute),
         ] {
             if let Some(value) = value
                 && value <= 0
@@ -173,6 +178,8 @@ pub struct ApiKey {
     pub requests_per_minute: Option<i32>,
     /// The key's outstanding-holds cap; `None` is uncapped.
     pub max_concurrent_holds: Option<i32>,
+    /// The key's rolling-minute token allowance; `None` is uncapped (issue #203).
+    pub tokens_per_minute: Option<i32>,
 }
 
 /// The credential behind a key-authenticated request: which key acted, and the
@@ -188,6 +195,9 @@ pub struct ActingKey {
     /// between authentication and a hold tightens nothing retroactively for a
     /// request already read, and loosens on the next authentication.
     pub requests_per_minute: Option<i32>,
+    /// The rolling-minute token allowance in force when the key authenticated,
+    /// checked against the durable settled-usage window at admission (issue #203).
+    pub tokens_per_minute: Option<i32>,
 }
 
 /// A key plus its secret, returned exactly once: at creation.
@@ -243,7 +253,8 @@ impl Db {
         let hash = hash_secret(secret);
         let row = sqlx::query(
             "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, \
-                    k.key_id, k.spend_limit_minor, k.requests_per_minute \
+                    k.key_id, k.spend_limit_minor, k.requests_per_minute, \
+                    k.tokens_per_minute \
              FROM oxsum.api_keys k JOIN oxsum.organizations o USING (organization_id) \
              WHERE k.secret_hash = $1 \
                AND k.revoked_at IS NULL \
@@ -259,6 +270,7 @@ impl Db {
                 key_id: row.try_get("key_id")?,
                 spend_limit_minor: row.try_get("spend_limit_minor")?,
                 requests_per_minute: row.try_get("requests_per_minute")?,
+                tokens_per_minute: row.try_get("tokens_per_minute")?,
             };
             Ok((organization, key))
         })
@@ -290,7 +302,8 @@ impl Db {
                 sqlx::query(&format!(
                     "UPDATE oxsum.api_keys \
                      SET spend_limit_minor = $4, budget_duration = $5, model_allowlist = $6, \
-                         requests_per_minute = $7, max_concurrent_holds = $8 \
+                         requests_per_minute = $7, max_concurrent_holds = $8, \
+                         tokens_per_minute = $9 \
                      WHERE organization_id = $1 AND key_id = $2 AND created_by = $3 \
                      RETURNING {KEY_COLS}"
                 ))
@@ -302,6 +315,7 @@ impl Db {
                 .bind(constraints.model_allowlist)
                 .bind(constraints.requests_per_minute)
                 .bind(constraints.max_concurrent_holds)
+                .bind(constraints.tokens_per_minute)
                 .fetch_optional(self.pool())
                 .await?
             }
@@ -309,7 +323,8 @@ impl Db {
                 sqlx::query(&format!(
                     "UPDATE oxsum.api_keys \
                      SET spend_limit_minor = $3, budget_duration = $4, model_allowlist = $5, \
-                         requests_per_minute = $6, max_concurrent_holds = $7 \
+                         requests_per_minute = $6, max_concurrent_holds = $7, \
+                         tokens_per_minute = $8 \
                      WHERE organization_id = $1 AND key_id = $2 \
                      RETURNING {KEY_COLS}"
                 ))
@@ -320,6 +335,7 @@ impl Db {
                 .bind(constraints.model_allowlist)
                 .bind(constraints.requests_per_minute)
                 .bind(constraints.max_concurrent_holds)
+                .bind(constraints.tokens_per_minute)
                 .fetch_optional(self.pool())
                 .await?
             }
@@ -422,8 +438,8 @@ pub(crate) async fn insert(
         "INSERT INTO oxsum.api_keys \
              (key_id, organization_id, name, prefix, secret_hash, created_by, expires_at, \
               spend_limit_minor, budget_duration, model_allowlist, \
-              requests_per_minute, max_concurrent_holds) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
+              requests_per_minute, max_concurrent_holds, tokens_per_minute) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
          RETURNING {KEY_COLS}"
     ))
     .bind(Uuid::new_v4())
@@ -438,6 +454,7 @@ pub(crate) async fn insert(
     .bind(constraints.model_allowlist)
     .bind(constraints.requests_per_minute)
     .bind(constraints.max_concurrent_holds)
+    .bind(constraints.tokens_per_minute)
     .fetch_one(&mut **tx)
     .await
     .map_err(|e| conflict_or_storage(e, "api_keys_secret_hash_key", "key collision"))?;
@@ -505,6 +522,7 @@ fn key_from_row(row: &sqlx::postgres::PgRow) -> Result<ApiKey, WalletError> {
         model_allowlist: row.try_get("model_allowlist")?,
         requests_per_minute: row.try_get("requests_per_minute")?,
         max_concurrent_holds: row.try_get("max_concurrent_holds")?,
+        tokens_per_minute: row.try_get("tokens_per_minute")?,
     })
 }
 

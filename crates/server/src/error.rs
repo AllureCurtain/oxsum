@@ -37,6 +37,13 @@ pub enum ApiError {
         limit: i64,
         retry_after_secs: u64,
     },
+    /// The acting API key's rolling-minute token allowance is used up — settled
+    /// usage inside the minute is at or over the cap (issue #203). Its own code
+    /// `TOKENS_PER_MINUTE`; the `Retry-After`/`X-RateLimit-*` shape is RPM's.
+    TokensPerMinute {
+        limit: i64,
+        retry_after_secs: u64,
+    },
     /// The acting API key's outstanding-holds cap is reached.
     TooManyHolds {
         limit: i64,
@@ -84,6 +91,13 @@ impl From<WalletError> for ApiError {
                 limit,
                 retry_after_secs,
             } => Self::RateLimited {
+                limit,
+                retry_after_secs,
+            },
+            WalletError::TokensPerMinute {
+                limit,
+                retry_after_secs,
+            } => Self::TokensPerMinute {
                 limit,
                 retry_after_secs,
             },
@@ -160,6 +174,29 @@ impl IntoResponse for ApiError {
                     "code": "RATE_LIMITED",
                     "message": format!(
                         "this API key is limited to {limit} requests per minute"
+                    ),
+                    "details": [],
+                } });
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    [
+                        ("retry-after", retry_after_secs.max(1).to_string()),
+                        ("x-ratelimit-limit", limit.to_string()),
+                        ("x-ratelimit-remaining", "0".to_owned()),
+                        ("x-ratelimit-reset", retry_after_secs.max(1).to_string()),
+                    ],
+                    Json(body),
+                )
+                    .into_response();
+            }
+            Self::TokensPerMinute {
+                limit,
+                retry_after_secs,
+            } => {
+                let body = json!({ "error": {
+                    "code": "TOKENS_PER_MINUTE",
+                    "message": format!(
+                        "this API key is limited to {limit} tokens per minute"
                     ),
                     "details": [],
                 } });

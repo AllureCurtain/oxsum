@@ -165,6 +165,15 @@ impl From<WalletError> for GatewayError {
                 limit,
                 retry_after_secs,
             },
+            WalletError::TokensPerMinute {
+                limit,
+                retry_after_secs,
+            } => Self::RateLimited {
+                message: format!("this API key is limited to {limit} tokens per minute"),
+                code: "TOKENS_PER_MINUTE",
+                limit,
+                retry_after_secs,
+            },
             WalletError::TooManyHolds { limit, open } => Self::RateLimited {
                 message: format!(
                     "this API key has {open} requests in flight, at or over its cap of {limit}"

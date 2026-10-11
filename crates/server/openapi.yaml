@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.49.0
+  version: 0.50.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -300,6 +300,17 @@ info:
     memberships (the last-owner wall refuses 409), and nulls the `endUser`/`tags`
     attribution on the usage rows their keys paid. The ledger is never touched: the
     books keep the UUID, every proof keeps verifying.
+
+    0.50.0 adds per-key token rate limiting (issue #203): `tokensPerMinute` caps the
+    settled input+output tokens a key may burn inside a trailing minute. RPM spends a
+    slot at admission; TPM counts *settled* usage — a durable window a settlement
+    feeds in its own transaction, never a hold. A request is refused at admission
+    when window-actual plus this request's estimate (the input bound plus the output
+    bound, the freeze's own figures) exceeds the cap: 429 with `Retry-After` and the
+    `X-RateLimit-*` headers, `TOKENS_PER_MINUTE` in the oxsum envelope and on the
+    gateway's `error.code` under the `rate_limit_exceeded`/`rate_limit_error` type.
+    Holds never occupy the window; only a settle moves it. Tag-scoped buckets are a
+    follow-up.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -993,9 +1004,9 @@ paths:
       summary: Set an API key's constraints
       description: |
         Replaces the key's whole constraint set — each of `spendLimitMinor`,
-        `budgetDuration`, `modelAllowlist`, `requestsPerMinute` and
-        `maxConcurrentHolds` is written as given, so a field left out or null
-        clears it.
+        `budgetDuration`, `modelAllowlist`, `requestsPerMinute`,
+        `maxConcurrentHolds` and `tokensPerMinute` is written as given, so a
+        field left out or null clears it.
 
         `spendLimitMinor` caps what the key may have committed — settled charges plus
         outstanding holds attributed to it, in minor units. `budgetDuration` makes
@@ -1015,6 +1026,16 @@ paths:
         once: a hold over it is refused 429 `TOO_MANY_HOLDS`, counted from the
         ledger's own pending entries under the same per-key lock as the spend
         limit, so racing requests cannot both fit through.
+
+        `tokensPerMinute` caps the settled input+output tokens the key may burn
+        inside a trailing minute (issue #203). Where RPM spends a slot at admission,
+        TPM counts *settled* usage — a durable window a settlement feeds in its own
+        transaction, never a hold. A gateway request is refused 429
+        `TOKENS_PER_MINUTE` when the tokens already settled inside the minute plus
+        this request's own estimate (the input bound plus the output bound — the
+        same figures the freeze prices) exceed the cap; `POST /api/v1/holds`,
+        amount-only, is refused 429 `TOKENS_PER_MINUTE` only once the window is
+        already full. Both answer `Retry-After` and the `X-RateLimit-*` headers.
 
         A hold that would push the key past its limit is refused with 429
         `KEY_LIMIT_EXCEEDED`, atomically with the ledger append, so concurrent requests
@@ -1460,8 +1481,11 @@ paths:
         refuses a request over the key's rolling-minute allowance with 429
         `RATE_LIMITED` — the answer carries `Retry-After` and the `X-RateLimit-*`
         headers — and `maxConcurrentHolds` refuses a hold over the outstanding-holds
-        cap with 429 `TOO_MANY_HOLDS`. A session holds unattributed, with no limit
-        to check.
+        cap with 429 `TOO_MANY_HOLDS`. `tokensPerMinute` refuses an amount-only hold
+        only once the key's settled-token window is already full — the hold spends
+        no tokens itself, so it is refused 429 `TOKENS_PER_MINUTE` rather than let a
+        settled-out key freeze more credit. A session holds unattributed, with no
+        limit to check.
       requestBody:
         required: true
         content:
@@ -3556,6 +3580,7 @@ components:
         modelAllowlist: { type: [array, "null"], items: { type: string, minLength: 1 }, description: "the gateway models this key may call; null (the default) allows all served models" }
         requestsPerMinute: { type: [integer, "null"], minimum: 1, description: "requests the key may start inside a rolling minute, on the gateway and on /api/v1/holds; null (the default) is uncapped" }
         maxConcurrentHolds: { type: [integer, "null"], minimum: 1, description: "holds the key may have outstanding at once; null (the default) is uncapped" }
+        tokensPerMinute: { type: [integer, "null"], minimum: 1, description: "settled input+output tokens the key may burn inside a trailing minute, checked at admission on the gateway; null (the default) is uncapped" }
     UpdateKeyConstraintsRequest:
       type: object
       properties:
@@ -3564,9 +3589,10 @@ components:
         modelAllowlist: { type: [array, "null"], items: { type: string, minLength: 1 }, description: "models the key may call; null or absent clears the list to allow all" }
         requestsPerMinute: { type: [integer, "null"], minimum: 1, description: "the new per-minute request allowance, or null to uncap" }
         maxConcurrentHolds: { type: [integer, "null"], minimum: 1, description: "the new outstanding-holds cap, or null to uncap" }
+        tokensPerMinute: { type: [integer, "null"], minimum: 1, description: "the new per-minute settled-token allowance, or null to uncap" }
     ApiKey:
       type: object
-      required: [id, name, prefix, createdBy, createdAt, expiresAt, revokedAt, spendLimitMinor, budgetDuration, modelAllowlist, requestsPerMinute, maxConcurrentHolds]
+      required: [id, name, prefix, createdBy, createdAt, expiresAt, revokedAt, spendLimitMinor, budgetDuration, modelAllowlist, requestsPerMinute, maxConcurrentHolds, tokensPerMinute]
       properties:
         id: { type: string, format: uuid }
         name: { type: [string, "null"] }
@@ -3580,6 +3606,7 @@ components:
         modelAllowlist: { type: [array, "null"], items: { type: string }, description: "models the key may call on the gateway; null allows all" }
         requestsPerMinute: { type: [integer, "null"], minimum: 1, description: "the key's rolling-minute request allowance; null is uncapped" }
         maxConcurrentHolds: { type: [integer, "null"], minimum: 1, description: "the key's outstanding-holds cap; null is uncapped" }
+        tokensPerMinute: { type: [integer, "null"], minimum: 1, description: "the key's rolling-minute settled-token allowance; null is uncapped" }
     CreatedApiKey:
       allOf:
         - $ref: "#/components/schemas/ApiKey"
@@ -4518,7 +4545,7 @@ components:
           properties:
             code:
               type: string
-              enum: [VALIDATION_ERROR, UNAUTHORIZED, FORBIDDEN, INSUFFICIENT_FUNDS, KEY_LIMIT_EXCEEDED, RATE_LIMITED, TOO_MANY_HOLDS, NOT_FOUND, CONFLICT, INTERNAL_ERROR, SERVICE_UNAVAILABLE]
+              enum: [VALIDATION_ERROR, UNAUTHORIZED, FORBIDDEN, INSUFFICIENT_FUNDS, KEY_LIMIT_EXCEEDED, RATE_LIMITED, TOO_MANY_HOLDS, TOKENS_PER_MINUTE, NOT_FOUND, CONFLICT, INTERNAL_ERROR, SERVICE_UNAVAILABLE]
             message: { type: string }
             details: { type: array, items: {} }
     ChatCompletionRequest:
@@ -4805,12 +4832,12 @@ components:
               description: >-
                 oxsum's own code: VALIDATION_ERROR, UNAUTHORIZED, FORBIDDEN, CONFLICT,
                 INSUFFICIENT_FUNDS, KEY_LIMIT_EXCEEDED, RATE_LIMITED, TOO_MANY_HOLDS,
-                IDEMPOTENCY_IN_FLIGHT, IDEMPOTENCY_MISMATCH, UPSTREAM_ERROR or
-                INTERNAL_ERROR.
+                TOKENS_PER_MINUTE, IDEMPOTENCY_IN_FLIGHT, IDEMPOTENCY_MISMATCH,
+                UPSTREAM_ERROR or INTERNAL_ERROR.
                 A key past its spend limit arrives as 429 KEY_LIMIT_EXCEEDED with the
                 `insufficient_quota` type, the same type the 402 INSUFFICIENT_FUNDS
-                refusal carries; a key past its request or concurrency allowance
-                arrives as 429 with the `rate_limit_exceeded` type and the
+                refusal carries; a key past its request, concurrency or settled-token
+                allowance arrives as 429 with the `rate_limit_exceeded` type and the
                 `Retry-After`/`X-RateLimit-*` headers.
     AnthropicError:
       type: object

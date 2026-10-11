@@ -429,9 +429,9 @@ async fn run(
             });
         }
     }
-    // The key's rolling-minute allowance is consumed at admission, before any
-    // money moves: a refused request never reaches the wallet. A client retry is
-    // a new request (the id is minted here), so it rightly spends another slot.
+    // The key's rolling-minute request allowance is consumed at admission, before
+    // any money moves: a refused request never reaches the wallet. A client retry
+    // is a new request (the id is minted here), so it rightly spends another slot.
     if let Some(rpm) = key.requests_per_minute
         && rpm > 0
         && let Err(limited) =
@@ -518,6 +518,33 @@ async fn run(
         .into_iter()
         .min()
         .unwrap_or(0);
+    // The token-window allowance is judged at admission, after the bounds that
+    // price the turn are known but before any hold is taken (issue #203): the
+    // check is `window-actual + this estimate`, where the estimate is the same
+    // input bound plus output bound the freeze prices — so a turn admitted here
+    // can never settle more than the window already granted it. A refused turn
+    // writes nothing: the durable window moves only when a settle lands.
+    if let Some(tpm) = key.tokens_per_minute
+        && tpm > 0
+    {
+        let estimate = request
+            .counted_input
+            .unwrap_or_else(|| oxsum_core::input_upper_bound(&texts))
+            + output_bound;
+        let (settled, retry_after) = state.db.tpm_window(key.key_id).await?;
+        if settled + estimate > i64::from(tpm) {
+            crate::metrics::rate_limited(&state.metrics, "gateway");
+            return Err(GatewayError::RateLimited {
+                message: format!(
+                    "this API key is limited to {tpm} tokens per minute \
+                     ({settled} settled, this request needs up to {estimate})"
+                ),
+                code: "TOKENS_PER_MINUTE",
+                limit: i64::from(tpm),
+                retry_after_secs: retry_after,
+            });
+        }
+    }
     // Attempt order: a weighted pick leads — the rollout of `weight` is a real
     // proportional preference — and the rest follow in descending weight, so a
     // failed attempt falls over to the next-most-preferred route (issue #168).

@@ -204,6 +204,7 @@ impl Db {
                     key_id: registration.api_key.key.id,
                     spend_limit_minor: None,
                     requests_per_minute: None,
+                    tokens_per_minute: None,
                 },
             ),
             (
@@ -212,6 +213,7 @@ impl Db {
                     key_id: staging.key.id,
                     spend_limit_minor: Some(STAGING_LIMIT),
                     requests_per_minute: None,
+                    tokens_per_minute: None,
                 },
             ),
             (
@@ -220,6 +222,7 @@ impl Db {
                     key_id: member_key.key.id,
                     spend_limit_minor: None,
                     requests_per_minute: None,
+                    tokens_per_minute: None,
                 },
             ),
         ];
