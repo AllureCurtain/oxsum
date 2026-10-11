@@ -149,6 +149,7 @@ pub struct Config {
     mailer: Option<crate::mail::Mailer>,
     github: Option<crate::oauth::GitHub>,
     turnstile: Option<crate::antibot::Turnstile>,
+    stripe: Option<crate::stripe::Stripe>,
     /// The deployment's public origin, `OXSUM_PUBLIC_URL` — required by the
     /// mailer and the OAuth client, optional on its own: the device grant
     /// builds `verificationUri` from it when set (issue #156).
@@ -172,6 +173,7 @@ impl Config {
             mailer: None,
             github: None,
             turnstile: None,
+            stripe: None,
             public_url: None,
             retention: oxsum_core::Retention::default(),
         }
@@ -277,6 +279,7 @@ impl Config {
         let mailer = mailer_of()?;
         let github = github_of()?;
         let turnstile = turnstile_of()?;
+        let stripe = stripe_of()?;
         // Optional on its own: the mailer and the OAuth client each require it,
         // and the device grant only prefers it for a stable `verificationUri`.
         let public_url = var("OXSUM_PUBLIC_URL");
@@ -297,6 +300,7 @@ impl Config {
             mailer,
             github,
             turnstile,
+            stripe,
             public_url,
             retention,
         })
@@ -342,6 +346,24 @@ impl Config {
     #[must_use]
     pub fn turnstile(&self) -> Option<&crate::antibot::Turnstile> {
         self.turnstile.as_ref()
+    }
+
+    /// The Stripe rail, or `None` when `OXSUM_STRIPE_SECRET_KEY` and
+    /// `OXSUM_STRIPE_WEBHOOK_SECRET` are not both set — in which case
+    /// `POST /api/v1/topups/stripe` answers 503 and `POST
+    /// /api/v1/webhooks/stripe` answers 404.
+    #[must_use]
+    pub fn stripe(&self) -> Option<&crate::stripe::Stripe> {
+        self.stripe.as_ref()
+    }
+
+    /// Sets the Stripe rail. Tests use this; the server reads
+    /// `OXSUM_STRIPE_SECRET_KEY`, `OXSUM_STRIPE_WEBHOOK_SECRET` and
+    /// `OXSUM_PUBLIC_URL` together — a subset is a startup error.
+    #[must_use]
+    pub fn with_stripe(mut self, stripe: crate::stripe::Stripe) -> Self {
+        self.stripe = Some(stripe);
+        self
     }
 
     /// `OXSUM_PUBLIC_URL` when set — the origin outward-facing links are built
@@ -575,6 +597,38 @@ fn github_of() -> Result<Option<crate::oauth::GitHub>, String> {
         public_url,
         web_url,
         api_url,
+    )))
+}
+
+/// Parses the Stripe pair: `OXSUM_STRIPE_SECRET_KEY` and
+/// `OXSUM_STRIPE_WEBHOOK_SECRET` together or not at all — a lone key is a
+/// startup error, because a half-configured rail only fails inside a request.
+/// `OXSUM_PUBLIC_URL` is required alongside: checkout redirects are built on
+/// it. `OXSUM_STRIPE_API_URL` overrides the API origin; nothing but a test
+/// points it anywhere else.
+fn stripe_of() -> Result<Option<crate::stripe::Stripe>, String> {
+    let secret_key = var("OXSUM_STRIPE_SECRET_KEY");
+    let webhook_secret = var("OXSUM_STRIPE_WEBHOOK_SECRET");
+    if secret_key.is_none() && webhook_secret.is_none() {
+        return Ok(None);
+    }
+    let public_url = var("OXSUM_PUBLIC_URL");
+    let (Some(secret_key), Some(webhook_secret), Some(public_url)) =
+        (secret_key, webhook_secret, public_url)
+    else {
+        return Err(
+            "OXSUM_STRIPE_SECRET_KEY, OXSUM_STRIPE_WEBHOOK_SECRET and OXSUM_PUBLIC_URL \
+             are set together, or none of them"
+                .into(),
+        );
+    };
+    let api_url =
+        var("OXSUM_STRIPE_API_URL").unwrap_or_else(|| "https://api.stripe.com".to_owned());
+    Ok(Some(crate::stripe::Stripe::new(
+        secret_key,
+        webhook_secret,
+        api_url,
+        public_url,
     )))
 }
 

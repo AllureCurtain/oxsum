@@ -26,6 +26,9 @@ serde_json.workspace = true
 # docs/decisions.md, "all tenants share one connection pool".
 sqlx.workspace = true
 subtle.workspace = true
+# Stripe webhook signature verification: HMAC-SHA256 over the raw body.
+hmac.workspace = true
+sha2.workspace = true
 time.workspace = true
 tokio.workspace = true
 tracing.workspace = true

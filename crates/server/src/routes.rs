@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
+use axum::body::Bytes;
 use axum::extract::{Extension, Path, State};
 use axum::http::header::SET_COOKIE;
-use axum::http::{HeaderMap, HeaderValue};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router, middleware};
@@ -55,6 +56,7 @@ pub fn router(state: AppState) -> Router {
         .route("/device/request", get(device_request))
         .route("/device/authorize", post(device_authorize))
         .route("/topups", post(top_up))
+        .route("/topups/stripe", post(stripe_topup))
         .route("/redemptions", post(redeem))
         .route("/holds", post(hold))
         .route("/settlements", post(settle))
@@ -101,7 +103,11 @@ pub fn router(state: AppState) -> Router {
         .route("/device/code", post(device_code))
         .route("/device/token", post(device_token))
         // The operator's tree-head verifying key: a public key, so no credential.
-        .route("/log/key", get(log_key));
+        .route("/log/key", get(log_key))
+        // Stripe's webhook: the provider calls here, the `Stripe-Signature`
+        // header is the credential — org-agnostic, so it must not sit behind
+        // the session or the API key.
+        .route("/webhooks/stripe", post(stripe_webhook));
 
     // The platform admin: an operator token, not an organization key, and its own middleware.
     let admin = crate::admin::router(state.clone());
@@ -1308,6 +1314,149 @@ async fn top_up(
         .reconcile_statements(principal.organization().id, &w, today())
         .await?;
     ok(receipt)
+}
+
+/// The body of `POST /api/v1/topups/stripe`: the amount to charge and the
+/// idempotency key that anchors the deposit.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StripeTopupReq {
+    idempotency_key: String,
+    amount_minor: i64,
+}
+
+/// The Stripe top-up intent: opens a deposit, asks Stripe for a checkout
+/// session and answers the redirect URL the org user's browser follows.
+///
+/// A replayed intent (same `idempotencyKey`) answers the same checkout URL —
+/// the deposit's `payment_ref` is the idempotency anchor.
+///
+/// A deployment without `OXSUM_STRIPE_*` answers 503 — the rail is configured
+/// or it is not, never silently manual.
+async fn stripe_topup(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    ApiJson(r): ApiJson<StripeTopupReq>,
+) -> ApiResult<serde_json::Value> {
+    let stripe = state
+        .config
+        .stripe()
+        .ok_or_else(|| ApiError::ServiceUnavailable("stripe is not configured".into()))?;
+    let deposit_id = Uuid::new_v4();
+    let inserted = state
+        .db
+        .open_stripe_deposit(
+            principal.organization().id,
+            deposit_id,
+            &r.idempotency_key,
+            r.amount_minor,
+        )
+        .await?;
+    if !inserted {
+        // A replayed intent: the deposit the key opened already carries its
+        // checkout URL in `meta` — answer it again rather than mint a second
+        // Stripe session.
+        let existing = state
+            .db
+            .find_stripe_deposit(principal.organization().id, &r.idempotency_key)
+            .await?
+            .ok_or_else(|| ApiError::Validation("deposit already resolved".into()))?;
+        return ok(json!({
+            "checkoutUrl": existing.1.unwrap_or_default(),
+            "depositId": existing.0,
+        }));
+    }
+    let session = stripe
+        .create_checkout_session(&state.http, deposit_id, r.amount_minor)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e.0, "stripe checkout session failed");
+            ApiError::Internal
+        })?;
+    state
+        .db
+        .stripe_session_id(deposit_id, &session.session_id, &session.url)
+        .await?;
+    ok(json!({
+        "checkoutUrl": session.url,
+        "depositId": deposit_id,
+    }))
+}
+
+/// Stripe's inbound webhook: verifies `Stripe-Signature`, then walks the
+/// deposit the event names. Org-agnostic — the signature is the credential,
+/// so this route sits on the `open` surface.
+///
+/// `checkout.session.completed` confirms the deposit and credits the wallet
+/// under `stripe:<session_id>`; `checkout.session.expired` closes it. Every
+/// other event type, every replay and every miss is a 200 — Stripe retries
+/// until it hears one, and a row that does not exist is not this endpoint's
+/// business.
+async fn stripe_webhook(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, ApiError> {
+    let stripe = state.config.stripe().ok_or_else(ApiError::not_found)?;
+    let signature = headers
+        .get("stripe-signature")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !stripe.verify_signature(signature, &body) {
+        return Err(ApiError::Unauthorized);
+    }
+    #[derive(Deserialize)]
+    struct Event {
+        #[serde(rename = "type")]
+        kind: String,
+        data: EventData,
+    }
+    #[derive(Deserialize)]
+    struct EventData {
+        object: serde_json::Value,
+    }
+    let event: Event = serde_json::from_slice(&body)
+        .map_err(|e| ApiError::Validation(format!("unreadable event: {e}")))?;
+    match event.kind.as_str() {
+        "checkout.session.completed" => {
+            let session_id = event.data.object["id"]
+                .as_str()
+                .ok_or_else(|| ApiError::Validation("no session id".into()))?;
+            let amount = event.data.object["amount_total"].as_i64();
+            // Find the deposit this session opened, then confirm + credit it.
+            // Only a `pending` deposit moves, so a replayed or raced webhook
+            // does nothing twice.
+            if let Some((deposit_id, organization_id, tenant_id)) =
+                state.db.find_stripe_by_session(session_id).await?
+                && state.db.confirm_stripe_deposit(deposit_id).await?
+            {
+                let w = state
+                    .tenants
+                    .get(&tenant_id)
+                    .await
+                    .map_err(ApiError::from)?;
+                state
+                    .db
+                    .credit_stripe_deposit(&w, deposit_id, session_id, amount, today())
+                    .await?;
+                // Whatever the deposit repaid counts against the statement book.
+                state
+                    .db
+                    .reconcile_statements(organization_id, &w, today())
+                    .await?;
+            }
+        }
+        "checkout.session.expired" => {
+            let session_id = event.data.object["id"]
+                .as_str()
+                .ok_or_else(|| ApiError::Validation("no session id".into()))?;
+            if let Some((deposit_id, _, _)) = state.db.find_stripe_by_session(session_id).await? {
+                state.db.expire_stripe_deposit(deposit_id).await?;
+            }
+        }
+        _ => {}
+    }
+    Ok(StatusCode::OK)
 }
 
 /// Redeem an operator-minted code into the acting organization's wallet.
