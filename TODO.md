@@ -28,9 +28,9 @@ Post-roadmap validation: a gate run found `a_settled_turn_enqueues_a_signed_deli
 
 Post-roadmap backlog, one issue per item:
 
-- #203 TPM rate limits: token windows on settled usage
 - #204 Signed price catalog snapshots
 - #205 Statement PDF export
+- #209 Tag-scoped TPM buckets (Each / Concrete / Total)
 
 The original phases below are done — A, B and C closed, most recently C-11 (the chat page, issue #39).
 
@@ -61,6 +61,8 @@ Closed. The chat page is built (issue #39): after login the user tops up, picks 
 Nothing.
 
 ## Recently completed
+
+- 2026-10-12 Per-key token rate limits (issue #203): `tokensPerMinute` joins the key constraint set — set at creation, PATCHed wholesale like the others, cleared by null — capping the settled input+output tokens a key may burn inside a trailing minute. RPM spends a slot at admission; TPM counts *settled* usage, so the window is a durable `oxsum.tpm_windows` table (migration 0031) that `record_usage_balanced` feeds in its own transaction — a replay rolls nothing, a rollback keeps nothing, one-second buckets prune on write. On the gateway a request is refused 429 `TOKENS_PER_MINUTE` when window-actual plus this request's estimate (the input bound plus the output bound, the freeze's own figures) exceeds the cap; `POST /api/v1/holds`, amount-only, refuses only once the window is already full. Both answer `Retry-After` and the `X-RateLimit-*` headers. Contract `openapi.yaml` 0.50.0; pinned by `crates/core/tests/tpm_windows.rs` plus the api.rs and gateway.rs suites. Tag-scoped buckets are follow-up #209.
 
 - 2026-10-11 Account deletion by pseudonymization (issue #202): `DELETE /api/v1/users/me` — session-only, password-confirmed — tombstones the user row (`email` → `deleted-<id>@deleted.invalid`, the password hash blanked, `emailVerified` cleared), revokes every session and every key the user minted (`created_by` — a key minted by a key has no owner), removes the memberships, and nulls the `end_user`/`tags` attribution on `usage_records` and `open_holds` rows their keys paid. The last-owner wall only guards organizations that outlive the account — one with other members answers 409 until the seat transfers — while an organization whose only member was the deleter is tombstoned in the same transaction (renamed, suspended): the ledger under its tenant id is never orphaned. `oauth_accounts` and `email_tokens` go with the account; invitations sent stay as the receiving organization's fact. The ledger is untouched, so a deleted user's bills still verify — pinned by `crates/server/tests/account_deletion.rs` (the 403/401 gate, the 409 and its lift, the full walk, the team-member case, and a settled bill verifying after the account is gone). Contract `openapi.yaml` 0.49.0.
 
