@@ -5,8 +5,9 @@
 //! the personal organization, the owner membership and the first API key. A user without an
 //! organization, or an organization without its owner, cannot exist.
 
-use password_auth::generate_hash;
+use password_auth::{generate_hash, verify_password};
 use serde::Serialize;
+use sqlx::Row;
 use uuid::Uuid;
 
 use crate::db::Db;
@@ -42,6 +43,19 @@ pub struct NewUser {
     pub password: String,
     /// Name of the personal organization; defaults to the local part of the email.
     pub organization_name: Option<String>,
+}
+
+/// What an account deletion removed (issue #202). The ledger is untouched, so
+/// no count covers it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountDeletion {
+    /// Sessions the account held, now dead.
+    pub sessions_revoked: u64,
+    /// API keys the account minted, now dead.
+    pub keys_revoked: u64,
+    /// Memberships the account left; the organizations stay.
+    pub memberships_removed: u64,
 }
 
 /// What registration produced. The key's secret is never seen again after this response.
@@ -144,6 +158,213 @@ impl Db {
         .await?;
         tx.commit().await?;
         Ok(revoked.rows_affected())
+    }
+
+    /// Deletes an account by pseudonymization (issue #202): the identity goes,
+    /// the books keep their history.
+    ///
+    /// `password` is the act's confirmation and is verified before anything
+    /// moves — a wrong one is [`WalletError::InvalidCredentials`], the same
+    /// answer login gives, so the refusal leaks nothing about the account.
+    /// An account created through OAuth holds a hash nobody knows, so it can
+    /// never confirm this call until the reset flow sets a real password.
+    ///
+    /// One transaction then does the whole walk:
+    ///
+    /// - the last-owner wall: an organization the user is the only owner of
+    ///   *and that has other members* refuses the delete
+    ///   [`WalletError::Conflict`] — the seat has to be transferred first, the
+    ///   same rule `remove_member` enforces. An organization whose only member
+    ///   is this user does not trip it: its seat goes empty in the same
+    ///   transaction that tombstones the organization;
+    /// - every membership of the user is removed; an organization whose only
+    ///   member was this user — the personal org every signup makes, or a team
+    ///   org that shrank to one seat — is tombstoned (renamed `deleted-<id>`,
+    ///   suspended) rather than deleted — an append-only ledger cannot be
+    ///   orphaned, and a memberless organization acts for nobody;
+    /// - the user row is tombstoned: `email`/`email_normalized` become
+    ///   `deleted-<id>@deleted.invalid` (the unique index stays satisfied —
+    ///   the id is the row's own), `password_hash` is replaced by a marker
+    ///   that no password verifies against, `email_verified_at` cleared;
+    /// - every session the user holds is revoked, every API key they minted
+    ///   (`created_by`) is revoked — the rows stay for provenance;
+    /// - the attribution the user's keys wrote is pseudonymized:
+    ///   `usage_records.end_user`/`tags` and `open_holds.end_user`/`tags` on
+    ///   rows their minted keys paid are nulled — mutable-store data, which is
+    ///   exactly why it lives outside the hashed ledger entries;
+    /// - `oauth_accounts` and `email_tokens` go with the account; invitations
+    ///   the user sent stay — an invitation is the receiving organization's
+    ///   fact, and only its hash is stored anyway.
+    ///
+    /// The ledger is untouched by design: settlement descriptions carry no
+    /// identity, so a deleted user's bills verify exactly as before.
+    ///
+    /// Returns what the walk removed, for the caller to report.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::InvalidCredentials`] on a wrong password;
+    /// [`WalletError::NotFound`] when the user does not exist — deleting twice
+    /// lands here, since a tombstoned account holds no membership the session
+    /// could still act through; [`WalletError::Conflict`] while the user is an
+    /// organization's last owner; storage failures surface as `WalletError`.
+    pub async fn delete_account(
+        &self,
+        user_id: Uuid,
+        password: &str,
+    ) -> Result<AccountDeletion, WalletError> {
+        // Verify before the transaction opens: the argon2 check is deliberately
+        // slow (~100ms) and must not hold a connection, same as login.
+        let row = sqlx::query("SELECT password_hash FROM oxsum.users WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_optional(self.pool())
+            .await?
+            .ok_or_else(|| WalletError::NotFound("no such user".into()))?;
+        let password_hash: String = row.try_get("password_hash")?;
+        if verify_password(password, &password_hash).is_err() {
+            return Err(WalletError::InvalidCredentials);
+        }
+
+        let mut tx = self.pool().begin().await?;
+
+        // The last-owner wall, read inside the transaction against locked
+        // membership rows: a delete that removes the seat must be refused
+        // before anything is blanked. The lock is taken on the user's own
+        // membership rows first — `FOR UPDATE` cannot ride an aggregate — so
+        // a concurrent ownership transfer or role change on the same rows
+        // serializes behind it; then the count runs under that lock.
+        sqlx::query(
+            "SELECT organization_id FROM oxsum.memberships WHERE user_id = $1 \
+             FOR UPDATE",
+        )
+        .bind(user_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        // The wall applies to organizations that outlive the account — ones
+        // with other members. A personal organization whose only member is
+        // this user is tombstoned in the same transaction, so its empty seat
+        // is no orphan: the organization dies with the account.
+        let last_owner = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM oxsum.memberships m \
+             WHERE m.user_id = $1 AND m.role = 'owner' \
+               AND EXISTS ( \
+                     SELECT 1 FROM oxsum.memberships o \
+                     WHERE o.organization_id = m.organization_id \
+                       AND o.user_id <> $1) \
+               AND NOT EXISTS ( \
+                     SELECT 1 FROM oxsum.memberships o \
+                     WHERE o.organization_id = m.organization_id \
+                       AND o.role = 'owner' AND o.user_id <> $1)",
+        )
+        .bind(user_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if last_owner > 0 {
+            return Err(WalletError::Conflict(
+                "you are an organization's only owner: transfer ownership first".into(),
+            ));
+        }
+
+        // Organizations whose only member was this user: tombstone the row —
+        // renamed and suspended — because the ledger under its tenant id may
+        // hold history an append-only store cannot orphan, and a memberless
+        // organization acts for nobody. (This is where the personal
+        // organization every signup creates dies; a team organization that
+        // shrank to one seat meets the same end.)
+        sqlx::query(
+            "UPDATE oxsum.organizations SET \
+                 name = 'deleted-' || organization_id::text, \
+                 suspended_at = COALESCE(suspended_at, now()) \
+             WHERE organization_id IN ( \
+                   SELECT organization_id FROM oxsum.memberships WHERE user_id = $1) \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM oxsum.memberships o \
+                   WHERE o.organization_id = oxsum.organizations.organization_id \
+                     AND o.user_id <> $1)",
+        )
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+
+        let memberships_removed = sqlx::query("DELETE FROM oxsum.memberships WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+
+        let sessions_revoked = sqlx::query(
+            "UPDATE oxsum.sessions SET revoked_at = COALESCE(revoked_at, now()) \
+             WHERE user_id = $1 AND revoked_at IS NULL",
+        )
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+
+        let keys_revoked = sqlx::query(
+            "UPDATE oxsum.api_keys SET revoked_at = COALESCE(revoked_at, now()) \
+             WHERE created_by = $1 AND revoked_at IS NULL",
+        )
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+
+        // Pseudonymize the attribution the account's keys wrote — the turns
+        // already settled (usage_records) and the ones still in flight
+        // (open_holds, whose watch rows carry the same fields so a swept
+        // settlement still says whose turn it was). The entry is untouched;
+        // that is what the mutable store is for.
+        sqlx::query(
+            "UPDATE oxsum.usage_records SET end_user = NULL, tags = '{}' \
+             WHERE key_id IN (SELECT key_id FROM oxsum.api_keys WHERE created_by = $1)",
+        )
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE oxsum.open_holds SET end_user = NULL, tags = '{}' \
+             WHERE key_id IN (SELECT key_id FROM oxsum.api_keys WHERE created_by = $1)",
+        )
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+
+        // Account-access plumbing goes with the account; the user row stays
+        // as the tombstone the foreign keys (invitations.invited_by among
+        // them) point at.
+        sqlx::query("DELETE FROM oxsum.oauth_accounts WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM oxsum.email_tokens WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+
+        // The tombstone: a marker no password verifies (argon2 parse fails on
+        // it), an address that can never be mailed or collided with
+        // (`deleted.invalid` is a guaranteed-invalid TLD), and no verified
+        // flag. `email_normalized` keeps UNIQUE satisfied — the id is the
+        // row's own.
+        sqlx::query(
+            "UPDATE oxsum.users SET \
+                 email = 'deleted-' || user_id::text || '@deleted.invalid', \
+                 email_normalized = 'deleted-' || user_id::text || '@deleted.invalid', \
+                 password_hash = '!deleted', \
+                 email_verified_at = NULL \
+             WHERE user_id = $1",
+        )
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(AccountDeletion {
+            sessions_revoked,
+            keys_revoked,
+            memberships_removed,
+        })
     }
 }
 

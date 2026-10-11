@@ -28,7 +28,6 @@ Post-roadmap validation: a gate run found `a_settled_turn_enqueues_a_signed_deli
 
 Post-roadmap backlog, one issue per item:
 
-- #202 Account deletion via pseudonymization
 - #203 TPM rate limits: token windows on settled usage
 - #204 Signed price catalog snapshots
 - #205 Statement PDF export
@@ -62,6 +61,8 @@ Closed. The chat page is built (issue #39): after login the user tops up, picks 
 Nothing.
 
 ## Recently completed
+
+- 2026-10-11 Account deletion by pseudonymization (issue #202): `DELETE /api/v1/users/me` — session-only, password-confirmed — tombstones the user row (`email` → `deleted-<id>@deleted.invalid`, the password hash blanked, `emailVerified` cleared), revokes every session and every key the user minted (`created_by` — a key minted by a key has no owner), removes the memberships, and nulls the `end_user`/`tags` attribution on `usage_records` and `open_holds` rows their keys paid. The last-owner wall only guards organizations that outlive the account — one with other members answers 409 until the seat transfers — while an organization whose only member was the deleter is tombstoned in the same transaction (renamed, suspended): the ledger under its tenant id is never orphaned. `oauth_accounts` and `email_tokens` go with the account; invitations sent stay as the receiving organization's fact. The ledger is untouched, so a deleted user's bills still verify — pinned by `crates/server/tests/account_deletion.rs` (the 403/401 gate, the 409 and its lift, the full walk, the team-member case, and a settled bill verifying after the account is gone). Contract `openapi.yaml` 0.49.0.
 
 - 2026-10-11 The Stripe deposit rail (issue #201): card top-ups through a hosted Checkout page, on deployments that set `OXSUM_STRIPE_SECRET_KEY` + `OXSUM_STRIPE_WEBHOOK_SECRET` + `OXSUM_PUBLIC_URL` together (a subset is a startup error; unset, the intent 503s and the webhook 404s). `POST /api/v1/topups/stripe` opens a `pending` deposit — the caller's `idempotencyKey` stays the `payment_ref` anchor, the session id and hosted URL live in `meta`, so a replayed intent answers the stored URL with no second Stripe call — creates the session with the deposit id as `client_reference_id`, and answers `{checkoutUrl, depositId}`. The signed webhook `POST /api/v1/webhooks/stripe` (no credential; `Stripe-Signature` verified `t=…,v1=…` HMAC-SHA256 in constant time — bad or missing is 401) acts on two types: `checkout.session.completed` finds the deposit by `meta.stripeSessionId`, confirms it `FOR UPDATE` and credits the purchased pool under the fixed key `stripe:<session_id>` — a replayed or raced delivery credits once ever and enqueues `deposit.credited` in the same transaction — and `checkout.session.expired` walks the row to `expired`. `amount_total` records into `received_minor`; a mismatch is reconciler drift, never auto-patched (D2). Contract `openapi.yaml` 0.48.0; pinned by `crates/server/tests/stripe.rs` — intent, replay, the full flow, triple-delivery, wrong-secret and unsigned 401s, unconfigured 503/404, and the expired path.
 

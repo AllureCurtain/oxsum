@@ -96,7 +96,7 @@ pub use usage::{
     Attribution, MAX_CONTEXT_NAME, MAX_END_USER, MAX_TAG, MAX_TAGS, Margin, UsageDay, UsageRecord,
     UsageRow, validate_attribution,
 };
-pub use users::{NewUser, Registration, User};
+pub use users::{AccountDeletion, NewUser, Registration, User};
 pub use wallet::{
     Credits, ListPage, LogEntry, Receipt, RequestEntry, SCALE, SettledEntry, SettledTurn,
     TransactionEntry, TransactionKind, Wallet, entry_id_for, settlement_key_for,
