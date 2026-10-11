@@ -22,9 +22,7 @@ Post-roadmap validation: a manual run against a real provider exercised the opt-
 
 Post-roadmap validation: a light dev deployment logged multi-second WARN entries for statements and pool acquisitions that were not problems — sqlx's defaults (1s slow-statement, 2s slow-acquire) trip on a local Docker or a cold start without meaning anything (#182, shipped: the thresholds rise to 10 seconds, where a stall actually says something, and `test_before_acquire` catches a backend killed while idle before it serves a query).
 
-Post-roadmap validation: a light dev deployment logged multi-second WARN entries for statements and pool acquisitions that were not problems — sqlx's defaults (1s slow-statement, 2s slow-acquire) trip on a local Docker or a cold start without meaning anything (#182, shipped: the thresholds rise to 10 seconds, where a stall actually says something, and `test_before_acquire` catches a backend killed while idle before it serves a query).
-
-Post-roadmap validation: a gate run found `a_minted_code_redeems_once_into_the_purchased_pool` flaking — the fabricated unknown code `codes[0].replace('a', "b")` is the real code when the mint happens to contain no `a` (~1.6% of runs) (#185, in progress here: the unknown code is built by flipping the last hex digit, different by construction).
+Post-roadmap validation: a gate run found `a_settled_turn_enqueues_a_signed_delivery` flaking — the test asserts a global `count(*)` on `oxsum.webhook_deliveries` before and after a no-op usage row, so any parallel test on the shared database that enqueues a delivery between the two counts fails the assertion (~1 CI failure so far) (#195, open: scope the count to the test's own organization instead of the whole table).
 
 ## Next
 
