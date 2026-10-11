@@ -439,3 +439,247 @@ async fn the_payload_names_the_bill() {
         })
     );
 }
+
+/// `balance.low` fires once when the balance crosses under the endpoint's
+/// threshold, latches, and re-arms only after a deposit lifts it back over
+/// (issue #200).
+#[tokio::test]
+async fn balance_low_fires_once_per_crossing() {
+    let url = db_or_skip!();
+    let (db, org, tenant) = world(&url).await;
+    let endpoint = db
+        .create_webhook_with_threshold(
+            org,
+            "https://receiver.example/hook",
+            &["balance.low".to_owned()],
+            Some(1_000),
+            &key(),
+        )
+        .await
+        .unwrap();
+
+    // A settle that leaves the balance over the line fires nothing.
+    db.record_usage_balanced(
+        &usage_row(&format!("req-{}", Uuid::new_v4()), &tenant),
+        Some(1_500),
+    )
+    .await
+    .unwrap();
+    // Under the line: the crossing fires once.
+    db.record_usage_balanced(
+        &usage_row(&format!("req-{}", Uuid::new_v4()), &tenant),
+        Some(800),
+    )
+    .await
+    .unwrap();
+    // Still under on the next settle: the latch holds, no second event.
+    db.record_usage_balanced(
+        &usage_row(&format!("req-{}", Uuid::new_v4()), &tenant),
+        Some(600),
+    )
+    .await
+    .unwrap();
+
+    let deliveries = db
+        .webhook_deliveries(org, endpoint.endpoint.id)
+        .await
+        .unwrap()
+        .expect("the endpoint is the organization's");
+    let lows: Vec<_> = deliveries
+        .iter()
+        .filter(|d| d.event_type == oxsum_core::BALANCE_LOW)
+        .collect();
+    assert_eq!(
+        lows.len(),
+        1,
+        "one balance.low per crossing: {deliveries:?}"
+    );
+    let stored: serde_json::Value =
+        sqlx::query_scalar("SELECT payload FROM oxsum.webhook_deliveries WHERE delivery_id = $1")
+            .bind(lows[0].id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(stored["data"]["availableMinor"], 800);
+    assert_eq!(stored["data"]["thresholdMinor"], 1_000);
+
+    // A deposit lifting the balance back over re-arms; the next dip fires again.
+    let mut tx = db.pool().begin().await.unwrap();
+    oxsum_core::Db::clear_balance_low(&mut tx, org, 2_000)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    db.record_usage_balanced(
+        &usage_row(&format!("req-{}", Uuid::new_v4()), &tenant),
+        Some(500),
+    )
+    .await
+    .unwrap();
+    let deliveries = db
+        .webhook_deliveries(org, endpoint.endpoint.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        deliveries
+            .iter()
+            .filter(|d| d.event_type == oxsum_core::BALANCE_LOW)
+            .count(),
+        2,
+        "the re-armed threshold fires on the next crossing"
+    );
+}
+
+/// `anomaly.detected` enqueues for the kinds the anomalies page reviews, and a
+/// clean `usage` row enqueues nothing (issue #200).
+#[tokio::test]
+async fn an_anomalous_settlement_enqueues_anomaly_detected() {
+    let url = db_or_skip!();
+    let (db, org, tenant) = world(&url).await;
+    let endpoint = db
+        .create_webhook(
+            org,
+            "https://receiver.example/hook",
+            &["anomaly.detected".to_owned()],
+            &key(),
+        )
+        .await
+        .unwrap();
+
+    // A clean usage kind reports no anomaly.
+    db.record_usage(&usage_row(&format!("req-{}", Uuid::new_v4()), &tenant))
+        .await
+        .unwrap();
+    // A capped turn is the anomaly the page reviews.
+    let mut capped = usage_row(&format!("req-{}", Uuid::new_v4()), &tenant);
+    capped.kind = SettlementKind::Capped;
+    db.record_usage(&capped).await.unwrap();
+
+    let deliveries = db
+        .webhook_deliveries(org, endpoint.endpoint.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let anomalies: Vec<_> = deliveries
+        .iter()
+        .filter(|d| d.event_type == oxsum_core::ANOMALY_DETECTED)
+        .collect();
+    assert_eq!(
+        anomalies.len(),
+        1,
+        "only the capped turn fires: {deliveries:?}"
+    );
+    let stored: serde_json::Value =
+        sqlx::query_scalar("SELECT payload FROM oxsum.webhook_deliveries WHERE delivery_id = $1")
+            .bind(anomalies[0].id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(stored["data"]["kind"], "capped");
+}
+
+/// A manual top-up enqueues `deposit.credited` in the deposit's own transaction;
+/// a replayed idempotency key enqueues nothing twice (issue #200).
+#[tokio::test]
+async fn a_manual_deposit_enqueues_deposit_credited() {
+    let url = db_or_skip!();
+    let (db, org, _tenant) = world(&url).await;
+    let endpoint = db
+        .create_webhook(
+            org,
+            "https://receiver.example/hook",
+            &["deposit.credited".to_owned()],
+            &key(),
+        )
+        .await
+        .unwrap();
+
+    let entry = Uuid::new_v4();
+    db.record_manual_deposit(org, "topup-1", 5_000, entry, Some(5_000))
+        .await
+        .unwrap();
+    // A replay of the same payment ref writes no row and enqueues nothing.
+    db.record_manual_deposit(org, "topup-1", 5_000, entry, Some(5_000))
+        .await
+        .unwrap();
+
+    let deliveries = db
+        .webhook_deliveries(org, endpoint.endpoint.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let credits: Vec<_> = deliveries
+        .iter()
+        .filter(|d| d.event_type == oxsum_core::DEPOSIT_CREDITED)
+        .collect();
+    assert_eq!(credits.len(), 1, "one deposit.credited per deposit");
+    let stored: serde_json::Value =
+        sqlx::query_scalar("SELECT payload FROM oxsum.webhook_deliveries WHERE delivery_id = $1")
+            .bind(credits[0].id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(stored["data"]["rail"], "manual");
+    assert_eq!(stored["data"]["amountMinor"], 5_000);
+    // The credit cleared any balance.low latch a settle had set.
+    let armed: bool = sqlx::query_scalar(
+        "SELECT balance_low_sent FROM oxsum.webhook_endpoints WHERE endpoint_id = $1",
+    )
+    .bind(endpoint.endpoint.id)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert!(!armed);
+}
+
+/// A negative `balanceLowMinor` is refused; every catalog name subscribes.
+#[tokio::test]
+async fn the_catalog_and_threshold_validate() {
+    let url = db_or_skip!();
+    let (db, org, _) = world(&url).await;
+    let error = db
+        .create_webhook_with_threshold(
+            org,
+            "https://receiver.example/hook",
+            &["balance.low".to_owned()],
+            Some(-1),
+            &key(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, WalletError::InvalidInput(_)), "{error:?}");
+
+    let endpoint = db
+        .create_webhook(
+            org,
+            "https://receiver.example/hook",
+            &[
+                "request.settled".to_owned(),
+                "org.suspended".to_owned(),
+                "deposit.credited".to_owned(),
+                "deposit.failed".to_owned(),
+                "deposit.reversed".to_owned(),
+                "balance.low".to_owned(),
+                "statement.finalized".to_owned(),
+                "statement.payment_overdue".to_owned(),
+                "statement.payment_status_updated".to_owned(),
+                "org.credit_limit_exceeded".to_owned(),
+                "anomaly.detected".to_owned(),
+            ],
+            &key(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(endpoint.endpoint.events.len(), 11);
+    // An unknown name is still refused.
+    let error = db
+        .create_webhook(
+            org,
+            "https://receiver.example/hook",
+            &["turn.started".to_owned()],
+            &key(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, WalletError::InvalidInput(_)), "{error:?}");
+}
