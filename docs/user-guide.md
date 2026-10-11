@@ -411,22 +411,38 @@ the platform holds the bill, and `paid` once repayments cover it.
 
 ## Webhooks
 
-Purpose: be notified when a request settles, without polling the API.
+Purpose: be notified when money moves — a request settles, a deposit lands,
+the balance crosses a line, a statement turns — without polling the API.
 
 Steps:
 
 1. Register an endpoint: `POST /api/v1/webhooks` with
-   `{"url": "https://your-server/hook", "events": ["request.settled", "org.suspended"]}`
-   — subscribe to either or both. The URL must be HTTPS — HTTP is allowed only
-   to localhost for development. The answer carries `secret`, a `whsec-` string
-   shown exactly once; store it, afterwards the API shows only `secretLast4`.
+   `{"url": "https://your-server/hook", "events": ["request.settled"], "balanceLowMinor": 2000000}`
+   — pick the events it should hear (`request.settled`, `org.suspended`,
+   `deposit.credited`, `deposit.failed`, `deposit.reversed`, `balance.low`,
+   `statement.finalized`, `statement.payment_overdue`,
+   `statement.payment_status_updated`, `org.credit_limit_exceeded`,
+   `anomaly.detected`). `balanceLowMinor` is the available-balance line
+   `balance.low` fires below — omit it and the endpoint stays deaf to the
+   balance. The URL must be HTTPS — HTTP is allowed only to localhost for
+   development. The answer carries `secret`, a `whsec-` string shown exactly
+   once; store it, afterwards the API shows only `secretLast4`.
 2. Receive `POST`s at that URL. Each is a JSON envelope
-   `{id, type, created_at, org_id, data}`; for `request.settled` the `data`
+   `{id, type, created_at, org_id, data}`. For `request.settled` the `data`
    names the request (`requestId`, `model`, `channel`), the charge (`kind`,
    `chargedMinor`, `freezeMinor`, `settlementEntryId`) and the token counts;
    for `org.suspended` it is just `{organizationId}` — the platform suspended
    the organization's spend, and new holds will refuse `FORBIDDEN` until an
-   operator reinstates it.
+   operator reinstates it. `deposit.credited` carries `{rail, paymentRef,
+   amountMinor, entryId}`; `balance.low` `{availableMinor, thresholdMinor}` —
+   it fires once per crossing and re-arms when a deposit lifts the balance
+   back over the line. `statement.finalized` carries `{statementId, period,
+   totalMinor, creditDrawnMinor, dueDate}`, `statement.payment_overdue` and
+   `statement.payment_status_updated` name the statement and its standing.
+   `org.credit_limit_exceeded` fires when a credit-lined organization hits its
+   line — a hold refused 402 while a `creditLimitMinor` is set.
+   `anomaly.detected` fires on the odd settlements — capped, estimated,
+   client-cancelled, swept, unpriced, released, dead-lettered holds.
 3. Verify every delivery before acting on it: read `x-oxsum-signature`
    (`t=<unix>,v1=<hex>`), recompute HMAC-SHA256 of `"{t}.{raw body}"` with the
    stored secret, compare in constant time, and reject timestamps older than a
