@@ -2493,6 +2493,196 @@ async fn a_max_concurrent_holds_cap_refuses_the_extra_turn() {
     assert_eq!(status, StatusCode::OK);
 }
 
+// ── the token window (issue #203) ────────────────────────────────────────────
+
+/// The settled tokens a turn burned roll into the key's trailing-minute window:
+/// `input + output` of the settle lands in `oxsum.tpm_windows` inside the same
+/// transaction, so the durable sum is what admission reads back.
+#[tokio::test]
+async fn settled_usage_accrues_the_token_window() {
+    let world = world!(1_000_000);
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+    let key_id: uuid::Uuid = world.key_id.parse().unwrap();
+    async fn settled_of(pool: &sqlx::PgPool, key_id: uuid::Uuid) -> i64 {
+        sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT sum(tokens)::bigint FROM oxsum.tpm_windows WHERE key_id = $1",
+        )
+        .bind(key_id)
+        .fetch_one(pool)
+        .await
+        .expect("the window reads")
+        .unwrap_or(0)
+    }
+
+    let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
+    let (status, _) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        settled_of(&world.pool, key_id).await,
+        12,
+        "the settle wrote its 10+2 tokens into the window"
+    );
+
+    // A second turn settles beside the first: the window accumulates.
+    let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
+    let (status, _) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(settled_of(&world.pool, key_id).await, 24);
+}
+
+/// A key's `tokensPerMinute` is judged at admission: the window-actual plus this
+/// request's estimate over the cap is refused 429 `TOKENS_PER_MINUTE` in
+/// OpenAI's `rate_limit_exceeded` shape — upstream never asked, nothing frozen.
+#[tokio::test]
+async fn a_tokens_per_minute_cap_refuses_the_request_over_estimate() {
+    let world = world!(1_000_000);
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+    let key_id: uuid::Uuid = world.key_id.parse().unwrap();
+
+    let (status, body) = call(
+        &world.app,
+        "PATCH",
+        &format!("/api/v1/org/keys/{}", world.key_id),
+        Some(json!({"tokensPerMinute": 1_000_000})),
+        Some(&world.key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Seed the window near the cap — what settled turns would have left.
+    sqlx::query(
+        "INSERT INTO oxsum.tpm_windows (key_id, window_start, tokens) \
+         VALUES ($1, date_trunc('second', now()), 999_999)",
+    )
+    .bind(key_id)
+    .execute(&world.pool)
+    .await
+    .expect("the window row lands");
+
+    // The request's own estimate (input bound + output bound) pushes over the
+    // cap: refused at admission, before upstream or a hold.
+    let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(response.headers().get("retry-after").is_some());
+    assert_eq!(
+        response.headers().get("x-ratelimit-limit").unwrap(),
+        "1000000"
+    );
+    let (_, body) = json_of(response).await;
+    assert_eq!(body["error"]["type"], "rate_limit_exceeded");
+    assert_eq!(body["error"]["code"], "TOKENS_PER_MINUTE");
+    assert!(world.script.seen().is_empty(), "upstream never heard");
+    assert_eq!(world.wallet().await.reserved().await.unwrap(), 0);
+}
+
+/// The window is a trailing minute: rows aged past it stop counting, so a key
+/// that was over cap admits again once its settled tokens age out — the test
+/// writes the rows back past the minute rather than waiting a wall-clock one.
+#[tokio::test]
+async fn the_token_window_ages_out_and_admits_again() {
+    let world = world!(1_000_000);
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+    let key_id: uuid::Uuid = world.key_id.parse().unwrap();
+
+    // The cap clears one turn's estimate (~1000 output bound) but not the seeded
+    // 1000 settled tokens plus it: 0 + ~1000 admits, 1000 + ~1000 refuses.
+    let (status, _) = call(
+        &world.app,
+        "PATCH",
+        &format!("/api/v1/org/keys/{}", world.key_id),
+        Some(json!({"tokensPerMinute": 1500})),
+        Some(&world.key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Over the cap but inside the window: refused.
+    sqlx::query(
+        "INSERT INTO oxsum.tpm_windows (key_id, window_start, tokens) \
+         VALUES ($1, date_trunc('second', now()), 1000)",
+    )
+    .bind(key_id)
+    .execute(&world.pool)
+    .await
+    .expect("the window row lands");
+    let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+
+    // Age the row past the trailing minute: deleting it stands in for the
+    // wall-clock minute no test waits through, and the same request now admits.
+    sqlx::query("DELETE FROM oxsum.tpm_windows WHERE key_id = $1")
+        .bind(key_id)
+        .execute(&world.pool)
+        .await
+        .expect("the row ages out");
+    let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
+    let (status, _) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+/// RPM and TPM compose on one key without leaking into each other: an RPM
+/// refusal spends no token window (the turn never ran), and a turn under both
+/// caps is refused by whichever admits first — here the request allowance.
+#[tokio::test]
+async fn rpm_and_tpm_compose_without_leaking() {
+    let world = world!(1_000_000);
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+    let key_id: uuid::Uuid = world.key_id.parse().unwrap();
+
+    let (status, _) = call(
+        &world.app,
+        "PATCH",
+        &format!("/api/v1/org/keys/{}", world.key_id),
+        Some(json!({"requestsPerMinute": 1, "tokensPerMinute": 1_000_000})),
+        Some(&world.key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // The first turn fits both windows and settles its tokens.
+    let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
+    let (status, _) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // The second hits the request allowance first — RPM consumes at admission
+    // and TPM never sees a turn that never ran.
+    let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
+    let (_, body) = json_of(response).await;
+    assert_eq!(body["error"]["code"], "RATE_LIMITED");
+    let window: i64 = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT sum(tokens)::bigint FROM oxsum.tpm_windows WHERE key_id = $1",
+    )
+    .bind(key_id)
+    .fetch_one(&world.pool)
+    .await
+    .unwrap()
+    .unwrap_or(0);
+    assert_eq!(
+        window, 12,
+        "the refused turn wrote nothing into the token window"
+    );
+}
+
 // ── request-level idempotency (issue #132) ───────────────────────────────────
 
 /// A chat request carrying an `Idempotency-Key` header.
