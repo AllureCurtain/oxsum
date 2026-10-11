@@ -241,6 +241,9 @@ struct CreateKeyReq {
     /// Holds outstanding at once; absent or null is uncapped.
     #[serde(default)]
     max_concurrent_holds: Option<i32>,
+    /// Settled tokens inside a rolling minute; absent or null is uncapped.
+    #[serde(default)]
+    tokens_per_minute: Option<i32>,
 }
 
 #[derive(Deserialize)]
@@ -261,6 +264,9 @@ struct UpdateKeyConstraintsReq {
     /// The outstanding-holds cap; null clears it back to uncapped.
     #[serde(default)]
     max_concurrent_holds: Option<i32>,
+    /// The per-minute token allowance; null clears it back to uncapped.
+    #[serde(default)]
+    tokens_per_minute: Option<i32>,
 }
 
 /// Builds the constraint set both key endpoints carry, parsing the duration's name.
@@ -275,6 +281,7 @@ fn key_constraints(r: &UpdateKeyConstraintsReq) -> Result<oxsum_core::KeyConstra
         model_allowlist: r.model_allowlist.clone(),
         requests_per_minute: r.requests_per_minute,
         max_concurrent_holds: r.max_concurrent_holds,
+        tokens_per_minute: r.tokens_per_minute,
     })
 }
 
@@ -1058,6 +1065,7 @@ async fn create_key(
                     model_allowlist: r.model_allowlist,
                     requests_per_minute: r.requests_per_minute,
                     max_concurrent_holds: r.max_concurrent_holds,
+                    tokens_per_minute: r.tokens_per_minute,
                 })
                 .map(|c| (r.name, r.expires_at, c))
             },
@@ -1533,6 +1541,23 @@ async fn hold(
                     retry_after_secs: limited.retry_after.as_secs(),
                 }
                 .into());
+            }
+            // The token window bounds a key the same way, but counts settled
+            // usage rather than requests (issue #203): an amount-only hold
+            // spends no tokens, so it is refused only when the window is
+            // already full — a hold never occupies the allowance itself.
+            if let Some(tpm) = key.tokens_per_minute
+                && tpm > 0
+            {
+                let (settled, retry_after) = state.db.tpm_window(key.key_id).await?;
+                if settled >= i64::from(tpm) {
+                    crate::metrics::rate_limited(&state.metrics, "api");
+                    return Err(WalletError::TokensPerMinute {
+                        limit: i64::from(tpm),
+                        retry_after_secs: retry_after,
+                    }
+                    .into());
+                }
             }
             match w
                 .hold_for_key(key, None, &r.idempotency_key, "", r.amount_minor, today())
