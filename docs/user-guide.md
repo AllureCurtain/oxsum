@@ -231,6 +231,14 @@ is wrong, spent or past its expiry answers `NOT_FOUND` whichever it is. Ask your
 operator for a code — they mint batches through `POST /api/v1/admin/redemption-codes`,
 and the codes only exist in that one answer.
 
+By card, on a deployment that offers Stripe checkout (the operator sets
+`OXSUM_STRIPE_*`; without it the endpoint answers 503): `POST /api/v1/topups/stripe`
+with `idempotencyKey` and `amountMinor` answers `{"checkoutUrl", "depositId"}` — open
+the URL, pay on Stripe's hosted page, and the signed webhook credits the purchased
+pool when the session completes. Repeating the call with the same key answers the
+same checkout URL rather than opening a second session, and a session left unpaid
+expires without moving money.
+
 Note: the unit is minor, 1 credit = 1_000_000.
 
 ## Paying for one AI call

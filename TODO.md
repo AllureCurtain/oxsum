@@ -28,7 +28,6 @@ Post-roadmap validation: a gate run found `a_settled_turn_enqueues_a_signed_deli
 
 Post-roadmap backlog, one issue per item:
 
-- #201 Stripe rail: credit deposits through a checkout webhook
 - #202 Account deletion via pseudonymization
 - #203 TPM rate limits: token windows on settled usage
 - #204 Signed price catalog snapshots
@@ -63,6 +62,8 @@ Closed. The chat page is built (issue #39): after login the user tops up, picks 
 Nothing.
 
 ## Recently completed
+
+- 2026-10-11 The Stripe deposit rail (issue #201): card top-ups through a hosted Checkout page, on deployments that set `OXSUM_STRIPE_SECRET_KEY` + `OXSUM_STRIPE_WEBHOOK_SECRET` + `OXSUM_PUBLIC_URL` together (a subset is a startup error; unset, the intent 503s and the webhook 404s). `POST /api/v1/topups/stripe` opens a `pending` deposit — the caller's `idempotencyKey` stays the `payment_ref` anchor, the session id and hosted URL live in `meta`, so a replayed intent answers the stored URL with no second Stripe call — creates the session with the deposit id as `client_reference_id`, and answers `{checkoutUrl, depositId}`. The signed webhook `POST /api/v1/webhooks/stripe` (no credential; `Stripe-Signature` verified `t=…,v1=…` HMAC-SHA256 in constant time — bad or missing is 401) acts on two types: `checkout.session.completed` finds the deposit by `meta.stripeSessionId`, confirms it `FOR UPDATE` and credits the purchased pool under the fixed key `stripe:<session_id>` — a replayed or raced delivery credits once ever and enqueues `deposit.credited` in the same transaction — and `checkout.session.expired` walks the row to `expired`. `amount_total` records into `received_minor`; a mismatch is reconciler drift, never auto-patched (D2). Contract `openapi.yaml` 0.48.0; pinned by `crates/server/tests/stripe.rs` — intent, replay, the full flow, triple-delivery, wrong-secret and unsigned 401s, unconfigured 503/404, and the expired path.
 
 - 2026-10-11 The webhook event catalog completed (issue #200): beside `request.settled` and `org.suspended`, endpoints may now subscribe to `deposit.credited`, `deposit.failed`, `deposit.reversed`, `balance.low`, `statement.finalized`, `statement.payment_overdue`, `statement.payment_status_updated`, `org.credit_limit_exceeded` and `anomaly.detected`. Every event that has a transaction rides inside it — the deposit's `credited` flip, finalization, the reconcile pass, `record_usage`'s tx; `balance.low` arms per endpoint via `balanceLowMinor` (migration 0030) and latches once-per-crossing until a deposit lifts the balance back over; `anomaly.detected` fires on the six odd settlement kinds plus a dead-lettered hold. `org.credit_limit_exceeded` is the one at-least-once exception — a refused hold leaves no transaction, so it announces from the dispatch layer, gated on a configured credit line. Contract `openapi.yaml` 0.47.0; pinned by the core webhook and statement suites plus the server webhook suite's refused-hold test.
 
