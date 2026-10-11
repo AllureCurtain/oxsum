@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.48.0
+  version: 0.49.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -292,6 +292,14 @@ info:
     `checkout.session.completed` confirms and credits the deposit under the session id's own
     ledger key, and `checkout.session.expired` closes it. `received_minor` records what Stripe
     reports paid; a mismatch with `amount_minor` is for a human, never auto-patched.
+
+    0.49.0 adds account deletion by pseudonymization (issue #202): `DELETE
+    /api/v1/users/me` — session-only, password-confirmed — tombstones the user row
+    (`email` → `deleted-<id>@deleted.invalid`, the password hash blanked, `emailVerified`
+    cleared), revokes every session and every key the user minted, removes their
+    memberships (the last-owner wall refuses 409), and nulls the `endUser`/`tags`
+    attribution on the usage rows their keys paid. The ledger is never touched: the
+    books keep the UUID, every proof keeps verifying.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -811,6 +819,60 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/users/me:
+    delete:
+      summary: Delete the session user's account (pseudonymization)
+      description: |
+        Irreversible. The account's identity is erased while the books keep their history:
+        the user row's `email` is tombstoned to `deleted-<userId>@deleted.invalid`, the
+        password hash is blanked so no login can ever succeed, `emailVerified` is cleared,
+        every session the user holds is revoked, and every API key they minted is revoked.
+        Every membership of the user is removed — except that a user who is an
+        organization's last owner is refused (409): transfer ownership first, the same
+        wall membership management keeps. The user's own keys' usage attribution is
+        pseudonymized: `usage_records.end_user`/`tags` on turns their minted keys paid
+        are nulled, as are the `open_holds` watch rows. The OAuth links and minted email
+        tokens go with the account; an invitation they sent stays — it is the receiving
+        organization's fact. An organization whose only member was the user — the personal
+        organization every signup creates, or a team org that shrank to one seat — is
+        tombstoned with them: renamed `deleted-<id>` and suspended. The ledger never
+        changes — settlement descriptions carry no identity — so a deleted user's bills
+        still verify.
+
+        A person's action: the session cookie only, an API key is refused (403), and the
+        body's `password` must verify against the account — a wrong one is 401. An
+        account created through OAuth carries an unknown password by construction; it
+        must set a real one through the reset flow before it can confirm this call. The
+        answer names what was removed. The session dies in the same commit, so a
+        second call can never reach the handler — its cookie is already dead.
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password:
+                  type: string
+                  description: The account's current password — the act's confirmation.
+      responses:
+        "200":
+          description: The account is deleted; the session that asked dies with it
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/AccountDeletion" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/orgs:
     get:
@@ -3450,6 +3512,14 @@ components:
       required: [organizationId]
       properties:
         organizationId: { type: string, format: uuid, description: "must be an organization the session's user is a member of" }
+    AccountDeletion:
+      type: object
+      description: What `DELETE /api/v1/users/me` removed — the ledger is untouched, so no count covers it.
+      required: [sessionsRevoked, keysRevoked, membershipsRemoved]
+      properties:
+        sessionsRevoked: { type: integer, format: int64, description: "sessions the account held, now dead" }
+        keysRevoked: { type: integer, format: int64, description: "API keys the account minted, now dead" }
+        membershipsRemoved: { type: integer, format: int64, description: "memberships the account left; the organizations stay" }
     SessionInfo:
       type: object
       required: [user, organization, role, session]
@@ -4302,7 +4372,7 @@ components:
       properties:
         idempotencyKey: { type: string, minLength: 1, maxLength: 128, description: "UTF-8 idempotency key; the hold entry's key is `metering:<key>:hold`" }
         organizationId: { type: string, format: uuid, description: whose wallet freezes }
-        channel: { type: string, description: the channel whose `mode: event` price version for the code applies }
+        channel: { type: string, description: "the channel whose `mode: event` price version for the code applies" }
         billableCode: { type: string, minLength: 1, maxLength: 200, description: "what is being billed — the price book's model name on that channel" }
         eventId: { type: string, maxLength: 128, description: "the service's own identifier for the event, recorded as the usage row's request id; defaults to the hold key" }
         usage: { $ref: "#/components/schemas/EventUsage" }

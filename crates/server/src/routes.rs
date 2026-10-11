@@ -48,6 +48,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/session", get(session))
         .route("/session/organization", post(switch_organization))
+        // Deleting the account is a person's action — the handler refuses an
+        // API key, which names no user (issue #202).
+        .route("/users/me", delete(delete_account))
         // Requesting a verification mail is the session user's own action; the
         // handler refuses an API key, which names no user.
         .route("/auth/verify/request", post(request_verification))
@@ -801,6 +804,33 @@ async fn switch_organization(
     principal.organization = organization;
     principal.role = role;
     ok(SessionInfo::from(principal))
+}
+
+/// The body of `DELETE /api/v1/users/me`: the act's confirmation.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DeleteAccountReq {
+    password: String,
+}
+
+/// Deletes the session user's account (issue #202): pseudonymization, one
+/// transaction — the identity fields are tombstoned, the sessions and minted
+/// keys die, the memberships go, and the attribution their keys wrote is
+/// nulled. The ledger is untouched, so the account's bills still verify.
+///
+/// Session-only: a key is not a person. The session that asks dies in the same
+/// commit, so the answer is the last thing the credential ever receives.
+async fn delete_account(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    ApiJson(request): ApiJson<DeleteAccountReq>,
+) -> ApiResult<oxsum_core::AccountDeletion> {
+    let principal = person(principal)?;
+    let deletion = state
+        .db
+        .delete_account(principal.user.id, &request.password)
+        .await?;
+    ok(deletion)
 }
 
 /// The body of `POST /api/v1/invitations/redeem`: the link's token plus the account
