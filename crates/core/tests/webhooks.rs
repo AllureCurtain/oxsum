@@ -223,8 +223,13 @@ async fn a_settled_turn_enqueues_a_signed_delivery() {
     assert_eq!(stored["data"]["chargedMinor"], 12);
 
     // A usage row for a tenant with no organization row enqueues nothing
-    // anywhere — synthetic tenants never webhook.
-    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM oxsum.webhook_deliveries")
+    // anywhere — synthetic tenants never webhook. The count is scoped to this
+    // test's organization: the whole suite shares one database, so a parallel
+    // test's delivery would trip a global count (issue #195).
+    let deliveries = "SELECT count(*) FROM oxsum.webhook_deliveries \
+                      WHERE organization_id = $1";
+    let before: i64 = sqlx::query_scalar(deliveries)
+        .bind(org)
         .fetch_one(db.pool())
         .await
         .unwrap();
@@ -234,7 +239,8 @@ async fn a_settled_turn_enqueues_a_signed_delivery() {
     ))
     .await
     .unwrap();
-    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM oxsum.webhook_deliveries")
+    let after: i64 = sqlx::query_scalar(deliveries)
+        .bind(org)
         .fetch_one(db.pool())
         .await
         .unwrap();
