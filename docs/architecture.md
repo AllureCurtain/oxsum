@@ -53,7 +53,7 @@ The axum API, the core, doubleentry and the gateway exist today, with oxsum's ow
 | Admin audit | `crates/core/src/audit.rs` | The operator surface's memory (issue #160): `oxsum.admin_audit` (migration 0023), one append-only row per mutating `/api/v1/admin` call — dotted `action`, `target`, allowlisted `detail` (credentials never recorded) and the `idempotency_key` the write carried. The route writes the row after the mutation commits, so the log may omit on a crash but never describes a change that did not happen; a unique `(action, idempotency_key)` index makes a keyed replay the same event. `GET /api/v1/admin/audit` pages it newest-first over `(recorded_at, audit_id)` |
 | OAuth | `crates/core/src/oauth.rs` (state and account resolution), `crates/server/src/oauth.rs` (the GitHub legs) | GitHub OAuth login (issue #152): `oxsum.oauth_states` (migration 0020) keeps `oxo-` CSRF states as SHA-256, single-use and ten-minute-lived; `oxsum.oauth_accounts` links a provider identity to a user by the provider's own id. The callback resolves link → verified-email match → registration (refused in invite mode), then mints the session through the `session_for` the password path shares. The provider legs are plain `reqwest` over configurable base URLs — a test stubs github.com — and the client pair configures all-or-none with `OXSUM_PUBLIC_URL`; an OAuth-registered account holds argon2 over a random secret, so no password ever opens it |
 | Metering | `crates/core/src/service_credentials.rs` + `metering.rs`, `crates/server/src/metering.rs` | The deployer-services billing surface (issue #172): `oxsum.service_credentials` (migration 0028) keeps `oxs-svc-` secrets as SHA-256 only — minted, listed and revoked under the admin token, authenticated only on `/api/v1/metering/*` where unknown and revoked are the same `UNAUTHORIZED`. `metering.rs` orchestrates hold/settle/release/one-shot over the wallet's own primitives: `billableCode` resolves a channel's `mode: event` price pinned at hold time, holds ride the `open_holds` watch table, entries attribute to `svc-<credentialId>` instead of a key, and committed outcomes replay from the settlement record itself once the watch row is gone. Settlement descriptions are schema v6 — the reporting `service` inside, no `upstreamAttempts` (the usage row carries 0: nothing was relayed) |
-| Pages | `crates/web` | Leptos admin dashboard, bills page (`/dashboard/bills`), chat page, verification page. SSR plus hydration, mounted through the official `leptos_axum`, one binary; the CSV and JSON export beside the bills page is a page route of the server's, because a download has to be a response (docs/decisions.md) |
+| Pages | `crates/web` | The Leptos pages: the dashboard (`/dashboard` — overview, chat, bills, keys, members, log, requests, usage), the admin pages (`/admin` — channels, organizations, in-flight, anomalies, reconciliation, closing), and the public pages (`/`, `/login`, `/register`, `/logout`, `/verify-email`, `/forgot-password`, `/reset-password`, `/verify`, `/device`). SSR plus hydration, mounted through the official `leptos_axum`, one binary; the CSV and JSON export beside the bills page is a page route of the server's, because a download has to be a response (docs/decisions.md) |
 
 ## Directory plan
 
@@ -76,14 +76,16 @@ crates/
                         verifying-key publication; the seed is OXSUM_HEAD_SIGNING_KEY
       db.rs             exists: the one pool plus oxsum's own migration runner
       users.rs          exists: registration, password hashing, login/logout sessions (B-4)
-      orgs.rs           exists: organizations, memberships, roles; invitations come later
+      orgs.rs           exists: organizations, memberships, roles, and invitation
+                        links (issue #59)
       keys.rs           exists: API key mint, resolve, list, revoke
       sessions.rs       exists: session table reads, writes and renewal; login, logout,
                         and the Principal (key or session) the auth middleware resolves
       usage.rs          exists: the normalized UsageRecord, its attribution bounds,
                         and the oxsum.usage_records persistence beside the settlement
       adapters.rs       exists: the protocol-keyed UsageAdapter registry that reads
-                        each channel's usage reports into the record (OpenAI first)
+                        each channel's usage reports into the record (openai and
+                        anthropic adapters today)
     migrations/         exists: oxsum's own tables (users/orgs/memberships/keys, channels
                         and their price versions, usage records). Create-table SQL
                         only, applied by oxsum's own migration runner; ledger schemas
@@ -121,7 +123,6 @@ Principle: **domain logic belongs in core; the gateway does protocol and orchest
 - Role rules: members list and revoke only the keys they created (anything else is 404), owners and admins see and revoke all; roles constrain sessions, not keys. One exception, and it is deliberate: managing memberships needs a session in the owner or admin role, so a key is refused there even though it acts as the whole organization — a key is not a person and names no role (docs/decisions.md, "membership management is a person's action"). The member list itself stays readable by every member.
 - Between tenants: physical isolation, one schema per tenant, no filter columns in queries. The connection layer shares one pool; `SET LOCAL search_path` at the start of each transaction picks the tenant schema (mechanism in docs/decisions.md). oxsum's own tables are not in those schemas: they are schema-qualified (`oxsum.users`) in the one `oxsum` schema, so nothing about a request's organization can change which identity rows a statement sees.
 - Planned:
-  - Team organizations and multi-org membership: the schema holds many memberships per user already, and an owner or admin can add an existing account to their organization (#56, the members page); what comes later is creating a second organization and switching between them, and a session acts as the oldest membership until the dashboard adds switching.
   - Last-used timestamps on API keys, see TODO.md.
   - See docs/decisions.md and TODO.md.
 
@@ -170,8 +171,8 @@ Only relationships; the ledger's table structure is authoritative in `crates/dou
 - Organization 1-to-1 ledger, 1 ledger = 1 schema `ledger_<tenant_id>`, and an organization's tenant id is its own UUID without dashes.
 - User many-to-many organizations, via memberships carrying a role (owner, admin, member). Registration creates one of each.
 - Organization 1-to-many API keys; a key holds no balance itself, it is a credential resolving to its organization.
-- Planned (not built): organization 1-to-many invitations.
-- User 1-to-many sessions (web login): built; a session acts as the user's oldest membership until the dashboard adds switching.
+- Organization 1-to-many invitations (issue #59): a token link that registers a user straight into the inviting organization's memberships.
+- User 1-to-many sessions (web login): built; a session acts as the organization the session row names, switched through `POST /api/v1/session/organization` or the dashboard's org switcher (issue #58).
 - Every ledger has seven fixed accounts:
   - `Liabilities:Wallet`: purchased balance, overdraft forbidden
   - `Equity:Bonus`: granted credit — the signup bonus and admin grants; settlement draws it before the wallet
@@ -187,4 +188,4 @@ Only relationships; the ledger's table structure is authoritative in `crates/dou
 ## Deployment
 
 - One binary `oxsum` plus PostgreSQL 17. All configuration from environment variables, see `.env.example`.
-- The database runs locally via `compose.yaml`. Production deployment is undecided, see TODO.md.
+- The database runs locally via `compose.yaml`. The production runbook — backup, restore, migration ordering, upgrade/rollback and key rotation — shipped in docs/development.md's "Deployment runbook" (issue #174).
