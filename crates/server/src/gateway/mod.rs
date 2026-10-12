@@ -400,11 +400,23 @@ async fn run(
     surface: Surface,
 ) -> Result<Response, GatewayError> {
     let request = GatewayRequest::parse(body, surface)?;
+    // The three admission-time reads are independent — the tier's capability
+    // package, the model's servings, the discount in force — so they run
+    // concurrently instead of as three serial pool round trips. A failure in
+    // any one still surfaces the same error the serial order produced.
+    let (tier, servings, discount) = tokio::join!(
+        state.db.tier_of(organization.id),
+        servings(state, &request.model),
+        state.db.discount_percent(organization.id, &request.model),
+    );
+    let tier = tier?;
+    let candidates = servings?;
+    let discount_percent = discount?.map(i64::from);
     // The organization's tier is a capability package — limits and allowlists,
     // never a pricing input (issue #158): its model allowlist refuses 403 and
     // its rolling-minute allowance is one window shared by every key of the
     // organization, consumed at admission like the key's own below.
-    if let Some(profile) = state.db.tier_of(organization.id).await? {
+    if let Some(profile) = tier {
         if let Some(allowlist) = &profile.model_allowlist
             && !allowlist.iter().any(|allowed| allowed == &request.model)
         {
@@ -453,8 +465,8 @@ async fn run(
     // that speak its protocol — an `anthropic` route is not a candidate on the
     // OpenAI surface, and vice versa (issue #168) — and only prices of the
     // surface's own billing mode: a chat-priced model is not an embeddings
-    // route, because its rates do not mean the same counts (issue #170).
-    let candidates = servings(state, &request.model).await?;
+    // route, because its rates do not mean the same counts (issue #170). The
+    // servings were fetched above, concurrently with the tier and discount.
     let candidates: Vec<Serving> = candidates
         .into_iter()
         .filter(|serving| {
@@ -479,14 +491,10 @@ async fn run(
         ))
         .into());
     };
-    // The discount resolves once here, beside the price versions: the turn
-    // settles under the percent in force when it started, whatever the rows do
-    // later — the snapshot the settlement description writes (issue #158).
-    let discount_percent = state
-        .db
-        .discount_percent(organization.id, &request.model)
-        .await?
-        .map(i64::from);
+    // The discount was resolved above, beside the tier and the servings: the
+    // turn settles under the percent in force when it started, whatever the
+    // rows do later — the snapshot the settlement description writes
+    // (issue #158).
     let texts: Vec<&str> = request.texts.iter().map(String::as_str).collect();
     // The freeze is the conservative bound across every route a failover could
     // land on: the dearest candidate's upper bound, and `max_tokens` forwards
