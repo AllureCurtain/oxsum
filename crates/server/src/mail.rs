@@ -7,7 +7,7 @@
 //! indistinguishable 200, and `verify/request` is the one endpoint that reports
 //! the absence, because sending the mail is its whole job.
 //!
-//! The transport is lettre's async SMTP over `tokio1-native-tls`; `smtps://`
+//! The transport is lettre's async SMTP over `tokio1-rustls-tls`; `smtps://`
 //! URLs connect wrapped, `smtp://` upgrades with STARTTLS when the server offers
 //! it. The mail itself is plain text: a verification or reset link under the
 //! public URL, never the token alone — the page route is what consumes it.
