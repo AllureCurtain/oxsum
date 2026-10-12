@@ -412,6 +412,17 @@ credit line carried — and `outstandingMinor` is what is still open. `dueDate`
 comes from the `paymentTermsDays` the organization carried when the statement was
 issued.
 
+For a document you can send on — an invoice for your own records or your
+accounting — `GET /api/v1/statements/{statementId}/export.pdf` downloads the
+statement as a PDF: the same header (your organization, the period, status, due
+date), the itemized lines, and the totals, rendered from the stored lines so it
+can never disagree with the API's own answer. A footer anchors the page to the
+ledger — the `logFromIndex`–`logToIndex` window the lines prove — beside a QR
+that opens `/verify`, so a paper copy still points back at the checkable
+record. Only a finalized statement exports; a draft (the platform's working
+document) answers 404, as does a statement that is not yours. The platform's
+own copy is `GET /api/v1/admin/statements/{statementId}/export.pdf`.
+
 Paying a statement needs no dedicated call: any top-up or redemption repays the
 credit line first, and repayments always land on the oldest open statement — so a
 `POST /api/v1/topups` while a statement is outstanding settles it. `paymentStatus`

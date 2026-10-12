@@ -619,3 +619,212 @@ async fn statements_are_scoped_to_their_organization() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+// ── the PDF export (issue #205) ─────────────────────────────────────────────
+//
+// A finalized statement renders as a downloadable PDF — binary, not the JSON
+// envelope — anchored to the ledger window its lines prove. A draft is a
+// working document and exports as 404; the export always reads the stored
+// lines, so the document can never disagree with the detail endpoint.
+
+/// One call that returns the raw body and the headers, for the binary export —
+/// `call`/`call_with` parse JSON, which a PDF is not.
+async fn call_bytes(
+    app: &Router,
+    path: &str,
+    token: Option<&str>,
+) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    let mut request = Request::builder().method("GET").uri(path);
+    if let Some(token) = token {
+        request = request.header("authorization", format!("Bearer {token}"));
+    }
+    let response = app
+        .clone()
+        .oneshot(request.body(Body::empty()).expect("the test's own request"))
+        .await
+        .expect("the router answers");
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("collects the body")
+        .to_bytes()
+        .to_vec();
+    (status, headers, bytes)
+}
+
+/// Generates, finalizes and returns a statement id for a fresh organization —
+/// the precondition every export test shares. Two billed September turns.
+async fn a_finalized_statement(app: &Router, pool: &PgPool, name: &str) -> (String, String) {
+    let (org, key) = register(app, name).await;
+    let tenant = tenant_of(pool, &org).await;
+    let db = Db::from_pool(pool.clone());
+    grant_credit(app, &org, 20_000_000, &org).await;
+    turn(
+        &db,
+        &tenant,
+        "x1",
+        ("openai", "gpt-4o"),
+        5 * ONE,
+        3 * ONE,
+        SEPT,
+    )
+    .await;
+    turn(
+        &db,
+        &tenant,
+        "x2",
+        ("anthropic", "claude"),
+        5 * ONE,
+        4 * ONE,
+        SEPT,
+    )
+    .await;
+
+    let (status, body) = call(
+        app,
+        "POST",
+        "/api/v1/admin/statements",
+        Some(json!({"period": "2026-09", "organizationId": org})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let statement_id = body["data"][0]["id"].as_str().unwrap().to_owned();
+    let (status, body) = call(
+        app,
+        "POST",
+        &format!("/api/v1/admin/statements/{statement_id}/finalize"),
+        Some(json!({"idempotencyKey": format!("fin-{name}")})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    (statement_id, key)
+}
+
+/// The bytes are a real PDF: the magic header, the trailer, and a parse — and
+/// the page carries the totals the stored lines sum to, so the export is the
+/// same answer the detail endpoint gives.
+#[tokio::test]
+async fn a_finalized_statement_exports_as_a_pdf() {
+    let (app, pool) = app_or_skip!();
+    let (statement_id, key) = a_finalized_statement(&app, &pool, "pdf").await;
+
+    // The organization's own export — its key reads only its own org.
+    let (status, headers, pdf) = call_bytes(
+        &app,
+        &format!("/api/v1/statements/{statement_id}/export.pdf"),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "export failed: {pdf:?}");
+    assert_eq!(
+        headers.get("content-type").and_then(|v| v.to_str().ok()),
+        Some("application/pdf")
+    );
+    let disposition = headers
+        .get("content-disposition")
+        .and_then(|v| v.to_str().ok())
+        .expect("a download name");
+    assert!(disposition.starts_with("attachment;"), "{disposition}");
+    assert!(disposition.contains("2026-09"), "{disposition}");
+
+    // The magic and the trailer are the format's own edges; printpdf's own
+    // reader round-tripping the bytes is pinned by the core unit test (the
+    // server crate does not link the renderer).
+    assert!(pdf.starts_with(b"%PDF-"), "not a PDF header");
+    assert!(pdf.windows(5).any(|w| w == b"%%EOF"), "no trailer");
+    assert!(pdf.len() > 1_000, "a statement page is not a stub");
+
+    // The admin twin renders the same document for the operator.
+    let (status, headers, admin_pdf) = call_bytes(
+        &app,
+        &format!("/api/v1/admin/statements/{statement_id}/export.pdf"),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "admin export failed");
+    assert_eq!(
+        headers.get("content-type").and_then(|v| v.to_str().ok()),
+        Some("application/pdf")
+    );
+    assert!(admin_pdf.starts_with(b"%PDF-"));
+}
+
+/// A draft is the platform's working document: it never exports, on either
+/// surface — and the export answers it as if it were not there.
+#[tokio::test]
+async fn a_draft_statement_does_not_export() {
+    let (app, pool) = app_or_skip!();
+    let (org, key) = register(&app, "pdf-draft").await;
+    let tenant = tenant_of(&pool, &org).await;
+    let db = Db::from_pool(pool.clone());
+    grant_credit(&app, &org, 20_000_000, &org).await;
+    turn(
+        &db,
+        &tenant,
+        "d1",
+        ("openai", "gpt-4o"),
+        5 * ONE,
+        3 * ONE,
+        SEPT,
+    )
+    .await;
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/admin/statements",
+        Some(json!({"period": "2026-09", "organizationId": org})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let draft_id = body["data"][0]["id"].as_str().unwrap().to_owned();
+    assert_eq!(body["data"][0]["status"], "draft");
+
+    // Still a draft: both surfaces answer 404, not a rendered working copy.
+    let (status, _, _) = call_bytes(
+        &app,
+        &format!("/api/v1/statements/{draft_id}/export.pdf"),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = call_bytes(
+        &app,
+        &format!("/api/v1/admin/statements/{draft_id}/export.pdf"),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// The org export is scoped: another organization's statement is 404 to this
+/// org's key, and no credential is 401 — the document is the bill, so it reads
+/// under the same rules as the detail endpoint.
+#[tokio::test]
+async fn the_export_reads_only_the_callers_own_statements() {
+    let (app, pool) = app_or_skip!();
+    let (statement_id, _key) = a_finalized_statement(&app, &pool, "pdf-scope").await;
+
+    // A second organization registered after the first's statement exists:
+    // its key cannot name another org's document.
+    let (_other_org, other_key) = register(&app, "pdf-other").await;
+    let (status, _, _) = call_bytes(
+        &app,
+        &format!("/api/v1/statements/{statement_id}/export.pdf"),
+        Some(&other_key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // No credential at all.
+    let (status, _, _) = call_bytes(
+        &app,
+        &format!("/api/v1/statements/{statement_id}/export.pdf"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}

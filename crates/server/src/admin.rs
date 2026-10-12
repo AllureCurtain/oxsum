@@ -67,6 +67,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/closings", get(closings).post(close_month))
         .route("/statements", get(statements).post(generate_statements))
         .route("/statements/{statement_id}", get(statement))
+        .route("/statements/{statement_id}/export.pdf", get(statement_pdf))
         .route(
             "/statements/{statement_id}/finalize",
             post(finalize_statement),
@@ -1153,6 +1154,50 @@ async fn statement(
         lines: state.db.statement_lines(statement_id).await?,
         statement,
     })
+}
+
+/// One finalized statement as a rendered PDF — the admin view of the export the
+/// organization itself downloads (issue #205). A draft or a missing id answers
+/// 404: an unissued document does not exist to export. The body is binary, not
+/// the JSON envelope.
+async fn statement_pdf(
+    State(state): State<AppState>,
+    Path(statement_id): Path<Uuid>,
+) -> Result<Response, ApiError> {
+    use axum::body::Body;
+    state.db.flip_overdue(today()).await?;
+    let statement = state
+        .db
+        .statement_by_id(statement_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    if statement.status != oxsum_core::StatementStatus::Finalized {
+        return Err(ApiError::not_found());
+    }
+    let lines = state.db.statement_lines(statement_id).await?;
+    let organization = state
+        .db
+        .organization_by_id(statement.organization_id)
+        .await?;
+    let url = match state.config.public_url() {
+        Some(base) => format!("{}/verify", base.trim_end_matches('/')),
+        None => "/verify".to_owned(),
+    };
+    let bytes =
+        oxsum_core::render_statement_pdf(&statement, &organization.name, &lines, Some(&url))?;
+    let filename = format!(
+        "statement-{}-{}.pdf",
+        statement.period,
+        &statement_id.simple().to_string()[..8]
+    );
+    Response::builder()
+        .header("content-type", "application/pdf")
+        .header(
+            "content-disposition",
+            format!("attachment; filename=\"{filename}\""),
+        )
+        .body(Body::from(bytes))
+        .map_err(|_| ApiError::Internal)
 }
 
 /// The body of the statement transitions: only the idempotency key, carried for

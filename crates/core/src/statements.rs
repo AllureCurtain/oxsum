@@ -55,6 +55,16 @@ impl StatementStatus {
             other => Err(malformed("statements.status", other)),
         }
     }
+
+    /// The lifecycle's stored spelling — the lowercase serde form. The PDF
+    /// export prints it.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Draft => "draft",
+            Self::Finalized => "finalized",
+        }
+    }
 }
 
 /// Where payment stands on a finalized statement: pending while the drawn part is

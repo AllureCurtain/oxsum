@@ -32,6 +32,7 @@ mod reconcile;
 mod seed;
 mod service_credentials;
 mod sessions;
+mod statement_pdf;
 mod statements;
 mod tenants;
 mod tiers;
@@ -89,6 +90,7 @@ pub use sessions::{
     CreatedSession, KeyPrincipal, KeyScope, Principal, SESSION_COOKIE, SESSION_LIFETIME, Session,
     SessionPrincipal,
 };
+pub use statement_pdf::render_statement_pdf;
 pub use statements::{
     PaymentStatus, Statement, StatementLine, StatementPeriod, StatementStatus, statement_period,
 };

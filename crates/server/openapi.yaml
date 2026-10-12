@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.51.0
+  version: 0.52.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -325,6 +325,17 @@ info:
     deterministic, so a stored row signs identically whenever asked: a bill under
     an older version stays verifiable after the catalog moves on, and no snapshot
     table exists to drift.
+
+    0.52.0 adds the statement PDF export (issue #205):
+    `GET /api/v1/statements/{statementId}/export.pdf` and the admin twin
+    `GET /api/v1/admin/statements/{statementId}/export.pdf` render a finalized
+    statement as a downloadable PDF — organization, period, status and due date,
+    the itemized lines, totals, and a footer anchoring the page to the ledger
+    window (`logFromIndex`/`logToIndex`) beside a QR back to `/verify`. Only
+    `finalized` statements export — a draft, a foreign or a missing id is 404 —
+    and the body is binary `application/pdf`, not the JSON envelope. Rendering
+    is pure Rust inside the single binary, so the PDF always reads the stored
+    lines and can never disagree with the detail endpoint's own answer.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -1591,6 +1602,33 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/statements/{statementId}/export.pdf:
+    get:
+      summary: A finalized statement as a PDF
+      description: |
+        The rendered document (issue #205): the organization and period, the
+        statement meta (status, payment standing, due date), the itemized
+        lines, the totals, and a footer anchoring the page to the ledger —
+        `logFromIndex`/`logToIndex` beside a QR pointing back at `/verify`.
+        Only `finalized` statements export; a draft, another organization's
+        statement and a missing id are all 404, the same guard the detail
+        endpoint keeps. The body is binary `application/pdf`, not the JSON
+        envelope, and the export always renders the stored lines, so it can
+        never disagree with the detail endpoint's own answer.
+      parameters:
+        - name: statementId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The statement as a PDF document
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/balance:
     get:
       summary: Available balance (settled minus unsettled holds)
@@ -2647,6 +2685,31 @@ paths:
                 required: [data]
                 properties:
                   data: { $ref: "#/components/schemas/StatementDetail" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/statements/{statementId}/export.pdf:
+    get:
+      summary: A finalized statement as a PDF (admin)
+      description: |
+        The same rendered document the organization downloads from
+        `/api/v1/statements/{statementId}/export.pdf` — the admin view, able to
+        reach any organization's statement. Only `finalized` statements export;
+        a draft or a missing id answers 404 — an unissued document does not
+        exist to export. The body is binary `application/pdf`.
+      security:
+        - adminToken: []
+      parameters:
+        - name: statementId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The statement as a PDF document
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }

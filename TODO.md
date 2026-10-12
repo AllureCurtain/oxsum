@@ -28,7 +28,6 @@ Post-roadmap validation: a gate run found `a_settled_turn_enqueues_a_signed_deli
 
 Post-roadmap backlog, one issue per item:
 
-- #205 Statement PDF export
 - #209 Tag-scoped TPM buckets (Each / Concrete / Total)
 
 The original phases below are done — A, B and C closed, most recently C-11 (the chat page, issue #39).
@@ -60,6 +59,8 @@ Closed. The chat page is built (issue #39): after login the user tops up, picks 
 Nothing.
 
 ## Recently completed
+
+- 2026-10-12 Statement PDF export (issue #205): a finalized statement now downloads as a rendered PDF — `GET /api/v1/statements/{statementId}/export.pdf` for the organization, `GET /api/v1/admin/statements/{statementId}/export.pdf` for the operator — the header, itemized lines, totals, and a footer anchoring the page to `logFromIndex`/`logToIndex` beside a QR back to `/verify`. Rendering is pure Rust in the single binary: `printpdf` (`default-features = false`, standard-14 builtin fonts, no TTF) draws the page and `qrcode`'s modules fill as vector rectangles — no headless browser, no embedded typst, no image codec. Only a finalized statement exports — draft, foreign or missing is 404, and `render_statement_pdf` re-checks the lifecycle so the bytes can never describe a working copy — and the export reads the stored lines, so it can never disagree with the detail answer. Binary `application/pdf`, the one `/api/v1` response that is not the JSON envelope. Contract `openapi.yaml` 0.52.0; pinned by the core render unit tests (parse-back, totals carried, draft refuses) and the statements suite's export tests.
 
 - 2026-10-12 Signed price catalog snapshots (issue #204): the price a bill names is now bound to an operator-signed checkpoint, closing the roadmap footnote's last trust gap — a forged current price table can no longer answer for an old bill. `GET /api/v1/log/price-head?channel=<c>&model=<m>[&version=<n>]` (credential required) serves one `(channel, model, priceVersion)`'s checkpoint: a `tlog-checkpoint` body under `oxsum/price-catalog/<channel>` with the version in `size` and a tagged-BLAKE3 row hash (`oxsum/price-catalog/v1` over the canonical `PriceRowV1` bytes) in `root`, signed by the same `OXSUM_HEAD_SIGNING_KEY` that signs tree heads. Signing is stateless and deterministic — a stored v1 re-signs identically after v2 lands, so there is no snapshot table — and `receipt_proof` embeds the link as an optional `price` field (`channel`/`model`/`version`/canonical `row`/`note`/hex key). `oxsum_verify::verify_price_head` checks the binding in the browser: bound, absent (a top-up, an old bundle, a key-less deployment), or refused with the reason named — a third line on `/verify`'s verdict, never its own failure. Contract `openapi.yaml` 0.51.0; pinned by the heads unit tests, `crates/core/tests/price_heads.rs`, `crates/verify`'s `price_heads` module and `crates/server/tests/heads.rs`.
 
