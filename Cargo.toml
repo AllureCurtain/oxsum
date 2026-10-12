@@ -95,6 +95,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "v5"] }
 
 tower = { version = "0.5", features = ["util"] }
+# The request backstop (`TimeoutLayer` in routes.rs): already in the tree via
+# axum, promoted to a direct dependency so the timeout is explicit rather than
+# relying on a transitive one.
+tower-http = { version = "0.6", features = ["timeout"] }
 http-body = "1"
 http-body-util = "0.1"
 # Telemetry: the `metrics` facade's types, and the Prometheus recorder whose handle renders
