@@ -147,6 +147,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0033_budget_exhaustion_forecast",
         include_str!("../migrations/0033_budget_exhaustion_forecast.sql"),
     ),
+    (
+        "0034_statement_anchor",
+        include_str!("../migrations/0034_statement_anchor.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.
