@@ -77,7 +77,6 @@ pub const BILLS_LIMIT: usize = 100;
 
 /// One transaction, as the page's server function and the export routes read it from
 /// the ledger.
-#[cfg(feature = "ssr")]
 impl From<&oxsum_core::TransactionEntry> for BillView {
     fn from(entry: &oxsum_core::TransactionEntry) -> Self {
         Self {

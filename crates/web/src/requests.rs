@@ -12,7 +12,6 @@ pub const REQUESTS_PATH: &str = "/dashboard/requests";
 
 /// How many requests one page lists (issue #93). The pager walks the rest; the
 /// ledger read behind it is bounded either way.
-#[cfg(feature = "ssr")]
 pub const REQUESTS_LIMIT: usize = 100;
 
 /// One request as the requests page lists it: how the turn was priced, what it used, what
@@ -41,7 +40,6 @@ pub struct RequestView {
     pub cost_minor: i64,
 }
 
-#[cfg(feature = "ssr")]
 impl RequestView {
     /// One row: a request read from the organization's ledger, plus the key that paid it
     /// when the session may see that key.
@@ -68,7 +66,6 @@ impl RequestView {
 ///
 /// The match is exhaustive on purpose: a new settlement kind is a compile error here
 /// rather than a word the page invents.
-#[cfg(feature = "ssr")]
 pub(crate) fn status(kind: oxsum_core::SettlementKind) -> String {
     use oxsum_core::SettlementKind;
     match kind {
@@ -116,7 +113,6 @@ impl RequestFilters {
     /// True when `row` passes every filter that is set. A key filter never matches a row
     /// that names no key. The filtering runs where the rows are read, on the server; the
     /// browser only carries the filters.
-    #[cfg(feature = "ssr")]
     #[must_use]
     pub fn matches(&self, row: &RequestView) -> bool {
         let key_matches = match (&self.key, &row.key_prefix) {
