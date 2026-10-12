@@ -144,9 +144,19 @@ impl Frames {
         self.buffer.extend_from_slice(chunk);
         let mut terminated = false;
         // SSE is line-delimited, so only whole lines are parsed and a partial line waits.
-        while let Some(newline) = self.buffer.iter().position(|byte| *byte == b'\n') {
-            let line: Vec<u8> = self.buffer.drain(..=newline).collect();
-            let line = String::from_utf8_lossy(&line[..line.len() - 1]);
+        // Lines are walked with a cursor rather than drained one at a time: draining
+        // shifts the whole remainder left per line (quadratic on line-heavy chunks),
+        // while the cursor only advances and the consumed prefix is dropped once.
+        let mut consumed = 0;
+        while let Some(relative) = self.buffer[consumed..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+        {
+            let line_end = consumed + relative;
+            // The slice excludes the '\n' itself, matching the old
+            // `line[..line.len() - 1]`; a '\r' survives for `trim` below.
+            let line = String::from_utf8_lossy(&self.buffer[consumed..line_end]);
+            consumed = line_end + 1;
             let Some(payload) = line.strip_prefix("data:") else {
                 continue;
             };
@@ -171,6 +181,8 @@ impl Frames {
             let text = adapter.answer_text(&value);
             self.push_text(&text);
         }
+        // One shift for the whole consumed prefix, not one per line.
+        self.buffer.drain(..consumed);
         terminated
     }
 
