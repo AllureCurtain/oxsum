@@ -33,3 +33,9 @@ debug = 1
 lto = true
 strip = true
 codegen-units = 1
+
+# mold 链接器：链接大 rlib（如 liboxsum_server）比 GNU ld 快几倍。需要本机装
+# mold（`sudo apt install mold`）；没装时构建会失败，所以这行只进优化分支，
+# 不进 main——合进去之前确认 CI/部署机也有 mold。
+[target.'cfg(target_os = "linux")']
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
