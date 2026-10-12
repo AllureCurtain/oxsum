@@ -224,9 +224,8 @@ async fn a_new_organization_has_nothing_frozen_and_no_spend() {
     let (app, _db, _billing) = app_or_skip!();
     let (_tenant_id, cookie) = logged_in(&app, "untouched").await;
     let html = dashboard_html(&app, &cookie).await;
-    for figure in ["0.000000"] {
-        assert!(html.contains(figure), "the overview shows {figure}: {html}");
-    }
+    let figure = "0.000000";
+    assert!(html.contains(figure), "the overview shows {figure}: {html}");
 }
 
 /// The overview's two figures, pinned as integers in minor units: the frozen total is what

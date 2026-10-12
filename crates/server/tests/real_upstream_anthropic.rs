@@ -384,7 +384,7 @@ async fn real_provider_bill_verifies_over_anthropic() {
         assert_eq!(status, StatusCode::OK, "the {label} proof serves: {body}");
         let bundle_json = serde_json::to_string(&body["data"]).unwrap();
         let bundle = wallet
-            .receipt_proof(entry_id)
+            .receipt_proof(entry_id, None)
             .await
             .expect("the proof builds")
             .expect("the entry exists");
