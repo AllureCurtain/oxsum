@@ -33,12 +33,12 @@ pub type Credits = Amount<SCALE>;
 /// Account opening date. Every posting date must not be earlier than this.
 const OPENED: Date = date!(2026 - 01 - 01);
 
-const WALLET: &str = "Liabilities:Wallet";
+pub(crate) const WALLET: &str = "Liabilities:Wallet";
 /// Granted credit — the signup bonus and admin grants — kept in its own pool so
 /// settlement can draw it before the purchased balance (decision D1, see
 /// docs/decisions.md). Equity, because the platform contributes it and no cash
 /// ever stood behind it.
-const BONUS: &str = "Equity:Bonus";
+pub(crate) const BONUS: &str = "Equity:Bonus";
 const CASH: &str = "Assets:Cash";
 const REVENUE: &str = "Income:Usage";
 /// Operator-side money that is neither cash received nor usage revenue: admin
@@ -51,7 +51,7 @@ const ADJUSTMENTS: &str = "Equity:Adjustments";
 /// the same `FundedReservations` rule the other pools do, so a hold on credit
 /// reserves against what the line really carries and a release cannot invent
 /// room the line never gave.
-const CREDIT_LINE: &str = "Liabilities:CreditLine";
+pub(crate) const CREDIT_LINE: &str = "Liabilities:CreditLine";
 /// The credit facility committed to the organization, kept gross: the account's
 /// debit balance is the granted limit, and a shrink debits `CreditLine` back
 /// against it, so the ledger itself refuses a limit cut below the outstanding

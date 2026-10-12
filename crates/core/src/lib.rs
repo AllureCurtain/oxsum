@@ -108,9 +108,9 @@ pub use wallet::{
     TransactionEntry, TransactionKind, Wallet, entry_id_for, settlement_key_for,
 };
 pub use webhooks::{
-    ANOMALY_DETECTED, BALANCE_LOW, CreatedWebhook, DEPOSIT_CREDITED, DEPOSIT_FAILED,
-    DEPOSIT_REVERSED, DeliveryOutcome, DueDelivery, MAX_DELIVERY_ATTEMPTS,
-    ORG_CREDIT_LIMIT_EXCEEDED, ORG_SUSPENDED, REQUEST_SETTLED, STATEMENT_FINALIZED,
-    STATEMENT_OVERDUE, STATEMENT_STATUS_UPDATED, WebhookDelivery, WebhookEndpoint,
-    retry_delay_secs, signature,
+    ANOMALY_DETECTED, BALANCE_LOW, BUDGET_EXHAUSTION_FORECAST, BudgetForecast, CreatedWebhook,
+    DEPOSIT_CREDITED, DEPOSIT_FAILED, DEPOSIT_REVERSED, DeliveryOutcome, DueDelivery,
+    MAX_DELIVERY_ATTEMPTS, ORG_CREDIT_LIMIT_EXCEEDED, ORG_SUSPENDED, REQUEST_SETTLED,
+    STATEMENT_FINALIZED, STATEMENT_OVERDUE, STATEMENT_STATUS_UPDATED, WebhookDelivery,
+    WebhookEndpoint, forecast_exhaustion, retry_delay_secs, signature,
 };

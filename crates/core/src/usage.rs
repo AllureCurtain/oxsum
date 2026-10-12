@@ -601,8 +601,112 @@ impl Db {
         if let (Some(available), Ok(organization)) = (available, Uuid::parse_str(&row.tenant_id)) {
             Self::enqueue_balance_low(&mut tx, organization, available).await?;
         }
+        // The settling key's budget window is forecast off the same settled
+        // figures this transaction just wrote (issue #220): a key carrying both
+        // `spendLimitMinor` and `budgetDuration` is projected forward, and the
+        // warning enqueues once per window when the projection crosses inside it.
+        Self::forecast_key_budget(&mut tx, &row.tenant_id, row.key_id).await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// `budget.exhaustion_forecast` (issue #220): project the settling key's
+    /// current `budgetDuration` window forward at the rate its committed spend
+    /// has run so far, and enqueue the event when the projection crosses the
+    /// `spendLimitMinor` inside the window.
+    ///
+    /// Runs inside `record_usage`'s transaction, so the projection reads the
+    /// settled figures this settle just wrote — the same `key_committed_in`
+    /// scope the hold-side limit check reads (`pending` holds in full plus
+    /// settled entries booked on or after the period start) — and the event, the
+    /// latch and the usage row commit or roll back together. Once per key per
+    /// window: `budget_forecast_sent_for` records which window the forecast was
+    /// sent for, locked `FOR UPDATE` so two settles of the key cannot both pass
+    /// the not-yet-sent check. A re-PATCH of the constraint clears the latch.
+    ///
+    /// A key with no periodic limit, an unattributed settle (`key_id` `None`), or
+    /// a synthetic tenant with no ledger all skip quietly — there is no window
+    /// to project, or no books to read it from.
+    async fn forecast_key_budget(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tenant_id: &str,
+        key_id: Option<Uuid>,
+    ) -> Result<(), WalletError> {
+        let Some(key_id) = key_id else { return Ok(()) };
+        // The key's constraint and latch. `FOR UPDATE` serializes the check the
+        // same way `balance.low`'s latch does: two settles of this key cannot
+        // both read `sent_for != window_start` and enqueue the event twice.
+        let key = sqlx::query(
+            "SELECT spend_limit_minor, budget_duration, budget_forecast_sent_for \
+             FROM oxsum.api_keys WHERE key_id = $1 FOR UPDATE",
+        )
+        .bind(key_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        let Some(key) = key else { return Ok(()) };
+        let limit: Option<i64> = key.try_get("spend_limit_minor")?;
+        let duration: Option<String> = key.try_get("budget_duration")?;
+        let sent_for: Option<time::Date> = key.try_get("budget_forecast_sent_for")?;
+        let (Some(limit), Some(duration)) = (limit, duration) else {
+            return Ok(());
+        };
+        let duration = crate::keys::BudgetDuration::parse(&duration)?;
+        let today = OffsetDateTime::now_utc().date();
+        let window_start = duration.period_start(today);
+        // Already forecast for this window — one event per key per period.
+        if sent_for == Some(window_start) {
+            return Ok(());
+        }
+        // The pool account indexes the key's committed spend is summed over —
+        // resolved from the tenant ledger's account registry by path, the same
+        // three pools the hold check sums. A tenant with no ledger yet (the
+        // synthetic ids the suites seed) has no accounts table: nothing to read.
+        let ledger = format!("ledger_{}", tenant_id.replace('"', "\"\""));
+        let has_ledger = sqlx::query_scalar::<_, Option<String>>("SELECT to_regclass($1)::text")
+            .bind(format!("\"{ledger}\".accounts"))
+            .fetch_one(&mut **tx)
+            .await?
+            .is_some();
+        if !has_ledger {
+            return Ok(());
+        }
+        let pools: Vec<i32> = sqlx::query_scalar(&format!(
+            "SELECT account_index FROM \"{ledger}\".accounts \
+             WHERE path = ANY($1)",
+        ))
+        .bind(vec![
+            crate::wallet::WALLET.to_owned(),
+            crate::wallet::BONUS.to_owned(),
+            crate::wallet::CREDIT_LINE.to_owned(),
+        ])
+        .fetch_all(&mut **tx)
+        .await?;
+        if pools.is_empty() {
+            return Ok(());
+        }
+        // Committed spend this window: settled charges booked on or after the
+        // period start, plus every outstanding hold — the figure the limit check
+        // itself reads, so the forecast and the enforcement agree.
+        let committed: i64 = sqlx::query_scalar(&format!(
+            "SELECT COALESCE(SUM(CASE WHEN p.direction = 'D' THEN p.amount_minor \
+                                  ELSE -p.amount_minor END), 0)::bigint \
+             FROM \"{ledger}\".postings p \
+             JOIN \"{ledger}\".entries e ON e.entry_id = p.entry_id \
+             WHERE p.account_index = ANY($1) AND e.provenance_actor = $2 \
+               AND (p.layer = 'pending' OR e.booking_date >= $3)",
+        ))
+        .bind(&pools)
+        .bind(key_id.as_simple().to_string())
+        .bind(window_start)
+        .fetch_one(&mut **tx)
+        .await?;
+        let Some(mut forecast) =
+            crate::webhooks::forecast_exhaustion(duration, window_start, today, committed, limit)
+        else {
+            return Ok(());
+        };
+        forecast.key_id = key_id;
+        Self::enqueue_budget_forecast(tx, tenant_id, &forecast).await
     }
 
     /// How many tokens a key has settled inside the trailing minute, and when
