@@ -1,8 +1,8 @@
 # The release image gate: `Dockerfile` is the only release artifact, and no gate built
 # it — ci.yml uses Docker only for doubleentry's testcontainers suite. The last real
-# check of the image predated the site root fix (#44) and the hydration fix (#46), and
-# both of those regressions are invisible to the router-level tests but obvious over
-# HTTP, so this workflow builds the image and runs it against a real database.
+# check of the image predated the dashboard rewrite, and router-level tests cannot
+# see what the image serves over HTTP, so this workflow builds the image and runs
+# it against a real database.
 #
 # The database is a service container, exactly as in ci.yml (`postgres:17-alpine`, same
 # credentials, same health check). Its port is published on the runner's own loopback,
@@ -15,8 +15,8 @@
 name: Release image
 
 on:
-  # The image gate runs on main and by hand. PRs are covered by the CI browser job,
-  # which builds the same site the image packages; building a Docker image for every
+  # The image gate runs on main and by hand. PRs are covered by CI, which runs the
+  # full test suite including the browser contract; building a Docker image for every
   # PR push duplicated that compile for no extra signal. A docs-only push does not
   # change the artifact, so it does not rebuild it.
   push:
@@ -32,7 +32,7 @@ jobs:
   image:
     name: build and smoke-test
     runs-on: ubuntu-latest
-    # `cargo leptos build --release` compiles the whole workspace plus the WASM side:
+    # `cargo build --release` compiles the whole workspace:
     # a hung build should fail long before the default six hours are up.
     timeout-minutes: 90
     services:
@@ -51,9 +51,8 @@ jobs:
           --health-retries 15
     steps:
       - uses: actions/checkout@v4
-      # The release build (Leptos, wasm-bindgen, wasm-opt) and its BuildKit cache are
-      # big; ci.yml frees the same space for the same reason, "No space left on device"
-      # from a compiler.
+      # The release build and its BuildKit cache are big; ci.yml frees the same
+      # space for the same reason, "No space left on device" from a compiler.
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
@@ -73,7 +72,7 @@ jobs:
           load: true
           tags: oxsum:ci
           # Without the Actions cache every rebuild is another 20-40 minute release
-          # compile; with it the Rust and WASM layers are reused.
+          # compile; with it the Rust layers are reused.
           cache-from: type=gha
           cache-to: type=gha,mode=max
       # The service container's health check normally gates the steps, but the server
@@ -150,36 +149,23 @@ jobs:
           # starts serving, and refuses to boot at all if the database is unreachable.
           expect_status /healthz 200
 
-          # The static bundle is served from the site root the image sets
-          # (LEPTOS_SITE_ROOT=/app/site). A 404 here is the regression that once
-          # shipped: every page rendered, and none of them hydrated. cargo-leptos
-          # 0.3.11 renames wasm-bindgen's `oxsum_bg.wasm` to `oxsum.wasm`
-          # (cargo-leptos src/compile/front.rs), so the WASM file is oxsum.wasm.
-          expect_status /pkg/oxsum.js 200
-          expect_status /pkg/oxsum.wasm 200
+          # The dashboard's static assets are served by the binary itself (the
+          # stylesheet is embedded via `include_str!`); the chat/admin live parts
+          # are vanilla JS against the API.
+          expect_status /style/main.css 200
+          expect_status /chat.js 200
+          expect_status /admin.js 200
 
-          # The shell has to name the WASM it loads, and that file has to be served.
-          wasm=$(
-            curl --silent "$base/login" \
-              | grep --only-matching --extended-regexp '/pkg/[A-Za-z0-9_.-]+\.wasm' \
-              | head --lines=1 || true
-          )
-          if [ -z "$wasm" ]; then
-            echo "FAILED   /login names no /pkg/*.wasm for the browser to load"
-            failed=1
-          else
-            expect_status "$wasm" 200 "the WASM /login loads"
-          fi
-
-          # The hydration script and the no-JS POST form: without the script the login
-          # form falls back to a native GET submit, which puts the password in the
-          # query string (#46).
-          expect_body /login 'mod\.hydrate\(\)' 'the Leptos hydration script'
+          # The login form must POST: a native GET submit would put the password
+          # in the query string (#46).
           expect_body /login '<form[^>]*method="post"' 'the login form with method="post"'
+
+          # The public verify page renders without a session.
+          expect_status /verify 200
 
           if [ "$failed" -ne 0 ]; then
             echo "----- docker logs oxsum -----"
             docker logs oxsum || true
             exit 1
           fi
-          echo "the release image serves the wallet, the login page and its bundle"
+          echo "the release image serves the wallet, the login page and the dashboard assets"
