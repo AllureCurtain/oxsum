@@ -18,18 +18,35 @@ WORKDIR /app
 # survives source edits.
 RUN cargo install cargo-leptos --version 0.3.11
 
+# Dependency layer: manifests (and the cargo config that pins the toolchain and
+# the release profile) first, stub sources to satisfy cargo's workspace layout.
+# A later source edit only invalidates the layers below, not this one.
+# rust-toolchain.toml rides along here, before any `rustup target add`: rustup
+# installs a target for the toolchain it resolves at the moment it runs, and
+# adding it before the pinned channel was visible installed it for the image's
+# default toolchain while the build used the pinned one, failing with
+# "can't find crate for `core`" (the release image gate caught it; issue #49).
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY .cargo/config.toml .cargo/config.toml
+COPY crates/doubleentry/Cargo.toml crates/doubleentry/Cargo.toml
+COPY crates/core/Cargo.toml crates/core/Cargo.toml
+COPY crates/verify/Cargo.toml crates/verify/Cargo.toml
+COPY crates/server/Cargo.toml crates/server/Cargo.toml
+COPY crates/web/Cargo.toml crates/web/Cargo.toml
+RUN mkdir -p crates/doubleentry/src crates/core/src crates/verify/src \
+        crates/server/src crates/web/src \
+    && for c in doubleentry core verify web; do echo "" > crates/$c/src/lib.rs; done \
+    && echo "" > crates/server/src/lib.rs \
+    && echo 'fn main() {}' > crates/server/src/main.rs \
+    && rustup target add wasm32-unknown-unknown \
+    && cargo build --release --workspace \
+    && rm -rf target
+
+# Real sources. Only this layer and below rebuild when .rs files change.
 COPY . .
 # The server binary lands in target/release/<bin-exe-name> (here: oxsum); the site
 # (WASM bundle, CSS, index.html) lands in target/site.
-#
-# The wasm target is added here, after the checkout, and never before it:
-# rust-toolchain.toml pins the channel, and rustup installs a target for the
-# toolchain it resolves at the moment it runs. Adding it before COPY installed it
-# for the image's default toolchain while the build used the pinned one, so the
-# build failed with "can't find crate for `core`" (the release image gate caught
-# it; issue #49).
-RUN rustup target add wasm32-unknown-unknown \
-    && cargo leptos build --release \
+RUN cargo leptos build --release \
     && test -x /app/target/release/oxsum \
     && test -d /app/target/site/pkg
 
