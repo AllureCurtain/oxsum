@@ -141,7 +141,7 @@ async fn admin_frame(title: &str, child: Child<'_>) -> Result<impl View> {
             title: title,
             <header>
                 <nav>
-                    <a href="/admin/channels">"admin"</a>
+                    <a href="/admin/channels">"Platform admin"</a>
                     <ul>
                         <li><a href="/admin/channels">"Channels"</a></li>
                         <li><a href="/admin/organizations">"Organizations"</a></li>
