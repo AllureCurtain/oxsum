@@ -478,7 +478,7 @@ async fn topup_chat_billing_and_proof() {
         .await
         .expect("the organization's ledger opens");
     let bundle = wallet
-        .receipt_proof(entry_id)
+        .receipt_proof(entry_id, None)
         .await
         .expect("the proof is built")
         .expect("the settlement is there");

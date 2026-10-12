@@ -645,7 +645,7 @@ impl Case<'_> {
         for (entry_id, hash) in &self.entries {
             let Some(bundle) = self
                 .wallet
-                .receipt_proof(*entry_id)
+                .receipt_proof(*entry_id, None)
                 .await
                 .map_err(|error| format!("the proof for {entry_id}: {error}"))?
             else {

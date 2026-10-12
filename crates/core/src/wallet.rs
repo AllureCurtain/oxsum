@@ -15,7 +15,10 @@ use uuid::Uuid;
 
 use crate::billing::{SettlementKind, SettlementRecord};
 use crate::error::{WalletError, invalid};
-use crate::heads::{Consistency, HeadSigningKey, SignedHead, origin_for, sign_head};
+use crate::heads::{
+    Consistency, HeadSigningKey, SignedHead, canonical_price_row, origin_for, sign_head,
+    sign_price_head,
+};
 use crate::keys::{ActingKey, BudgetDuration};
 use crate::proof::ProofBundle;
 
@@ -1941,9 +1944,18 @@ impl Wallet {
     }
 
     /// Builds the proof bundle for one entry. Returns None when the entry does not exist.
+    ///
+    /// When `key` is the operator's signing key and the entry is a settlement that
+    /// names a price, the bundle also carries a [`PriceLink`](oxsum_verify::PriceLink)
+    /// — the signed checkpoint binding the `(channel, model, priceVersion)` the bill
+    /// records to the catalog row it priced under (issue #204). `None` key — a
+    /// deployment that signs no heads — leaves `price` absent, as does a
+    /// non-settlement entry or a settlement whose named row is gone; the verifier
+    /// reports the binding absent rather than failed.
     pub async fn receipt_proof(
         &self,
         entry_id: EntryId,
+        key: Option<&HeadSigningKey>,
     ) -> Result<Option<ProofBundle>, WalletError> {
         let Some(stored) = self.store.get(entry_id).await? else {
             return Ok(None);
@@ -1951,10 +1963,67 @@ impl Wallet {
         let index = stored.require_index().map_err(invalid)?;
         let head = self.store.head().await?;
         let proof = self.store.prove_inclusion(index).await?;
+        let price = match key {
+            Some(key) => self.price_link(&stored, key).await?,
+            None => None,
+        };
         Ok(Some(ProofBundle {
             entry: stored.entry,
             head,
             proof,
+            price,
+        }))
+    }
+
+    /// The signed price binding for one settlement entry, or `None` when it is not a
+    /// settlement or the price it names is gone.
+    ///
+    /// Reads the `(channel, model, priceVersion)` the settlement description records —
+    /// the same fields the entry's content hash already covers — fetches that row, and
+    /// signs it as a catalog checkpoint. Signing is stateless and deterministic over
+    /// (key, origin, version, row), so the note a v1 bundle carries is identical
+    /// whether it was made at bill time or after the catalog moved on.
+    async fn price_link(
+        &self,
+        stored: &StoredEntry<SCALE>,
+        key: &HeadSigningKey,
+    ) -> Result<Option<oxsum_verify::PriceLink>, WalletError> {
+        let Some(record) = SettlementRecord::parse(stored.entry.description().as_str()) else {
+            return Ok(None);
+        };
+        // The catalog lives in the shared `oxsum` schema on the same pool the
+        // tenant ledger runs on — no second handle to thread through.
+        let Some(row) = crate::channels::price_row(
+            self.store.pool(),
+            &record.channel,
+            &record.model,
+            Some(record.price_version),
+        )
+        .await?
+        else {
+            return Ok(None);
+        };
+        let canonical = canonical_price_row(&record.channel, &row)?;
+        let signed = sign_price_head(key, &record.channel, &row, &canonical).map_err(invalid)?;
+        Ok(Some(oxsum_verify::PriceLink {
+            channel: signed.channel,
+            model: signed.model,
+            version: signed.version,
+            row: canonical,
+            note: signed.note,
+            key_name: signed.key.name,
+            public_key: signed
+                .key
+                .public_key
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect(),
+            key_hash: signed
+                .key
+                .key_hash
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect(),
         }))
     }
 

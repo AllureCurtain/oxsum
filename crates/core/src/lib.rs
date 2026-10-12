@@ -48,7 +48,8 @@ pub use billing::{
     estimate_tokens, hold_description, input_upper_bound,
 };
 pub use channels::{
-    CatalogModel, Channel, MAX_WEIGHT, ModelPrice, SecretKey, Serving, event_price, route_order,
+    CatalogModel, Channel, MAX_WEIGHT, ModelPrice, SecretKey, Serving, event_price, price_row,
+    route_order,
 };
 pub use db::{Db, SCHEMA};
 pub use deposits::{CodeBatch, MAX_BATCH, Redemption};
@@ -58,8 +59,9 @@ pub use doubleentry::{ConsistencyProof, EntryId, Hash, Seal, TreeHead};
 pub use email_tokens::{EmailPurpose, MintedEmailToken};
 pub use error::WalletError;
 pub use heads::{
-    Consistency, HeadSigningKey, KeyPublication, SignedHead, origin_for, seed_from_base64,
-    sign_head, signing_key,
+    Consistency, HeadSigningKey, KeyPublication, PRICE_ROW_DOMAIN, SignedHead, SignedPriceHead,
+    canonical_price_row, origin_for, price_origin_for, price_row_hash, seed_from_base64, sign_head,
+    sign_price_head, signing_key,
 };
 pub use holds::{
     DEAD_AFTER_SWEEP_ATTEMPTS, DEFAULT_HOLD_TIMEOUT, InFlightHold, OpenHold, SWEEP_INTERVAL,

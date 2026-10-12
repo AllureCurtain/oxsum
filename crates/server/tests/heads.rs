@@ -527,3 +527,234 @@ async fn the_page_functions_need_a_session() {
         );
     }
 }
+
+// ── signed price heads (issue #204) ─────────────────────────────────────────
+//
+// A bill names its `(channel, model, priceVersion)`; these tests pin the
+// endpoint that attests the named price is the catalog's own: a signed
+// checkpoint per priced row under the same operator key that signs tree heads.
+
+/// A channel name the tests own, so tests never share one.
+fn fresh_channel(name: &str) -> String {
+    format!("{name}-{}", &uuid::Uuid::new_v4().simple().to_string()[..8])
+}
+
+/// Writes one channel with one priced model straight to the catalog, the way
+/// the admin API's own store calls do. Returns the version `append_price` wrote.
+async fn price_one(db: &Db, channel: &str, model: &str, input: i64) -> i64 {
+    db.set_channel(
+        channel,
+        "https://upstream.example/v1",
+        "sk-secret-1234",
+        "openai",
+        &oxsum_core::SecretKey::from_bytes([7; 32]),
+    )
+    .await
+    .expect("the channel registers");
+    db.append_price(
+        channel,
+        model,
+        oxsum_core::Price {
+            input_price_per_million: input,
+            output_price_per_million: 2_000_000,
+            max_output_tokens: 8_000,
+            cache_read_price_per_million: None,
+            cache_write_5m_price_per_million: None,
+            cache_write_1h_price_per_million: None,
+            reasoning_price_per_million: None,
+            cost_per_request: None,
+            upstream: None,
+            mode: Default::default(),
+            rules: Vec::new(),
+        },
+        100,
+    )
+    .await
+    .expect("the price appends")
+}
+
+/// Checks a price-head answer the way `check_signature` checks a tree head:
+/// the note parses, its body is the checkpoint the structured fields describe
+/// — the catalog origin, the version as `size`, the row hash as `root` — and
+/// the operator's signature verifies under the key `/log/key` publishes.
+fn check_price_note(body: &Value, channel: &str, version: i64) {
+    let data = &body["data"];
+    assert_eq!(data["channel"].as_str().unwrap(), channel);
+    assert_eq!(data["version"].as_i64().unwrap(), version);
+    assert_eq!(
+        data["origin"].as_str().unwrap(),
+        format!("oxsum/price-catalog/{channel}")
+    );
+
+    let note = SignedTreeHead::parse(data["note"].as_str().unwrap()).unwrap();
+    assert_eq!(note.head.size, version as u64);
+    assert_eq!(
+        note.head.root.to_hex(),
+        data["rowHash"].as_str().unwrap(),
+        "note body and structured rowHash agree"
+    );
+    assert!(note.extensions.is_empty());
+
+    let key = published_key(body);
+    let signature = note
+        .signatures
+        .iter()
+        .find(|s| s.key_hash == key.note_key_hash())
+        .expect("the operator's signature line is on the note");
+    assert!(key.verify(&note.body(), signature));
+}
+
+#[tokio::test]
+async fn a_price_checkpoint_binds_the_named_version_to_the_signed_row() {
+    let (app, _pool) = app_or_skip!(Some(SEED));
+    let db = Db::from_pool(_pool.clone());
+    let (_registration, key) = register(&app, "price-heads").await;
+    let channel = fresh_channel("priced");
+    let model = fresh_channel("m");
+    let version = price_one(&db, &channel, &model, 1_000_000).await;
+    assert_eq!(version, 1);
+
+    // No version asked: the latest is served.
+    let (status, body) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/log/price-head?channel={channel}&model={model}"),
+        None,
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    check_price_note(&body, &channel, 1);
+
+    // The served root commits to the canonical row of the stored v1 — the
+    // same bytes `receipt_proof` puts in a bundle's `price.row`.
+    let row = oxsum_core::price_row(&_pool, &channel, &model, Some(1))
+        .await
+        .unwrap()
+        .expect("v1 exists");
+    let canonical = oxsum_core::canonical_price_row(&channel, &row).unwrap();
+    assert_eq!(
+        body["data"]["rowHash"].as_str().unwrap(),
+        oxsum_core::price_row_hash(&canonical).to_hex()
+    );
+
+    // The catalog moves on: v2 lands, latest answers v2…
+    price_one(&db, &channel, &model, 9_000_000).await;
+    let (status, latest) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/log/price-head?channel={channel}&model={model}"),
+        None,
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{latest}");
+    check_price_note(&latest, &channel, 2);
+    assert_ne!(
+        latest["data"]["rowHash"].as_str().unwrap(),
+        body["data"]["rowHash"].as_str().unwrap(),
+        "v2 commits to a different row"
+    );
+
+    // …and the bill under v1 still attests the identical checkpoint: signing
+    // is deterministic, so the note a bundle carried stays the note served.
+    let (status, pinned) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/log/price-head?channel={channel}&model={model}&version=1"),
+        None,
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{pinned}");
+    check_price_note(&pinned, &channel, 1);
+    assert_eq!(
+        pinned["data"]["note"].as_str().unwrap(),
+        body["data"]["note"].as_str().unwrap(),
+        "the v1 note is re-rendered identically"
+    );
+}
+
+#[tokio::test]
+async fn the_price_head_endpoint_refuses_the_cases_that_attest_nothing() {
+    let (app, _pool) = app_or_skip!(Some(SEED));
+    let (_registration, key) = register(&app, "price-heads-edges").await;
+    let channel = fresh_channel("priced-edges");
+    let model = fresh_channel("m-edges");
+    price_one(&Db::from_pool(_pool.clone()), &channel, &model, 1_000_000).await;
+
+    // An unwritten version: 404, not the latest in disguise.
+    let (status, body) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/log/price-head?channel={channel}&model={model}&version=99"),
+        None,
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+
+    // An unpriced model and an unknown channel: the same absence.
+    let (status, _) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/log/price-head?channel={channel}&model=never-priced"),
+        None,
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = call(
+        &app,
+        "GET",
+        "/api/v1/log/price-head?channel=never-a-channel&model=m",
+        None,
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // `model` is not optional: a request naming only a channel is a 400.
+    let (status, body) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/log/price-head?channel={channel}"),
+        None,
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"].as_str().unwrap(), "VALIDATION_ERROR");
+}
+
+#[tokio::test]
+async fn the_price_head_endpoint_needs_a_seed_and_a_credential() {
+    // No seed: the log surface degrades to 503, identically to /log/head.
+    let (app, _pool) = app_or_skip!(None);
+    let (_registration, key) = register(&app, "price-heads-noseed").await;
+    let (status, body) = call(
+        &app,
+        "GET",
+        "/api/v1/log/price-head?channel=anything&model=m",
+        None,
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(
+        body["error"]["code"].as_str().unwrap(),
+        "SERVICE_UNAVAILABLE"
+    );
+
+    // No credential: a checkpoint is served only to a principal.
+    let app = offline_app(Some(SEED));
+    let (status, _) = call(
+        &app,
+        "GET",
+        "/api/v1/log/price-head?channel=anything&model=m",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}

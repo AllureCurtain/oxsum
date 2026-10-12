@@ -147,7 +147,10 @@ async fn stale_hold(world: &World) -> String {
 /// The turn's settlement record once one exists.
 async fn settlement_record(wallet: &Arc<Wallet>, hold_key: &str) -> Option<Value> {
     let entry_id = entry_id_for(&settlement_key_for(hold_key));
-    let bundle = wallet.receipt_proof(entry_id).await.expect("the proof")?;
+    let bundle = wallet
+        .receipt_proof(entry_id, None)
+        .await
+        .expect("the proof")?;
     Some(
         serde_json::from_str(bundle.entry.description().as_str()).expect("the description is JSON"),
     )

@@ -610,7 +610,7 @@ async fn the_usage_attribution_is_pseudonymized_and_the_bill_still_verifies() {
     let entry_id = entry_id_for(&settlement_key_for("req-req-attr:hold"));
     let wallet = tenants.get(&tenant_id).await.expect("the ledger opens");
     let bundle = wallet
-        .receipt_proof(entry_id)
+        .receipt_proof(entry_id, None)
         .await
         .expect("the proof is built")
         .expect("the settlement entry is still there");

@@ -19,7 +19,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use rand::RngExt as _;
 use serde::Serialize;
-use sqlx::Row;
+use sqlx::{PgPool, Row};
 use time::OffsetDateTime;
 use url::Url;
 use uuid::Uuid;
@@ -684,6 +684,51 @@ pub async fn event_price(
     .bind(code)
     .bind(pinned.map(|v| v as i32))
     .fetch_optional(db.pool())
+    .await?;
+    row.map(|row| {
+        Ok(ModelPrice {
+            model: row.try_get("model")?,
+            version: i64::from(row.try_get::<i32, _>("version")?),
+            weight: i64::from(row.try_get::<i32, _>("weight")?),
+            price: price_from_row(&row)?,
+            created_at: row.try_get("created_at")?,
+        })
+    })
+    .transpose()
+}
+
+/// One `(channel, model)` price row — `version`'s exact row, or the latest when
+/// `version` is `None`: what `GET /api/v1/log/price-head` signs (issue #204).
+///
+/// `mode` is no filter here: a bill names the version it priced under regardless
+/// of the billing mode it was, so the checkpoint must be able to reach any of
+/// them.
+///
+/// # Errors
+///
+/// [`WalletError::Misconfigured`] on a stored row this build cannot read;
+/// storage failures surface as [`WalletError`].
+pub async fn price_row(
+    pool: &PgPool,
+    channel: &str,
+    model: &str,
+    version: Option<i64>,
+) -> Result<Option<ModelPrice>, WalletError> {
+    let row = sqlx::query(
+        "SELECT p.model, p.version, p.weight, p.input_price_per_million, \
+                p.output_price_per_million, p.max_output_tokens, \
+                p.cache_read_price_per_million, p.cache_write_5m_price_per_million, \
+                p.cache_write_1h_price_per_million, p.reasoning_price_per_million, \
+                p.cost_per_request, p.mode, p.upstream_prices, p.rules, p.created_at \
+         FROM oxsum.channel_prices p JOIN oxsum.channels c USING (channel_id) \
+         WHERE c.name = $1 AND p.model = $2 \
+           AND ($3::int IS NULL OR p.version = $3) \
+         ORDER BY p.version DESC LIMIT 1",
+    )
+    .bind(channel)
+    .bind(model)
+    .bind(version.map(|v| v as i32))
+    .fetch_optional(pool)
     .await?;
     row.map(|row| {
         Ok(ModelPrice {

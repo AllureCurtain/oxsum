@@ -214,7 +214,7 @@ async fn two_organizations_under_one_user_have_isolated_balances() {
     // A's bill exists in A's ledger and nowhere else, proof and all.
     assert!(
         wallet_b
-            .receipt_proof(receipt.entry_id)
+            .receipt_proof(receipt.entry_id, None)
             .await
             .unwrap()
             .is_none(),
@@ -222,7 +222,7 @@ async fn two_organizations_under_one_user_have_isolated_balances() {
     );
     assert!(
         wallet_a
-            .receipt_proof(receipt.entry_id)
+            .receipt_proof(receipt.entry_id, None)
             .await
             .unwrap()
             .is_some()

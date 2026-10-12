@@ -586,7 +586,7 @@ impl World {
         let bundle = self
             .wallet()
             .await
-            .receipt_proof(entry_id)
+            .receipt_proof(entry_id, None)
             .await
             .expect("the proof is built")
             .map(|bundle| bundle.entry);
@@ -617,7 +617,7 @@ impl World {
         let bundle = self
             .wallet()
             .await
-            .receipt_proof(entry_id)
+            .receipt_proof(entry_id, None)
             .await
             .expect("the proof is built")
             .map(|bundle| bundle.entry);
