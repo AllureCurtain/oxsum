@@ -114,23 +114,33 @@ async fn call(
     }
 }
 
-/// One server function of the pages, called the way its own code calls it: the
-/// URL-encoded body of the function's arguments, with the session cookie.
-///
-/// The path is read from the same registry the router registers its server-function
-/// routes from, because leptos suffixes it with a hash of the crate and module it was
-/// declared in.
-async fn page_call(
-    app: &Router,
-    name: &str,
-    body: &str,
-    cookie: Option<&str>,
-) -> (StatusCode, Value) {
-    let (path, method) = leptos::server_fn::axum::server_fn_paths()
-        .find(|(path, _)| path.starts_with(&format!("/_pages/{name}")))
-        .unwrap_or_else(|| panic!("the {name} server function is registered"));
+/// The bills page's HTML, the way the page's own code asks for it: `GET
+/// /dashboard/bills` with the session cookie. The Topcoat dashboard renders
+/// server-side — there is no `/_pages/get_bills` server function anymore.
+async fn bills_html(app: &Router, cookie: &str) -> String {
+    let res = call(app, "GET", "/dashboard/bills", None, Some(cookie)).await;
+    assert_eq!(res.status, StatusCode::OK, "the bills page renders");
+    res.text()
+}
+
+/// Minimal percent-encoding for the form bodies the tests post.
+fn urlencode(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+/// One form post against the app, with the session cookie.
+async fn post_form(app: &Router, path: &str, body: &str, cookie: Option<&str>) -> Res {
     let mut req = Request::builder()
-        .method(method)
+        .method("POST")
         .uri(path)
         .header("content-type", "application/x-www-form-urlencoded");
     if let Some(cookie) = cookie {
@@ -141,10 +151,11 @@ async fn page_call(
         .oneshot(req.body(Body::from(body.to_owned())).unwrap())
         .await
         .unwrap();
-    let status = res.status();
-    let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    (status, value)
+    Res {
+        status: res.status(),
+        headers: res.headers().clone(),
+        body: res.into_body().collect().await.unwrap().to_bytes().to_vec(),
+    }
 }
 
 /// A registered organization: the tenant its ledger lives in, the session that reads
@@ -440,28 +451,6 @@ async fn seed_request(
         .expect("the settlement lands");
 }
 
-/// The bills page's payload, the way the page's own code asks for it: the
-/// `/_pages/get_bills` server function with the session cookie.
-async fn bills(app: &Router, cookie: &str) -> Vec<Value> {
-    let (status, body) = page_call(app, "get_bills", "", Some(cookie)).await;
-    assert_eq!(status, StatusCode::OK, "the bills read answers: {body}");
-    body["rows"]
-        .as_array()
-        .expect("the payload is a page of rows")
-        .clone()
-}
-
-/// The proof bundle one verify link asks for: `/_pages/get_entry_bundle`.
-async fn entry_bundle(app: &Router, cookie: &str, entry_id: &str) -> (StatusCode, Value) {
-    page_call(
-        app,
-        "get_entry_bundle",
-        &format!("entry_id={entry_id}"),
-        Some(cookie),
-    )
-    .await
-}
-
 /// The CSV export's header, which is also its field list.
 const CSV_HEADER: &str = "bookedOn,entryId,kind,amountMinor,description,contentHash";
 
@@ -726,13 +715,19 @@ async fn one_organization_never_sees_anothers_bills() {
         "another organization's transactions must not appear"
     );
 
-    // The page itself renders for any session — the guard runs in the browser — but an
-    // unauthenticated render never carries records.
+    // The page itself needs a session: without one it sends the visitor to
+    // `/login` rather than rendering anyone's records.
     let page = call(&app, "GET", "/dashboard/bills", None, None).await;
-    assert_eq!(page.status, StatusCode::OK, "the shell renders");
+    assert_eq!(
+        page.status,
+        StatusCode::SEE_OTHER,
+        "no session renders no page"
+    );
     assert!(
-        !page.text().contains(&a_seed.content_hash) && !page.text().contains(&b_seed.content_hash),
-        "no organization's records without a session"
+        page.headers
+            .get("location")
+            .is_some_and(|location| location == "/login"),
+        "the login page is where sessions start"
     );
 }
 
@@ -773,20 +768,18 @@ async fn a_member_reads_own_key_spend_and_the_shared_history() {
 
     // The member's rows: their own settlement and the organization's top-up — the
     // owner's settlement is another member's spend and must not appear.
-    let mine = bills(&app, &member_cookie).await;
-    let requests: Vec<&str> = mine
-        .iter()
-        .filter(|row| row["kind"] == "settlement")
-        .map(|row| row["description"].as_str().unwrap())
-        .collect();
-    assert_eq!(requests.len(), 1, "only the member's own turn: {mine:?}");
+    let mine = bills_html(&app, &member_cookie).await;
     assert!(
-        requests[0].contains("req-member"),
+        mine.contains("req-member"),
         "the member's own settlement is listed"
     );
     assert!(
-        mine.iter().any(|row| row["kind"] == "topUp"),
+        mine.contains("topUp"),
         "the key-less organization top-up is shared history"
+    );
+    assert!(
+        !mine.contains("req-owner"),
+        "another member's spend must not appear on the page"
     );
 
     // The export is the page's rows as a file, so it filters the same way.
@@ -806,69 +799,97 @@ async fn a_member_reads_own_key_spend_and_the_shared_history() {
     );
 
     // The owner reads everything: both turns and the top-up.
-    let all = bills(&app, &owner.cookie).await;
-    let descriptions: Vec<&str> = all
-        .iter()
-        .map(|row| row["description"].as_str().unwrap())
-        .collect();
+    let all = bills_html(&app, &owner.cookie).await;
     assert!(
-        descriptions.iter().any(|d| d.contains("req-owner"))
-            && descriptions.iter().any(|d| d.contains("req-member")),
-        "the owner sees every member's spend: {all:?}"
+        all.contains("req-owner") && all.contains("req-member"),
+        "the owner sees every member's spend"
     );
 }
 
 /// The proof bundle the verify link fetches answers inside the session's scope only:
-/// a member gets their own rows and the key-less organization ones, never another
-/// member's — and nobody gets another organization's.
+/// The public verify page renders, and the proof check now runs on the server:
+/// a hash that is not hex is a 400, a bundle that is not JSON is a 400, and a
+/// real bundle verifies. (The Leptos dashboard ran `verify_bundle` in the
+/// browser's WASM; Topcoat has no browser target, so the check moved
+/// server-side — the trust-model change is documented in
+/// `crates/web/src/pages_misc.rs`.)
 #[tokio::test]
-async fn the_entry_bundle_stays_within_the_sessions_scope() {
+async fn the_verify_page_checks_bundles_on_the_server() {
     let (app, _db) = app_or_skip!();
-    let org = account(&app, "bills-proof").await;
+    let org = account(&app, "bills-verify").await;
     let seeded = seed(&app, &org.cookie, "proof", 400, 316).await;
 
-    let (status, bundle) = entry_bundle(&app, &org.cookie, &seeded.entry_id).await;
-    assert_eq!(status, StatusCode::OK, "the session's own entry answers");
-    let bundle = bundle.as_str().expect("the bundle is a JSON string");
-    let bundle: Value = serde_json::from_str(bundle).expect("the bundle parses");
-    assert_eq!(
-        bundle["entry"]["id"].as_str().unwrap(),
-        seeded.entry_id,
-        "the bundle is the named entry's"
+    let page = call(&app, "GET", "/verify", None, None).await;
+    assert_eq!(page.status, StatusCode::OK, "the verify page renders");
+    assert!(
+        page.text().contains("Verify a bill"),
+        "the page names itself"
     );
 
-    // A top-up is organization history with no key attached: its bundle answers too.
-    let (status, _) = entry_bundle(&app, &org.cookie, &seeded.top_up_entry_id).await;
-    assert_eq!(status, StatusCode::OK, "the top-up's bundle answers");
+    // A hash that is not 64 hex characters is a bad request.
+    let res = post_form(
+        &app,
+        "/verify",
+        &format!("bundle={}&expected_hash=zz", urlencode("{}")),
+        None,
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::BAD_REQUEST, "a bad hash is a 400");
 
-    // What is not an entry of this organization — another tenant's, or no entry at
-    // all — is "no such entry", and so is a malformed id.
-    let other = account(&app, "bills-proof-b").await;
-    let other_seed = seed(&app, &other.cookie, "proof-b", 400, 7).await;
-    for entry_id in [
-        other_seed.entry_id.as_str(),
-        &Uuid::new_v4().to_string(),
-        "nope",
-    ] {
-        let (status, _) = entry_bundle(&app, &org.cookie, entry_id).await;
-        assert_ne!(
-            status,
-            StatusCode::OK,
-            "{entry_id} is outside this session's records"
-        );
-    }
+    // A bundle that is not JSON is a bad request too.
+    let res = post_form(
+        &app,
+        "/verify",
+        &format!(
+            "bundle={}&expected_hash={}",
+            urlencode("nope"),
+            "aa".repeat(32),
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::BAD_REQUEST, "a bad bundle is a 400");
+
+    // The real bundle — fetched through the API the way a user holding their
+    // bill would — verifies against the content hash the settlement returned.
+    let bundle = call(
+        &app,
+        "GET",
+        &format!("/api/v1/entries/{}/proof", seeded.entry_id),
+        None,
+        Some(&org.cookie),
+    )
+    .await;
+    assert_eq!(bundle.status, StatusCode::OK, "the proof API answers");
+    let res = post_form(
+        &app,
+        "/verify",
+        &format!(
+            "bundle={}&expected_hash={}",
+            urlencode(&bundle.text()),
+            seeded.content_hash,
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "a real bundle answers");
+    assert!(
+        res.text().contains("The bill verifies"),
+        "the server-side check passes the real bundle"
+    );
 }
 
-/// The bundle read is scoped like the page: a member pulls the bundle for their own
-/// key's settlement and for the key-less top-up, but another member's settlement —
-/// in the same organization — is "no such entry", not a leak.
+/// The bills page is the session's scope made visible: a member's page carries
+/// verify links for their own rows, and never names another member's entries —
+/// there is no link to follow and nothing to leak.
 #[tokio::test]
-async fn a_member_cannot_pull_another_members_bundle() {
+async fn a_member_never_sees_another_members_entries() {
     let (app, db) = app_or_skip!();
-    let owner = account(&app, "bills-scope-owner").await;
-    let (member_cookie, _member) = member_of(&app, &db, &owner, "bills-scope-member").await;
+    let owner = account(&app, "bills-links-owner").await;
+    let (member_cookie, _member) = member_of(&app, &db, &owner, "bills-links-member").await;
     let member_key = mint_key(&app, &member_cookie, "member-key").await;
-    let (top_up_id, _) = top_up(&app, &owner.cookie, "scope", 5_000_000).await;
+    // The holds below need funding: two freezes of 400 plus their charges.
+    top_up(&app, &owner.cookie, "links", 10_000).await;
     let tenants = Tenants::new(db.pool().clone());
     for (key_id, request) in [(owner.key_id, "req-owner"), (member_key, "req-member")] {
         seed_request(
@@ -883,33 +904,19 @@ async fn a_member_cannot_pull_another_members_bundle() {
         .await;
     }
 
-    // The entry ids come from the owner's unfiltered read: each settlement's row.
-    let all = bills(&app, &owner.cookie).await;
-    let entry_of = |request: &str| {
-        all.iter()
-            .find(|row| row["description"].as_str().unwrap_or("").contains(request))
-            .and_then(|row| row["entryId"].as_str())
-            .unwrap_or_else(|| panic!("{request} is in the owner's bills: {all:?}"))
-            .to_owned()
-    };
-    let owner_entry = entry_of("req-owner");
-    let member_entry = entry_of("req-member");
+    let member_html = bills_html(&app, &member_cookie).await;
+    assert!(
+        member_html.contains("/verify?entry="),
+        "the member's own rows link to the verify page"
+    );
+    assert!(
+        !member_html.contains("req-owner"),
+        "another member's entries are never named on the member's page"
+    );
 
-    let (status, _) = entry_bundle(&app, &member_cookie, &member_entry).await;
-    assert_eq!(status, StatusCode::OK, "the member's own bundle answers");
-    let (status, _) = entry_bundle(&app, &member_cookie, &top_up_id).await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "the key-less top-up's bundle answers"
+    let owner_html = bills_html(&app, &owner.cookie).await;
+    assert!(
+        owner_html.contains("req-owner") && owner_html.contains("req-member"),
+        "the owner sees every member's spend"
     );
-    let (status, _) = entry_bundle(&app, &member_cookie, &owner_entry).await;
-    assert_ne!(
-        status,
-        StatusCode::OK,
-        "another member's settlement is not this member's to prove"
-    );
-    // The owner, in scope for everything, pulls the same entry fine.
-    let (status, _) = entry_bundle(&app, &owner.cookie, &owner_entry).await;
-    assert_eq!(status, StatusCode::OK, "the owner's read is unscoped");
 }

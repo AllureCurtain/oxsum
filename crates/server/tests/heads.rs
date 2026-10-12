@@ -431,20 +431,36 @@ async fn key_and_session(app: &Router, name: &str) -> (String, String) {
     (key, session_cookie(app, &email).await)
 }
 
-/// One server function of the pages, called the way its own code calls it: the
-/// URL-encoded body of the function's arguments, with the session cookie. The path is
-/// read from leptos's registry because the route carries a hash of the declaring module.
-async fn page_call(
+/// The bills page's HTML with the session cookie. The Topcoat dashboard renders
+/// server-side — there is no `get_log_head` server function anymore; the signed
+/// head is a section of the page.
+async fn bills_html(app: &Router, cookie: Option<&str>) -> (StatusCode, String) {
+    let mut req = Request::builder().method("GET").uri("/dashboard/bills");
+    if let Some(cookie) = cookie {
+        req = req.header("cookie", format!("oxsum_session={cookie}"));
+    }
+    let res = app
+        .clone()
+        .oneshot(req.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        String::from_utf8(bytes.to_vec()).expect("the page is UTF-8"),
+    )
+}
+
+/// One form post against the app, with the session cookie.
+async fn post_form(
     app: &Router,
-    name: &str,
+    path: &str,
     body: &str,
     cookie: Option<&str>,
-) -> (StatusCode, Value) {
-    let (path, method) = leptos::server_fn::axum::server_fn_paths()
-        .find(|(path, _)| path.starts_with(&format!("/_pages/{name}")))
-        .unwrap_or_else(|| panic!("the {name} server function is registered"));
+) -> (StatusCode, String) {
     let mut req = Request::builder()
-        .method(method)
+        .method("POST")
         .uri(path)
         .header("content-type", "application/x-www-form-urlencoded");
     if let Some(cookie) = cookie {
@@ -457,75 +473,88 @@ async fn page_call(
         .unwrap();
     let status = res.status();
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    (status, value)
+    (
+        status,
+        String::from_utf8(bytes.to_vec()).expect("the page is UTF-8"),
+    )
 }
 
 #[tokio::test]
-async fn the_bills_page_functions_serve_the_head_and_the_proof() {
+async fn the_bills_page_serves_the_head_and_the_consistency_check() {
     let (app, _pool) = app_or_skip!(Some(SEED));
     let (key, cookie) = key_and_session(&app, "heads-pages").await;
     top_up(&app, &key, 1_000_000).await;
 
-    // get_log_head: the same signed head the API serves, session-scoped.
-    let (status, head) = page_call(&app, "get_log_head", "", Some(&cookie)).await;
-    assert_eq!(status, StatusCode::OK, "{head}");
-    assert_eq!(head["size"].as_u64().unwrap(), 1);
+    // The bills page renders the signed head section, session-scoped.
+    let (status, html) = bills_html(&app, Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK, "the bills page renders");
+    assert!(html.contains("Ledger head"), "the head section renders");
     assert!(
-        head["origin"]
-            .as_str()
-            .unwrap()
-            .starts_with("oxsum/ledgers/")
+        html.contains("oxsum/tree-heads"),
+        "the section names the signing key"
     );
-    assert_eq!(head["key"]["keyName"].as_str().unwrap(), "oxsum/tree-heads");
-    assert_eq!(head["key"]["publicKey"].as_str().unwrap().len(), 64);
-    assert_eq!(head["key"]["keyHash"].as_str().unwrap().len(), 8);
-    assert!(
-        SignedTreeHead::parse(head["note"].as_str().unwrap()).is_ok(),
-        "the note parses"
-    );
+    assert!(html.contains("Size 1"), "the head's size renders");
 
-    // The log grows; get_log_consistency proves the archived head is still inside it.
+    // The log grows; the consistency form proves the archived head is still
+    // inside it — the check that ran in the browser in the Leptos dashboard.
     top_up(&app, &key, 2_000_000).await;
-    let (status, proof) = page_call(&app, "get_log_consistency", "from=1", Some(&cookie)).await;
-    assert_eq!(status, StatusCode::OK, "{proof}");
-    assert_eq!(proof["oldHead"]["size"].as_u64().unwrap(), 1);
-    assert_eq!(proof["oldHead"]["root"].as_str().unwrap(), head["root"]);
-    assert_eq!(proof["signed"]["size"].as_u64().unwrap(), 2);
-    assert_eq!(proof["proof"]["oldSize"].as_u64().unwrap(), 1);
-    assert_eq!(proof["proof"]["newSize"].as_u64().unwrap(), 2);
+    let (status, html) = post_form(
+        &app,
+        "/dashboard/bills/consistency",
+        "from=1",
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "the consistency check answers");
+    assert!(
+        html.contains("the log still contains the archived head"),
+        "the verdict renders"
+    );
+    assert!(
+        html.contains("From size 1 to size 2"),
+        "the proof's sizes render"
+    );
 }
 
 #[tokio::test]
-async fn without_a_seed_the_page_functions_answer_null() {
+async fn without_a_seed_the_head_section_degrades() {
     let (app, _pool) = app_or_skip!(None);
     let (key, cookie) = key_and_session(&app, "heads-nopage").await;
     top_up(&app, &key, 1_000_000).await;
 
-    // The page degrades instead of failing: null, where the API answers 503.
-    for (name, body) in [("get_log_head", ""), ("get_log_consistency", "from=1")] {
-        let (status, answer) = page_call(&app, name, body, Some(&cookie)).await;
-        assert_eq!(status, StatusCode::OK, "{name}: {answer}");
-        assert!(answer.is_null(), "{name} answers no head: {answer}");
-    }
+    // The page degrades instead of failing: the section reports itself
+    // unconfigured, where the API answers 503.
+    let (status, html) = bills_html(&app, Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK, "the bills page renders");
+    assert!(
+        html.contains("This deployment signs no heads"),
+        "the section degrades: {html}"
+    );
+
+    // The consistency check has nothing to check against: an internal error.
+    let (status, _) = post_form(
+        &app,
+        "/dashboard/bills/consistency",
+        "from=1",
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "no seed, no proof"
+    );
 }
 
 #[tokio::test]
-async fn the_page_functions_need_a_session() {
+async fn the_head_surface_needs_a_session() {
     let (app, _pool) = app_or_skip!(Some(SEED));
-    // An API key is not a session: the dashboard's surface does not answer to it.
-    for (name, body) in [("get_log_head", ""), ("get_log_consistency", "from=1")] {
-        let (status, _) = page_call(&app, name, body, None).await;
-        assert!(
-            matches!(
-                status,
-                StatusCode::BAD_REQUEST
-                    | StatusCode::UNAUTHORIZED
-                    | StatusCode::INTERNAL_SERVER_ERROR
-            ),
-            "{name} without a session is refused: {status}"
-        );
-    }
+    // Without a session the page sends the visitor to /login, and so does the
+    // consistency form — the dashboard's surface does not answer anonymously.
+    let (status, _) = bills_html(&app, None).await;
+    assert_eq!(status, StatusCode::SEE_OTHER, "the page needs a session");
+    let (status, _) = post_form(&app, "/dashboard/bills/consistency", "from=1", None).await;
+    assert_eq!(status, StatusCode::SEE_OTHER, "the form needs a session");
 }
 
 // ── signed price heads (issue #204) ─────────────────────────────────────────

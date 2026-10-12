@@ -183,20 +183,18 @@ async fn acting(app: &Router, cookie: &str) -> String {
         .to_owned()
 }
 
-/// One server function of the pages, called the way its own code calls it.
-async fn page_call(app: &Router, name: &str, body: &str, cookie: &str) -> (StatusCode, Value) {
-    let (path, method) = leptos::server_fn::axum::server_fn_paths()
-        .find(|(path, _)| path.starts_with(&format!("/_pages/{name}")))
-        .unwrap_or_else(|| panic!("the {name} server function is registered"));
+/// The dashboard overview page's HTML with the session cookie. The Topcoat
+/// dashboard renders server-side — there is no `get_dashboard` server function
+/// anymore.
+async fn dashboard_html(app: &Router, cookie: &str) -> (StatusCode, String) {
     let res = app
         .clone()
         .oneshot(
             Request::builder()
-                .method(method)
-                .uri(path)
-                .header("content-type", "application/x-www-form-urlencoded")
+                .method("GET")
+                .uri("/dashboard")
                 .header("cookie", format!("oxsum_session={cookie}"))
-                .body(Body::from(body.to_owned()))
+                .body(Body::empty())
                 .unwrap(),
         )
         .await
@@ -205,7 +203,7 @@ async fn page_call(app: &Router, name: &str, body: &str, cookie: &str) -> (Statu
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
     (
         status,
-        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        String::from_utf8(bytes.to_vec()).expect("the page is UTF-8"),
     )
 }
 
@@ -288,9 +286,12 @@ async fn switching_the_organization_carries_the_session() {
     assert_eq!(acting(&app, &cookie).await, team_id);
     let res = call(&app, "GET", "/api/v1/org", None, None, Some(&cookie)).await;
     assert_eq!(res.body["data"]["id"].as_str(), Some(team_id.as_str()));
-    let (status, dashboard) = page_call(&app, "get_dashboard", "", &cookie).await;
-    assert_eq!(status, StatusCode::OK, "{dashboard}");
-    assert_eq!(dashboard["orgName"], "Switch To Me");
+    let (status, dashboard) = dashboard_html(&app, &cookie).await;
+    assert_eq!(status, StatusCode::OK, "the dashboard renders");
+    assert!(
+        dashboard.contains("Switch To Me"),
+        "the dashboard names the organization"
+    );
 
     // And back.
     let res = call(
