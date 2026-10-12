@@ -28,7 +28,6 @@ Post-roadmap validation: a gate run found `a_settled_turn_enqueues_a_signed_deli
 
 Post-roadmap backlog, one issue per item:
 
-- #204 Signed price catalog snapshots
 - #205 Statement PDF export
 - #209 Tag-scoped TPM buckets (Each / Concrete / Total)
 
@@ -61,6 +60,8 @@ Closed. The chat page is built (issue #39): after login the user tops up, picks 
 Nothing.
 
 ## Recently completed
+
+- 2026-10-12 Signed price catalog snapshots (issue #204): the price a bill names is now bound to an operator-signed checkpoint, closing the roadmap footnote's last trust gap — a forged current price table can no longer answer for an old bill. `GET /api/v1/log/price-head?channel=<c>&model=<m>[&version=<n>]` (credential required) serves one `(channel, model, priceVersion)`'s checkpoint: a `tlog-checkpoint` body under `oxsum/price-catalog/<channel>` with the version in `size` and a tagged-BLAKE3 row hash (`oxsum/price-catalog/v1` over the canonical `PriceRowV1` bytes) in `root`, signed by the same `OXSUM_HEAD_SIGNING_KEY` that signs tree heads. Signing is stateless and deterministic — a stored v1 re-signs identically after v2 lands, so there is no snapshot table — and `receipt_proof` embeds the link as an optional `price` field (`channel`/`model`/`version`/canonical `row`/`note`/hex key). `oxsum_verify::verify_price_head` checks the binding in the browser: bound, absent (a top-up, an old bundle, a key-less deployment), or refused with the reason named — a third line on `/verify`'s verdict, never its own failure. Contract `openapi.yaml` 0.51.0; pinned by the heads unit tests, `crates/core/tests/price_heads.rs`, `crates/verify`'s `price_heads` module and `crates/server/tests/heads.rs`.
 
 - 2026-10-12 Per-key token rate limits (issue #203): `tokensPerMinute` joins the key constraint set — set at creation, PATCHed wholesale like the others, cleared by null — capping the settled input+output tokens a key may burn inside a trailing minute. RPM spends a slot at admission; TPM counts *settled* usage, so the window is a durable `oxsum.tpm_windows` table (migration 0031) that `record_usage_balanced` feeds in its own transaction — a replay rolls nothing, a rollback keeps nothing, one-second buckets prune on write. On the gateway a request is refused 429 `TOKENS_PER_MINUTE` when window-actual plus this request's estimate (the input bound plus the output bound, the freeze's own figures) exceeds the cap; `POST /api/v1/holds`, amount-only, refuses only once the window is already full. Both answer `Retry-After` and the `X-RateLimit-*` headers. Contract `openapi.yaml` 0.50.0; pinned by `crates/core/tests/tpm_windows.rs` plus the api.rs and gateway.rs suites. Tag-scoped buckets are follow-up #209.
 
