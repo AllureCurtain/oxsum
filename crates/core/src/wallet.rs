@@ -2,8 +2,8 @@ use doubleentry::account::AccountRegistry;
 use doubleentry::storage::postgres::{PostgresError, PostgresStore};
 use doubleentry::{
     AccountId, Amount, BalanceKey, BalanceLimit, BalanceQuery, Balanced, Currency, Cursor,
-    Description, Direction, Draft, Entry, EntryBatch, EntryId, Hash, IdempotencyKey, Layer,
-    LedgerId, LedgerPolicy, LedgerStore, LogIndex, Period, PeriodId, PeriodState, Posting,
+    Description, Direction, DocumentRef, Draft, Entry, EntryBatch, EntryId, Hash, IdempotencyKey,
+    Layer, LedgerId, LedgerPolicy, LedgerStore, LogIndex, Period, PeriodId, PeriodState, Posting,
     Provenance, Seal, SealContext, StoredEntry,
 };
 use sha2::{Digest, Sha256};
@@ -16,8 +16,8 @@ use uuid::Uuid;
 use crate::billing::{SettlementKind, SettlementRecord};
 use crate::error::{WalletError, invalid};
 use crate::heads::{
-    Consistency, HeadSigningKey, SignedHead, canonical_price_row, origin_for, sign_head,
-    sign_price_head,
+    Consistency, HeadSigningKey, STATEMENT_ANCHOR_DOCUMENT, SignedHead, canonical_price_row,
+    origin_for, sign_head, sign_price_head,
 };
 use crate::keys::{ActingKey, BudgetDuration};
 use crate::proof::ProofBundle;
@@ -2032,6 +2032,57 @@ impl Wallet {
         Ok(self.store.head().await?.size)
     }
 
+    /// Appends the statement anchor — the marker entry committing a finalized
+    /// statement's digests into the tenant ledger (issue #221). `pub(crate)`:
+    /// only [`crate::Db::finalize_statement`] calls it.
+    ///
+    /// One ledger entry per statement: a 1-minor balanced `Equity:Adjustments`
+    /// debit/credit (the posting amount is immaterial — the marker is metadata,
+    /// not money), idempotency-keyed `statement-anchor/<statement_id>` so a
+    /// retried finalize replays rather than duplicates. The entry's
+    /// [`DocumentRef`] binds the marker to the window digest, and its
+    /// description carries the rollup digest plus the figures it summarizes.
+    /// Returns the marker's id and its position in the log — the head that
+    /// follows that position is what proves the anchor was committed.
+    ///
+    /// # Errors
+    ///
+    /// Storage and ledger failures surface as [`WalletError`].
+    pub(crate) async fn anchor_statement(
+        &self,
+        statement_id: Uuid,
+        description_json: &str,
+        window_hash: Hash,
+    ) -> Result<(EntryId, u64), WalletError> {
+        let key = format!("statement-anchor/{statement_id}");
+        let minor = Credits::from_minor(1);
+        let entry = Entry::<Draft, SCALE>::new(
+            entry_id_for(&key),
+            idem(&key)?,
+            OffsetDateTime::now_utc().date(),
+        )
+        .with_document(DocumentRef::new(STATEMENT_ANCHOR_DOCUMENT, window_hash).map_err(invalid)?)
+        .with_description(description_of(description_json)?)
+        .debit(self.adjustments, minor, currency())
+        .credit(self.adjustments, minor, currency());
+        let receipt = match self.append(entry).await {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                // A raced finalize can land on the same idempotency key; the
+                // standing entry is the same anchor either way, so read it back
+                // instead of failing the race's loser.
+                let Some(stored) = self.store.get(entry_id_for(&key)).await? else {
+                    return Err(error);
+                };
+                stored_receipt(&stored)
+            }
+        };
+        let index = receipt.log_index.ok_or_else(|| {
+            WalletError::InvalidInput("the statement anchor did not sequence".into())
+        })?;
+        Ok((receipt.entry_id, index))
+    }
+
     /// The current tree head, signed by the operator: what `GET /api/v1/log/head` serves.
     ///
     /// The note attests the head at signing time; the ledger keeps growing underneath, and a
@@ -2040,6 +2091,23 @@ impl Wallet {
     pub async fn signed_head(&self, key: &HeadSigningKey) -> Result<SignedHead, WalletError> {
         let origin = origin_for(&self.tenant_id).map_err(invalid)?;
         let head = self.store.head().await?;
+        sign_head(key, &origin, head).map_err(invalid)
+    }
+
+    /// The head at an earlier log size, signed by the operator: what the statement
+    /// anchor serves (issue #221) — the head right after the marker is what proves
+    /// the anchor's inclusion.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::InvalidInput`] when `size` exceeds the log's current size.
+    pub async fn signed_head_at(
+        &self,
+        key: &HeadSigningKey,
+        size: u64,
+    ) -> Result<SignedHead, WalletError> {
+        let origin = origin_for(&self.tenant_id).map_err(invalid)?;
+        let head = self.store.head_at(size).await.map_err(invalid)?;
         sign_head(key, &origin, head).map_err(invalid)
     }
 

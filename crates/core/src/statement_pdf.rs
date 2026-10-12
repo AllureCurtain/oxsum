@@ -343,6 +343,10 @@ mod tests {
             paid_at: None,
             overdue_at: None,
             suspended_at: None,
+            anchor_entry_id: None,
+            anchor_log_index: None,
+            window_hash: None,
+            rollup_hash: None,
             created_at: time::OffsetDateTime::UNIX_EPOCH,
         }
     }

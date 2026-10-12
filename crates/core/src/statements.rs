@@ -25,6 +25,7 @@
 //! reads and reconcile paths persist it, no scheduler is required for a document
 //! that only needs to be right when looked at.
 
+use doubleentry::Hash;
 use serde::Serialize;
 use sqlx::Row;
 use time::{Date, Duration, Month, OffsetDateTime};
@@ -32,6 +33,10 @@ use uuid::Uuid;
 
 use crate::db::Db;
 use crate::error::WalletError;
+use crate::heads::{
+    StatementRollupLine, StatementRollupV1, canonical_statement_rollup, statement_rollup_hash,
+    statement_window_hash,
+};
 use crate::orgs::malformed;
 use crate::wallet::Wallet;
 
@@ -159,6 +164,18 @@ pub struct Statement {
     pub overdue_at: Option<OffsetDateTime>,
     #[serde(with = "time::serde::rfc3339::option")]
     pub suspended_at: Option<OffsetDateTime>,
+    /// The marker entry's id — the anchor appended to the tenant ledger at
+    /// finalization (issue #221), `None` on a draft or an anchor-less legacy row.
+    pub anchor_entry_id: Option<Uuid>,
+    /// Where the marker landed in the log — the head that follows it proves the
+    /// anchor's inclusion.
+    pub anchor_log_index: Option<i64>,
+    /// The window digest the anchor's document hash carries — the fold of the
+    /// covered entries' content hashes in log order, lowercase hex.
+    pub window_hash: Option<String>,
+    /// The rollup digest the anchor's description commits — the canonical form
+    /// of the statement's own figures and lines, lowercase hex.
+    pub rollup_hash: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
@@ -171,6 +188,12 @@ pub struct DraftStatement {
     pub entry_count: i64,
     pub log_from_index: Option<i64>,
     pub log_to_index: Option<i64>,
+    /// The window digest over the covered entries' content hashes in log order —
+    /// what the anchor's document hash commits (issue #221).
+    pub window_hash: Hash,
+    /// The rollup digest over the draft's own canonical form — what the anchor's
+    /// description commits.
+    pub rollup_hash: Hash,
     pub lines: Vec<StatementLine>,
 }
 
@@ -229,6 +252,10 @@ fn statement_from_row(row: &sqlx::postgres::PgRow) -> Result<Statement, WalletEr
         paid_at: row.try_get("paid_at")?,
         overdue_at: row.try_get("overdue_at")?,
         suspended_at: row.try_get("suspended_at")?,
+        anchor_entry_id: row.try_get("anchor_entry_id")?,
+        anchor_log_index: row.try_get("anchor_log_index")?,
+        window_hash: row.try_get("window_hash")?,
+        rollup_hash: row.try_get("rollup_hash")?,
         created_at: row.try_get("created_at")?,
     })
 }
@@ -236,7 +263,8 @@ fn statement_from_row(row: &sqlx::postgres::PgRow) -> Result<Statement, WalletEr
 const STATEMENT_COLS: &str = "statement_id, organization_id, period, status, \
      payment_status, total_minor, credit_drawn_minor, paid_minor, payment_terms_days, \
      due_date, log_from_index, log_to_index, entry_count, finalized_at, paid_at, \
-     overdue_at, suspended_at, created_at";
+     overdue_at, suspended_at, anchor_entry_id, anchor_log_index, window_hash, \
+     rollup_hash, created_at";
 
 /// The FROM clause the ledger-window and aggregate reads share: the usage rows whose
 /// settlement entries booked into the period. The join is what ties a statement to
@@ -343,14 +371,70 @@ impl Db {
                 })
             })
             .collect::<Result<Vec<_>, WalletError>>()?;
+        let entry_count: i64 = totals.try_get("entry_count")?;
+        let total_minor: i64 = totals.try_get("total_minor")?;
+        let credit_drawn_minor = wallet
+            .credit_drawn_between(period.first, period.last)
+            .await?;
+        let log_from_index = totals.try_get("log_from")?;
+        let log_to_index = totals.try_get("log_to")?;
+        // The window fold: every covered entry's content hash in log order, the
+        // order the digest pins (issue #221). `log_index IS NOT NULL` is implied —
+        // a usage row only exists for a settlement whose entry sequenced.
+        let hashes_sql = format!(
+            "SELECT e.content_hash {} ORDER BY e.log_index",
+            period_join(tenant_id)
+        );
+        let hash_rows = sqlx::query(&hashes_sql)
+            .bind(period.first)
+            .bind(period.last)
+            .bind(tenant_id)
+            .fetch_all(self.pool())
+            .await?;
+        let mut hashes = Vec::with_capacity(hash_rows.len());
+        for row in &hash_rows {
+            let bytes: Vec<u8> = row.try_get("content_hash")?;
+            let raw: [u8; 32] = bytes.try_into().map_err(|_| {
+                WalletError::InvalidInput("a covered entry's content hash is malformed".into())
+            })?;
+            hashes.push(Hash::from_bytes(raw));
+        }
+        let window_hash = statement_window_hash(&hashes);
+        // The rollup: the statement's own figures and lines in the canonical form
+        // the verifier re-serializes — the document the rollup digest commits.
+        let rollup_lines: Vec<StatementRollupLine<'_>> = lines
+            .iter()
+            .map(|line| StatementRollupLine {
+                channel: &line.channel,
+                model: &line.model,
+                turns: line.turns,
+                input_tokens: line.input_tokens,
+                output_tokens: line.output_tokens,
+                cached_tokens: line.cached_tokens,
+                reasoning_tokens: line.reasoning_tokens,
+                amount_minor: line.amount_minor,
+            })
+            .collect();
+        let canonical = canonical_statement_rollup(&StatementRollupV1 {
+            v: 1,
+            period: &period.label(),
+            log_from_index,
+            log_to_index,
+            entry_count,
+            total_minor,
+            credit_drawn_minor,
+            window_hash: &window_hash.to_hex(),
+            lines: &rollup_lines,
+        })?;
+        let rollup_hash = statement_rollup_hash(&canonical);
         Ok(DraftStatement {
-            total_minor: totals.try_get("total_minor")?,
-            credit_drawn_minor: wallet
-                .credit_drawn_between(period.first, period.last)
-                .await?,
-            entry_count: totals.try_get("entry_count")?,
-            log_from_index: totals.try_get("log_from")?,
-            log_to_index: totals.try_get("log_to")?,
+            total_minor,
+            credit_drawn_minor,
+            entry_count,
+            log_from_index,
+            log_to_index,
+            window_hash,
+            rollup_hash,
             lines,
         })
     }
@@ -596,6 +680,25 @@ impl Db {
         let prior_draws =
             wallet.credit_drawn_through(period.last).await? - draft.credit_drawn_minor;
         let paid_minor = (repaid - prior_draws).clamp(0, draft.credit_drawn_minor);
+        // The anchor: one marker entry appended to the tenant ledger, committing
+        // the window and rollup digests (issue #221). It precedes the draft-only
+        // update so a losing finalize never records an anchor it didn't issue —
+        // the idempotency key makes the append itself replay-safe.
+        let description = serde_json::json!({
+            "v": 1,
+            "period": existing.period,
+            "logFromIndex": draft.log_from_index,
+            "logToIndex": draft.log_to_index,
+            "entryCount": draft.entry_count,
+            "totalMinor": draft.total_minor,
+            "creditDrawnMinor": draft.credit_drawn_minor,
+            "windowHash": draft.window_hash.to_hex(),
+            "rollupHash": draft.rollup_hash.to_hex(),
+        })
+        .to_string();
+        let (anchor_entry_id, anchor_log_index) = wallet
+            .anchor_statement(statement_id, &description, draft.window_hash)
+            .await?;
         let mut tx = self.pool().begin().await?;
         // Draft-only update: a racing finalize loses the WHERE and re-reads the
         // standing document below — the same idempotent answer a repeat gives.
@@ -604,6 +707,8 @@ impl Db {
                  total_minor = $2, credit_drawn_minor = $3, paid_minor = $4, \
                  payment_terms_days = $5, due_date = $6, log_from_index = $7, \
                  log_to_index = $8, entry_count = $9, finalized_at = now(), \
+                 anchor_entry_id = $10, anchor_log_index = $11, window_hash = $12, \
+                 rollup_hash = $13, \
                  payment_status = CASE WHEN $4 >= $3 THEN 'paid' ELSE 'pending' END, \
                  paid_at = CASE WHEN $4 >= $3 THEN now() ELSE NULL END, \
                  updated_at = now() \
@@ -619,6 +724,10 @@ impl Db {
         .bind(draft.log_from_index)
         .bind(draft.log_to_index)
         .bind(draft.entry_count)
+        .bind(*anchor_entry_id.as_uuid())
+        .bind(anchor_log_index as i64)
+        .bind(draft.window_hash.to_hex())
+        .bind(draft.rollup_hash.to_hex())
         .fetch_optional(&mut *tx)
         .await?;
         if updated.is_some() {
