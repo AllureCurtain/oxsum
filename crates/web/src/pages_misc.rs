@@ -98,21 +98,85 @@ async fn verify_submit(Form(form): Form<VerifyForm>) -> Result<impl View> {
         .unwrap_or_else(|| bundle.to_owned());
     let ok = oxsum_verify::verify_bundle(&inner, &hash)
         .map_err(|_| bad_request("the bundle did not parse as JSON"))?;
+    // Inclusion proven; now whether the charge inside the entry is what its own
+    // usage and rates add up to, and whether the price the description names is
+    // bound to a checkpoint the operator signed (issue #204). The binding
+    // reports under the pass, never a verdict of its own.
+    enum Verdict {
+        Pass { charge: &'static str, price: String },
+        ChargeMismatch,
+        Fail,
+    }
+    let verdict = if !ok {
+        Verdict::Fail
+    } else {
+        let description = serde_json::from_str::<serde_json::Value>(&inner)
+            .ok()
+            .and_then(|bundle| {
+                bundle
+                    .get("entry")?
+                    .get("description")?
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .unwrap_or_default();
+        match oxsum_verify::verify_charge(&description) {
+            oxsum_verify::ChargeCheck::Mismatch => Verdict::ChargeMismatch,
+            check => {
+                let charge = match check {
+                    oxsum_verify::ChargeCheck::Recomputed => {
+                        " The recorded charge itself recomputes from the usage and rates inside the entry."
+                    }
+                    oxsum_verify::ChargeCheck::NotASettlement => {
+                        " The entry is not a usage settlement, so there is no charge to recompute."
+                    }
+                    oxsum_verify::ChargeCheck::OlderSchema => {
+                        " The record predates charge verification — the entry is proven, but its arithmetic is too old to recompute."
+                    }
+                    oxsum_verify::ChargeCheck::NewerSchema { .. } => {
+                        " The record is newer than this verifier — the entry is proven, but its arithmetic is skipped rather than guessed at."
+                    }
+                    oxsum_verify::ChargeCheck::Mismatch => unreachable!("handled above"),
+                };
+                let price = match oxsum_verify::verify_price_head(&inner) {
+                    Ok(()) => {
+                        " The price it names is bound to a checkpoint the operator signed.".to_owned()
+                    }
+                    Err(oxsum_verify::PriceError::Absent) => {
+                        " This bundle carries no signed price binding — the entry is proven, but its price is not independently attested.".to_owned()
+                    }
+                    Err(error) => format!(" Its price binding does not verify: {error}."),
+                };
+                Verdict::Pass { charge, price }
+            }
+        }
+    };
     Ok(view! {
         plain(
             title: "Verification result",
             <div class="card">
                 <h1>"Verification result"</h1>
-                if ok {
-                    <p class="ok"><strong>"The bill verifies."</strong></p>
-                    <p class="muted">
-                        "The content hash recomputes from the entry, and the inclusion proof links it to the tree head."
-                    </p>
-                } else {
-                    <p class="error"><strong>"The bill does not verify."</strong></p>
-                    <p class="muted">
-                        "Either the bundle was altered, or the hash you recorded does not match this entry."
-                    </p>
+                match verdict {
+                    Verdict::Pass { charge, price } => {
+                        <p class="ok"><strong>"The bill verifies."</strong></p>
+                        <p class="muted">
+                            "The content hash recomputes from the entry, and the inclusion proof links it to the tree head."
+                            (charge)
+                            (price)
+                        </p>
+                    }
+                    Verdict::ChargeMismatch => {
+                        <p class="error"><strong>"The charge does not add up."</strong></p>
+                        <p class="muted">
+                            "The entry is proven unaltered, but the charge it records does not recompute from the usage and rates it carries."
+                        </p>
+                    }
+                    Verdict::Fail => {
+                        <p class="error"><strong>"The bill does not verify."</strong></p>
+                        <p class="muted">
+                            "Either the bundle was altered, or the hash you recorded does not match this entry."
+                        </p>
+                    }
                 }
                 <p><a href="/verify">"Verify another"</a></p>
             </div>
