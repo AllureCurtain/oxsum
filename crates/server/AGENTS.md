@@ -9,7 +9,10 @@ crates/server/src/routes/     Routing, request deserialization. No business logi
                               one module per resource group (auth, org, keys, billing,
                               usage, log, webhooks, device); mod.rs wires the router and
                               holds the helpers every module shares.
-crates/server/src/admin.rs    The operator-token admin surface
+crates/server/src/admin/      The operator-token admin surface, split the same way
+                              (channels, organizations, billing, statements, ops,
+                              credentials); mod.rs wires the router, the require_admin
+                              middleware and the shared helpers.
 crates/server/src/auth.rs     Auth middleware
 crates/server/src/error.rs    WalletError → HTTP error code mapping
 crates/core/src/              Business logic (Wallet, Tenants, proofs)
