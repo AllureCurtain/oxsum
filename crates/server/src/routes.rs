@@ -39,7 +39,7 @@ use crate::{AppState, Signup, today};
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// The `/api/v1` surface, plus the routes served outside it: health, the gateway, the
-/// billing WebSocket, the bills export and the Leptos pages.
+/// billing WebSocket, the bills export and the dashboard pages.
 pub fn router(state: AppState) -> Router {
     // Behind a credential: everything that touches an organization, its ledger or its
     // credentials. The credential is an API key or a session cookie; both resolve to a
@@ -182,7 +182,7 @@ pub fn router(state: AppState) -> Router {
                 REQUEST_TIMEOUT,
             )),
         );
-    // The Leptos pages and their server functions, served by the same binary.
+    // The dashboard pages, served by the same binary.
     // The request counter sits last so it sees every route the router answered, pages
     // included — labelled by the matched pattern, never the concrete path.
     crate::web::mount(router, &state)

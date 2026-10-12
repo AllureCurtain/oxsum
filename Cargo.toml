@@ -10,26 +10,6 @@ rust-version = "1.98"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/AllureCurtain/oxsum"
 
-# cargo-leptos builds the dashboard: the `oxsum` binary (bin-package) serves the pages,
-# and `oxsum-web` (lib-package) compiles to WASM for the browser. `cargo leptos build`
-# and `cargo leptos serve` read this section; plain `cargo build` ignores it. It lives
-# here (rather than in a package) because the binary and the pages are different
-# packages; paths are relative to the workspace root, site-root defaults to target/site.
-[[workspace.metadata.leptos]]
-name = "oxsum"
-bin-package = "oxsum-server"
-lib-package = "oxsum-web"
-output-name = "oxsum"
-# The binary is `oxsum` (see crates/server/Cargo.toml's [[bin]]), not the package name.
-bin-exe-name = "oxsum"
-style-file = "crates/web/style/main.css"
-# The WASM build turns the web crate's default (ssr) features off and enables hydrate.
-lib-features = ["hydrate"]
-# Declared rather than left to leptos's own default, which is `.`: the pkg service resolves
-# `site-root` against the process's working directory, so `.` serves the checkout, every
-# `/pkg/*` asset the shell references 404s and the pages never hydrate (issue #44).
-site-root = "target/site"
-
 [workspace.dependencies]
 oxsum-core = { path = "crates/core" }
 oxsum-verify = { path = "crates/verify" }
@@ -44,12 +24,9 @@ axum = "0.8"
 aes-gcm = "0.10"
 base64 = "0.21"
 dotenvy = "0.15"
-# The dashboard: Leptos 0.8, server-side rendering plus browser hydration, mounted
-# through the official leptos_axum into the same binary (docs/decisions.md).
-leptos = "0.8.21"
-leptos_axum = "0.8.10"
-leptos_meta = "0.8.7"
-leptos_router = "0.8.16"
+# The dashboard: Topcoat pages, server-side rendered, mounted into the same
+# binary as an axum fallback service (spike/topcoat-dashboard).
+topcoat = { version = "0.10", default-features = false, features = ["tower", "cookie", "view"] }
 password-auth = "1"
 proptest = "1"
 rand = "0.10"
@@ -78,6 +55,7 @@ async-stream = "0.3"
 # Local token estimation, on the interruption path only; the vocabulary is built in.
 tiktoken-rs = "0.6"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal", "net"] }
+percent-encoding = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # The single feature source for sqlx: doubleentry's optional postgres backend

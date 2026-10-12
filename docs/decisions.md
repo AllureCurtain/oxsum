@@ -2,6 +2,23 @@
 
 New decisions go on top. Overturned decisions are never deleted; mark them "Superseded" and name the decision that replaces it.
 
+## 2026-10-12 Pages move back to Topcoat, replacing Leptos
+
+- Status: Adopted for the development phase. Supersedes "2026-10-01 Pages move to Leptos, replacing Topcoat" (marked Superseded below).
+- Decision: the dashboard pages move from Leptos 0.8 to Topcoat 0.10 (pinned). Server-side rendering only — no WASM bundle, no hydration, no client build step. The Topcoat router mounts as an axum `fallback_service` on the same port; API routes keep priority. Sessions stay self-built (the `oxsum_session` cookie mechanism is unchanged; Topcoat's built-in session module is not used).
+- Why now (what changed since 2026-10-01):
+  - Compile time proved to be the dominant cost of Leptos: touching one file in `crates/web` cost 2m52s of `cargo check` on the dev machine (Leptos's ~25 related crates plus heavy proc macros, compiled twice — SSR natively and hydrate to wasm32). The Topcoat spike measured ~7s for the same edit (~25x), with Cargo.lock shrinking from 624 to 561 packages.
+  - Topcoat matured from 0.1 to 0.10; the "no frontend build step" advantage the 2026-10-01 decision dismissed as moot turned out to be exactly the compile-time win that matters.
+  - The verification trade-off the 2026-10-01 decision centered on is accepted as a development-phase cost (see below), not a permanent verdict — the decision is revisit-able if the dashboard outgrows server rendering.
+- Costs and knock-on effects:
+  - `/verify` trust-model downgrade: the proof check ran in the browser (WASM), so a user verified a bill without trusting the server. Topcoat has no browser target; the check now runs server-side via `oxsum-verify` (native). The proof math is unchanged, but the "don't trust the server" property is gone. The page says so plainly ("The check runs on this server."). If the public narrative needs the trustless property back, the page can regain it with a standalone WASM verifier later — the pure `oxsum-verify` crate is already wasm-clean.
+  - Interactivity steps back to server-rendered form posts plus vanilla JS for the chat/admin live parts; the `/ws/billing` socket is untouched.
+  - Topcoat 0.10 is still pre-1.0 and self-described experimental: macro error messages are poor, docs are thin, community support is near zero. Mitigation: the version is pinned, and page/component helpers are kept behind small local wrappers to isolate API churn.
+- Rejected:
+  - Staying on Leptos: paying the ~25x compile tax every day for a dashboard whose pages are overwhelmingly server-rendered admin screens.
+  - askama + htmx: the safest compile-time story, but it discards the component model the pages already use and still leaves the heaviest interactivity to hand-written JS; Topcoat keeps one Rust technology for pages.
+  - Dioxus: same proc-macro weight class as Leptos, no compile-time gain.
+
 ## 2026-10-05 The productization roadmap is settled (issue #100)
 
 - Status: Adopted as direction; nothing implemented yet. It names the work backlog (P5-1 through P8-4 plus the items below); each item lands as its own issue and PR, and the behavioral docs (product.md, architecture.md, api.md) are updated inside those PRs, not here.
@@ -613,7 +630,7 @@ A usage report that names a metered dimension no `PriceSet` covers — `toolCall
 
 ## 2026-10-01 Pages move to Leptos, replacing Topcoat
 
-- Status: Adopted. Replaces the Topcoat part of "full-stack Rust: axum + Topcoat" below; the axum, doubleentry and WASM-verification conclusions stand.
+- Status: **Superseded** by "2026-10-12 Pages move back to Topcoat, replacing Leptos" (compile time proved to be Leptos's dominant cost; the verify trust-model downgrade is accepted for the development phase). Replaces the Topcoat part of "full-stack Rust: axum + Topcoat" below; the axum, doubleentry and WASM-verification conclusions stand.
 - Decision: pages use Leptos 0.8; the admin dashboard, bill page, chat page and verification page all live in one Leptos app. Server-side rendering plus browser-side WASM hydration, mounted through the official `leptos_axum`, one binary with the API. `verify_bundle` is called directly inside a Leptos component; no separate wasm-bindgen crate.
 - Verified premise: `cargo build -p doubleentry --features serde --target wasm32-unknown-unknown` passes on this machine. The only obstacle was uuid 1.26's `v7` feature force-requiring a randomness source on wasm32; solved with an `oxsum change (not upstream)` target dependency in `crates/doubleentry/Cargo.toml`: `[target.'cfg(target_arch = "wasm32")'.dependencies] uuid = { version = "1", features = ["js"] }`. Browser-side randomness goes through wasm-bindgen; native builds are unaffected.
 - Why:

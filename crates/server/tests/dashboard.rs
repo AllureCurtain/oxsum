@@ -1,4 +1,4 @@
-//! HTTP tests for the dashboard: the Leptos pages are mounted into the same binary as
+//! HTTP tests for the dashboard: the Topcoat pages are mounted into the same binary as
 //! the API, and `/ws/billing` pushes billing progress to a logged-in browser in real time.
 //!
 //! Needs DATABASE_URL and skips without it, like the other server suites.
@@ -19,16 +19,6 @@ use tokio_tungstenite::tungstenite::Message;
 use tower::ServiceExt;
 
 const PASSWORD: &str = "correct horse battery";
-
-/// The wasm-bindgen glue and the wasm module, relative to the site root: the names
-/// `cargo leptos build` writes into `<site-root>/pkg`, taken from `output-name` in
-/// `[[workspace.metadata.leptos]]`.
-///
-/// wasm-bindgen emits `oxsum_bg.wasm` and cargo-leptos 0.3.11 renames it to
-/// `oxsum.wasm` ("for backward compatibility with leptos' `HydrationScripts`"), which is
-/// the name the shell's markup must ask for (issue #65).
-const GLUE: &str = "pkg/oxsum.js";
-const WASM: &str = "pkg/oxsum.wasm";
 
 /// An app over a real database with oxsum's tables migrated, plus the broadcast sender
 /// the gateway publishes billing events to.
@@ -152,31 +142,19 @@ async fn logged_in(app: &Router, name: &str) -> (String, String) {
     (tenant_id, cookie)
 }
 
-/// The overview payload, the way the page's own code asks for it: the
-/// `/_pages/get_dashboard` server function, with the session cookie, answered as
-/// `DashboardData` JSON.
-///
-/// Leptos suffixes a server function's URL with a hash of the crate and module it was
-/// declared in, so the path is read from the same registry the router registers its
-/// server-function routes from rather than hard-coded — that hash carries the absolute
-/// path of the checkout.
-async fn dashboard(app: &Router, cookie: &str) -> Value {
-    let (path, method) = leptos::server_fn::axum::server_fn_paths()
-        .find(|(path, _)| path.starts_with("/_pages/get_dashboard"))
-        .expect("the dashboard's overview server function is registered");
-    // No arguments to send: the function takes none, and the codec is the URL-encoded
-    // body, so the body is empty and the cookie is the credential.
+/// The overview page's HTML, fetched with the session cookie: the page renders
+/// server-side, so the figures the old server function answered as JSON are in
+/// the markup as formatted credits.
+async fn dashboard_html(app: &Router, cookie: &str) -> String {
     let req = Request::builder()
-        .method(method)
-        .uri(path)
-        .header("content-type", "application/x-www-form-urlencoded")
+        .uri("/dashboard")
         .header("cookie", format!("oxsum_session={cookie}"))
         .body(Body::empty())
         .unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    serde_json::from_slice(&bytes).expect("the dashboard answers JSON")
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 /// The dashboard socket refuses a request with no session: a probe learns nothing.
@@ -219,12 +197,23 @@ async fn the_login_page_is_served() {
     );
 }
 
-/// The dashboard shell renders server-side; the session guard itself runs in the browser.
+/// The dashboard shell renders server-side behind the session: without a session the
+/// server redirects to the login page instead of serving an empty shell (the guard
+/// that ran in the browser in the Leptos dashboard now runs here).
 #[tokio::test]
 async fn the_dashboard_shell_is_served() {
     let (app, _db, _billing) = app_or_skip!();
     let res = call(&app, "GET", "/dashboard", None, None).await;
-    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert_eq!(res.status, StatusCode::SEE_OTHER, "{}", res.body);
+    let location = res
+        .headers
+        .get("location")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    assert!(
+        location.ends_with("/login"),
+        "the redirect lands on the login page: {location}"
+    );
 }
 
 /// An organization that has moved no money owes nothing and holds nothing: the frozen
@@ -234,10 +223,9 @@ async fn the_dashboard_shell_is_served() {
 async fn a_new_organization_has_nothing_frozen_and_no_spend() {
     let (app, _db, _billing) = app_or_skip!();
     let (_tenant_id, cookie) = logged_in(&app, "untouched").await;
-    let data = dashboard(&app, &cookie).await;
-    assert_eq!(data["availableMinor"], 0, "{data}");
-    assert_eq!(data["frozenMinor"], 0, "{data}");
-    assert_eq!(data["monthSpendMinor"], 0, "{data}");
+    let html = dashboard_html(&app, &cookie).await;
+    let figure = "0.000000";
+    assert!(html.contains(figure), "the overview shows {figure}: {html}");
 }
 
 /// The overview's two figures, pinned as integers in minor units: the frozen total is what
@@ -292,122 +280,10 @@ async fn the_dashboard_shows_the_frozen_total_and_this_months_spend() {
     .await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
 
-    let data = dashboard(&app, &cookie).await;
+    let html = dashboard_html(&app, &cookie).await;
     // 5 credits topped up, 1 still frozen, 0.5 charged: 5 - 1 - 0.5 = 3.5 available.
-    assert_eq!(data["availableMinor"], 3_500_000, "{data}");
-    assert_eq!(data["frozenMinor"], 1_000_000, "{data}");
-    assert_eq!(data["monthSpendMinor"], 500_000, "{data}");
-}
-
-/// The static bundle is served from the site root: `cargo leptos build` writes the
-/// WASM/CSS to `<site-root>/pkg`, and the shell references `/pkg/*` — without the pkg
-/// route the pages render but never hydrate. `web::mount` wires this route with the
-/// same two `leptos_axum` helpers, so this pins the serving behavior they provide.
-#[tokio::test]
-async fn the_pkg_bundle_is_served_from_the_site_root() {
-    let site = std::env::temp_dir().join(format!("oxsum-pkg-{}", std::process::id()));
-    let pkg = site.join("pkg");
-    std::fs::create_dir_all(&pkg).expect("creates the fake site dir");
-    std::fs::write(pkg.join("probe.txt"), "bundle-bytes").expect("writes the fake bundle");
-
-    let options = leptos::config::LeptosOptions::builder()
-        .output_name("oxsum")
-        .site_root(site.to_str().expect("the temp dir is UTF-8"))
-        .build();
-    let app = Router::new().route_service(
-        &leptos_axum::site_pkg_dir_service_route_path(&options),
-        leptos_axum::site_pkg_dir_service(&options),
-    );
-    let req = Request::builder()
-        .uri("/pkg/probe.txt")
-        .body(Body::empty())
-        .unwrap();
-    let res = app.oneshot(req).await.unwrap();
-    std::fs::remove_dir_all(&site).ok();
-    assert_eq!(res.status(), StatusCode::OK);
-    let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(&bytes[..], b"bundle-bytes");
-}
-
-/// One GET whose body is kept as bytes: the server-rendered pages are HTML, and
-/// `/pkg/*` is not text at all, so `call`'s JSON body does not fit.
-async fn get_raw(app: &Router, path: &str) -> (StatusCode, Vec<u8>) {
-    let req = Request::builder()
-        .uri(path)
-        .body(Body::empty())
-        .expect("the request is valid");
-    let res = app.clone().oneshot(req).await.expect("the app answers");
-    let status = res.status();
-    let bytes = res
-        .into_body()
-        .collect()
-        .await
-        .expect("the body is readable")
-        .to_bytes()
-        .to_vec();
-    (status, bytes)
-}
-
-/// The workspace root: this crate sits at `<root>/crates/server`.
-fn workspace_root() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(std::path::Path::parent)
-        .expect("crates/server sits under the workspace root")
-        .to_path_buf()
-}
-
-/// The shell's markup asks for the wasm module the built site holds, under the name
-/// `cargo leptos build` writes it.
-///
-/// leptos decides that name when *leptos* is compiled: `HydrationScripts` appends `_bg`
-/// unless `LEPTOS_OUTPUT_NAME` is set (`leptos-0.8.21/src/hydration/mod.rs`), and only
-/// `cargo leptos build`/`serve` used to set it — for the server half as well as the wasm
-/// half. A server built by plain `cargo run -p oxsum-server`, the command
-/// `docs/development.md` documents, therefore asked for `/pkg/oxsum_bg.wasm`, while the
-/// site holds `pkg/oxsum.wasm`: the import 404'd and every page stayed exactly as the
-/// server had rendered it (issue #65). `.cargo/config.toml` sets `LEPTOS_OUTPUT_NAME` for
-/// every cargo invocation in the workspace, and this test binary is such a build — which
-/// is what makes this assertion cover the command a developer actually runs.
-#[tokio::test]
-async fn the_shell_asks_for_the_wasm_file_the_built_site_holds() {
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .connect_lazy("postgres://unused")
-        .expect("the placeholder URL parses");
-    let app = oxsum_server::app(Db::from_pool(pool), Config::new(Signup::Open, None));
-
-    let (status, body) = get_raw(&app, "/login").await;
-    assert_eq!(status, StatusCode::OK, "GET /login answered {status}");
-    let html = String::from_utf8_lossy(&body).into_owned();
-
-    // The `_bg` suffix is leptos's compile-time fallback: the file it names is not in the
-    // site, so this is the assertion that fails when the name drifts back (issue #65).
-    assert!(
-        !html.contains("_bg.wasm"),
-        "GET /login asks for a `_bg` wasm module: leptos appends that suffix when \
-         LEPTOS_OUTPUT_NAME is unset while it is compiled, and it is compiled into this \
-         server. The built site holds {WASM} instead, so the file the markup names \
-         answers 404 and the page never hydrates (issue #65)"
-    );
-    for asset in [GLUE, WASM] {
-        assert!(
-            html.contains(asset),
-            "GET /login never references {asset}, so the browser has nothing to load"
-        );
-    }
-
-    // With a site on disk — `cargo leptos build` writes it to the workspace's `target/site`,
-    // which is the site root the server resolves (`site-root` in the workspace Cargo.toml) —
-    // the markup names a file the pkg route really serves: the browser's entire contract,
-    // in one more request.
-    if workspace_root().join("target/site").join(WASM).exists() {
-        let (status, body) = get_raw(&app, &format!("/{WASM}")).await;
-        assert_eq!(
-            status,
-            StatusCode::OK,
-            "/{WASM} is in the built site, but the pkg route answered {status}"
-        );
-        assert!(!body.is_empty(), "/{WASM} answered 200 with an empty body");
+    for figure in ["3.500000", "1.000000", "0.500000"] {
+        assert!(html.contains(figure), "the overview shows {figure}: {html}");
     }
 }
 

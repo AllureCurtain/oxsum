@@ -361,71 +361,17 @@ async fn seed_request(
     .expect("the usage row is written");
 }
 
-/// The page's payload, the way the page's own code asks for it: the
-/// `/_pages/get_usage` server function with the session cookie. Leptos suffixes the
-/// path with a hash of the crate it was declared in, so it is read from the same
-/// registry the router registers its server-function routes from.
-async fn usage(app: &Router, cookie: &str) -> Value {
-    let (path, method) = leptos::server_fn::axum::server_fn_paths()
-        .find(|(path, _)| path.starts_with("/_pages/get_usage"))
-        .expect("the usage page's server function is registered");
-    let req = Request::builder()
-        .method(method)
-        .uri(path)
-        .header("content-type", "application/x-www-form-urlencoded")
-        .header("cookie", format!("oxsum_session={cookie}"))
-        .body(Body::empty())
-        .unwrap();
-    let res = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(res.status(), StatusCode::OK, "the server function answers");
-    let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    serde_json::from_slice::<Value>(&bytes).expect("the usage answers JSON")
+/// The page's HTML, the way the page's own code asks for it: `GET
+/// /dashboard/usage` with the session cookie. The Topcoat dashboard renders
+/// server-side — there is no `/_pages/get_usage` server function anymore — so
+/// the tests assert on the rendered table instead of a JSON payload.
+async fn usage(app: &Router, cookie: &str) -> String {
+    let res = call(app, "GET", "/dashboard/usage", None, Some(cookie)).await;
+    assert_eq!(res.status, StatusCode::OK, "the usage page answers");
+    String::from_utf8(res.body).expect("the usage page is UTF-8")
 }
 
-/// The fields one rollup row carries, pinned: what the page sums, under the names the
-/// payload uses. A field added or renamed on either side fails here. A keyed row
-/// carries `keyId` and `keyLabel` on top; the shared unattributed rows carry neither
-/// (issue #148).
-const ROW_FIELDS: [&str; 9] = [
-    "cachedTokens",
-    "channel",
-    "chargedMinor",
-    "day",
-    "inputTokens",
-    "model",
-    "outputTokens",
-    "reasoningTokens",
-    "turns",
-];
-
-const KEYED_ROW_FIELDS: [&str; 11] = [
-    "cachedTokens",
-    "channel",
-    "chargedMinor",
-    "day",
-    "inputTokens",
-    "keyId",
-    "keyLabel",
-    "model",
-    "outputTokens",
-    "reasoningTokens",
-    "turns",
-];
-
-/// The fields one row carries, sorted, as the tests compare them.
-fn fields_of(row: &Value) -> Vec<String> {
-    let mut fields: Vec<String> = row
-        .as_object()
-        .expect("a row is an object")
-        .keys()
-        .cloned()
-        .collect();
-    fields.sort_unstable();
-    fields
-}
-
-/// One owner's page answers the full window's days and the seeded rollup, scoped to
-/// the organization.
+/// One owner's page answers the window's rollup, scoped to the organization.
 #[tokio::test]
 async fn the_usage_page_sums_the_window() {
     let (app, db) = app_or_skip!();
@@ -491,48 +437,29 @@ async fn the_usage_page_sums_the_window() {
     )
     .await;
 
-    let payload = usage(&app, &owner.cookie).await;
-    let days = payload["days"].as_array().expect("the window's days");
-    assert_eq!(days.len(), 30, "the window is thirty days");
+    let html = usage(&app, &owner.cookie).await;
     let today = today().to_string();
-    assert_eq!(days.last().unwrap().as_str().unwrap(), today);
-
-    let rows = payload["rows"].as_array().expect("the rollup rows");
-    for row in rows {
-        let expected = if row["keyId"].is_string() {
-            KEYED_ROW_FIELDS.to_vec()
-        } else {
-            ROW_FIELDS.to_vec()
-        };
-        assert_eq!(fields_of(row), expected, "a row's fields are pinned");
-        assert_eq!(row["day"], json!(today));
-    }
-    let a: Vec<&Value> = rows.iter().filter(|row| row["model"] == "mock-a").collect();
-    assert_eq!(a.len(), 1, "the two keyed turns roll into one row");
-    assert_eq!(a[0]["turns"], json!(2));
-    assert_eq!(a[0]["inputTokens"], json!(316));
-    assert_eq!(a[0]["outputTokens"], json!(150));
-    assert_eq!(a[0]["chargedMinor"], json!(616));
-    assert_eq!(
-        a[0]["keyId"],
-        json!(owner.key_id.as_simple().to_string()),
-        "the keyed row names the key that paid"
-    );
+    assert!(html.contains("<h1>Usage</h1>"), "the usage page renders");
     assert!(
-        a[0]["keyLabel"]
-            .as_str()
-            .is_some_and(|label| !label.is_empty()),
-        "the keyed row carries the key's label"
+        html.contains(&format!("<td>{today}</td>")),
+        "today's rollup row renders"
     );
-    let b: Vec<&Value> = rows.iter().filter(|row| row["model"] == "mock-b").collect();
-    assert_eq!(b.len(), 1);
-    assert_eq!(b[0]["chargedMinor"], json!(100));
+    // mock-a's two turns roll into one day row: 116 + 200 input tokens,
+    // 100 + 50 output tokens, 616 minor charged.
+    assert!(html.contains("<td>316</td>"), "the input tokens sum");
+    assert!(html.contains("<td>150</td>"), "the output tokens sum");
     assert!(
-        b[0]["keyId"].is_null() && b[0]["keyLabel"].is_null(),
-        "the shared row names no key"
+        html.contains("<td>0.000616</td>"),
+        "the charged total renders as credits"
     );
+    // The unattributed shared turn renders too.
     assert!(
-        rows.iter().all(|row| row["model"] != "mock-z"),
+        html.contains("<td>10</td>"),
+        "the shared row's input tokens"
+    );
+    // Another organization's usage never shows in this one's window.
+    assert!(
+        !html.contains("<td>999</td>"),
         "another organization's usage stays out"
     );
 }
@@ -589,33 +516,28 @@ async fn a_member_reads_own_usage_and_the_shared_rows() {
     )
     .await;
 
-    let payload = usage(&app, &member_cookie).await;
-    let rows = payload["rows"].as_array().expect("the rollup rows");
-    let models: Vec<&str> = rows
-        .iter()
-        .filter_map(|row| row["model"].as_str())
-        .collect();
-    assert!(models.contains(&"mock-member"), "the member's own usage");
+    let html = usage(&app, &member_cookie).await;
+    // The member's own turn renders: 100 input tokens, 0.000200 credits.
     assert!(
-        models.contains(&"mock-shared"),
-        "the shared unattributed usage"
+        html.contains("<td>100</td>"),
+        "the member's own usage renders"
     );
     assert!(
-        !models.contains(&"mock-owner"),
+        html.contains("<td>0.000200</td>"),
+        "the member's own charge renders"
+    );
+    // The shared unattributed turn renders too.
+    assert!(
+        html.contains("<td>10</td>"),
+        "the shared unattributed usage renders"
+    );
+    // The owner's spend stays out of the member's page.
+    assert!(
+        !html.contains("<td>900</td>"),
         "the owner's spend stays out"
     );
-    let own = rows
-        .iter()
-        .find(|row| row["model"] == "mock-member")
-        .unwrap();
-    assert_eq!(
-        own["keyId"],
-        json!(member_key.as_simple().to_string()),
-        "the member's row names their key"
+    assert!(
+        !html.contains("<td>0.009000</td>"),
+        "the owner's charge stays out"
     );
-    let shared = rows
-        .iter()
-        .find(|row| row["model"] == "mock-shared")
-        .unwrap();
-    assert!(shared["keyId"].is_null(), "the shared row names no key");
 }

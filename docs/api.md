@@ -297,4 +297,4 @@ A tenant is an organization and its memberships carry a role (owner, admin, memb
 
 1. Change `crates/server/openapi.yaml`
 2. Change the backend implementation, add integration tests
-3. Change the callers (Leptos pages, browser verification component)
+3. Change the callers (Topcoat pages)

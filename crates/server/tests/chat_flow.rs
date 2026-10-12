@@ -1,10 +1,10 @@
 //! The chat page's flow, end to end at the HTTP layer: login → top-up → pick a model
 //! → streaming chat turn → billing events on the WebSocket → proof verification.
 //!
-//! The page itself is Leptos (SSR + browser hydration); what this pins is the path
-//! the page drives: every endpoint the page calls, in the order it calls them,
-//! against a scripted upstream. The literal one-browser-session walkthrough stays a
-//! manual check for the owner.
+//! The page itself is server-rendered Topcoat plus vanilla JavaScript; what this pins
+//! is the path the page drives: every endpoint the page calls, in the order it calls
+//! them, against a scripted upstream. The literal one-browser-session walkthrough stays
+//! a manual check for the owner.
 //!
 //! Needs DATABASE_URL and skips without it, like the other server suites.
 

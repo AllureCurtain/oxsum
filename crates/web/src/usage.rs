@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 
 /// How many trailing UTC days the usage page shows — the window `get_usage`
 /// reads and the chart's width.
-#[cfg(feature = "ssr")]
 pub const USAGE_DAYS: i64 = 30;
 
 /// The usage page's payload: the rollup rows plus the window's day labels.
@@ -56,7 +55,6 @@ pub struct UsageDayView {
     pub charged_minor: i64,
 }
 
-#[cfg(feature = "ssr")]
 impl UsageDayView {
     /// One row read from `oxsum.usage_daily`, shaped for the wire: the money
     /// stays an integer in minor units and the date a `YYYY-MM-DD` string, the

@@ -4,8 +4,6 @@
 
 - Rust 1.98: `rust-toolchain.toml` selects it automatically; rustup installs it on demand
 - Docker: runs local PostgreSQL 17, also used by doubleentry's Postgres tests
-- `wasm32-unknown-unknown` target: needed by the verification page and the Leptos browser build. `rustup target add wasm32-unknown-unknown --toolchain 1.98-x86_64-pc-windows-msvc` (or the platform equivalent). doubleentry is verified to compile for this target; uuid's randomness source is handled by a target dependency in `crates/doubleentry/Cargo.toml`
-- `cargo-leptos`: builds the dashboard's server and WASM sides together (`cargo leptos build`, `cargo leptos serve`). Install once with `cargo install cargo-leptos`. Plain `cargo build` / `cargo test` do not need it: the `oxsum` binary serves the pages with server-side rendering either way, and only hydration (the live browser side) needs the WASM build
 
 On Windows with Git Bash, Git's own `/usr/bin/link` shadows MSVC's `link.exe` and linking fails with `link: missing operand`. Either build inside a VS Developer shell, or export the `vcvars64.bat` environment into the current shell first.
 
@@ -114,7 +112,6 @@ Copy `.env.example` to `.env` and the server and the tests pick it up automatica
 | `OXSUM_RETENTION_DELIVERIES_DAYS` | Optional; days a delivered or failed `webhook_deliveries` row is kept. Default 30 |
 | `OXSUM_RETENTION_JOBS_DAYS` | Optional; days a finished `oxsum.jobs` row is kept — `dead` rows included, so the window is also how long `jobs_dead` drift evidence survives. Default 90 |
 | `RUST_LOG` | Optional `tracing-subscriber` filter; defaults to `info` |
-| `LEPTOS_OUTPUT_NAME` | Build-time, not a server setting, and deliberately not in `.env.example`: it is set in `.cargo/config.toml` for every cargo invocation in the workspace, because leptos reads it with `option_env!` *while it is compiled* and the shell it compiles into the server is what names the wasm module the browser loads. See "Web dashboard" |
 
 The mailer trio is all three or none: a subset refuses to boot, because a half-configured mailer would only fail at send time inside a request. Unset, the deployment sends no email — registration answers `verificationSent: false`, forgot-password still answers its indistinguishable 200, and `POST /api/v1/auth/verify/request` alone reports the absence with 503. The GitHub OAuth pair follows the same rule — a client id or secret without `OXSUM_PUBLIC_URL` refuses to boot, and unset the login page draws no GitHub button and the OAuth endpoints answer 404. So does the Stripe trio (`OXSUM_STRIPE_SECRET_KEY`, `OXSUM_STRIPE_WEBHOOK_SECRET`, `OXSUM_PUBLIC_URL`): a subset refuses to boot, and unset, the intent endpoint 503s and the inbound webhook 404s.
 
@@ -178,80 +175,53 @@ creates `ledger_<tenant_id>` on first use.
 | Start the database | `docker compose up -d` |
 | Start the server | `cargo run -p oxsum-server` |
 | Seed the demo world | `cargo run -p oxsum-server -- seed` (populates, prints the credentials, exits — see "Demo data") |
-| Build the dashboard (SSR + WASM) | `cargo leptos build` |
-| Run the server with the dashboard, rebuilding on change | `cargo leptos serve` |
-| Check the built site against the browser contract | `OXSUM_SITE_DIR=target/site cargo test -p oxsum-server --test browser_contract -- --ignored --nocapture` (after `cargo leptos build`, see "Browser contract") |
 | All tests | `cargo test --workspace` (loads `DATABASE_URL` from `.env` or the shell) |
 | oxsum only | `cargo test -p oxsum-core -p oxsum-server` |
 | Run the end-to-end demo | `python3 demo/demo.py` (needs `pip install -r demo/requirements.txt`; starts its own mock upstream and server) |
 | Generative sequences, quick run | `PROPTEST_CASES=50 cargo test -p oxsum-core --test generative` |
 | Real-provider end-to-end check | `cargo test -p oxsum-server --test real_upstream` (needs env vars — see "Real-provider smoke check") |
 | doubleentry's Postgres tests | `cargo test -p doubleentry --features postgres --test postgres` (spins up its own container via testcontainers) |
-| Verify doubleentry builds for the browser | `cargo build -p doubleentry --features serde --target wasm32-unknown-unknown` |
 | Format | `cargo fmt --all` |
 | Lint | `cargo clippy --workspace --all-targets` |
 
 ## Web dashboard
 
-The dashboard lives in `crates/web` (Leptos 0.8): `/login` and `/logout` call the
-session endpoints from the browser, and `/dashboard` shows the organization, the
-members, the keys, the balance, the in-flight holds and the transaction log. Pages are
-served by the same `oxsum` binary through `leptos_axum`: server-side rendering calls
-`oxsum-core` directly, browser interactions go through server functions under `/_pages`
-(which are the page API, not part of `crates/server/openapi.yaml`).
+The dashboard lives in `crates/web` (Topcoat 0.10, server-side rendered): `/login`
+and `/logout` call the session endpoints from the browser, and `/dashboard` shows
+the organization, the members, the keys, the balance, the in-flight holds and the
+transaction log. Pages are served by the same `oxsum` binary, with the Topcoat
+router mounted as an axum `fallback_service`: API routes match first, everything
+else falls through to the pages. Page handlers call `oxsum-core` directly; the
+chat/admin live parts are vanilla JS against the API (not part of
+`crates/server/openapi.yaml`). The stylesheet is embedded in the binary via
+`include_str!` — there is no client bundle and no frontend build step.
 
-- `cargo leptos build` compiles the server and the WASM browser side together (the
-  styles in `crates/web/style/main.css` are bundled into `target/site/pkg/`).
-- `cargo leptos serve` runs the server and rebuilds on change.
-- `cargo run -p oxsum-server` also serves the pages (server-side rendered), and serves the
-  bundle that `cargo leptos build` wrote: the site root is the workspace's `target/site`,
-  resolved by the server rather than taken from the working directory, so the live browser
-  side works under plain `cargo run` too (issue #44). Without a build, the pages render and
-  never hydrate — no top-up form, no chat, no bill verification — so run `cargo leptos
-  build` first.
-- The shell's markup names the files the build writes. leptos decides the wasm file name
-  when *leptos is compiled*: `HydrationScripts` appends `_bg` unless `LEPTOS_OUTPUT_NAME`
-  is set, which only cargo-leptos did. The module the site holds is `pkg/oxsum.wasm`
-  (wasm-bindgen emits `oxsum_bg.wasm`, and cargo-leptos renames it to the name
-  `HydrationScripts` computes for `output-name`). With the variable unset, a server built
-  by plain `cargo run` asked for `/pkg/oxsum_bg.wasm`, which no build writes: the import
-  404'd and every page stayed as inert as the server had rendered it (issue #65).
-  `.cargo/config.toml` sets `LEPTOS_OUTPUT_NAME` for every cargo invocation in this
-  workspace, so however the server was built it asks for `pkg/oxsum.wasm`; only the
-  variable's presence matters to leptos, and `cargo leptos build` sets the same one. This
-  is pinned by `the_shell_asks_for_the_wasm_file_the_built_site_holds` in
-  `crates/server/tests/dashboard.rs`, which runs in the ordinary
-  `cargo test -p oxsum-server` gate: its test binary is a plain-cargo build, so it checks
-  what `cargo run` renders, and when `target/site` exists it also fetches the module the
-  markup names and requires 200.
+- `cargo run -p oxsum-server` serves the pages; `cargo build -p oxsum-server`
+  builds them. No extra tooling beyond cargo.
 - In-flight gateway turns are pushed to the dashboard over `/ws/billing` (WebSocket,
   session-cookie auth): a snapshot of the open holds on connect, then started, progress
   and settled events as turns happen. The events come from a process-wide broadcast the
   gateway publishes to — best-effort and in-memory; the watch table stays the record.
-- The public `/verify` page needs no login: it pastes a proof bundle and a content hash
-  into `oxsum_verify::verify_bundle` running in the browser (WASM), the same function
-  body the server runs. The pure verification logic lives in `crates/verify`
-  (`oxsum-verify`), shared through `oxsum-core` re-exports — `oxsum-core` itself cannot
-  target wasm32 because sqlx-postgres needs OS sockets (docs/decisions.md).
+- The public `/verify` page needs no login: it posts a proof bundle and a content hash,
+  and the server runs `oxsum_verify::verify_bundle` plus the charge and price-binding
+  checks, then renders the verdict. The pure verification logic lives in `crates/verify`
+  (`oxsum-verify`); the check runs server-side (docs/decisions.md, 2026-10-12).
 
 ## Docker image
 
 The release image is built by the `Dockerfile` at the repo root: a multi-stage build of
-the whole workspace, including the Leptos dashboard.
+the whole workspace, including the Topcoat dashboard.
 
 ```bash
 docker build -t oxsum .
 docker run --rm -p 3000:3000 -e DATABASE_URL=postgresql://user:pass@dbhost/oxsum oxsum
 ```
 
-- Builder: `rust:1.98-bookworm` (matches `rust-toolchain.toml`), with `cargo-leptos`
-  0.3.11 and the `wasm32-unknown-unknown` target. `cargo leptos build --release`
-  compiles the `oxsum` server binary and the WASM browser side together; the
-  dashboard's style is plain CSS, so no Node.js or npm is needed.
+- Builder: `rust:1.98-bookworm` (matches `rust-toolchain.toml`). `cargo build --release`
+  compiles the `oxsum` server binary; the dashboard's style is plain CSS embedded in
+  the binary, so no Node.js or npm is needed.
 - Runtime: `debian:bookworm-slim` plus `ca-certificates`. reqwest uses rustls, so no
-  OpenSSL is required. It carries the `oxsum` binary and `target/site` (the WASM
-  bundle, CSS and `index.html`), which the server finds through `LEPTOS_SITE_ROOT`
-  (`/app/site` in the image).
+  OpenSSL is required. It carries the `oxsum` binary.
 - The image never bakes in `.env` (`.dockerignore` excludes it); `DATABASE_URL` points
   at an external PostgreSQL and is supplied at `docker run`, along with the `OXSUM_*`
   settings above. `OXSUM_ADDR` defaults to `0.0.0.0:3000` inside the image so the port

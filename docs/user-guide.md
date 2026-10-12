@@ -169,9 +169,6 @@ Notes:
 - Amounts are in credits with six decimals on every page, the bills and requests pages
   included; the ledger keeps them as integers, and the CSV and JSON exports carry the
   ledger's own integers in minor units (`amountMinor`, signed, where 1 credit = 1,000,000).
-- The dashboard needs the browser build: serve it with `cargo leptos serve` (or
-  `cargo leptos build` once, then run the server). Without it the pages render but
-  the live updates do not run.
 
 ## Chat in the browser
 

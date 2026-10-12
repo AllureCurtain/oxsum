@@ -1,81 +1,28 @@
 [package]
 name = "oxsum-web"
-description = "oxsum web dashboard: Leptos admin pages, server-side rendering plus browser hydration."
+description = "oxsum web dashboard: Topcoat pages, server-side rendered, mounted into the same binary."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
 
-[lib]
-crate-type = ["cdylib", "rlib"]
-
-[features]
-default = ["ssr"]
-# Browser build (cargo-leptos passes --no-default-features): the components hydrate in
-# the browser; server functions become fetch stubs.
-hydrate = ["leptos/hydrate"]
-# Server build: server-side rendering plus the server-function implementations, which
-# call oxsum-core directly.
-ssr = [
-    "dep:axum",
-    "dep:leptos_axum",
-    "dep:oxsum-core",
-    "dep:time",
-    "leptos/ssr",
-]
-
 [dependencies]
-leptos.workspace = true
-leptos_meta.workspace = true
-leptos_router.workspace = true
-# Server-only: rendering integration and the request parts the server functions read the
-# session cookie from.
-leptos_axum = { workspace = true, optional = true }
-axum = { workspace = true, optional = true }
-# Server-only: SSR calls the domain layer directly (docs/architecture.md).
-oxsum-core = { workspace = true, optional = true }
-# Server-only: the usage page's lookback window is computed on the server.
-time = { workspace = true, optional = true }
-# Always: the verification page runs the pure proof check in the browser (WASM),
-# and the same function body serves SSR. oxsum-core itself cannot target wasm32
-# (sqlx-postgres needs OS sockets), so the shared logic lives in this crate.
+# The dashboard pages: server-side rendered Topcoat views, mounted into the
+# axum router as a fallback tower service (spike/topcoat-dashboard). No wasm
+# bundle, no client build step.
+topcoat.workspace = true
+percent-encoding.workspace = true
+# The pages call the domain layer directly (docs/architecture.md).
+oxsum-core = { workspace = true }
+# The public /verify page runs the pure proof check on the server now: Topcoat
+# has no browser wasm target, so the browser-side check is gone (see lib.rs).
 oxsum-verify = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
+# The usage page's lookback window is computed on the server.
+time.workspace = true
 uuid.workspace = true
-# The login/logout pages call the session endpoints from the browser with fetch.
-gloo-net = "0.6"
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-js-sys = "0.3"
-web-sys = { version = "0.3", features = [
-    "WebSocket",
-    "MessageEvent",
-    "Window",
-    "Document",
-    "Element",
-    "Node",
-    "HtmlHeadElement",
-    "HtmlInputElement",
-    "Location",
-    "Storage",
-    "ReadableStream",
-    "ReadableStreamDefaultReader",
-    "TextDecoder",
-    "TextDecodeOptions",
-] }
-# Percent-encoding for the /verify links the chat page builds (bundle + content hash
-# as query parameters).
-percent-encoding = "2"
 
 [lints]
 workspace = true
-
-# uuid's `v4` feature unconditionally enables its `rng` module, which hard-errors on
-# `wasm32-unknown-unknown` unless a randomness source is named (`js`, `rng-getrandom`,
-# or `rng-rand`). The browser build targets wasm32, so on that target only, bind the
-# randomness to the browser via wasm-bindgen. Native targets keep the plain workspace
-# dep above. (Same pattern as crates/doubleentry/Cargo.toml.)
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-uuid = { version = "1", features = ["js"] }

@@ -1,28 +1,26 @@
-//! The bills page's tree-head archive (issue #92).
+//! The bills page's tree-head section (issue #92).
 //!
 //! Every organization ledger is an append-only Merkle log whose head the operator
 //! signs on demand. A user who archives today's head can later prove that the log the
 //! server serves still contains it — the strongest statement a verifiable wallet can
-//! make: the history behind the bills was not rewritten. The archive lives in the
-//! browser's `localStorage`, keyed by the log's origin, and the check itself runs in
-//! the browser through `oxsum_verify`: the server only serves the signed head and the
-//! consistency proof, never a verdict.
+//! make: the history behind the bills was not rewritten.
 //!
-//! What is here: the view types the server functions and the page share, the pure
-//! [`decide`] that turns an archived head plus a served head into an action, and —
-//! under `hydrate` — the two `localStorage` calls. The signature and proof checking
-//! stays in `oxsum_verify`, which is what actually compiles to WASM.
+//! ## Spike trust-model change
+//!
+//! The Leptos dashboard kept the archive in the browser's `localStorage` and ran
+//! the check in the browser through `oxsum_verify`: the server only served the
+//! signed head and the consistency proof, never a verdict. Topcoat has no browser
+//! target, so the spike answers the check server-side on demand
+//! (`POST /dashboard/bills/consistency`): the page renders the verdict the server
+//! computed. The proof math is unchanged, but the user must trust the server's
+//! answer — the "don't trust the server" property is gone, exactly like `/verify`.
+//!
+//! What is here: the view types the pages share, and the pure [`decide`] that used
+//! to drive the browser archive, kept with its tests as the documented semantics of
+//! the check.
 
-use oxsum_verify::{Hash, PublishedKey, TreeHead};
+use oxsum_verify::TreeHead;
 use serde::{Deserialize, Serialize};
-
-/// The deployment's head-signing seed, handed to the server functions through leptos
-/// context (`crates/server/src/web.rs`). `None` means this deployment signs no heads —
-/// the archive check then reports itself not configured rather than failing, the same
-/// way the `/api/v1/log` endpoints answer 503 there.
-#[cfg(feature = "ssr")]
-#[derive(Clone)]
-pub struct HeadSeed(pub Option<[u8; 32]>);
 
 /// A bare tree head, `{size, root}`: what the archive stores and what responses carry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,52 +86,6 @@ pub struct ConsistencyProofView {
     pub path: Vec<String>,
 }
 
-impl TreeHeadView {
-    /// The typed head, or `None` when the served root is not 32 bytes of hex.
-    pub fn head(&self) -> Option<TreeHead> {
-        Some(TreeHead {
-            size: self.size,
-            root: Hash::parse_hex(&self.root).ok()?,
-        })
-    }
-}
-
-impl SignedHeadView {
-    /// The head the note attests, parsed.
-    pub fn head(&self) -> Option<TreeHead> {
-        Some(TreeHead {
-            size: self.size,
-            root: Hash::parse_hex(&self.root).ok()?,
-        })
-    }
-
-    /// The published key in `oxsum_verify`'s shape.
-    pub fn published_key(&self) -> PublishedKey<'_> {
-        PublishedKey {
-            key_name: &self.key.key_name,
-            public_key: &self.key.public_key,
-            key_hash: &self.key.key_hash,
-        }
-    }
-}
-
-impl ConsistencyView {
-    /// The typed proof, or `None` when a path hash is not 32 bytes of hex.
-    pub fn consistency_proof(&self) -> Option<oxsum_verify::ConsistencyProof> {
-        Some(oxsum_verify::ConsistencyProof {
-            old_size: self.proof.old_size,
-            new_size: self.proof.new_size,
-            path: self
-                .proof
-                .path
-                .iter()
-                .map(|h| Hash::parse_hex(h).ok())
-                .collect::<Option<Vec<_>>>()?,
-        })
-    }
-}
-
-#[cfg(feature = "ssr")]
 mod wire {
     use oxsum_core::{Consistency, SignedHead};
 
@@ -186,7 +138,11 @@ mod wire {
 }
 
 /// What the archive does with a freshly served head, given what it holds.
+///
+/// Kept as the documented semantics of the archive check; the spike answers the
+/// check server-side instead of running this in the browser.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum ArchiveStep {
     /// Nothing is archived for this log yet: verify the signature, then store the head.
     Record,
@@ -204,7 +160,8 @@ pub enum ArchiveStep {
     Forked,
 }
 
-/// The archive's decision, in one pure step so the browser code has nothing to judge.
+/// The archive's decision, in one pure step.
+#[allow(dead_code)]
 pub fn decide(archived: Option<TreeHead>, served: &TreeHead) -> ArchiveStep {
     match archived {
         None => ArchiveStep::Record,
@@ -215,52 +172,12 @@ pub fn decide(archived: Option<TreeHead>, served: &TreeHead) -> ArchiveStep {
     }
 }
 
-/// The archived head's `localStorage` calls — browser-only: on the server there is no
-/// storage and the archive check simply does not run.
-#[cfg(feature = "hydrate")]
-pub mod archive {
-    use oxsum_verify::{Hash, TreeHead};
-
-    /// One log's slot in `localStorage`, keyed by the log's origin so two
-    /// organizations on one browser can never read as each other.
-    pub fn key(origin: &str) -> String {
-        format!("oxsum.tree-head.{origin}")
-    }
-
-    /// The stored head as `size:root`, plain text — an archive a user could diff by
-    /// hand against the page if they ever wanted to.
-    fn render(head: &TreeHead) -> String {
-        format!("{}:{}", head.size, head.root.to_hex())
-    }
-
-    /// What is archived for `origin`, or `None` — nothing stored, storage denied, or
-    /// an unreadable value. An unreadable archive reads as a fresh start: corruption
-    /// is a local fault, and the served head still had to verify to be stored.
-    pub fn read(origin: &str) -> Option<TreeHead> {
-        let storage = web_sys::window()?.local_storage().ok()??;
-        let text = storage.get_item(&key(origin)).ok()??;
-        let (size, root) = text.split_once(':')?;
-        Some(TreeHead {
-            size: size.parse().ok()?,
-            root: Hash::parse_hex(root).ok()?,
-        })
-    }
-
-    /// Records `head` as the newest head this browser has verified. A failed write is
-    /// swallowed: a full or blocked `localStorage` makes the archive empty next time,
-    /// which reads as a first visit — not as tampering.
-    pub fn write(origin: &str, head: &TreeHead) {
-        if let Some(Ok(Some(storage))) = web_sys::window().map(|w| w.local_storage()) {
-            let _ = storage.set_item(&key(origin), &render(head));
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+    use oxsum_verify::Hash;
 
     fn head(size: u64, byte: u8) -> TreeHead {
         TreeHead {

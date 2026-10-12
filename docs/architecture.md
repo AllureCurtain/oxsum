@@ -3,8 +3,8 @@
 ## Overview
 
 ```
-Browser ──→ Leptos pages (admin dashboard, bill page, chat page) ──┐
-          WASM verification (same code, hydrated, runs locally)     │
+Browser ──→ Topcoat pages (admin dashboard, bill page, chat page) ──┐
+          server-side rendered, no browser bundle                 │
 LLM clients ──→ Gateway /v1/chat/completions, /v1/messages, ───────┤  one process, one binary
                 /v1/embeddings, /v1/rerank                          │
 API callers ──→ axum /api/v1 ──────────────────────────────────────┤
@@ -17,7 +17,7 @@ API callers ──→ axum /api/v1 ───────────────
                      holding users, organizations, memberships and API keys
 ```
 
-The axum API, the core, doubleentry and the gateway exist today, with oxsum's own identity tables in one `oxsum` schema. The Leptos pages are built too: the dashboard (TODO B-5), the bill page, the verification page and the chat page are all served by the same binary, so TODO.md's phases A, B and C are closed.
+The axum API, the core, doubleentry and the gateway exist today, with oxsum's own identity tables in one `oxsum` schema. The Topcoat pages are built too: the dashboard (TODO B-5), the bill page, the verification page and the chat page are all served by the same binary, so TODO.md's phases A, B and C are closed.
 
 ## Modules
 
@@ -53,7 +53,7 @@ The axum API, the core, doubleentry and the gateway exist today, with oxsum's ow
 | Admin audit | `crates/core/src/audit.rs` | The operator surface's memory (issue #160): `oxsum.admin_audit` (migration 0023), one append-only row per mutating `/api/v1/admin` call — dotted `action`, `target`, allowlisted `detail` (credentials never recorded) and the `idempotency_key` the write carried. The route writes the row after the mutation commits, so the log may omit on a crash but never describes a change that did not happen; a unique `(action, idempotency_key)` index makes a keyed replay the same event. `GET /api/v1/admin/audit` pages it newest-first over `(recorded_at, audit_id)` |
 | OAuth | `crates/core/src/oauth.rs` (state and account resolution), `crates/server/src/oauth.rs` (the GitHub legs) | GitHub OAuth login (issue #152): `oxsum.oauth_states` (migration 0020) keeps `oxo-` CSRF states as SHA-256, single-use and ten-minute-lived; `oxsum.oauth_accounts` links a provider identity to a user by the provider's own id. The callback resolves link → verified-email match → registration (refused in invite mode), then mints the session through the `session_for` the password path shares. The provider legs are plain `reqwest` over configurable base URLs — a test stubs github.com — and the client pair configures all-or-none with `OXSUM_PUBLIC_URL`; an OAuth-registered account holds argon2 over a random secret, so no password ever opens it |
 | Metering | `crates/core/src/service_credentials.rs` + `metering.rs`, `crates/server/src/metering.rs` | The deployer-services billing surface (issue #172): `oxsum.service_credentials` (migration 0028) keeps `oxs-svc-` secrets as SHA-256 only — minted, listed and revoked under the admin token, authenticated only on `/api/v1/metering/*` where unknown and revoked are the same `UNAUTHORIZED`. `metering.rs` orchestrates hold/settle/release/one-shot over the wallet's own primitives: `billableCode` resolves a channel's `mode: event` price pinned at hold time, holds ride the `open_holds` watch table, entries attribute to `svc-<credentialId>` instead of a key, and committed outcomes replay from the settlement record itself once the watch row is gone. Settlement descriptions are schema v6 — the reporting `service` inside, no `upstreamAttempts` (the usage row carries 0: nothing was relayed) |
-| Pages | `crates/web` | The Leptos pages: the dashboard (`/dashboard` — overview, chat, bills, keys, members, log, requests, usage), the admin pages (`/admin` — channels, organizations, in-flight, anomalies, reconciliation, closing), and the public pages (`/`, `/login`, `/register`, `/logout`, `/verify-email`, `/forgot-password`, `/reset-password`, `/verify`, `/device`). SSR plus hydration, mounted through the official `leptos_axum`, one binary; the CSV and JSON export beside the bills page is a page route of the server's, because a download has to be a response (docs/decisions.md) |
+| Pages | `crates/web` | The Topcoat pages: the dashboard (`/dashboard` — overview, chat, bills, keys, members, log, requests, usage), the admin pages (`/admin` — channels, organizations, in-flight, anomalies, reconciliation, closing), and the public pages (`/`, `/login`, `/register`, `/logout`, `/verify-email`, `/forgot-password`, `/reset-password`, `/verify`, `/device`). Server-side rendered, mounted as an axum `fallback_service`, one binary; the CSV and JSON export beside the bills page is a page route of the server's, because a download has to be a response (docs/decisions.md) |
 
 ## Directory plan
 
@@ -101,11 +101,10 @@ crates/
     src/admin.rs        exists: the platform admin's /api/v1/admin surface and its token
     src/bills.rs        exists: the bills export — the dashboard's two GET routes that
                         answer the page's list as CSV and JSON (issue #54)
-  web/                  The Leptos pages (B-5 done): `src/app.rs` the components,
-                        `src/api.rs` the server functions, `src/bills.rs` the bills row
+  web/                  The Topcoat pages (B-5 done): `src/pages_*.rs` the pages,
+                        `src/views.rs` the shared layout, `src/bills.rs` the bills row
                         shape and the two exports built from it, `style/main.css` the
-                        tokens (see DESIGN.md); built with cargo-leptos, server and
-                        browser code separated by feature
+                        tokens (see DESIGN.md); plain `cargo build`, no client bundle
 ```
 
 Principle: **domain logic belongs in core; the gateway does protocol and orchestration only; server only assembles**. The litmus test — if the logic survives replacing the axum layer, it is in the right place. That is why the gateway is a module of the server crate rather than a crate of its own: everything it does is HTTP — routing, an OpenAI-shaped error body, request deserialization, and a relay whose lifetime is the response body's — while every number it charges by is computed in `crates/core/src/billing.rs` and every row it charges by is read through `crates/core/src/channels.rs`. Migrations follow the crate that owns the table (core's tables in `core/migrations/`), applied in dependency order at startup.
@@ -113,7 +112,7 @@ Principle: **domain logic belongs in core; the gateway does protocol and orchest
 ## Frontend/backend boundary
 
 - External callers use REST/JSON; the contract is `crates/server/openapi.yaml`.
-- Leptos pages live in the same process as the server: SSR calls `oxsum-core` directly, and browser interactions call server code through server functions, with no hand-written page API. Two kinds of call are the exception: the bills page's exports (`GET /dashboard/bills/export.csv` and `.json`) are routes of the server's own, because a download has to be a response rather than a server function's return value; and the platform-admin pages call `/api/v1/admin/*` straight from the browser with the operator token, because that bearer credential is the deployment's — it is not a session, and no server function could authorize with it (docs/decisions.md).
+- Topcoat pages live in the same process as the server: page handlers call `oxsum-core` directly, and the chat/admin live parts are vanilla JS against the API, with no hand-written page API layer. Two kinds of call are the exception: the bills page's exports (`GET /dashboard/bills/export.csv` and `.json`) are routes of the server's own, because a download has to be a response rather than a page handler's return value; and the platform-admin pages call `/api/v1/admin/*` straight from the browser with the operator token, because that bearer credential is the deployment's — it is not a session, and no page handler could authorize with it (docs/decisions.md).
 - The verification page runs in the browser on hydrated WASM, calling `oxsum_core::verify_bundle` directly — the same code the server runs. doubleentry is verified to compile for `wasm32-unknown-unknown` (uuid's wasm32 randomness source solved with the `js` feature, see docs/decisions.md).
 
 ## Auth and permissions

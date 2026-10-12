@@ -1,31 +1,23 @@
-# oxsum release image: one binary plus the Leptos dashboard site, against an
-# external PostgreSQL supplied through DATABASE_URL at run time.
+# oxsum release image: one binary against an external PostgreSQL supplied
+# through DATABASE_URL at run time.
 #
 # Build:  docker build -t oxsum .
 # Run:    docker run --rm -p 3000:3000 -e DATABASE_URL=postgresql://user:pass@host/oxsum oxsum
 #
-# The builder matches rust-toolchain.toml (Rust 1.98). cargo-leptos 0.3.11 builds the
-# server binary and the WASM browser side together; the dashboard's style is plain CSS,
-# so no Node.js or npm is needed. The runtime is slim: reqwest uses rustls, so the
-# only system package it needs is the CA bundle.
+# The builder matches rust-toolchain.toml (Rust 1.98). The dashboard is
+# server-side rendered (Topcoat); its stylesheet is embedded in the binary
+# via `include_str!`, so there is no client bundle and no Node.js or npm is
+# needed. The runtime is slim: reqwest uses rustls, so the only system
+# package it needs is the CA bundle.
 
 # ---------- builder ----------
 FROM rust:1.98-bookworm AS builder
 
 WORKDIR /app
 
-# cargo-leptos drives the WASM build. Install it before the checkout so the layer
-# survives source edits.
-RUN cargo install cargo-leptos --version 0.3.11
-
 # Dependency layer: manifests (and the cargo config that pins the toolchain and
 # the release profile) first, stub sources to satisfy cargo's workspace layout.
 # A later source edit only invalidates the layers below, not this one.
-# rust-toolchain.toml rides along here, before any `rustup target add`: rustup
-# installs a target for the toolchain it resolves at the moment it runs, and
-# adding it before the pinned channel was visible installed it for the image's
-# default toolchain while the build used the pinned one, failing with
-# "can't find crate for `core`" (the release image gate caught it; issue #49).
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY .cargo/config.toml .cargo/config.toml
 COPY crates/doubleentry/Cargo.toml crates/doubleentry/Cargo.toml
@@ -38,17 +30,15 @@ RUN mkdir -p crates/doubleentry/src crates/core/src crates/verify/src \
     && for c in doubleentry core verify web; do echo "" > crates/$c/src/lib.rs; done \
     && echo "" > crates/server/src/lib.rs \
     && echo 'fn main() {}' > crates/server/src/main.rs \
-    && rustup target add wasm32-unknown-unknown \
     && cargo build --release --workspace \
     && rm -rf target
 
 # Real sources. Only this layer and below rebuild when .rs files change.
 COPY . .
-# The server binary lands in target/release/<bin-exe-name> (here: oxsum); the site
-# (WASM bundle, CSS, index.html) lands in target/site.
-RUN cargo leptos build --release \
-    && test -x /app/target/release/oxsum \
-    && test -d /app/target/site/pkg
+# The server binary lands in target/release/<bin-exe-name> (here: oxsum).
+# The dashboard is server-rendered; no WASM bundle is built.
+RUN cargo build --release \
+    && test -x /app/target/release/oxsum
 
 # ---------- runtime ----------
 FROM debian:bookworm-slim
@@ -58,13 +48,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/oxsum /usr/local/bin/oxsum
-COPY --from=builder /app/target/site /app/site
 
-# Inside a container the server must listen on all interfaces; the dashboard reads its
-# files from LEPTOS_SITE_ROOT. DATABASE_URL (external PostgreSQL) is supplied at run
-# time; the schema is migrated at startup, so no migrate step is needed.
+# Inside a container the server must listen on all interfaces.
+# DATABASE_URL (external PostgreSQL) is supplied at run time; the schema is
+# migrated at startup, so no migrate step is needed.
 ENV OXSUM_ADDR=0.0.0.0:3000 \
-    LEPTOS_SITE_ROOT=/app/site \
     RUST_LOG=info
 
 EXPOSE 3000

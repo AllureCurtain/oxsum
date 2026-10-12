@@ -298,47 +298,62 @@ async fn seed_request(
         .expect("the settlement lands");
 }
 
-/// The page's payload, the way the page's own code asks for it: the
-/// `/_pages/get_requests` server function with the session cookie, its two filters sent in
-/// the URL-encoded body its codec uses. Leptos suffixes the path with a hash of the crate
-/// it was declared in, so it is read from the same registry the router registers its
-/// server-function routes from.
+/// The page's rows, the way the page's own code asks for it: `GET
+/// /dashboard/requests` with the session cookie, the two filters in the query
+/// string. The Topcoat dashboard renders server-side — there is no
+/// `/_pages/get_requests` server function anymore — so the helper parses the
+/// table back out of the HTML.
 async fn requests(
     app: &Router,
     cookie: &str,
     key: Option<&str>,
     model: Option<&str>,
-) -> Vec<Value> {
-    let (path, method) = leptos::server_fn::axum::server_fn_paths()
-        .find(|(path, _)| path.starts_with("/_pages/get_requests"))
-        .expect("the requests page's server function is registered");
-    let mut body = String::new();
-    for (name, value) in [("key", key), ("model", model)] {
-        let Some(value) = value else { continue };
-        if !body.is_empty() {
-            body.push('&');
-        }
-        body.push_str(&format!("{name}={}", encode(value)));
+) -> Vec<Vec<String>> {
+    let mut uri = String::from("/dashboard/requests");
+    let mut query = Vec::new();
+    if let Some(key) = key {
+        query.push(format!("key={}", encode(key)));
+    }
+    if let Some(model) = model {
+        query.push(format!("model={}", encode(model)));
+    }
+    if !query.is_empty() {
+        uri.push('?');
+        uri.push_str(&query.join("&"));
     }
     let req = Request::builder()
-        .method(method)
-        .uri(path)
-        .header("content-type", "application/x-www-form-urlencoded")
+        .method("GET")
+        .uri(uri)
         .header("cookie", format!("oxsum_session={cookie}"))
-        .body(Body::from(body))
+        .body(Body::empty())
         .unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(res.status(), StatusCode::OK, "the server function answers");
+    assert_eq!(res.status(), StatusCode::OK, "the requests page answers");
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    serde_json::from_slice::<Value>(&bytes).expect("the requests answer JSON")["rows"]
-        .as_array()
-        .expect("the payload is a page of rows")
-        .clone()
+    let html = String::from_utf8(bytes.to_vec()).expect("the page is UTF-8");
+    // The table renders one `<tr>` per row, six `<td>` cells each:
+    // request, booked, model, key, status, cost.
+    html.split("<tr>")
+        .filter_map(|row| {
+            let mut cells = Vec::new();
+            let mut rest = row;
+            while let Some(start) = rest.find("<td>") {
+                rest = &rest[start + "<td>".len()..];
+                if let Some(end) = rest.find("</td>") {
+                    cells.push(rest[..end].to_owned());
+                    rest = &rest[end + "</td>".len()..];
+                } else {
+                    break;
+                }
+            }
+            if cells.len() == 6 { Some(cells) } else { None }
+        })
+        .collect()
 }
 
-/// One value of the URL-encoded body the page's codec sends. The prefixes and model names
-/// these tests use need no encoding, but a value with a reserved character in it must not
-/// split the body it sits in.
+/// One value of the query string the page's filters travel in. The prefixes and
+/// model names these tests use need no encoding, but a value with a reserved
+/// character in it must not split the query string it sits in.
 fn encode(value: &str) -> String {
     value
         .replace('%', "%25")
@@ -348,34 +363,9 @@ fn encode(value: &str) -> String {
         .replace(' ', "+")
 }
 
-/// The fields one row carries, pinned: what the page shows, under the names the payload
-/// uses. A field added or renamed on either side fails here.
-const ROW_FIELDS: [&str; 8] = [
-    "bookedOn",
-    "costMinor",
-    "inputTokens",
-    "keyPrefix",
-    "model",
-    "outputTokens",
-    "requestId",
-    "status",
-];
-
-/// The fields one row carries, sorted, as the tests compare them.
-fn fields_of(row: &Value) -> Vec<String> {
-    let mut fields: Vec<String> = row
-        .as_object()
-        .expect("a row is an object")
-        .keys()
-        .cloned()
-        .collect();
-    fields.sort_unstable();
-    fields
-}
-
-/// Each request is one row with its status, its usage and its cost — in minor units, as an
-/// integer — beside the date, the request id, the key and the model that name it, newest
-/// first.
+/// Each request is one row with its status and its cost — as credits, like every
+/// other amount in the dashboard — beside the date, the request id, the key
+/// and the model that name it, newest first.
 #[tokio::test]
 async fn the_requests_page_lists_each_requests_status_usage_and_cost() {
     let (app, db) = app_or_skip!();
@@ -415,34 +405,23 @@ async fn the_requests_page_lists_each_requests_status_usage_and_cost() {
 
     // Newest first: the swept request was written last.
     let swept = &rows[0];
-    assert_eq!(fields_of(swept), ROW_FIELDS, "{swept}");
-    assert_eq!(swept["requestId"], "req-swept");
-    assert_eq!(swept["bookedOn"], today().to_string());
-    assert_eq!(swept["model"], "mock-b");
-    assert_eq!(swept["keyPrefix"], minted_prefix.as_str());
-    assert_eq!(swept["status"], "swept", "the record's own word");
-    assert_eq!(swept["inputTokens"], 0);
-    assert_eq!(swept["outputTokens"], 0);
-    assert!(
-        swept["costMinor"].is_i64(),
-        "money is an integer in minor units, never a formatted amount: {swept}"
-    );
-    assert_eq!(swept["costMinor"], 0, "a swept turn charged nothing");
+    assert_eq!(swept[0], "req-swept");
+    assert_eq!(swept[1], today().to_string());
+    assert_eq!(swept[2], "mock-b");
+    assert_eq!(swept[3], minted_prefix.as_str());
+    assert_eq!(swept[4], "swept", "the record's own word");
+    assert_eq!(swept[5], "0.000000", "a swept turn charged nothing");
 
     let billed = &rows[1];
-    assert_eq!(fields_of(billed), ROW_FIELDS, "{billed}");
-    assert_eq!(billed["requestId"], "req-usage");
-    assert_eq!(billed["bookedOn"], today().to_string());
-    assert_eq!(billed["model"], "mock-a");
-    assert_eq!(billed["keyPrefix"], account.prefix.as_str());
-    assert_eq!(billed["status"], "usage");
-    assert_eq!(billed["inputTokens"], 116, "the tokens the settlement used");
-    assert_eq!(billed["outputTokens"], 100);
-    assert!(
-        billed["costMinor"].is_i64(),
-        "money is an integer in minor units: {billed}"
+    assert_eq!(billed[0], "req-usage");
+    assert_eq!(billed[1], today().to_string());
+    assert_eq!(billed[2], "mock-a");
+    assert_eq!(billed[3], account.prefix.as_str());
+    assert_eq!(billed[4], "usage");
+    assert_eq!(
+        billed[5], "0.000316",
+        "what the settlement charged, as credits"
     );
-    assert_eq!(billed["costMinor"], 316, "what the settlement charged");
 }
 
 /// The filters are the page's URL: one by key, one by model, and both together — including
@@ -487,21 +466,21 @@ async fn the_request_filters_narrow_by_key_and_by_model() {
     // By key: only the turns that key paid.
     let by_key = requests(&app, &account.cookie, Some(&account.prefix), None).await;
     assert_eq!(by_key.len(), 1, "{by_key:?}");
-    assert_eq!(by_key[0]["requestId"], "req-a");
+    assert_eq!(by_key[0][0], "req-a");
     let by_other_key = requests(&app, &account.cookie, Some(&minted_prefix), None).await;
     assert_eq!(by_other_key.len(), 1, "{by_other_key:?}");
-    assert_eq!(by_other_key[0]["requestId"], "req-b");
+    assert_eq!(by_other_key[0][0], "req-b");
 
     // By model: only the turns that model priced.
     let by_model = requests(&app, &account.cookie, None, Some("mock-b")).await;
     assert_eq!(by_model.len(), 1, "{by_model:?}");
-    assert_eq!(by_model[0]["requestId"], "req-b");
-    assert_eq!(by_model[0]["status"], "estimated");
+    assert_eq!(by_model[0][0], "req-b");
+    assert_eq!(by_model[0][4], "estimated");
 
     // Both together: the one turn that is both.
     let both = requests(&app, &account.cookie, Some(&account.prefix), Some("mock-a")).await;
     assert_eq!(both.len(), 1, "{both:?}");
-    assert_eq!(both[0]["requestId"], "req-a");
+    assert_eq!(both[0][0], "req-a");
 
     // A combination that matches nothing: the key pays for one model, not the other.
     let nothing = requests(&app, &account.cookie, Some(&account.prefix), Some("mock-b")).await;
@@ -575,13 +554,13 @@ async fn the_requests_page_renders_its_filters_and_an_empty_table() {
     assert!(html.contains("<th"), "the empty table keeps its header");
     assert!(!html.contains("req-page"), "and lists nothing: {html}");
 
-    // The page needs a session like every other dashboard page; without one it renders the
-    // shell and carries no records.
+    // The page needs a session like every other dashboard page; without one the
+    // server redirects to the login page instead of rendering a shell.
     let anonymous = call(&app, "GET", "/dashboard/requests", None, None).await;
-    assert_eq!(anonymous.status, StatusCode::OK, "the shell renders");
-    assert!(
-        !anonymous.text().contains("req-page"),
-        "no records without a session"
+    assert_eq!(
+        anonymous.status,
+        StatusCode::SEE_OTHER,
+        "the guard redirects"
     );
 }
 
@@ -625,9 +604,9 @@ async fn the_requests_page_shows_only_the_sessions_organization() {
 
     let mine = requests(&app, &first.cookie, None, None).await;
     assert_eq!(mine.len(), 1, "{mine:?}");
-    assert_eq!(mine[0]["requestId"], "req-first");
-    assert_eq!(mine[0]["keyPrefix"], first.prefix.as_str());
+    assert_eq!(mine[0][0], "req-first");
+    assert_eq!(mine[0][3], first.prefix.as_str());
     let theirs = requests(&app, &second.cookie, None, None).await;
     assert_eq!(theirs.len(), 1, "{theirs:?}");
-    assert_eq!(theirs[0]["requestId"], "req-second");
+    assert_eq!(theirs[0][0], "req-second");
 }

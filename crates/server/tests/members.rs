@@ -189,22 +189,36 @@ async fn seed_membership(pool: &PgPool, organization_id: Uuid, account: &Account
     .expect("seeds a membership");
 }
 
-/// One server function of the pages, called the way its own code calls it: the URL-encoded
-/// body of the function's arguments, with the session cookie.
-///
-/// The path is read from the same registry the router registers its server-function routes
-/// from, because leptos suffixes it with a hash of the crate and module it was declared in.
-async fn page_call(
+/// One HTML page of the dashboard, fetched the way the browser fetches it: the
+/// Topcoat dashboard renders server-side, so there are no `/_pages/*` server
+/// functions anymore.
+async fn get_html(app: &Router, path: &str, cookie: Option<&str>) -> (StatusCode, String) {
+    let mut req = Request::builder().method("GET").uri(path);
+    if let Some(cookie) = cookie {
+        req = req.header("cookie", format!("oxsum_session={cookie}"));
+    }
+    let res = app
+        .clone()
+        .oneshot(req.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        String::from_utf8(bytes.to_vec()).expect("the page is UTF-8"),
+    )
+}
+
+/// One dashboard form post, the way the pages' forms submit.
+async fn post_form(
     app: &Router,
-    name: &str,
+    path: &str,
     body: &str,
     cookie: Option<&str>,
-) -> (StatusCode, Value) {
-    let (path, method) = leptos::server_fn::axum::server_fn_paths()
-        .find(|(path, _)| path.starts_with(&format!("/_pages/{name}")))
-        .unwrap_or_else(|| panic!("the {name} server function is registered"));
+) -> (StatusCode, String) {
     let mut req = Request::builder()
-        .method(method)
+        .method("POST")
         .uri(path)
         .header("content-type", "application/x-www-form-urlencoded");
     if let Some(cookie) = cookie {
@@ -217,44 +231,52 @@ async fn page_call(
         .unwrap();
     let status = res.status();
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    (status, value)
-}
-
-/// The members page's own read: `/_pages/get_members`, answered as a `MembersView`.
-async fn members_page(app: &Router, cookie: Option<&str>) -> (StatusCode, Value) {
-    page_call(app, "get_members", "", cookie).await
-}
-
-/// The members page's data, asserted to have loaded.
-async fn members(app: &Router, cookie: &str) -> Value {
-    let (status, body) = members_page(app, Some(cookie)).await;
-    assert_eq!(
+    (
         status,
-        StatusCode::OK,
-        "the members list did not load: {body}"
-    );
-    body
+        String::from_utf8(bytes.to_vec()).expect("the page is UTF-8"),
+    )
 }
 
-/// The roles the list shows, by email.
-fn roles_of(list: &Value) -> Vec<(String, String)> {
-    list["members"]
-        .as_array()
-        .expect("a member list")
-        .iter()
-        .map(|member| {
-            (
-                member["email"].as_str().unwrap().to_owned(),
-                member["role"].as_str().unwrap().to_owned(),
-            )
+/// The members page's own read: `GET /dashboard/members` with the session cookie.
+async fn members_page(app: &Router, cookie: Option<&str>) -> (StatusCode, String) {
+    get_html(app, "/dashboard/members", cookie).await
+}
+
+/// The members page's HTML, asserted to have loaded.
+async fn members(app: &Router, cookie: &str) -> String {
+    let (status, html) = members_page(app, Some(cookie)).await;
+    assert_eq!(status, StatusCode::OK, "the members list did not load");
+    html
+}
+
+/// The roles the members table shows, by email: each row renders
+/// `<tr><td>email</td><td>role</td><td>…</td></tr>`.
+fn roles_of(html: &str) -> Vec<(String, String)> {
+    html.split("<tr>")
+        .filter_map(|row| {
+            let mut cells = Vec::new();
+            let mut rest = row;
+            while let Some(start) = rest.find("<td>") {
+                rest = &rest[start + "<td>".len()..];
+                if let Some(end) = rest.find("</td>") {
+                    cells.push(rest[..end].to_owned());
+                    rest = &rest[end + "</td>".len()..];
+                } else {
+                    break;
+                }
+            }
+            if cells.len() >= 2 {
+                Some((cells[0].clone(), cells[1].clone()))
+            } else {
+                None
+            }
         })
         .collect()
 }
 
-/// The role one email holds in the list, or None.
-fn role_of(list: &Value, email: &str) -> Option<String> {
-    roles_of(list)
+/// The role one email holds in the table, or None.
+fn role_of(html: &str, email: &str) -> Option<String> {
+    roles_of(html)
         .into_iter()
         .find(|(member, _)| member == email)
         .map(|(_, role)| role)
@@ -370,7 +392,7 @@ async fn an_unknown_email_is_not_found_and_a_second_add_is_a_conflict() {
 
     // Nothing was added, and a malformed address is a validation failure, not a 404.
     let after = members(&app, &f.owner_cookie).await;
-    assert_eq!(before["members"], after["members"]);
+    assert_eq!(before, after, "the refused add changed nothing");
     let res = call(
         &app,
         "POST",
@@ -691,10 +713,10 @@ async fn a_member_cannot_manage_memberships() {
     assert!(role_of(&list, &extra.email).is_none());
     assert_eq!(role_of(&list, &f.admin.email).as_deref(), Some("admin"));
 
-    // The page's own function refuses the same call, with the same rule.
-    let (status, _) = page_call(
+    // The page's own form refuses the same call, with the same rule.
+    let (status, _) = post_form(
         &app,
-        "add_member",
+        "/dashboard/members/add",
         &format!("email={}", extra.email),
         Some(&f.member_cookie),
     )
@@ -957,7 +979,10 @@ async fn any_member_may_read_the_member_list() {
         (&f.member_cookie, "member"),
     ] {
         let list = members(&app, cookie).await;
-        assert_eq!(list["role"], role);
+        assert!(
+            list.contains(&format!("Your role: {role}")),
+            "the page names the caller's role"
+        );
         assert_eq!(role_of(&list, &f.owner.email).as_deref(), Some("owner"));
         assert_eq!(role_of(&list, &f.admin.email).as_deref(), Some("admin"));
         assert_eq!(role_of(&list, &f.member.email).as_deref(), Some("member"));

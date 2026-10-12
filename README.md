@@ -59,11 +59,11 @@ Abridged transcript (ids and hashes differ per run):
    balance after the turn: 99999966 minor units (charged 34)
 ```
 
-Both proof bundles are checkable on the `/verify` page against their content hashes — no trust in the server required. The demo prefers its own `oxsum_demo` database (created when the `DATABASE_URL` role may create databases) and otherwise uses `DATABASE_URL` directly. Recording this flow as a GIF is a manual step: record the terminal running `python3 demo/demo.py`.
+Both proof bundles are checkable on the `/verify` page against their content hashes (the check runs on the server). The demo prefers its own `oxsum_demo` database (created when the `DATABASE_URL` role may create databases) and otherwise uses `DATABASE_URL` directly. Recording this flow as a GIF is a manual step: record the terminal running `python3 demo/demo.py`.
 
 ## Docker
 
-The release image is a multi-stage build of the whole workspace, including the Leptos dashboard (server-side rendering plus the WASM browser side). It runs the `oxsum` binary against an external PostgreSQL — no database is bundled:
+The release image is a multi-stage build of the whole workspace, including the Topcoat dashboard (server-side rendered, no browser bundle). It runs the `oxsum` binary against an external PostgreSQL — no database is bundled:
 
 ```bash
 docker build -t oxsum .
@@ -73,7 +73,7 @@ docker run --rm -p 3000:3000 \
   oxsum
 ```
 
-`DATABASE_URL` is the only required variable; the rest are the `OXSUM_*` settings [docs/development.md](docs/development.md) documents (`.env` is never baked into the image — pass them with `-e`). The schema is migrated at startup, and the dashboard reads its files from the image's `/app/site`. Then visit <http://localhost:3000/healthz>.
+`DATABASE_URL` is the only required variable; the rest are the `OXSUM_*` settings [docs/development.md](docs/development.md) documents (`.env` is never baked into the image — pass them with `-e`). The schema is migrated at startup, and the dashboard's stylesheet is embedded in the binary. Then visit <http://localhost:3000/healthz>.
 
 ## Status
 
