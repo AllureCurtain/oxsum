@@ -21,10 +21,16 @@ pub const DELIVERY_INTERVAL: Duration = Duration::from_secs(30);
 /// The longest a delivery POST may take before it counts as a failed attempt.
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How many deliveries run at once inside [`deliver_due`]. Each delivery is
+/// independent (its own POST, its own row update), so a slow receiver only
+/// occupies one slot instead of stalling the whole batch behind it.
+const DELIVERY_CONCURRENCY: usize = 8;
+
 /// Delivers every due webhook row; the return count is for tests and logs.
 ///
-/// Each row is attempted independently: one slow receiver never blocks the
-/// batch, and a row another pass already finished is a no-op update.
+/// Each row is attempted independently, up to [`DELIVERY_CONCURRENCY`] at a
+/// time: one slow receiver never blocks the batch, and a row another pass
+/// already finished is a no-op update.
 pub async fn deliver_due(
     db: &Db,
     http: &reqwest::Client,
@@ -39,23 +45,59 @@ pub async fn deliver_due(
             return;
         }
     };
+    let mut in_flight = tokio::task::JoinSet::new();
     for item in due {
-        let outcome = deliver_one(http, secret, &item).await;
-        crate::metrics::webhook_delivery(
-            metrics,
-            match &outcome {
-                DeliveryOutcome::Delivered { .. } => "delivered",
-                DeliveryOutcome::AttemptFailed { attempt, .. }
-                    if *attempt >= oxsum_core::MAX_DELIVERY_ATTEMPTS =>
-                {
-                    "failed"
-                }
-                DeliveryOutcome::AttemptFailed { .. } => "retried",
-            },
-        );
-        if let Err(error) = db.record_delivery(&item.delivery, &outcome).await {
-            tracing::error!(%error, delivery = %item.delivery.id, "a webhook attempt could not be recorded");
+        // Bound the parallelism: without the gate a large due batch would fan
+        // out one task per row.
+        if in_flight.len() >= DELIVERY_CONCURRENCY
+            && let Some(completed) = in_flight.join_next().await
+        {
+            record_outcome(db, metrics, completed).await;
         }
+        // Each task only POSTs; the row update and the metrics stay on this
+        // task, recorded in completion order as slots free up.
+        let http = http.clone();
+        let secret = secret.clone();
+        in_flight.spawn(async move {
+            let outcome = deliver_one(&http, &secret, &item).await;
+            (item, outcome)
+        });
+    }
+    while let Some(completed) = in_flight.join_next().await {
+        record_outcome(db, metrics, completed).await;
+    }
+}
+
+/// Records one finished delivery: the metrics label, then the row update.
+/// A join failure means the task panicked, which `deliver_one` cannot do by
+/// construction (no unwrap/expect on its paths); it is logged and the row
+/// stays due for the next pass rather than being recorded wrongly.
+async fn record_outcome(
+    db: &Db,
+    metrics: &Metrics,
+    completed: Result<(DueDelivery, DeliveryOutcome), tokio::task::JoinError>,
+) {
+    let (item, outcome) = match completed {
+        Ok(done) => done,
+        Err(error) => {
+            tracing::error!(%error, "a webhook delivery task failed");
+            return;
+        }
+    };
+    crate::metrics::webhook_delivery(
+        metrics,
+        match &outcome {
+            DeliveryOutcome::Delivered { .. } => "delivered",
+            DeliveryOutcome::AttemptFailed { attempt, .. }
+                if *attempt >= oxsum_core::MAX_DELIVERY_ATTEMPTS =>
+            {
+                "failed"
+            }
+            DeliveryOutcome::AttemptFailed { .. } => "retried",
+        },
+    );
+    if let Err(error) = db.record_delivery(&item.delivery, &outcome).await {
+        tracing::error!(%error, delivery = %item.delivery.id, "a webhook attempt could not be recorded");
     }
 }
 
