@@ -24,3 +24,12 @@ LEPTOS_OUTPUT_NAME = "oxsum"
 # full fidelity because they ship without debug info anyway (issue #176).
 [profile.dev]
 debug = 1
+
+# Release ships one binary to a deployment host: size and cold start matter,
+# build time does not (CI builds it rarely, dev never does). LTO + strip shrink
+# the `oxsum` binary substantially; a single codegen unit is the slowest but
+# smallest configuration. Debug info stays off (cargo's release default).
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
