@@ -5,7 +5,11 @@ Global rules live in the root AGENTS.md; this file only covers backend-specific 
 ## Layers
 
 ```
-crates/server/src/routes.rs   Routing, request deserialization. No business logic here
+crates/server/src/routes/     Routing, request deserialization. No business logic here;
+                              one module per resource group (auth, org, keys, billing,
+                              usage, log, webhooks, device); mod.rs wires the router and
+                              holds the helpers every module shares.
+crates/server/src/admin.rs    The operator-token admin surface
 crates/server/src/auth.rs     Auth middleware
 crates/server/src/error.rs    WalletError → HTTP error code mapping
 crates/core/src/              Business logic (Wallet, Tenants, proofs)
