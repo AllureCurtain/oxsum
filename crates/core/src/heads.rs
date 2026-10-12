@@ -16,7 +16,10 @@
 
 use doubleentry::witness::signing::SigningKey;
 use doubleentry::witness::{KeyName, NoteError, Origin, SignedTreeHead};
-use doubleentry::{ConsistencyProof, TreeHead};
+use doubleentry::{ConsistencyProof, Hash, TreeHead};
+
+use crate::channels::ModelPrice;
+use crate::error::WalletError;
 
 pub use doubleentry::witness::signing::SigningKey as HeadSigningKey;
 
@@ -150,6 +153,148 @@ pub struct Consistency {
     pub proof: ConsistencyProof,
 }
 
+// ── signed price heads (issue #204) ────────────────────────────────────────────
+//
+// A bill's settlement description names exactly one `(channel, model,
+// priceVersion)` — but the *authenticity* of that price rests only on the
+// append-only `channel_prices` table. A forged current price would still verify.
+// The operator closes the gap by signing a checkpoint per priced row, under the
+// same Ed25519 key that signs tree heads: a verifier that trusts the key can
+// confirm the price a bill names is the price the catalog actually held.
+
+/// The domain separator the canonical price row hashes under.
+///
+/// Mirrors `oxsum/idempotency/v1` (idempotency.rs): a tagged-BLAKE3 domain so the
+/// row hash cannot collide with any other digest in the system, and versioned so
+/// the canonical form can evolve without reinterpreting old notes.
+pub const PRICE_ROW_DOMAIN: &[u8] = b"oxsum/price-catalog/v1";
+
+/// The origin a channel's price catalog signs under: `oxsum/price-catalog/<channel>`.
+///
+/// One origin per channel — not per `(channel, model)` — because a `channel` is the
+/// unit an operator names and a witness keys on origins; two models of one channel
+/// are two checkpoints of one catalog, not two catalogs. Channel names are letters,
+/// digits, dashes, underscores and dots (`channel_name`), so they are always
+/// origin-safe — unlike *model* names, which may carry spaces and so stay inside the
+/// hashed row bytes rather than the origin line.
+///
+/// # Errors
+///
+/// Returns [`NoteError`] when the origin is malformed — unreachable for a validated
+/// channel name, but reported rather than asserted.
+pub fn price_origin_for(channel: &str) -> Result<Origin, NoteError> {
+    Origin::new(format!("oxsum/price-catalog/{channel}"))
+}
+
+/// The canonical JSON bytes a price row hashes into the signed checkpoint.
+///
+/// The body signs `{v, channel, model, version, weight, price}` as compact JSON
+/// through [`PriceRowV1`]: channel/model/version inside the hash so a note for one
+/// row cannot be replayed as another's; `weight` inside because it is versioned
+/// with the price (issue #168) and part of what the turn routed under. `created_at`
+/// and `channel_id` are deliberately out — the row's identity is its content, and a
+/// timestamp would only force time serde into the canonical form. The `v` field
+/// future-proofs the shape: a `PriceRowV2` would hash under a new domain.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PriceRowV1<'a> {
+    v: i64,
+    channel: &'a str,
+    model: &'a str,
+    version: i64,
+    weight: i64,
+    price: &'a crate::billing::Price,
+}
+
+/// Renders the canonical row bytes for `channel`'s `price` record.
+///
+/// `serde_json` emits struct fields in declaration order, so the bytes are
+/// deterministic — the bundle carries this exact string, and the verifier hashes
+/// it verbatim rather than re-serializing.
+///
+/// # Errors
+///
+/// Serialization of these fields cannot fail; the `Result` keeps the caller honest.
+pub fn canonical_price_row(channel: &str, price: &ModelPrice) -> Result<String, WalletError> {
+    serde_json::to_string(&PriceRowV1 {
+        v: 1,
+        channel,
+        model: &price.model,
+        version: price.version,
+        weight: price.weight,
+        price: &price.price,
+    })
+    .map_err(|error| WalletError::InvalidInput(format!("canonical price row: {error}")))
+}
+
+/// The 32-byte hash of the canonical row: what the signed checkpoint's root carries.
+#[must_use]
+pub fn price_row_hash(canonical_row: &str) -> Hash {
+    Hash::digest(PRICE_ROW_DOMAIN, canonical_row.as_bytes())
+}
+
+/// A channel-model-version price checkpoint, signed by the operator: what
+/// `GET /api/v1/log/price-head` serves.
+///
+/// The note reuses the `tlog-checkpoint` body — origin, size, root — because a
+/// versioned price row *is* a checkpoint: `size` carries `priceVersion` (monotone,
+/// append-only like a tree size) and `root` carries the row hash. `sign_head`
+/// renders it, so nothing here is a new format.
+#[derive(Debug, Clone)]
+pub struct SignedPriceHead {
+    /// The complete C2SP signed-note text: body, blank line, signature lines.
+    pub note: String,
+    /// Which catalog this checkpoint belongs to (`oxsum/price-catalog/<channel>`).
+    pub origin: String,
+    /// The channel the price belongs to.
+    pub channel: String,
+    /// The model the price prices.
+    pub model: String,
+    /// The price version the checkpoint attests.
+    pub version: i64,
+    /// The canonical-row hash the note's root carries.
+    pub row_hash: Hash,
+    /// The key that signed it, as the API publishes it.
+    pub key: KeyPublication,
+}
+
+/// Signs a channel's price row as a checkpoint note.
+///
+/// `canonical_row` is the exact bytes the note's root commits to — pass the output
+/// of [`canonical_price_row`] so the served hash and the served row agree.
+///
+/// # Errors
+///
+/// Returns [`NoteError`] when the key name or origin is invalid — unreachable for
+/// the constants, but reported rather than asserted.
+pub fn sign_price_head(
+    key: &HeadSigningKey,
+    channel: &str,
+    price: &ModelPrice,
+    canonical_row: &str,
+) -> Result<SignedPriceHead, NoteError> {
+    let origin = price_origin_for(channel)?;
+    let row_hash = price_row_hash(canonical_row);
+    // A priced row is a checkpoint: `size` is the version, `root` the row hash.
+    let signed = sign_head(
+        key,
+        &origin,
+        TreeHead {
+            size: price.version as u64,
+            root: row_hash,
+        },
+    )?;
+    Ok(SignedPriceHead {
+        note: signed.note,
+        origin: signed.origin,
+        channel: channel.to_owned(),
+        model: price.model.clone(),
+        version: price.version,
+        row_hash,
+        key: signed.key,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     // The tests may expect: a panic here is a failing test, which is what a test is for.
@@ -235,5 +380,93 @@ mod tests {
             !verifying.verify(&tampered.body(), signature),
             "the signature covers the body byte for byte"
         );
+    }
+
+    // ── signed price heads (issue #204) ─────────────────────────────────────
+
+    /// A price record to render: the fields the canonical row commits to.
+    fn priced(model: &str, version: i64) -> ModelPrice {
+        ModelPrice {
+            model: model.to_owned(),
+            version,
+            weight: 100,
+            price: crate::billing::Price {
+                input_price_per_million: 1_000_000,
+                output_price_per_million: 2_000_000,
+                max_output_tokens: 8_000,
+                cache_read_price_per_million: Some(100_000),
+                cache_write_5m_price_per_million: None,
+                cache_write_1h_price_per_million: None,
+                reasoning_price_per_million: Some(8_000_000),
+                cost_per_request: Some(100),
+                upstream: None,
+                mode: Default::default(),
+                rules: Vec::new(),
+            },
+            created_at: time::OffsetDateTime::UNIX_EPOCH,
+        }
+    }
+
+    #[test]
+    fn a_price_origin_names_the_channel_catalog() {
+        let origin = price_origin_for("deepseek.prod-1").expect("valid channel name");
+        assert_eq!(origin.as_str(), "oxsum/price-catalog/deepseek.prod-1");
+    }
+
+    /// The canonical row is pinned down to the byte: a field renamed, reordered
+    /// or spelled differently would mint a different root for the same row and
+    /// every bundle already issued would fail `verify_price_head`.
+    #[test]
+    fn the_canonical_price_row_is_byte_stable() {
+        let row = canonical_price_row("deepseek", &priced("ds-chat", 7)).expect("serializes");
+        assert_eq!(
+            row,
+            r#"{"v":1,"channel":"deepseek","model":"ds-chat","version":7,"weight":100,"price":{"inputPricePerMillion":1000000,"outputPricePerMillion":2000000,"maxOutputTokens":8000,"cacheReadPricePerMillion":100000,"reasoningPricePerMillion":8000000,"costPerRequest":100,"mode":"chat"}}"#
+        );
+    }
+
+    /// A signed price head *is* a signed tree head: the note body names the
+    /// catalog origin, the version rides in `size`, the row hash in `root`, and
+    /// the operator's key checks out against the exact bytes.
+    #[test]
+    fn a_signed_price_head_verifies_against_the_published_key() {
+        let key = signing_key(seed()).expect("constant key name");
+        let price = priced("ds-chat", 7);
+        let row = canonical_price_row("deepseek", &price).expect("serializes");
+        let signed = sign_price_head(&key, "deepseek", &price, &row).expect("signs");
+
+        let parsed = SignedTreeHead::parse(&signed.note).expect("parses");
+        assert_eq!(parsed.origin.as_str(), "oxsum/price-catalog/deepseek");
+        assert_eq!(parsed.head.size, 7, "the version rides in size");
+        assert_eq!(parsed.head.root, signed.row_hash);
+        assert_eq!(parsed.head.root, price_row_hash(&row));
+
+        let verifying = VerifyingKey::from_bytes(
+            KeyName::new(&signed.key.name).expect("valid"),
+            signed.key.public_key,
+        )
+        .expect("a real public key");
+        let signature = parsed
+            .signatures
+            .iter()
+            .find(|s| s.key_hash == signed.key.key_hash)
+            .expect("the operator's signature line is on the note");
+        assert!(verifying.verify(&parsed.body(), signature));
+    }
+
+    /// Signing is stateless and deterministic: re-signing the same stored row
+    /// later — after newer versions exist — renders the identical note, which
+    /// is what keeps `?version=1` verifiable forever.
+    #[test]
+    fn re_signing_a_stored_row_renders_the_same_note() {
+        let key = signing_key(seed()).expect("constant key name");
+        let price = priced("ds-chat", 7);
+        let row = canonical_price_row("deepseek", &price).expect("serializes");
+        let first = sign_price_head(&key, "deepseek", &price, &row).expect("signs");
+        let second = sign_price_head(&key, "deepseek", &price, &row).expect("signs");
+        assert_eq!(first.note, second.note);
+        // A different version is a different checkpoint.
+        let newer = sign_price_head(&key, "deepseek", &priced("ds-chat", 8), &row).expect("signs");
+        assert_ne!(first.note, newer.note);
     }
 }
