@@ -1,8 +1,9 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::{Extension, Path, State};
 use axum::http::header::SET_COOKIE;
-use axum::http::{HeaderMap, HeaderValue};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router, middleware};
@@ -15,11 +16,26 @@ use oxsum_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use time::OffsetDateTime;
+use tower_http::timeout::TimeoutLayer;
 use uuid::Uuid;
 
 use crate::auth::{require_principal, session_cookie_value};
 use crate::error::{ApiError, ApiJson, ApiQuery};
 use crate::{AppState, Signup, today};
+
+/// Backstop for every request on the API and gateway surfaces: no handler may
+/// run longer than this. It bounds handler execution — the time until the
+/// response headers are produced — not a streaming body, which keeps flowing
+/// after the headers: a stalled mid-stream upstream is the gateway client's
+/// own timeout policy, deliberately untouched here (see `gateway/mod.rs`).
+/// The billing WebSocket, the pages and the health/metrics endpoints are
+/// excluded on purpose: the socket is long-lived by design, the rest answer
+/// in milliseconds and need no backstop.
+///
+/// On timeout the client gets a bare 408, not the uniform error envelope:
+/// the envelope is built by handlers, and a handler that never answered in
+/// fifteen minutes is past the point where envelope fidelity matters.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// The `/api/v1` surface, plus the routes served outside it: health, the gateway, the
 /// billing WebSocket, the bills export and the Leptos pages.
@@ -138,10 +154,23 @@ pub fn router(state: AppState) -> Router {
             "/api/v1",
             open.merge(authenticated)
                 .nest("/admin", admin)
-                .nest("/metering", metering),
+                .nest("/metering", metering)
+                // The backstop sits on the API and gateway nests, not the top
+                // router: the billing WebSocket below is long-lived by design
+                // and must never be cut by a request timeout.
+                .layer(TimeoutLayer::with_status_code(
+                    StatusCode::REQUEST_TIMEOUT,
+                    REQUEST_TIMEOUT,
+                )),
         )
         // The OpenAI-compatible surface, which brings its own auth and its own error format.
-        .nest("/v1", crate::gateway::router(state.clone()));
+        .nest(
+            "/v1",
+            crate::gateway::router(state.clone()).layer(TimeoutLayer::with_status_code(
+                StatusCode::REQUEST_TIMEOUT,
+                REQUEST_TIMEOUT,
+            )),
+        );
     // The Leptos pages and their server functions, served by the same binary.
     // The request counter sits last so it sees every route the router answered, pages
     // included — labelled by the matched pattern, never the concrete path.

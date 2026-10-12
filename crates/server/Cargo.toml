@@ -51,6 +51,8 @@ metrics-exporter-prometheus.workspace = true
 lettre.workspace = true
 # The weighted pick that leads a request's candidate routes (issue #168).
 rand.workspace = true
+# The request backstop (`TimeoutLayer` in routes.rs).
+tower-http.workspace = true
 
 [dev-dependencies]
 dotenvy.workspace = true
