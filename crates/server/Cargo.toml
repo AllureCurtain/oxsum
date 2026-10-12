@@ -35,6 +35,8 @@ uuid.workspace = true
 async-stream.workspace = true
 # The `Stream` trait for the relay's return type; nothing else from futures is needed.
 futures-core.workspace = true
+# `StreamExt::next` for the capped upstream-body read (`read_body_limited`).
+futures-util.workspace = true
 # The upstream HTTP client, built once in lib.rs and shared through AppState.
 reqwest.workspace = true
 # Buffering a finished response body for the idempotency record.
@@ -56,7 +58,6 @@ tower-http.workspace = true
 
 [dev-dependencies]
 dotenvy.workspace = true
-futures-util.workspace = true
 http-body-util.workspace = true
 # `browser_contract.rs` matches the served HTML and the wasm glue with targeted patterns,
 # rather than a substring that a rename would keep satisfying.
