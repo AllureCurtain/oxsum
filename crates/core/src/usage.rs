@@ -480,15 +480,52 @@ impl Db {
             let tokens = row.usage.input_tokens + row.usage.output_tokens;
             if tokens > 0 {
                 sqlx::query(
-                    "INSERT INTO oxsum.tpm_windows (key_id, window_start, tokens) \
-                     VALUES ($1, date_trunc('second', now()), $2) \
-                     ON CONFLICT (key_id, window_start) DO UPDATE SET \
+                    "INSERT INTO oxsum.tpm_windows (key_id, scope, window_start, tokens) \
+                     VALUES ($1, '', date_trunc('second', now()), $2) \
+                     ON CONFLICT (key_id, scope, window_start) DO UPDATE SET \
                          tokens = tpm_windows.tokens + EXCLUDED.tokens",
                 )
                 .bind(key_id)
                 .bind(tokens)
                 .execute(&mut *tx)
                 .await?;
+                // Tag-scoped buckets (issue #209): the turn accrues into each
+                // bucket its tags select, in the same transaction, so a scoped
+                // cap reads the same settle that fills it. The turn's tag values
+                // name the buckets (`tag:<name>=<value>` for Each/Concrete,
+                // `tag:<name>` for Total); a turn carrying no matching tag writes
+                // only the plain row above. Scopes are read off the key row — a
+                // `key_id` that names no key (the `usage_daily` rollup keys on an
+                // unattributed label, not a credential) reads no scopes, so a
+                // re-scoped PATCH shapes the next settle, not this one.
+                let scopes: Option<serde_json::Value> = sqlx::query_scalar(
+                    "SELECT tokens_per_minute_scopes FROM oxsum.api_keys WHERE key_id = $1",
+                )
+                .bind(key_id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .flatten();
+                let scopes: Option<crate::keys::TpmScopes> =
+                    scopes.and_then(|v| serde_json::from_value(v).ok());
+                if let Some(scopes) = scopes {
+                    for (tag, scope) in scopes {
+                        let tag_scope = crate::keys::TagScope { tag, scope };
+                        if let Some(name) = tag_scope.scope_name(&row.usage.tags) {
+                            sqlx::query(
+                                "INSERT INTO oxsum.tpm_windows \
+                                     (key_id, scope, window_start, tokens) \
+                                 VALUES ($1, $2, date_trunc('second', now()), $3) \
+                                 ON CONFLICT (key_id, scope, window_start) DO UPDATE SET \
+                                     tokens = tpm_windows.tokens + EXCLUDED.tokens",
+                            )
+                            .bind(key_id)
+                            .bind(name)
+                            .bind(tokens)
+                            .execute(&mut *tx)
+                            .await?;
+                        }
+                    }
+                }
                 sqlx::query(
                     "DELETE FROM oxsum.tpm_windows \
                      WHERE key_id = $1 \
@@ -587,7 +624,7 @@ impl Db {
             "SELECT COALESCE(sum(tokens), 0)::bigint AS settled, \
                     min(window_start) AS oldest \
              FROM oxsum.tpm_windows \
-             WHERE key_id = $1 \
+             WHERE key_id = $1 AND scope = '' \
                AND window_start > now() - interval '60 seconds'",
         )
         .bind(key_id)
@@ -597,6 +634,41 @@ impl Db {
         // The row frees when it is 60s old. `whole_seconds` truncates, so the
         // difference is already the ceiling; `.max(0)` guards clock skew, and
         // the header site applies its own `.max(1)` floor.
+        let retry_after = match row.try_get::<Option<OffsetDateTime>, _>("oldest")? {
+            Some(oldest) => {
+                (60 - (OffsetDateTime::now_utc() - oldest).whole_seconds()).max(0) as u64
+            }
+            None => 0,
+        };
+        Ok((settled, retry_after))
+    }
+
+    /// [`tpm_window`](Self::tpm_window) for one named bucket: the trailing-minute
+    /// sum and retry-after anchor over `oxsum.tpm_windows` rows whose `scope`
+    /// matches. A `TagScope::scope_name` result is the caller's `scope` — the
+    /// tag-scoped cap a turn checks is read from the same bucket the turn just
+    /// accrued into (issue #209). The plain window is `tpm_window` (`scope = ''`).
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn tpm_window_scoped(
+        &self,
+        key_id: Uuid,
+        scope: &str,
+    ) -> Result<(i64, u64), WalletError> {
+        let row = sqlx::query(
+            "SELECT COALESCE(sum(tokens), 0)::bigint AS settled, \
+                    min(window_start) AS oldest \
+             FROM oxsum.tpm_windows \
+             WHERE key_id = $1 AND scope = $2 \
+               AND window_start > now() - interval '60 seconds'",
+        )
+        .bind(key_id)
+        .bind(scope)
+        .fetch_one(self.pool())
+        .await?;
+        let settled: i64 = row.try_get("settled")?;
         let retry_after = match row.try_get::<Option<OffsetDateTime>, _>("oldest")? {
             Some(oldest) => {
                 (60 - (OffsetDateTime::now_utc() - oldest).whole_seconds()).max(0) as u64

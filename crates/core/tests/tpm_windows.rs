@@ -316,3 +316,161 @@ async fn rows_older_than_the_window_are_pruned_on_write() {
         "the remaining row is inside the window"
     );
 }
+
+// ── tag-scoped buckets (issue #209) ──────────────────────────────────────────
+
+/// A settle carrying `metadata` tags, against the fixture's own key.
+async fn tagged_turn(f: &Fixture, request: &str, tag: &str, value: &str, tokens: i64) {
+    let hold_key = format!("hold-{request}");
+    f.wallet
+        .hold(&hold_key, "", 1_000_000, ON)
+        .await
+        .expect("the hold reserves");
+    let receipt = f
+        .wallet
+        .settle(&hold_key, "", 100_000, ON)
+        .await
+        .expect("the turn settles");
+    let mut usage = UsageRecord {
+        input_tokens: tokens,
+        output_tokens: 0,
+        ..Default::default()
+    };
+    usage.tags.insert(tag.to_owned(), value.to_owned());
+    f.db.record_usage(&UsageRow {
+        request_id: format!("{request}-{}", Uuid::new_v4().simple()),
+        tenant_id: f.org.tenant_id.clone(),
+        key_id: Some(f.key_id),
+        model: "mock".to_owned(),
+        channel: "mock".to_owned(),
+        price_version: 1,
+        kind: SettlementKind::Usage,
+        entry_id: *receipt.entry_id.as_uuid(),
+        usage,
+        charged_minor: 100_000,
+        freeze_minor: 1_000_000,
+        upstream_cost_minor: None,
+        upstream_attempts: 1,
+    })
+    .await
+    .expect("the usage row is written");
+}
+
+/// The scope column on a key's window rows: the tags a settle carries land it in
+/// its per-value bucket beside the plain one — and `tpm_window_scoped` reads
+/// exactly that bucket back.
+#[tokio::test]
+async fn a_tagged_settle_accrues_its_scoped_bucket() {
+    let url = db_or_skip!();
+    let f = fixture(&url, "tpmscope").await;
+
+    // `team` fans out per value (`each`), `tier` pins one value (`concrete`),
+    // `region` aggregates (`total`) — all on the one key.
+    let mut scopes = oxsum_core::TpmScopes::new();
+    scopes.insert("team".to_owned(), oxsum_core::TpmScope::Each(1000));
+    scopes.insert(
+        "tier".to_owned(),
+        oxsum_core::TpmScope::Concrete {
+            concrete: "free".to_owned(),
+            tokens_per_minute: 1000,
+        },
+    );
+    scopes.insert("region".to_owned(), oxsum_core::TpmScope::Total(1000));
+    sqlx::query("UPDATE oxsum.api_keys SET tokens_per_minute_scopes = $1 WHERE key_id = $2")
+        .bind(serde_json::to_value(&scopes).unwrap())
+        .bind(f.key_id)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+
+    // `team=red`, `tier=free`, `region=us`: every scope selects, so the settle
+    // fans into three buckets beside the plain window.
+    let mut usage = UsageRecord {
+        input_tokens: 10,
+        output_tokens: 2,
+        ..Default::default()
+    };
+    usage.tags.insert("team".to_owned(), "red".to_owned());
+    usage.tags.insert("tier".to_owned(), "free".to_owned());
+    usage.tags.insert("region".to_owned(), "us".to_owned());
+    let receipt = {
+        let hold_key = "hold-scoped";
+        f.wallet.hold(hold_key, "", 1_000_000, ON).await.unwrap();
+        f.wallet.settle(hold_key, "", 100_000, ON).await.unwrap()
+    };
+    f.db.record_usage(&UsageRow {
+        request_id: format!("scoped-{}", Uuid::new_v4().simple()),
+        tenant_id: f.org.tenant_id.clone(),
+        key_id: Some(f.key_id),
+        model: "mock".to_owned(),
+        channel: "mock".to_owned(),
+        price_version: 1,
+        kind: SettlementKind::Usage,
+        entry_id: *receipt.entry_id.as_uuid(),
+        usage,
+        charged_minor: 100_000,
+        freeze_minor: 1_000_000,
+        upstream_cost_minor: None,
+        upstream_attempts: 1,
+    })
+    .await
+    .unwrap();
+
+    let (plain, _) = f.db.tpm_window(f.key_id).await.unwrap();
+    assert_eq!(plain, 12, "the plain window still counts every settle");
+    let (red, _) =
+        f.db.tpm_window_scoped(f.key_id, "tag:team=red")
+            .await
+            .unwrap();
+    assert_eq!(red, 12, "the each bucket fanned out per value");
+    let (free, _) =
+        f.db.tpm_window_scoped(f.key_id, "tag:tier=free")
+            .await
+            .unwrap();
+    assert_eq!(free, 12, "the concrete bucket pinned its value");
+    let (region, _) =
+        f.db.tpm_window_scoped(f.key_id, "tag:region")
+            .await
+            .unwrap();
+    assert_eq!(region, 12, "the total bucket aggregated");
+    // A value never carried never accrues.
+    let (blue, _) =
+        f.db.tpm_window_scoped(f.key_id, "tag:team=blue")
+            .await
+            .unwrap();
+    assert_eq!(blue, 0, "no settle carried blue");
+}
+
+/// A settle that selects no scope — an untagged turn, or a tag the key does not
+/// scope — writes only the plain window row.
+#[tokio::test]
+async fn a_turn_beyond_its_scopes_writes_only_the_plain_window() {
+    let url = db_or_skip!();
+    let f = fixture(&url, "tpmpartial").await;
+
+    let mut scopes = oxsum_core::TpmScopes::new();
+    scopes.insert(
+        "tier".to_owned(),
+        oxsum_core::TpmScope::Concrete {
+            concrete: "free".to_owned(),
+            tokens_per_minute: 1000,
+        },
+    );
+    sqlx::query("UPDATE oxsum.api_keys SET tokens_per_minute_scopes = $1 WHERE key_id = $2")
+        .bind(serde_json::to_value(&scopes).unwrap())
+        .bind(f.key_id)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+
+    // `tier=pro` is not the pinned value: it accrues nowhere but the plain
+    // window, even though the tag itself is scoped.
+    tagged_turn(&f, "pro", "tier", "pro", 10).await;
+    let (free, _) =
+        f.db.tpm_window_scoped(f.key_id, "tag:tier=free")
+            .await
+            .unwrap();
+    assert_eq!(free, 0, "the pinned value never saw the turn");
+    let (plain, _) = f.db.tpm_window(f.key_id).await.unwrap();
+    assert_eq!(plain, 10);
+}

@@ -275,6 +275,9 @@ struct CreateKeyReq {
     /// Settled tokens inside a rolling minute; absent or null is uncapped.
     #[serde(default)]
     tokens_per_minute: Option<i32>,
+    /// Tag-scoped slices of the token allowance; absent or null scopes nothing.
+    #[serde(default)]
+    tokens_per_minute_scopes: Option<oxsum_core::TpmScopes>,
 }
 
 #[derive(Deserialize)]
@@ -298,6 +301,9 @@ struct UpdateKeyConstraintsReq {
     /// The per-minute token allowance; null clears it back to uncapped.
     #[serde(default)]
     tokens_per_minute: Option<i32>,
+    /// The tag-scoped token allowances; null scopes nothing.
+    #[serde(default)]
+    tokens_per_minute_scopes: Option<oxsum_core::TpmScopes>,
 }
 
 /// Builds the constraint set both key endpoints carry, parsing the duration's name.
@@ -313,6 +319,7 @@ fn key_constraints(r: &UpdateKeyConstraintsReq) -> Result<oxsum_core::KeyConstra
         requests_per_minute: r.requests_per_minute,
         max_concurrent_holds: r.max_concurrent_holds,
         tokens_per_minute: r.tokens_per_minute,
+        tokens_per_minute_scopes: r.tokens_per_minute_scopes.clone(),
     })
 }
 
@@ -1097,6 +1104,7 @@ async fn create_key(
                     requests_per_minute: r.requests_per_minute,
                     max_concurrent_holds: r.max_concurrent_holds,
                     tokens_per_minute: r.tokens_per_minute,
+                    tokens_per_minute_scopes: r.tokens_per_minute_scopes,
                 })
                 .map(|c| (r.name, r.expires_at, c))
             },
@@ -1588,6 +1596,29 @@ async fn hold(
                         retry_after_secs: retry_after,
                     }
                     .into());
+                }
+            }
+            // Tag-scoped buckets bound the key the same way (issue #209): an
+            // amount-only hold carries no tags, so it can only be refused by a
+            // `total` bucket already full — the one scope whose bucket a turn's
+            // tags never narrow. Per-value buckets stay open to a tagless hold.
+            if let Some(scopes) = &key.tokens_per_minute_scopes {
+                for (tag, scope) in scopes {
+                    if let oxsum_core::TpmScope::Total(cap) = scope
+                        && *cap > 0
+                    {
+                        let name = format!("tag:{tag}");
+                        let (settled, retry_after) =
+                            state.db.tpm_window_scoped(key.key_id, &name).await?;
+                        if settled >= *cap {
+                            crate::metrics::rate_limited(&state.metrics, "api");
+                            return Err(WalletError::TokensPerMinute {
+                                limit: *cap,
+                                retry_after_secs: retry_after,
+                            }
+                            .into());
+                        }
+                    }
                 }
             }
             match w

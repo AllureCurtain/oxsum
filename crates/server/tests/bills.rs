@@ -402,6 +402,7 @@ async fn seed_request(
                 spend_limit_minor: None,
                 requests_per_minute: None,
                 tokens_per_minute: None,
+                tokens_per_minute_scopes: None,
             },
             None,
             &hold_key,

@@ -74,7 +74,9 @@ pub use jobs::{
     CLAIM_LEASE_SECS, DEAD_RESCHEDULE, Job, JobOutcome, MAX_ATTEMPTS, Retention, RetentionReport,
     StatementReport, kinds, next_run,
 };
-pub use keys::{ActingKey, ApiKey, BudgetDuration, CreatedApiKey, KeyConstraints};
+pub use keys::{
+    ActingKey, ApiKey, BudgetDuration, CreatedApiKey, KeyConstraints, TagScope, TpmScope, TpmScopes,
+};
 pub use metering::{MeteredEvent, MeteredHold, MeteredOutcome};
 pub use oauth::OAuthIdentity;
 pub use orgs::{
