@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.53.0
+  version: 0.54.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -346,6 +346,17 @@ info:
     value; the other values' buckets stay open. Scoped rows accrue in the same
     transaction that records the usage row and expire with the trailing minute,
     so a high-cardinality tag set cannot outgrow the window.
+
+    0.54.0 adds forecasted budget exhaustion (issue #220): an endpoint may now
+    subscribe to `budget.exhaustion_forecast`. A key carrying both
+    `spendLimitMinor` and `budgetDuration` is checked after each settle: the
+    window's committed spend projected forward at the rate observed so far in
+    the window, and when the projection crosses the limit before the window
+    ends the event enqueues — inside the settle's own transaction, once per key
+    per window, deduped the way `balance.low` latches. The data names the key,
+    the limit, the window start, the committed spend, the projected exhaustion
+    date and the days remaining. The latch clears when the window rolls or the
+    constraint changes, so a new period forecasts again.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -3857,6 +3868,7 @@ components:
               - statement.payment_status_updated
               - org.credit_limit_exceeded
               - anomaly.detected
+              - budget.exhaustion_forecast
           description: the event types this endpoint is subscribed to
         enabled: { type: boolean, description: "a disabled endpoint enqueues nothing" }
         balanceLowMinor:
@@ -3888,6 +3900,7 @@ components:
               - statement.payment_status_updated
               - org.credit_limit_exceeded
               - anomaly.detected
+              - budget.exhaustion_forecast
           description: "the event types to subscribe; the catalog is listed under the operation's description"
         balanceLowMinor:
           type: integer
@@ -3922,6 +3935,7 @@ components:
             - statement.payment_status_updated
             - org.credit_limit_exceeded
             - anomaly.detected
+            - budget.exhaustion_forecast
         status: { type: string, enum: [pending, sending, delivered, failed], description: "sending is a worker's claim in flight; delivered means a 2xx; failed means the ten-attempt budget ran out" }
         attempts: { type: integer, minimum: 0 }
         nextAttemptAt: { type: string, format: date-time, description: "when the worker next tries a pending delivery; the creation time for a finished one" }
