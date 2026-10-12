@@ -143,6 +143,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0032_tpm_tag_scopes",
         include_str!("../migrations/0032_tpm_tag_scopes.sql"),
     ),
+    (
+        "0033_budget_exhaustion_forecast",
+        include_str!("../migrations/0033_budget_exhaustion_forecast.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.
