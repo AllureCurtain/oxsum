@@ -18,7 +18,7 @@ use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use oxsum_core::{KeyScope, Role};
-use oxsum_web::bills::{BillView, csv, json};
+use oxsum_web::{BillView, csv, json};
 
 use crate::AppState;
 use crate::auth::session_cookie_value;

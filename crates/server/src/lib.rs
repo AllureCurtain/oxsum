@@ -22,8 +22,6 @@ mod ws;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::FromRef;
-use leptos::config::LeptosOptions;
 use oxsum_core::{Db, Tenants, WalletError};
 use time::OffsetDateTime;
 use tokio::sync::broadcast;
@@ -54,13 +52,6 @@ pub(crate) struct AppState {
     /// The process's own telemetry registry: per-app, not the `metrics` facade's global
     /// slot, so a test reads back exactly the counts it caused (src/metrics.rs).
     pub(crate) metrics: Metrics,
-    pub(crate) leptos_options: LeptosOptions,
-}
-
-impl FromRef<AppState> for LeptosOptions {
-    fn from_ref(state: &AppState) -> Self {
-        state.leptos_options.clone()
-    }
 }
 
 /// Builds the full application router. Shared by main and the integration tests.
@@ -95,7 +86,6 @@ pub fn app_with_billing(
         billing: billing.clone(),
         rate_limiter: Arc::new(oxsum_core::SlidingWindow::default()),
         metrics: metrics.clone(),
-        leptos_options: web::options(),
     };
     (routes::router(state), billing, metrics)
 }
