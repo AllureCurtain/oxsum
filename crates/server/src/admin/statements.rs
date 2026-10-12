@@ -182,6 +182,7 @@ pub(crate) async fn generate_statements(
 pub(crate) struct StatementDetailRes {
     statement: oxsum_core::Statement,
     lines: Vec<oxsum_core::StatementLine>,
+    anchor: Option<crate::routes::billing::StatementAnchorRes>,
 }
 
 /// One statement with its lines, whatever standing it is in — the admin view of
@@ -196,9 +197,16 @@ pub(crate) async fn statement(
         .statement_by_id(statement_id)
         .await?
         .ok_or_else(ApiError::not_found)?;
+    let organization = state
+        .db
+        .organization_by_id(statement.organization_id)
+        .await?;
+    let wallet = state.tenants.get(&organization.tenant_id).await?;
+    let anchor = crate::routes::billing::statement_anchor(&state, &wallet, &statement).await?;
     ok(StatementDetailRes {
         lines: state.db.statement_lines(statement_id).await?,
         statement,
+        anchor,
     })
 }
 

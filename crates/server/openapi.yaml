@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.54.0
+  version: 0.55.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -357,6 +357,19 @@ info:
     the limit, the window start, the committed spend, the projected exhaustion
     date and the days remaining. The latch clears when the window rolls or the
     constraint changes, so a new period forecasts again.
+
+    0.55.0 anchors finalized statements to the transparency log (issue #221).
+    Finalizing a statement now appends a marker entry to the tenant ledger that
+    commits two digests at that point in the log: the window digest, folded in
+    log order over the covered entries' content hashes, and the rollup digest
+    over the statement's lines and totals. The statement records the anchor's
+    entry id and log index plus both digests (`anchorEntryId`,
+    `anchorLogIndex`, `windowHash`, `rollupHash`), and the detail endpoint
+    serves an `anchor` object carrying the digests, the marker's coordinates
+    and — when the deployment configures `OXSUM_HEAD_SIGNING_KEY` — a signed
+    note over the tree head right after the anchor. A verified bill now proves
+    not only that each entry sits in the log but that nothing was left out of
+    the window the statement claims to cover.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -4502,6 +4515,10 @@ components:
         paidAt: { type: [string, "null"], format: date-time }
         overdueAt: { type: [string, "null"], format: date-time, description: when the statement first answered past due }
         suspendedAt: { type: [string, "null"], format: date-time }
+        anchorEntryId: { type: [string, "null"], format: uuid, description: "the ledger marker committing the statement's window and rollup digests — appended at finalization" }
+        anchorLogIndex: { type: [integer, "null"], format: int64, description: "the anchor entry's position in the tenant log" }
+        windowHash: { type: [string, "null"], pattern: "^[0-9a-f]{64}$", description: "digest folded in log order over the covered entries' content hashes — a truncated or reordered window no longer matches" }
+        rollupHash: { type: [string, "null"], pattern: "^[0-9a-f]{64}$", description: "digest over the statement's canonical lines and totals" }
         createdAt: { type: string, format: date-time }
     StatementLine:
       type: object
@@ -4523,6 +4540,20 @@ components:
         lines:
           type: array
           items: { $ref: "#/components/schemas/StatementLine" }
+        anchor:
+          type: object
+          description: "the statement's log anchor; present once the statement is finalized — `note`, `keyName`, `publicKey` and `keyHash` only when the deployment configures OXSUM_HEAD_SIGNING_KEY"
+          required: [entryId, logIndex, windowHash, rollupHash, origin]
+          properties:
+            entryId: { type: string, format: uuid, description: "the marker entry committing the digests" }
+            logIndex: { type: integer, format: int64, description: "the marker's position in the tenant log" }
+            windowHash: { type: string, pattern: "^[0-9a-f]{64}$", description: "digest folded in log order over the covered entries' content hashes" }
+            rollupHash: { type: string, pattern: "^[0-9a-f]{64}$", description: "digest over the statement's canonical lines and totals" }
+            origin: { type: string, description: "the ledger's origin, `oxsum/ledgers/<tenant>`" }
+            note: { type: [string, "null"], description: "signed-note text over the tree head right after the anchor — the anchor's inclusion is proven by the head that follows it" }
+            keyName: { type: [string, "null"], description: "the signing key's published name, present when the note is" }
+            publicKey: { type: [string, "null"], pattern: "^[0-9a-f]{64}$", description: "the operator's Ed25519 public key, lowercase hex, present when the note is" }
+            keyHash: { type: [string, "null"], pattern: "^[0-9a-f]{8}$", description: "the key's short fingerprint, lowercase hex, present when the note is" }
     StatementPayment:
       type: object
       required: [statement, entryId, amountMinor]

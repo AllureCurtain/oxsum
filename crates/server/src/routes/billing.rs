@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use oxsum_core::{Principal, WalletError};
+use oxsum_core::{Principal, SignedHead, WalletError, signing_key};
 
 use crate::error::{ApiError, ApiJson};
 use crate::routes::{ApiResult, ok, verify_url, wallet};
@@ -348,6 +348,76 @@ pub(crate) async fn settle(
 pub(crate) struct StatementDetailRes {
     statement: oxsum_core::Statement,
     lines: Vec<oxsum_core::StatementLine>,
+    anchor: Option<StatementAnchorRes>,
+}
+
+/// The statement's log anchor as the detail endpoints answer it (issue #221):
+/// the marker's identity, the two digests it commits, and — when the deployment
+/// signs heads — the signed note over the head right after it, which is what
+/// proves the marker was committed.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StatementAnchorRes {
+    entry_id: Uuid,
+    log_index: i64,
+    window_hash: String,
+    rollup_hash: String,
+    origin: String,
+    note: Option<String>,
+    key_name: Option<String>,
+    public_key: Option<String>,
+    key_hash: Option<String>,
+}
+
+/// Builds the anchor a statement detail serves from the row's columns, signing
+/// the head that follows the marker when the deployment holds a key — `None`
+/// key leaves `note` and the key fields absent, as on the proof endpoint.
+/// `None` when the row carries no anchor (drafts, pre-anchor statements).
+pub(crate) async fn statement_anchor(
+    state: &AppState,
+    w: &oxsum_core::Wallet,
+    statement: &oxsum_core::Statement,
+) -> Result<Option<StatementAnchorRes>, ApiError> {
+    let (Some(entry_id), Some(log_index), Some(window_hash), Some(rollup_hash)) = (
+        statement.anchor_entry_id,
+        statement.anchor_log_index,
+        statement.window_hash.as_deref(),
+        statement.rollup_hash.as_deref(),
+    ) else {
+        return Ok(None);
+    };
+    let key = state
+        .config
+        .head_signing_seed()
+        .map(signing_key)
+        .transpose()
+        .map_err(|_| ApiError::Internal)?;
+    let signed: Option<SignedHead> = match key {
+        Some(key) => Some(w.signed_head_at(&key, log_index as u64 + 1).await?),
+        None => None,
+    };
+    Ok(Some(StatementAnchorRes {
+        entry_id,
+        log_index,
+        window_hash: window_hash.to_owned(),
+        rollup_hash: rollup_hash.to_owned(),
+        origin: signed
+            .as_ref()
+            .map(|s| s.origin.clone())
+            .unwrap_or_else(|| format!("oxsum/ledgers/{}", w.tenant_id())),
+        note: signed.as_ref().map(|s| s.note.clone()),
+        key_name: signed.as_ref().map(|s| s.key.name.clone()),
+        public_key: signed.as_ref().map(|s| {
+            s.key
+                .public_key
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect()
+        }),
+        key_hash: signed
+            .as_ref()
+            .map(|s| s.key.key_hash.iter().map(|b| format!("{b:02x}")).collect()),
+    }))
 }
 
 /// The organization's finalized statements, newest period first — the monthly
@@ -393,9 +463,11 @@ pub(crate) async fn statement_detail(
     {
         return Err(ApiError::not_found());
     }
+    let anchor = statement_anchor(&state, &w, &statement).await?;
     ok(StatementDetailRes {
         lines: state.db.statement_lines(statement_id).await?,
         statement,
+        anchor,
     })
 }
 

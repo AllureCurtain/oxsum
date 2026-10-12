@@ -22,7 +22,7 @@ use crate::auth::require_principal;
 use crate::error::ApiError;
 
 mod auth;
-mod billing;
+pub(crate) mod billing;
 mod device;
 mod keys;
 mod log;
