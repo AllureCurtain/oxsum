@@ -610,6 +610,40 @@ async fn run(
             });
         }
     }
+    // Tag-scoped buckets bound the key on top of the plain window (issue #209):
+    // the turn's `metadata` picks which buckets it lands in, and each is checked
+    // `window-actual + estimate ≤ cap` against the same estimate the plain window
+    // used. A full per-value bucket refuses only the turns carrying that value —
+    // the other values' buckets stay open.
+    if let Some(scopes) = &key.tokens_per_minute_scopes {
+        let estimate = request
+            .counted_input
+            .unwrap_or_else(|| oxsum_core::input_upper_bound(&texts))
+            + output_bound;
+        for (tag, scope) in scopes {
+            let tag_scope = oxsum_core::TagScope {
+                tag: tag.clone(),
+                scope: scope.clone(),
+            };
+            let Some(name) = tag_scope.scope_name(&request.attribution.tags) else {
+                continue;
+            };
+            let (settled, retry_after) = state.db.tpm_window_scoped(key.key_id, &name).await?;
+            if settled + estimate > scope.cap() {
+                crate::metrics::rate_limited(&state.metrics, "gateway");
+                return Err(GatewayError::RateLimited {
+                    message: format!(
+                        "this API key is limited to {} tokens per minute on tag \
+                         {tag} ({settled} settled, this request needs up to {estimate})",
+                        scope.cap()
+                    ),
+                    code: "TOKENS_PER_MINUTE",
+                    limit: scope.cap(),
+                    retry_after_secs: retry_after,
+                });
+            }
+        }
+    }
     // Attempt order: a weighted pick leads — the rollout of `weight` is a real
     // proportional preference — and the rest follow in descending weight, so a
     // failed attempt falls over to the next-most-preferred route (issue #168).

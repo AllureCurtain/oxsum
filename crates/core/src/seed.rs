@@ -205,6 +205,7 @@ impl Db {
                     spend_limit_minor: None,
                     requests_per_minute: None,
                     tokens_per_minute: None,
+                    tokens_per_minute_scopes: None,
                 },
             ),
             (
@@ -214,6 +215,7 @@ impl Db {
                     spend_limit_minor: Some(STAGING_LIMIT),
                     requests_per_minute: None,
                     tokens_per_minute: None,
+                    tokens_per_minute_scopes: None,
                 },
             ),
             (
@@ -223,6 +225,7 @@ impl Db {
                     spend_limit_minor: None,
                     requests_per_minute: None,
                     tokens_per_minute: None,
+                    tokens_per_minute_scopes: None,
                 },
             ),
         ];

@@ -5,10 +5,11 @@
 //! prefix, so a dump of `oxsum.api_keys` authenticates nothing. See docs/product.md,
 //! "API keys".
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use rand::Rng;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{Postgres, Transaction};
 use time::OffsetDateTime;
@@ -32,7 +33,8 @@ pub(crate) const MAX_MODEL: usize = 128;
 /// The columns every `ApiKey` read projects, in one place for select and returning.
 const KEY_COLS: &str = "key_id, name, prefix, created_by, created_at, expires_at, \
                         revoked_at, spend_limit_minor, budget_duration, model_allowlist, \
-                        requests_per_minute, max_concurrent_holds, tokens_per_minute";
+                        requests_per_minute, max_concurrent_holds, tokens_per_minute, \
+                        tokens_per_minute_scopes";
 
 /// The rule every model allowlist follows — a key's own, or a tier's: null or a
 /// non-empty list of non-empty model names.
@@ -98,6 +100,136 @@ impl BudgetDuration {
     }
 }
 
+/// One tag-scoped form of a TPM allowance (issue #209): how a key's settled
+/// tokens are sliced into a bucket beside the plain per-key window. The cap is
+/// the scope's `tokensPerMinute`; a turn accrues into the bucket only when its
+/// `metadata` carries the scope's tag — and, for [`Concrete`](TpmScope::Concrete),
+/// the pinned value.
+///
+/// The wire shape is one object naming its form — `{"each": 5000}`,
+/// `{"concrete": "free", "tokensPerMinute": 1000}`, `{"total": 20000}` — which
+/// no serde derive spells, so `Serialize`/`Deserialize` are written by hand.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TpmScope {
+    /// A bucket per tag value, capped at the given settled tokens per minute.
+    /// `{ "each": 5000 }` on tag `team` makes `team=red` and `team=blue` separate
+    /// buckets of 5000 each.
+    Each(i64),
+    /// One named value, capped at `tokens_per_minute`: only turns whose tag
+    /// carries exactly `concrete` accrue.
+    Concrete {
+        /// The tag value the scope pins.
+        concrete: String,
+        /// The pinned bucket's settled-token allowance per minute.
+        tokens_per_minute: i64,
+    },
+    /// The whole tag aggregated into one bucket, capped at the given settled
+    /// tokens per minute, whatever value the turn carries. `{ "total": 20000 }`.
+    Total(i64),
+}
+
+impl Serialize for TpmScope {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(match self {
+            Self::Concrete { .. } => 2,
+            _ => 1,
+        }))?;
+        match self {
+            Self::Each(cap) => map.serialize_entry("each", cap)?,
+            Self::Concrete {
+                concrete,
+                tokens_per_minute,
+            } => {
+                map.serialize_entry("concrete", concrete)?;
+                map.serialize_entry("tokensPerMinute", tokens_per_minute)?;
+            }
+            Self::Total(cap) => map.serialize_entry("total", cap)?,
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for TpmScope {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // An intermediate map keeps the three shapes flat: whichever of `each`,
+        // `concrete`, `total` is present names the form; `concrete` carries
+        // `tokensPerMinute` beside it.
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Flat {
+            each: Option<i64>,
+            concrete: Option<String>,
+            tokens_per_minute: Option<i64>,
+            total: Option<i64>,
+        }
+        let flat = Flat::deserialize(deserializer)?;
+        match (flat.each, flat.concrete, flat.tokens_per_minute, flat.total) {
+            (Some(cap), None, None, None) => Ok(TpmScope::Each(cap)),
+            (None, Some(concrete), Some(tpm), None) => Ok(TpmScope::Concrete {
+                concrete,
+                tokens_per_minute: tpm,
+            }),
+            (None, None, None, Some(cap)) => Ok(TpmScope::Total(cap)),
+            _ => Err(serde::de::Error::custom(
+                "a token scope is exactly one of each, concrete+tokensPerMinute, or total",
+            )),
+        }
+    }
+}
+
+impl TpmScope {
+    /// The settled-token-per-minute cap the scope carries, whichever form it is.
+    pub fn cap(&self) -> i64 {
+        match self {
+            Self::Each(cap)
+            | Self::Concrete {
+                tokens_per_minute: cap,
+                ..
+            }
+            | Self::Total(cap) => *cap,
+        }
+    }
+}
+
+/// A tag name plus the scope the key places on it: one entry of
+/// `tokensPerMinuteScopes`. The tag names the `metadata` key the turn's
+/// attribution carries; the scope says how its settled tokens bucket.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagScope {
+    /// The `metadata` key the scope reads, bounded like a tag key.
+    pub tag: String,
+    /// The scope form and its cap.
+    pub scope: TpmScope,
+}
+
+impl TagScope {
+    /// The `oxsum.tpm_windows.scope` name a turn accrues into, or `None` when the
+    /// turn's tags do not select this scope — an untagged turn never accrues a
+    /// scoped row, and a `concrete` scope accrues only on the pinned value.
+    ///
+    /// `Each` and `Concrete` name their bucket `tag:<tag>=<value>`; `Total` names
+    /// it `tag:<tag>`. The empty scope stays the plain per-key window, which a
+    /// scoped name can never collide with because it always carries a tag.
+    pub fn scope_name(&self, tags: &BTreeMap<String, String>) -> Option<String> {
+        match &self.scope {
+            TpmScope::Each(_) => tags
+                .get(&self.tag)
+                .map(|value| format!("tag:{}={value}", self.tag)),
+            TpmScope::Concrete { concrete, .. } => match tags.get(&self.tag) {
+                Some(value) if value == concrete => Some(format!("tag:{}={concrete}", self.tag)),
+                _ => None,
+            },
+            TpmScope::Total(_) => tags.get(&self.tag).map(|_| format!("tag:{}", self.tag)),
+        }
+    }
+}
+
+/// The scopes a `tokensPerMinuteScopes` JSON object decodes into: the stored
+/// `jsonb` maps a tag name to its one scope object. Sorted by tag so a stored
+/// set reads back deterministically.
+pub type TpmScopes = BTreeMap<String, TpmScope>;
+
 /// The constraints one key carries, written as a set — at mint or replaced wholesale
 /// by a patch. Every field is optional: `None` lifts that constraint.
 #[derive(Debug, Clone, Default)]
@@ -118,6 +250,12 @@ pub struct KeyConstraints {
     /// from the durable window a settlement feeds — not from holds, which never
     /// occupy it. `None` is uncapped (issue #203).
     pub tokens_per_minute: Option<i32>,
+    /// Tag-scoped slices of that allowance (issue #209): a map from a `metadata`
+    /// tag key to one scope — `each` fans a bucket out per value, `concrete`
+    /// pins one value, `total` aggregates the whole tag. Each scoped bucket is
+    /// an additional cap alongside `tokens_per_minute`, not a replacement.
+    /// `None` (or an empty map) scopes nothing.
+    pub tokens_per_minute_scopes: Option<TpmScopes>,
 }
 
 impl KeyConstraints {
@@ -146,8 +284,40 @@ impl KeyConstraints {
                 )));
             }
         }
+        if let Some(scopes) = &self.tokens_per_minute_scopes {
+            validate_tpm_scopes(scopes)?;
+        }
         Ok(())
     }
+}
+
+/// The rules a `tokensPerMinuteScopes` map follows (issue #209): a tag name is a
+/// non-empty tag-key-sized name, each scope's cap is at least 1, and a
+/// `concrete` scope names a non-empty tag-value-sized value. The map may name
+/// several tags but each tag carries one scope — the object shape enforces it.
+fn validate_tpm_scopes(scopes: &TpmScopes) -> Result<(), WalletError> {
+    for (tag, scope) in scopes {
+        if tag.trim().is_empty() || tag.len() > crate::usage::MAX_TAG {
+            return Err(WalletError::InvalidInput(format!(
+                "a tokensPerMinuteScopes tag is a tag name, 1..={} bytes",
+                crate::usage::MAX_TAG
+            )));
+        }
+        if scope.cap() <= 0 {
+            return Err(WalletError::InvalidInput(format!(
+                "tokensPerMinuteScopes.{tag} must cap at least 1"
+            )));
+        }
+        if let TpmScope::Concrete { concrete, .. } = scope
+            && (concrete.is_empty() || concrete.len() > crate::usage::MAX_TAG)
+        {
+            return Err(WalletError::InvalidInput(format!(
+                "tokensPerMinuteScopes.{tag}.concrete is a tag value, 1..={} bytes",
+                crate::usage::MAX_TAG
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// An API key as the API presents it. Never the secret, never the hash.
@@ -180,6 +350,8 @@ pub struct ApiKey {
     pub max_concurrent_holds: Option<i32>,
     /// The key's rolling-minute token allowance; `None` is uncapped (issue #203).
     pub tokens_per_minute: Option<i32>,
+    /// The key's tag-scoped token allowances (issue #209); `None` scopes nothing.
+    pub tokens_per_minute_scopes: Option<TpmScopes>,
 }
 
 /// The credential behind a key-authenticated request: which key acted, and the
@@ -198,6 +370,10 @@ pub struct ActingKey {
     /// The rolling-minute token allowance in force when the key authenticated,
     /// checked against the durable settled-usage window at admission (issue #203).
     pub tokens_per_minute: Option<i32>,
+    /// The tag-scoped token allowances in force when the key authenticated
+    /// (issue #209), checked bucket-by-bucket against the same durable window.
+    /// `None` scopes nothing.
+    pub tokens_per_minute_scopes: Option<TpmScopes>,
 }
 
 /// A key plus its secret, returned exactly once: at creation.
@@ -254,7 +430,7 @@ impl Db {
         let row = sqlx::query(
             "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, \
                     k.key_id, k.spend_limit_minor, k.requests_per_minute, \
-                    k.tokens_per_minute \
+                    k.tokens_per_minute, k.tokens_per_minute_scopes \
              FROM oxsum.api_keys k JOIN oxsum.organizations o USING (organization_id) \
              WHERE k.secret_hash = $1 \
                AND k.revoked_at IS NULL \
@@ -271,6 +447,9 @@ impl Db {
                 spend_limit_minor: row.try_get("spend_limit_minor")?,
                 requests_per_minute: row.try_get("requests_per_minute")?,
                 tokens_per_minute: row.try_get("tokens_per_minute")?,
+                tokens_per_minute_scopes: scopes_from_json(
+                    row.try_get::<Option<serde_json::Value>, _>("tokens_per_minute_scopes")?,
+                ),
             };
             Ok((organization, key))
         })
@@ -295,6 +474,9 @@ impl Db {
         constraints: KeyConstraints,
     ) -> Result<Option<ApiKey>, WalletError> {
         constraints.validate()?;
+        // `model_allowlist` moves into its bind below, so the scopes JSON — a
+        // borrow of the whole struct — is built before any field leaves.
+        let scopes = scopes_json(&constraints);
         // Like revoke: the scope is part of the lookup, not a check after it, so a member
         // naming a key they did not create gets the same answer as a key that does not exist.
         let row = match scope {
@@ -303,7 +485,7 @@ impl Db {
                     "UPDATE oxsum.api_keys \
                      SET spend_limit_minor = $4, budget_duration = $5, model_allowlist = $6, \
                          requests_per_minute = $7, max_concurrent_holds = $8, \
-                         tokens_per_minute = $9 \
+                         tokens_per_minute = $9, tokens_per_minute_scopes = $10 \
                      WHERE organization_id = $1 AND key_id = $2 AND created_by = $3 \
                      RETURNING {KEY_COLS}"
                 ))
@@ -316,6 +498,7 @@ impl Db {
                 .bind(constraints.requests_per_minute)
                 .bind(constraints.max_concurrent_holds)
                 .bind(constraints.tokens_per_minute)
+                .bind(scopes.clone())
                 .fetch_optional(self.pool())
                 .await?
             }
@@ -324,7 +507,7 @@ impl Db {
                     "UPDATE oxsum.api_keys \
                      SET spend_limit_minor = $3, budget_duration = $4, model_allowlist = $5, \
                          requests_per_minute = $6, max_concurrent_holds = $7, \
-                         tokens_per_minute = $8 \
+                         tokens_per_minute = $8, tokens_per_minute_scopes = $9 \
                      WHERE organization_id = $1 AND key_id = $2 \
                      RETURNING {KEY_COLS}"
                 ))
@@ -336,6 +519,7 @@ impl Db {
                 .bind(constraints.requests_per_minute)
                 .bind(constraints.max_concurrent_holds)
                 .bind(constraints.tokens_per_minute)
+                .bind(scopes)
                 .fetch_optional(self.pool())
                 .await?
             }
@@ -434,12 +618,16 @@ pub(crate) async fn insert(
     let secret = generate_secret();
     let prefix = secret.chars().take(PREFIX_CHARS).collect::<String>();
     let hash = hash_secret(&secret);
+    // `model_allowlist` moves into its bind, so the scopes JSON — a borrow of the
+    // whole struct — is built before any field leaves.
+    let scopes = scopes_json(&constraints);
     let row = sqlx::query(&format!(
         "INSERT INTO oxsum.api_keys \
              (key_id, organization_id, name, prefix, secret_hash, created_by, expires_at, \
               spend_limit_minor, budget_duration, model_allowlist, \
-              requests_per_minute, max_concurrent_holds, tokens_per_minute) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
+              requests_per_minute, max_concurrent_holds, tokens_per_minute, \
+              tokens_per_minute_scopes) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
          RETURNING {KEY_COLS}"
     ))
     .bind(Uuid::new_v4())
@@ -455,6 +643,7 @@ pub(crate) async fn insert(
     .bind(constraints.requests_per_minute)
     .bind(constraints.max_concurrent_holds)
     .bind(constraints.tokens_per_minute)
+    .bind(scopes)
     .fetch_one(&mut **tx)
     .await
     .map_err(|e| conflict_or_storage(e, "api_keys_secret_hash_key", "key collision"))?;
@@ -523,7 +712,28 @@ fn key_from_row(row: &sqlx::postgres::PgRow) -> Result<ApiKey, WalletError> {
         requests_per_minute: row.try_get("requests_per_minute")?,
         max_concurrent_holds: row.try_get("max_concurrent_holds")?,
         tokens_per_minute: row.try_get("tokens_per_minute")?,
+        tokens_per_minute_scopes: scopes_from_json(
+            row.try_get::<Option<serde_json::Value>, _>("tokens_per_minute_scopes")?,
+        ),
     })
+}
+
+/// The `tokens_per_minute_scopes` value the column stores: the scopes map as
+/// `jsonb`, or `NULL` when the key scopes nothing — an empty map reads as "no
+/// scopes" too, so it is stored as NULL rather than an empty object.
+fn scopes_json(constraints: &KeyConstraints) -> Option<serde_json::Value> {
+    constraints
+        .tokens_per_minute_scopes
+        .as_ref()
+        .filter(|scopes| !scopes.is_empty())
+        .map(serde_json::to_value)
+        .and_then(Result::ok)
+}
+
+/// Reads the stored `jsonb` scopes back into a map; `NULL` and an unreadable
+/// shape both yield `None`, matching the "no scopes" reading a NULL takes.
+fn scopes_from_json(value: Option<serde_json::Value>) -> Option<TpmScopes> {
+    value.and_then(|v| serde_json::from_value(v).ok())
 }
 
 /// A spend limit must be a non-negative amount in minor units; `None` clears it to unlimited.

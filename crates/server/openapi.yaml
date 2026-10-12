@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.52.0
+  version: 0.53.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -336,6 +336,16 @@ info:
     and the body is binary `application/pdf`, not the JSON envelope. Rendering
     is pure Rust inside the single binary, so the PDF always reads the stored
     lines and can never disagree with the detail endpoint's own answer.
+
+    0.53.0 adds tag-scoped token buckets (issue #209): `tokensPerMinuteScopes`
+    slices a key's `tokensPerMinute` allowance by the request's `metadata` tag.
+    Each tag names one scope — `each` fans a bucket out per value, `concrete`
+    pins one named value, `total` aggregates the whole tag — and every bucket a
+    turn lands in is checked `window-actual + estimate ≤ cap` alongside the
+    plain window. A full per-value bucket refuses only the turns carrying that
+    value; the other values' buckets stay open. Scoped rows accrue in the same
+    transaction that records the usage row and expire with the trailing minute,
+    so a high-cardinality tag set cannot outgrow the window.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -3711,6 +3721,7 @@ components:
         requestsPerMinute: { type: [integer, "null"], minimum: 1, description: "requests the key may start inside a rolling minute, on the gateway and on /api/v1/holds; null (the default) is uncapped" }
         maxConcurrentHolds: { type: [integer, "null"], minimum: 1, description: "holds the key may have outstanding at once; null (the default) is uncapped" }
         tokensPerMinute: { type: [integer, "null"], minimum: 1, description: "settled input+output tokens the key may burn inside a trailing minute, checked at admission on the gateway; null (the default) is uncapped" }
+        tokensPerMinuteScopes: { $ref: "#/components/schemas/TokensPerMinuteScopes" }
     UpdateKeyConstraintsRequest:
       type: object
       properties:
@@ -3720,9 +3731,10 @@ components:
         requestsPerMinute: { type: [integer, "null"], minimum: 1, description: "the new per-minute request allowance, or null to uncap" }
         maxConcurrentHolds: { type: [integer, "null"], minimum: 1, description: "the new outstanding-holds cap, or null to uncap" }
         tokensPerMinute: { type: [integer, "null"], minimum: 1, description: "the new per-minute settled-token allowance, or null to uncap" }
+        tokensPerMinuteScopes: { $ref: "#/components/schemas/TokensPerMinuteScopes" }
     ApiKey:
       type: object
-      required: [id, name, prefix, createdBy, createdAt, expiresAt, revokedAt, spendLimitMinor, budgetDuration, modelAllowlist, requestsPerMinute, maxConcurrentHolds, tokensPerMinute]
+      required: [id, name, prefix, createdBy, createdAt, expiresAt, revokedAt, spendLimitMinor, budgetDuration, modelAllowlist, requestsPerMinute, maxConcurrentHolds, tokensPerMinute, tokensPerMinuteScopes]
       properties:
         id: { type: string, format: uuid }
         name: { type: [string, "null"] }
@@ -3737,6 +3749,31 @@ components:
         requestsPerMinute: { type: [integer, "null"], minimum: 1, description: "the key's rolling-minute request allowance; null is uncapped" }
         maxConcurrentHolds: { type: [integer, "null"], minimum: 1, description: "the key's outstanding-holds cap; null is uncapped" }
         tokensPerMinute: { type: [integer, "null"], minimum: 1, description: "the key's rolling-minute settled-token allowance; null is uncapped" }
+        tokensPerMinuteScopes: { $ref: "#/components/schemas/TokensPerMinuteScopes" }
+    TokensPerMinuteScopes:
+      type: ["object", "null"]
+      additionalProperties: { $ref: "#/components/schemas/TokenScope" }
+      description: "Tag-scoped slices of the key's settled-token allowance (issue #209). Maps a request `metadata` tag key to one scope; each scoped bucket is an additional cap alongside `tokensPerMinute`, not a replacement. null (the default) scopes nothing."
+    TokenScope:
+      type: object
+      description: "One tag scope (issue #209): exactly one of `each`, `concrete`, or `total` is set. A settled turn accrues into the bucket its `metadata` tag selects — `each` fans out per value (`tag=value`), `concrete` only the pinned value, `total` the whole tag — and the bucket's cap is checked `window-actual + estimate ≤ cap` at admission, 429 when full while other buckets stay open."
+      oneOf:
+        - type: object
+          required: [each]
+          properties:
+            each: { type: integer, minimum: 1, description: "a separate bucket per value of this tag, each capped here" }
+          additionalProperties: false
+        - type: object
+          required: [concrete, tokensPerMinute]
+          properties:
+            concrete: { type: string, minLength: 1, maxLength: 64, description: "the one tag value this bucket pins" }
+            tokensPerMinute: { type: integer, minimum: 1, description: "the pinned bucket's settled-token allowance per minute" }
+          additionalProperties: false
+        - type: object
+          required: [total]
+          properties:
+            total: { type: integer, minimum: 1, description: "one bucket over every value of this tag, capped here" }
+          additionalProperties: false
     CreatedApiKey:
       allOf:
         - $ref: "#/components/schemas/ApiKey"

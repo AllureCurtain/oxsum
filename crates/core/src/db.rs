@@ -139,6 +139,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0031_tpm_rate_limits",
         include_str!("../migrations/0031_tpm_rate_limits.sql"),
     ),
+    (
+        "0032_tpm_tag_scopes",
+        include_str!("../migrations/0032_tpm_tag_scopes.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.
