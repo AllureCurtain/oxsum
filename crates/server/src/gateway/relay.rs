@@ -519,11 +519,21 @@ impl Plan {
                 // The post-settle balance feeds `balance.low`; a read that
                 // fails skips the check rather than blocking the record.
                 let available = self.wallet.available().await.ok();
-                if let Err(error) = self.db.record_usage_balanced(&row, available).await {
+                // The two writes are independent — the usage row and the watch-row
+                // delete touch different tables — so they go out concurrently
+                // instead of as two serial round trips. Either failing alone
+                // only logs: a missing usage row is what the reconciliation
+                // report's drift classes exist to catch, and a left-behind
+                // watch row is what the sweeper reaps.
+                let (usage_outcome, hold_outcome) = tokio::join!(
+                    self.db.record_usage_balanced(&row, available),
+                    self.db.clear_open_hold(&self.hold_key),
+                );
+                if let Err(error) = usage_outcome {
                     tracing::error!(%error, request = %self.request,
                         "recording the settled turn's usage row failed");
                 }
-                if let Err(error) = self.db.clear_open_hold(&self.hold_key).await {
+                if let Err(error) = hold_outcome {
                     tracing::error!(%error, request = %self.request,
                         "clearing the settled hold's watch row failed");
                 }
