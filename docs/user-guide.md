@@ -439,7 +439,8 @@ Steps:
    `deposit.credited`, `deposit.failed`, `deposit.reversed`, `balance.low`,
    `statement.finalized`, `statement.payment_overdue`,
    `statement.payment_status_updated`, `org.credit_limit_exceeded`,
-   `anomaly.detected`). `balanceLowMinor` is the available-balance line
+   `anomaly.detected`, `budget.exhaustion_forecast`). `balanceLowMinor` is the
+   available-balance line
    `balance.low` fires below — omit it and the endpoint stays deaf to the
    balance. The URL must be HTTPS — HTTP is allowed only to localhost for
    development. The answer carries `secret`, a `whsec-` string shown exactly
@@ -460,6 +461,13 @@ Steps:
    line — a hold refused 402 while a `creditLimitMinor` is set.
    `anomaly.detected` fires on the odd settlements — capped, estimated,
    client-cancelled, swept, unpriced, released, dead-lettered holds.
+   `budget.exhaustion_forecast` carries `{keyId, spendLimitMinor,
+   budgetDuration, windowStart, committedMinor, projectedExhaustionDate,
+   daysRemaining}` — an early warning that a key with a `budgetDuration` window
+   is on pace to hit its `spendLimitMinor` before the window closes. It fires
+   once per key per window; PATCHing the key's constraints or rolling into the
+   next window re-arms it, and the keys dashboard shows the same projection
+   inline.
 3. Verify every delivery before acting on it: read `x-oxsum-signature`
    (`t=<unix>,v1=<hex>`), recompute HMAC-SHA256 of `"{t}.{raw body}"` with the
    stored secret, compare in constant time, and reject timestamps older than a
