@@ -155,6 +155,10 @@ pub struct Db {
     pool: PgPool,
 }
 
+/// How long a checkout may wait for a free connection before failing. See
+/// `Db::connect`.
+const ACQUIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 impl Db {
     /// Connects the one pool this process uses for everything.
     ///
@@ -175,6 +179,13 @@ impl Db {
         let pool = PgPoolOptions::new()
             .max_connections(max_connections)
             .acquire_slow_threshold(std::time::Duration::from_secs(10))
+            // Bound how long a checkout may wait for a free connection: under
+            // load the pool fills and requests must fail fast (surfacing as a
+            // pool-timeout error the gateway maps) instead of queueing behind
+            // each other with no bound. Deliberately shorter than sqlx's 30s
+            // default — a checkout waiting this long means the pool, not the
+            // query, is the bottleneck.
+            .acquire_timeout(ACQUIRE_TIMEOUT)
             // A dropped connection gets detected on checkout, not on use: the
             // pool pings before handing it over, so a stale backend never serves
             // a query that then dies mid-flight.
