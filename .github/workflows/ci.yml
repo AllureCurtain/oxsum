@@ -16,10 +16,18 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel stale runs for pull requests only — never cancel a main-branch run
+  # mid-flight (helix pattern).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
+  # Fresh (non-incremental) compiles are faster in CI and shrink the cache
+  # (uv/rust-analyzer/bevy pattern).
+  CARGO_INCREMENTAL: 0
+  # Test binaries don't need debuginfo (uv pattern): linking is the serial,
+  # uncacheable part of CI, and debuginfo only makes it slower.
+  CARGO_PROFILE_TEST_DEBUG: 0
 
 jobs:
   fmt:
@@ -49,12 +57,23 @@ jobs:
       - name: Install mold
         run: sudo apt-get update && sudo apt-get install -y mold
       - uses: Swatinem/rust-cache@v2
+        with:
+          # One shared cache entry for every compile job (helix pattern) instead
+          # of one per job; workspace crates included (uv pattern).
+          shared-key: "ci"
+          cache-workspace-crates: "true"
+          # PR runs restore the cache but only main saves it (uv pattern):
+          # keeps every push from thrashing the cache entry.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # No database is needed to compile: the tree uses no sqlx::query! macros,
       # so compilation never touches a live database.
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
     name: test
+    # Fail fast: the expensive suites never start when fmt or clippy is red
+    # (tokio's `basics` / diesel's `check_and_test` pattern).
+    needs: [fmt, clippy]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     services:
@@ -97,10 +116,31 @@ jobs:
       # The registry, index and target dir: the workspace's dependency tree is the
       # expensive part of every run, and it only changes with the lockfile.
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "ci"
+          cache-workspace-crates: "true"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # nextest runs the workspace's test binaries in parallel (tokio,
+      # rust-analyzer and uv all use it); doctests still go through cargo test.
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
       # The database tests skip without DATABASE_URL; here it is set, so they
       # run for real.
       - name: Run the workspace test suites
-        run: cargo test --workspace
+        # Three suites coordinate through process-global state — the generative
+        # property suite's OnceLock shared schemas, and the seed/jobs suites'
+        # in-process mutexes. nextest runs every test in its own process, so
+        # parallel workers race on that shared state (dropped schemas, double
+        # seeds). They stay on cargo test, which runs one binary per process.
+        run: cargo nextest run --workspace -E 'not binary(generative) and not binary(seed) and not binary(jobs)'
+      - name: Run the process-shared suites
+        run: |
+          cargo test -p oxsum-core --test generative --test seed --test jobs
+          cargo test -p oxsum-server --test jobs
+      - name: Run doctests
+        run: cargo test --workspace --doc
       # doubleentry's Postgres conformance suite spins up testcontainers for several
       # minutes. doubleentry is vendored and almost never changes, so the suite runs
       # only when the engine, the lockfile or the database migration list changed —
