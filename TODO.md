@@ -1,6 +1,6 @@
 # TODO
 
-Updated: 2026-10-11
+Updated: 2026-10-13
 
 ## In progress
 
@@ -26,9 +26,14 @@ Post-roadmap validation: a gate run found `a_settled_turn_enqueues_a_signed_deli
 
 ## Next
 
-Post-roadmap backlog, one issue per item:
+Post-roadmap backlog, one issue per item. The phase direction is settled in docs/decisions.md (2026-10-13, "deepens verifiability before widening the surface"); the four items below execute it in order. The server refactor that preceded it — `routes.rs` and `admin.rs` split into per-resource modules — shipped on this branch ahead of the roadmap.
 
-- (empty — the backlog is clear)
+- **Q3 — Forecasted budget exhaustion** (first; smallest). Project the current `budget_duration` window's spend forward off `usage_daily` against `spend_limit_minor`, surface an exhaustion date as a new webhook event plus a dashboard line.
+- **Q1 — Anchor statements and usage rollups to the transparency log.** The tree head and `sign_price_head` sign ledger heads and priced rows; anchor the statement's covered window (`log_from_index`/`log_to_index`) and the rollup it summarizes into the append-only log so a verified bill also proves nothing was left out.
+- **Q2 — Upstream price-catalog sync with drift alerts.** A scheduled job diffs each channel's `upstream_prices` against the upstream's live catalog, records drift as a reconciliation entry, and raises `anomaly.detected` over webhooks — a stale catalog under fail-closed `unpriced` is worse than none.
+- **Q4 — OpenTelemetry trace export with GenAI conventions.** OTLP `gen_ai.*` spans (system, model, token counts, hold/settle timing), optional and env-gated, beside the existing `/metrics` scrape.
+
+Deferred to the backlog after these: end-user passthrough signed billing reports, anomaly scoring beyond settlement-kind, multi-currency display, signed spend mandates and x402 rails (payment/agent surface, out of scope today), prepaid/postpaid polish.
 
 The original phases below are done — A, B and C closed, most recently C-11 (the chat page, issue #39).
 
