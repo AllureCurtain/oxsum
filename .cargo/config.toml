@@ -24,3 +24,18 @@ LEPTOS_OUTPUT_NAME = "oxsum"
 # full fidelity because they ship without debug info anyway (issue #176).
 [profile.dev]
 debug = 1
+
+# Release ships one binary to a deployment host: size and cold start matter,
+# build time does not (CI builds it rarely, dev never does). LTO + strip shrink
+# the `oxsum` binary substantially; a single codegen unit is the slowest but
+# smallest configuration. Debug info stays off (cargo's release default).
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
+
+# mold 链接器：链接大 rlib（如 liboxsum_server）比 GNU ld 快几倍。需要本机装
+# mold（`sudo apt install mold`）；没装时构建会失败，所以这行只进优化分支，
+# 不进 main——合进去之前确认 CI/部署机也有 mold。
+[target.'cfg(target_os = "linux")']
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]

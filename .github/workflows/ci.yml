@@ -43,6 +43,11 @@ jobs:
         with:
           toolchain: "1.98"
           components: rustfmt, clippy
+      # The tracked .cargo/config.toml routes linking through mold
+      # (-C link-arg=-fuse-ld=mold); the stock ubuntu-latest image does not
+      # ship it, so install it before anything links.
+      - name: Install mold
+        run: sudo apt-get update && sudo apt-get install -y mold
       - uses: Swatinem/rust-cache@v2
       # No database is needed to compile: the tree uses no sqlx::query! macros,
       # so compilation never touches a live database.
@@ -77,6 +82,10 @@ jobs:
         with:
           toolchain: "1.98"
           components: rustfmt, clippy
+      # Same mold requirement as the clippy job: the tracked .cargo/config.toml
+      # links through mold, which the stock image does not ship.
+      - name: Install mold
+        run: sudo apt-get update && sudo apt-get install -y mold
       # The workspace's test binaries are big (Leptos, testcontainers, sqlx):
       # without this the runner exhausts its disk compiling them ("No space left
       # on device" from rustc).
@@ -129,6 +138,9 @@ jobs:
         with:
           toolchain: "1.98"
           components: rustfmt, clippy
+      # Same mold requirement as the other compile jobs.
+      - name: Install mold
+        run: sudo apt-get update && sudo apt-get install -y mold
       # Same reason as the test job: the host and wasm32 compilations, plus the
       # cargo-leptos install, do not fit in the runner's default free space.
       - name: Free disk space

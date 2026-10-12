@@ -80,7 +80,11 @@ tiktoken-rs = "0.6"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal", "net"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres"] }
+# The single feature source for sqlx: doubleentry's optional postgres backend
+# needs the `time`/`Date` and `uuid`/`Uuid` Encode/Decode impls (storage/postgres.rs
+# binds both), so the union lives here and doubleentry inherits it — keeping the
+# two declaration sites from drifting apart and forcing duplicate sqlx builds.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "time", "uuid"] }
 thiserror = "2"
 time = { version = "0.3", features = ["macros", "serde-well-known"] }
 # `log` is what sqlx's ConnectOptions::log_slow_statements takes; the workspace does not
@@ -100,9 +104,16 @@ metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 futures-util = "0.3"
 tokio-tungstenite = "0.29"
-# Outbound mail for the verification and password-reset flows: async SMTP over native TLS.
+# Outbound mail for the verification and password-reset flows: async SMTP over TLS.
 # `smtps://` connects wrapped; `smtp://` upgrades with STARTTLS when the server offers it.
-lettre = { version = "0.11", features = ["tokio1-native-tls"] }
+# `tokio1-rustls-tls` (not `tokio1-native-tls`): rustls keeps the whole workspace on
+# one TLS stack and drops openssl-sys — the only crate that pulled it — from the graph.
+# Default features are off because lettre's default set includes `native-tls`, which
+# trips lettre's own tokio1/native-tls feature guard; the list below is the old
+# default set minus `native-tls`.
+lettre = { version = "0.11", default-features = false, features = [
+    "smtp-transport", "pool", "hostname", "builder", "tokio1-rustls-tls",
+] }
 # The statement PDF export (issue #205): a pure-Rust writer, no headless browser, so the
 # single-binary deployment is kept. Default features off — the html/layout/images/svg
 # machinery is unused — and the document renders with the standard-14 builtin fonts, so no
