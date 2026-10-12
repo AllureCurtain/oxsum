@@ -2683,6 +2683,272 @@ async fn rpm_and_tpm_compose_without_leaking() {
     );
 }
 
+// ── tag-scoped token buckets (issue #209) ────────────────────────────────────
+
+/// A tagged chat request: `simple` plus the `metadata` the scope reads.
+fn tagged(model: &str, tag: &str, value: &str) -> Value {
+    json!({
+        "model": model,
+        "messages": [{"role": "user", "content": "hi"}],
+        "metadata": {tag: value},
+    })
+}
+
+/// The settled tokens one named bucket holds, straight from `oxsum.tpm_windows`.
+async fn scoped_settled(pool: &sqlx::PgPool, key_id: uuid::Uuid, scope: &str) -> i64 {
+    sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT sum(tokens)::bigint FROM oxsum.tpm_windows WHERE key_id = $1 AND scope = $2",
+    )
+    .bind(key_id)
+    .bind(scope)
+    .fetch_one(pool)
+    .await
+    .expect("the scoped window reads")
+    .unwrap_or(0)
+}
+
+/// `each` fans the allowance out per tag value: a tagged settle lands in its own
+/// value's bucket, and when that bucket caps only the turns carrying *that*
+/// value are refused — the other values' buckets stay open.
+#[tokio::test]
+async fn an_each_scope_refuses_only_the_capped_value() {
+    let world = world!(1_000_000);
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+    let key_id: uuid::Uuid = world.key_id.parse().unwrap();
+
+    // `team` fans out per value at 1500 a minute; `region` aggregates at 1M.
+    let (status, body) = call(
+        &world.app,
+        "PATCH",
+        &format!("/api/v1/org/keys/{}", world.key_id),
+        Some(json!({
+            "tokensPerMinuteScopes": {"team": {"each": 1500}}
+        })),
+        Some(&world.key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["data"]["tokensPerMinuteScopes"]["team"]["each"], 1500,
+        "the scope round-trips on the key"
+    );
+
+    // A `team=red` turn settles: its 12 tokens land in the `tag:team=red` bucket
+    // beside the plain window.
+    let response = chat(
+        &world.app,
+        &world.key,
+        tagged(&world.model("ok"), "team", "red"),
+    )
+    .await;
+    let (status, _) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        scoped_settled(&world.pool, key_id, "tag:team=red").await,
+        12
+    );
+    assert_eq!(
+        scoped_settled(&world.pool, key_id, "tag:team=blue").await,
+        0,
+        "the settle fanned out only into its own value's bucket"
+    );
+
+    // Seed `red` over the cap — what its settled turns would have left: the
+    // bucket tops up to 1500 of 1500 (the turn's own 12 may share the truncated
+    // second, so the seed upserts rather than collide on the primary key).
+    sqlx::query(
+        "INSERT INTO oxsum.tpm_windows (key_id, scope, window_start, tokens) \
+         VALUES ($1, 'tag:team=red', date_trunc('second', now()), 1490) \
+         ON CONFLICT (key_id, scope, window_start) DO UPDATE SET \
+             tokens = tpm_windows.tokens + EXCLUDED.tokens",
+    )
+    .bind(key_id)
+    .execute(&world.pool)
+    .await
+    .expect("the scoped row lands");
+
+    // `red` is refused — its bucket plus this estimate is over 1500.
+    let response = chat(
+        &world.app,
+        &world.key,
+        tagged(&world.model("ok"), "team", "red"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let (_, body) = json_of(response).await;
+    assert_eq!(body["error"]["code"], "TOKENS_PER_MINUTE");
+
+    // `blue` is still open: its own bucket has room.
+    let response = chat(
+        &world.app,
+        &world.key,
+        tagged(&world.model("ok"), "team", "blue"),
+    )
+    .await;
+    let (status, _) = json_of(response).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the other value's bucket stayed open"
+    );
+}
+
+/// `concrete` pins one named value: only a turn carrying exactly that value
+/// accrues into the pinned bucket, and only it is refused when the bucket caps.
+#[tokio::test]
+async fn a_concrete_scope_counts_only_the_pinned_value() {
+    let world = world!(1_000_000);
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+    let key_id: uuid::Uuid = world.key_id.parse().unwrap();
+
+    let (status, _) = call(
+        &world.app,
+        "PATCH",
+        &format!("/api/v1/org/keys/{}", world.key_id),
+        Some(json!({
+            "tokensPerMinuteScopes": {"tier": {"concrete": "free", "tokensPerMinute": 1500}}
+        })),
+        Some(&world.key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // `tier=free` accrues into the pinned bucket; `tier=pro` lands nowhere but
+    // the plain window.
+    let response = chat(
+        &world.app,
+        &world.key,
+        tagged(&world.model("ok"), "tier", "free"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = chat(
+        &world.app,
+        &world.key,
+        tagged(&world.model("ok"), "tier", "pro"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        scoped_settled(&world.pool, key_id, "tag:tier=free").await,
+        12,
+        "only the pinned value accrued"
+    );
+    assert_eq!(scoped_settled(&world.pool, key_id, "tag:tier=pro").await, 0);
+}
+
+/// `total` aggregates the whole tag: whatever value the turn carries, the bucket
+/// is `tag:region`, so two values fill one cap between them.
+#[tokio::test]
+async fn a_total_scope_aggregates_every_value() {
+    let world = world!(1_000_000);
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+    let key_id: uuid::Uuid = world.key_id.parse().unwrap();
+
+    let (status, _) = call(
+        &world.app,
+        "PATCH",
+        &format!("/api/v1/org/keys/{}", world.key_id),
+        Some(json!({
+            "tokensPerMinuteScopes": {"region": {"total": 1500}}
+        })),
+        Some(&world.key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // `us` and `eu` both land in `tag:region` — the value never names a bucket.
+    for region in ["us", "eu"] {
+        let response = chat(
+            &world.app,
+            &world.key,
+            tagged(&world.model("ok"), "region", region),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    assert_eq!(
+        scoped_settled(&world.pool, key_id, "tag:region").await,
+        24,
+        "both values aggregated into the one bucket"
+    );
+
+    // Fill the aggregate over the cap: any region is now refused, because they
+    // share the one bucket (upserted — a settle may share the truncated second).
+    sqlx::query(
+        "INSERT INTO oxsum.tpm_windows (key_id, scope, window_start, tokens) \
+         VALUES ($1, 'tag:region', date_trunc('second', now()), 1490) \
+         ON CONFLICT (key_id, scope, window_start) DO UPDATE SET \
+             tokens = tpm_windows.tokens + EXCLUDED.tokens",
+    )
+    .bind(key_id)
+    .execute(&world.pool)
+    .await
+    .expect("the scoped row lands");
+    let response = chat(
+        &world.app,
+        &world.key,
+        tagged(&world.model("ok"), "region", "us"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+/// A scope a turn never selects leaves the plain window alone: an untagged turn
+/// accrues into `scope=''` only, and is bounded by `tokensPerMinute` alone —
+/// tag scopes read the tag, they do not invent one.
+#[tokio::test]
+async fn an_untagged_turn_ignores_the_scopes() {
+    let world = world!(1_000_000);
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+    let key_id: uuid::Uuid = world.key_id.parse().unwrap();
+
+    let (status, _) = call(
+        &world.app,
+        "PATCH",
+        &format!("/api/v1/org/keys/{}", world.key_id),
+        Some(json!({
+            "tokensPerMinuteScopes": {"team": {"each": 1500}}
+        })),
+        Some(&world.key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
+    let (status, _) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(scoped_settled(&world.pool, key_id, "").await, 12);
+    let total: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM oxsum.tpm_windows WHERE key_id = $1 AND scope <> ''",
+    )
+    .bind(key_id)
+    .fetch_one(&world.pool)
+    .await
+    .unwrap();
+    assert_eq!(total, 0, "an untagged turn wrote no scoped row");
+}
+
 // ── request-level idempotency (issue #132) ───────────────────────────────────
 
 /// A chat request carrying an `Idempotency-Key` header.

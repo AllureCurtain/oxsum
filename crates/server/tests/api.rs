@@ -723,6 +723,12 @@ async fn key_constraints_reject_malformed_input() {
         json!({"maxConcurrentHolds": 0}),
         json!({"tokensPerMinute": 0}),
         json!({"tokensPerMinute": -100}),
+        json!({"tokensPerMinuteScopes": {"team": {"each": 0}}}),
+        json!({"tokensPerMinuteScopes": {"team": {"each": -5}}}),
+        json!({"tokensPerMinuteScopes": {"": {"each": 100}}}),
+        json!({"tokensPerMinuteScopes": {"tier": {"concrete": "", "tokensPerMinute": 100}}}),
+        json!({"tokensPerMinuteScopes": {"tier": {"concrete": "free", "tokensPerMinute": 0}}}),
+        json!({"tokensPerMinuteScopes": {"region": {"total": -1}}}),
     ] {
         let (status, _) = call(
             &app,

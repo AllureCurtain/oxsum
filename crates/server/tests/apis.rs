@@ -176,6 +176,7 @@ async fn settle_request(
                         spend_limit_minor: None,
                         requests_per_minute: None,
                         tokens_per_minute: None,
+                        tokens_per_minute_scopes: None,
                     },
                     Some(model),
                     &hold_key,
