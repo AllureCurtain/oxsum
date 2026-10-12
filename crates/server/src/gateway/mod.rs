@@ -20,6 +20,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router, middleware};
+use futures_util::StreamExt;
 use http_body_util::{BodyExt, StreamBody};
 use oxsum_core::{
     ActingKey, BillingMode, Claim, OpenHold, Organization, Serving, SettlementKind, WalletError,
@@ -142,6 +143,62 @@ async fn servings(state: &AppState, model: &str) -> Result<Vec<Serving>, Gateway
 
 /// The header a retry carries to claim the same turn, Stripe-shaped.
 const IDEMPOTENCY_KEY: &str = "idempotency-key";
+
+/// The most of an upstream body the non-streaming path will buffer. A whole
+/// body has to sit in memory to be parsed as JSON, so a runaway or hostile
+/// upstream must not be able to grow it without bound — embeddings batches
+/// are legitimately large, hence megabytes, not kilobytes.
+const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
+
+/// How much of an upstream error body goes into the client-facing message: a
+/// preview for the operator, never the whole body.
+const ERROR_BODY_PREVIEW_CHARS: usize = 500;
+
+/// Reads an upstream body with a hard size cap. Past the cap the upstream is
+/// treated as faulty — the turn settles `UpstreamError` and the client gets a
+/// 502 naming the limit, not a process that grew until the OOM killer noticed.
+async fn read_body_limited(response: reqwest::Response) -> Result<String, GatewayError> {
+    let mut buffered: usize = 0;
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| {
+            GatewayError::upstream(
+                StatusCode::BAD_GATEWAY,
+                format!("the upstream body could not be read: {error}"),
+                None,
+            )
+        })?;
+        buffered += chunk.len();
+        if buffered > MAX_BODY_BYTES {
+            return Err(GatewayError::upstream(
+                StatusCode::BAD_GATEWAY,
+                format!(
+                    "the upstream body exceeded the {} MiB limit",
+                    MAX_BODY_BYTES / (1024 * 1024)
+                ),
+                None,
+            ));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    // `text()` decoded lossily before; keep that behavior rather than failing
+    // a turn on one bad byte in an otherwise usable JSON body.
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
+/// A short preview of an upstream error body for the client-facing message,
+/// marked when truncated. The full body never leaves the server: it used to
+/// be pasted into the message verbatim, which both leaked upstream internals
+/// and bloated logs on large error pages.
+fn error_body_preview(text: &str) -> String {
+    let preview: String = text.chars().take(ERROR_BODY_PREVIEW_CHARS).collect();
+    if preview.len() < text.len() {
+        format!("{preview}…")
+    } else {
+        preview
+    }
+}
 
 /// Marks a response answered from the idempotency record rather than run again.
 const IDEMPOTENT_REPLAYED: &str = "idempotent-replayed";
@@ -746,13 +803,21 @@ async fn run(
                     tokio::time::sleep(retry_after.unwrap_or_default()).await;
                     continue;
                 }
-                let text = response.text().await.unwrap_or_default();
+                // The body is read with a cap: a runaway error page must not
+                // grow the process, and only a preview reaches the client.
+                let text = match read_body_limited(response).await {
+                    Ok(text) => text,
+                    Err(error) => {
+                        break (index, Err((error, SettlementKind::UpstreamError)));
+                    }
+                };
+                let preview = error_body_preview(&text);
                 break (
                     index,
                     Err((
                         GatewayError::upstream(
                             StatusCode::BAD_GATEWAY,
-                            format!("upstream answered {status}: {text}"),
+                            format!("upstream answered {status}: {preview}"),
                             serde_json::from_str::<Value>(&text)
                                 .ok()
                                 .filter(|body| body.get("error").is_some()),
@@ -816,7 +881,22 @@ async fn run(
                 cost.stamp(&mut response);
                 response
             } else {
-                let text = response.text().await.unwrap_or_default();
+                let text = match read_body_limited(response).await {
+                    Ok(text) => text,
+                    Err(error) => {
+                        // The body never arrived intact, so nothing was
+                        // received: nothing is charged and the whole freeze
+                        // goes back, the same settlement the refusal arm
+                        // above performs.
+                        let charged = turn
+                            .settle(SettlementKind::UpstreamError, Charge::Nothing)
+                            .await;
+                        let mut response = error_response(error, surface);
+                        cost.stamp(&mut response);
+                        stamp_charged(&mut response, charged);
+                        return Ok(response);
+                    }
+                };
                 // Upstream answered in full, so the turn is finished: from here the only work
                 // left is the local write, whatever the client does with the response.
                 turn.note_upstream_end();
