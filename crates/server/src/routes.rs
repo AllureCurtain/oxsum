@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::extract::{Extension, Path, State};
 use axum::http::header::SET_COOKIE;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
@@ -65,6 +65,7 @@ pub fn router(state: AppState) -> Router {
         .route("/settlements", post(settle))
         .route("/statements", get(statements))
         .route("/statements/{statement_id}", get(statement_detail))
+        .route("/statements/{statement_id}/export.pdf", get(statement_pdf))
         .route("/balance", get(balance))
         .route("/usage", get(usage))
         .route("/billing-records", get(billing_records))
@@ -1652,6 +1653,63 @@ async fn statement_detail(
         lines: state.db.statement_lines(statement_id).await?,
         statement,
     })
+}
+
+/// The `/verify` URL the PDF's footer and QR point at: `OXSUM_PUBLIC_URL`
+/// plus the path when the deployment names one, else the relative path — the
+/// same rule `verification_uri` uses for the device page.
+fn verify_url(state: &AppState) -> String {
+    match state.config.public_url() {
+        Some(base) => format!("{}/verify", base.trim_end_matches('/')),
+        None => "/verify".to_owned(),
+    }
+}
+
+/// One finalized statement as a rendered PDF — `Content-Type: application/pdf`,
+/// an attachment the browser downloads. The same guard as `statement_detail`:
+/// a draft, another organization's statement and a missing id all answer 404.
+/// The body is binary, not the JSON envelope.
+async fn statement_pdf(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(statement_id): Path<Uuid>,
+) -> Result<Response, ApiError> {
+    let w = wallet(&state.tenants, principal.organization()).await?;
+    state
+        .db
+        .reconcile_statements(principal.organization().id, &w, today())
+        .await?;
+    let statement = state
+        .db
+        .statement_by_id(statement_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    if statement.organization_id != principal.organization().id
+        || statement.status != oxsum_core::StatementStatus::Finalized
+    {
+        return Err(ApiError::not_found());
+    }
+    let lines = state.db.statement_lines(statement_id).await?;
+    let url = verify_url(&state);
+    let bytes = oxsum_core::render_statement_pdf(
+        &statement,
+        &principal.organization().name,
+        &lines,
+        Some(&url),
+    )?;
+    let filename = format!(
+        "statement-{}-{}.pdf",
+        statement.period,
+        &statement_id.simple().to_string()[..8]
+    );
+    Response::builder()
+        .header("content-type", "application/pdf")
+        .header(
+            "content-disposition",
+            format!("attachment; filename=\"{filename}\""),
+        )
+        .body(Body::from(bytes))
+        .map_err(|_| ApiError::Internal)
 }
 
 async fn balance(
