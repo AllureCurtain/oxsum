@@ -522,6 +522,20 @@ The bills page does this check automatically on every visit (see "Append-only ar
 
 The operator signs the head of your organization's log. Save the signed head from `GET /api/v1/log/head` (the `note` text and the `size`/`root` it carries) alongside your records. Later, `GET /api/v1/log/consistency?from=<that size>` returns the new signed head and the proof between them. Check the note's signature against the operator's key (published at `GET /api/v1/log/key` — get the key through a channel the operator does not control the first time, or the signature proves only that the server agrees with itself), then check the proof against the two heads. It passes only when the new log is the old log with entries appended: a second history at a size the operator already signed for cannot produce it.
 
+## Verifying a statement's anchor
+
+Purpose: confirm a finalized statement commits the *whole* covered set — every entry the month charged, in order — and that the figures the document shows are the figures the ledger committed, not just that the rows it chose to display add up.
+
+A bill's own proof shows one entry was not altered. A statement's anchor closes the gap that leaves: the proof cannot say whether the statement's lines are *all* the lines. Finalizing a statement appends a marker entry to your organization's ledger whose document hash is the window digest and whose description carries the rollup digest, and the detail endpoint hands that marker back as the `anchor` object on `GET /api/v1/statements/{statementId}` (the platform's own copy is `GET /api/v1/admin/statements/{statementId}` — the same anchor). `verify_statement_anchor` in `oxsum_verify` re-runs the check locally, the same way `/verify` re-runs a bill's:
+
+1. Fetch the detail: `GET /api/v1/statements/{statementId}` and keep the `data` object — it carries `statement`, `lines` and `anchor` (`{entryId, logIndex, windowHash, rollupHash, origin, note, keyName, publicKey, keyHash}`).
+2. Collect the covered entries' `contentHash` values **in `logIndex` order** — the entries the statement's `logFromIndex`–`logToIndex` window spans. `GET /api/v1/billing-records` pages the settled turns (each row's `requestId` names its settlement entry `req-<requestId>:settle` for `GET /api/v1/entries/{entryId}/proof`), and the bills page's JSON export carries `entryId`/`contentHash`/`bookedOn` for the same archive. Pass them to the check as `window_hashes`; the fold recompute under `oxsum/statement-window/v1` must equal `windowHash` — a dropped, inserted or reordered entry changes it.
+3. The rollup re-serializes the statement's own fields and lines to canonical bytes and must digest under `oxsum/statement-rollup/v1` to `rollupHash` — the totals the document shows are the ones the marker committed.
+4. On a signing deployment (`OXSUM_HEAD_SIGNING_KEY`) the anchor's `note` attests the tree head *right after* the marker — the head at exactly `logIndex + 1`, fetched from `GET /api/v1/log/head` (the current head when the marker is the latest entry). Pass it as `expected_head` and the ledger's `origin` (`oxsum/ledgers/<tenant_id>`, the same string `log/head` answers) as `expected_origin`; the check verifies the note's signature against `publicKey`, so the marker's *inclusion* is proven, not merely claimed.
+5. An unsigned deployment serves `note`/`keyName`/`publicKey`/`keyHash` as `null` — `expected_head` is then unused (the check returns before consulting it) and the anchor still binds the two digests. Either way a passed check names what failed otherwise: `Absent` (no anchor — the statement is not finalized), `WindowMismatch`, `RollupMismatch`, `Malformed`, `WrongOrigin`, `HeadMismatch`, `Unsigned` or `BadSignature`.
+
+Note: like a bill's proof, the anchor proves the *record* — that the committed window and rollup are what the ledger holds — and on a signing deployment that the operator signed the head containing the marker. It does not prove upstream really returned those tokens; that honesty question sits one layer up.
+
 ## Platform admin
 
 Purpose: manage the deployment itself — the upstream channels the gateway relays to and the price each model charges.
