@@ -96,10 +96,19 @@ async fn tenants_on_one_pool_cannot_see_each_other() {
     assert_eq!(b.log_size().await.unwrap(), 1);
 
     // A's entry does not exist in B's ledger — and B does not get to prove it either.
-    assert!(b.receipt_proof(a_bill.entry_id).await.unwrap().is_none());
+    assert!(
+        b.receipt_proof(a_bill.entry_id, None)
+            .await
+            .unwrap()
+            .is_none()
+    );
 
     // A's own proof still verifies, on the same shared pool.
-    let bundle = a.receipt_proof(a_bill.entry_id).await.unwrap().unwrap();
+    let bundle = a
+        .receipt_proof(a_bill.entry_id, None)
+        .await
+        .unwrap()
+        .unwrap();
     let json = serde_json::to_string(&bundle).unwrap();
     assert!(verify_bundle(&json, &a_bill.content_hash).unwrap());
 }
@@ -457,7 +466,7 @@ async fn bill_proof_verifies_and_catches_tampering() {
         w.top_up(&format!("noise-{i}"), ONE, D).await.unwrap();
     }
 
-    let bundle = w.receipt_proof(bill.entry_id).await.unwrap().unwrap();
+    let bundle = w.receipt_proof(bill.entry_id, None).await.unwrap().unwrap();
     let json = serde_json::to_string(&bundle).unwrap();
     assert!(verify_bundle(&json, &bill.content_hash).unwrap());
 
@@ -836,7 +845,7 @@ async fn request_pages_walk_only_settled_turns() {
 /// never name a handle the ledger assigned.
 async fn settled_postings(w: &Wallet, entry: oxsum_core::EntryId) -> Vec<(u32, char, i64)> {
     use doubleentry::Direction;
-    let bundle = w.receipt_proof(entry).await.unwrap().unwrap();
+    let bundle = w.receipt_proof(entry, None).await.unwrap().unwrap();
     bundle
         .entry
         .postings()
@@ -857,7 +866,7 @@ async fn settled_postings(w: &Wallet, entry: oxsum_core::EntryId) -> Vec<(u32, c
 
 async fn pending_debits(w: &Wallet, entry: oxsum_core::EntryId) -> Vec<(u32, i64)> {
     use doubleentry::Direction;
-    let bundle = w.receipt_proof(entry).await.unwrap().unwrap();
+    let bundle = w.receipt_proof(entry, None).await.unwrap().unwrap();
     bundle
         .entry
         .postings()

@@ -125,7 +125,7 @@ async fn take_hold(world: &World, hold_key: &str, request_id: &str, watch: &Open
 async fn settlement_description(wallet: &Arc<Wallet>, hold_key: &str) -> Option<String> {
     let entry_id = entry_id_for(&settlement_key_for(hold_key));
     let bundle = wallet
-        .receipt_proof(entry_id)
+        .receipt_proof(entry_id, None)
         .await
         .expect("the proof is built")?;
     Some(bundle.entry.description().as_str().to_owned())
@@ -155,9 +155,12 @@ async fn lock_sweeper(pool: &PgPool) -> sqlx::pool::PoolConnection<sqlx::Postgre
         .acquire()
         .await
         .expect("a connection for the sweep lock");
-    // Three minutes, not one: the dead-letter test holds the lock through ten
-    // failing sweeps, which alone runs past a minute.
-    for _ in 0..1_800 {
+    // Ten minutes: the dead-letter test alone holds the lock through ten
+    // failing sweeps — ~40 s on CI but past three minutes on a slow shared
+    // dev database — and up to four other tests queue behind it. The wait is
+    // for a lock held by work that finishes, never by a hung one, so the cap
+    // exists to fail loudly rather than to fit a schedule.
+    for _ in 0..6_000 {
         let locked: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
             .bind(SWEEP_LOCK)
             .fetch_one(&mut *conn)
@@ -168,7 +171,7 @@ async fn lock_sweeper(pool: &PgPool) -> sqlx::pool::PoolConnection<sqlx::Postgre
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!("could not take the sweep lock within three minutes");
+    panic!("could not take the sweep lock within ten minutes");
 }
 
 /// Releases the sweep lock.

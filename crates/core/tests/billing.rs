@@ -588,7 +588,7 @@ async fn every_settlement_kind_proves_and_recomputes() {
         // Round-trip: the entry is provable, and what it records recomputes.
         let entry_id = entry_id_for(&settlement_key_for(&hold_key));
         let bundle = wallet
-            .receipt_proof(entry_id)
+            .receipt_proof(entry_id, None)
             .await
             .expect("the proof builds")
             .expect("the settlement entry exists");
