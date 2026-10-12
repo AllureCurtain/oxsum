@@ -2950,8 +2950,9 @@ enum VerifyOutcome {
     /// The bundle matches the content hash and the proof links it to the tree head;
     /// carries what recomputing the entry's settlement description concluded —
     /// recomputed itself, or skipped because the record is not a settlement's or
-    /// is written in a schema this verifier does not know.
-    Passed(oxsum_verify::ChargeCheck),
+    /// is written in a schema this verifier does not know — plus how the price
+    /// binding fared.
+    Passed(oxsum_verify::ChargeCheck, PriceBinding),
     /// The bundle does not match the hash, or the proof does not link to the head.
     Failed,
     /// Inclusion passed but the charge does not recompute from the record's own
@@ -2961,6 +2962,21 @@ enum VerifyOutcome {
     BadHash,
     /// The bundle field does not parse as a proof bundle; carries the parse error.
     BadBundle(String),
+}
+
+/// How the bill's signed price binding fared (issue #204): a third line under a
+/// passed check, never its own verdict — an entry can be proven while its price
+/// link is absent or refused, and neither undoes the bytes.
+#[derive(Debug, Clone)]
+enum PriceBinding {
+    /// The price the bill names is bound to a checkpoint the operator signed.
+    Bound,
+    /// The bundle carries no `price` field: a non-settlement entry, a bundle made
+    /// before price binding shipped, or a deployment that signs no heads.
+    NotBound,
+    /// The bundle carries a `price` field but it does not verify — the note is
+    /// unsigned, names a different price, or its row hash does not hold.
+    Refused(String),
 }
 
 /// The public verification page: paste a proof bundle and the content hash recorded
@@ -3026,9 +3042,18 @@ fn VerifyPage() -> impl IntoView {
                                 .map(str::to_owned)
                         })
                         .unwrap_or_default();
+                    // And whether the price the description names is bound to a
+                    // checkpoint the operator signed — a link a forged price table
+                    // could not produce (issue #204). It reports under the pass,
+                    // never a verdict of its own.
+                    let binding = match oxsum_verify::verify_price_head(&bundle_text) {
+                        Ok(()) => PriceBinding::Bound,
+                        Err(oxsum_verify::PriceError::Absent) => PriceBinding::NotBound,
+                        Err(error) => PriceBinding::Refused(error.to_string()),
+                    };
                     match oxsum_verify::verify_charge(&description) {
                         oxsum_verify::ChargeCheck::Mismatch => VerifyOutcome::ChargeMismatch,
-                        check => VerifyOutcome::Passed(check),
+                        check => VerifyOutcome::Passed(check, binding),
                     }
                 }
                 Ok(false) => VerifyOutcome::Failed,
@@ -3124,7 +3149,7 @@ fn VerifyPage() -> impl IntoView {
 #[component]
 fn Verdict(outcome: VerifyOutcome) -> impl IntoView {
     let (class, icon, title, detail) = match &outcome {
-        VerifyOutcome::Passed(check) => {
+        VerifyOutcome::Passed(check, binding) => {
             use oxsum_verify::ChargeCheck;
             let charge = match check {
                 ChargeCheck::Recomputed => {
@@ -3141,12 +3166,25 @@ fn Verdict(outcome: VerifyOutcome) -> impl IntoView {
                 }
                 ChargeCheck::Mismatch => unreachable!("a mismatch is not a pass"),
             };
+            let price = match binding {
+                PriceBinding::Bound => {
+                    " The price it names is bound to a checkpoint the operator signed — the catalog row it billed under is the one the operator attested."
+                        .to_owned()
+                }
+                PriceBinding::NotBound => {
+                    " This bundle carries no signed price binding — the entry is proven, but its price is not independently attested."
+                        .to_owned()
+                }
+                PriceBinding::Refused(reason) => {
+                    format!(" Its price binding does not verify: {reason}.")
+                }
+            };
             (
                 "success",
                 "✓",
                 "Verification passed.",
                 format!(
-                    "The bundle matches the content hash, and the inclusion proof links it to the tree head.{charge}"
+                    "The bundle matches the content hash, and the inclusion proof links it to the tree head.{charge}{price}"
                 ),
             )
         }

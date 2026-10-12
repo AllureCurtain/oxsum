@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.50.0
+  version: 0.51.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -311,6 +311,20 @@ info:
     gateway's `error.code` under the `rate_limit_exceeded`/`rate_limit_error` type.
     Holds never occupy the window; only a settle moves it. Tag-scoped buckets are a
     follow-up.
+
+    0.51.0 adds signed price-catalog checkpoints (issue #204): a bill's settlement
+    names the `(channel, model, priceVersion)` it priced under, but until now that
+    price's authenticity rested only on the append-only `channel_prices` table. The
+    operator now signs each priced row as a checkpoint under the same Ed25519 key
+    that signs tree heads, served at `GET /api/v1/log/price-head` — origin
+    `oxsum/price-catalog/<channel>`, the version in the note's size slot, the
+    canonical row's hash in its root. The proof bundle carries the signed link in
+    `price` — the canonical row bytes, the checkpoint note, and the published key —
+    so a verifier confirms the price a bill names is the one the catalog held,
+    without trusting a second server answer. Signing is stateless and
+    deterministic, so a stored row signs identically whenever asked: a bill under
+    an older version stays verifiable after the catalog moves on, and no snapshot
+    table exists to drift.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -1788,6 +1802,10 @@ paths:
                           size: { type: integer, format: int64 }
                           root: { type: string, description: 32-byte hash, lowercase hex }
                       proof: { type: object }
+                      price:
+                        $ref: "#/components/schemas/PriceLink"
+                        # Absent on a non-settlement entry, a bundle made before price
+                        # binding, or a deployment that signs no heads.
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
@@ -1859,6 +1877,55 @@ paths:
                       proof: { $ref: "#/components/schemas/ConsistencyProof" }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/log/price-head:
+    get:
+      summary: "A channel-model price row, signed by the operator"
+      description: |
+        The signed checkpoint of one `(channel, model)` price row — `version`'s exact
+        row, or the latest when `version` is omitted — as a C2SP signed-note under the
+        same Ed25519 key that signs tree heads (issue #204). The body reuses the
+        tlog-checkpoint shape: `origin` is the catalog `oxsum/price-catalog/<channel>`,
+        the note's size slot carries `priceVersion`, and its root carries the hash of
+        the canonical row bytes — the price the catalog actually held, attested.
+        Signing is stateless and deterministic over (key, origin, version, row), so a
+        stored row signs identically whenever it is asked for: a bill that named an
+        older version stays verifiable after the catalog moves on, and no snapshot
+        table exists to drift. Verify the note signature against `publicKey` exactly
+        as for `GET /api/v1/log/head`; the same key is published at `GET /api/v1/log/key`.
+        A deployment with no `OXSUM_HEAD_SIGNING_KEY` answers 503.
+      parameters:
+        - name: channel
+          in: query
+          required: true
+          schema: { type: string }
+          description: The channel name whose catalog the checkpoint covers.
+        - name: model
+          in: query
+          required: true
+          schema: { type: string }
+          description: The model whose price row is signed.
+        - name: version
+          in: query
+          required: false
+          schema: { type: integer, format: int64, minimum: 1 }
+          description: |
+            The price version to sign; omitted signs the latest. A bill names the
+            version it priced under — pass that to verify an older price.
+      responses:
+        "200":
+          description: The signed price checkpoint
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/SignedPriceHead" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
   /api/v1/log/key:
@@ -4528,6 +4595,38 @@ components:
         keyHash: { type: string, description: "the 4-byte selector this key's note signatures carry, lowercase hex" }
         size: { type: integer, format: int64, description: "tree size: number of entries in the log" }
         root: { type: string, description: 32-byte hash, lowercase hex }
+    SignedPriceHead:
+      type: object
+      required: [note, origin, channel, model, version, rowHash, keyName, publicKey, keyHash]
+      properties:
+        note: { type: string, description: "the complete C2SP signed-note text: body, blank line, signature lines" }
+        origin: { type: string, description: "the catalog this checkpoint belongs to: `oxsum/price-catalog/<channel>`" }
+        channel: { type: string, description: "the channel whose price is signed" }
+        model: { type: string, description: "the model the price row prices" }
+        version: { type: integer, format: int64, description: "the price version the checkpoint attests; the note's size slot carries it" }
+        rowHash: { type: string, description: "hash of the canonical price row bytes, lowercase hex; the note's root carries it" }
+        keyName: { type: string }
+        publicKey: { type: string, description: "the operator's Ed25519 verifying key, base64 of 32 bytes" }
+        keyHash: { type: string, description: "the 4-byte selector this key's note signatures carry, lowercase hex" }
+    PriceLink:
+      type: object
+      required: [channel, model, version, row, note, keyName, publicKey, keyHash]
+      description: |
+        The signed link a settlement's proof bundle carries between the
+        `(channel, model, priceVersion)` it records and the catalog row it priced
+        under (issue #204). Self-contained: the canonical row bytes, the checkpoint
+        note, and the published key, so the verifier never asks the server twice.
+        `publicKey` and `keyHash` spell lowercase hex here — the encoding a verifier
+        reads — unlike the base64 the endpoint response uses.
+      properties:
+        channel: { type: string, description: "the channel the price belongs to" }
+        model: { type: string, description: "the model the price prices" }
+        version: { type: integer, format: int64, description: "the price version the checkpoint attests" }
+        row: { type: string, description: "the canonical JSON the checkpoint root commits to — the exact bytes hashed, hashed verbatim" }
+        note: { type: string, description: "the C2SP signed-note attesting `row`'s hash under `version`" }
+        keyName: { type: string, description: "the key name the operator signs under" }
+        publicKey: { type: string, description: "the operator's Ed25519 verifying key, lowercase hex of 32 bytes" }
+        keyHash: { type: string, description: "the 4-byte selector this key's note signatures carry, lowercase hex" }
     ConsistencyProof:
       type: object
       required: [oldSize, newSize, path]

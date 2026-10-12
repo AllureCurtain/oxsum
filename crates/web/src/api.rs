@@ -433,8 +433,11 @@ pub async fn get_entry_bundle(entry_id: String) -> Result<String, ServerFnError>
         .get(&principal.organization.tenant_id)
         .await
         .map_err(|_| ServerFnError::new("the wallet could not be opened"))?;
+    // The signed price binding rides the bundle only when the deployment signs
+    // heads — `None` just omits the field, it is not a failure.
+    let key = head_signing_key()?;
     let bundle = wallet
-        .receipt_proof(oxsum_core::EntryId::from_uuid(entry))
+        .receipt_proof(oxsum_core::EntryId::from_uuid(entry), key.as_ref())
         .await
         .map_err(|_| ServerFnError::new("the proof could not be read"))?
         .ok_or_else(|| ServerFnError::new("no such entry"))?;
@@ -862,8 +865,11 @@ pub async fn get_turn_bill(request_id: String) -> Result<Option<TurnBill>, Serve
     // `req-<id>:hold`, and the settlement's key — and so its entry id — derives from it.
     let hold_key = format!("req-{request_id}:hold");
     let entry_id = oxsum_core::entry_id_for(&oxsum_core::settlement_key_for(&hold_key));
+    // The signed price binding rides the bundle only when the deployment signs
+    // heads — `None` just omits the field, it is not a failure.
+    let key = head_signing_key()?;
     let bundle = wallet
-        .receipt_proof(entry_id)
+        .receipt_proof(entry_id, key.as_ref())
         .await
         .map_err(|_| ServerFnError::new("the bill could not be read"))?;
     let Some(bundle) = bundle else {

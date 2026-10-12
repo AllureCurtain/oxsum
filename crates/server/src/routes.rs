@@ -73,6 +73,7 @@ pub fn router(state: AppState) -> Router {
         .route("/entries/{entry_id}/proof", get(proof))
         .route("/log/head", get(log_head))
         .route("/log/consistency", get(log_consistency))
+        .route("/log/price-head", get(log_price_head))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_principal,
@@ -1902,8 +1903,17 @@ async fn proof(
     Path(entry_id): Path<Uuid>,
 ) -> ApiResult<oxsum_core::ProofBundle> {
     let w = wallet(&state.tenants, principal.organization()).await?;
+    // The price binding rides the bundle only when the deployment signs heads;
+    // `head_signing_key` would 503 the whole proof where `None` just omits the
+    // field, so the optional key is derived here rather than through that helper.
+    let key = state
+        .config
+        .head_signing_seed()
+        .map(signing_key)
+        .transpose()
+        .map_err(|_| ApiError::Internal)?;
     match w
-        .receipt_proof(oxsum_core::EntryId::from_uuid(entry_id))
+        .receipt_proof(oxsum_core::EntryId::from_uuid(entry_id), key.as_ref())
         .await?
     {
         Some(bundle) => ok(bundle),
@@ -2053,6 +2063,70 @@ async fn log_consistency(
     let key = head_signing_key(&state)?;
     let w = wallet(&state.tenants, principal.organization()).await?;
     ok(w.consistency(q.from, &key).await?.into())
+}
+
+/// A signed price checkpoint, as `GET /api/v1/log/price-head` serves it: the note
+/// text, the price row it attests, and the key that signed it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SignedPriceHeadRes {
+    note: String,
+    origin: String,
+    channel: String,
+    model: String,
+    version: i64,
+    row_hash: String,
+    #[serde(flatten)]
+    key: VerifyingKeyRes,
+}
+
+impl From<oxsum_core::SignedPriceHead> for SignedPriceHeadRes {
+    fn from(signed: oxsum_core::SignedPriceHead) -> Self {
+        Self {
+            note: signed.note,
+            origin: signed.origin,
+            channel: signed.channel,
+            model: signed.model,
+            version: signed.version,
+            row_hash: signed.row_hash.to_hex(),
+            key: VerifyingKeyRes::of(&signed.key),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PriceHeadQuery {
+    channel: String,
+    model: String,
+    /// Absent → the latest version of the (channel, model); a bill that names an
+    /// older one asks for it explicitly.
+    version: Option<i64>,
+}
+
+/// The signed checkpoint of one channel-model price row — `version`'s exact row,
+/// or the latest — under the operator's key (issue #204).
+///
+/// Signing is stateless and deterministic over (key, origin, version, row), so a
+/// stored row signs identically whenever it is asked for: a bill under an older
+/// version stays checkable after the catalog moves on, and no snapshot table
+/// exists to drift.
+async fn log_price_head(
+    State(state): State<AppState>,
+    Extension(_principal): Extension<Principal>,
+    ApiQuery(q): ApiQuery<PriceHeadQuery>,
+) -> ApiResult<SignedPriceHeadRes> {
+    let key = head_signing_key(&state)?;
+    let Some(row) = oxsum_core::price_row(state.db.pool(), &q.channel, &q.model, q.version).await?
+    else {
+        return Err(ApiError::not_found());
+    };
+    let canonical = oxsum_core::canonical_price_row(&q.channel, &row)?;
+    ok(
+        oxsum_core::sign_price_head(&key, &q.channel, &row, &canonical)
+            .map_err(|_| ApiError::Internal)?
+            .into(),
+    )
 }
 
 /// The operator's tree-head verifying key. A public key, so no credential: fetching it from
