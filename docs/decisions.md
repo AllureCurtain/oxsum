@@ -1229,3 +1229,11 @@ The judgment calls:
 - **Prices are the test's own.** The channel it writes carries fixed minor-unit prices, because what oxsum bills is what it was configured to bill — the check compares the settlement against the freeze and the reported usage, not against the provider's own pricing sheet.
 
 The first live run it codifies also produced its value already: streaming turns that complete normally settle `client_cancelled` when the client hangs up at `[DONE]` — invisible to the scripted suite, tracked as issue #178.
+
+## 2026-10-12 — sqlx features: one source of truth at the workspace root
+
+`crates/doubleentry`'s optional `postgres` backend binds `uuid::Uuid` and `time::Date` through sqlx (`storage/postgres.rs`), so it needs sqlx's `uuid` and `time` features — but the workspace-root sqlx entry only carried `runtime-tokio-rustls` + `postgres`. The two declaration sites disagreed, and every drift like that is a standing invitation for cargo to build sqlx (and `sqlx-postgres`) twice.
+
+The fix puts the union — `runtime-tokio-rustls`, `postgres`, `time`, `uuid` — on the workspace entry and makes doubleentry inherit it (`sqlx = { workspace = true, optional = true }`, marked as an oxsum change since doubleentry is vendored). Deliberately still no `macros`: every query is built at runtime with `sqlx::query`, and the `query!` family would pull `sqlx-macros-core` → every driver → MySQL's `rsa` with its unfixed timing-sidechannel advisory (RUSTSEC-2023-0071).
+
+Same change also moves lettre from `tokio1-native-tls` to `tokio1-rustls-tls` (with default features off — lettre's default set includes `native-tls`, which trips lettre's own tokio1/native-tls feature guard). openssl-sys had exactly one reverse dependency in the graph — lettre — so it drops out entirely, and the workspace is now on a single TLS stack (rustls, ring provider).
