@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use oxsum_core::{
-    Db, OpenHold, Retention, Tenants, Wallet, entry_id_for, hold_description, kinds,
-    settlement_key_for,
+    Db, OpenHold, Retention, SecretKey, Tenants, UpstreamPrices, Wallet, entry_id_for,
+    hold_description, kinds, settlement_key_for,
 };
 use oxsum_server::Metrics;
 use oxsum_server::jobs::{JobContext, run_due};
@@ -67,6 +67,7 @@ fn ctx() -> JobContext {
         metrics: Metrics::new(),
         webhook: None,
         retention: Retention::default(),
+        upstream_price_sync: false,
     }
 }
 
@@ -271,5 +272,111 @@ async fn a_retention_run_finishes_and_chains_a_day_out() {
     run_due(&world.db, &ctx).await;
 
     let (pending, running, done, dead) = counts(&world.db, kinds::RETENTION).await;
+    assert_eq!((pending, running, done, dead), (1, 0, 1, 0));
+}
+
+/// An upstream catalog that answers `GET /api/v1/pricing` with one model whose
+/// `upstream` rates disagree with what the channel stores — the live side of
+/// the `SYNC_UPSTREAM_PRICES` diff (issue #222).
+async fn stub_upstream_catalog() -> String {
+    let app = axum::Router::new().route(
+        "/api/v1/pricing",
+        axum::routing::get(|| async {
+            axum::Json(serde_json::json!({
+                "data": { "models": [{
+                    "model": "test-model",
+                    "upstream": { "inputPricePerMillion": 9, "outputPricePerMillion": 2 }
+                }]}
+            }))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
+/// A due `SYNC_UPSTREAM_PRICES` run probes the channel's live catalog, opens a
+/// drift row for the rate that disagrees, and records an `ok` probe outcome —
+/// the run never fails on a reachable upstream.
+#[tokio::test]
+async fn a_price_sync_run_opens_drift_and_chains_a_day_out() {
+    let _guard = JOBS_LOCK.lock().await;
+    let Some(url) = url() else {
+        eprintln!("DATABASE_URL not set, skipping");
+        return;
+    };
+    let world = world(&url).await;
+    // The shared test database keeps this channel afterwards; every suite seals
+    // channels with [7; 32] so `check_sealed_keys` under that same key still
+    // passes for other tests.
+    let secret = SecretKey::from_bytes([7; 32]);
+
+    // The channel, pointed at a stub upstream whose live rate disagrees.
+    let base_url = stub_upstream_catalog().await;
+    let channel = fresh("chan");
+    world
+        .db
+        .set_channel(&channel, &base_url, "sk-stub-secret", "openai", &secret)
+        .await
+        .unwrap();
+    world
+        .db
+        .append_price(
+            &channel,
+            "test-model",
+            oxsum_core::Price {
+                input_price_per_million: 1,
+                output_price_per_million: 2,
+                max_output_tokens: 1024,
+                cache_read_price_per_million: None,
+                cache_write_5m_price_per_million: None,
+                cache_write_1h_price_per_million: None,
+                reasoning_price_per_million: None,
+                cost_per_request: None,
+                upstream: Some(UpstreamPrices {
+                    input_price_per_million: Some(1),
+                    output_price_per_million: Some(2),
+                    ..UpstreamPrices::default()
+                }),
+                mode: oxsum_core::BillingMode::Chat,
+                rules: Vec::new(),
+            },
+            1,
+        )
+        .await
+        .unwrap();
+
+    let ctx = JobContext {
+        webhook: Some((reqwest::Client::new(), secret)),
+        upstream_price_sync: true,
+        ..ctx()
+    };
+    enqueue(&world.db, kinds::SYNC_UPSTREAM_PRICES).await;
+
+    run_due(&world.db, &ctx).await;
+
+    // The differing rate opened a drift row; the probe recorded `ok`.
+    let open: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM oxsum.upstream_price_drift \
+         WHERE channel = $1 AND resolved_at IS NULL",
+    )
+    .bind(&channel)
+    .fetch_one(world.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(open, 1, "inputPricePerMillion drifts 1 -> 9");
+    let outcome: String = sqlx::query_scalar(
+        "SELECT outcome FROM oxsum.upstream_price_probes \
+         WHERE channel = $1 ORDER BY probed_at DESC LIMIT 1",
+    )
+    .bind(&channel)
+    .fetch_one(world.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(outcome, "ok");
+
+    // The run finished and the daily occurrence is already scheduled.
+    let (pending, running, done, dead) = counts(&world.db, kinds::SYNC_UPSTREAM_PRICES).await;
     assert_eq!((pending, running, done, dead), (1, 0, 1, 0));
 }

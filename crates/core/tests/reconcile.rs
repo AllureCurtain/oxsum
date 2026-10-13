@@ -112,7 +112,7 @@ async fn a_clean_world_reports_no_drift() {
     .unwrap();
 
     let report = db.reconcile().await.unwrap();
-    assert_eq!(report.classes.len(), 10);
+    assert_eq!(report.classes.len(), 11);
     for class in &report.classes {
         for sample in &class.samples {
             assert!(
