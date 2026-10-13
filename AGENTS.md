@@ -13,12 +13,13 @@ A verifiable AI credit wallet: users top up credits, each streaming LLM call fre
 ## Layout
 
 ```
-crates/doubleentry/  Vendored ledger engine. Change rules below under Hard rules
-crates/core/         Domain layer: multi-tenant wallet, hold/settle, bill proofs
-crates/verify/       Pure verification (ProofBundle, verify_bundle), wasm32-clean for the browser
-crates/server/       HTTP layer: routing, auth, error mapping, produces the oxsum binary. Conventions in crates/server/AGENTS.md
-crates/web/          Topcoat pages (server-rendered), mounted into the same binary. UI rules in DESIGN.md
-docs/                Project documentation
+crates/doubleentry/   Vendored ledger engine. Change rules below under Hard rules
+crates/core/          Domain layer: multi-tenant wallet, hold/settle, bill proofs
+crates/verify/        Pure verification (ProofBundle, verify_bundle), wasm32-clean for the browser
+crates/integrations/  Third-party service clients: GitHub OAuth, Stripe, Turnstile, SMTP mail
+crates/server/        HTTP layer: routing, auth, error mapping, produces the oxsum binary. Conventions in crates/server/AGENTS.md
+crates/web/           Topcoat pages (server-rendered), mounted into the same binary. UI rules in DESIGN.md
+docs/                 Project documentation
 ```
 
 ## Common commands

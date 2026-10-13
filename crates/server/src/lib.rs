@@ -1,7 +1,6 @@
 //! oxsum HTTP layer: routing, auth, error mapping. Business logic lives in oxsum-core.
 
 mod admin;
-pub mod antibot;
 mod auth;
 mod billing;
 mod bills;
@@ -9,16 +8,17 @@ mod config;
 mod error;
 mod gateway;
 pub mod jobs;
-pub mod mail;
 mod metering;
 mod metrics;
-pub mod oauth;
 mod routes;
-pub mod stripe;
 pub mod telemetry;
 mod web;
 pub mod webhooks;
 mod ws;
+
+// Third-party service clients live in oxsum-integrations; re-exported here so
+// existing paths (`crate::oauth::…`, `oxsum_server::stripe::…`) keep working.
+pub use oxsum_integrations::{antibot, mail, oauth, stripe};
 
 use std::sync::Arc;
 
@@ -29,8 +29,8 @@ use tokio::sync::broadcast;
 
 pub use billing::BillingEvent;
 pub use config::{Config, Gateway, Signup};
-pub use mail::Mailer;
 pub use metrics::Metrics;
+pub use oxsum_integrations::mail::Mailer;
 
 /// Everything a request handler may need.
 ///

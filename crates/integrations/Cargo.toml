@@ -1,0 +1,21 @@
+[package]
+name = "oxsum-integrations"
+description = "oxsum third-party service integrations: GitHub OAuth, Stripe, Turnstile, SMTP mail."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+oxsum-core.workspace = true
+hmac.workspace = true
+lettre.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+uuid.workspace = true

@@ -1350,6 +1350,11 @@ The protection decision's tag-scoped TPM buckets (Each / Concrete / Total, the 2
 - **The wire is one object naming its form.** `tokensPerMinuteScopes` maps a tag key to `{"each": N}` / `{"concrete": V, "tokensPerMinute": N}` / `{"total": N}`; serde derives no flat shape matching all three, so `TpmScope`'s `Serialize`/`Deserialize` are written by hand. `crates/server/openapi.yaml` → 0.53.0.
 
 Pinned by `crates/core/tests/tpm_windows.rs` (a tagged settle fans into each applicable bucket, a non-matching turn writes only the plain window, scoped reads sum one bucket) and `crates/server/tests/gateway.rs` (a full `each` bucket refuses only the capped value, `concrete` counts only its pinned value, `total` aggregates across values, an untagged turn ignores the scopes) and `api.rs` (malformed scopes are 400).
+## 2026-10-13 — `oxsum-integrations`: the third-party clients leave `oxsum-server`
+
+`oxsum-server` had grown past 10k lines. A dependency analysis (`use crate::` per module) showed the handler layer — gateway, admin, routes, metering, bills, ws — is coupled through the single `AppState` every handler takes: `state.db`/`state.tenants` appear in all of them, so extracting the gateway (the "obvious" candidate at ~2.7k lines) would have meant either moving `AppState` (inverting the dependency) or a parallel state struct with every handler signature rewritten. Neither is a minimal, behavior-preserving split, so the handler layer stays put.
+
+The clean seam the analysis did find is the four external service clients — `oauth` (GitHub), `stripe`, `antibot` (Turnstile), `mail` (SMTP) — each with zero `crate::` dependencies, already `pub`, and already imported by the integration tests as public API. They move to a new `oxsum-integrations` crate (~630 lines); `oxsum-server` re-exports the modules (`pub use oxsum_integrations::{antibot, mail, oauth, stripe}`), so every existing path — `crate::oauth::PROVIDER` in `routes.rs`, `oxsum_server::stripe::Stripe` in the tests — keeps resolving and the move is a pure relocation plus two Cargo.toml edits.
 
 ## 2026-10-13 — The next phase deepens verifiability before widening the surface
 

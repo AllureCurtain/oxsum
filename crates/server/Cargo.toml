@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 oxsum-core.workspace = true
+oxsum-integrations.workspace = true
 # The `ws` feature serves the dashboard's `/ws/billing` socket; it used to
 # arrive transitively through leptos_axum.
 axum = { workspace = true, features = ["ws"] }
