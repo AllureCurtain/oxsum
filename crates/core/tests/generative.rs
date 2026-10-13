@@ -788,7 +788,7 @@ fn database_url() -> Option<String> {
     // the suite pass vacuously (issue #18). This mirrors the `url()` helper
     // in the other suites.
     let _ = dotenvy::dotenv();
-    std::env::var("DATABASE_URL").ok()
+    oxsum_testkit::suite_db_url("generative")
 }
 
 /// The ledger of the deterministic regression case. Not one of the eight the generated cases

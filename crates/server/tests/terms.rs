@@ -28,7 +28,7 @@ const TOKEN: &str = "operator-token-0123456789";
 
 fn url() -> Option<String> {
     let _ = dotenvy::dotenv();
-    std::env::var("DATABASE_URL").ok()
+    oxsum_testkit::suite_db_url("terms")
 }
 
 macro_rules! app_or_skip {

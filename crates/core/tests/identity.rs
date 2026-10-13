@@ -20,7 +20,7 @@ const D: time::Date = time::macros::date!(2026 - 10 - 01);
 fn url() -> Option<String> {
     // `.env` is searched for in the current directory and its parents, see docs/development.md.
     let _ = dotenvy::dotenv();
-    std::env::var("DATABASE_URL").ok()
+    oxsum_testkit::suite_db_url("identity")
 }
 
 macro_rules! db_or_skip {

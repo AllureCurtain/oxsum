@@ -26,7 +26,7 @@ const WEBHOOK_SECRET: &str = "whsec-test-secret-1234";
 
 fn url() -> Option<String> {
     let _ = dotenvy::dotenv();
-    std::env::var("DATABASE_URL").ok()
+    oxsum_testkit::suite_db_url("stripe")
 }
 
 fn sealing_key() -> SecretKey {

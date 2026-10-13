@@ -24,7 +24,7 @@ const ADMIN_TOKEN: &str = "operator-token-1234";
 
 fn url() -> Option<String> {
     let _ = dotenvy::dotenv();
-    std::env::var("DATABASE_URL").ok()
+    oxsum_testkit::suite_db_url("webhooks")
 }
 
 fn sealing_key() -> SecretKey {

@@ -133,7 +133,7 @@ async fn online_app(
 
 fn url() -> Option<String> {
     let _ = dotenvy::dotenv();
-    std::env::var("DATABASE_URL").ok()
+    oxsum_testkit::suite_db_url("oauth")
 }
 
 /// The stub, an app wired to it, and the pool — the standard test world.

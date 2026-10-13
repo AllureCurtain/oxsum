@@ -24,7 +24,7 @@ const PASSWORD: &str = "correct horse battery";
 
 fn url() -> Option<String> {
     let _ = dotenvy::dotenv();
-    std::env::var("DATABASE_URL").ok()
+    oxsum_testkit::suite_db_url("suspension")
 }
 
 macro_rules! app_or_skip {

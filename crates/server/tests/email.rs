@@ -27,7 +27,7 @@ const PASSWORD: &str = "correct horse battery";
 /// The DATABASE_URL tests need, or None to skip.
 fn url() -> Option<String> {
     let _ = dotenvy::dotenv();
-    std::env::var("DATABASE_URL").ok()
+    oxsum_testkit::suite_db_url("email")
 }
 
 /// A minimal SMTP receiver: it speaks just enough of the protocol for lettre —

@@ -630,7 +630,7 @@ impl World {
 /// The DATABASE_URL the tests need, or None to skip.
 fn url() -> Option<String> {
     let _ = dotenvy::dotenv();
-    std::env::var("DATABASE_URL").ok()
+    oxsum_testkit::suite_db_url("gateway")
 }
 
 /// A world with `top_up` minor units of credit, or an early return when there is no database.
