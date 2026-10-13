@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/doubleentry", "crates/core", "crates/server", "crates/verify", "crates/web", "crates/integrations"]
+members = ["crates/doubleentry", "crates/core", "crates/server", "crates/verify", "crates/web", "crates/integrations", "crates/testkit"]
 default-members = ["crates/core", "crates/server"]
 
 [workspace.package]
@@ -13,6 +13,7 @@ repository = "https://github.com/AllureCurtain/oxsum"
 [workspace.dependencies]
 oxsum-core = { path = "crates/core" }
 oxsum-integrations = { path = "crates/integrations" }
+oxsum-testkit = { path = "crates/testkit" }
 oxsum-verify = { path = "crates/verify" }
 oxsum-web = { path = "crates/web" }
 # The `witness` feature enables doubleentry's witness module (tree-head notes and Ed25519
@@ -21,6 +22,9 @@ oxsum-web = { path = "crates/web" }
 doubleentry = { path = "crates/doubleentry", features = ["postgres", "serde", "witness"] }
 
 axum = "0.8"
+# Per-suite scratch databases for integration tests (issue #226): created on
+# first use, dropped when the suite's process exits.
+ctor = "0.2"
 # Sealing channel credentials at rest: AES-256-GCM, and the base64 the stored record uses.
 aes-gcm = "0.10"
 base64 = "0.21"
