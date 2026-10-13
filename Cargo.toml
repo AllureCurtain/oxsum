@@ -70,6 +70,26 @@ time = { version = "0.3", features = ["macros", "serde-well-known"] }
 log = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# OTLP trace export (issue #224): optional, env-gated on OXSUM_OTLP_ENDPOINT.
+# `tracing-opentelemetry` bridges the `tracing` spans the gateway already emits
+# into the OpenTelemetry SDK; `opentelemetry-otlp` ships them to a collector.
+# Default features off where the exporter allows it, and HTTP (not gRPC) keeps
+# the binary off tonic/prost's codegen stack.
+opentelemetry = { version = "0.33", features = ["trace"] }
+# `rt-tokio` alone is not enough: the default batch processor drives the exporter
+# on its own thread where no tokio reactor runs, which the async `reqwest-client`
+# cannot work under. The async-runtime processor variant takes `runtime::Tokio`
+# explicitly, so batches are exported on the application's own runtime.
+opentelemetry_sdk = { version = "0.33", features = [
+    "trace",
+    "rt-tokio",
+    "experimental_trace_batch_span_processor_with_async_runtime",
+] }
+# HTTP transport only: `http-proto` + `reqwest-client` + rustls roots — the gRPC
+# (`grpc-tonic`) and native-TLS paths stay out, keeping the binary off
+# tonic/prost codegen and on the workspace's one TLS stack.
+opentelemetry-otlp = { version = "0.33", features = ["trace", "http", "http-proto", "reqwest-client", "tls-webpki-roots", "tls-ring"] }
+tracing-opentelemetry = "0.34"
 uuid = { version = "1", features = ["v4", "v5"] }
 
 tower = { version = "0.5", features = ["util"] }

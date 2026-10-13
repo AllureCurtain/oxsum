@@ -159,6 +159,9 @@ pub struct Config {
     /// Whether `OXSUM_UPSTREAM_PRICE_SYNC` gates the `SYNC_UPSTREAM_PRICES`
     /// periodic job (issue #222). Optional and off by default, like SMTP.
     upstream_price_sync: bool,
+    /// Where OTLP spans go, `OXSUM_OTLP_ENDPOINT` (issue #224). `None` — the
+    /// default — keeps tracing strictly local.
+    otlp_endpoint: Option<String>,
 }
 
 impl Config {
@@ -180,6 +183,7 @@ impl Config {
             public_url: None,
             retention: oxsum_core::Retention::default(),
             upstream_price_sync: false,
+            otlp_endpoint: None,
         }
     }
 
@@ -296,6 +300,9 @@ impl Config {
             .map(upstream_price_sync_of)
             .transpose()?
             .unwrap_or(false);
+        // Trailing slashes come off: the exporter appends `/v1/traces`, and a
+        // doubled slash is only a cosmetic wrong.
+        let otlp_endpoint = var("OXSUM_OTLP_ENDPOINT").map(|v| v.trim_end_matches('/').to_owned());
         Ok(Self {
             signup,
             gateway: Gateway::from_env()?,
@@ -312,6 +319,7 @@ impl Config {
             public_url,
             retention,
             upstream_price_sync,
+            otlp_endpoint,
         })
     }
 
@@ -413,6 +421,13 @@ impl Config {
     pub fn with_upstream_price_sync(mut self, enabled: bool) -> Self {
         self.upstream_price_sync = enabled;
         self
+    }
+
+    /// `OXSUM_OTLP_ENDPOINT` when set — the collector base URL trace export
+    /// points at (issue #224). `None` keeps the subscriber fmt-only.
+    #[must_use]
+    pub fn otlp_endpoint(&self) -> Option<&str> {
+        self.otlp_endpoint.as_deref()
     }
 
     /// Sets the public origin. Tests use this; the server reads
