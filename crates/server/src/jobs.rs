@@ -14,9 +14,10 @@
 use std::time::Duration;
 
 use oxsum_core::{
-    DEAD_RESCHEDULE, Db, JobOutcome, Retention, SecretKey, Tenants, kinds, next_run,
-    sweep_stale_holds,
+    DEAD_RESCHEDULE, Db, JobOutcome, ModelPair, ProbeOutcome, Retention, SecretKey, Tenants,
+    UpstreamPrices, kinds, next_run, sweep_stale_holds,
 };
+use serde::Deserialize;
 use time::OffsetDateTime;
 use tracing::{error, info, warn};
 
@@ -35,10 +36,17 @@ pub struct JobContext {
     /// The shared registry `/metrics` renders.
     pub metrics: Metrics,
     /// The webhook delivery pass's pieces — `None` runs no `deliver-webhooks`
-    /// kind, the same deployment `POST /api/v1/webhooks` refuses on.
+    /// kind, the same deployment `POST /api/v1/webhooks` refuses on. The
+    /// upstream price-sync pass reuses the pair: the client fetches the live
+    /// catalog, the key unseals each channel's `api_key_sealed` for the probe's
+    /// `Authorization` header (issue #222).
     pub webhook: Option<(reqwest::Client, SecretKey)>,
     /// The retention windows, `OXSUM_RETENTION_*`.
     pub retention: Retention,
+    /// Whether `OXSUM_UPSTREAM_PRICE_SYNC` lets the `SYNC_UPSTREAM_PRICES`
+    /// periodic kind run. It still needs `webhook` for the fetcher and the
+    /// credential unsealer, so both must hold (issue #222).
+    pub upstream_price_sync: bool,
 }
 
 /// The background task: startup enqueues whatever periodic kinds have nothing
@@ -54,6 +62,9 @@ pub fn spawn_worker(db: Db, ctx: JobContext) -> tokio::task::JoinHandle<()> {
         ];
         if ctx.webhook.is_some() {
             periodic.push(kinds::DELIVER_WEBHOOKS);
+        }
+        if ctx.webhook.is_some() && ctx.upstream_price_sync {
+            periodic.push(kinds::SYNC_UPSTREAM_PRICES);
         }
         for kind in periodic {
             match db.enqueue_job(kind, OffsetDateTime::now_utc()).await {
@@ -166,6 +177,20 @@ async fn run_one(
             };
             crate::webhooks::deliver_due(db, http, secret, &ctx.metrics, None).await;
         }
+        kinds::SYNC_UPSTREAM_PRICES => {
+            let Some((http, secret)) = &ctx.webhook else {
+                return Err(oxsum_core::WalletError::Misconfigured(
+                    "sync-upstream-prices has no sealing key configured".into(),
+                ));
+            };
+            let report = sync_upstream_prices(db, http, secret).await?;
+            info!(
+                channels = report.channels,
+                probed = report.probed,
+                drifted = report.drifted,
+                "the upstream price-sync pass probed the channels"
+            );
+        }
         kinds::RECONCILE => {
             let report = db.reconcile().await?;
             let drifted = report
@@ -208,4 +233,152 @@ async fn run_one(
         }
     }
     Ok(())
+}
+
+/// What a `SYNC_UPSTREAM_PRICES` pass did, for the worker's log line.
+struct SyncReport {
+    /// The channels the pass tried to probe.
+    channels: usize,
+    /// The channels whose catalog answered and diffed.
+    probed: usize,
+    /// The open drift rows the pass left behind.
+    drifted: usize,
+}
+
+/// The live catalog as a probe reads it: `{data:{models:[...]}}`, each model
+/// carrying the model name and its `upstream` block. `CatalogModel` is
+/// serialize-only, so the wire side needs its own shape (issue #222).
+#[derive(Deserialize)]
+struct RemoteCatalog {
+    data: RemoteData,
+}
+
+#[derive(Deserialize)]
+struct RemoteData {
+    models: Vec<RemotePricedModel>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RemotePricedModel {
+    model: String,
+    upstream: Option<UpstreamPrices>,
+}
+
+/// One `SYNC_UPSTREAM_PRICES` pass: probe every channel's live catalog, diff
+/// its `upstream` rates against the stored ones, and let the persistence layer
+/// open or resolve drift. A channel that will not answer records its outcome
+/// and the pass moves on — drift is detected, never inferred from silence, so
+/// one unreachable channel never fails the pass.
+async fn sync_upstream_prices(
+    db: &Db,
+    http: &reqwest::Client,
+    secret: &SecretKey,
+) -> Result<SyncReport, oxsum_core::WalletError> {
+    let channels = db.probe_channels().await?;
+    let stored = db.catalog().await?;
+    let mut report = SyncReport {
+        channels: channels.len(),
+        probed: 0,
+        drifted: 0,
+    };
+    for channel in channels {
+        match probe_channel(db, http, secret, &channel, &stored).await {
+            Ok(drifted) => {
+                report.probed += 1;
+                report.drifted += drifted;
+            }
+            Err(error) => {
+                error!(channel = %channel.name, %error, "the upstream price probe failed");
+            }
+        }
+    }
+    Ok(report)
+}
+
+/// Probes one channel and returns how many fresh drift rows the diff opened.
+/// Every failure is recorded as its own probe outcome rather than propagated:
+/// the channel's catalog is the probe's business, not the pass's.
+async fn probe_channel(
+    db: &Db,
+    http: &reqwest::Client,
+    secret: &SecretKey,
+    channel: &oxsum_core::ProbeChannel,
+    stored: &[oxsum_core::CatalogModel],
+) -> Result<usize, oxsum_core::WalletError> {
+    let url = format!("{}/api/v1/pricing", channel.base_url.trim_end_matches('/'));
+    let api_key = match secret.open(&channel.api_key_sealed) {
+        Ok(api_key) => api_key,
+        Err(error) => {
+            db.record_probe(&channel.name, ProbeOutcome::Auth, &error.to_string())
+                .await?;
+            return Ok(0);
+        }
+    };
+    let response = match http
+        .get(&url)
+        .bearer_auth(api_key)
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            db.record_probe(&channel.name, ProbeOutcome::Unreachable, &error.to_string())
+                .await?;
+            return Ok(0);
+        }
+    };
+    let status = response.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+        db.record_probe(&channel.name, ProbeOutcome::Auth, status.as_str())
+            .await?;
+        return Ok(0);
+    }
+    if !status.is_success() {
+        db.record_probe(&channel.name, ProbeOutcome::Invalid, status.as_str())
+            .await?;
+        return Ok(0);
+    }
+    let catalog = match response.json::<RemoteCatalog>().await {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            db.record_probe(&channel.name, ProbeOutcome::Invalid, &error.to_string())
+                .await?;
+            return Ok(0);
+        }
+    };
+
+    // Pair each stored model for this channel with the live entry of the same
+    // name. A live model the stored side never saw has nothing to contradict,
+    // so it is not added; a stored model the live catalog dropped pairs
+    // `live: None` and resolves whatever drift was open on it.
+    let mut pairs: Vec<ModelPair<'_>> = Vec::new();
+    let mut drifted = 0;
+    for entry in stored.iter().filter(|entry| entry.channel == channel.name) {
+        let live = catalog
+            .data
+            .models
+            .iter()
+            .find(|remote| remote.model == entry.model);
+        pairs.push(ModelPair {
+            model: &entry.model,
+            stored: entry.price.upstream.as_ref(),
+            live: live.and_then(|remote| remote.upstream.as_ref()),
+        });
+        if let (Some(stored_up), Some(live_up)) = (
+            entry.price.upstream.as_ref(),
+            live.and_then(|r| r.upstream.as_ref()),
+        ) {
+            drifted += oxsum_core::diff_upstream(stored_up, live_up).len();
+        }
+    }
+    db.sync_upstream_prices(&channel.name, &pairs).await?;
+    db.record_probe(
+        &channel.name,
+        ProbeOutcome::Ok,
+        &format!("{} models", catalog.data.models.len()),
+    )
+    .await?;
+    Ok(drifted)
 }

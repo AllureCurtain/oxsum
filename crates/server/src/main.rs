@@ -76,6 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .cloned()
                 .map(|secret| (reqwest::Client::new(), secret)),
             retention: config.retention(),
+            upstream_price_sync: config.upstream_price_sync(),
         },
     );
     let listener = tokio::net::TcpListener::bind(addr).await?;

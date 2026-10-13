@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.55.0
+  version: 0.56.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -370,6 +370,19 @@ info:
     note over the tree head right after the anchor. A verified bill now proves
     not only that each entry sits in the log but that nothing was left out of
     the window the statement claims to cover.
+
+    0.56.0 watches upstream price drift (issue #222). A scheduled job probes
+    each channel's live catalog — the oxsum-compatible `/api/v1/pricing` the
+    channel's base URL serves — and diffs every model's `upstream` rates
+    against the rates oxsum stores for it. Each differing field lands in the
+    new `oxsum.upstream_price_drift` table and surfaces as the reconciliation
+    report's new `upstream_price_drift` class, and every drift broadcasts an
+    `anomaly.detected` event (`kind: "upstream_price_drift"`, naming the
+    channel, model, field, stored and live minor rates) to each enabled
+    subscriber. A channel that cannot be probed — unreachable, or an upstream
+    that does not serve an oxsum-compatible catalog — records a probe outcome
+    for that run rather than failing the pass; drift is detected, never
+    inferred from silence.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -2515,9 +2528,11 @@ paths:
         hold no watch row covers — invisible to the sweeper),
         `holds_dead_lettered` (a watched hold whose sweep has failed ten
         times — it retries hourly and needs an operator), `log_gaps`
-        (a ledger log whose positions are not dense) and `jobs_dead` (a
+        (a ledger log whose positions are not dense), `jobs_dead` (a
         periodic job run that exhausted its attempts — platform drift, not
-        any organization's). Each class carries a
+        any organization's) and `upstream_price_drift` (a stored upstream
+        rate that no longer matches the live catalog the channel serves —
+        platform drift, not any organization's). Each class carries a
         count and a bounded sample of the offending identifiers. The report
         is read-only: drift is for an operator to read, never for the
         reconciler to patch.
@@ -4448,7 +4463,7 @@ components:
       properties:
         class:
           type: string
-          enum: [usage_orphans, settlements_unrecorded, deposits_unbooked, deposits_mismatched, deposits_stuck, watches_orphaned, holds_unwatched, holds_dead_lettered, log_gaps, jobs_dead]
+          enum: [usage_orphans, settlements_unrecorded, deposits_unbooked, deposits_mismatched, deposits_stuck, watches_orphaned, holds_unwatched, holds_dead_lettered, log_gaps, jobs_dead, upstream_price_drift]
         count: { type: integer, format: int64, minimum: 0, description: how much drift the class holds }
         samples:
           type: array
