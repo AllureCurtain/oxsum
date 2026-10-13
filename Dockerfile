@@ -13,6 +13,12 @@
 # ---------- builder ----------
 FROM rust:1.98-bookworm AS builder
 
+# .cargo/config.toml forces mold as the linker on Linux; without it the
+# release link fails with "cannot find 'ld'".
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends mold \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Dependency layer: manifests (and the cargo config that pins the toolchain and
