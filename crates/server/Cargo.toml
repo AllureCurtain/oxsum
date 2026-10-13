@@ -69,6 +69,8 @@ tower-http.workspace = true
 
 [dev-dependencies]
 dotenvy.workspace = true
+# Per-suite scratch databases for integration tests (issue #226).
+oxsum-testkit.workspace = true
 http-body-util.workspace = true
 # `browser_contract.rs` matches the served HTML and the wasm glue with targeted patterns,
 # rather than a substring that a rename would keep satisfying.

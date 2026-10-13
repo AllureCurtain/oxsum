@@ -35,6 +35,8 @@ workspace = true
 
 [dev-dependencies]
 dotenvy.workspace = true
+# Per-suite scratch databases for integration tests (issue #226).
+oxsum-testkit.workspace = true
 proptest.workspace = true
 # The OAuth tests expire a specific state row by its stored digest.
 sha2.workspace = true
