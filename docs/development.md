@@ -35,14 +35,47 @@ nothing else — with `OXSUM_SECRET_KEY` set it also runs the startup bootstrap 
 channel is there for the turns to bill under; without one it seeds against whatever catalog the
 deployment already serves, or writes the world with no turns when the catalog is empty.
 
+### Test database isolation
+
+Each integration-test suite (`crates/server/tests/*.rs`, `crates/core/tests/*.rs`)
+gets its own scratch PostgreSQL database, so suites never share mutable state
+and repeated runs cannot accumulate residue (issue #226). The helper lives in
+`crates/testkit`: a test file's `url()` calls
+`oxsum_testkit::suite_db_url("<file_stem>")`, which on first use creates
+`oxsum_test_<slug>_<unix_timestamp>` through an admin connection derived from
+`DATABASE_URL` (same server and credentials, `postgres` maintenance database)
+and returns a URL pointing at it. When the suite's process exits, the scratch
+database is dropped (best-effort; a crashed run may leave a timestamped
+`oxsum_test_*` database behind, identifiable by name).
+
+Consequences:
+
+- The shared development database stays clean: test organizations, ledger
+  schemas, and test-sealed channels now live in scratch databases that are
+  dropped after the run. `cargo run -p oxsum-server` is no longer blocked by
+  test fixtures.
+- Suites that scan all tenant ledgers (the admin suite is the heavy case) only
+  ever see their own organizations, so suite time no longer degrades across runs.
+- No new environment variables: `DATABASE_URL` remains the single knob. Without
+  it, the database tests skip automatically, as before.
+
+If a run is interrupted and leaves `oxsum_test_*` databases behind, drop them
+manually; the reset script below is still available for the development
+database itself.
+
 ### Test residue in the development database
 
-The tests share the development database and never delete their fixtures: every test organization leaves a user, an organization and a `ledger_<tenant_id>` schema behind, and the server integration tests (`crates/server/tests/gateway.rs` and `crates/server/tests/admin.rs`) also write channels sealed with the tests' own key. Two consequences accumulate over time:
+The section above describes the current per-suite isolation. What follows is
+kept for the development database itself: if you ever point the tests at a
+database by hand, or write fixtures outside the suites, the residue rules
+still apply. Every test organization leaves a user, an organization and a
+`ledger_<tenant_id>` schema behind, and channels sealed with the tests' own
+key block `cargo run -p oxsum-server` at startup by design (a deployment that
+cannot open a stored credential fails fast instead of failing a request
+mid-relay).
 
-- `cargo run -p oxsum-server` refuses to boot once a test-sealed channel exists: a deployment that cannot open a stored credential fails at startup by design, instead of failing a request mid-relay.
-- Tests that scan all tenant ledgers (the admin suite is the heavy case) walk every historical schema, so the whole suite slows down as residue accumulates — thousands of schemas turn it from minutes into most of an hour.
-
-Run the reset script after a full `cargo test --workspace` run, and any time the database has accumulated enough fixtures to slow things down:
+Run the reset script any time the development database has accumulated
+fixtures outside the test suites:
 
 ```bash
 psql "$DATABASE_URL" -f scripts/reset-dev-database.sql
