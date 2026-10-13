@@ -30,6 +30,7 @@ Post-roadmap backlog, one issue per item. The phase direction is settled in docs
 
 - **Q2 — Upstream price-catalog sync with drift alerts.** A scheduled job diffs each channel's `upstream_prices` against the upstream's live catalog, records drift as a reconciliation entry, and raises `anomaly.detected` over webhooks — a stale catalog under fail-closed `unpriced` is worse than none.
 - **Q4 — OpenTelemetry trace export with GenAI conventions.** OTLP `gen_ai.*` spans (system, model, token counts), optional and env-gated, beside the existing `/metrics` scrape.
+- **Test database isolation (#226, in progress).** Each integration-test suite gets its own scratch PostgreSQL database (`oxsum_test_<slug>_<ts>_<pid>`), created on first use and dropped at suite exit via the shared `oxsum-testkit` helper — the shared dev database no longer accumulates test fixtures across runs.
 
 Deferred to the backlog after these: end-user passthrough signed billing reports, anomaly scoring beyond settlement-kind, multi-currency display, signed spend mandates and x402 rails (payment/agent surface, out of scope today), prepaid/postpaid polish.
 
