@@ -27,7 +27,7 @@ const ON: time::Date = date!(2026 - 10 - 05);
 
 fn url() -> Option<String> {
     let _ = dotenvy::dotenv();
-    std::env::var("DATABASE_URL").ok()
+    oxsum_testkit::suite_db_url("tpm_windows")
 }
 
 macro_rules! db_or_skip {

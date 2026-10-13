@@ -38,7 +38,7 @@ async fn online_app(url: &str) -> (Router, PgPool) {
 fn url() -> Option<String> {
     // `.env` is searched for in the current directory and its parents, see docs/development.md.
     let _ = dotenvy::dotenv();
-    std::env::var("DATABASE_URL").ok()
+    oxsum_testkit::suite_db_url("orgs")
 }
 
 macro_rules! app_or_skip {

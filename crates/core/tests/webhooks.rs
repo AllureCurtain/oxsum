@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 fn url() -> Option<String> {
     let _ = dotenvy::dotenv();
-    std::env::var("DATABASE_URL").ok()
+    oxsum_testkit::suite_db_url("webhooks")
 }
 
 macro_rules! db_or_skip {

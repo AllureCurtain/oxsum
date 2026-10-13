@@ -23,7 +23,7 @@ const ONE: i64 = 1_000_000;
 fn url() -> Option<String> {
     // `.env` is searched for in the current directory and its parents, see docs/development.md.
     let _ = dotenvy::dotenv();
-    std::env::var("DATABASE_URL").ok()
+    oxsum_testkit::suite_db_url("wallet")
 }
 
 /// Each test uses a tenant name with a random suffix, so tests never interfere and reruns never collide.

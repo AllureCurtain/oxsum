@@ -19,7 +19,7 @@ static JOBS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn url() -> Option<String> {
     let _ = dotenvy::dotenv();
-    std::env::var("DATABASE_URL").ok()
+    oxsum_testkit::suite_db_url("jobs")
 }
 
 macro_rules! db_or_skip {

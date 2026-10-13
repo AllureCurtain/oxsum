@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 fn url() -> Option<String> {
     // `.env` is searched for in the current directory and its parents, see docs/development.md.
     let _ = dotenvy::dotenv();
-    std::env::var("DATABASE_URL").ok()
+    oxsum_testkit::suite_db_url("channels")
 }
 
 macro_rules! db_or_skip {

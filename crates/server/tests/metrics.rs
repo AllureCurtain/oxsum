@@ -46,7 +46,7 @@ async fn online_app(url: &str) -> (Router, PgPool) {
 /// The DATABASE_URL tests need, or None to skip.
 fn url() -> Option<String> {
     let _ = dotenvy::dotenv();
-    std::env::var("DATABASE_URL").ok()
+    oxsum_testkit::suite_db_url("metrics")
 }
 
 macro_rules! app_or_skip {

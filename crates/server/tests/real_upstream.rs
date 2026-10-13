@@ -63,7 +63,8 @@ fn env_world() -> Option<Result<World, String>> {
     let base_url = std::env::var("OXSUM_E2E_UPSTREAM_BASE_URL").ok()?;
     let api_key = std::env::var("OXSUM_E2E_UPSTREAM_API_KEY").ok()?;
     let model = std::env::var("OXSUM_E2E_MODEL").ok()?;
-    let url = std::env::var("DATABASE_URL").map_err(|_| "DATABASE_URL is not set".to_owned());
+    let url =
+        oxsum_testkit::suite_db_url("real_upstream").ok_or("DATABASE_URL is not set".to_owned());
     Some(url.map(|url| World {
         base_url,
         api_key,

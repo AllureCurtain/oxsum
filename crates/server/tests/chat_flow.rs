@@ -181,7 +181,7 @@ async fn world_for(url: &str) -> World {
 /// The DATABASE_URL the tests need, or None to skip.
 fn url() -> Option<String> {
     let _ = dotenvy::dotenv();
-    std::env::var("DATABASE_URL").ok()
+    oxsum_testkit::suite_db_url("chat_flow")
 }
 
 struct Res {

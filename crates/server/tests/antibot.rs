@@ -94,7 +94,7 @@ async fn checked_app(url: &str) -> (Router, PgPool, SiteVerify) {
 
 fn url() -> Option<String> {
     let _ = dotenvy::dotenv();
-    std::env::var("DATABASE_URL").ok()
+    oxsum_testkit::suite_db_url("antibot")
 }
 
 macro_rules! app_or_skip {
