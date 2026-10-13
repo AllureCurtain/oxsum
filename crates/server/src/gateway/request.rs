@@ -62,6 +62,18 @@ impl Surface {
             Self::Rerank => "rerank",
         }
     }
+
+    /// The `gen_ai.operation.name` this surface's turns carry on their OTLP
+    /// span (issue #224): the semantic-convention vocabulary — `chat` covers
+    /// both chat dialects, `embeddings` the input-only surfaces' own; `rerank`
+    /// is the extension value for the Jina/Cohere surface.
+    pub fn gen_ai_operation(self) -> &'static str {
+        match self {
+            Self::OpenAi | Self::Anthropic => "chat",
+            Self::Embeddings => "embeddings",
+            Self::Rerank => "rerank",
+        }
+    }
 }
 
 /// One parsed gateway request: the body to forward, and the parts the freeze depends on.
