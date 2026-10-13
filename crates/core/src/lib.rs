@@ -36,6 +36,7 @@ mod statement_pdf;
 mod statements;
 mod tenants;
 mod tiers;
+mod upstream_sync;
 mod usage;
 mod users;
 mod wallet;
@@ -49,8 +50,8 @@ pub use billing::{
     estimate_tokens, hold_description, input_upper_bound,
 };
 pub use channels::{
-    CatalogModel, Channel, MAX_WEIGHT, ModelPrice, SecretKey, Serving, event_price, price_row,
-    route_order,
+    CatalogModel, Channel, MAX_WEIGHT, ModelPrice, ProbeChannel, SecretKey, Serving, event_price,
+    price_row, route_order,
 };
 pub use db::{Db, SCHEMA};
 pub use deposits::{CodeBatch, MAX_BATCH, Redemption};
@@ -98,6 +99,7 @@ pub use statements::{
 };
 pub use tenants::Tenants;
 pub use tiers::TierProfile;
+pub use upstream_sync::{FieldDrift, ModelPair, ProbeOutcome, diff_upstream};
 pub use usage::{
     Attribution, MAX_CONTEXT_NAME, MAX_END_USER, MAX_TAG, MAX_TAGS, Margin, UsageDay, UsageRecord,
     UsageRow, validate_attribution,

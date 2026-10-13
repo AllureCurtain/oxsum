@@ -712,6 +712,50 @@ impl Db {
         Ok(())
     }
 
+    /// Enqueues one delivery of `event_type` per enabled subscribed endpoint
+    /// across *every* organization — for platform events that belong to no
+    /// tenant, such as `anomaly.detected` on upstream price drift (issue #222).
+    /// Each delivery carries its own endpoint's `organization_id`, which the
+    /// NOT NULL column requires; the event is safe to fan out because it names
+    /// rates the public catalog already serves, never organization data.
+    ///
+    /// At-least-once like [`notify_event`](Self::notify_event): durable once a
+    /// row is written, and a crash before it is recorded as a lost event rather
+    /// than a partial fan-out.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn broadcast_event(&self, event_type: &str, data: Value) -> Result<(), WalletError> {
+        let endpoints = sqlx::query(
+            "SELECT endpoint_id, organization_id FROM oxsum.webhook_endpoints \
+             WHERE enabled AND $1 = ANY(events)",
+        )
+        .bind(event_type)
+        .fetch_all(self.pool())
+        .await?;
+        for endpoint in endpoints {
+            use sqlx::Row;
+            let endpoint_id: Uuid = endpoint.try_get("endpoint_id")?;
+            let organization_id: Uuid = endpoint.try_get("organization_id")?;
+            let delivery_id = Uuid::new_v4();
+            let payload = event_envelope(delivery_id, event_type, organization_id, data.clone());
+            sqlx::query(
+                "INSERT INTO oxsum.webhook_deliveries \
+                 (delivery_id, endpoint_id, organization_id, event_type, payload) \
+                 VALUES ($1, $2, $3, $4, $5)",
+            )
+            .bind(delivery_id)
+            .bind(endpoint_id)
+            .bind(organization_id)
+            .bind(event_type)
+            .bind(payload)
+            .execute(self.pool())
+            .await?;
+        }
+        Ok(())
+    }
+
     /// `balance.low`: enqueues the event once per endpoint whose threshold the
     /// organization's available balance has dropped under, and latches the row
     /// so a balance that stays low does not re-fire on every settle. The latch

@@ -151,6 +151,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0034_statement_anchor",
         include_str!("../migrations/0034_statement_anchor.sql"),
     ),
+    (
+        "0035_upstream_price_drift",
+        include_str!("../migrations/0035_upstream_price_drift.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.

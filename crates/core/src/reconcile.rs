@@ -39,6 +39,8 @@
 //!   entries still unsequenced past the grace window
 //! - `JobsDead` — a `jobs` row whose run exhausted its attempts: the periodic
 //!   kind it carried has a broken link, and the row is the evidence of why
+//! - `UpstreamPriceDrift` — a stored `upstream` rate that no longer matches the
+//!   live catalog the channel serves: platform drift the price-sync job opened
 
 use serde::Serialize;
 use sqlx::Row;
@@ -67,10 +69,11 @@ pub enum DriftKind {
     HoldsDeadLettered,
     LogGaps,
     JobsDead,
+    UpstreamPriceDrift,
 }
 
 /// The classes, in the fixed order the report answers them.
-const DRIFT_KINDS: [DriftKind; 10] = [
+const DRIFT_KINDS: [DriftKind; 11] = [
     DriftKind::UsageOrphans,
     DriftKind::SettlementsUnrecorded,
     DriftKind::DepositsUnbooked,
@@ -81,6 +84,7 @@ const DRIFT_KINDS: [DriftKind; 10] = [
     DriftKind::HoldsDeadLettered,
     DriftKind::LogGaps,
     DriftKind::JobsDead,
+    DriftKind::UpstreamPriceDrift,
 ];
 
 /// One offending identifier an operator follows — the request id, the hold key,
@@ -231,6 +235,21 @@ impl Db {
         .fetch_all(self.pool())
         .await?;
         classes.fold(DriftKind::JobsDead, "platform", &dead_jobs);
+
+        // Open upstream price drift is platform drift — it belongs to no
+        // tenant, so "platform" stands in for the organization the way it does
+        // for dead jobs. The sample names channel, model and field.
+        let upstream_drift = sqlx::query(
+            "SELECT channel || ':' || model || ':' || field AS detail, \
+                    count(*) OVER() AS total \
+             FROM oxsum.upstream_price_drift \
+             WHERE resolved_at IS NULL \
+             ORDER BY detected_at DESC LIMIT $1",
+        )
+        .bind(SAMPLE_LIMIT)
+        .fetch_all(self.pool())
+        .await?;
+        classes.fold(DriftKind::UpstreamPriceDrift, "platform", &upstream_drift);
 
         for tenant in &tenants {
             let schema = format!("ledger_{}", tenant.tenant_id.replace('"', "\"\""));
