@@ -9,6 +9,8 @@
 #   - an `oxsum` database + role on the existing PostgreSQL container
 #   - /opt/oxsum/oxsum.env holding DATABASE_URL and the OXSUM_* secrets
 #     (never baked into the image; see docs/development.md, "Deployment runbook")
+#     with OXSUM_ADDR=127.0.0.1:<port> — `--network host` lets the container
+#     reach PostgreSQL on the host's loopback, where it only listens.
 #   - port 3001 free on loopback (3000 is taken by new-api)
 #
 # Secrets (repo settings -> Secrets and variables -> Actions):
@@ -82,8 +84,9 @@ jobs:
           docker pull ghcr.io/allurecurtain/oxsum:latest
           docker stop oxsum 2>/dev/null || true
           docker rm oxsum 2>/dev/null || true
-          docker run -d --name oxsum --restart unless-stopped \
-            -p 127.0.0.1:${{ inputs.port }}:3000 \
+          # --network host: PostgreSQL only listens on the host's loopback, so the
+          # container must share it. OXSUM_ADDR in the env file binds 127.0.0.1:<port>.
+          docker run -d --name oxsum --restart unless-stopped --network host \
             --env-file /opt/oxsum/oxsum.env \
             ghcr.io/allurecurtain/oxsum:latest
           docker ps --filter name=oxsum --format '{{.Names}}: {{.Status}}'
