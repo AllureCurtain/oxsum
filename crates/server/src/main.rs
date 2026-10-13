@@ -2,7 +2,6 @@ use std::net::SocketAddr;
 
 use oxsum_core::Db;
 use oxsum_server::Config;
-use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -11,9 +10,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // and real variables always win over the file.
     dotenvy::dotenv().ok();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .init();
+    // fmt is always on; OTLP trace export joins it on the same subscriber only
+    // when OXSUM_OTLP_ENDPOINT names a collector (issue #224). The guard flushes
+    // the buffered spans on the way out — held until after serving stops.
+    // Logging is up before Config::from_env so a bad environment still reports.
+    let otel_guard = oxsum_server::telemetry::init(
+        std::env::var("OXSUM_OTLP_ENDPOINT")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .as_deref(),
+    )?;
 
     let database_url = required_env("DATABASE_URL")?;
     let config = Config::from_env()?;
@@ -76,6 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .cloned()
                 .map(|secret| (reqwest::Client::new(), secret)),
             retention: config.retention(),
+            upstream_price_sync: config.upstream_price_sync(),
         },
     );
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -91,6 +98,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             secs = SHUTDOWN_GRACE.as_secs(),
             "shutdown drain timed out; exiting with connections still open"
         ),
+    }
+    // Serving is over: flush whatever the batch exporter still holds. Without
+    // the endpoint this is `None` and the process exits exactly as before.
+    if let Some(guard) = otel_guard {
+        guard.shutdown();
     }
     Ok(())
 }

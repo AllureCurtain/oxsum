@@ -15,6 +15,7 @@ mod metrics;
 pub mod oauth;
 mod routes;
 pub mod stripe;
+pub mod telemetry;
 mod web;
 pub mod webhooks;
 mod ws;

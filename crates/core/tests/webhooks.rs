@@ -36,6 +36,13 @@ fn key() -> SecretKey {
 /// A migrated database and a registered organization, returned as both its row id
 /// and its tenant id (the 32-hex form `usage_records` carries).
 async fn world(url: &str) -> (Db, Uuid, String) {
+    let (db, org, tenant, _) = world_with_secret(url).await;
+    (db, org, tenant)
+}
+
+/// `world` plus the registration key's secret, for the tests that need an
+/// `ActingKey` to put real holds and settlements on the ledger.
+async fn world_with_secret(url: &str) -> (Db, Uuid, String, String) {
     let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
         .connect(url)
@@ -56,7 +63,12 @@ async fn world(url: &str) -> (Db, Uuid, String) {
         .await
         .unwrap();
     let org = registration.organization.id;
-    (db, org, org.simple().to_string())
+    (
+        db,
+        org,
+        org.simple().to_string(),
+        registration.api_key.secret,
+    )
 }
 
 /// A minimal settled-turn row, as the gateway writes it.
@@ -665,12 +677,13 @@ async fn the_catalog_and_threshold_validate() {
                 "statement.payment_status_updated".to_owned(),
                 "org.credit_limit_exceeded".to_owned(),
                 "anomaly.detected".to_owned(),
+                "budget.exhaustion_forecast".to_owned(),
             ],
             &key(),
         )
         .await
         .unwrap();
-    assert_eq!(endpoint.endpoint.events.len(), 11);
+    assert_eq!(endpoint.endpoint.events.len(), 12);
     // An unknown name is still refused.
     let error = db
         .create_webhook(
@@ -682,4 +695,223 @@ async fn the_catalog_and_threshold_validate() {
         .await
         .unwrap_err();
     assert!(matches!(error, WalletError::InvalidInput(_)), "{error:?}");
+}
+
+/// The pure projection: `forecast_exhaustion` answers the date a periodically
+/// limited key's committed spend, carried forward at the rate it has run so far
+/// this window, crosses its `spendLimitMinor` — and only when that crossing
+/// falls inside the window (issue #220).
+#[test]
+fn forecast_exhaustion_projects_the_crossing() {
+    use oxsum_core::BudgetDuration;
+    use time::macros::date;
+
+    let monday = date!(2026 - 10 - 12); // a real Monday
+    let today = date!(2026 - 10 - 13); // day 2 of the ISO week
+
+    // Weekly, 10 limit, 4 committed in 2 days → rate 2/day → crosses day 5 (Fri).
+    let forecast = oxsum_core::forecast_exhaustion(BudgetDuration::Weekly, monday, today, 4, 10)
+        .expect("a crossing inside the week projects");
+    assert_eq!(forecast.projected_exhaustion_date, date!(2026 - 10 - 16));
+    assert_eq!(forecast.days_remaining, 3);
+    assert_eq!(forecast.committed_minor, 4);
+    assert_eq!(forecast.window_start, monday);
+    assert_eq!(forecast.budget_duration, "weekly");
+
+    // A slower burn never reaches the cap inside the window: nothing to warn.
+    // 1 committed in 2 days → 0.5/day → 20 days to cross > the 5 remaining.
+    assert!(
+        oxsum_core::forecast_exhaustion(BudgetDuration::Weekly, monday, today, 1, 10).is_none()
+    );
+
+    // No spend or no limit: no projection.
+    for (committed, limit) in [(0, 10), (-3, 10), (5, 0)] {
+        assert!(
+            oxsum_core::forecast_exhaustion(
+                BudgetDuration::Weekly,
+                monday,
+                today,
+                committed,
+                limit,
+            )
+            .is_none(),
+            "committed={committed} limit={limit}"
+        );
+    }
+
+    // Already over the line: exhaustion is today, zero days remaining.
+    let over =
+        oxsum_core::forecast_exhaustion(BudgetDuration::Weekly, monday, today, 12, 10).unwrap();
+    assert_eq!(over.projected_exhaustion_date, today);
+    assert_eq!(over.days_remaining, 0);
+
+    // Daily: the whole window is today, so committed at the limit projects to today.
+    let daily =
+        oxsum_core::forecast_exhaustion(BudgetDuration::Daily, today, today, 10, 10).unwrap();
+    assert_eq!(daily.projected_exhaustion_date, today);
+    assert_eq!(daily.days_remaining, 0);
+}
+
+/// The monthly window honors the real month length: a burn that crosses inside a
+/// 31-day October projects, the same burn judged against a 30-day month does not.
+#[test]
+fn forecast_exhaustion_uses_the_real_month_length() {
+    use oxsum_core::BudgetDuration;
+    use time::macros::date;
+
+    let october_first = date!(2026 - 10 - 01);
+    let oct_14 = date!(2026 - 10 - 14);
+    // 14 days elapsed, 14 committed → 1/day; limit 31 crosses on
+    // ceil(31*14/14)-1 = 30 → Oct 31, the last day inside October.
+    let forecast =
+        oxsum_core::forecast_exhaustion(BudgetDuration::Monthly, october_first, oct_14, 14, 31)
+            .expect("the 31st of October is inside the window");
+    assert_eq!(forecast.projected_exhaustion_date, date!(2026 - 10 - 31));
+
+    // The same rate and limit in a 30-day month: November's day 31 is outside it.
+    let november_first = date!(2026 - 11 - 01);
+    let nov_14 = date!(2026 - 11 - 14);
+    assert!(
+        oxsum_core::forecast_exhaustion(BudgetDuration::Monthly, november_first, nov_14, 14, 31,)
+            .is_none(),
+        "the same crossing lands on Dec 1, outside a 30-day window"
+    );
+}
+
+/// `budget.exhaustion_forecast` fires once per key per window when the settled
+/// figures project a crossing inside it, latches on the key row, and re-arms
+/// when a constraint PATCH clears the latch (issue #220).
+#[tokio::test]
+async fn the_forecast_fires_once_per_window() {
+    let url = db_or_skip!();
+    let (db, org, tenant, secret) = world_with_secret(&url).await;
+    let endpoint = db
+        .create_webhook(
+            org,
+            "https://receiver.example/hook",
+            &["budget.exhaustion_forecast".to_owned()],
+            &key(),
+        )
+        .await
+        .unwrap();
+
+    // Committed spend comes from the ledger, so fund the wallet and authenticate
+    // the registration's first key for the acting key the hold path binds.
+    let (_, acting) = db
+        .authenticate(&secret)
+        .await
+        .unwrap()
+        .expect("the registration's key authenticates");
+    let wallet = oxsum_core::Tenants::new(db.pool().clone())
+        .get(&tenant)
+        .await
+        .unwrap();
+    let today = time::OffsetDateTime::now_utc().date();
+    wallet.top_up("topup", 1_000_000_000, today).await.unwrap();
+
+    // A daily limit at exactly the committed amount: committed >= limit means
+    // the projection is today — a deterministic fire, not a race with the clock.
+    let key_id = acting.key_id;
+    db.update_key_constraints(
+        org,
+        key_id,
+        oxsum_core::KeyScope::Organization,
+        oxsum_core::KeyConstraints {
+            spend_limit_minor: Some(10_000),
+            budget_duration: Some(oxsum_core::BudgetDuration::Daily),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    wallet
+        .hold_for_key(&acting, None, "hold-1", "", 10_000, today)
+        .await
+        .unwrap();
+    wallet.settle("hold-1", "", 10_000, today).await.unwrap();
+
+    // The settle itself does not fire the event — `record_usage`'s row write
+    // does, off the same committed figure the ledger just sealed.
+    let mut row = usage_row(&format!("req-{}", Uuid::new_v4()), &tenant);
+    row.key_id = Some(key_id);
+    db.record_usage_balanced(&row, None).await.unwrap();
+
+    let deliveries = db
+        .webhook_deliveries(org, endpoint.endpoint.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let forecasts: Vec<_> = deliveries
+        .iter()
+        .filter(|d| d.event_type == oxsum_core::BUDGET_EXHAUSTION_FORECAST)
+        .collect();
+    assert_eq!(
+        forecasts.len(),
+        1,
+        "one forecast per key per window: {deliveries:?}"
+    );
+    let stored: serde_json::Value =
+        sqlx::query_scalar("SELECT payload FROM oxsum.webhook_deliveries WHERE delivery_id = $1")
+            .bind(forecasts[0].id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        stored["data"]["keyId"].as_str().unwrap(),
+        key_id.to_string()
+    );
+    assert_eq!(stored["data"]["spendLimitMinor"], 10_000);
+    assert_eq!(stored["data"]["budgetDuration"], "daily");
+    assert_eq!(stored["data"]["daysRemaining"], 0);
+
+    // A second usage write in the same window does not fire again — the latch
+    // holds for the rest of the window. (A further hold would be refused anyway:
+    // committed is already at the limit.)
+    let mut row = usage_row(&format!("req-{}", Uuid::new_v4()), &tenant);
+    row.key_id = Some(key_id);
+    db.record_usage_balanced(&row, None).await.unwrap();
+    let deliveries = db
+        .webhook_deliveries(org, endpoint.endpoint.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        deliveries
+            .iter()
+            .filter(|d| d.event_type == oxsum_core::BUDGET_EXHAUSTION_FORECAST)
+            .count(),
+        1,
+        "the latch holds inside the window"
+    );
+
+    // Re-PATCHing the constraints clears the latch: the next settle forecasts
+    // again under the new terms — a lower limit keeps the projection over.
+    db.update_key_constraints(
+        org,
+        key_id,
+        oxsum_core::KeyScope::Organization,
+        oxsum_core::KeyConstraints {
+            spend_limit_minor: Some(5_000),
+            budget_duration: Some(oxsum_core::BudgetDuration::Daily),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let mut row = usage_row(&format!("req-{}", Uuid::new_v4()), &tenant);
+    row.key_id = Some(key_id);
+    db.record_usage_balanced(&row, None).await.unwrap();
+    let deliveries = db
+        .webhook_deliveries(org, endpoint.endpoint.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        deliveries
+            .iter()
+            .filter(|d| d.event_type == oxsum_core::BUDGET_EXHAUSTION_FORECAST)
+            .count(),
+        2,
+        "a constraint change re-arms the forecast"
+    );
 }

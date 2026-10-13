@@ -457,7 +457,9 @@ impl Db {
     }
 
     /// Replaces a key's whole constraint set: the request names the limit, the budget
-    /// window and the allowlist, each cleared by null. `None` returned means this
+    /// window and the allowlist, each cleared by null. A constraint write also clears
+    /// `budget_forecast_sent_for`, so a new limit or window forecasts again from
+    /// scratch instead of inheriting the old terms' latch. `None` returned means this
     /// organization has no such key — which is also the answer for another
     /// organization's key id, and for a member naming a key they did not create, so
     /// ids cannot be probed. The scope rules are the revoke's.
@@ -485,7 +487,8 @@ impl Db {
                     "UPDATE oxsum.api_keys \
                      SET spend_limit_minor = $4, budget_duration = $5, model_allowlist = $6, \
                          requests_per_minute = $7, max_concurrent_holds = $8, \
-                         tokens_per_minute = $9, tokens_per_minute_scopes = $10 \
+                         tokens_per_minute = $9, tokens_per_minute_scopes = $10, \
+                         budget_forecast_sent_for = NULL \
                      WHERE organization_id = $1 AND key_id = $2 AND created_by = $3 \
                      RETURNING {KEY_COLS}"
                 ))
@@ -507,7 +510,8 @@ impl Db {
                     "UPDATE oxsum.api_keys \
                      SET spend_limit_minor = $3, budget_duration = $4, model_allowlist = $5, \
                          requests_per_minute = $6, max_concurrent_holds = $7, \
-                         tokens_per_minute = $8, tokens_per_minute_scopes = $9 \
+                         tokens_per_minute = $8, tokens_per_minute_scopes = $9, \
+                         budget_forecast_sent_for = NULL \
                      WHERE organization_id = $1 AND key_id = $2 \
                      RETURNING {KEY_COLS}"
                 ))
@@ -560,6 +564,122 @@ impl Db {
             }
         };
         rows.iter().map(key_from_row).collect()
+    }
+
+    /// The exhaustion projection [`forecast_exhaustion`](crate::webhooks::forecast_exhaustion)
+    /// computes at settle time, recomputed on read for every key of the organization that
+    /// carries both a `spend_limit_minor` and a `budget_duration` — the keys page renders
+    /// one line per returned forecast (issue #220).
+    ///
+    /// The committed spend is the same scope the hold-side limit check and the settle-time
+    /// forecast read: settled charges booked on or after the current window's start plus
+    /// every outstanding hold, summed over the wallet, bonus and credit-line pools. A key
+    /// whose projection lands outside its window does not appear — like the event, the
+    /// dashboard line exists only when the burn rate crosses inside the period.
+    ///
+    /// An organization with no ledger yet (a fresh tenant before its first hold) reads
+    /// back empty: there is nothing to project.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn key_budget_forecasts(
+        &self,
+        organization_id: Uuid,
+        scope: KeyScope,
+    ) -> Result<Vec<crate::webhooks::BudgetForecast>, WalletError> {
+        // The keys this caller may see, constrained like `list_keys`: the scope is part
+        // of the lookup, so a member reads only their own keys' forecasts.
+        let keys: Vec<(Uuid, i64, String)> = match scope {
+            KeyScope::Own(user_id) => {
+                sqlx::query_as(
+                    "SELECT key_id, spend_limit_minor, budget_duration FROM oxsum.api_keys \
+                     WHERE organization_id = $1 AND created_by = $2 \
+                       AND spend_limit_minor IS NOT NULL AND budget_duration IS NOT NULL \
+                       AND revoked_at IS NULL",
+                )
+                .bind(organization_id)
+                .bind(user_id)
+                .fetch_all(self.pool())
+                .await?
+            }
+            KeyScope::Organization | KeyScope::All => {
+                sqlx::query_as(
+                    "SELECT key_id, spend_limit_minor, budget_duration FROM oxsum.api_keys \
+                     WHERE organization_id = $1 \
+                       AND spend_limit_minor IS NOT NULL AND budget_duration IS NOT NULL \
+                       AND revoked_at IS NULL",
+                )
+                .bind(organization_id)
+                .fetch_all(self.pool())
+                .await?
+            }
+        };
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        // The tenant's ledger name and its three drawable pools, resolved by path like the
+        // settle-time forecast does. A tenant with no ledger yet reads back empty.
+        let ledger = {
+            let tenant: String = sqlx::query_scalar(
+                "SELECT tenant_id FROM oxsum.organizations WHERE organization_id = $1",
+            )
+            .bind(organization_id)
+            .fetch_one(self.pool())
+            .await?;
+            format!("ledger_{}", tenant.replace('"', "\"\""))
+        };
+        let has_ledger = sqlx::query_scalar::<_, Option<String>>("SELECT to_regclass($1)::text")
+            .bind(format!("\"{ledger}\".accounts"))
+            .fetch_one(self.pool())
+            .await?
+            .is_some();
+        if !has_ledger {
+            return Ok(Vec::new());
+        }
+        let pools: Vec<i32> = sqlx::query_scalar(&format!(
+            "SELECT account_index FROM \"{ledger}\".accounts WHERE path = ANY($1)",
+        ))
+        .bind(vec![
+            crate::wallet::WALLET.to_owned(),
+            crate::wallet::BONUS.to_owned(),
+            crate::wallet::CREDIT_LINE.to_owned(),
+        ])
+        .fetch_all(self.pool())
+        .await?;
+        if pools.is_empty() {
+            return Ok(Vec::new());
+        }
+        let today = OffsetDateTime::now_utc().date();
+        let mut forecasts = Vec::with_capacity(keys.len());
+        for (key_id, limit, duration) in keys {
+            let duration = BudgetDuration::parse(&duration)?;
+            let window_start = duration.period_start(today);
+            let committed: i64 = sqlx::query_scalar(&format!(
+                "SELECT COALESCE(SUM(CASE WHEN p.direction = 'D' THEN p.amount_minor \
+                                      ELSE -p.amount_minor END), 0)::bigint \
+                 FROM \"{ledger}\".postings p \
+                 JOIN \"{ledger}\".entries e ON e.entry_id = p.entry_id \
+                 WHERE p.account_index = ANY($1) AND e.provenance_actor = $2 \
+                   AND (p.layer = 'pending' OR e.booking_date >= $3)",
+            ))
+            .bind(&pools)
+            .bind(key_id.as_simple().to_string())
+            .bind(window_start)
+            .fetch_one(self.pool())
+            .await?;
+            if let Some(mut forecast) = crate::webhooks::forecast_exhaustion(
+                duration,
+                window_start,
+                today,
+                committed,
+                limit,
+            ) {
+                forecast.key_id = key_id;
+                forecasts.push(forecast);
+            }
+        }
+        Ok(forecasts)
     }
 
     /// Revokes a key. `None` means this organization has no such key — which is also the

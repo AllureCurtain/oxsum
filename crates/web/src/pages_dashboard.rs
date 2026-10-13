@@ -399,6 +399,12 @@ async fn keys_page(cx: &Cx) -> Result<impl View> {
         .list_keys(org_id, key_scope(&sctx.principal))
         .await
         .map_err(|_| internal("the keys could not be read"))?;
+    // The same projection the `budget.exhaustion_forecast` event fires on, per key (issue #220).
+    let forecasts = sctx
+        .db
+        .key_budget_forecasts(org_id, key_scope(&sctx.principal))
+        .await
+        .map_err(|_| internal("the budget forecasts could not be read"))?;
     Ok(view! {
         dashboard_frame(
             title: "Keys",
@@ -413,12 +419,13 @@ async fn keys_page(cx: &Cx) -> Result<impl View> {
                 <button type="submit">"Create key"</button>
             </form>
             <table>
-                <thead><tr><th>"Name"</th><th>"Prefix"</th><th></th></tr></thead>
+                <thead><tr><th>"Name"</th><th>"Prefix"</th><th>"Budget"</th><th></th></tr></thead>
                 <tbody>
                     for key in keys {
                         <tr>
                             <td>(key.name.clone().unwrap_or_default())</td>
                             <td><code>(key.prefix.clone())</code></td>
+                            <td>(budget_line(&key, &forecasts))</td>
                             <td>
                                 <form method="post" action="/dashboard/keys/revoke" style="display:inline">
                                     <input type="hidden" name="key_id" value=(key.id.to_string()) />
@@ -431,6 +438,25 @@ async fn keys_page(cx: &Cx) -> Result<impl View> {
             </table>
         )
     })
+}
+
+/// The budget cell one key row renders: the limit and its window when set, and the
+/// projected exhaustion date when the current burn rate crosses inside the period —
+/// the same date the `budget.exhaustion_forecast` webhook announces (issue #220).
+fn budget_line(key: &oxsum_core::ApiKey, forecasts: &[oxsum_core::BudgetForecast]) -> String {
+    use std::fmt::Write as _;
+    let (Some(limit), Some(duration)) = (key.spend_limit_minor, key.budget_duration) else {
+        return String::new();
+    };
+    let mut line = format!("{} / {}", credits(limit), duration.as_str());
+    if let Some(forecast) = forecasts.iter().find(|f| f.key_id == key.id) {
+        let _ = write!(
+            line,
+            " — exhausts {} ({}d)",
+            forecast.projected_exhaustion_date, forecast.days_remaining
+        );
+    }
+    line
 }
 
 #[derive(Deserialize)]

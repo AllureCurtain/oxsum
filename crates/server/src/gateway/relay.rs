@@ -121,6 +121,12 @@ struct Plan {
     /// `Retry-After` on a lone channel's 429. Written into the settlement
     /// description and the usage row.
     upstream_attempts: i64,
+    /// The turn's OTLP span (issue #224). Held, never entered: keeping the
+    /// handle alive keeps the span open until the settlement task finishes,
+    /// so its duration is the whole turn — relay plus ledger write — and
+    /// `Span::record` lands the token counts once the charge is known.
+    /// With no collector configured the handle costs a reference count.
+    span: tracing::Span,
 }
 
 /// The SSE scanner: chunks in, usage and answer text out.
@@ -216,6 +222,7 @@ impl Turn {
         attribution: Attribution,
         adapter: &'static dyn UsageAdapter,
         metrics: crate::metrics::Metrics,
+        span: tracing::Span,
     ) -> Self {
         Self {
             plan: Some(Plan {
@@ -242,6 +249,7 @@ impl Turn {
                 finished: false,
                 progress_chars: 0,
                 upstream_attempts: 1,
+                span,
             }),
         }
     }
@@ -444,6 +452,15 @@ impl Plan {
                 UsageRecord::tokens(input, output)?
             }
         };
+        // The turn's OTLP span gets the counts the charge was priced from —
+        // upstream's own report or the local estimate — at the one place every
+        // settlement path passes through, plus the turn's wall time (the span's
+        // own start is at request parse, so elapsed here is admission + relay;
+        // issue #224).
+        self.span
+            .record("gen_ai.usage.input_tokens", usage.input_tokens);
+        self.span
+            .record("gen_ai.usage.output_tokens", usage.output_tokens);
         // The caller's attribution rides whatever the turn was charged for: it is
         // request-scoped, not upstream-reported.
         usage.end_user = self.attribution.end_user.clone();
@@ -499,6 +516,17 @@ impl Plan {
             .wallet
             .settle(&self.hold_key, &description, charged, today())
             .await;
+        // The ledger write is the turn's last phase boundary: hold-taken → this
+        // event is the relay, this → span end is the settlement write itself
+        // (issue #224). The event lands whether or not the write succeeded —
+        // a failed settle is exactly the turn a trace exists to explain.
+        self.span.in_scope(|| {
+            tracing::info!(
+                settlement.kind = ?kind,
+                oxsum.charged_minor = charged,
+                "settle written"
+            );
+        });
         match &outcome {
             Ok(_) => {
                 // The turn's usage row rides beside the settlement it describes: the ledger

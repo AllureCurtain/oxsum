@@ -439,7 +439,8 @@ Steps:
    `deposit.credited`, `deposit.failed`, `deposit.reversed`, `balance.low`,
    `statement.finalized`, `statement.payment_overdue`,
    `statement.payment_status_updated`, `org.credit_limit_exceeded`,
-   `anomaly.detected`). `balanceLowMinor` is the available-balance line
+   `anomaly.detected`, `budget.exhaustion_forecast`). `balanceLowMinor` is the
+   available-balance line
    `balance.low` fires below — omit it and the endpoint stays deaf to the
    balance. The URL must be HTTPS — HTTP is allowed only to localhost for
    development. The answer carries `secret`, a `whsec-` string shown exactly
@@ -459,7 +460,19 @@ Steps:
    `org.credit_limit_exceeded` fires when a credit-lined organization hits its
    line — a hold refused 402 while a `creditLimitMinor` is set.
    `anomaly.detected` fires on the odd settlements — capped, estimated,
-   client-cancelled, swept, unpriced, released, dead-lettered holds.
+   client-cancelled, swept, unpriced, released, dead-lettered holds — and on
+   upstream price drift: when the price-sync job finds a stored `upstream`
+   rate disagreeing with the channel's live catalog, `data` is `{kind:
+   "upstream_price_drift", channel, model, field, storedMinor, liveMinor}`,
+   broadcast to every subscribed endpoint across all organizations (the rates
+   are the public catalog's, never organization data).
+   `budget.exhaustion_forecast` carries `{keyId, spendLimitMinor,
+   budgetDuration, windowStart, committedMinor, projectedExhaustionDate,
+   daysRemaining}` — an early warning that a key with a `budgetDuration` window
+   is on pace to hit its `spendLimitMinor` before the window closes. It fires
+   once per key per window; PATCHing the key's constraints or rolling into the
+   next window re-arms it, and the keys dashboard shows the same projection
+   inline.
 3. Verify every delivery before acting on it: read `x-oxsum-signature`
    (`t=<unix>,v1=<hex>`), recompute HMAC-SHA256 of `"{t}.{raw body}"` with the
    stored secret, compare in constant time, and reject timestamps older than a
@@ -514,6 +527,20 @@ The bills page does this check automatically on every visit (see "Append-only ar
 
 The operator signs the head of your organization's log. Save the signed head from `GET /api/v1/log/head` (the `note` text and the `size`/`root` it carries) alongside your records. Later, `GET /api/v1/log/consistency?from=<that size>` returns the new signed head and the proof between them. Check the note's signature against the operator's key (published at `GET /api/v1/log/key` — get the key through a channel the operator does not control the first time, or the signature proves only that the server agrees with itself), then check the proof against the two heads. It passes only when the new log is the old log with entries appended: a second history at a size the operator already signed for cannot produce it.
 
+## Verifying a statement's anchor
+
+Purpose: confirm a finalized statement commits the *whole* covered set — every entry the month charged, in order — and that the figures the document shows are the figures the ledger committed, not just that the rows it chose to display add up.
+
+A bill's own proof shows one entry was not altered. A statement's anchor closes the gap that leaves: the proof cannot say whether the statement's lines are *all* the lines. Finalizing a statement appends a marker entry to your organization's ledger whose document hash is the window digest and whose description carries the rollup digest, and the detail endpoint hands that marker back as the `anchor` object on `GET /api/v1/statements/{statementId}` (the platform's own copy is `GET /api/v1/admin/statements/{statementId}` — the same anchor). `verify_statement_anchor` in `oxsum_verify` re-runs the check locally, the same way `/verify` re-runs a bill's:
+
+1. Fetch the detail: `GET /api/v1/statements/{statementId}` and keep the `data` object — it carries `statement`, `lines` and `anchor` (`{entryId, logIndex, windowHash, rollupHash, origin, note, keyName, publicKey, keyHash}`).
+2. Collect the covered entries' `contentHash` values **in `logIndex` order** — the entries the statement's `logFromIndex`–`logToIndex` window spans. `GET /api/v1/billing-records` pages the settled turns (each row's `requestId` names its settlement entry `req-<requestId>:settle` for `GET /api/v1/entries/{entryId}/proof`), and the bills page's JSON export carries `entryId`/`contentHash`/`bookedOn` for the same archive. Pass them to the check as `window_hashes`; the fold recompute under `oxsum/statement-window/v1` must equal `windowHash` — a dropped, inserted or reordered entry changes it.
+3. The rollup re-serializes the statement's own fields and lines to canonical bytes and must digest under `oxsum/statement-rollup/v1` to `rollupHash` — the totals the document shows are the ones the marker committed.
+4. On a signing deployment (`OXSUM_HEAD_SIGNING_KEY`) the anchor's `note` attests the tree head *right after* the marker — the head at exactly `logIndex + 1`, fetched from `GET /api/v1/log/head` (the current head when the marker is the latest entry). Pass it as `expected_head` and the ledger's `origin` (`oxsum/ledgers/<tenant_id>`, the same string `log/head` answers) as `expected_origin`; the check verifies the note's signature against `publicKey`, so the marker's *inclusion* is proven, not merely claimed.
+5. An unsigned deployment serves `note`/`keyName`/`publicKey`/`keyHash` as `null` — `expected_head` is then unused (the check returns before consulting it) and the anchor still binds the two digests. Either way a passed check names what failed otherwise: `Absent` (no anchor — the statement is not finalized), `WindowMismatch`, `RollupMismatch`, `Malformed`, `WrongOrigin`, `HeadMismatch`, `Unsigned` or `BadSignature`.
+
+Note: like a bill's proof, the anchor proves the *record* — that the committed window and rollup are what the ledger holds — and on a signing deployment that the operator signed the head containing the marker. It does not prove upstream really returned those tokens; that honesty question sits one layer up.
+
 ## Platform admin
 
 Purpose: manage the deployment itself — the upstream channels the gateway relays to and the price each model charges.
@@ -529,6 +556,8 @@ Steps:
 
 Note: a request resolves its price when it starts and carries the version to its settlement, so a price change lands on later requests only; in-flight turns and old bills are untouched.
 
+Upstream-price drift is also watched automatically where the channel is another oxsum deployment: with `OXSUM_UPSTREAM_PRICE_SYNC` set (and `OXSUM_SECRET_KEY` present to unseal the channel credentials), a daily job probes each channel's `/api/v1/pricing`, and a stored `upstream` rate the live catalog contradicts opens a drift row — broadcasting `anomaly.detected` and listing in the reconciliation report — that resolves itself once the rates agree again. Every probe records an outcome (`ok`, `unreachable`, `invalid`, `auth`), so a channel that stops answering is visible too.
+
 The organizations page (`/admin/organizations`) lists every organization the ledger holds money for — its name, kind (personal or team), headcount, and what its wallet shows: the available balance and the frozen sum of its outstanding holds. Each row carries an "Adjust" form: a signed amount in credits (a leading `-` deducts) and a required reason, which the new entry stores as its description — part of what a bill's proof covers. A deduction the balance cannot carry is refused with `INSUFFICIENT_FUNDS`; nothing in the page ever rewrites history.
 
 A deployment can also start each new organization's wallet with credits: `OXSUM_SIGNUP_BONUS_MINOR` (default 0) grants that amount at self-registration, booked as an adjustment whose reason is "signup bonus". An invited account joins an existing organization and is granted nothing.
@@ -541,7 +570,7 @@ The anomalies page (`/admin/anomalies`) reviews the settled turns that did not p
 
 The margin view has no page yet — it answers over the API: `GET /api/v1/admin/margin` sums what organizations were charged against what upstream cost the platform, per channel and model, and reports the difference as `marginMinor`. `untrackedTurns` counts the settled turns no `upstream` price block covered (a swept turn, a price without one, or history predating the column): read it as the coverage gap the margin is blind to, because an untracked turn is never a free one — the number to watch before trusting `marginMinor`.
 
-The reconciliation page (`/admin/reconciliation`) answers whether the projections still match the books: the scan reads every organization's ledger against the usage rows, the deposits and the hold watches, and lists each drift class that counted nonzero — a usage row whose settlement entry is missing, a settled turn that wrote no record, a deposit marked credited with no entry behind it, a rail that paid a different amount than expected, a deposit confirmed but never credited, a hold watch with no reservation behind it, a pending hold the sweeper cannot see, a hold whose sweep failed ten times and was dead-lettered, a periodic job run that exhausted its attempts, and a log whose positions are not dense. Each class carries its count and a bounded sample of identifiers to follow; `clean` means every class counted zero. The scan reports and never repairs — drift is for the operator to act on, not for a second writer to patch silently.
+The reconciliation page (`/admin/reconciliation`) answers whether the projections still match the books: the scan reads every organization's ledger against the usage rows, the deposits and the hold watches, and lists each drift class that counted nonzero — a usage row whose settlement entry is missing, a settled turn that wrote no record, a deposit marked credited with no entry behind it, a rail that paid a different amount than expected, a deposit confirmed but never credited, a hold watch with no reservation behind it, a pending hold the sweeper cannot see, a hold whose sweep failed ten times and was dead-lettered, a periodic job run that exhausted its attempts, a log whose positions are not dense, and — at platform scope — a stored `upstream` rate the channel's live catalog contradicts (`upstream_price_drift`, sampled as `channel:model:field`). Each class carries its count and a bounded sample of identifiers to follow; `clean` means every class counted zero. The scan reports and never repairs — drift is for the operator to act on, not for a second writer to patch silently.
 
 The closing page (`/admin/closing`) runs the monthly closing: pick a month that has fully ended and close it — the month is sealed in every organization's ledger, which produces its closing record (a seal committing to the log's tree head and the month's closing trial balance, chained onto the seal before it) and refuses any new entry dated into it from then on. The table lists the sealed months newest first: organization, period, how many entries it covers, the log's size at sealing, and the three hashes the record is made of. Closing a month twice is safe — the second run answers the records that already exist.
 

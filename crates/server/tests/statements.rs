@@ -828,3 +828,226 @@ async fn the_export_reads_only_the_callers_own_statements() {
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
+
+// ── statement anchors (issue #221) ──────────────────────────────────────────
+//
+// A finalized statement is anchored to the transparency log: a marker entry the
+// finalize path appends, a window fold over the covered entries' content hashes,
+// and a rollup digest over the statement's own figures. The detail endpoint
+// answers the anchor back, and `oxsum_verify::verify_statement_anchor` is the
+// client-side check a bill's reader runs — these tests run it against the real
+// API answer.
+
+/// The covered entries' `contentHash` hex strings in `log_index` order — what
+/// `StatementAnchorCheck::window_hashes` wants. Mirrors `draft_of`'s own select:
+/// every usage row whose ledger entry books inside the statement's month.
+async fn window_hashes(pool: &PgPool, tenant_id: &str, first: Date, last: Date) -> Vec<String> {
+    let schema = format!("ledger_{tenant_id}");
+    // The schema name is assembled by Wallet::open from a validated tenant id;
+    // it is interpolated here the same way doubleentry does internally.
+    let sql = format!(
+        "SELECT e.content_hash \
+         FROM oxsum.usage_records u \
+         JOIN {schema}.entries e ON e.entry_id = u.entry_id \
+         WHERE u.tenant_id = $1 AND e.booking_date >= $2 AND e.booking_date <= $3 \
+         ORDER BY e.log_index"
+    );
+    sqlx::query_scalar::<_, Vec<u8>>(&sql)
+        .bind(tenant_id)
+        .bind(first)
+        .bind(last)
+        .fetch_all(pool)
+        .await
+        .expect("the window hashes read")
+        .into_iter()
+        .map(|bytes| bytes.iter().map(|b| format!("{b:02x}")).collect())
+        .collect()
+}
+
+/// The period's first and last calendar day as `time::Date`s, for the window query.
+fn period_bounds(period: &str) -> (Date, Date) {
+    let (year, month) = period.split_once('-').expect("a YYYY-MM period");
+    let year: i32 = year.parse().unwrap();
+    let month: u8 = month.parse().unwrap();
+    let month = time::Month::try_from(month).unwrap();
+    let first = Date::from_calendar_date(year, month, 1).unwrap();
+    // The last day is the first of the month plus its length minus one.
+    let last = first + time::Duration::days(time::util::days_in_month(month, year) as i64 - 1);
+    (first, last)
+}
+
+/// Builds the `TreeHead` the `/api/v1/log/head` answer carries — the signed head
+/// right after the anchor, which is what the note attests.
+fn head_from(value: &Value) -> doubleentry::TreeHead {
+    doubleentry::TreeHead {
+        size: value["size"].as_u64().expect("a head size"),
+        root: doubleentry::Hash::parse_hex(value["root"].as_str().expect("a head root"))
+            .expect("the head root is hex"),
+    }
+}
+
+/// An unsigned deployment: the anchor still binds the window fold and the rollup
+/// — `note` and the key fields are absent — and `verify_statement_anchor` passes
+/// on the digests alone.
+#[tokio::test]
+async fn an_unsigned_anchor_verifies_against_the_detail_answer() {
+    let (app, pool) = app_or_skip!();
+    let (statement_id, key) = a_finalized_statement(&app, &pool, "anchor-unsigned").await;
+
+    // The organization's detail carries the anchor fields.
+    let (status, body) = call_with(
+        &app,
+        "GET",
+        &format!("/api/v1/statements/{statement_id}"),
+        None,
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let anchor = &body["data"]["anchor"];
+    assert!(
+        anchor.is_object(),
+        "the finalized statement is anchored: {body}"
+    );
+    assert!(anchor["entryId"].is_string());
+    assert!(anchor["logIndex"].is_number());
+    assert!(anchor["windowHash"].is_string());
+    assert!(anchor["rollupHash"].is_string());
+    // Unsigned: the signature layer does not apply, so the key fields are absent.
+    assert!(anchor["note"].is_null(), "{anchor}");
+    assert!(anchor["keyName"].is_null(), "{anchor}");
+    assert!(anchor["publicKey"].is_null(), "{anchor}");
+    assert!(anchor["keyHash"].is_null(), "{anchor}");
+
+    let tenant = tenant_of(
+        &pool,
+        body["data"]["statement"]["organizationId"]
+            .as_str()
+            .unwrap(),
+    )
+    .await;
+    let origin = format!("oxsum/ledgers/{tenant}");
+    assert_eq!(anchor["origin"].as_str().unwrap(), origin);
+
+    // The client collects the covered entries' content hashes in log order.
+    let (first, last) = period_bounds(body["data"]["statement"]["period"].as_str().unwrap());
+    let hashes = window_hashes(&pool, &tenant, first, last).await;
+    let hashes: Vec<&str> = hashes.iter().map(String::as_str).collect();
+    assert_eq!(
+        hashes.len() as i64,
+        body["data"]["statement"]["entryCount"].as_i64().unwrap(),
+        "every covered entry supplies a hash"
+    );
+
+    // The check the bill's reader runs — expected_head is unused on the unsigned
+    // path (verification returns before consulting it), so a dummy stands in.
+    let dummy_head = doubleentry::TreeHead {
+        size: 0,
+        root: doubleentry::Hash::from_bytes([0; 32]),
+    };
+    let check = oxsum_verify::StatementAnchorCheck {
+        window_hashes: &hashes,
+        expected_head: &dummy_head,
+        expected_origin: &origin,
+    };
+    oxsum_verify::verify_statement_anchor(&body["data"].to_string(), &check)
+        .expect("the unsigned anchor verifies");
+
+    // The admin twin answers the same document, anchored identically.
+    let (status, admin_body) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/admin/statements/{statement_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{admin_body}");
+    assert_eq!(
+        admin_body["data"]["anchor"]["rollupHash"], anchor["rollupHash"],
+        "the admin detail commits the same rollup"
+    );
+    oxsum_verify::verify_statement_anchor(&admin_body["data"].to_string(), &check)
+        .expect("the admin detail's anchor verifies");
+}
+
+/// A seeded deployment signs heads: the anchor carries the note over the head
+/// right after the marker, and `verify_statement_anchor` binds that signature —
+/// the marker's inclusion is proven by the head that follows it.
+#[tokio::test]
+async fn a_signed_anchor_verifies_the_head_that_follows_it() {
+    // Skips when DATABASE_URL is unset; the unsigned-app bindings are dropped —
+    // a seeded app is built below.
+    let (_app, _pool) = app_or_skip!();
+    // Rebuild the app with a signing seed: the same deployment, now attesting.
+    let db_url = url().expect("DATABASE_URL is set (app_or_skip connected)");
+    let pool2 = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&db_url)
+        .await
+        .expect("connects to PostgreSQL");
+    let db = Db::from_pool(pool2.clone());
+    db.migrate().await.expect("migrates");
+    let config = Config::new(Signup::Open, None)
+        .with_secret(secret())
+        .with_admin_token(TOKEN)
+        .with_head_signing_seed([42; 32]);
+    let app = oxsum_server::app(db, config);
+    let pool = pool2;
+
+    let (statement_id, key) = a_finalized_statement(&app, &pool, "anchor-signed").await;
+
+    let (status, body) = call_with(
+        &app,
+        "GET",
+        &format!("/api/v1/statements/{statement_id}"),
+        None,
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let anchor = &body["data"]["anchor"];
+    assert!(
+        anchor.is_object(),
+        "the finalized statement is anchored: {body}"
+    );
+    // Signed: the note and the key fields attest the head after the marker.
+    assert!(anchor["note"].is_string(), "{anchor}");
+    assert_eq!(anchor["keyName"].as_str().unwrap(), "oxsum/tree-heads");
+    assert_eq!(anchor["publicKey"].as_str().unwrap().len(), 64);
+    assert_eq!(anchor["keyHash"].as_str().unwrap().len(), 8);
+
+    let tenant = tenant_of(
+        &pool,
+        body["data"]["statement"]["organizationId"]
+            .as_str()
+            .unwrap(),
+    )
+    .await;
+    let origin = format!("oxsum/ledgers/{tenant}");
+    assert_eq!(anchor["origin"].as_str().unwrap(), origin);
+
+    // The head right after the anchor: the marker is the latest entry, so the
+    // current head is at logIndex + 1 — the size the note must attest. /log/head
+    // reads the caller's own ledger, so the organization's key asks, not the
+    // operator token.
+    let (status, head_body) = call_with(&app, "GET", "/api/v1/log/head", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK, "{head_body}");
+    let expected_head = head_from(&head_body["data"]);
+    assert_eq!(
+        expected_head.size,
+        anchor["logIndex"].as_u64().unwrap() + 1,
+        "the served head is the one that follows the marker"
+    );
+
+    let (first, last) = period_bounds(body["data"]["statement"]["period"].as_str().unwrap());
+    let hashes = window_hashes(&pool, &tenant, first, last).await;
+    let hashes: Vec<&str> = hashes.iter().map(String::as_str).collect();
+
+    let check = oxsum_verify::StatementAnchorCheck {
+        window_hashes: &hashes,
+        expected_head: &expected_head,
+        expected_origin: &origin,
+    };
+    oxsum_verify::verify_statement_anchor(&body["data"].to_string(), &check)
+        .expect("the signed anchor verifies");
+}

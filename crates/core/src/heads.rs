@@ -295,6 +295,122 @@ pub fn sign_price_head(
     })
 }
 
+// ── statement anchors (issue #221) ────────────────────────────────────────────
+//
+// A finalized statement names the log window it covers
+// (`log_from_index`/`log_to_index`), and each covered entry proves its own
+// inclusion — but nothing committed *what the log contained* between those
+// bounds. A forged or truncated window would still verify. The anchor closes
+// the gap: finalize appends a marker entry whose document hash is the window
+// digest over the covered entries' content hashes in log order, and whose
+// description commits the rollup digest over the statement's lines and totals.
+// A verifier recomputes both digests and checks the anchor's inclusion proof —
+// an entry dropped from or inserted into the window changes the digest the
+// anchor carries.
+
+/// The domain separator the statement-window digest folds under.
+///
+/// One digest over the ordered content hashes of every covered entry —
+/// `oxsum/statement-window/v1` so it cannot collide with any other digest in
+/// the system, and versioned so the fold can evolve without reinterpreting
+/// anchored statements.
+pub const STATEMENT_WINDOW_DOMAIN: &[u8] = b"oxsum/statement-window/v1";
+
+/// The domain separator the rollup digest hashes its canonical form under.
+pub const STATEMENT_ROLLUP_DOMAIN: &[u8] = b"oxsum/statement-rollup/v1";
+
+/// The document id the anchor entry's [`doubleentry::DocumentRef`] carries: the
+/// statement's identity in its own system, bound to the window digest.
+pub const STATEMENT_ANCHOR_DOCUMENT: &str = "oxsum/statement-anchor/v1";
+
+/// The window digest: one fold over `hashes` in log order.
+///
+/// Each covered entry's `content_hash` is appended to the payload verbatim —
+/// 32 raw bytes each — and the fold digests the whole under
+/// [`STATEMENT_WINDOW_DOMAIN`]. Order is load-bearing: the same set in a
+/// different order folds to a different digest, which is what lets the anchor
+/// pin the window's contents *and* their arrangement. An empty window folds
+/// the empty payload — a statement with no usage anchors that fact too.
+#[must_use]
+pub fn statement_window_hash(hashes: &[Hash]) -> Hash {
+    let mut payload = Vec::with_capacity(hashes.len() * Hash::LEN);
+    for hash in hashes {
+        payload.extend_from_slice(hash.as_bytes());
+    }
+    Hash::digest(STATEMENT_WINDOW_DOMAIN, &payload)
+}
+
+/// The canonical JSON bytes the rollup digest commits to.
+///
+/// The anchor's description carries `{v, period, logFromIndex, logToIndex,
+/// entryCount, totalMinor, creditDrawnMinor, windowHash, lines: [...]}` as
+/// compact JSON through this struct — the document the rollup digest names.
+/// `serde_json` emits struct fields in declaration order, so the bytes are
+/// deterministic; the verifier hashes them verbatim rather than re-serializing.
+/// The `v` field future-proofs the shape: a `StatementRollupV2` would hash
+/// under a new domain.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatementRollupV1<'a> {
+    /// Canonical-form version.
+    pub v: i64,
+    /// The billed month, `YYYY-MM`.
+    pub period: &'a str,
+    /// The first covered entry's log index, if the window is non-empty.
+    pub log_from_index: Option<i64>,
+    /// The last covered entry's log index, if the window is non-empty.
+    pub log_to_index: Option<i64>,
+    /// Usage rows the statement itemizes.
+    pub entry_count: i64,
+    /// The period's settled usage charges.
+    pub total_minor: i64,
+    /// The part of the charges the credit line carried.
+    pub credit_drawn_minor: i64,
+    /// The window digest the anchor's document hash carries — kept inside the
+    /// rollup so the two digests are bound to each other, not just to the entry.
+    pub window_hash: &'a str,
+    /// The statement's itemized lines, ordered as persisted.
+    pub lines: &'a [StatementRollupLine<'a>],
+}
+
+/// One line of the canonical rollup: a `StatementLine` borrowed for hashing.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatementRollupLine<'a> {
+    /// The channel the usage came through.
+    pub channel: &'a str,
+    /// The model that priced it.
+    pub model: &'a str,
+    /// Settled requests the line aggregates.
+    pub turns: i64,
+    /// Input tokens across those turns.
+    pub input_tokens: i64,
+    /// Output tokens across those turns.
+    pub output_tokens: i64,
+    /// Cached-input tokens across those turns.
+    pub cached_tokens: i64,
+    /// Reasoning tokens across those turns.
+    pub reasoning_tokens: i64,
+    /// What the line's usage was charged.
+    pub amount_minor: i64,
+}
+
+/// Renders the canonical rollup bytes.
+///
+/// # Errors
+///
+/// Serialization of these fields cannot fail; the `Result` keeps the caller honest.
+pub fn canonical_statement_rollup(rollup: &StatementRollupV1<'_>) -> Result<String, WalletError> {
+    serde_json::to_string(rollup)
+        .map_err(|error| WalletError::InvalidInput(format!("canonical statement rollup: {error}")))
+}
+
+/// The 32-byte rollup digest: what the anchor entry's description commits.
+#[must_use]
+pub fn statement_rollup_hash(canonical_rollup: &str) -> Hash {
+    Hash::digest(STATEMENT_ROLLUP_DOMAIN, canonical_rollup.as_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     // The tests may expect: a panic here is a failing test, which is what a test is for.
@@ -468,5 +584,92 @@ mod tests {
         // A different version is a different checkpoint.
         let newer = sign_price_head(&key, "deepseek", &priced("ds-chat", 8), &row).expect("signs");
         assert_ne!(first.note, newer.note);
+    }
+
+    // ── statement anchors (issue #221) ──────────────────────────────────────
+
+    /// The window fold is positional: the same two content hashes in a
+    /// different order digest differently, so a reordered window cannot pass.
+    #[test]
+    fn the_window_fold_binds_log_order() {
+        let first = Hash::digest(b"test", b"a");
+        let second = Hash::digest(b"test", b"b");
+        let mut joined = Vec::from(first.as_bytes().as_slice());
+        joined.extend_from_slice(second.as_bytes());
+        assert_eq!(
+            statement_window_hash(&[first, second]),
+            Hash::digest(STATEMENT_WINDOW_DOMAIN, &joined),
+        );
+        assert_ne!(
+            statement_window_hash(&[first, second]),
+            statement_window_hash(&[second, first]),
+        );
+        // An empty window still folds — a statement over no entries commits
+        // the digest of nothing, which is a real, checkable value.
+        assert_eq!(
+            statement_window_hash(&[]),
+            Hash::digest(STATEMENT_WINDOW_DOMAIN, b""),
+        );
+    }
+
+    /// The canonical rollup is pinned down to the byte: a field renamed,
+    /// reordered or spelled differently would mint a different digest for the
+    /// same statement and every anchor already issued would fail
+    /// `verify_statement_anchor`.
+    #[test]
+    fn the_canonical_statement_rollup_is_byte_stable() {
+        let lines = [StatementRollupLine {
+            channel: "anthropic",
+            model: "claude",
+            turns: 3,
+            input_tokens: 100,
+            output_tokens: 50,
+            cached_tokens: 10,
+            reasoning_tokens: 5,
+            amount_minor: 2_000_000,
+        }];
+        let window_hex = "aa".repeat(32);
+        let rollup = StatementRollupV1 {
+            v: 1,
+            period: "2026-09",
+            log_from_index: Some(3),
+            log_to_index: Some(8),
+            entry_count: 3,
+            total_minor: 2_000_000,
+            credit_drawn_minor: 1_500_000,
+            window_hash: &window_hex,
+            lines: &lines,
+        };
+        let canonical = canonical_statement_rollup(&rollup).expect("serializes");
+        assert_eq!(
+            canonical,
+            format!(
+                r#"{{"v":1,"period":"2026-09","logFromIndex":3,"logToIndex":8,"entryCount":3,"totalMinor":2000000,"creditDrawnMinor":1500000,"windowHash":"{}","lines":[{{"channel":"anthropic","model":"claude","turns":3,"inputTokens":100,"outputTokens":50,"cachedTokens":10,"reasoningTokens":5,"amountMinor":2000000}}]}}"#,
+                "aa".repeat(32),
+            ),
+        );
+    }
+
+    /// A null window is a real shape too: a statement over no settled entries
+    /// serializes `logFromIndex`/`logToIndex` as null, not as absent fields —
+    /// the verifier reads the same wire.
+    #[test]
+    fn the_rollup_keeps_an_empty_window_explicit() {
+        let window_hex = "bb".repeat(32);
+        let rollup = StatementRollupV1 {
+            v: 1,
+            period: "2026-09",
+            log_from_index: None,
+            log_to_index: None,
+            entry_count: 0,
+            total_minor: 0,
+            credit_drawn_minor: 0,
+            window_hash: &window_hex,
+            lines: &[],
+        };
+        let canonical = canonical_statement_rollup(&rollup).expect("serializes");
+        assert!(canonical.contains(r#""logFromIndex":null"#));
+        assert!(canonical.contains(r#""logToIndex":null"#));
+        assert!(canonical.ends_with(r#""lines":[]}"#));
     }
 }

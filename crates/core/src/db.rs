@@ -143,6 +143,18 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0032_tpm_tag_scopes",
         include_str!("../migrations/0032_tpm_tag_scopes.sql"),
     ),
+    (
+        "0033_budget_exhaustion_forecast",
+        include_str!("../migrations/0033_budget_exhaustion_forecast.sql"),
+    ),
+    (
+        "0034_statement_anchor",
+        include_str!("../migrations/0034_statement_anchor.sql"),
+    ),
+    (
+        "0035_upstream_price_drift",
+        include_str!("../migrations/0035_upstream_price_drift.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.

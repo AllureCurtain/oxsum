@@ -156,6 +156,12 @@ pub struct Config {
     public_url: Option<String>,
     /// The retention windows the `retention` job applies, `OXSUM_RETENTION_*`.
     retention: oxsum_core::Retention,
+    /// Whether `OXSUM_UPSTREAM_PRICE_SYNC` gates the `SYNC_UPSTREAM_PRICES`
+    /// periodic job (issue #222). Optional and off by default, like SMTP.
+    upstream_price_sync: bool,
+    /// Where OTLP spans go, `OXSUM_OTLP_ENDPOINT` (issue #224). `None` — the
+    /// default — keeps tracing strictly local.
+    otlp_endpoint: Option<String>,
 }
 
 impl Config {
@@ -176,6 +182,8 @@ impl Config {
             stripe: None,
             public_url: None,
             retention: oxsum_core::Retention::default(),
+            upstream_price_sync: false,
+            otlp_endpoint: None,
         }
     }
 
@@ -288,6 +296,13 @@ impl Config {
             deliveries_days: retention_days("OXSUM_RETENTION_DELIVERIES_DAYS")?.unwrap_or(30),
             jobs_days: retention_days("OXSUM_RETENTION_JOBS_DAYS")?.unwrap_or(90),
         };
+        let upstream_price_sync = var("OXSUM_UPSTREAM_PRICE_SYNC")
+            .map(upstream_price_sync_of)
+            .transpose()?
+            .unwrap_or(false);
+        // Trailing slashes come off: the exporter appends `/v1/traces`, and a
+        // doubled slash is only a cosmetic wrong.
+        let otlp_endpoint = var("OXSUM_OTLP_ENDPOINT").map(|v| v.trim_end_matches('/').to_owned());
         Ok(Self {
             signup,
             gateway: Gateway::from_env()?,
@@ -303,6 +318,8 @@ impl Config {
             stripe,
             public_url,
             retention,
+            upstream_price_sync,
+            otlp_endpoint,
         })
     }
 
@@ -389,6 +406,30 @@ impl Config {
         self
     }
 
+    /// Whether the `SYNC_UPSTREAM_PRICES` periodic job runs (issue #222).
+    /// `false` is the default: a deployment opts in with
+    /// `OXSUM_UPSTREAM_PRICE_SYNC`, and even then the job only probes when a
+    /// channel credential can be unsealed — which needs `OXSUM_SECRET_KEY`.
+    #[must_use]
+    pub fn upstream_price_sync(&self) -> bool {
+        self.upstream_price_sync
+    }
+
+    /// Sets the upstream price-sync gate. Tests use this; the server reads
+    /// `OXSUM_UPSTREAM_PRICE_SYNC`.
+    #[must_use]
+    pub fn with_upstream_price_sync(mut self, enabled: bool) -> Self {
+        self.upstream_price_sync = enabled;
+        self
+    }
+
+    /// `OXSUM_OTLP_ENDPOINT` when set — the collector base URL trace export
+    /// points at (issue #224). `None` keeps the subscriber fmt-only.
+    #[must_use]
+    pub fn otlp_endpoint(&self) -> Option<&str> {
+        self.otlp_endpoint.as_deref()
+    }
+
     /// Sets the public origin. Tests use this; the server reads
     /// `OXSUM_PUBLIC_URL`.
     #[must_use]
@@ -467,6 +508,22 @@ fn session_cookie_secure_of(raw: String) -> Result<bool, String> {
         "false" | "0" => Ok(false),
         other => Err(format!(
             "OXSUM_SESSION_COOKIE_SECURE must be true or false, got {other:?}"
+        )),
+    }
+}
+
+/// Parses `OXSUM_UPSTREAM_PRICE_SYNC`: whether the `SYNC_UPSTREAM_PRICES`
+/// periodic job probes each channel's live catalog for drift (issue #222).
+///
+/// `true`/`1` enable it, `false`/`0` (and absence) leave the stored upstream
+/// rates unprobed — the default, matching the other opt-in switches. Anything
+/// else refuses to start rather than guess.
+fn upstream_price_sync_of(raw: String) -> Result<bool, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" => Ok(true),
+        "false" | "0" => Ok(false),
+        other => Err(format!(
+            "OXSUM_UPSTREAM_PRICE_SYNC must be true or false, got {other:?}"
         )),
     }
 }

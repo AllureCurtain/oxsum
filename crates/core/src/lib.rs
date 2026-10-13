@@ -36,6 +36,7 @@ mod statement_pdf;
 mod statements;
 mod tenants;
 mod tiers;
+mod upstream_sync;
 mod usage;
 mod users;
 mod wallet;
@@ -49,8 +50,8 @@ pub use billing::{
     estimate_tokens, hold_description, input_upper_bound,
 };
 pub use channels::{
-    CatalogModel, Channel, MAX_WEIGHT, ModelPrice, SecretKey, Serving, event_price, price_row,
-    route_order,
+    CatalogModel, Channel, MAX_WEIGHT, ModelPrice, ProbeChannel, SecretKey, Serving, event_price,
+    price_row, route_order,
 };
 pub use db::{Db, SCHEMA};
 pub use deposits::{CodeBatch, MAX_BATCH, Redemption};
@@ -98,6 +99,7 @@ pub use statements::{
 };
 pub use tenants::Tenants;
 pub use tiers::TierProfile;
+pub use upstream_sync::{FieldDrift, ModelPair, ProbeOutcome, diff_upstream};
 pub use usage::{
     Attribution, MAX_CONTEXT_NAME, MAX_END_USER, MAX_TAG, MAX_TAGS, Margin, UsageDay, UsageRecord,
     UsageRow, validate_attribution,
@@ -108,9 +110,9 @@ pub use wallet::{
     TransactionEntry, TransactionKind, Wallet, entry_id_for, settlement_key_for,
 };
 pub use webhooks::{
-    ANOMALY_DETECTED, BALANCE_LOW, CreatedWebhook, DEPOSIT_CREDITED, DEPOSIT_FAILED,
-    DEPOSIT_REVERSED, DeliveryOutcome, DueDelivery, MAX_DELIVERY_ATTEMPTS,
-    ORG_CREDIT_LIMIT_EXCEEDED, ORG_SUSPENDED, REQUEST_SETTLED, STATEMENT_FINALIZED,
-    STATEMENT_OVERDUE, STATEMENT_STATUS_UPDATED, WebhookDelivery, WebhookEndpoint,
-    retry_delay_secs, signature,
+    ANOMALY_DETECTED, BALANCE_LOW, BUDGET_EXHAUSTION_FORECAST, BudgetForecast, CreatedWebhook,
+    DEPOSIT_CREDITED, DEPOSIT_FAILED, DEPOSIT_REVERSED, DeliveryOutcome, DueDelivery,
+    MAX_DELIVERY_ATTEMPTS, ORG_CREDIT_LIMIT_EXCEEDED, ORG_SUSPENDED, REQUEST_SETTLED,
+    STATEMENT_FINALIZED, STATEMENT_OVERDUE, STATEMENT_STATUS_UPDATED, WebhookDelivery,
+    WebhookEndpoint, forecast_exhaustion, retry_delay_secs, signature,
 };

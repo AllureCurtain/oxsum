@@ -208,6 +208,21 @@ impl ModelPrice {
     }
 }
 
+/// A channel's probe coordinates for `SYNC_UPSTREAM_PRICES` (issue #222): the
+/// catalog endpoint to call and the credential to send it, still sealed. The
+/// job opens `api_key_sealed` only to build the `Authorization` header.
+#[derive(Debug, Clone)]
+pub struct ProbeChannel {
+    /// The channel's name.
+    pub name: String,
+    /// The upstream protocol the channel speaks.
+    pub protocol: String,
+    /// The base URL `{baseUrl}/api/v1/pricing` is appended to.
+    pub base_url: String,
+    /// The upstream credential, still sealed under `OXSUM_SECRET_KEY`.
+    pub api_key_sealed: String,
+}
+
 /// What one request relays to and is charged by, resolved once when the request starts.
 #[derive(Debug, Clone)]
 pub struct Serving {
@@ -524,6 +539,28 @@ impl Db {
             })?;
         }
         Ok(())
+    }
+
+    /// Every channel's probe coordinates — name, protocol, base URL and its
+    /// still-sealed credential — for the `SYNC_UPSTREAM_PRICES` job (issue
+    /// #222). The caller opens `api_key_sealed` under [`SecretKey`] only to
+    /// send it as the probe's `Authorization` header; it never leaves the job.
+    pub async fn probe_channels(&self) -> Result<Vec<ProbeChannel>, WalletError> {
+        let rows = sqlx::query(
+            "SELECT name, protocol, base_url, api_key_sealed FROM oxsum.channels ORDER BY name",
+        )
+        .fetch_all(self.pool())
+        .await?;
+        rows.iter()
+            .map(|row| {
+                Ok(ProbeChannel {
+                    name: row.try_get("name")?,
+                    protocol: row.try_get("protocol")?,
+                    base_url: row.try_get("base_url")?,
+                    api_key_sealed: row.try_get("api_key_sealed")?,
+                })
+            })
+            .collect()
     }
 
     /// Seeds one channel and its prices from a [`PriceBook`], once, if the database has no channels.
