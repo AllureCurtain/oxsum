@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/doubleentry", "crates/core", "crates/server", "crates/verify", "crates/web"]
+members = ["crates/doubleentry", "crates/core", "crates/server", "crates/verify", "crates/web", "crates/integrations"]
 default-members = ["crates/core", "crates/server"]
 
 [workspace.package]
@@ -12,6 +12,7 @@ repository = "https://github.com/AllureCurtain/oxsum"
 
 [workspace.dependencies]
 oxsum-core = { path = "crates/core" }
+oxsum-integrations = { path = "crates/integrations" }
 oxsum-verify = { path = "crates/verify" }
 oxsum-web = { path = "crates/web" }
 # The `witness` feature enables doubleentry's witness module (tree-head notes and Ed25519
