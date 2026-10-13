@@ -460,7 +460,12 @@ Steps:
    `org.credit_limit_exceeded` fires when a credit-lined organization hits its
    line — a hold refused 402 while a `creditLimitMinor` is set.
    `anomaly.detected` fires on the odd settlements — capped, estimated,
-   client-cancelled, swept, unpriced, released, dead-lettered holds.
+   client-cancelled, swept, unpriced, released, dead-lettered holds — and on
+   upstream price drift: when the price-sync job finds a stored `upstream`
+   rate disagreeing with the channel's live catalog, `data` is `{kind:
+   "upstream_price_drift", channel, model, field, storedMinor, liveMinor}`,
+   broadcast to every subscribed endpoint across all organizations (the rates
+   are the public catalog's, never organization data).
    `budget.exhaustion_forecast` carries `{keyId, spendLimitMinor,
    budgetDuration, windowStart, committedMinor, projectedExhaustionDate,
    daysRemaining}` — an early warning that a key with a `budgetDuration` window
@@ -551,6 +556,8 @@ Steps:
 
 Note: a request resolves its price when it starts and carries the version to its settlement, so a price change lands on later requests only; in-flight turns and old bills are untouched.
 
+Upstream-price drift is also watched automatically where the channel is another oxsum deployment: with `OXSUM_UPSTREAM_PRICE_SYNC` set (and `OXSUM_SECRET_KEY` present to unseal the channel credentials), a daily job probes each channel's `/api/v1/pricing`, and a stored `upstream` rate the live catalog contradicts opens a drift row — broadcasting `anomaly.detected` and listing in the reconciliation report — that resolves itself once the rates agree again. Every probe records an outcome (`ok`, `unreachable`, `invalid`, `auth`), so a channel that stops answering is visible too.
+
 The organizations page (`/admin/organizations`) lists every organization the ledger holds money for — its name, kind (personal or team), headcount, and what its wallet shows: the available balance and the frozen sum of its outstanding holds. Each row carries an "Adjust" form: a signed amount in credits (a leading `-` deducts) and a required reason, which the new entry stores as its description — part of what a bill's proof covers. A deduction the balance cannot carry is refused with `INSUFFICIENT_FUNDS`; nothing in the page ever rewrites history.
 
 A deployment can also start each new organization's wallet with credits: `OXSUM_SIGNUP_BONUS_MINOR` (default 0) grants that amount at self-registration, booked as an adjustment whose reason is "signup bonus". An invited account joins an existing organization and is granted nothing.
@@ -563,7 +570,7 @@ The anomalies page (`/admin/anomalies`) reviews the settled turns that did not p
 
 The margin view has no page yet — it answers over the API: `GET /api/v1/admin/margin` sums what organizations were charged against what upstream cost the platform, per channel and model, and reports the difference as `marginMinor`. `untrackedTurns` counts the settled turns no `upstream` price block covered (a swept turn, a price without one, or history predating the column): read it as the coverage gap the margin is blind to, because an untracked turn is never a free one — the number to watch before trusting `marginMinor`.
 
-The reconciliation page (`/admin/reconciliation`) answers whether the projections still match the books: the scan reads every organization's ledger against the usage rows, the deposits and the hold watches, and lists each drift class that counted nonzero — a usage row whose settlement entry is missing, a settled turn that wrote no record, a deposit marked credited with no entry behind it, a rail that paid a different amount than expected, a deposit confirmed but never credited, a hold watch with no reservation behind it, a pending hold the sweeper cannot see, a hold whose sweep failed ten times and was dead-lettered, a periodic job run that exhausted its attempts, and a log whose positions are not dense. Each class carries its count and a bounded sample of identifiers to follow; `clean` means every class counted zero. The scan reports and never repairs — drift is for the operator to act on, not for a second writer to patch silently.
+The reconciliation page (`/admin/reconciliation`) answers whether the projections still match the books: the scan reads every organization's ledger against the usage rows, the deposits and the hold watches, and lists each drift class that counted nonzero — a usage row whose settlement entry is missing, a settled turn that wrote no record, a deposit marked credited with no entry behind it, a rail that paid a different amount than expected, a deposit confirmed but never credited, a hold watch with no reservation behind it, a pending hold the sweeper cannot see, a hold whose sweep failed ten times and was dead-lettered, a periodic job run that exhausted its attempts, a log whose positions are not dense, and — at platform scope — a stored `upstream` rate the channel's live catalog contradicts (`upstream_price_drift`, sampled as `channel:model:field`). Each class carries its count and a bounded sample of identifiers to follow; `clean` means every class counted zero. The scan reports and never repairs — drift is for the operator to act on, not for a second writer to patch silently.
 
 The closing page (`/admin/closing`) runs the monthly closing: pick a month that has fully ended and close it — the month is sealed in every organization's ledger, which produces its closing record (a seal committing to the log's tree head and the month's closing trial balance, chained onto the seal before it) and refuses any new entry dated into it from then on. The table lists the sealed months newest first: organization, period, how many entries it covers, the log's size at sealing, and the three hashes the record is made of. Closing a month twice is safe — the second run answers the records that already exist.
 

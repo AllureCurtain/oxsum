@@ -26,7 +26,7 @@ Post-roadmap validation: a gate run found `a_settled_turn_enqueues_a_signed_deli
 
 ## Next
 
-Post-roadmap backlog, one issue per item. The phase direction is settled in docs/decisions.md (2026-10-13, "deepens verifiability before widening the surface"); the four items below execute it in order. The server refactor that preceded it — `routes.rs` and `admin.rs` split into per-resource modules — shipped on this branch ahead of the roadmap. Q3 (#220, forecasted budget exhaustion) shipped. Q1 (#221, statement anchors to the transparency log) shipped.
+Post-roadmap backlog, one issue per item. The phase direction is settled in docs/decisions.md (2026-10-13, "deepens verifiability before widening the surface"); the four items below execute it in order. The server refactor that preceded it — `routes.rs` and `admin.rs` split into per-resource modules — shipped on this branch ahead of the roadmap. Q3 (#220, forecasted budget exhaustion) shipped. Q1 (#221, statement anchors to the transparency log) shipped. Q2 (#222, upstream price-catalog sync with drift alerts) shipped.
 
 - **Q2 — Upstream price-catalog sync with drift alerts.** A scheduled job diffs each channel's `upstream_prices` against the upstream's live catalog, records drift as a reconciliation entry, and raises `anomaly.detected` over webhooks — a stale catalog under fail-closed `unpriced` is worse than none.
 - **Q4 — OpenTelemetry trace export with GenAI conventions.** OTLP `gen_ai.*` spans (system, model, token counts, hold/settle timing), optional and env-gated, beside the existing `/metrics` scrape.
