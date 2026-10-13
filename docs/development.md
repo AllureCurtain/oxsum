@@ -112,7 +112,8 @@ Copy `.env.example` to `.env` and the server and the tests pick it up automatica
 | `OXSUM_RETENTION_PROVIDER_RAW_DAYS` | Optional; days a usage row keeps `usage_details.provider_raw` before the daily `retention` job nulls it — the privacy window, since the raw payload may carry prompt fragments. Default 7; the normalized columns are kept forever |
 | `OXSUM_RETENTION_DELIVERIES_DAYS` | Optional; days a delivered or failed `webhook_deliveries` row is kept. Default 30 |
 | `OXSUM_RETENTION_JOBS_DAYS` | Optional; days a finished `oxsum.jobs` row is kept — `dead` rows included, so the window is also how long `jobs_dead` drift evidence survives. Default 90 |
-| `RUST_LOG` | Optional `tracing-subscriber` filter; defaults to `info` |
+| `RUST_LOG` | Optional `tracing-subscriber` filter; defaults to `info` — applies to exported traces too when `OXSUM_OTLP_ENDPOINT` is set |
+| `OXSUM_OTLP_ENDPOINT` | Optional; the OTLP collector's HTTP endpoint, e.g. `http://localhost:4318` — the exporter appends `/v1/traces` (issue #224). Unset, tracing stays strictly local. Spans carry only the `gen_ai.*` semantic-convention vocabulary — operation, system, model, token counts — never a request id, organization, or key |
 
 The mailer trio is all three or none: a subset refuses to boot, because a half-configured mailer would only fail at send time inside a request. Unset, the deployment sends no email — registration answers `verificationSent: false`, forgot-password still answers its indistinguishable 200, and `POST /api/v1/auth/verify/request` alone reports the absence with 503. The GitHub OAuth pair follows the same rule — a client id or secret without `OXSUM_PUBLIC_URL` refuses to boot, and unset the login page draws no GitHub button and the OAuth endpoints answer 404. So does the Stripe trio (`OXSUM_STRIPE_SECRET_KEY`, `OXSUM_STRIPE_WEBHOOK_SECRET`, `OXSUM_PUBLIC_URL`): a subset refuses to boot, and unset, the intent endpoint 503s and the inbound webhook 404s.
 
@@ -160,6 +161,22 @@ dead-lettered holds and the connection pool are all under the `oxsum_` prefix:
 
 ```bash
 curl -H "authorization: Bearer $OXSUM_ADMIN_TOKEN" http://127.0.0.1:3000/metrics
+```
+
+Traces can leave the process too: with `OXSUM_OTLP_ENDPOINT` set, every gateway turn is
+exported to that OTLP/HTTP collector as a `gen_ai.turn` span carrying the GenAI semantic
+conventions — `gen_ai.operation.name` (`chat`/`embeddings`/`rerank`), `gen_ai.system`
+(`openai`/`anthropic`), `gen_ai.request.model`, and `gen_ai.usage.input_tokens` /
+`gen_ai.usage.output_tokens` filled in once settlement knows them. Two span events mark
+the phase boundaries — `hold taken` (`oxsum.hold.freeze_minor`) when the ledger hold
+lands, `settle written` (`oxsum.charged_minor`, `settlement.kind`) when the write
+returns — so the span's own start and end bracket admission, the relay, and the settle
+without a child span. The span is batched and shipped on the application's own tokio
+runtime, and `RUST_LOG`'s env filter applies to it the same way it applies to logs.
+Point a collector at it:
+
+```bash
+OXSUM_OTLP_ENDPOINT=http://localhost:4318 cargo run -p oxsum-server
 ```
 
 oxsum's own tables are migrated at startup, in the same process that serves requests: `Db::migrate`
