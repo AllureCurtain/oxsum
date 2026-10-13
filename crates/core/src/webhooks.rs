@@ -54,6 +54,11 @@ pub const ORG_CREDIT_LIMIT_EXCEEDED: &str = "org.credit_limit_exceeded";
 /// A settled turn closed anomalously — `unpriced`, `capped`, `estimated`,
 /// `client_cancelled`, `swept`, or a hold that dead-lettered.
 pub const ANOMALY_DETECTED: &str = "anomaly.detected";
+/// A key's current `budgetDuration` window is projected to exhaust its
+/// `spendLimitMinor` before the window ends — the early warning the refused
+/// hold would otherwise be the first sign of. Fires once per key per window;
+/// the latch is the `budget_forecast_sent_for` date on the key row (issue #220).
+pub const BUDGET_EXHAUSTION_FORECAST: &str = "budget.exhaustion_forecast";
 
 /// Every event name a subscription may carry.
 const KNOWN_EVENTS: &[&str] = &[
@@ -68,11 +73,136 @@ const KNOWN_EVENTS: &[&str] = &[
     STATEMENT_STATUS_UPDATED,
     ORG_CREDIT_LIMIT_EXCEEDED,
     ANOMALY_DETECTED,
+    BUDGET_EXHAUSTION_FORECAST,
 ];
 
 /// How many times a delivery is attempted before it is marked `failed` — the
 /// same budget the hold sweeper gives a settlement before dead-lettering.
 pub const MAX_DELIVERY_ATTEMPTS: i32 = 10;
+
+/// The projection a settle computes for one periodically-limited key: the date
+/// the current window's committed spend, carried forward at the rate observed
+/// so far in the window, would cross the key's `spendLimitMinor`. Produced by
+/// [`forecast_exhaustion`]; consumed by [`Db::enqueue_budget_forecast`] and by
+/// the keys dashboard, which renders the same projection as a line per key.
+///
+/// `days_remaining` is `projected_exhaustion_date - today`, floored at zero —
+/// a `daily` window always projects to today when it crosses, so `0` means
+/// "the window's own close exhausts it", not that the limit is already hit.
+#[derive(Debug, Clone)]
+pub struct BudgetForecast {
+    /// The key the projection is for.
+    pub key_id: Uuid,
+    /// The limit being projected against, in minor units.
+    pub spend_limit_minor: i64,
+    /// The window's duration, as the contract spells it.
+    pub budget_duration: &'static str,
+    /// The first day of the window the projection ran in.
+    pub window_start: time::Date,
+    /// The committed spend in the window when the projection ran.
+    pub committed_minor: i64,
+    /// The date the spend rate crosses the limit.
+    pub projected_exhaustion_date: time::Date,
+    /// Days from today to the projected date, floored at zero.
+    pub days_remaining: i64,
+}
+
+/// Projects when a periodically-limited key exhausts its `spendLimitMinor`,
+/// from the window's elapsed fraction and committed spend.
+///
+/// The rate is `committed_minor / elapsed-days` carried over the whole window:
+/// `projected_total = committed * window_days / elapsed_days`, and exhaustion
+/// lands at `window_start + (limit / rate)` — the date the line crosses the
+/// cap. `Some(date)` is returned only when that date falls inside the window
+/// (a slower burn never exhausts this period, so nothing to warn about); the
+/// returned date is the projected crossing, which may be today for a `daily`
+/// window judged partway through.
+///
+/// `elapsed_days` counts `window_start..=today` inclusive — a settle at 09:00
+/// on a `daily` window has burned a partial day, and projecting it as a full
+/// one would over-read the rate; treating the first day as fully elapsed is
+/// the conservative floor that fires the warning earliest. The boundary cases:
+/// `committed <= 0` or a zero/negative rate projects nothing (no spend, or
+/// credit-only); `committed >= limit` is already over and projects to today.
+#[must_use]
+pub fn forecast_exhaustion(
+    duration: crate::keys::BudgetDuration,
+    window_start: time::Date,
+    today: time::Date,
+    committed_minor: i64,
+    spend_limit_minor: i64,
+) -> Option<BudgetForecast> {
+    if committed_minor <= 0 || spend_limit_minor <= 0 {
+        return None;
+    }
+    let window_days = match duration {
+        crate::keys::BudgetDuration::Daily => 1,
+        crate::keys::BudgetDuration::Weekly => 7,
+        crate::keys::BudgetDuration::Monthly => {
+            // The month's real length — a 31-day month burns slower per day.
+            days_in_month(today)
+        }
+    };
+    // Days elapsed in the window, inclusive of today; the first day is 1, so a
+    // window that just opened cannot divide by zero — and a `daily` window's
+    // elapsed is always 1, meaning its projection is "as fast as today".
+    let elapsed_days = (today - window_start).whole_days().max(0) + 1;
+    // Already over the limit: exhaustion is now, not a projection.
+    if committed_minor >= spend_limit_minor {
+        return Some(BudgetForecast {
+            key_id: Uuid::nil(),
+            spend_limit_minor,
+            budget_duration: duration.as_str(),
+            window_start,
+            committed_minor,
+            projected_exhaustion_date: today,
+            days_remaining: 0,
+        });
+    }
+    // Project the window's total at the current rate, then walk back to the
+    // date the running line crosses the limit:
+    //   rate          = committed / elapsed_days            (minor per day)
+    //   days_to_cross = ceil(limit / rate) - 1              (window-start offset)
+    // computed in integer minor-days to avoid floating point on money.
+    //
+    // exhaustion_offset = floor((limit * elapsed_days - 1) / committed) — the
+    // number of window days, minus one, until committed * (d+1)/elapsed >= limit.
+    // Equivalently the first d where committed * (d+1) / elapsed >= limit.
+    // Solve d = ceil(limit * elapsed / committed) - 1.
+    let numerator = (spend_limit_minor as i128) * (elapsed_days as i128);
+    let days_to_cross =
+        ((numerator + (committed_minor as i128) - 1) / (committed_minor as i128)) as i64 - 1;
+    let projected = window_start + time::Duration::days(days_to_cross);
+    let window_end = window_start + time::Duration::days(window_days - 1);
+    if projected > window_end {
+        return None;
+    }
+    Some(BudgetForecast {
+        key_id: Uuid::nil(),
+        spend_limit_minor,
+        budget_duration: duration.as_str(),
+        window_start,
+        committed_minor,
+        projected_exhaustion_date: projected,
+        days_remaining: (projected - today).whole_days().max(0),
+    })
+}
+
+/// The number of days in the month `on` falls in — `monthly` windows are not a
+/// fixed width, and February's short month is the case the width exists for.
+fn days_in_month(on: time::Date) -> i64 {
+    let next_month = if on.month() == time::Month::December {
+        time::Date::from_calendar_date(on.year() + 1, time::Month::January, 1)
+    } else {
+        time::Date::from_calendar_date(on.year(), on.month().next(), 1)
+    };
+    let first = time::Date::from_calendar_date(on.year(), on.month(), 1);
+    match (next_month, first) {
+        (Ok(next), Ok(first)) => (next - first).whole_days(),
+        // Unreachable for any real date; a 30-day fallback projects mid-range.
+        _ => 30,
+    }
+}
 
 /// How many endpoints one organization may register.
 const MAX_ENDPOINTS: i64 = 20;
@@ -582,6 +712,50 @@ impl Db {
         Ok(())
     }
 
+    /// Enqueues one delivery of `event_type` per enabled subscribed endpoint
+    /// across *every* organization — for platform events that belong to no
+    /// tenant, such as `anomaly.detected` on upstream price drift (issue #222).
+    /// Each delivery carries its own endpoint's `organization_id`, which the
+    /// NOT NULL column requires; the event is safe to fan out because it names
+    /// rates the public catalog already serves, never organization data.
+    ///
+    /// At-least-once like [`notify_event`](Self::notify_event): durable once a
+    /// row is written, and a crash before it is recorded as a lost event rather
+    /// than a partial fan-out.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn broadcast_event(&self, event_type: &str, data: Value) -> Result<(), WalletError> {
+        let endpoints = sqlx::query(
+            "SELECT endpoint_id, organization_id FROM oxsum.webhook_endpoints \
+             WHERE enabled AND $1 = ANY(events)",
+        )
+        .bind(event_type)
+        .fetch_all(self.pool())
+        .await?;
+        for endpoint in endpoints {
+            use sqlx::Row;
+            let endpoint_id: Uuid = endpoint.try_get("endpoint_id")?;
+            let organization_id: Uuid = endpoint.try_get("organization_id")?;
+            let delivery_id = Uuid::new_v4();
+            let payload = event_envelope(delivery_id, event_type, organization_id, data.clone());
+            sqlx::query(
+                "INSERT INTO oxsum.webhook_deliveries \
+                 (delivery_id, endpoint_id, organization_id, event_type, payload) \
+                 VALUES ($1, $2, $3, $4, $5)",
+            )
+            .bind(delivery_id)
+            .bind(endpoint_id)
+            .bind(organization_id)
+            .bind(event_type)
+            .bind(payload)
+            .execute(self.pool())
+            .await?;
+        }
+        Ok(())
+    }
+
     /// `balance.low`: enqueues the event once per endpoint whose threshold the
     /// organization's available balance has dropped under, and latches the row
     /// so a balance that stays low does not re-fire on every settle. The latch
@@ -677,6 +851,51 @@ impl Db {
         )
         .bind(organization)
         .bind(available)
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
+    /// `budget.exhaustion_forecast`: enqueue the event for the key whose
+    /// forecast this settle computed, inside the settle's transaction so the
+    /// projection, the usage row and the delivery commit or roll back together.
+    /// The caller (the settle path, which holds the wallet) has already judged
+    /// the projection and read the key's constraint; this only writes the
+    /// delivery and latches the window on the key row. `key_id` is `None` on an
+    /// unattributed settle — nothing to forecast.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub(crate) async fn enqueue_budget_forecast(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tenant_id: &str,
+        forecast: &BudgetForecast,
+    ) -> Result<(), WalletError> {
+        let Ok(organization) = Uuid::parse_str(tenant_id) else {
+            return Ok(());
+        };
+        Self::enqueue_event(
+            tx,
+            organization,
+            BUDGET_EXHAUSTION_FORECAST,
+            serde_json::json!({
+                "keyId": forecast.key_id,
+                "spendLimitMinor": forecast.spend_limit_minor,
+                "budgetDuration": forecast.budget_duration,
+                "windowStart": forecast.window_start,
+                "committedMinor": forecast.committed_minor,
+                "projectedExhaustionDate": forecast.projected_exhaustion_date,
+                "daysRemaining": forecast.days_remaining,
+            }),
+        )
+        .await?;
+        sqlx::query(
+            "UPDATE oxsum.api_keys SET budget_forecast_sent_for = $2 \
+             WHERE key_id = $1",
+        )
+        .bind(forecast.key_id)
+        .bind(forecast.window_start)
         .execute(&mut **tx)
         .await?;
         Ok(())

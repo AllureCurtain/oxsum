@@ -457,6 +457,21 @@ async fn run(
     surface: Surface,
 ) -> Result<Response, GatewayError> {
     let request = GatewayRequest::parse(body, surface)?;
+    // The turn's OTLP span (issue #224): created once the model is known,
+    // held by the settlement plan so it stays open until the charge is
+    // written — a streamed turn's span outlives this function by exactly the
+    // relay plus its ledger write. It is never entered: `Span::record` works
+    // on the handle alone, and holding the guard across awaits would leave
+    // the span current on whatever task next polls this thread. The
+    // `gen_ai.usage.*` fields land at settle time, when counts exist.
+    let turn_span = tracing::info_span!(
+        "gen_ai.turn",
+        gen_ai.operation.name = surface.gen_ai_operation(),
+        gen_ai.system = surface.protocol(),
+        gen_ai.request.model = request.model.as_str(),
+        gen_ai.usage.input_tokens = tracing::field::Empty,
+        gen_ai.usage.output_tokens = tracing::field::Empty,
+    );
     // The three admission-time reads are independent — the tier's capability
     // package, the model's servings, the discount in force — so they run
     // concurrently instead of as three serial pool round trips. A failure in
@@ -719,6 +734,13 @@ async fn run(
             other => other.into(),
         });
     }
+    // The hold's landing is the turn's first phase boundary on the OTLP span:
+    // span-start → this event is admission+freeze, this → the settle event is
+    // relay (issue #224). `in_scope` logs the event *on* the span without making
+    // it current — the handle still is not entered.
+    turn_span.in_scope(|| {
+        tracing::info!(oxsum.hold.freeze_minor = freeze, "hold taken");
+    });
 
     // The cost head: the reserved bound and the runway left under it are both known now,
     // before upstream is asked — they ride every answer this turn produces, streamed or
@@ -748,6 +770,7 @@ async fn run(
         request.attribution.clone(),
         adapter,
         state.metrics.clone(),
+        turn_span,
     );
     turn.note_input_count(request.counted_input);
     // The dashboard's live section sees the turn from here: the hold is taken, upstream is

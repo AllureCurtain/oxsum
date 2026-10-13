@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.53.0
+  version: 0.56.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -346,6 +346,43 @@ info:
     value; the other values' buckets stay open. Scoped rows accrue in the same
     transaction that records the usage row and expire with the trailing minute,
     so a high-cardinality tag set cannot outgrow the window.
+
+    0.54.0 adds forecasted budget exhaustion (issue #220): an endpoint may now
+    subscribe to `budget.exhaustion_forecast`. A key carrying both
+    `spendLimitMinor` and `budgetDuration` is checked after each settle: the
+    window's committed spend projected forward at the rate observed so far in
+    the window, and when the projection crosses the limit before the window
+    ends the event enqueues — inside the settle's own transaction, once per key
+    per window, deduped the way `balance.low` latches. The data names the key,
+    the limit, the window start, the committed spend, the projected exhaustion
+    date and the days remaining. The latch clears when the window rolls or the
+    constraint changes, so a new period forecasts again.
+
+    0.55.0 anchors finalized statements to the transparency log (issue #221).
+    Finalizing a statement now appends a marker entry to the tenant ledger that
+    commits two digests at that point in the log: the window digest, folded in
+    log order over the covered entries' content hashes, and the rollup digest
+    over the statement's lines and totals. The statement records the anchor's
+    entry id and log index plus both digests (`anchorEntryId`,
+    `anchorLogIndex`, `windowHash`, `rollupHash`), and the detail endpoint
+    serves an `anchor` object carrying the digests, the marker's coordinates
+    and — when the deployment configures `OXSUM_HEAD_SIGNING_KEY` — a signed
+    note over the tree head right after the anchor. A verified bill now proves
+    not only that each entry sits in the log but that nothing was left out of
+    the window the statement claims to cover.
+
+    0.56.0 watches upstream price drift (issue #222). A scheduled job probes
+    each channel's live catalog — the oxsum-compatible `/api/v1/pricing` the
+    channel's base URL serves — and diffs every model's `upstream` rates
+    against the rates oxsum stores for it. Each differing field lands in the
+    new `oxsum.upstream_price_drift` table and surfaces as the reconciliation
+    report's new `upstream_price_drift` class, and every drift broadcasts an
+    `anomaly.detected` event (`kind: "upstream_price_drift"`, naming the
+    channel, model, field, stored and live minor rates) to each enabled
+    subscriber. A channel that cannot be probed — unreachable, or an upstream
+    that does not serve an oxsum-compatible catalog — records a probe outcome
+    for that run rather than failing the pass; drift is detected, never
+    inferred from silence.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -2491,9 +2528,11 @@ paths:
         hold no watch row covers — invisible to the sweeper),
         `holds_dead_lettered` (a watched hold whose sweep has failed ten
         times — it retries hourly and needs an operator), `log_gaps`
-        (a ledger log whose positions are not dense) and `jobs_dead` (a
+        (a ledger log whose positions are not dense), `jobs_dead` (a
         periodic job run that exhausted its attempts — platform drift, not
-        any organization's). Each class carries a
+        any organization's) and `upstream_price_drift` (a stored upstream
+        rate that no longer matches the live catalog the channel serves —
+        platform drift, not any organization's). Each class carries a
         count and a bounded sample of the offending identifiers. The report
         is read-only: drift is for an operator to read, never for the
         reconciler to patch.
@@ -3857,6 +3896,7 @@ components:
               - statement.payment_status_updated
               - org.credit_limit_exceeded
               - anomaly.detected
+              - budget.exhaustion_forecast
           description: the event types this endpoint is subscribed to
         enabled: { type: boolean, description: "a disabled endpoint enqueues nothing" }
         balanceLowMinor:
@@ -3888,6 +3928,7 @@ components:
               - statement.payment_status_updated
               - org.credit_limit_exceeded
               - anomaly.detected
+              - budget.exhaustion_forecast
           description: "the event types to subscribe; the catalog is listed under the operation's description"
         balanceLowMinor:
           type: integer
@@ -3922,6 +3963,7 @@ components:
             - statement.payment_status_updated
             - org.credit_limit_exceeded
             - anomaly.detected
+            - budget.exhaustion_forecast
         status: { type: string, enum: [pending, sending, delivered, failed], description: "sending is a worker's claim in flight; delivered means a 2xx; failed means the ten-attempt budget ran out" }
         attempts: { type: integer, minimum: 0 }
         nextAttemptAt: { type: string, format: date-time, description: "when the worker next tries a pending delivery; the creation time for a finished one" }
@@ -4421,7 +4463,7 @@ components:
       properties:
         class:
           type: string
-          enum: [usage_orphans, settlements_unrecorded, deposits_unbooked, deposits_mismatched, deposits_stuck, watches_orphaned, holds_unwatched, holds_dead_lettered, log_gaps, jobs_dead]
+          enum: [usage_orphans, settlements_unrecorded, deposits_unbooked, deposits_mismatched, deposits_stuck, watches_orphaned, holds_unwatched, holds_dead_lettered, log_gaps, jobs_dead, upstream_price_drift]
         count: { type: integer, format: int64, minimum: 0, description: how much drift the class holds }
         samples:
           type: array
@@ -4488,6 +4530,10 @@ components:
         paidAt: { type: [string, "null"], format: date-time }
         overdueAt: { type: [string, "null"], format: date-time, description: when the statement first answered past due }
         suspendedAt: { type: [string, "null"], format: date-time }
+        anchorEntryId: { type: [string, "null"], format: uuid, description: "the ledger marker committing the statement's window and rollup digests — appended at finalization" }
+        anchorLogIndex: { type: [integer, "null"], format: int64, description: "the anchor entry's position in the tenant log" }
+        windowHash: { type: [string, "null"], pattern: "^[0-9a-f]{64}$", description: "digest folded in log order over the covered entries' content hashes — a truncated or reordered window no longer matches" }
+        rollupHash: { type: [string, "null"], pattern: "^[0-9a-f]{64}$", description: "digest over the statement's canonical lines and totals" }
         createdAt: { type: string, format: date-time }
     StatementLine:
       type: object
@@ -4509,6 +4555,20 @@ components:
         lines:
           type: array
           items: { $ref: "#/components/schemas/StatementLine" }
+        anchor:
+          type: object
+          description: "the statement's log anchor; present once the statement is finalized — `note`, `keyName`, `publicKey` and `keyHash` only when the deployment configures OXSUM_HEAD_SIGNING_KEY"
+          required: [entryId, logIndex, windowHash, rollupHash, origin]
+          properties:
+            entryId: { type: string, format: uuid, description: "the marker entry committing the digests" }
+            logIndex: { type: integer, format: int64, description: "the marker's position in the tenant log" }
+            windowHash: { type: string, pattern: "^[0-9a-f]{64}$", description: "digest folded in log order over the covered entries' content hashes" }
+            rollupHash: { type: string, pattern: "^[0-9a-f]{64}$", description: "digest over the statement's canonical lines and totals" }
+            origin: { type: string, description: "the ledger's origin, `oxsum/ledgers/<tenant>`" }
+            note: { type: [string, "null"], description: "signed-note text over the tree head right after the anchor — the anchor's inclusion is proven by the head that follows it" }
+            keyName: { type: [string, "null"], description: "the signing key's published name, present when the note is" }
+            publicKey: { type: [string, "null"], pattern: "^[0-9a-f]{64}$", description: "the operator's Ed25519 public key, lowercase hex, present when the note is" }
+            keyHash: { type: [string, "null"], pattern: "^[0-9a-f]{8}$", description: "the key's short fingerprint, lowercase hex, present when the note is" }
     StatementPayment:
       type: object
       required: [statement, entryId, amountMinor]

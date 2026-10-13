@@ -36,6 +36,12 @@ time.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+# OTLP trace export (issue #224): the bridging layer and the exporter, wired in
+# main.rs only when OXSUM_OTLP_ENDPOINT is set.
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+opentelemetry-otlp.workspace = true
+tracing-opentelemetry.workspace = true
 uuid.workspace = true
 # The relay generator, see Cargo.toml at the workspace root.
 async-stream.workspace = true

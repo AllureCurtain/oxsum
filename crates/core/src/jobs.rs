@@ -37,6 +37,8 @@ pub mod kinds {
     pub const STATEMENTS: &str = "statements";
     /// The retention spec's batched cleanup.
     pub const RETENTION: &str = "retention";
+    /// The upstream price-catalog probe and drift diff (issue #222).
+    pub const SYNC_UPSTREAM_PRICES: &str = "sync-upstream-prices";
 }
 
 /// How long a claimed run may take before another worker's claim assumes the
@@ -119,7 +121,7 @@ pub fn next_run(kind: &str) -> Option<Duration> {
     Some(match kind {
         SWEEP_HOLDS => Duration::seconds(60),
         DELIVER_WEBHOOKS => Duration::seconds(30),
-        RECONCILE | STATEMENTS | RETENTION => Duration::days(1),
+        RECONCILE | STATEMENTS | RETENTION | SYNC_UPSTREAM_PRICES => Duration::days(1),
         _ => return None,
     })
 }

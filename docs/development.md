@@ -108,10 +108,12 @@ Copy `.env.example` to `.env` and the server and the tests pick it up automatica
 | `OXSUM_STRIPE_WEBHOOK_SECRET` | Optional; the `whsec_…` secret that verifies the `Stripe-Signature` header on `POST /api/v1/webhooks/stripe` — the endpoint Stripe's dashboard registers is `<public-url>/api/v1/webhooks/stripe` |
 | `OXSUM_STRIPE_API_URL` | Tests only; the Stripe API origin the checkout-session POST goes to, default `https://api.stripe.com` — `crates/server/tests/stripe.rs` stands a stub there |
 | `OXSUM_E2E_UPSTREAM_BASE_URL`, `OXSUM_E2E_UPSTREAM_API_KEY`, `OXSUM_E2E_MODEL` | Tests only; all three together opt `crates/server/tests/real_upstream.rs` into reaching a real provider — the base URL, the provider's key, and the model name it serves. Unset, the test skips before touching the network; `cargo test` never sets them and neither does CI. Keep the key in the shell environment, never in `.env` or any tracked file — the test seals it into `oxsum.channels` like a real deployment |
+| `OXSUM_UPSTREAM_PRICE_SYNC` | Optional; `true` schedules the daily `sync-upstream-prices` job that probes each channel's `GET {baseUrl}/api/v1/pricing` and opens upstream-price-drift rows where the stored `upstream` rates disagree (issue #222). The job also needs `OXSUM_SECRET_KEY` to unseal channel credentials — it is only enqueued when both exist. Default unset: the job never runs, and channels pointing at non-oxsum upstreams are better left unprobed anyway — only an oxsum-compatible catalog answers that path |
 | `OXSUM_RETENTION_PROVIDER_RAW_DAYS` | Optional; days a usage row keeps `usage_details.provider_raw` before the daily `retention` job nulls it — the privacy window, since the raw payload may carry prompt fragments. Default 7; the normalized columns are kept forever |
 | `OXSUM_RETENTION_DELIVERIES_DAYS` | Optional; days a delivered or failed `webhook_deliveries` row is kept. Default 30 |
 | `OXSUM_RETENTION_JOBS_DAYS` | Optional; days a finished `oxsum.jobs` row is kept — `dead` rows included, so the window is also how long `jobs_dead` drift evidence survives. Default 90 |
-| `RUST_LOG` | Optional `tracing-subscriber` filter; defaults to `info` |
+| `RUST_LOG` | Optional `tracing-subscriber` filter; defaults to `info` — applies to exported traces too when `OXSUM_OTLP_ENDPOINT` is set |
+| `OXSUM_OTLP_ENDPOINT` | Optional; the OTLP collector's HTTP endpoint, e.g. `http://localhost:4318` — the exporter appends `/v1/traces` (issue #224). Unset, tracing stays strictly local. Spans carry only the `gen_ai.*` semantic-convention vocabulary — operation, system, model, token counts — never a request id, organization, or key |
 
 The mailer trio is all three or none: a subset refuses to boot, because a half-configured mailer would only fail at send time inside a request. Unset, the deployment sends no email — registration answers `verificationSent: false`, forgot-password still answers its indistinguishable 200, and `POST /api/v1/auth/verify/request` alone reports the absence with 503. The GitHub OAuth pair follows the same rule — a client id or secret without `OXSUM_PUBLIC_URL` refuses to boot, and unset the login page draws no GitHub button and the OAuth endpoints answer 404. So does the Stripe trio (`OXSUM_STRIPE_SECRET_KEY`, `OXSUM_STRIPE_WEBHOOK_SECRET`, `OXSUM_PUBLIC_URL`): a subset refuses to boot, and unset, the intent endpoint 503s and the inbound webhook 404s.
 
@@ -159,6 +161,22 @@ dead-lettered holds and the connection pool are all under the `oxsum_` prefix:
 
 ```bash
 curl -H "authorization: Bearer $OXSUM_ADMIN_TOKEN" http://127.0.0.1:3000/metrics
+```
+
+Traces can leave the process too: with `OXSUM_OTLP_ENDPOINT` set, every gateway turn is
+exported to that OTLP/HTTP collector as a `gen_ai.turn` span carrying the GenAI semantic
+conventions — `gen_ai.operation.name` (`chat`/`embeddings`/`rerank`), `gen_ai.system`
+(`openai`/`anthropic`), `gen_ai.request.model`, and `gen_ai.usage.input_tokens` /
+`gen_ai.usage.output_tokens` filled in once settlement knows them. Two span events mark
+the phase boundaries — `hold taken` (`oxsum.hold.freeze_minor`) when the ledger hold
+lands, `settle written` (`oxsum.charged_minor`, `settlement.kind`) when the write
+returns — so the span's own start and end bracket admission, the relay, and the settle
+without a child span. The span is batched and shipped on the application's own tokio
+runtime, and `RUST_LOG`'s env filter applies to it the same way it applies to logs.
+Point a collector at it:
+
+```bash
+OXSUM_OTLP_ENDPOINT=http://localhost:4318 cargo run -p oxsum-server
 ```
 
 oxsum's own tables are migrated at startup, in the same process that serves requests: `Db::migrate`
