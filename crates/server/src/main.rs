@@ -83,6 +83,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map(|secret| (reqwest::Client::new(), secret)),
             retention: config.retention(),
             upstream_price_sync: config.upstream_price_sync(),
+            // Anchoring needs both halves: witnesses to publish to and the key
+            // the heads are signed under (issue #231).
+            witness: match (config.witness_urls(), config.head_signing_seed()) {
+                (urls, Some(seed)) if !urls.is_empty() => Some(oxsum_server::jobs::WitnessConfig {
+                    http: reqwest::Client::new(),
+                    head_signing_seed: seed,
+                    urls: urls.to_vec(),
+                }),
+                _ => None,
+            },
         },
     );
     let listener = tokio::net::TcpListener::bind(addr).await?;

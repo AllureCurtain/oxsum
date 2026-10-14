@@ -167,6 +167,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0039_budget_thresholds",
         include_str!("../migrations/0039_budget_thresholds.sql"),
     ),
+    (
+        "0040_witness_checkpoints",
+        include_str!("../migrations/0040_witness_checkpoints.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.

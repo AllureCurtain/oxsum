@@ -162,6 +162,11 @@ pub struct Config {
     /// Where OTLP spans go, `OXSUM_OTLP_ENDPOINT` (issue #224). `None` — the
     /// default — keeps tracing strictly local.
     otlp_endpoint: Option<String>,
+    /// The external witnesses the `witness-checkpoints` pass publishes heads
+    /// to, `OXSUM_WITNESS_URLS` comma-separated (issue #231). Empty — the
+    /// default — runs no anchoring: `/api/v1/log/checkpoint` serves an empty
+    /// snapshot.
+    witness_urls: Vec<String>,
 }
 
 impl Config {
@@ -184,6 +189,7 @@ impl Config {
             retention: oxsum_core::Retention::default(),
             upstream_price_sync: false,
             otlp_endpoint: None,
+            witness_urls: Vec::new(),
         }
     }
 
@@ -300,6 +306,7 @@ impl Config {
             .map(upstream_price_sync_of)
             .transpose()?
             .unwrap_or(false);
+        let witness_urls = witness_urls_of()?;
         // Trailing slashes come off: the exporter appends `/v1/traces`, and a
         // doubled slash is only a cosmetic wrong.
         let otlp_endpoint = var("OXSUM_OTLP_ENDPOINT").map(|v| v.trim_end_matches('/').to_owned());
@@ -320,6 +327,7 @@ impl Config {
             retention,
             upstream_price_sync,
             otlp_endpoint,
+            witness_urls,
         })
     }
 
@@ -415,6 +423,22 @@ impl Config {
         self.upstream_price_sync
     }
 
+    /// The witness endpoints `OXSUM_WITNESS_URLS` configured (issue #231):
+    /// the pass publishes each organization's signed head here; empty means
+    /// no anchoring runs.
+    #[must_use]
+    pub fn witness_urls(&self) -> &[String] {
+        &self.witness_urls
+    }
+
+    /// Sets the witness URL list. Tests use this; the server reads
+    /// `OXSUM_WITNESS_URLS`.
+    #[must_use]
+    pub fn with_witness_urls(mut self, urls: Vec<String>) -> Self {
+        self.witness_urls = urls;
+        self
+    }
+
     /// Sets the upstream price-sync gate. Tests use this; the server reads
     /// `OXSUM_UPSTREAM_PRICE_SYNC`.
     #[must_use]
@@ -447,7 +471,7 @@ impl Config {
     /// The seed the operator signs tree heads with, or `None` when the deployment did not
     /// configure one — in which case the `/api/v1/log` endpoints answer 503.
     #[must_use]
-    pub(crate) fn head_signing_seed(&self) -> Option<[u8; 32]> {
+    pub fn head_signing_seed(&self) -> Option<[u8; 32]> {
         self.head_signing_seed
     }
 
@@ -510,6 +534,28 @@ fn session_cookie_secure_of(raw: String) -> Result<bool, String> {
             "OXSUM_SESSION_COOKIE_SECURE must be true or false, got {other:?}"
         )),
     }
+}
+
+/// Parses `OXSUM_WITNESS_URLS`: the comma-separated C2SP `tlog-witness`
+/// endpoints the `witness-checkpoints` pass publishes each organization's
+/// signed head to (issue #231). Absent or empty means no anchoring — the pass
+/// never schedules, and `GET /api/v1/log/checkpoint` answers an empty
+/// snapshot. Each entry must parse as a URL; a witness that wants plain HTTP
+/// names it deliberately — an unreachable scheme fails loudly at startup
+/// rather than silently never anchoring.
+fn witness_urls_of() -> Result<Vec<String>, String> {
+    let Some(raw) = var("OXSUM_WITNESS_URLS") else {
+        return Ok(Vec::new());
+    };
+    raw.split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            reqwest::Url::parse(entry)
+                .map(|_| entry.trim_end_matches('/').to_owned())
+                .map_err(|error| format!("OXSUM_WITNESS_URLS entry {entry:?} is no URL: {error}"))
+        })
+        .collect()
 }
 
 /// Parses `OXSUM_UPSTREAM_PRICE_SYNC`: whether the `SYNC_UPSTREAM_PRICES`

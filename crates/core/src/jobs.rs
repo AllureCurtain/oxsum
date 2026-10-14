@@ -39,6 +39,10 @@ pub mod kinds {
     pub const RETENTION: &str = "retention";
     /// The upstream price-catalog probe and drift diff (issue #222).
     pub const SYNC_UPSTREAM_PRICES: &str = "sync-upstream-prices";
+    /// The external witness anchoring pass (issue #231): publish each
+    /// organization's latest signed head to the configured witnesses and store
+    /// the cosigned notes they answer.
+    pub const WITNESS_CHECKPOINTS: &str = "witness-checkpoints";
 }
 
 /// How long a claimed run may take before another worker's claim assumes the
@@ -122,6 +126,10 @@ pub fn next_run(kind: &str) -> Option<Duration> {
         SWEEP_HOLDS => Duration::seconds(60),
         DELIVER_WEBHOOKS => Duration::seconds(30),
         RECONCILE | STATEMENTS | RETENTION | SYNC_UPSTREAM_PRICES => Duration::days(1),
+        // Anchoring is hourly: often enough that a head ages at most an hour
+        // before a witness vouches for it, rare enough that every pass is one
+        // request per organization per witness.
+        WITNESS_CHECKPOINTS => Duration::hours(1),
         _ => return None,
     })
 }
