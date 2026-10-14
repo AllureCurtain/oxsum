@@ -200,8 +200,13 @@ impl Harness {
         let shared = shared().await;
 
         // A private database per test: isolation without a container per test.
+        // The run's suffix keeps names unique against an external server that
+        // outlives the run — `de_0` from a previous or sibling run is someone
+        // else's scratch, not this one's (the container path always owns its
+        // server, so the suffix costs nothing there either).
         let name = format!(
-            "de_{}",
+            "de_{}_{}",
+            &uuid::Uuid::now_v7().simple().to_string()[..8],
             NEXT_DB.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
         match shared {
