@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.58.0
+  version: 0.59.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -4808,7 +4808,7 @@ components:
           properties:
             code:
               type: string
-              enum: [VALIDATION_ERROR, UNAUTHORIZED, FORBIDDEN, INSUFFICIENT_FUNDS, KEY_LIMIT_EXCEEDED, RATE_LIMITED, TOO_MANY_HOLDS, TOKENS_PER_MINUTE, NOT_FOUND, CONFLICT, INTERNAL_ERROR, SERVICE_UNAVAILABLE]
+              enum: [VALIDATION_ERROR, UNAUTHORIZED, FORBIDDEN, INSUFFICIENT_FUNDS, KEY_LIMIT_EXCEEDED, RATE_LIMITED, TOO_MANY_HOLDS, TOKENS_PER_MINUTE, POOL_BUSY, NOT_FOUND, CONFLICT, INTERNAL_ERROR, SERVICE_UNAVAILABLE]
             message: { type: string }
             details: { type: array, items: {} }
     ChatCompletionRequest:
@@ -5095,13 +5095,15 @@ components:
               description: >-
                 oxsum's own code: VALIDATION_ERROR, UNAUTHORIZED, FORBIDDEN, CONFLICT,
                 INSUFFICIENT_FUNDS, KEY_LIMIT_EXCEEDED, RATE_LIMITED, TOO_MANY_HOLDS,
-                TOKENS_PER_MINUTE, IDEMPOTENCY_IN_FLIGHT, IDEMPOTENCY_MISMATCH,
+                TOKENS_PER_MINUTE, POOL_BUSY, IDEMPOTENCY_IN_FLIGHT, IDEMPOTENCY_MISMATCH,
                 UPSTREAM_ERROR or INTERNAL_ERROR.
                 A key past its spend limit arrives as 429 KEY_LIMIT_EXCEEDED with the
                 `insufficient_quota` type, the same type the 402 INSUFFICIENT_FUNDS
                 refusal carries; a key past its request, concurrency or settled-token
                 allowance arrives as 429 with the `rate_limit_exceeded` type and the
-                `Retry-After`/`X-RateLimit-*` headers.
+                `Retry-After`/`X-RateLimit-*` headers. A saturated connection pool
+                arrives as 429 POOL_BUSY with `Retry-After` alone — backpressure,
+                not a caller quota.
     AnthropicError:
       type: object
       required: [type, error]

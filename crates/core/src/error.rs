@@ -82,6 +82,15 @@ pub enum WalletError {
     #[error("misconfigured: {0}")]
     Misconfigured(String),
 
+    /// A pooled connection could not be checked out inside the acquire timeout,
+    /// or the pool was closed mid-request: the process is briefly saturated,
+    /// not broken, and a retry after a moment is the right answer (issue #235).
+    /// The HTTP layer answers 429 `POOL_BUSY` with `Retry-After` — never the
+    /// 500 a plain storage failure carries, because a burst looks like an
+    /// outage and invites retry storms at exactly the wrong moment.
+    #[error("the connection pool is saturated")]
+    PoolBusy,
+
     /// A storage failure. Details go to the logs only, never to the caller.
     #[error("storage error: {0}")]
     Storage(#[source] PostgresError),
@@ -98,6 +107,11 @@ impl From<PostgresError> for WalletError {
             PostgresError::IdempotencyConflict { .. } => {
                 Self::Conflict("idempotency key already used for a different request".into())
             }
+            // Ledger paths reach the pool through `PostgresStore`, so a
+            // saturated pool surfaces wrapped inside the engine's own error.
+            PostgresError::Database(sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed) => {
+                Self::PoolBusy
+            }
             other => Self::Storage(other),
         }
     }
@@ -105,7 +119,10 @@ impl From<PostgresError> for WalletError {
 
 impl From<sqlx::Error> for WalletError {
     fn from(e: sqlx::Error) -> Self {
-        Self::Storage(e.into())
+        match e {
+            sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed => Self::PoolBusy,
+            other => Self::Storage(other.into()),
+        }
     }
 }
 

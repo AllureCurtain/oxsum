@@ -72,6 +72,11 @@ pub enum GatewayError {
         message: String,
         body: Option<Value>,
     },
+    /// The shared connection pool could not hand a connection out in time:
+    /// backpressure, not a caller quota — so the answer is 429 `POOL_BUSY`
+    /// with `Retry-After`, without the `X-RateLimit-*` headers a caller-owned
+    /// limit carries (issue #235).
+    PoolBusy,
     /// Something in oxsum failed. The detail goes to the log, never to the caller.
     Internal,
 }
@@ -194,6 +199,10 @@ impl From<WalletError> for GatewayError {
                 tracing::error!(%message, "gateway path resolved a resource that is not there");
                 Self::Internal
             }
+            WalletError::PoolBusy => {
+                tracing::warn!("the connection pool is saturated; answering 429 POOL_BUSY");
+                Self::PoolBusy
+            }
             WalletError::Storage(error) => {
                 tracing::error!(%error, "storage failure on the gateway path");
                 Self::Internal
@@ -296,6 +305,22 @@ impl IntoResponse for GatewayError {
                 Some(body) if body.get("error").is_some() => (status, Json(body)).into_response(),
                 _ => error_response(status, &message, "api_error", "UPSTREAM_ERROR", None),
             },
+            Self::PoolBusy => {
+                let body = json!({
+                    "error": {
+                        "message": "the service is briefly saturated; retry after a moment",
+                        "type": "rate_limit_exceeded",
+                        "param": null,
+                        "code": "POOL_BUSY",
+                    }
+                });
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    [("retry-after", "1".to_owned())],
+                    Json(body),
+                )
+                    .into_response()
+            }
             Self::Internal => error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal error",
@@ -386,6 +411,18 @@ impl GatewayError {
                 }
                 _ => (status, message, "api_error", "UPSTREAM_ERROR"),
             },
+            Self::PoolBusy => {
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    [("retry-after", "1".to_owned())],
+                    Json(anthropic_error(
+                        "the service is briefly saturated; retry after a moment",
+                        "overloaded_error",
+                        "POOL_BUSY",
+                    )),
+                )
+                    .into_response();
+            }
             Self::Internal => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal error".to_owned(),

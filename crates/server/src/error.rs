@@ -54,6 +54,11 @@ pub enum ApiError {
     PollTooFast {
         retry_after_secs: u64,
     },
+    /// The shared connection pool could not hand out a connection in time:
+    /// momentary backpressure, not a caller quota — so the answer is 429
+    /// `POOL_BUSY` with `Retry-After` and no `X-RateLimit-*` headers, which
+    /// describe limits the caller owns (issue #235).
+    PoolBusy,
     /// A feature the deployment did not configure: the wallet works, this surface does not.
     ServiceUnavailable(String),
     Internal,
@@ -102,6 +107,12 @@ impl From<WalletError> for ApiError {
                 retry_after_secs,
             },
             WalletError::TooManyHolds { limit, open } => Self::TooManyHolds { limit, open },
+            // Saturation is expected under burst and the caller's signal is the
+            // 429 itself — one warn line, not an error-level incident per request.
+            WalletError::PoolBusy => {
+                tracing::warn!("the connection pool is saturated; answering 429 POOL_BUSY");
+                Self::PoolBusy
+            }
             // A deployment that cannot open its own channel credentials is broken rather than asked
             // something wrong: the operator gets the detail in the log, the caller gets a 500.
             WalletError::Misconfigured(detail) => {
@@ -226,6 +237,19 @@ impl IntoResponse for ApiError {
                 return (
                     StatusCode::TOO_MANY_REQUESTS,
                     [("retry-after", retry_after_secs.max(1).to_string())],
+                    Json(body),
+                )
+                    .into_response();
+            }
+            Self::PoolBusy => {
+                let body = json!({ "error": {
+                    "code": "POOL_BUSY",
+                    "message": "the service is briefly saturated; retry after a moment",
+                    "details": [],
+                } });
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    [("retry-after", "1".to_owned())],
                     Json(body),
                 )
                     .into_response();
