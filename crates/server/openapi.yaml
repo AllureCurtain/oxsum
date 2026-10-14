@@ -4108,9 +4108,25 @@ components:
           format: uuid
           description: the settlement entry's own id — `GET /api/v1/entries/{entryId}/proof` answers this turn's proof bundle directly
         model: { type: string }
+        status:
+          type: string
+          enum: [settled, errored, refused]
+          description: >
+            how the turn ended: `settled` covers every settled outcome including
+            the anomalous kinds; `errored` marks the turns that served nothing
+            after their hold (`upstream_error`, `upstream_unreachable`,
+            `swept`); `refused` marks a request admission turned away before a
+            hold, recorded as a marker entry so a 4xx or 429 still lands on the
+            billing page
+        failureReason:
+          type: string
+          description: >
+            why the turn refused or errored, when the settlement recorded a
+            reason — the caller-facing words the answer already carried; absent
+            on a clean settle
         kind:
           type: string
-          enum: [usage, estimated, client_cancelled, upstream_error, upstream_unreachable, capped, swept, unpriced, released]
+          enum: [usage, estimated, client_cancelled, upstream_error, upstream_unreachable, capped, swept, unpriced, released, refused]
           description: how the turn was priced
         inputTokens: { type: integer, format: int64, description: tokens billed as input }
         outputTokens: { type: integer, format: int64, description: tokens billed as output }

@@ -345,6 +345,8 @@ async fn the_retention_pass_ages_out_each_rule_once() {
         price_version: 1,
         kind: SettlementKind::Usage,
         entry_id: Uuid::new_v4(),
+        status: "settled".to_owned(),
+        failure_reason: None,
         usage,
         charged_minor: 12,
         freeze_minor: 100,

@@ -112,6 +112,8 @@ async fn turn(
         price_version: 1,
         kind: SettlementKind::Usage,
         entry_id: *receipt.entry_id.as_uuid(),
+        status: "settled".to_owned(),
+        failure_reason: None,
         usage: UsageRecord {
             input_tokens: 100,
             output_tokens: 50,

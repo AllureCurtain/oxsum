@@ -432,6 +432,7 @@ impl Db {
             freeze,
             // A seeded turn is a single scripted call: no failover ever ran.
             upstream_attempts: 1,
+            reason: None,
         }
         .description()?;
         world
@@ -450,6 +451,8 @@ impl Db {
                 price_version: model.version,
                 kind,
                 entry_id: *entry_id_for(&settlement_key_for(&hold_key)).as_uuid(),
+                status: "settled".to_owned(),
+                failure_reason: None,
                 usage,
                 charged_minor: charged,
                 freeze_minor: freeze,

@@ -13,7 +13,7 @@ use time::OffsetDateTime;
 use time::macros::date;
 use uuid::Uuid;
 
-use crate::billing::{SettlementKind, SettlementRecord};
+use crate::billing::{Settlement, SettlementKind, SettlementRecord};
 use crate::error::{WalletError, invalid};
 use crate::heads::{
     Consistency, HeadSigningKey, STATEMENT_ANCHOR_DOCUMENT, SignedHead, canonical_price_row,
@@ -21,6 +21,7 @@ use crate::heads::{
 };
 use crate::keys::{ActingKey, BudgetDuration};
 use crate::proof::ProofBundle;
+use crate::usage::UsageRecord;
 
 /// Money precision: 6 decimal places; 1 credit = 1_000_000 minor, fine enough for per-token pricing.
 ///
@@ -285,6 +286,15 @@ pub struct RequestEntry {
     /// The API key that paid the turn, as its id in uuid simple form: the hold's provenance
     /// actor, copied onto the settlement. `None` for a turn held without key attribution.
     pub key_id: Option<String>,
+    /// How the turn ended — [`SettlementKind::status`]'s spelling (issue #233):
+    /// `settled` for the outcomes that charged, `errored` for the turns that
+    /// served nothing after their hold, `refused` for the requests admission
+    /// turned away before a hold.
+    pub status: &'static str,
+    /// Why the turn refused or errored, when the settlement recorded a reason —
+    /// `None` for a clean settle.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_reason: Option<String>,
 }
 
 /// One slice of a list that walks the log backward, newest first (issue #93).
@@ -2087,6 +2097,83 @@ impl Wallet {
         Ok((receipt.entry_id, index))
     }
 
+    /// A refused gateway request's billing record: one marker entry appended
+    /// under `req-<request>:refused`, so a request admission turned away still
+    /// lands on the billing page with its terminal status and reason (issue
+    /// #233). The marker is a self-balancing 1-minor round-trip on the
+    /// adjustments account — like the statement anchor — because a refusal
+    /// moves no money but is still a billing fact the ledger proves: the
+    /// description is a settlement record of kind `refused`, so the requests
+    /// page reads it the same way it reads every other outcome.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`]. A request id already
+    /// marked replays the first marker: the append and the read answer the
+    /// same id.
+    pub async fn record_refusal(
+        &self,
+        request_id: &str,
+        model: &str,
+        channel: &str,
+        reason: &str,
+        actor: Option<&str>,
+    ) -> Result<EntryId, WalletError> {
+        let key = format!("req-{request_id}:refused");
+        let usage = UsageRecord::default();
+        // The reason truncates to keep the record inside the description's
+        // 512-character cap — the full message is already in the answer the
+        // caller got.
+        let mut end = reason.len().min(150);
+        while end > 0 && !reason.is_char_boundary(end) {
+            end -= 1;
+        }
+        let reason = &reason[..end];
+        let description = Settlement {
+            request: request_id,
+            channel,
+            model,
+            price_version: 0,
+            kind: SettlementKind::Refused,
+            usage: &usage,
+            lines: &[],
+            matched_rule: None,
+            discount_percent: None,
+            charged: 0,
+            freeze: 0,
+            upstream_attempts: 0,
+            reason: Some(reason),
+        }
+        .description()?;
+        let mut draft = Entry::<Draft, SCALE>::new(
+            entry_id_for(&key),
+            idem(&key)?,
+            OffsetDateTime::now_utc().date(),
+        )
+        .with_description(description_of(&description)?);
+        if let Some(actor) = actor {
+            draft = draft.with_provenance(Provenance::none().with_actor(actor).map_err(invalid)?);
+        }
+        let minor = Credits::from_minor(1);
+        let entry = draft.debit(self.adjustments, minor, currency()).credit(
+            self.adjustments,
+            minor,
+            currency(),
+        );
+        let receipt = match self.append(entry).await {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                // A raced or repeated marker lands on the same key; the
+                // standing entry is the same refusal either way.
+                let Some(stored) = self.store.get(entry_id_for(&key)).await? else {
+                    return Err(error);
+                };
+                stored_receipt(&stored)
+            }
+        };
+        Ok(receipt.entry_id)
+    }
+
     /// The current tree head, signed by the operator: what `GET /api/v1/log/head` serves.
     ///
     /// The note attests the head at signing time; the ledger keeps growing underneath, and a
@@ -2584,6 +2671,8 @@ impl Wallet {
                 discount_percent: turn.record.discount_percent,
                 upstream_attempts: turn.record.upstream_attempts,
                 key_id: turn.key_id,
+                status: turn.record.kind.status(),
+                failure_reason: turn.record.reason,
             }))
     }
 

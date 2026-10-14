@@ -152,6 +152,8 @@ async fn a_settled_usage_row_completes_the_claim() {
         price_version: 1,
         kind: SettlementKind::Usage,
         entry_id: Uuid::new_v4(),
+        status: "settled".to_owned(),
+        failure_reason: None,
         usage: UsageRecord::tokens(10, 2).unwrap(),
         charged_minor: 12,
         freeze_minor: 100,

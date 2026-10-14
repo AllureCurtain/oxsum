@@ -23,8 +23,8 @@ use axum::{Json, Router, middleware};
 use futures_util::StreamExt;
 use http_body_util::{BodyExt, StreamBody};
 use oxsum_core::{
-    ActingKey, BillingMode, Claim, OpenHold, Organization, Serving, SettlementKind, WalletError,
-    fingerprint, hold_description, route_order,
+    ActingKey, BillingMode, Claim, OpenHold, Organization, Serving, SettlementKind, UsageRecord,
+    UsageRow, WalletError, fingerprint, hold_description, route_order,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -322,12 +322,20 @@ async fn gateway(
                 message: format!("the request body must be JSON: {error}"),
                 param: None,
             };
+            record_refusal(&state, &organization, &key, &request_id, "", &error).await;
             return with_request_id(
                 settle_claim(&state, &organization, claim, Err(error), surface).await,
                 &request_id,
             );
         }
     };
+    // The model the refusal record names: the body's own `model` when it carries
+    // one, whatever the parse below makes of the rest.
+    let model = body
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
     let outcome = run(
         &state,
         &organization,
@@ -338,8 +346,71 @@ async fn gateway(
         surface,
     )
     .await;
+    if let Err(error) = &outcome {
+        record_refusal(&state, &organization, &key, &request_id, &model, error).await;
+    }
     let response = settle_claim(&state, &organization, claim, outcome, surface).await;
     with_request_id(response, &request_id)
+}
+
+/// A refused turn's billing record (issue #233): the marker entry under
+/// `req-<request>:refused` plus the usage row beside it, so a request admission
+/// turned away still lands on the billing page with its terminal status and
+/// reason — not only in server logs. Best-effort: a record that cannot be
+/// written is logged and never turns the refusal itself into a different
+/// answer.
+async fn record_refusal(
+    state: &AppState,
+    organization: &Organization,
+    key: &ActingKey,
+    request_id: &str,
+    model: &str,
+    error: &GatewayError,
+) {
+    let Some(reason) = error.refusal_reason() else {
+        return;
+    };
+    let wallet = match state.tenants.get(&organization.tenant_id).await {
+        Ok(wallet) => wallet,
+        Err(open_error) => {
+            tracing::warn!(%open_error, request = %request_id,
+                "a refused request's wallet could not open; no record");
+            return;
+        }
+    };
+    let actor = format!("{}", key.key_id.simple());
+    let entry_id = match wallet
+        .record_refusal(request_id, model, "", reason, Some(&actor))
+        .await
+    {
+        Ok(entry_id) => *entry_id.as_uuid(),
+        Err(mark_error) => {
+            tracing::warn!(%mark_error, request = %request_id,
+                "the refusal marker did not append");
+            return;
+        }
+    };
+    let row = UsageRow {
+        request_id: request_id.to_owned(),
+        tenant_id: organization.tenant_id.clone(),
+        key_id: Some(key.key_id),
+        model: model.to_owned(),
+        channel: String::new(),
+        price_version: 0,
+        kind: SettlementKind::Refused,
+        entry_id,
+        status: "refused".to_owned(),
+        failure_reason: Some(reason.to_owned()),
+        usage: UsageRecord::default(),
+        charged_minor: 0,
+        freeze_minor: 0,
+        upstream_cost_minor: None,
+        upstream_attempts: 0,
+    };
+    if let Err(row_error) = state.db.record_usage(&row).await {
+        tracing::warn!(%row_error, request = %request_id,
+            "the refusal's usage row did not write");
+    }
 }
 
 /// The error envelope the surface's SDK parses: OpenAI's `{"error": {…}}` on
@@ -920,7 +991,7 @@ async fn run(
     let response = match upstream {
         Err((error, kind)) => {
             // Nothing was received, so nothing is charged and the whole freeze goes back.
-            let charged = turn.settle(kind, Charge::Nothing).await;
+            let charged = turn.settle(kind, Charge::Nothing, error.reason()).await;
             // The answer is upstream's refusal shape with the cost head on it — returned as
             // a response rather than the error so the head can be stamped here, where the
             // numbers are. The claim still stores it: a finished non-streamed answer is
@@ -946,7 +1017,11 @@ async fn run(
                         // goes back, the same settlement the refusal arm
                         // above performs.
                         let charged = turn
-                            .settle(SettlementKind::UpstreamError, Charge::Nothing)
+                            .settle(
+                                SettlementKind::UpstreamError,
+                                Charge::Nothing,
+                                error.reason(),
+                            )
                             .await;
                         let mut response = error_response(error, surface);
                         cost.stamp(&mut response);
@@ -966,7 +1041,7 @@ async fn run(
                         }
                         turn.note_text(&adapter.answer_text(&value));
                         let (kind, charge) = turn.closing();
-                        let charged = turn.settle(kind, charge).await;
+                        let charged = turn.settle(kind, charge, None).await;
                         let mut response = Json(value).into_response();
                         cost.stamp(&mut response);
                         stamp_charged(&mut response, charged);
@@ -977,7 +1052,11 @@ async fn run(
                         // what came back rather than handing the caller a charge of nothing.
                         turn.note_text(&text);
                         let charged = turn
-                            .settle(SettlementKind::Estimated, Charge::Estimated)
+                            .settle(
+                                SettlementKind::Estimated,
+                                Charge::Estimated,
+                                Some("upstream answered with a body that is not JSON"),
+                            )
                             .await;
                         let mut response = error_response(
                             GatewayError::upstream(

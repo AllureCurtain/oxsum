@@ -361,6 +361,10 @@ impl Turn {
     }
 
     /// Writes the settlement for this turn. Called once; later calls do nothing.
+    /// `reason` is why the turn refused or errored, when it did (issue #233):
+    /// it rides the settlement description — under the hash — and the usage
+    /// row's `failure_reason`, so the billing page shows the terminal cause
+    /// instead of leaving it in server logs.
     ///
     /// The write runs in a task of its own and is awaited here, so that nothing can cancel a
     /// settlement that has begun. hyper drops this future — and the plan in it — when the client
@@ -376,10 +380,16 @@ impl Turn {
     /// The settled charge comes back for the caller to see: the response-cost header on a
     /// non-streamed answer, the trailer on a streamed one (P4-3). `None` says the write did
     /// not land, so nothing is stamped — the sweeper's settle reports its own number.
-    pub async fn settle(&mut self, kind: SettlementKind, charge: Charge) -> Option<i64> {
+    pub async fn settle(
+        &mut self,
+        kind: SettlementKind,
+        charge: Charge,
+        reason: Option<&str>,
+    ) -> Option<i64> {
         let mut plan = self.plan.take()?;
         let request = plan.request.clone();
-        match tokio::spawn(async move { plan.write(kind, charge).await }).await {
+        let reason = reason.map(str::to_owned);
+        match tokio::spawn(async move { plan.write(kind, charge, reason).await }).await {
             Ok(Ok(charged)) => Some(charged),
             Ok(Err(error)) => {
                 tracing::error!(%error, %request, "settling a gateway turn failed");
@@ -425,7 +435,7 @@ impl Drop for Turn {
             return;
         };
         handle.spawn(async move {
-            if let Err(error) = plan.write(kind, charge).await {
+            if let Err(error) = plan.write(kind, charge, None).await {
                 tracing::error!(%error, request = %plan.request, "settling a turn dropped mid-flight failed");
             }
         });
@@ -434,7 +444,22 @@ impl Drop for Turn {
 
 impl Plan {
     /// Charges the turn and writes the settlement entry, answering the settled charge.
-    async fn write(&mut self, kind: SettlementKind, charge: Charge) -> Result<i64, WalletError> {
+    async fn write(
+        &mut self,
+        kind: SettlementKind,
+        charge: Charge,
+        reason: Option<String>,
+    ) -> Result<i64, WalletError> {
+        // The reason rides the ledger description — bounded so a long upstream
+        // error cannot push the record past the description limit. The full
+        // message already reached the caller in the answer itself.
+        let reason = reason.map(|reason| {
+            let mut end = reason.len().min(150);
+            while end > 0 && !reason.is_char_boundary(end) {
+                end -= 1;
+            }
+            reason[..end].to_owned()
+        });
         let mut usage = match charge {
             Charge::Nothing => UsageRecord::tokens(0, 0)?,
             Charge::Usage(usage) => *usage,
@@ -510,6 +535,7 @@ impl Plan {
             charged,
             freeze: self.freeze,
             upstream_attempts: self.upstream_attempts,
+            reason: reason.as_deref(),
         };
         let description = settlement.description()?;
         let outcome = self
@@ -542,6 +568,8 @@ impl Plan {
                     kind,
                     entry_id: *entry_id_for(&settlement_key_for(&self.hold_key)).as_uuid(),
                     usage: usage.clone(),
+                    status: kind.status().to_owned(),
+                    failure_reason: reason.clone(),
                     charged_minor: charged,
                     freeze_minor: self.freeze,
                     // The platform's own cost for the same usage, under the set the
@@ -647,7 +675,7 @@ pub fn stream(
         // Read the closing frame before `settle` gives the plan up.
         let closing_frame = turn.closing_frame();
         let (kind, charge) = turn.closing();
-        let charged = turn.settle(kind, charge).await;
+        let charged = turn.settle(kind, charge, None).await;
         if !terminated {
             // Upstream ended without its own terminator, so an SSE reader would wait for an event
             // that is never coming. Close the stream for it, in the protocol's own spelling.

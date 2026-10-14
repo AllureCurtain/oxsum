@@ -863,6 +863,7 @@ async fn the_anomalies_list_shows_the_turns_that_did_not_price_cleanly() {
             charged: 60,
             freeze: 900_000,
             upstream_attempts: 1,
+            reason: None,
         }
         .description()
         .expect("the settlement record serializes");
@@ -951,6 +952,8 @@ async fn the_margin_view_sums_charges_against_upstream_costs() {
             price_version: 1,
             kind: oxsum_core::SettlementKind::Usage,
             entry_id: uuid::Uuid::new_v4(),
+            status: "settled".to_owned(),
+            failure_reason: None,
             usage: oxsum_core::UsageRecord::tokens(10, 2).expect("the seed counts"),
             charged_minor: *charged,
             freeze_minor: 100,

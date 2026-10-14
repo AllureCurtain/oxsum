@@ -82,6 +82,7 @@ fn golden(
         charged,
         freeze,
         upstream_attempts: 1,
+        reason: None,
     }
     .description()
     .expect("the fixture serializes")
@@ -150,6 +151,7 @@ fn settlement_descriptions_are_byte_stable() {
         charged: 0,
         freeze: 900_000,
         upstream_attempts: 1,
+        reason: None,
     }
     .description()
     .expect("the fixture serializes");
@@ -218,6 +220,7 @@ fn a_rule_priced_description_names_its_match() {
         charged: 181,
         freeze: 900_000,
         upstream_attempts: 1,
+        reason: None,
     }
     .description()
     .expect("the fixture serializes");
@@ -577,6 +580,7 @@ async fn every_settlement_kind_proves_and_recomputes() {
             charged,
             freeze: *freeze,
             upstream_attempts: 1,
+            reason: None,
         }
         .description()
         .expect("the settlement serializes");
@@ -616,6 +620,8 @@ async fn every_settlement_kind_proves_and_recomputes() {
             price_version: record.price_version,
             kind: *kind,
             entry_id: *entry_id.as_uuid(),
+            status: "settled".to_owned(),
+            failure_reason: None,
             usage: usage.clone(),
             charged_minor: charged,
             freeze_minor: *freeze,

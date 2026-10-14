@@ -931,6 +931,12 @@ pub enum SettlementKind {
     /// settled at zero on the service's own word — deliberate, unlike `swept`,
     /// which is the sweeper's answer to a hold nobody settled (issue #172).
     Released,
+    /// The request never took a hold: admission refused it (rate limit,
+    /// insufficient funds, model not served, a saturated pool). Nothing
+    /// charged and nothing moved — the marker entry exists so a refused call
+    /// lands on the billing page with its reason instead of only in server
+    /// logs (issue #233).
+    Refused,
 }
 
 impl SettlementKind {
@@ -947,6 +953,21 @@ impl SettlementKind {
             Self::Swept => "swept",
             Self::Unpriced => "unpriced",
             Self::Released => "released",
+            Self::Refused => "refused",
+        }
+    }
+
+    /// How the turn ended, as `BillingRecord.status` and the usage row's
+    /// `status` column spell it (issue #233): `settled` covers every settled
+    /// outcome including the anomalous kinds, `errored` the turns that served
+    /// nothing after their hold, `refused` the requests admission turned away
+    /// before a hold.
+    #[must_use]
+    pub fn status(&self) -> &'static str {
+        match self {
+            Self::UpstreamError | Self::UpstreamUnreachable | Self::Swept => "errored",
+            Self::Refused => "refused",
+            _ => "settled",
         }
     }
 }
@@ -1009,6 +1030,12 @@ pub struct Settlement<'a> {
     /// above 1 means it failed over between channels, or waited out a bounded
     /// `Retry-After` on a lone channel's 429. Written by the v5 description.
     pub upstream_attempts: i64,
+    /// Why the turn refused or errored, when it did (issue #233): the refusal
+    /// or upstream error in the caller-facing words the answer already carried,
+    /// truncated to fit the description — under the hash, so a bill proves the
+    /// reason it was given, not one invented after the fact.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<&'a str>,
 }
 
 /// Whether a metered count is zero: zero fields are not written, so the common
@@ -1337,6 +1364,9 @@ pub struct SettlementRecord {
     /// The reporting service credential's name (v6, issue #172); `None` on a
     /// gateway turn's record, which has no reporter.
     pub service: Option<String>,
+    /// Why the turn refused or errored, when the writer recorded one (issue
+    /// #233); `None` on a clean settle and on records that predate it.
+    pub reason: Option<String>,
 }
 
 /// The wire [`SettlementRecord::parse`] reads: [`SettlementV5`] owned, tolerant
@@ -1358,6 +1388,7 @@ struct SettlementRecordWire {
     service: Option<String>,
     charged: i64,
     freeze: i64,
+    reason: Option<String>,
 }
 
 impl SettlementRecord {
@@ -1376,11 +1407,23 @@ impl SettlementRecord {
                 .find(|line| line.item == item)
                 .map(|line| line.price_per_m)
         };
+        // A refused turn's marker carries no priced lines — there was no hold
+        // to price against — so the rates read back as zero rather than making
+        // the record unparseable and the refusal invisible (issue #233).
+        let refused = wire.kind == SettlementKind::Refused;
         Some(Self {
             input_tokens: wire.usage.input_tokens,
             output_tokens: wire.usage.output_tokens,
-            input_price: price_of("input")?,
-            output_price: price_of("output")?,
+            input_price: if refused {
+                price_of("input").unwrap_or(0)
+            } else {
+                price_of("input")?
+            },
+            output_price: if refused {
+                price_of("output").unwrap_or(0)
+            } else {
+                price_of("output")?
+            },
             request: wire.request,
             channel: wire.channel,
             model: wire.model,
@@ -1398,6 +1441,7 @@ impl SettlementRecord {
                 .upstream_attempts
                 .unwrap_or(if wire.v >= 6 { 0 } else { 1 }),
             service: wire.service,
+            reason: wire.reason,
         })
     }
 }
@@ -1988,6 +2032,7 @@ mod tests {
             charged: 316,
             freeze: 400,
             upstream_attempts: 1,
+            reason: None,
         };
         let json = settlement.description().unwrap();
         assert_eq!(
@@ -2112,6 +2157,7 @@ mod tests {
             charged: 316,
             freeze: 400,
             upstream_attempts: 1,
+            reason: None,
         }
         .description()
         .unwrap();
@@ -2160,6 +2206,7 @@ mod tests {
             charged: 1,
             freeze: 1,
             upstream_attempts: 1,
+            reason: None,
         }
         .description()
         .unwrap();
@@ -2190,6 +2237,7 @@ mod tests {
             charged: 316,
             freeze: 400,
             upstream_attempts: 2,
+            reason: None,
         };
         let record = SettlementRecord::parse(&settlement.description().unwrap()).unwrap();
         assert_eq!(record.request, "abc");
