@@ -208,6 +208,24 @@ pub(crate) struct MemberBudget {
     consumed_percent: Option<i32>,
 }
 
+/// `Option<Date>` as `YYYY-MM-DD` or `null` — the contract's `format: date`.
+/// `time`'s default serde emits `[year, ordinal]`, which the API does not use.
+mod date_opt {
+    use serde::Serializer;
+
+    time::serde::format_description!(day, Date, "[year]-[month]-[day]");
+
+    pub(super) fn serialize<S: Serializer>(
+        value: &Option<time::Date>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match value {
+            Some(date) => day::serialize(date, serializer),
+            None => serializer.serialize_none(),
+        }
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct KeyBudget {
@@ -218,6 +236,7 @@ pub(crate) struct KeyBudget {
     budget_duration: Option<String>,
     /// The UTC date the key's current window began — `null` for a cumulative
     /// limit, whose consumption is all-time.
+    #[serde(with = "date_opt")]
     window_start: Option<time::Date>,
     committed_minor: i64,
     consumed_percent: Option<i32>,
