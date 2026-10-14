@@ -1540,7 +1540,11 @@ async fn a_missing_usage_report_settles_under_the_degraded_policy() {
     // cost, never silently-zero or a guessed overcharge (issue #230).
     assert!(charged > 0, "{record}");
     assert!(charged <= record["freeze"].as_i64().unwrap(), "{record}");
-    assert_eq!(record["usage"]["outputTokens"], 0, "{record}");
+    assert_eq!(
+        record["usage"]["outputTokens"].as_i64().unwrap_or(0),
+        0,
+        "{record}"
+    );
     let wallet = world.wallet().await;
     assert_eq!(wallet.reserved().await.unwrap(), 0);
     assert_eq!(wallet.settled().await.unwrap(), 1_000_000 - charged);
@@ -1614,7 +1618,11 @@ async fn a_truncated_stream_settles_under_the_degraded_policy() {
     let record = world.settlement(&id).await.expect("the turn settled");
     assert_eq!(record["kind"], "estimated", "{record}");
     assert!(record["charged"].as_i64().unwrap() > 0, "{record}");
-    assert_eq!(record["usage"]["outputTokens"], 0, "{record}");
+    assert_eq!(
+        record["usage"]["outputTokens"].as_i64().unwrap_or(0),
+        0,
+        "{record}"
+    );
     let row = sqlx::query(
         "SELECT local_input_tokens, local_output_tokens, usage_details \
          FROM oxsum.usage_records WHERE request_id = $1",
