@@ -163,6 +163,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0038_usage_count_provenance",
         include_str!("../migrations/0038_usage_count_provenance.sql"),
     ),
+    (
+        "0039_budget_thresholds",
+        include_str!("../migrations/0039_budget_thresholds.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.
