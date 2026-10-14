@@ -102,12 +102,10 @@ fn create_suite_db(slug: &str) -> Option<SuiteDb> {
     // A DATABASE_URL that is set but unparseable is a misconfiguration, not
     // an absent database: fail loudly instead of skipping vacuously (issue
     // #18 pins this behavior).
-    let url = replace_database(&base_url, &name).unwrap_or_else(|| {
-        panic!("oxsum-testkit: DATABASE_URL is not a valid URL: {base_url:?}")
-    });
-    let admin_url = replace_database(&base_url, "postgres").unwrap_or_else(|| {
-        panic!("oxsum-testkit: DATABASE_URL is not a valid URL: {base_url:?}")
-    });
+    let url = replace_database(&base_url, &name)
+        .unwrap_or_else(|| panic!("oxsum-testkit: DATABASE_URL is not a valid URL: {base_url:?}"));
+    let admin_url = replace_database(&base_url, "postgres")
+        .unwrap_or_else(|| panic!("oxsum-testkit: DATABASE_URL is not a valid URL: {base_url:?}"));
 
     // `OnceLock::get_or_init` runs on the caller's thread, which is inside
     // the test's tokio runtime; `block_on` would panic there, so do the
