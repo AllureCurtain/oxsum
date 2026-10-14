@@ -323,6 +323,68 @@ async fn the_usage_window_is_validated() {
 // ── /api/v1/billing-records ──────────────────────────────────────────────────
 
 /// Settled turns newest-first under the `before` cursor, scoped to the
+/// `GET /api/v1/budget` answers every scope's limit/consumed/pct (issue #232):
+/// the key's windowed `spendLimitMinor`, the member seat (absent for a key's
+/// own call), the organization's credit line — and `committedMinor` is the
+/// figure the hold check itself reads, settled spend plus outstanding holds.
+#[tokio::test]
+async fn budget_snapshot_scopes() {
+    let (app, db) = app_or_skip!();
+    let tenants = Tenants::new(db.pool().clone());
+    let (tenant, key, key_id) = register(&app, "budget").await;
+    top_up(&app, &key, 50_000_000).await;
+
+    // A daily-limited second key with a third of its budget burned.
+    let (status, minted) = call(
+        &app,
+        "POST",
+        "/api/v1/org/keys",
+        Some(json!({"name": "burner", "spendLimitMinor": 30_000, "budgetDuration": "daily"})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{minted}");
+    let burner_id = Uuid::parse_str(minted["data"]["id"].as_str().unwrap()).expect("a uuid key id");
+    settle_request(
+        &db,
+        &tenants,
+        &tenant,
+        Some(burner_id),
+        "burn-1",
+        "m1",
+        10_000,
+    )
+    .await;
+
+    let (status, body) = call(&app, "GET", "/api/v1/budget", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let data = &body["data"];
+    assert!(data["member"].is_null(), "a key names no member: {data}");
+    let org = &data["organization"];
+    assert_eq!(org["availableMinor"], 50_000_000 - 10_000, "{org}");
+    assert!(org["creditLimitMinor"].is_null(), "{org}");
+
+    let keys = data["keys"].as_array().expect("keys is an array");
+    let burner = keys
+        .iter()
+        .find(|row| row["keyId"] == burner_id.to_string())
+        .expect("the limited key is in scope");
+    assert_eq!(burner["spendLimitMinor"], 30_000, "{burner}");
+    assert_eq!(burner["budgetDuration"], "daily", "{burner}");
+    assert_eq!(burner["committedMinor"], 10_000, "{burner}");
+    assert_eq!(burner["consumedPercent"], 33, "{burner}");
+    assert!(burner["windowStart"].is_string(), "{burner}");
+
+    // The registration key carries no limit: committed without a percent.
+    let first = keys
+        .iter()
+        .find(|row| row["keyId"] == key_id.to_string())
+        .expect("the acting key is in scope");
+    assert!(first["spendLimitMinor"].is_null(), "{first}");
+    assert_eq!(first["committedMinor"], 0, "{first}");
+    assert!(first["consumedPercent"].is_null(), "{first}");
+}
+
 /// credential's organization.
 #[tokio::test]
 async fn billing_records_page_in_order() {

@@ -471,6 +471,7 @@ async fn balance_low_fires_once_per_crossing() {
             "https://receiver.example/hook",
             &["balance.low".to_owned()],
             Some(1_000),
+            &[],
             &key(),
         )
         .await
@@ -661,6 +662,7 @@ async fn the_catalog_and_threshold_validate() {
             "https://receiver.example/hook",
             &["balance.low".to_owned()],
             Some(-1),
+            &[],
             &key(),
         )
         .await
@@ -684,12 +686,13 @@ async fn the_catalog_and_threshold_validate() {
                 "org.credit_limit_exceeded".to_owned(),
                 "anomaly.detected".to_owned(),
                 "budget.exhaustion_forecast".to_owned(),
+                "budget.threshold_crossed".to_owned(),
             ],
             &key(),
         )
         .await
         .unwrap();
-    assert_eq!(endpoint.endpoint.events.len(), 12);
+    assert_eq!(endpoint.endpoint.events.len(), 13);
     // An unknown name is still refused.
     let error = db
         .create_webhook(
@@ -701,6 +704,210 @@ async fn the_catalog_and_threshold_validate() {
         .await
         .unwrap_err();
     assert!(matches!(error, WalletError::InvalidInput(_)), "{error:?}");
+
+    // Threshold percentages bound to 1–100; duplicates and order are normalized.
+    for thresholds in [&[0][..], &[101][..]] {
+        let error = db
+            .create_webhook_with_threshold(
+                org,
+                "https://receiver.example/hook",
+                &["budget.threshold_crossed".to_owned()],
+                None,
+                thresholds,
+                &key(),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, WalletError::InvalidInput(_)), "{error:?}");
+    }
+    let endpoint = db
+        .create_webhook_with_threshold(
+            org,
+            "https://receiver.example/limits",
+            &["budget.threshold_crossed".to_owned()],
+            None,
+            &[80, 50, 80],
+            &key(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(endpoint.endpoint.budget_thresholds, vec![50, 80]);
+}
+
+/// `budget.threshold_crossed` fires once per (endpoint, scope, window,
+/// threshold) — a settle lifting the key's consumption over an armed line
+/// enqueues the event with the scope's own figures, latched by
+/// `budget_threshold_fires` inside `record_usage`'s transaction, so a replayed
+/// or racing settle can never deliver the same crossing twice (issue #232).
+#[tokio::test]
+async fn a_budget_threshold_fires_once_per_crossing() {
+    let url = db_or_skip!();
+    let (db, org, tenant, secret) = world_with_secret(&url).await;
+    let endpoint = db
+        .create_webhook_with_threshold(
+            org,
+            "https://receiver.example/hook",
+            &["budget.threshold_crossed".to_owned()],
+            None,
+            &[50, 80],
+            &key(),
+        )
+        .await
+        .unwrap();
+
+    let (_, acting) = db
+        .authenticate(&secret)
+        .await
+        .unwrap()
+        .expect("the registration's key authenticates");
+    let wallet = oxsum_core::Tenants::new(db.pool().clone())
+        .get(&tenant)
+        .await
+        .unwrap();
+    let today = time::OffsetDateTime::now_utc().date();
+    wallet.top_up("topup", 1_000_000_000, today).await.unwrap();
+
+    let key_id = acting.key_id;
+    db.update_key_constraints(
+        org,
+        key_id,
+        oxsum_core::KeyScope::Organization,
+        oxsum_core::KeyConstraints {
+            spend_limit_minor: Some(10_000),
+            budget_duration: Some(oxsum_core::BudgetDuration::Daily),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    // Exactly at the line fires: 5_000 of 10_000 is 50% — `t <= pct` means the
+    // boundary itself is a crossing, not just overshoot.
+    wallet
+        .hold_for_key(&acting, None, "hold-1", "", 5_000, today)
+        .await
+        .unwrap();
+    wallet.settle("hold-1", "", 5_000, today).await.unwrap();
+    let mut row = usage_row(&format!("req-{}", Uuid::new_v4()), &tenant);
+    row.key_id = Some(key_id);
+    db.record_usage_balanced(&row, None).await.unwrap();
+
+    let deliveries = db
+        .webhook_deliveries(org, endpoint.endpoint.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let crossings: Vec<_> = deliveries
+        .iter()
+        .filter(|d| d.event_type == oxsum_core::BUDGET_THRESHOLD_CROSSED)
+        .collect();
+    assert_eq!(crossings.len(), 1, "one crossing at 50%: {deliveries:?}");
+    let stored: serde_json::Value =
+        sqlx::query_scalar("SELECT payload FROM oxsum.webhook_deliveries WHERE delivery_id = $1")
+            .bind(crossings[0].id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(stored["data"]["scope"], "key");
+    assert_eq!(
+        stored["data"]["keyId"].as_str().unwrap(),
+        key_id.to_string()
+    );
+    assert_eq!(stored["data"]["limitMinor"], 10_000);
+    assert_eq!(stored["data"]["committedMinor"], 5_000);
+    assert_eq!(stored["data"]["consumedPercent"], 50);
+    assert_eq!(stored["data"]["thresholdPercent"], 50);
+    assert!(stored["data"]["windowStart"].is_string());
+
+    // The next settle crosses 80: only the new line fires, the latched 50 does
+    // not — and 80 carries the raised committed figure, not 50's snapshot.
+    wallet
+        .hold_for_key(&acting, None, "hold-2", "", 4_000, today)
+        .await
+        .unwrap();
+    wallet.settle("hold-2", "", 4_000, today).await.unwrap();
+    let mut row = usage_row(&format!("req-{}", Uuid::new_v4()), &tenant);
+    row.key_id = Some(key_id);
+    db.record_usage_balanced(&row, None).await.unwrap();
+
+    let deliveries = db
+        .webhook_deliveries(org, endpoint.endpoint.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let crossings: Vec<_> = deliveries
+        .iter()
+        .filter(|d| d.event_type == oxsum_core::BUDGET_THRESHOLD_CROSSED)
+        .collect();
+    assert_eq!(crossings.len(), 2, "50 then 80, each once: {deliveries:?}");
+    // Deliveries list newest first — the 80 crossing is the first row back.
+    let newest: serde_json::Value = sqlx::query_scalar(
+        "SELECT payload FROM oxsum.webhook_deliveries \
+         WHERE delivery_id = $1",
+    )
+    .bind(crossings[0].id)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(newest["data"]["thresholdPercent"], 80);
+    assert_eq!(newest["data"]["committedMinor"], 9_000);
+    assert_eq!(newest["data"]["consumedPercent"], 90);
+
+    // A third settle past both lines fires nothing new — the latch holds, which
+    // is also the concurrent-burn guarantee: the insert-or-nothing latch row is
+    // the at-most-once marker two racing settles cannot both write.
+    wallet
+        .hold_for_key(&acting, None, "hold-3", "", 1_000, today)
+        .await
+        .unwrap();
+    wallet.settle("hold-3", "", 1_000, today).await.unwrap();
+    let mut row = usage_row(&format!("req-{}", Uuid::new_v4()), &tenant);
+    row.key_id = Some(key_id);
+    db.record_usage_balanced(&row, None).await.unwrap();
+    let deliveries = db
+        .webhook_deliveries(org, endpoint.endpoint.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        deliveries
+            .iter()
+            .filter(|d| d.event_type == oxsum_core::BUDGET_THRESHOLD_CROSSED)
+            .count(),
+        2,
+        "the latch holds past every armed line"
+    );
+
+    // Re-PATCHing the constraint re-arms: the next settle crosses under the new
+    // limit and announces again.
+    db.update_key_constraints(
+        org,
+        key_id,
+        oxsum_core::KeyScope::Organization,
+        oxsum_core::KeyConstraints {
+            spend_limit_minor: Some(20_000),
+            budget_duration: Some(oxsum_core::BudgetDuration::Daily),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let mut row = usage_row(&format!("req-{}", Uuid::new_v4()), &tenant);
+    row.key_id = Some(key_id);
+    db.record_usage_balanced(&row, None).await.unwrap();
+    let deliveries = db
+        .webhook_deliveries(org, endpoint.endpoint.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        deliveries
+            .iter()
+            .filter(|d| d.event_type == oxsum_core::BUDGET_THRESHOLD_CROSSED)
+            .count(),
+        3,
+        "the re-armed 50 fires once more under the new limit"
+    );
 }
 
 /// The pure projection: `forecast_exhaustion` answers the date a periodically
