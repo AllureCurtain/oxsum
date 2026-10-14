@@ -105,6 +105,62 @@ pub(crate) struct ConsistencyRes {
     proof: ConsistencyProofRes,
 }
 
+/// The latest externally anchored checkpoint: the operator-signed head the
+/// `witness-checkpoints` pass last published plus every witness cosignature
+/// returned for it (issue #231). `data` is `null` while nothing is anchored —
+/// either because no pass ran yet or because `OXSUM_WITNESS_URLS` is empty.
+pub(crate) async fn log_checkpoint(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+) -> ApiResult<Option<WitnessCheckpointRes>> {
+    let checkpoint = state
+        .db
+        .witness_checkpoint(principal.organization().id)
+        .await?;
+    ok(checkpoint.map(WitnessCheckpointRes::from))
+}
+
+/// The anchored checkpoint as the API presents it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WitnessCheckpointRes {
+    head_size: i64,
+    /// The operator-signed C2SP note, byte for byte.
+    note: String,
+    /// One entry per witness that cosigned this head.
+    cosignatures: Vec<WitnessCosignRes>,
+    updated_at: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WitnessCosignRes {
+    /// The witness endpoint as configured in `OXSUM_WITNESS_URLS`.
+    witness_url: String,
+    /// The cosigned C2SP note text returned by the witness.
+    note: String,
+    first_seen: String,
+}
+
+impl From<oxsum_core::WitnessCheckpoint> for WitnessCheckpointRes {
+    fn from(c: oxsum_core::WitnessCheckpoint) -> Self {
+        Self {
+            head_size: c.head_size,
+            note: c.note,
+            cosignatures: c
+                .cosignatures
+                .into_iter()
+                .map(|co| WitnessCosignRes {
+                    witness_url: co.witness_url,
+                    note: co.note,
+                    first_seen: co.first_seen.to_string(),
+                })
+                .collect(),
+            updated_at: c.updated_at.to_string(),
+        }
+    }
+}
+
 /// A consistency proof in doubleentry's order: the hashes that recompute the new root
 /// from the old one.
 #[derive(Serialize)]

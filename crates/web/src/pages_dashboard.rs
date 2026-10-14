@@ -794,6 +794,13 @@ async fn log_page(cx: &Cx) -> Result<impl View> {
         .entries_page(query.before, 100)
         .await
         .map_err(|_| internal("the transaction log could not be read"))?;
+    // The checkpoint the witness-checkpoints pass last anchored externally —
+    // the "we cannot rewrite this log" evidence (issue #231).
+    let checkpoint = sctx
+        .db
+        .witness_checkpoint(sctx.principal.organization.id)
+        .await
+        .map_err(|_| internal("the anchored checkpoint could not be read"))?;
     let rows = page.rows;
     let next_cursor = page.next_cursor;
     Ok(view! {
@@ -802,6 +809,21 @@ async fn log_page(cx: &Cx) -> Result<impl View> {
             org_name: org_name,
             user_email: user_email,
             <h1>"Transaction log"</h1>
+            if let Some(checkpoint) = checkpoint {
+                <p class="muted">
+                    (format!(
+                        "Anchored checkpoint: head #{}, published {}, cosigned by {} witness{}.",
+                        checkpoint.head_size,
+                        checkpoint.updated_at,
+                        checkpoint.cosignatures.len(),
+                        if checkpoint.cosignatures.len() == 1 { "" } else { "es" },
+                    ))
+                    for cosig in &checkpoint.cosignatures {
+                        <br />
+                        <code>(cosig.witness_url.clone())</code>
+                    }
+                </p>
+            }
             <table>
                 <thead><tr><th>"#"</th><th>"Description"</th><th>"Content hash"</th></tr></thead>
                 <tbody>

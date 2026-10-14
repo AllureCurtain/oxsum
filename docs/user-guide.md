@@ -545,6 +545,12 @@ The bills page does this check automatically on every visit (see "Append-only ar
 
 The operator signs the head of your organization's log. Save the signed head from `GET /api/v1/log/head` (the `note` text and the `size`/`root` it carries) alongside your records. Later, `GET /api/v1/log/consistency?from=<that size>` returns the new signed head and the proof between them. Check the note's signature against the operator's key (published at `GET /api/v1/log/key` — get the key through a channel the operator does not control the first time, or the signature proves only that the server agrees with itself), then check the proof against the two heads. It passes only when the new log is the old log with entries appended: a second history at a size the operator already signed for cannot produce it.
 
+### Anchored heads (external witnesses)
+
+The check above catches a rewrite between *two points you recorded* — but a signed head still attests *a* history the operator claims, not the one independent parties saw. Deployments that configure `OXSUM_WITNESS_URLS` close that gap: every hour the `witness-checkpoints` job hands each organization's signed head to external C2SP `tlog-witness` endpoints, which only cosign it when it extends the head they already vouched for — a rewritten history is refused at their side, not ours.
+
+`GET /api/v1/log/checkpoint` answers the latest anchored head: `headSize`, the operator-signed `note`, and `cosignatures[]` — one `{witnessUrl, note, firstSeen}` per witness that cosigned exactly that head (`data` is `null` until the first pass anchors something). To verify by hand: check the operator's signature line in `note` against the key at `GET /api/v1/log/key`, and each cosigned note's additional signature line against the key the named witness publishes. A third party holding your archived head proves the same append-only property through `GET /api/v1/log/consistency?from=` — against a head a witness has already vouched for, the proof binds an outside record, not just the operator's. The dashboard's transaction log page (`/dashboard/log`) shows the anchored head and its witnesses when anchoring is configured.
+
 ## Verifying a statement's anchor
 
 Purpose: confirm a finalized statement commits the *whole* covered set — every entry the month charged, in order — and that the figures the document shows are the figures the ledger committed, not just that the rows it chose to display add up.

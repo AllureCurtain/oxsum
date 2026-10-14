@@ -2058,6 +2058,46 @@ paths:
                   data: { $ref: "#/components/schemas/VerifyingKey" }
         "500": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /api/v1/log/checkpoint:
+    get:
+      summary: "Latest externally anchored checkpoint with witness cosignatures"
+      description: |
+        The head the `witness-checkpoints` pass last published to the witnesses
+        configured in `OXSUM_WITNESS_URLS`, together with the cosigned C2SP notes
+        they returned (issue #231). `note` is the operator-signed tlog-checkpoint
+        covering `headSize`; each `cosignatures[]` entry is one witness's signed
+        note for that same head — verify the signature lines against the keys the
+        respective witnesses publish. `data` is `null` while nothing is anchored:
+        before the first pass or when no witnesses are configured. A third party
+        verifies a head by checking the operator's signature (key at
+        `GET /api/v1/log/key`), the witnesses' signature lines, and — for their
+        own held head — a consistency proof from `GET /api/v1/log/consistency`.
+      responses:
+        "200":
+          description: The anchored checkpoint, or null
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    nullable: true
+                    properties:
+                      headSize: { type: integer, format: int64, description: "tree size the stored note attests" }
+                      note: { type: string, description: "the operator-signed C2SP note covering the head, byte for byte" }
+                      cosignatures:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            witnessUrl: { type: string, description: "the witness endpoint as configured in OXSUM_WITNESS_URLS" }
+                            note: { type: string, description: "the cosigned C2SP note the witness returned — its signature line is the verifiable part" }
+                            firstSeen: { type: string, format: date-time }
+                      updatedAt: { type: string, format: date-time }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/metering/holds:
     post:
       summary: Freeze credit for a billable event a service will settle later

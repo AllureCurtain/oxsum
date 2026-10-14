@@ -68,6 +68,7 @@ fn ctx() -> JobContext {
         webhook: None,
         retention: Retention::default(),
         upstream_price_sync: false,
+        witness: None,
     }
 }
 
@@ -379,4 +380,104 @@ async fn a_price_sync_run_opens_drift_and_chains_a_day_out() {
     // The run finished and the daily occurrence is already scheduled.
     let (pending, running, done, dead) = counts(&world.db, kinds::SYNC_UPSTREAM_PRICES).await;
     assert_eq!((pending, running, done, dead), (1, 0, 1, 0));
+}
+
+/// `witness-checkpoints` publishes each organization's signed head to the
+/// configured witnesses and stores the checkpoint plus the cosigned notes the
+/// witnesses answer (issue #231). The stub echoes the note back with its own
+/// signature line, like a real `tlog-witness` `/add-checkpoint` endpoint.
+#[tokio::test]
+async fn witness_checkpoints_anchor_and_collect_cosignatures() {
+    let _guard = JOBS_LOCK.lock().await;
+    let Some(url) = url() else {
+        eprintln!("DATABASE_URL not set, skipping");
+        return;
+    };
+    let world = world(&url).await;
+
+    // The pass walks `oxsum.organizations`; the world's tenant gets a row.
+    let organization = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO oxsum.organizations (organization_id, name, tenant_id, kind) \
+         VALUES ($1, $2, $3, 'team')",
+    )
+    .bind(organization)
+    .bind("witness-test")
+    .bind(&world.tenant)
+    .execute(world.db.pool())
+    .await
+    .unwrap();
+
+    // A stub tlog-witness: accepts every checkpoint and answers with the note
+    // plus its own signature line.
+    let stub = axum::Router::new().route(
+        "/add-checkpoint",
+        axum::routing::post(|body: String| async move {
+            let note = body.split("\n\n").next().unwrap_or_default().to_owned();
+            format!("{note}\n\n— fake-witness c2ln")
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let witness_url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, stub).await;
+    });
+
+    let ctx = JobContext {
+        witness: Some(oxsum_server::jobs::WitnessConfig {
+            http: reqwest::Client::new(),
+            head_signing_seed: [9; 32],
+            urls: vec![witness_url.clone()],
+        }),
+        ..ctx()
+    };
+    enqueue(&world.db, kinds::WITNESS_CHECKPOINTS).await;
+    run_due(&world.db, &ctx).await;
+
+    let (head_size, note): (i64, String) = sqlx::query_as(
+        "SELECT head_size, note FROM oxsum.witness_checkpoints WHERE organization_id = $1",
+    )
+    .bind(organization)
+    .fetch_one(world.db.pool())
+    .await
+    .expect("the checkpoint was anchored");
+    assert!(head_size > 0, "the top-up already wrote ledger entries");
+    let parsed = doubleentry::witness::SignedTreeHead::parse(&note).unwrap();
+    assert_eq!(parsed.head.size as i64, head_size);
+
+    let cosig: String = sqlx::query_scalar(
+        "SELECT note FROM oxsum.witness_cosignatures \
+         WHERE organization_id = $1 AND witness_url = $2 AND head_size = $3",
+    )
+    .bind(organization)
+    .bind(&witness_url)
+    .bind(head_size)
+    .fetch_one(world.db.pool())
+    .await
+    .expect("the witness's cosignature was stored");
+    assert!(cosig.contains("fake-witness"), "{cosig}");
+
+    // A second pass over an unchanged head anchors and cosigns nothing new —
+    // the first pass's own next-occurrence row carries it; the test pulls its
+    // due date forward the way the webhook retry test does.
+    sqlx::query(
+        "UPDATE oxsum.jobs SET run_at = now() \
+         WHERE kind = $1 AND status = 'pending'",
+    )
+    .bind(kinds::WITNESS_CHECKPOINTS)
+    .execute(world.db.pool())
+    .await
+    .unwrap();
+    run_due(&world.db, &ctx).await;
+    let cosigs: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM oxsum.witness_cosignatures WHERE organization_id = $1",
+    )
+    .bind(organization)
+    .fetch_one(world.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(cosigs, 1, "no duplicate cosignature for an unchanged head");
+
+    let (pending, running, done, dead) = counts(&world.db, kinds::WITNESS_CHECKPOINTS).await;
+    assert_eq!((pending, running, done, dead), (1, 0, 2, 0));
 }

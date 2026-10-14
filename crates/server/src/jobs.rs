@@ -47,6 +47,11 @@ pub struct JobContext {
     /// periodic kind run. It still needs `webhook` for the fetcher and the
     /// credential unsealer, so both must hold (issue #222).
     pub upstream_price_sync: bool,
+    /// The witness anchoring pieces, `OXSUM_WITNESS_URLS` + the head-signing
+    /// seed: the pass publishes each organization's signed head to these
+    /// endpoints (issue #231). `None` — no witnesses or no signing key —
+    /// schedules no `witness-checkpoints` runs.
+    pub witness: Option<WitnessConfig>,
 }
 
 /// The background task: startup enqueues whatever periodic kinds have nothing
@@ -65,6 +70,9 @@ pub fn spawn_worker(db: Db, ctx: JobContext) -> tokio::task::JoinHandle<()> {
         }
         if ctx.webhook.is_some() && ctx.upstream_price_sync {
             periodic.push(kinds::SYNC_UPSTREAM_PRICES);
+        }
+        if ctx.witness.is_some() {
+            periodic.push(kinds::WITNESS_CHECKPOINTS);
         }
         for kind in periodic {
             match db.enqueue_job(kind, OffsetDateTime::now_utc()).await {
@@ -191,6 +199,21 @@ async fn run_one(
                 "the upstream price-sync pass probed the channels"
             );
         }
+        kinds::WITNESS_CHECKPOINTS => {
+            let Some(witness) = &ctx.witness else {
+                return Err(oxsum_core::WalletError::Misconfigured(
+                    "witness-checkpoints has no witnesses configured".into(),
+                ));
+            };
+            let report = witness_checkpoints(db, &tenants, witness).await?;
+            info!(
+                organizations = report.organizations,
+                anchored = report.anchored,
+                cosigned = report.cosigned,
+                unreachable = report.unreachable,
+                "the witness-checkpoints pass published the heads"
+            );
+        }
         kinds::RECONCILE => {
             let report = db.reconcile().await?;
             let drifted = report
@@ -232,6 +255,180 @@ async fn run_one(
             )));
         }
     }
+    Ok(())
+}
+
+/// The witness anchoring pass's dependencies (issue #231): the HTTP client,
+/// the key the operator signs heads under, and the `tlog-witness` endpoints
+/// `OXSUM_WITNESS_URLS` names.
+#[derive(Clone)]
+pub struct WitnessConfig {
+    pub http: reqwest::Client,
+    /// The `OXSUM_HEAD_SIGNING_KEY` seed — the signing key is derived per pass
+    /// (`SigningKey` is deliberately not `Clone`).
+    pub head_signing_seed: [u8; 32],
+    pub urls: Vec<String>,
+}
+
+/// What a `WITNESS_CHECKPOINTS` pass did, for the worker's log line.
+struct WitnessReport {
+    /// The organizations the pass walked.
+    organizations: usize,
+    /// The heads newly anchored this pass.
+    anchored: usize,
+    /// The cosignatures the witnesses returned.
+    cosigned: usize,
+    /// The witnesses that did not answer — logged, never fatal: one unreachable
+    /// witness must not hold every other signature hostage, and the next pass
+    /// retries the head anyway.
+    unreachable: usize,
+}
+
+/// One `WITNESS_CHECKPOINTS` pass (issue #231): for every organization, publish
+/// the signed head to each configured witness, then record the checkpoint and
+/// the cosigned notes inside one transaction. The witness's own state machine
+/// (trust, consistency proof, fork refusal) runs on its side; the pass only
+/// publishes and persists.
+///
+/// A witness that does not answer counts `unreachable` and the pass records
+/// the others — partial anchoring is real anchoring. A head that *shrunk*
+/// below the stored checkpoint or a note that will not parse fails the run:
+/// both say our own log contradicts what we already vouched for, which is
+/// never routine.
+async fn witness_checkpoints(
+    db: &Db,
+    tenants: &Tenants,
+    cfg: &WitnessConfig,
+) -> Result<WitnessReport, oxsum_core::WalletError> {
+    let mut report = WitnessReport {
+        organizations: 0,
+        anchored: 0,
+        cosigned: 0,
+        unreachable: 0,
+    };
+    let organizations: Vec<(uuid::Uuid, String)> = sqlx::query_as(
+        "SELECT organization_id, tenant_id FROM oxsum.organizations ORDER BY created_at",
+    )
+    .fetch_all(db.pool())
+    .await?;
+    for (organization, tenant) in organizations {
+        report.organizations += 1;
+        let wallet = tenants.get(&tenant).await?;
+        let signing = oxsum_core::signing_key(cfg.head_signing_seed).map_err(|error| {
+            oxsum_core::WalletError::Misconfigured(format!("head signing key: {error}"))
+        })?;
+        let signed = wallet.signed_head(&signing).await?;
+        let Some(stored) = db.witness_checkpoint_state(organization).await? else {
+            // First anchor: the witness takes the first non-empty head on
+            // trust — from an empty starting head there is nothing to prove,
+            // and the proof's empty path is exactly what the wire encodes.
+            let empty = oxsum_core::ConsistencyProof {
+                old_size: 0,
+                new_size: signed.head.size,
+                path: Vec::new(),
+            };
+            witness_offer(db, cfg, organization, &signed, empty, &mut report).await?;
+            report.anchored += 1;
+            continue;
+        };
+        let (old_size, old_note) = stored;
+        let old = oxsum_core::SignedTreeHead::parse(&old_note).map_err(|error| {
+            oxsum_core::WalletError::InvalidInput(format!(
+                "the stored checkpoint does not parse: {error}"
+            ))
+        })?;
+        if signed.head.size == old.head.size {
+            if signed.head.root != old.head.root {
+                return Err(oxsum_core::WalletError::Conflict(
+                    "the current head contradicts the one the witnesses already cosigned — same size, different root"
+                        .into(),
+                ));
+            }
+            continue; // the anchored head is already current
+        }
+        if signed.head.size < old.head.size {
+            return Err(oxsum_core::WalletError::Conflict(format!(
+                "the log shrunk below the anchored head ({} < {old_size})",
+                signed.head.size
+            )));
+        }
+        let consistency = wallet.consistency(old.head.size, &signing).await?;
+        witness_offer(
+            db,
+            cfg,
+            organization,
+            &signed,
+            consistency.proof,
+            &mut report,
+        )
+        .await?;
+        report.anchored += 1;
+    }
+    Ok(report)
+}
+
+/// Offers one organization's new head to every witness and records the
+/// checkpoint with whatever cosignatures answered, in one transaction: the
+/// progress marker and the vouchers land or vanish together.
+async fn witness_offer(
+    db: &Db,
+    cfg: &WitnessConfig,
+    organization: uuid::Uuid,
+    signed: &oxsum_core::SignedHead,
+    proof: oxsum_core::ConsistencyProof,
+    report: &mut WitnessReport,
+) -> Result<(), oxsum_core::WalletError> {
+    let origin = oxsum_core::origin_for(
+        // The origin the note carries is the tenant's id — read it back off the
+        // signed head rather than threading the tenant name through the pass.
+        signed.note.split('\n').next().unwrap_or_default().trim(),
+    );
+    let _ = origin; // the AddCheckpoint body already embeds the origin line
+    let head_note = oxsum_core::SignedTreeHead::parse(&signed.note).map_err(|error| {
+        oxsum_core::WalletError::InvalidInput(format!("the signed head does not re-parse: {error}"))
+    })?;
+    let request = oxsum_core::AddCheckpoint::new(head_note, proof);
+    let body = request.to_body();
+    let mut tx = db.pool().begin().await?;
+    Db::record_witness_checkpoint(&mut tx, organization, signed.head.size as i64, &signed.note)
+        .await?;
+    for url in &cfg.urls {
+        let add = format!("{url}/add-checkpoint");
+        match cfg
+            .http
+            .post(&add)
+            .header("content-type", "text/plain")
+            .timeout(std::time::Duration::from_secs(10))
+            .body(body.clone())
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => {
+                let cosigned = response.text().await.unwrap_or_default();
+                Db::record_witness_cosignature(
+                    &mut tx,
+                    organization,
+                    url,
+                    signed.head.size as i64,
+                    cosigned.trim(),
+                )
+                .await?;
+                report.cosigned += 1;
+            }
+            Ok(response) => {
+                report.unreachable += 1;
+                warn!(
+                    %organization, %add, status = %response.status(),
+                    "a witness refused the checkpoint"
+                );
+            }
+            Err(error) => {
+                report.unreachable += 1;
+                warn!(%organization, %add, %error, "a witness could not be reached");
+            }
+        }
+    }
+    tx.commit().await?;
     Ok(())
 }
 

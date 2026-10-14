@@ -411,6 +411,185 @@ pub fn statement_rollup_hash(canonical_rollup: &str) -> Hash {
     Hash::digest(STATEMENT_ROLLUP_DOMAIN, canonical_rollup.as_bytes())
 }
 
+// ── external witness anchoring (issue #231) ───────────────────────────────────
+//
+// The notes above are signed by the operator — they attest *a* history the
+// operator claims. External anchoring is what makes the claim testable by a
+// third party: a scheduled pass hands each organization's signed head to the
+// witnesses `OXSUM_WITNESS_URLS` names (C2SP `tlog-witness` `/add-checkpoint`),
+// and the cosigned notes they answer land here. The `Witness` state machine —
+// trust, consistency proofs, fork refusal — lives on the witnesses' side; this
+// crate only publishes.
+//
+// `witness_checkpoints` keeps one row per organization: the head the last pass
+// published. `witness_cosignatures` is append-only — every cosigned note ever
+// returned — so a later head's trail never rewrites an earlier one's, and
+// `GET /api/v1/log/checkpoint` serves the anchored head with its vouchers.
+
+/// The checkpoint the last `witness-checkpoints` pass anchored for an
+/// organization: our signed head plus every witness's cosigned note for it.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WitnessCheckpoint {
+    /// The tree size the stored note attests.
+    pub head_size: i64,
+    /// The operator-signed C2SP note covering the head, byte for byte.
+    pub note: String,
+    /// The cosigned notes the witnesses returned for this head, oldest first.
+    pub cosignatures: Vec<WitnessCosign>,
+    /// When the pass last anchored the checkpoint.
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: time::OffsetDateTime,
+}
+
+/// One witness's cosigned note for a checkpoint — its signature line is the
+/// part a third party verifies.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WitnessCosign {
+    /// The witness endpoint that answered, as `OXSUM_WITNESS_URLS` names it.
+    pub witness_url: String,
+    /// The cosigned C2SP note text.
+    pub note: String,
+    /// When this witness first vouched for the head.
+    #[serde(with = "time::serde::rfc3339")]
+    pub first_seen: time::OffsetDateTime,
+}
+
+impl crate::Db {
+    /// The pass's own read of the checkpoint row — `(head size, note)` —
+    /// without the cosignature join the public surface pays for.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn witness_checkpoint_state(
+        &self,
+        organization: uuid::Uuid,
+    ) -> Result<Option<(i64, String)>, WalletError> {
+        use sqlx::Row;
+        sqlx::query(
+            "SELECT head_size, note FROM oxsum.witness_checkpoints \
+             WHERE organization_id = $1",
+        )
+        .bind(organization)
+        .fetch_optional(self.pool())
+        .await?
+        .map(|row| {
+            Ok((
+                row.try_get::<i64, _>("head_size")?,
+                row.try_get::<String, _>("note")?,
+            ))
+        })
+        .transpose()
+    }
+
+    /// The anchored checkpoint of one organization — the stored note plus the
+    /// cosignatures for *its* head — or `None` before the pass's first anchor.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn witness_checkpoint(
+        &self,
+        organization: uuid::Uuid,
+    ) -> Result<Option<WitnessCheckpoint>, WalletError> {
+        use sqlx::Row;
+        let Some(row) = sqlx::query(
+            "SELECT head_size, note, updated_at FROM oxsum.witness_checkpoints \
+             WHERE organization_id = $1",
+        )
+        .bind(organization)
+        .fetch_optional(self.pool())
+        .await?
+        else {
+            return Ok(None);
+        };
+        let head_size: i64 = row.try_get("head_size")?;
+        let cosignatures = sqlx::query(
+            "SELECT witness_url, note, first_seen FROM oxsum.witness_cosignatures \
+             WHERE organization_id = $1 AND head_size = $2 \
+             ORDER BY first_seen, witness_url",
+        )
+        .bind(organization)
+        .bind(head_size)
+        .fetch_all(self.pool())
+        .await?
+        .iter()
+        .map(|row| {
+            Ok(WitnessCosign {
+                witness_url: row.try_get("witness_url")?,
+                note: row.try_get("note")?,
+                first_seen: row.try_get("first_seen")?,
+            })
+        })
+        .collect::<Result<Vec<_>, WalletError>>()?;
+        Ok(Some(WitnessCheckpoint {
+            head_size,
+            note: row.try_get("note")?,
+            cosignatures,
+            updated_at: row.try_get("updated_at")?,
+        }))
+    }
+
+    /// Records the anchored checkpoint and one witness's cosigned note,
+    /// transactionally with the caller — both land or neither does. The
+    /// checkpoint upsert is the pass's progress marker; the cosignature's
+    /// (organization, witness, head size) key makes a re-delivered note
+    /// idempotent, and the trail is append-only across heads.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn record_witness_checkpoint(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        organization: uuid::Uuid,
+        head_size: i64,
+        note: &str,
+    ) -> Result<(), WalletError> {
+        sqlx::query(
+            "INSERT INTO oxsum.witness_checkpoints (organization_id, head_size, note) \
+             VALUES ($1, $2, $3) \
+             ON CONFLICT (organization_id) DO UPDATE \
+                 SET head_size = EXCLUDED.head_size, note = EXCLUDED.note, \
+                     updated_at = now()",
+        )
+        .bind(organization)
+        .bind(head_size)
+        .bind(note)
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
+    /// Appends a witness's cosigned note for a checkpoint head — `ON CONFLICT DO
+    /// NOTHING`, so a re-delivered note records once.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn record_witness_cosignature(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        organization: uuid::Uuid,
+        witness_url: &str,
+        head_size: i64,
+        note: &str,
+    ) -> Result<(), WalletError> {
+        sqlx::query(
+            "INSERT INTO oxsum.witness_cosignatures \
+             (organization_id, witness_url, head_size, note) \
+             VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+        )
+        .bind(organization)
+        .bind(witness_url)
+        .bind(head_size)
+        .bind(note)
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // The tests may expect: a panic here is a failing test, which is what a test is for.
