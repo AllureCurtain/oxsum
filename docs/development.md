@@ -468,6 +468,30 @@ bounded retry loop and asserts that:
 When an assertion fails the step prints `docker logs` and exits non-zero, so a red run
 is diagnosable from its own log rather than by re-running it.
 
+## React dashboard (`web/`, issue #234)
+
+A standalone Vite + React 19 + TypeScript scaffold lives in `web/` and will
+replace the Topcoat dashboard once it reaches parity (`web/README.md` carries
+the checklist). It talks to `/api/v1` only — no backend changes were needed.
+
+```bash
+npm --prefix web ci          # install the toolchain (Node 22+)
+npm --prefix web run codegen # regenerate src/api/schema.d.ts from crates/server/openapi.yaml
+npm --prefix web run dev     # vite dev server, proxies /api to localhost:3000
+npm --prefix web run build   # emit web/dist
+```
+
+The server embeds `web/dist` via `rust-embed` and serves it at `/app`
+(`crates/server/src/spa.rs`): extension-less routes fall back to
+`index.html`, hashed `assets/` get immutable caching, and a missing asset is
+a real 404. Debug builds read `dist` from disk (`debug-embed`), so a
+`npm run build` is visible without a cargo rebuild; release builds embed the
+directory at compile time — the Dockerfile's `frontend` stage produces it,
+so the release image is still one binary. `web/dist` is git-ignored except a
+committed placeholder `index.html` that keeps the embed folder present on a
+fresh checkout. Styling follows DESIGN.md: its tokens are mapped onto
+Tailwind v4 theme colors in `web/src/index.css`.
+
 ## Test strategy
 
 - Unit tests: inside each module's `#[cfg(test)]`, covering pure logic such as tenant id validation and configuration parsing.
