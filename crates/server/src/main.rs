@@ -157,7 +157,11 @@ async fn seed(db: &Db) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// The shared pool's size, from `OXSUM_DB_MAX_CONNECTIONS` (default 10).
+/// The shared pool's size, from `OXSUM_DB_MAX_CONNECTIONS` (default 20 — issue
+/// #235: a gateway turn's admission and settle each draw several connections in
+/// short bursts, so a pool of 10 saturated into 500s under a 10-way load test;
+/// each connection is a Postgres backend process, and 20 leaves the default
+/// `max_connections = 100` headroom for sessions, psql and migrations).
 fn pool_size() -> Result<u32, String> {
     match std::env::var("OXSUM_DB_MAX_CONNECTIONS") {
         Ok(v) => v
@@ -168,7 +172,7 @@ fn pool_size() -> Result<u32, String> {
             .ok_or_else(|| {
                 format!("OXSUM_DB_MAX_CONNECTIONS must be a positive integer, got {v:?}")
             }),
-        Err(_) => Ok(10),
+        Err(_) => Ok(20),
     }
 }
 

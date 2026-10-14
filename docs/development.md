@@ -118,7 +118,7 @@ Copy `.env.example` to `.env` and the server and the tests pick it up automatica
 | `DATABASE_URL` | Each organization gets a `ledger_<tenant_id>` schema in this database, plus the shared `oxsum` schema for users, organizations and keys. Tests read it too; without it, oxsum's database tests skip automatically |
 | `OXSUM_SIGNUP` | Optional; `invite` (default) or `open`. `invite` refuses `POST /api/v1/auth/register` with 403 — an invitation link (`POST /api/v1/org/invitations` → `/register?invite=…`) is the way in — so a public instance cannot be signed up by whoever arrives first; `open` is what a demo or a private instance wants |
 | `OXSUM_SIGNUP_BONUS_MINOR` | Optional; credits a new organization's wallet starts with, in minor units, default 0. Booked at self-registration as an adjustment carrying "signup bonus" as its reason; an invited account joins an existing organization and is granted nothing |
-| `OXSUM_DB_MAX_CONNECTIONS` | Optional; size of the one pool every tenant shares (default 10). Each connection is a PostgreSQL backend process, so this is the process's whole budget rather than a per-tenant allowance. Stay below the database's own `max_connections` (PostgreSQL's default is 100) |
+| `OXSUM_DB_MAX_CONNECTIONS` | Optional; size of the one pool every tenant shares (default 20). Each connection is a PostgreSQL backend process, so this is the process's whole budget rather than a per-tenant allowance. Stay below the database's own `max_connections` (PostgreSQL's default is 100); size it at roughly twice the expected number of concurrent gateway requests, floor 10 — saturation answers 429 `POOL_BUSY` with `Retry-After`, never a 500 |
 | `OXSUM_ADDR` | Optional listen address; defaults to `127.0.0.1:3000` |
 | `OXSUM_UPSTREAM_BASE_URL`, `OXSUM_UPSTREAM_API_KEY`, `OXSUM_MODELS` | The bootstrap channel for a database that has none, set together or not at all. With none of them a fresh deployment serves the wallet only. `OXSUM_MODELS` is JSON: each model maps to `inputPricePerMillion`, `outputPricePerMillion` and `maxOutputTokens`, in minor units per million tokens. `maxOutputTokens` is the ceiling for a request that asks for none and the freeze is computed from it, so it must be the model's real limit rather than a safe guess. A malformed value, or a base URL that is not an http(s) URL, refuses to boot rather than serving a price it had to guess |
 | `OXSUM_SECRET_KEY` | 32 bytes, base64, sealing the upstream credentials stored in `oxsum.channels` and the webhook signing secrets in `oxsum.webhook_endpoints` (AES-256-GCM). Required as soon as a channel exists — including one seeded from the environment, which is why setting `OXSUM_MODELS` means setting this too — and for the webhook sender to run at all: without it `POST /api/v1/webhooks` is refused and no worker is spawned. The server refuses to start when it cannot open a stored credential, rather than failing a request that has already been relayed. Generate one with `openssl rand -base64 32`. Losing it means re-entering every upstream credential and rotating every webhook secret |
@@ -520,6 +520,12 @@ is diagnosable from its own log rather than by re-running it.
   OXSUM_E2E_UPSTREAM_API_KEY=sk-... \
   OXSUM_E2E_MODEL=step-5-preview \
     cargo test -p oxsum-server --test real_upstream -- --ignored --nocapture
+  ```
+
+- Pool-saturation load check (issue #235): `a_saturated_pool_refuses_backpressure_never_a_500` in `crates/server/tests/gateway.rs` fires fifty concurrent turns through a three-connection pool against a 250 ms scripted upstream — saturation must answer 429 `POOL_BUSY` with `Retry-After`, never a 500. `#[ignore]`d like the real-provider suite; run it when the pool or the gateway's database access moves:
+
+  ```bash
+  cargo test -p oxsum-server --test gateway -- --ignored --nocapture
   ```
 
 ## Regression checklist

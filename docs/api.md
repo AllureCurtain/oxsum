@@ -182,6 +182,7 @@ Every failure on the envelope's surface is this shape, including a request body 
 | `KEY_LIMIT_EXCEEDED` | 429 | the acting API key's spend limit is exhausted: settled charges plus outstanding holds attributed to the key would exceed it |
 | `RATE_LIMITED` | 429 | the acting API key's rolling-minute request allowance is used up; `Retry-After` and `X-RateLimit-*` headers say when a slot frees |
 | `TOO_MANY_HOLDS` | 429 | the acting API key's outstanding-holds cap is reached: settle or let a hold lapse before opening another |
+| `POOL_BUSY` | 429 | the shared database pool could not hand out a connection in time — momentary backpressure, not a caller quota; `Retry-After` without the `X-RateLimit-*` headers a caller-owned limit carries (issue #235) |
 | `NOT_FOUND` | 404 | resource does not exist, or belongs to another organization; a settlement naming a hold that is not outstanding |
 | `CONFLICT` | 409 | the value is already taken, or a key was reused for a different request; registering an email that exists; settling a hold that is already discharged |
 | `INTERNAL_ERROR` | 500 | server error; details only in logs |
