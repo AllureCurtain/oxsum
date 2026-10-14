@@ -1415,3 +1415,12 @@ Q4 closes the phase: beside the `/metrics` scrape's aggregates, a deployment tha
 - **HTTP, not gRPC.** `http-proto` + `reqwest-client` + webpki-roots/ring keeps the exporter on the workspace's one TLS stack and off tonic/prost codegen.
 
 No contract change — the surface is a collector's, not oxsum's; `openapi.yaml` stays at 0.56.0.
+
+## 2026-10-15 — Billing records name their settlement entry (issue #236)
+
+A billing record named only its `requestId`, so reaching the charge's proof meant deriving the ledger key (`req-<requestId>:settle` → `settlement_key_for` → `entry_id_for`) — the request-ID→proof path existed in principle and in no usable form, since the derivation is oxsum's own convention and not one a caller should have to know.
+
+- **`RequestEntry` and `SettledTurn` carry `entry_id` straight off the stored entry** — the id the ledger already assigned, read where `settlements_page` walks the log, so it can never disagree with the entry the proof endpoint would serve.
+- **The path is `billing-records` → `entryId` → `GET /api/v1/entries/{entryId}/proof`.** No new endpoint: the proof surface already exists and the record now names exactly what it takes. `requestId` stays — it is still the id the caller chose and the `x-oxsum-request-id` header stamped.
+
+Contract `openapi.yaml` 0.58.0 (`BillingRecord.entryId`, required).
