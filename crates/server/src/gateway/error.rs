@@ -127,6 +127,39 @@ impl GatewayError {
         }
     }
 
+    /// The caller-facing words an admission refusal carries — what the billing
+    /// record keeps as `failureReason` (issue #233). `None` for the errors a
+    /// refusal record must not carry: an upstream failure is a settled turn
+    /// with its own reason path, an idempotency answer or a conflict is not a
+    /// billing event, and an internal fault has no caller-facing cause.
+    pub fn refusal_reason(&self) -> Option<&str> {
+        match self {
+            Self::Invalid { message, .. }
+            | Self::InsufficientFunds(message)
+            | Self::KeyLimitExceeded(message)
+            | Self::RateLimited { message, .. }
+            | Self::Forbidden(message) => Some(message),
+            Self::Upstream { .. }
+            | Self::Idempotency { .. }
+            | Self::Unauthorized
+            | Self::Conflict(_)
+            // A saturated pool refuses before any hold — nothing to record but
+            // the 429 itself; the variant carries no message by design.
+            | Self::PoolBusy
+            | Self::Internal => None,
+        }
+    }
+
+    /// The caller-facing message this error carries — the settlement's own
+    /// `failureReason` for a turn that errored after its hold (issue #233):
+    /// an upstream error's bill proves the refusal upstream gave.
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            Self::Upstream { message, .. } => Some(message),
+            _ => self.refusal_reason(),
+        }
+    }
+
     /// The idempotency key was claimed under a different request body.
     pub fn idempotency_mismatch() -> Self {
         Self::Idempotency {

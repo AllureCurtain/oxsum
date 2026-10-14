@@ -325,6 +325,15 @@ pub struct UsageRow {
     /// The settlement entry's id: derived from the hold's key, so it is known
     /// before the write answers.
     pub entry_id: Uuid,
+    /// How the turn ended — [`SettlementKind::status`]'s spelling (issue #233):
+    /// `settled` for every settled outcome including the anomalous kinds,
+    /// `errored` for the turns that served nothing after their hold, `refused`
+    /// for the requests admission turned away before a hold.
+    pub status: String,
+    /// Why the turn refused or errored, when it did — the words the answer
+    /// already carried, so the billing page can show a terminal cause instead
+    /// of leaving it in server logs (issue #233).
+    pub failure_reason: Option<String>,
     /// The normalized usage.
     pub usage: UsageRecord,
     /// What the settlement charged and what it had frozen, in minor units.
@@ -384,9 +393,11 @@ impl Db {
               cache_write_1h_tokens, reasoning_tokens, tool_calls, image_input_tokens, \
               audio_input_tokens, video_input_tokens, image_output_tokens, \
               audio_output_tokens, service_tier, event_type, end_user, tags, usage_details, \
-              charged_minor, freeze_minor, upstream_cost_minor, upstream_attempts) \
+              charged_minor, freeze_minor, upstream_cost_minor, upstream_attempts, \
+              status, failure_reason) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, \
-                     $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29) \
+                     $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, \
+                     $30, $31) \
              ON CONFLICT (request_id) DO NOTHING",
         )
         .bind(&row.request_id)
@@ -418,6 +429,8 @@ impl Db {
         .bind(row.freeze_minor)
         .bind(row.upstream_cost_minor)
         .bind(row.upstream_attempts)
+        .bind(&row.status)
+        .bind(&row.failure_reason)
         .execute(&mut *tx)
         .await?
         .rows_affected();

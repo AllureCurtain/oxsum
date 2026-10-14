@@ -46,6 +46,7 @@ const SETTLEMENT_KINDS: &[&str] = &[
     "swept",
     "unpriced",
     "released",
+    "refused",
 ];
 
 /// What recomputing a settlement description's charge concluded.

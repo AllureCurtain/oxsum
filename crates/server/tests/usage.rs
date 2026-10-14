@@ -329,6 +329,7 @@ async fn seed_request(
         charged: cost_minor,
         freeze: freeze_minor,
         upstream_attempts: 1,
+        reason: None,
     };
     wallet
         .settle(
@@ -352,6 +353,8 @@ async fn seed_request(
         price_version: 1,
         kind: SettlementKind::Usage,
         entry_id: *entry_id_for(&settlement_key_for(&hold_key)).as_uuid(),
+        status: "settled".to_owned(),
+        failure_reason: None,
         usage,
         charged_minor: cost_minor,
         freeze_minor,

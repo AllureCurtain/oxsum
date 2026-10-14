@@ -169,8 +169,11 @@ When relaying a streaming request, the gateway always writes `stream_options.inc
 | Usage-priced cost exceeds the freeze | Charge the freeze only; record the excess as an anomaly for admin review | `capped` |
 | Hold timed out with no settlement (e.g. the gateway crashed) | 0, full release, recorded as an anomaly | `swept` |
 | Usage names a dimension the price book cannot bill (a tool call, a media token, a foreign event kind) | Charge the part the book covers, capped by the freeze; the unpriced rest is the platform's flagged loss — never a silent zero, never folded into a rate it does not belong to | `unpriced` |
+| Admission refuses the request before any hold — a rate limit, an exhausted key budget, insufficient funds, a model not served | Nothing — no hold exists to settle; a self-balancing marker entry records the refusal and its reason | `refused` |
 
 (The settlement kinds and the anomalies page that reviews them — `capped`, `estimated`, `client_cancelled`, `swept` and `unpriced`, read out of the ledgers — both ship.)
+
+- Terminal status on billing records (issue #233): every record carries `status` — `settled` for every settled outcome including the anomalous kinds, `errored` for the turns that served nothing after their hold (`upstream_error`, `upstream_unreachable`, `swept`), `refused` for the requests admission turned away — plus a `failureReason` when the turn has one, in the caller-facing words the answer already gave. A refused request writes a self-balancing marker entry (debit and credit of the same minor unit on the adjustments account, like the statement anchor) whose description is a settlement record of kind `refused` — so a 400 or 429 is a row on the billing page that proves like every other record, instead of existing only in server logs.
 
 - Local estimation: count input and forwarded output with tiktoken's `o200k_base`; the result never exceeds the freeze. The bill is explicitly marked "estimated".
 - The user never pays more than the freeze — that is the gateway's promise. Underestimates, missing usage and upstream overcharges are the platform's cost.

@@ -438,6 +438,7 @@ async fn seed_request(
         charged,
         freeze,
         upstream_attempts: 1,
+        reason: None,
     };
     wallet
         .settle(

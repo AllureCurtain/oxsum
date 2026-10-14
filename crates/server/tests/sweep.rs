@@ -240,6 +240,7 @@ fn usage_settlement(request_id: &str, charged: i64, freeze: i64) -> String {
         charged,
         freeze,
         upstream_attempts: 1,
+        reason: None,
     }
     .description()
     .expect("the test's own record builds")
@@ -345,6 +346,8 @@ async fn a_usage_row_replay_is_ignored() {
         price_version: 1,
         kind: SettlementKind::Usage,
         entry_id: uuid::Uuid::new_v4(),
+        status: "settled".to_owned(),
+        failure_reason: None,
         usage: oxsum_core::UsageRecord::tokens(10, 2).unwrap(),
         charged_minor: 12,
         freeze_minor: 100,

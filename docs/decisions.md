@@ -1435,3 +1435,13 @@ A 10-way real-upstream burst returned six HTTP 500s — `pool timed out while wa
 - **The load check is `#[ignore]`d, run on demand** (`crates/server/tests/gateway.rs::a_saturated_pool_refuses_backpressure_never_a_500`): fifty concurrent turns on a three-connection pool against a 250 ms upstream; zero 500s, every refusal carries `Retry-After`. It stays out of the gate for the same reason `real_upstream` does — CI validates it the day the pool code moves, not on every PR.
 
 Contract `openapi.yaml` 0.57.0 (`POOL_BUSY` in both error-code enums).
+
+## 2026-10-15 — Refused requests are billing records, marked not hidden (issue #233)
+
+A 400 or 429 used to leave only a server log line: no hold, no settlement, nothing a caller could quote. Now admission refusals write a **marker entry** — a self-balancing 1-minor round-trip on the adjustments account (the statement anchor's shape), whose description is a settlement record of kind `refused` — beside a `usage_records` row carrying `status`/`failure_reason` (migration 0037).
+
+- **In the ledger, not a side table.** The requests page, billing-records and the proofs all read the log already; a refused turn in the same log shows up on all three with no second read path. The marker moves no money — debit and credit of the same unit on adjustments — because a refusal is a billing *fact* to prove, not a charge.
+- **`reason` rides the description.** The settlement description gains an optional `reason` — the caller-facing words the answer already carried — under the hash, so a bill proves the refusal it was given rather than one written afterwards. Errored turns (`upstream_error`, `upstream_unreachable`) carry the upstream refusal's message the same way; `swept` records its own.
+- **`status` is derived, not stored twice.** `settled` / `errored` / `refused` map off `kind` — no second taxonomy to drift from the kinds the record already writes.
+- **`request.settled` fires for refusals.** The event names `kind: refused` with `chargedMinor: 0`; subscribers that filter on kind keep behaving, and the refusal is finally visible to a webhook-only integration. It is deliberately *not* `anomaly.detected` — a rate limit doing its job is not an anomaly.
+- **Only admission refusals mark.** `GatewayError::refusal_reason` admits exactly the refusal variants — a 5xx/storage fault has no caller-facing cause to record, and an upstream error is a settled turn on the usual path, never a marker (a post-hold `Err` would double-record the request).

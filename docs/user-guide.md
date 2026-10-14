@@ -345,6 +345,15 @@ How each turn is recorded, in the settlement entry's own words:
 | `capped` | Upstream's usage priced above the freeze | The freeze, and the excess is recorded as an anomaly |
 | `swept` | The hold timed out with no settlement (e.g. the gateway crashed) | Nothing; the whole freeze is released, recorded as an anomaly |
 | `unpriced` | Upstream's usage named a dimension the price book cannot bill — a tool call, a media token, a foreign event kind | The part the book covers, flagged as an anomaly; the rest is never billed at zero |
+| `refused` | Admission refused the request before any hold — a rate limit, an exhausted budget or key limit, insufficient funds, a model the deployment does not serve | Nothing — no hold existed to settle; a marker entry records the refusal with its reason so the call still shows on the billing page |
+
+Beside the `kind` each billing record carries a terminal `status` — `settled` for every
+settled outcome including the anomalous kinds, `errored` for the turns that served nothing
+after their hold (`upstream_error`, `upstream_unreachable`, `swept`), `refused` for the
+requests turned away before a hold — and, for the turns that carry one, a `failureReason`
+in the caller-facing words the answer already gave. A 400 or 429 is no longer invisible
+outside the server log: it is a row on the requests and billing pages, and its marker
+entry verifies the same way every other record does.
 
 Every settlement also records which channel served the turn and which price version priced it
 (`priceVersion` beside the prices and the token counts), plus `upstreamAttempts` — how many

@@ -481,6 +481,7 @@ async fn sweep_one(
         // row only knows the hold existed, so the honest count is the one
         // attempt that began it (issue #168).
         upstream_attempts: 1,
+        reason: None,
     }
     .description()?;
     match wallet.settle(&hold.hold_key, &description, 0, on).await {
@@ -527,6 +528,8 @@ async fn record_swept_usage(db: &Db, wallet: &Wallet, hold: &OpenHold) -> Result
             price_version: hold.price_version,
             kind: SettlementKind::Swept,
             entry_id: *entry_id_for(&settlement_key_for(&hold.hold_key)).as_uuid(),
+            status: "settled".to_owned(),
+            failure_reason: None,
             usage: UsageRecord {
                 end_user: hold.end_user.clone(),
                 service_tier: hold.service_tier.clone(),

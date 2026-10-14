@@ -1736,6 +1736,100 @@ async fn a_freeze_beyond_the_balance_is_refused_before_upstream_is_contacted() {
     assert_eq!(wallet.available().await.unwrap(), 500);
 }
 
+/// A refused request is a billing record too (issue #233): admission refused
+/// the freeze, and the marker the refusal wrote lands on billing-records with a
+/// terminal status and the reason — not just a server log line.
+#[tokio::test]
+async fn a_refused_request_is_a_billing_record_with_its_reason() {
+    let world = world!(500);
+
+    let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
+    let id = request_id(&response);
+    let (status, _) = json_of(response).await;
+    assert_eq!(status, StatusCode::PAYMENT_REQUIRED);
+
+    let (status, page) = call(
+        &world.app,
+        "GET",
+        "/api/v1/billing-records",
+        None,
+        Some(&world.key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    let rows = page["data"]["rows"].as_array().expect("rows is an array");
+    let record = rows
+        .iter()
+        .find(|row| row["requestId"] == id)
+        .expect("the refused turn is on the billing page");
+    assert_eq!(record["kind"], "refused", "{record}");
+    assert_eq!(record["status"], "refused", "{record}");
+    assert_eq!(record["chargedMinor"], 0, "{record}");
+    let reason = record["failureReason"].as_str().expect("a reason");
+    assert!(reason.contains("freezes"), "{reason}");
+
+    // The marker's usage row says the same, with the entry it joins for the proof.
+    let row = sqlx::query(
+        "SELECT kind, status, failure_reason, charged_minor \
+         FROM oxsum.usage_records WHERE request_id = $1",
+    )
+    .bind(&id)
+    .fetch_one(&world.pool)
+    .await
+    .expect("the refusal's usage row is written");
+    assert_eq!(row.get::<&str, _>("kind"), "refused");
+    assert_eq!(row.get::<&str, _>("status"), "refused");
+    assert_eq!(row.get::<i64, _>("charged_minor"), 0);
+    assert!(row.get::<Option<String>, _>("failure_reason").is_some());
+}
+
+/// An upstream error's billing record says why (issue #233): the turn took its
+/// hold, settled at zero under `upstream_error`, and carries the refusal
+/// upstream gave — `status: errored` with the failure's own words.
+#[tokio::test]
+async fn an_upstream_error_is_a_billing_record_with_its_reason() {
+    let world = world!(1_000_000);
+    world.answers(
+        "refuse",
+        Answer::Refuse {
+            status: 400,
+            body: json!({"error": {"message": "upstream says the prompt is malformed"}}),
+        },
+    );
+
+    let response = chat(&world.app, &world.key, simple(&world.model("refuse"))).await;
+    let id = request_id(&response);
+    let (status, _) = json_of(response).await;
+    // Upstream refusals normalize to 502 — the gateway never lets upstream's
+    // status blame the client — while the error body passes through.
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+
+    let (status, page) = call(
+        &world.app,
+        "GET",
+        "/api/v1/billing-records",
+        None,
+        Some(&world.key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    let rows = page["data"]["rows"].as_array().expect("rows is an array");
+    let record = rows
+        .iter()
+        .find(|row| row["requestId"] == id)
+        .expect("the errored turn is on the billing page");
+    assert_eq!(record["kind"], "upstream_error", "{record}");
+    assert_eq!(record["status"], "errored", "{record}");
+    assert_eq!(record["chargedMinor"], 0, "{record}");
+    assert!(
+        record["failureReason"]
+            .as_str()
+            .expect("a reason")
+            .contains("malformed"),
+        "{record}"
+    );
+}
+
 #[tokio::test]
 async fn the_output_ceiling_scales_the_freeze() {
     let world = world!(1_000_000);

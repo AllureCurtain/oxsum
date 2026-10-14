@@ -862,7 +862,12 @@ async fn requests_page(cx: &Cx) -> Result<impl View> {
                             <td>(row.booked_on.clone())</td>
                             <td>(row.model.clone())</td>
                             <td>(row.key_prefix.clone().unwrap_or_default())</td>
-                            <td>(row.status.clone())</td>
+                            <td>
+                                (row.status.clone())
+                                if let Some(reason) = &row.failure_reason {
+                                    <br /><small>(reason.clone())</small>
+                                }
+                            </td>
                             <td>(credits(row.cost_minor))</td>
                         </tr>
                     }

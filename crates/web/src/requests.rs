@@ -30,8 +30,11 @@ pub struct RequestView {
     /// shows and the filter matches. `None` for a turn held without key attribution.
     pub key_prefix: Option<String>,
     /// How the turn was priced, in the settlement record's own words (`usage`,
-    /// `estimated`, `capped`, `swept`, …).
+    /// `estimated`, `capped`, `swept`, `refused`, …).
     pub status: String,
+    /// Why the turn refused or errored, when the settlement recorded a reason —
+    /// under the status word on the page (issue #233).
+    pub failure_reason: Option<String>,
     /// Tokens billed as input, as the settlement recorded them.
     pub input_tokens: i64,
     /// Tokens billed as output, as the settlement recorded them.
@@ -54,6 +57,7 @@ impl RequestView {
             model: request.model.clone(),
             key_prefix: key.map(|key| key.prefix.clone()),
             status: status(request.kind),
+            failure_reason: request.failure_reason.clone(),
             input_tokens: request.input_tokens,
             output_tokens: request.output_tokens,
             cost_minor: request.charged_minor,
@@ -78,6 +82,7 @@ pub(crate) fn status(kind: oxsum_core::SettlementKind) -> String {
         SettlementKind::Swept => "swept",
         SettlementKind::Unpriced => "unpriced",
         SettlementKind::Released => "released",
+        SettlementKind::Refused => "refused",
     }
     .to_owned()
 }
@@ -221,6 +226,7 @@ mod tests {
             model: model.to_owned(),
             key_prefix: key_prefix.map(str::to_owned),
             status: "usage".to_owned(),
+            failure_reason: None,
             input_tokens: 116,
             output_tokens: 100,
             cost_minor: 316,

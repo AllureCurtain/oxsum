@@ -220,6 +220,7 @@ async fn settle_request(
         charged,
         freeze,
         upstream_attempts: 1,
+        reason: None,
     };
     wallet
         .settle(
@@ -241,6 +242,8 @@ async fn settle_request(
         price_version: 1,
         kind: SettlementKind::Usage,
         entry_id: *entry_id_for(&settlement_key_for(&hold_key)).as_uuid(),
+        status: "settled".to_owned(),
+        failure_reason: None,
         usage,
         charged_minor: charged,
         freeze_minor: freeze,

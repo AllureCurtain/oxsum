@@ -82,6 +82,8 @@ fn usage_row(request_id: &str, tenant_id: &str) -> UsageRow {
         price_version: 1,
         kind: SettlementKind::Usage,
         entry_id: Uuid::new_v4(),
+        status: "settled".to_owned(),
+        failure_reason: None,
         usage: UsageRecord::tokens(10, 2).unwrap(),
         charged_minor: 12,
         freeze_minor: 100,
