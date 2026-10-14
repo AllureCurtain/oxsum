@@ -245,7 +245,6 @@ async fn settle_request(
         status: "settled".to_owned(),
         failure_reason: None,
         usage: usage.clone(),
-        usage: usage.clone(),
         counts: oxsum_core::CountsProvenance::Provider {
             input: usage.input_tokens,
             output: usage.output_tokens,

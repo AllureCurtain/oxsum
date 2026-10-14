@@ -358,7 +358,6 @@ async fn tagged_turn(f: &Fixture, request: &str, tag: &str, value: &str, tokens:
         status: "settled".to_owned(),
         failure_reason: None,
         usage: usage.clone(),
-        usage: usage.clone(),
         counts: oxsum_core::CountsProvenance::Provider {
             input: usage.input_tokens,
             output: usage.output_tokens,
@@ -425,7 +424,6 @@ async fn a_tagged_settle_accrues_its_scoped_bucket() {
         entry_id: *receipt.entry_id.as_uuid(),
         status: "settled".to_owned(),
         failure_reason: None,
-        usage: usage.clone(),
         usage: usage.clone(),
         counts: oxsum_core::CountsProvenance::Provider {
             input: usage.input_tokens,
