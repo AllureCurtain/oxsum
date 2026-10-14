@@ -46,6 +46,9 @@ enum Answer {
     Stream { usage: bool, terminated: bool },
     /// A stream that emits one chunk and then stays open, for as long as the client is there.
     Stall,
+    /// A whole completion after `delay_ms` — keeps the turn in flight without
+    /// stalling it forever, the shape a concurrent load check needs (issue #235).
+    Slow { delay_ms: u64 },
     /// Usage, terminator, then a stream that never ends: how a real upstream looks to a
     /// client that hangs up on `[DONE]` — the relay is suspended after the terminator,
     /// not past the end of upstream's body (issue #178).
@@ -221,6 +224,17 @@ async fn upstream(
             // Never finishes: the client stays connected until it gives up, which is the point.
             std::future::pending::<()>().await;
         })),
+        Answer::Slow { delay_ms } => {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            completion(
+                &model,
+                Some(json!({
+                    "prompt_tokens": 10,
+                    "completion_tokens": 2,
+                    "total_tokens": 12,
+                })),
+            )
+        }
         Answer::Refuse { status, body } => (
             StatusCode::from_u16(status).expect("the test's own status"),
             axum::Json(body),
@@ -526,6 +540,7 @@ fn price_list(suffix: &str) -> String {
         "stream",
         "stream-open",
         "stall",
+        "slow",
         "refuse",
         "garbage",
         "over",
@@ -652,8 +667,14 @@ macro_rules! world {
 }
 
 async fn world_for(url: &str, top_up: i64, protocol: &str) -> World {
+    world_on_pool(url, top_up, protocol, 5).await
+}
+
+/// The same world on a deliberately small pool — how the saturation check gets
+/// a busy pool without load-generating infrastructure (issue #235).
+async fn world_on_pool(url: &str, top_up: i64, protocol: &str, connections: u32) -> World {
     let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(5)
+        .max_connections(connections)
         .connect(url)
         .await
         .expect("connects to PostgreSQL");
@@ -2111,6 +2132,70 @@ async fn concurrent_turns_cannot_overdraw_the_wallet() {
     // The refused turn left nothing behind.
     let wallet = world.wallet().await;
     assert_eq!(wallet.reserved().await.unwrap(), 0);
+}
+
+/// The load check (issue #235): fifty turns on a three-connection pool, a slow
+/// upstream keeping them in flight. Saturation must never answer 500 — a turn
+/// that cannot get a connection is refused 429 `POOL_BUSY` with `Retry-After`,
+/// so a burst looks like backpressure rather than an outage. `#[ignore]`d by
+/// default like `real_upstream`: run it against a local stack with
+/// `cargo test -p oxsum-server --test gateway -- --ignored` (needs DATABASE_URL).
+#[tokio::test]
+#[ignore = "the load check runs on demand against a local stack, see docs/development.md"]
+async fn a_saturated_pool_refuses_backpressure_never_a_500() {
+    let Some(url) = url() else {
+        eprintln!("DATABASE_URL not set, skipping");
+        return;
+    };
+    // Three connections against fifty concurrent turns: admission and settle
+    // each draw several checkouts, so the pool is genuinely saturated.
+    let world = world_on_pool(&url, 1_000_000_000, "openai", 3).await;
+    world.answers("slow", Answer::Slow { delay_ms: 250 });
+
+    let mut turns = Vec::new();
+    for _ in 0..50 {
+        let app = world.app.clone();
+        let key = world.key.clone();
+        let model = world.model("slow");
+        turns.push(tokio::spawn(async move {
+            chat(
+                &app,
+                &key,
+                json!({
+                    "model": model,
+                    "messages": [{"role": "user", "content": "hi"}],
+                }),
+            )
+            .await
+        }));
+    }
+    let mut ok = 0;
+    let mut busy = 0;
+    for turn in turns {
+        let response = turn.await.expect("the request task ran");
+        let status = response.status();
+        assert_ne!(
+            status,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "pool exhaustion must not answer 500"
+        );
+        assert!(
+            status == StatusCode::OK || status == StatusCode::TOO_MANY_REQUESTS,
+            "an answer that is neither served nor backpressured: {status}"
+        );
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            // Backpressure carries the way out: a refusal without Retry-After
+            // invites the storm the 429 exists to prevent.
+            assert!(
+                response.headers().get("retry-after").is_some(),
+                "a POOL_BUSY refusal names its Retry-After"
+            );
+            busy += 1;
+        } else {
+            ok += 1;
+        }
+    }
+    eprintln!("50 concurrent turns: {ok} settled, {busy} refused POOL_BUSY");
 }
 
 #[tokio::test]
