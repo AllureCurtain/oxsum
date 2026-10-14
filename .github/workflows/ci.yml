@@ -53,9 +53,12 @@ jobs:
           components: rustfmt, clippy
       # The tracked .cargo/config.toml routes linking through mold
       # (-C link-arg=-fuse-ld=mold); the stock ubuntu-latest image does not
-      # ship it, so install it before anything links.
+      # ship it, so install it before anything links. Direct tarball download
+      # is faster than apt-get update (issue #237).
       - name: Install mold
-        run: sudo apt-get update && sudo apt-get install -y mold
+        run: |
+          curl -sL https://github.com/rui314/mold/releases/download/v2.40.0/mold-2.40.0-x86_64-linux.tar.gz | sudo tar -xz -C /usr/local --strip-components=1
+          mold --version
       - uses: Swatinem/rust-cache@v2
         with:
           # One shared cache entry for every compile job (helix pattern) instead
@@ -103,8 +106,11 @@ jobs:
           components: rustfmt, clippy
       # Same mold requirement as the clippy job: the tracked .cargo/config.toml
       # links through mold, which the stock image does not ship.
+      # Direct tarball download is faster than apt-get update (issue #237).
       - name: Install mold
-        run: sudo apt-get update && sudo apt-get install -y mold
+        run: |
+          curl -sL https://github.com/rui314/mold/releases/download/v2.40.0/mold-2.40.0-x86_64-linux.tar.gz | sudo tar -xz -C /usr/local --strip-components=1
+          mold --version
       # The workspace's test binaries are big (testcontainers, sqlx):
       # without this the runner exhausts its disk compiling them ("No space left
       # on device" from rustc).
