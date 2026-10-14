@@ -245,11 +245,23 @@ impl Harness {
         cleanup: Option<(sqlx::PgPool, String)>,
     ) -> Self {
         let ledger = LedgerId::new(format!("pg-{database}")).expect("valid");
-        // `connect` configures `search_path`, so the ledger's tables land in
-        // their own schema instead of competing with `public` for names.
-        let store = PostgresStore::<2>::connect(&url, ledger)
+        // oxsum change (not upstream): the store's pool asks for five backends,
+        // not sqlx's default ten. Every nextest process holds one of these, and
+        // a shared `DATABASE_URL` cluster also serves the rest of the workspace
+        // suite — the default budget oversubscribes `max_connections` until
+        // `CREATE DATABASE` answers PoolTimedOut instead.
+        let options = url
+            .parse::<sqlx::postgres::PgConnectOptions>()
+            .expect("a postgres url")
+            // The ledger's tables land in their own schema instead of
+            // competing with `public` for names, as `connect_with` does.
+            .options([("search_path", "doubleentry")]);
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(5)
+            .connect_with(options)
             .await
             .expect("connects");
+        let store = PostgresStore::<2>::new(pool, ledger);
         store.migrate().await.expect("schema applies");
         let url_for_reopen = url.clone();
 
