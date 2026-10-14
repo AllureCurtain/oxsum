@@ -99,7 +99,13 @@ async fn shared() -> &'static Shared {
                 .or_else(|| std::env::var("DATABASE_URL").ok())
             {
                 let admin = PgPoolOptions::new()
-                    .max_connections(2)
+                    .max_connections(4)
+                    // The shared cluster serializes concurrent CREATE/DROP
+                    // DATABASE on its catalog locks while twenty-something
+                    // nextest processes race it — sqlx's 30s acquire timeout
+                    // misreads that queue as a dead pool, so the harness waits
+                    // the way a `pg_sleep` test waits: patiently.
+                    .acquire_timeout(std::time::Duration::from_secs(120))
                     .connect(&with_database(&url, "postgres"))
                     .await
                     .expect("connects to the maintenance database");
