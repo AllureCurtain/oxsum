@@ -349,6 +349,10 @@ async fn a_usage_row_replay_is_ignored() {
         status: "settled".to_owned(),
         failure_reason: None,
         usage: oxsum_core::UsageRecord::tokens(10, 2).unwrap(),
+        counts: oxsum_core::CountsProvenance::Provider {
+            input: 10,
+            output: 2,
+        },
         charged_minor: 12,
         freeze_minor: 100,
         upstream_cost_minor: Some(4),

@@ -623,6 +623,10 @@ async fn every_settlement_kind_proves_and_recomputes() {
             status: "settled".to_owned(),
             failure_reason: None,
             usage: usage.clone(),
+            counts: oxsum_core::CountsProvenance::Provider {
+                input: usage.input_tokens,
+                output: usage.output_tokens,
+            },
             charged_minor: charged,
             freeze_minor: *freeze,
             upstream_cost_minor: upstream_cost,

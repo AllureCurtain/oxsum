@@ -955,6 +955,10 @@ async fn the_margin_view_sums_charges_against_upstream_costs() {
             status: "settled".to_owned(),
             failure_reason: None,
             usage: oxsum_core::UsageRecord::tokens(10, 2).expect("the seed counts"),
+            counts: oxsum_core::CountsProvenance::Provider {
+                input: 10,
+                output: 2,
+            },
             charged_minor: *charged,
             freeze_minor: 100,
             upstream_cost_minor: *upstream,

@@ -453,7 +453,11 @@ impl Db {
                 entry_id: *entry_id_for(&settlement_key_for(&hold_key)).as_uuid(),
                 status: "settled".to_owned(),
                 failure_reason: None,
-                usage,
+                usage: usage.clone(),
+                counts: crate::usage::CountsProvenance::Provider {
+                    input: usage.input_tokens,
+                    output: usage.output_tokens,
+                },
                 charged_minor: charged,
                 freeze_minor: freeze,
                 upstream_cost_minor,

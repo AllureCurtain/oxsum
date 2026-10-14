@@ -347,7 +347,12 @@ async fn the_retention_pass_ages_out_each_rule_once() {
         entry_id: Uuid::new_v4(),
         status: "settled".to_owned(),
         failure_reason: None,
-        usage,
+        usage: usage.clone(),
+        usage: usage.clone(),
+        counts: oxsum_core::CountsProvenance::Provider {
+            input: usage.input_tokens,
+            output: usage.output_tokens,
+        },
         charged_minor: 12,
         freeze_minor: 100,
         upstream_cost_minor: None,

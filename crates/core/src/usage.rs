@@ -301,6 +301,25 @@ pub fn validate_attribution(
     Ok(())
 }
 
+/// Who counted a settled turn's billed counts (issue #230).
+///
+/// The four `usage_records` columns this maps onto are nullable singly: a
+/// degraded settle counts only the input side, so a `Local` provenance may
+/// carry `output: None` — NULL means "not counted", which is a different
+/// statement from a counted zero.
+#[derive(Debug, Clone, Copy, Default)]
+pub enum CountsProvenance {
+    /// Upstream's usage report produced the counts (`provider_*` columns).
+    Provider { input: i64, output: i64 },
+    /// A local estimate produced them (`local_*` columns): tiktoken over the
+    /// request text and, where the policy counts it, the forwarded prefix.
+    /// `output: None` is the degraded settle — only the input side is counted.
+    Local { input: i64, output: Option<i64> },
+    /// Nothing was counted — a refusal, or a swept turn the watch row timed out.
+    #[default]
+    None,
+}
+
 /// One settled turn's row in `oxsum.usage_records`: the normalized record plus
 /// the context of what charged it.
 ///
@@ -334,8 +353,16 @@ pub struct UsageRow {
     /// already carried, so the billing page can show a terminal cause instead
     /// of leaving it in server logs (issue #233).
     pub failure_reason: Option<String>,
-    /// The normalized usage.
+    /// The normalized usage — what the settlement billed.
     pub usage: UsageRecord,
+    /// Who counted the billed counts (issue #230): the provider's own report
+    /// when it made one, the local estimate when it did not, `None` on a
+    /// refusal or a sweep that counts nothing. The row's `provider_*`/`local_*`
+    /// columns keep the two apart — `kind` says *that* an estimate happened,
+    /// the columns say *which* figures it produced. A degraded settle counts
+    /// only the input side, so `local` may carry a `None` output: NULL means
+    /// "not counted", never a silently-zero bill.
+    pub counts: CountsProvenance,
     /// What the settlement charged and what it had frozen, in minor units.
     pub charged_minor: i64,
     pub freeze_minor: i64,
@@ -394,10 +421,12 @@ impl Db {
               audio_input_tokens, video_input_tokens, image_output_tokens, \
               audio_output_tokens, service_tier, event_type, end_user, tags, usage_details, \
               charged_minor, freeze_minor, upstream_cost_minor, upstream_attempts, \
+              provider_input_tokens, provider_output_tokens, \
+              local_input_tokens, local_output_tokens, \
               status, failure_reason) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, \
                      $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, \
-                     $30, $31) \
+                     $30, $31, $32, $33, $34, $35) \
              ON CONFLICT (request_id) DO NOTHING",
         )
         .bind(&row.request_id)
@@ -429,6 +458,25 @@ impl Db {
         .bind(row.freeze_minor)
         .bind(row.upstream_cost_minor)
         .bind(row.upstream_attempts)
+        .bind(match row.counts {
+            CountsProvenance::Provider { input, .. } => Some(input),
+            _ => None,
+        })
+        .bind(match row.counts {
+            CountsProvenance::Provider { output, .. } => Some(output),
+            _ => None,
+        })
+        .bind(match row.counts {
+            CountsProvenance::Local { input, .. } => Some(input),
+            _ => None,
+        })
+        .bind(match row.counts {
+            CountsProvenance::Local {
+                output: Some(output),
+                ..
+            } => Some(output),
+            _ => None,
+        })
         .bind(&row.status)
         .bind(&row.failure_reason)
         .execute(&mut *tx)

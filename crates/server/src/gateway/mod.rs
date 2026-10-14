@@ -402,6 +402,8 @@ async fn record_refusal(
         status: "refused".to_owned(),
         failure_reason: Some(reason.to_owned()),
         usage: UsageRecord::default(),
+        // A refusal never counts tokens — the columns stay NULL, not zero.
+        counts: oxsum_core::CountsProvenance::None,
         charged_minor: 0,
         freeze_minor: 0,
         upstream_cost_minor: None,

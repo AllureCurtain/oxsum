@@ -2,9 +2,10 @@
 //!
 //! Three ways a turn ends, and all three settle:
 //!
-//! - Upstream finishes. The usage it reported is the charge, or a local estimate when it reported
-//!   none.
-//! - Upstream fails mid-stream. What was forwarded is estimated; the rest is not charged.
+//! - Upstream finishes. The usage it reported is the charge, or the degraded settle when it
+//!   reported none — the locally-estimated input only (issue #230).
+//! - Upstream fails mid-stream. What was forwarded is estimated on the cancelled side; the rest
+//!   is not charged.
 //! - The client goes away. hyper drops the response body, which drops the generator below, which
 //!   drops the upstream response — reqwest's only way to cancel a call — and the turn settles from
 //!   what had been forwarded, as `client_cancelled`, or as the finished turn it already was when the
@@ -24,8 +25,8 @@ use axum::http::{HeaderMap, HeaderValue};
 use futures_core::Stream;
 use http_body::Frame;
 use oxsum_core::{
-    Attribution, Db, Price, Serving, Settlement, SettlementKind, UsageAdapter, UsageRecord,
-    UsageRow, Wallet, WalletError, entry_id_for, estimate_tokens, settlement_key_for,
+    Attribution, CountsProvenance, Db, Price, Serving, Settlement, SettlementKind, UsageAdapter,
+    UsageRecord, UsageRow, Wallet, WalletError, entry_id_for, estimate_tokens, settlement_key_for,
 };
 use serde_json::Value;
 use tokio::sync::broadcast;
@@ -53,7 +54,9 @@ pub enum Charge {
     /// Upstream's own counts, normalized. Boxed: the record is wide and the other
     /// variants carry nothing.
     Usage(Box<UsageRecord>),
-    /// A local estimate over the input and what was forwarded.
+    /// A local estimate — under kind `estimated` the input side only (the
+    /// degraded policy, issue #230); under `client_cancelled` the input plus
+    /// the forwarded prefix.
     Estimated,
 }
 
@@ -460,9 +463,15 @@ impl Plan {
             }
             reason[..end].to_owned()
         });
-        let mut usage = match charge {
-            Charge::Nothing => UsageRecord::tokens(0, 0)?,
-            Charge::Usage(usage) => *usage,
+        let (mut usage, counts) = match charge {
+            Charge::Nothing => (UsageRecord::tokens(0, 0)?, CountsProvenance::None),
+            Charge::Usage(usage) => {
+                let counts = CountsProvenance::Provider {
+                    input: usage.input_tokens,
+                    output: usage.output_tokens,
+                };
+                (*usage, counts)
+            }
             Charge::Estimated => {
                 // A token-array request's input is counted, not estimated; the
                 // count stands in for the text bound (issue #170).
@@ -473,10 +482,64 @@ impl Plan {
                         estimate_tokens(&texts)
                     }
                 };
-                let output = estimate_tokens(&[self.frames.output.as_str()]);
-                UsageRecord::tokens(input, output)?
+                // The degraded policy (issue #230): a turn that ends with no
+                // usage report bills only the side it can count — the
+                // locally-estimated input. Output was forwarded but cannot be
+                // counted, and billing it would charge for tokens nobody
+                // counted; an undercount is the platform's cost, an overcount
+                // the user's (product.md). `local_output` stays uncounted:
+                // NULL, not zero.
+                //
+                // A client-cancelled turn is the other doctrine, not this
+                // one: it pays what was delivered, and the forwarded prefix
+                // is countable text, so its estimate stands on both sides.
+                if kind == SettlementKind::ClientCancelled {
+                    let output = estimate_tokens(&[self.frames.output.as_str()]);
+                    (
+                        UsageRecord::tokens(input, output)?,
+                        CountsProvenance::Local {
+                            input,
+                            output: Some(output),
+                        },
+                    )
+                } else {
+                    (
+                        UsageRecord::tokens(input, 0)?,
+                        CountsProvenance::Local {
+                            input,
+                            output: None,
+                        },
+                    )
+                }
             }
         };
+        // The estimate's own paper trail: how the counts were produced lives
+        // beside them, so a reconciler sees method and scope without
+        // re-deriving it from `kind` (issue #230). Merged, not replaced — an
+        // adapter that did report extras keeps them.
+        if let CountsProvenance::Local { input, output } = counts {
+            let estimation = serde_json::json!({
+                "method": if self.counted_input.is_some() {
+                    "token-array-count"
+                } else {
+                    "tiktoken-o200k"
+                },
+                "scope": if output.is_some() {
+                    "forwarded-prefix"
+                } else {
+                    "input-only"
+                },
+                "reason": "missing-usage-report",
+                "inputTokens": input,
+                "outputTokens": output,
+            });
+            let details = usage
+                .usage_details
+                .get_or_insert_with(|| serde_json::json!({}));
+            if let Some(map) = details.as_object_mut() {
+                map.insert("estimation".to_owned(), estimation);
+            }
+        }
         // The turn's OTLP span gets the counts the charge was priced from —
         // upstream's own report or the local estimate — at the one place every
         // settlement path passes through, plus the turn's wall time (the span's
@@ -570,6 +633,7 @@ impl Plan {
                     usage: usage.clone(),
                     status: kind.status().to_owned(),
                     failure_reason: reason.clone(),
+                    counts,
                     charged_minor: charged,
                     freeze_minor: self.freeze,
                     // The platform's own cost for the same usage, under the set the

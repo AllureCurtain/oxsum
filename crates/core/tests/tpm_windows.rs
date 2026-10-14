@@ -126,6 +126,7 @@ async fn turn(
             output_tokens: output,
             ..Default::default()
         },
+        counts: oxsum_core::CountsProvenance::Provider { input, output },
         charged_minor: 100_000,
         freeze_minor: 1_000_000,
         upstream_cost_minor: None,
@@ -194,6 +195,10 @@ async fn the_window_counts_the_normalized_totals() {
             cached_tokens: 30,
             reasoning_tokens: 10,
             ..Default::default()
+        },
+        counts: oxsum_core::CountsProvenance::Provider {
+            input: 100,
+            output: 40,
         },
         charged_minor: 100_000,
         freeze_minor: 1_000_000,
@@ -352,7 +357,12 @@ async fn tagged_turn(f: &Fixture, request: &str, tag: &str, value: &str, tokens:
         entry_id: *receipt.entry_id.as_uuid(),
         status: "settled".to_owned(),
         failure_reason: None,
-        usage,
+        usage: usage.clone(),
+        usage: usage.clone(),
+        counts: oxsum_core::CountsProvenance::Provider {
+            input: usage.input_tokens,
+            output: usage.output_tokens,
+        },
         charged_minor: 100_000,
         freeze_minor: 1_000_000,
         upstream_cost_minor: None,
@@ -415,7 +425,12 @@ async fn a_tagged_settle_accrues_its_scoped_bucket() {
         entry_id: *receipt.entry_id.as_uuid(),
         status: "settled".to_owned(),
         failure_reason: None,
-        usage,
+        usage: usage.clone(),
+        usage: usage.clone(),
+        counts: oxsum_core::CountsProvenance::Provider {
+            input: usage.input_tokens,
+            output: usage.output_tokens,
+        },
         charged_minor: 100_000,
         freeze_minor: 1_000_000,
         upstream_cost_minor: None,
