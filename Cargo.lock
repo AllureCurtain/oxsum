@@ -3201,7 +3201,7 @@ dependencies = [
  "hmac 0.13.0",
  "lettre",
  "oxsum-core",
- "reqwest",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sha2 0.11.0",
