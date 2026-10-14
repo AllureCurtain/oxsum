@@ -176,27 +176,29 @@ impl Harness {
     /// instance, which is a consequence of the technique rather than of the
     /// tests.
     ///
-    /// External mode cannot offer a second instance: the harness gets a
-    /// scratch database on the shared cluster instead, and the sequencing
-    /// tests may wait on a neighbour's open transaction — a slowdown, never a
-    /// wrong answer.
+    /// External mode prefers a dedicated container when Docker answers — the
+    /// isolation is the technique, not the convenience: on a shared cluster a
+    /// neighbour's open transaction holds back the deferred watermark, and the
+    /// conformance suite reads entries the cluster has not sequenced yet
+    /// ("the partly-settled invoice is not open"). Only a Docker-less
+    /// environment falls back to a scratch database on the shared cluster —
+    /// deferred tests there may still be wrong for the same reason, which the
+    /// doc comment on `Shared::External` names as the residual risk of running
+    /// the suite without Docker.
     async fn start_isolated() -> Self {
-        if let Shared::External { .. } = shared().await {
-            return Self::start().await;
+        // Try the dedicated container first even under External: it is the
+        // only answer that is actually isolated.
+        if let Ok(container) = PostgresImage::default().with_tag("17-alpine").start().await {
+            let port = container
+                .get_host_port_ipv4(5432)
+                .await
+                .expect("port is mapped");
+            let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
+            let mut harness = Self::connect(url, "postgres".to_owned(), None).await;
+            harness._owned_container = Some(container);
+            return harness;
         }
-        let container = PostgresImage::default()
-            .with_tag("17-alpine")
-            .start()
-            .await
-            .expect("postgres container starts");
-        let port = container
-            .get_host_port_ipv4(5432)
-            .await
-            .expect("port is mapped");
-        let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
-        let mut harness = Self::connect(url, "postgres".to_owned(), None).await;
-        harness._owned_container = Some(container);
-        harness
+        Self::start().await
     }
 
     async fn start() -> Self {

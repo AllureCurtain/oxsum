@@ -1474,7 +1474,7 @@ The vendored ledger's `tests/postgres.rs` always started a throwaway container, 
 
 - **The container stays the default.** With neither variable set the behaviour is byte-for-byte what CI runs today; the external path only exists because a developer named it.
 - **The URL's own database is never touched.** It supplies the server and credentials; the suite works in `de_<n>` scratch databases beside it, so pointing at the dev `oxsum` database is safe.
-- **`start_isolated` degrades to a scratch database on the shared cluster.** Its dedicated instance exists because deferred sequencing advances on a cluster-wide watermark — a neighbour's held-open transaction stalls it. On a borrowed cluster there is no second instance to give; the tests can wait, never answer wrong, and the doc comments say so.
+- **`start_isolated` prefers a dedicated container even under `DATABASE_URL`, falling back to the shared cluster only without Docker.** Its dedicated instance exists because deferred sequencing advances on a cluster-wide watermark — and CI proved the caveat is not just a slowdown: a neighbour's held-open transaction on the shared cluster stalls the watermark and the conformance suite reads unsequenced entries ("the partly-settled invoice is not open"). A Docker-less environment gets a scratch database instead and accepts that residual; CI keeps the real isolation.
 - **Cleanup runs in `Drop` under `Handle::try_current`, best-effort.** A normal test exit drops the database inside the still-live runtime; a hard abort leaves one named `de_<n>` database, identifiable and safe to drop by hand — strictly better than the orphaned containers the issue cites.
 
 All doubleentry tests must pass either way.
