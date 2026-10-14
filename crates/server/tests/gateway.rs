@@ -1506,10 +1506,26 @@ async fn a_stream_that_ends_without_its_terminator_is_closed_for_the_client() {
     assert_eq!(world.settlement(&id).await.unwrap()["kind"], "usage");
 }
 
+/// The degraded policy (issue #230): upstream answered but never reported
+/// usage — the turn settles `estimated`, billed on the locally-estimated input
+/// only, its usage row marked local-and-uncounted, and the anomaly signal
+/// enqueued for asynchronous reconciliation.
 #[tokio::test]
-async fn a_missing_usage_report_falls_back_to_a_local_estimate() {
+async fn a_missing_usage_report_settles_under_the_degraded_policy() {
     let world = world!(1_000_000);
     world.answers("no-usage", Answer::Completion { usage: None });
+
+    // An endpoint subscribed to anomalies sees the degraded settle land as
+    // `anomaly.detected` — the reconciliation signal.
+    let (hook_status, hook) = call(
+        &world.app,
+        "POST",
+        "/api/v1/webhooks",
+        Some(json!({"url": "https://receiver.example/hook", "events": ["anomaly.detected"]})),
+        Some(&world.key),
+    )
+    .await;
+    assert_eq!(hook_status, StatusCode::OK, "{hook}");
 
     let response = chat(&world.app, &world.key, simple(&world.model("no-usage"))).await;
     let id = request_id(&response);
@@ -1519,16 +1535,101 @@ async fn a_missing_usage_report_falls_back_to_a_local_estimate() {
     let record = world.settlement(&id).await.expect("the turn settled");
     assert_eq!(record["kind"], "estimated");
     let charged = record["charged"].as_i64().expect("a charge");
-    // The estimate prices the prompt and the answer text; it is never more than the freeze.
+    // Only the countable side bills: the locally-estimated input. Output is
+    // never charged when nobody counted it — an undercount is the platform's
+    // cost, never silently-zero or a guessed overcharge (issue #230).
     assert!(charged > 0, "{record}");
     assert!(charged <= record["freeze"].as_i64().unwrap(), "{record}");
-    assert!(
-        record["usage"]["outputTokens"].as_i64().unwrap() > 0,
-        "{record}"
-    );
+    assert_eq!(record["usage"]["outputTokens"], 0, "{record}");
     let wallet = world.wallet().await;
     assert_eq!(wallet.reserved().await.unwrap(), 0);
     assert_eq!(wallet.settled().await.unwrap(), 1_000_000 - charged);
+
+    // The row keeps the provenance apart: local input, output never counted —
+    // NULL, not zero — and the estimate's own paper trail in usage_details.
+    let row = sqlx::query(
+        "SELECT provider_input_tokens, provider_output_tokens, \
+                local_input_tokens, local_output_tokens, usage_details \
+         FROM oxsum.usage_records WHERE request_id = $1",
+    )
+    .bind(&id)
+    .fetch_one(&world.pool)
+    .await
+    .expect("the usage row is written");
+    assert!(row.get::<Option<i64>, _>("provider_input_tokens").is_none());
+    assert!(
+        row.get::<Option<i64>, _>("provider_output_tokens")
+            .is_none()
+    );
+    assert!(row.get::<Option<i64>, _>("local_input_tokens").is_some());
+    assert!(
+        row.get::<Option<i64>, _>("local_output_tokens").is_none(),
+        "the degraded settle never claims an output count"
+    );
+    let details: Value = row.get("usage_details");
+    assert_eq!(details["estimation"]["scope"], "input-only", "{details}");
+    assert_eq!(details["estimation"]["reason"], "missing-usage-report");
+
+    // The anomaly signal landed: one anomaly.detected delivery queued.
+    let deliveries: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM oxsum.webhook_deliveries \
+         WHERE event_type = 'anomaly.detected'",
+    )
+    .fetch_one(&world.pool)
+    .await
+    .unwrap();
+    assert_eq!(deliveries, 1, "the anomaly event is enqueued");
+}
+
+/// The truncated-SSE case of the same policy (issue #230): the upstream body
+/// ends without a usage report and without `[DONE]` — the turn still settles
+/// degraded: `estimated`, billed on the locally-estimated input only, and the
+/// usage row records local provenance with the output never counted.
+#[tokio::test]
+async fn a_truncated_stream_settles_under_the_degraded_policy() {
+    let world = world!(1_000_000);
+    world.answers(
+        "stream-open",
+        Answer::Stream {
+            usage: false,
+            terminated: false,
+        },
+    );
+
+    let response = chat(
+        &world.app,
+        &world.key,
+        json!({
+            "model": world.model("stream-open"),
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true,
+        }),
+    )
+    .await;
+    let id = request_id(&response);
+    let body = text_of(response).await;
+    // The client still gets its terminator; the settlement side is what degraded.
+    assert_eq!(body.matches("[DONE]").count(), 1, "{body}");
+
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["kind"], "estimated", "{record}");
+    assert!(record["charged"].as_i64().unwrap() > 0, "{record}");
+    assert_eq!(record["usage"]["outputTokens"], 0, "{record}");
+    let row = sqlx::query(
+        "SELECT local_input_tokens, local_output_tokens, usage_details \
+         FROM oxsum.usage_records WHERE request_id = $1",
+    )
+    .bind(&id)
+    .fetch_one(&world.pool)
+    .await
+    .expect("the usage row is written");
+    assert!(row.get::<Option<i64>, _>("local_input_tokens").is_some());
+    assert!(
+        row.get::<Option<i64>, _>("local_output_tokens").is_none(),
+        "output is never counted under the degraded policy"
+    );
+    let details: Value = row.get("usage_details");
+    assert_eq!(details["estimation"]["scope"], "input-only", "{details}");
 }
 
 #[tokio::test]
