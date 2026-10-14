@@ -1,18 +1,24 @@
 //! The PostgreSQL backend, exercised against a real database.
 //!
-//! Every test starts a throwaway PostgreSQL container, applies the reference
-//! schema, and runs against it. Nothing is mocked: the constraints, the advisory
-//! lock, the deferred triggers, and the concurrency behaviour are the real ones,
-//! because those are exactly the parts that cannot be checked any other way.
+//! Every test applies the reference schema to a real PostgreSQL database and
+//! runs against it. Nothing is mocked: the constraints, the advisory lock, the
+//! deferred triggers, and the concurrency behaviour are the real ones, because
+//! those are exactly the parts that cannot be checked any other way.
 //!
 //! The headline test is [`the_postgres_backend_conforms`], which runs the
 //! library's own conformance suite. A backend either passes it or is not a
 //! backend.
 //!
-//! One container is shared by the whole binary, and each test creates its own
-//! database inside it. Starting a container per test is both slow and unstable —
-//! twenty containers racing for the same daemon is a source of failures that
-//! have nothing to do with the code under test.
+//! The database is a throwaway container shared by the whole binary, with each
+//! test creating its own database inside it. Starting a container per test is
+//! both slow and unstable — twenty containers racing for the same daemon is a
+//! source of failures that have nothing to do with the code under test.
+//!
+//! oxsum change (not upstream): with `DOUBLEENTRY_DATABASE_URL` (or
+//! `DATABASE_URL`) set, the suite instead creates its scratch databases on the
+//! cluster the URL points at and drops each one when its test ends — no Docker
+//! needed, and no `de_*` residue afterwards (issue #241). Unset, the container
+//! behaviour is unchanged.
 
 #![cfg(feature = "postgres")]
 #![allow(
@@ -41,18 +47,67 @@ use time::macros::date;
 
 type Eur = Amount<2>;
 
-/// The one container this binary uses.
+/// The one cluster this binary uses.
 static POSTGRES: tokio::sync::OnceCell<Shared> = tokio::sync::OnceCell::const_new();
 
-struct Shared {
-    /// Held so it outlives every pool; dropping it stops the database.
-    _container: ContainerAsync<PostgresImage>,
-    port: u16,
+/// Where the suite's scratch databases live.
+enum Shared {
+    /// A throwaway container the binary owns; dropping it stops the database.
+    /// Boxed: the external variant is two pointers, the container is not.
+    Container {
+        _container: Box<ContainerAsync<PostgresImage>>,
+        port: u16,
+    },
+    /// A cluster the developer already runs — oxsum change (not upstream):
+    /// `DOUBLEENTRY_DATABASE_URL` (or `DATABASE_URL`) skips the container so
+    /// the suite runs without Docker, issue #241. The URL's database is only
+    /// read for its server and credentials; every test still gets a scratch
+    /// database of its own, dropped when the harness is.
+    External {
+        base_url: String,
+        admin: sqlx::PgPool,
+    },
+}
+
+/// `url` with its database path swapped for `database`, keeping scheme,
+/// authority, and query string. The path's first `/` after `scheme://`
+/// separates the authority from the database name.
+fn with_database(url: &str, database: &str) -> String {
+    let (base, query) = match url.split_once('?') {
+        Some((base, query)) => (base, Some(query)),
+        None => (url, None),
+    };
+    let authority_end = base.find("://").map_or(0, |i| i + 3);
+    let head = match base[authority_end..].find('/') {
+        Some(i) => &base[..authority_end + i],
+        None => base,
+    };
+    let mut out = format!("{head}/{database}");
+    if let Some(query) = query {
+        out.push('?');
+        out.push_str(query);
+    }
+    out
 }
 
 async fn shared() -> &'static Shared {
     POSTGRES
         .get_or_init(|| async {
+            // oxsum change (not upstream): a local cluster wins over Docker.
+            if let Some(url) = std::env::var("DOUBLEENTRY_DATABASE_URL")
+                .ok()
+                .or_else(|| std::env::var("DATABASE_URL").ok())
+            {
+                let admin = PgPoolOptions::new()
+                    .max_connections(2)
+                    .connect(&with_database(&url, "postgres"))
+                    .await
+                    .expect("connects to the maintenance database");
+                return Shared::External {
+                    base_url: url,
+                    admin,
+                };
+            }
             let container = PostgresImage::default()
                 .with_tag("17-alpine")
                 .start()
@@ -62,8 +117,8 @@ async fn shared() -> &'static Shared {
                 .get_host_port_ipv4(5432)
                 .await
                 .expect("port is mapped");
-            Shared {
-                _container: container,
+            Shared::Container {
+                _container: Box::new(container),
                 port,
             }
         })
@@ -79,12 +134,34 @@ struct Harness {
     _owned_container: Option<ContainerAsync<PostgresImage>>,
     /// The connection string, for tests that open a second store.
     url: String,
+    /// External mode only: how to drop this harness's scratch database.
+    cleanup: Option<(sqlx::PgPool, String)>,
     store: PostgresStore<2>,
     accounts: AccountRegistry,
     calendar: PeriodCalendar,
     policy: LedgerPolicy,
     left: AccountId,
     right: AccountId,
+}
+
+impl Drop for Harness {
+    fn drop(&mut self) {
+        let Some((admin, name)) = self.cleanup.take() else {
+            return;
+        };
+        // The store's pool is still open while `drop` runs, so FORCE the
+        // database away — its connections are the store's own, closing the
+        // moment the fields below drop.
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                // Best-effort: a failure leaves one named, identifiable
+                // scratch database, not a test failure.
+                let _ = sqlx::query(&format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)"))
+                    .execute(&admin)
+                    .await;
+            });
+        }
+    }
 }
 
 impl Harness {
@@ -95,7 +172,15 @@ impl Harness {
     /// instance — stalls it. Tests of that mode therefore need their own
     /// instance, which is a consequence of the technique rather than of the
     /// tests.
+    ///
+    /// External mode cannot offer a second instance: the harness gets a
+    /// scratch database on the shared cluster instead, and the sequencing
+    /// tests may wait on a neighbour's open transaction — a slowdown, never a
+    /// wrong answer.
     async fn start_isolated() -> Self {
+        if let Shared::External { .. } = shared().await {
+            return Self::start().await;
+        }
         let container = PostgresImage::default()
             .with_tag("17-alpine")
             .start()
@@ -105,38 +190,53 @@ impl Harness {
             .get_host_port_ipv4(5432)
             .await
             .expect("port is mapped");
-        let mut harness = Self::connect(port, "postgres".to_owned()).await;
+        let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
+        let mut harness = Self::connect(url, "postgres".to_owned(), None).await;
         harness._owned_container = Some(container);
         harness
     }
 
     async fn start() -> Self {
         let shared = shared().await;
-        let port = shared.port;
 
         // A private database per test: isolation without a container per test.
         let name = format!(
             "de_{}",
             NEXT_DB.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
-        let admin = PgPoolOptions::new()
-            .max_connections(1)
-            .connect(&format!(
-                "postgres://postgres:postgres@127.0.0.1:{port}/postgres"
-            ))
-            .await
-            .expect("connects to the maintenance database");
-        sqlx::query(&format!("CREATE DATABASE {name}"))
-            .execute(&admin)
-            .await
-            .expect("creates a database");
-        admin.close().await;
-
-        Self::connect(port, name).await
+        match shared {
+            Shared::Container { port, .. } => {
+                let admin = PgPoolOptions::new()
+                    .max_connections(1)
+                    .connect(&format!(
+                        "postgres://postgres:postgres@127.0.0.1:{port}/postgres"
+                    ))
+                    .await
+                    .expect("connects to the maintenance database");
+                sqlx::query(&format!("CREATE DATABASE {name}"))
+                    .execute(&admin)
+                    .await
+                    .expect("creates a database");
+                admin.close().await;
+                let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/{name}");
+                Self::connect(url, name, None).await
+            }
+            Shared::External { base_url, admin } => {
+                sqlx::query(&format!("CREATE DATABASE {name}"))
+                    .execute(admin)
+                    .await
+                    .expect("creates a database");
+                let url = with_database(base_url, &name);
+                Self::connect(url, name.clone(), Some((admin.clone(), name))).await
+            }
+        }
     }
 
-    async fn connect(port: u16, database: String) -> Self {
-        let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/{database}");
+    async fn connect(
+        url: String,
+        database: String,
+        cleanup: Option<(sqlx::PgPool, String)>,
+    ) -> Self {
         let ledger = LedgerId::new(format!("pg-{database}")).expect("valid");
         // `connect` configures `search_path`, so the ledger's tables land in
         // their own schema instead of competing with `public` for names.
@@ -162,6 +262,7 @@ impl Harness {
         Self {
             _owned_container: None,
             url: url_for_reopen,
+            cleanup,
             store,
             accounts,
             calendar: PeriodCalendar::new(),
