@@ -568,7 +568,7 @@ struct World {
     /// The broadcast sender the gateway publishes billing events to: tests subscribe to
     /// assert what a turn publishes, without opening a dashboard socket.
     billing: broadcast::Sender<BillingEvent>,
-    #[allow(dead_code)]
+    /// The world's own pool — helpers poll the schema the API writes.
     pool: PgPool,
 }
 
@@ -624,6 +624,28 @@ impl World {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         panic!("the turn never settled");
+    }
+
+    /// Waits for the request's idempotency record to leave `in_flight` — the
+    /// gate a retry actually tests. The ledger entry landing does not order
+    /// against the record update, so `settlement_within` alone can race a
+    /// retry into `IDEMPOTENCY_IN_FLIGHT` (the flake CI kept surfacing).
+    async fn idempotency_within(&self, request_id: &str) {
+        for _ in 0..250 {
+            let status: Option<String> = sqlx::query_scalar(
+                "SELECT status FROM oxsum.idempotency_records WHERE request_id = $1",
+            )
+            .bind(request_id)
+            .fetch_optional(&self.pool)
+            .await
+            .expect("the record reads")
+            .flatten();
+            if status.as_deref() != Some("in_flight") && status.is_some() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("the idempotency record never completed");
     }
 
     /// The hold entry for a request, used to check what was frozen.
@@ -3357,6 +3379,7 @@ async fn a_retry_landing_mid_turn_is_in_flight() {
     // The client going away settles the turn; a later retry finds the receipt.
     drop(first);
     world.settlement_within(&first_id).await;
+    world.idempotency_within(&first_id).await;
     let third = chat_idem(
         &world.app,
         &world.key,
