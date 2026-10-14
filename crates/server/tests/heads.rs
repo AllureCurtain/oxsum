@@ -787,3 +787,67 @@ async fn the_price_head_endpoint_needs_a_seed_and_a_credential() {
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
+
+/// `/log/checkpoint` answers the last witness-anchored head with its
+/// cosignatures — `data: null` before the first anchor (issue #231).
+#[tokio::test]
+async fn log_checkpoint() {
+    let Some(url) = url() else {
+        eprintln!("DATABASE_URL not set, skipping");
+        return;
+    };
+    let (app, pool) = online_app(&url, Some(SEED)).await;
+    let (registration, key) = register(&app, "checkpoint").await;
+    top_up(&app, &key, 10_000).await;
+    let org_id = registration["organization"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Nothing anchored yet.
+    let (status, body) = call(&app, "GET", "/api/v1/log/checkpoint", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["data"].is_null(), "{body}");
+
+    // Simulate a finished witness pass: the stored note is the operator-signed
+    // head this endpoint itself serves, plus one witness's cosigned note.
+    let (_, head_body) = call(&app, "GET", "/api/v1/log/head", None, Some(&key)).await;
+    let note = head_body["data"]["note"].as_str().unwrap().to_owned();
+    let size = head_body["data"]["head"]["size"].as_i64().unwrap();
+    sqlx::query(
+        "INSERT INTO oxsum.witness_checkpoints (organization_id, head_size, note) \
+         VALUES ($1::uuid, $2, $3)",
+    )
+    .bind(&org_id)
+    .bind(size)
+    .bind(&note)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO oxsum.witness_cosignatures \
+         (organization_id, witness_url, head_size, note) \
+         VALUES ($1::uuid, 'https://witness.example', $2, $3)",
+    )
+    .bind(&org_id)
+    .bind(size)
+    .bind(format!("{note}\n\n— witness.example+abcd c2ln"))
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (status, body) = call(&app, "GET", "/api/v1/log/checkpoint", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["headSize"], size, "{body}");
+    assert_eq!(body["data"]["note"], note, "{body}");
+    let cosigs = body["data"]["cosignatures"].as_array().unwrap();
+    assert_eq!(cosigs.len(), 1, "{body}");
+    assert_eq!(cosigs[0]["witnessUrl"], "https://witness.example");
+    assert!(
+        cosigs[0]["note"]
+            .as_str()
+            .unwrap()
+            .contains("witness.example"),
+        "{cosigs:?}"
+    );
+}
