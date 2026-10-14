@@ -1182,6 +1182,10 @@ struct SettlementV5<'a> {
     upstream_attempts: i64,
     charged: i64,
     freeze: i64,
+    /// Why the turn refused or errored, when it did (issue #233): the caller's
+    /// own answer words, under the content hash — absent for a clean settle.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'a str>,
 }
 
 impl Settlement<'_> {
@@ -1208,6 +1212,7 @@ impl Settlement<'_> {
             upstream_attempts: self.upstream_attempts,
             charged: self.charged,
             freeze: self.freeze,
+            reason: self.reason,
         })
         .map_err(|error| WalletError::InvalidInput(format!("settlement record: {error}")))
     }
