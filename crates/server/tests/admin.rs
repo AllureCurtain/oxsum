@@ -657,12 +657,17 @@ async fn the_organizations_list_shows_every_organization_with_its_balance() {
 #[tokio::test]
 async fn the_organizations_list_paginates_oldest_first() {
     let (app, _pool) = app_or_skip!();
-    register(&app, "orgpage").await;
+    // Register three organizations: with per-suite database isolation the
+    // database starts empty, so the test must create its own pages (issue #226).
+    register(&app, "orgpage-a").await;
+    register(&app, "orgpage-b").await;
+    register(&app, "orgpage-c").await;
 
     let mut seen = Vec::new();
     let mut cursor: Option<String> = None;
-    // Walk three pages deep at most: the shared database's tail is unbounded, and
-    // ordering and resume are what the walk asserts.
+    // Walk three pages deep at most: with per-suite isolation the database
+    // holds exactly the three organizations registered above, and ordering
+    // and resume are what the walk asserts.
     for _ in 0..3 {
         let path = match &cursor {
             Some(c) => format!("/api/v1/admin/organizations?limit=1&cursor={c}"),
