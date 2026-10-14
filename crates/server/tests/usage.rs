@@ -355,7 +355,11 @@ async fn seed_request(
         entry_id: *entry_id_for(&settlement_key_for(&hold_key)).as_uuid(),
         status: "settled".to_owned(),
         failure_reason: None,
-        usage,
+        usage: usage.clone(),
+        counts: oxsum_core::CountsProvenance::Provider {
+            input: usage.input_tokens,
+            output: usage.output_tokens,
+        },
         charged_minor: cost_minor,
         freeze_minor,
         upstream_cost_minor: None,

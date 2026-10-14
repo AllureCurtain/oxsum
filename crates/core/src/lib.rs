@@ -101,8 +101,8 @@ pub use tenants::Tenants;
 pub use tiers::TierProfile;
 pub use upstream_sync::{FieldDrift, ModelPair, ProbeOutcome, diff_upstream};
 pub use usage::{
-    Attribution, MAX_CONTEXT_NAME, MAX_END_USER, MAX_TAG, MAX_TAGS, Margin, UsageDay, UsageRecord,
-    UsageRow, validate_attribution,
+    Attribution, CountsProvenance, MAX_CONTEXT_NAME, MAX_END_USER, MAX_TAG, MAX_TAGS, Margin,
+    UsageDay, UsageRecord, UsageRow, validate_attribution,
 };
 pub use users::{AccountDeletion, NewUser, Registration, User};
 pub use wallet::{

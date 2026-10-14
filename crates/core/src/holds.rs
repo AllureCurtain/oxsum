@@ -536,6 +536,9 @@ async fn record_swept_usage(db: &Db, wallet: &Wallet, hold: &OpenHold) -> Result
                 tags: hold.tags.clone(),
                 ..UsageRecord::default()
             },
+            // The watch row timed out: nothing reported and nothing was
+            // counted — every provenance column stays NULL.
+            counts: crate::usage::CountsProvenance::None,
             charged_minor: 0,
             freeze_minor: hold.freeze_minor,
             // The watch row carries no price, so a swept turn's upstream cost is

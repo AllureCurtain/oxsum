@@ -164,6 +164,10 @@ fn usage_row(request_id: &str, tenant: &str) -> UsageRow {
         status: "settled".to_owned(),
         failure_reason: None,
         usage: UsageRecord::tokens(10, 2).unwrap(),
+        counts: oxsum_core::CountsProvenance::Provider {
+            input: 10,
+            output: 2,
+        },
         charged_minor: 12,
         freeze_minor: 100,
         upstream_cost_minor: None,

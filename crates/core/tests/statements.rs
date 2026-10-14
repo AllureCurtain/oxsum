@@ -126,6 +126,10 @@ async fn turn(
             output_tokens: 50,
             ..Default::default()
         },
+        counts: oxsum_core::CountsProvenance::Provider {
+            input: 100,
+            output: 50,
+        },
         charged_minor: charged,
         freeze_minor: freeze,
         upstream_cost_minor: None,

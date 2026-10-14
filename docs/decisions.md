@@ -1424,6 +1424,7 @@ A billing record named only its `requestId`, so reaching the charge's proof mean
 - **The path is `billing-records` → `entryId` → `GET /api/v1/entries/{entryId}/proof`.** No new endpoint: the proof surface already exists and the record now names exactly what it takes. `requestId` stays — it is still the id the caller chose and the `x-oxsum-request-id` header stamped.
 
 Contract `openapi.yaml` 0.58.0 (`BillingRecord.entryId`, required).
+
 ## 2026-10-15 — Pool saturation answers backpressure, not an outage (issue #235)
 
 A 10-way real-upstream burst returned six HTTP 500s — `pool timed out while waiting for an open connection` — because a `sqlx::Error::PoolTimedOut` arrived as `WalletError::Storage` and was rendered `INTERNAL_ERROR`. For a billing gateway that is the worst failure shape: it looks like an outage, is billed to nobody, and invites the retry storm that deepens the saturation.
@@ -1445,3 +1446,15 @@ A 400 or 429 used to leave only a server log line: no hold, no settlement, nothi
 - **`status` is derived, not stored twice.** `settled` / `errored` / `refused` map off `kind` — no second taxonomy to drift from the kinds the record already writes.
 - **`request.settled` fires for refusals.** The event names `kind: refused` with `chargedMinor: 0`; subscribers that filter on kind keep behaving, and the refusal is finally visible to a webhook-only integration. It is deliberately *not* `anomaly.detected` — a rate limit doing its job is not an anomaly.
 - **Only admission refusals mark.** `GatewayError::refusal_reason` admits exactly the refusal variants — a 5xx/storage fault has no caller-facing cause to record, and an upstream error is a settled turn on the usual path, never a marker (a post-hold `Err` would double-record the request).
+
+## 2026-10-15 — Missing usage settles degraded: input-only, marked, reconciled (issue #230)
+
+A turn upstream answered but never counted used to bill a local estimate of both sides — a charge for tokens nobody counted. The degraded policy narrows it: a turn that *ends* (completed or truncated) without a usage report bills only the locally-estimated input, recorded `estimated` with the anomaly already enqueued.
+
+- **Only the countable side bills.** The request's own input is the one figure the caller cannot dispute — it is their text. Output was forwarded but no adapter read a count for it, and an undercount is the platform's cost where an overcount is the user's (the `ESTIMATE_WINDOW` doctrine already says so).
+- **The columns keep provenance apart.** `usage_records` gains `provider_*` and `local_*` count pairs (migration 0038): a reported turn writes `provider_*`, a derived one `local_*`, each NULL when that side never happened — "not counted" is a different statement from a counted zero, which is what the degraded settle's NULL `local_output_tokens` records.
+- **`usage_details.estimation` is the paper trail.** Method (`tiktoken-o200k` or a token-array's exact count), scope (`input-only` for the degraded case, `forwarded-prefix` for a client cancel), and the reason ride the row, so reconciliation sees how a figure was produced without re-deriving it from `kind`.
+- **Client-cancelled is the neighbouring doctrine, not this one.** A cancellation pays what was delivered — the forwarded prefix is countable text, so its local estimate still stands on both sides. The kind stays `client_cancelled`, distinct from `estimated`.
+- **Never a silent zero.** A degraded row that billed nothing would look like a refusal that served an answer. `kind: estimated` + the `anomaly.detected` delivery + the `local_*` columns together make the under-bill reviewable rather than invisible; a `released` metering row or a `swept` turn is the only zero-count shape left, and both carry `CountsProvenance::None` explicitly.
+
+The tests name the contract: `a_missing_usage_report_settles_under_the_degraded_policy` (whole-answer case, provenance columns, the anomaly delivery) and `a_truncated_stream_settles_under_the_degraded_policy` (the SSE the issue cites).
