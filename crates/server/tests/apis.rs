@@ -355,6 +355,28 @@ async fn billing_records_page_in_order() {
     assert_eq!(rows[0]["chargedMinor"], 3_000);
     assert_eq!(rows[1]["chargedMinor"], 2_000);
     assert_eq!(rows[0]["kind"], "usage");
+    // The settlement's own id rides the row (issue #236): the proof endpoint
+    // answers it directly, with no request-id derivation on the caller's side.
+    let entry_id = rows[0]["entryId"]
+        .as_str()
+        .expect("the record names its settlement entry");
+    let (status, proof) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/entries/{entry_id}/proof"),
+        None,
+        Some(&key),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the row's entryId resolves: {proof}"
+    );
+    assert!(
+        proof["data"]["bundle"].is_object() || proof["data"]["entry"].is_object(),
+        "a proof bundle answers: {proof}"
+    );
     let cursor = first["data"]["nextCursor"]
         .as_u64()
         .expect("a second page remains");
