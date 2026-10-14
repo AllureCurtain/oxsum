@@ -125,9 +125,6 @@ async fn shared() -> &'static Shared {
         .await
 }
 
-/// Counter giving each test its own database name.
-static NEXT_DB: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
 /// A private database and a store pointed at it.
 struct Harness {
     /// Set when this harness owns its cluster rather than sharing one.
@@ -200,15 +197,12 @@ impl Harness {
         let shared = shared().await;
 
         // A private database per test: isolation without a container per test.
-        // The run's suffix keeps names unique against an external server that
-        // outlives the run — `de_0` from a previous or sibling run is someone
-        // else's scratch, not this one's (the container path always owns its
-        // server, so the suffix costs nothing there either).
-        let name = format!(
-            "de_{}_{}",
-            &uuid::Uuid::now_v7().simple().to_string()[..8],
-            NEXT_DB.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        );
+        // The name is a full v7 uuid, not a counter — nextest spawns a process
+        // per test so a process-local counter resets to 0 everywhere, and a
+        // short uuid prefix collides inside one millisecond (the timestamp
+        // shares its first chars): `de_01a13bda_0` appeared twice in one run.
+        // `de_` + 32 hex stays far under the 63-byte identifier limit.
+        let name = format!("de_{}", uuid::Uuid::now_v7().simple());
         match shared {
             Shared::Container { port, .. } => {
                 let admin = PgPoolOptions::new()
