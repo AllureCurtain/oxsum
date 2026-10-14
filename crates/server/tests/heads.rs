@@ -813,7 +813,9 @@ async fn log_checkpoint() {
     // head this endpoint itself serves, plus one witness's cosigned note.
     let (_, head_body) = call(&app, "GET", "/api/v1/log/head", None, Some(&key)).await;
     let note = head_body["data"]["note"].as_str().unwrap().to_owned();
-    let size = head_body["data"]["head"]["size"].as_u64().unwrap() as i64;
+    // The signed-head response flattens the head beside `note`: `data.size`,
+    // `data.root` — there is no `data.head` object.
+    let size = head_body["data"]["size"].as_u64().unwrap() as i64;
     sqlx::query(
         "INSERT INTO oxsum.witness_checkpoints (organization_id, head_size, note) \
          VALUES ($1::uuid, $2, $3)",
