@@ -457,8 +457,17 @@ async fn witness_checkpoints_anchor_and_collect_cosignatures() {
     .expect("the witness's cosignature was stored");
     assert!(cosig.contains("fake-witness"), "{cosig}");
 
-    // A second pass over an unchanged head anchors and cosigns nothing new.
-    enqueue(&world.db, kinds::WITNESS_CHECKPOINTS).await;
+    // A second pass over an unchanged head anchors and cosigns nothing new —
+    // the first pass's own next-occurrence row carries it; the test pulls its
+    // due date forward the way the webhook retry test does.
+    sqlx::query(
+        "UPDATE oxsum.jobs SET run_at = now() \
+         WHERE kind = $1 AND status = 'pending'",
+    )
+    .bind(kinds::WITNESS_CHECKPOINTS)
+    .execute(world.db.pool())
+    .await
+    .unwrap();
     run_due(&world.db, &ctx).await;
     let cosigs: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM oxsum.witness_cosignatures WHERE organization_id = $1",
