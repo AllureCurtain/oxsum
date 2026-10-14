@@ -2419,6 +2419,56 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/budget": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Budget-consumption snapshot
+         * @description Every budget scope the caller can read, with the committed figure and the
+         *     percentage consumed of its limit (issue #232). `committed` is the figure the
+         *     hold-side checks read: settled spend plus every outstanding hold, windowed to
+         *     the key's `budgetDuration` when it has one. `consumedPercent` floors
+         *     `committed * 100 / limit` and is null where no numeric limit exists. Three
+         *     scopes: `organization` carries the credit line beside the wallet balances,
+         *     `member` the acting member's own `budgetLimitMinor` (null for a key and for a
+         *     seat with no limit), `keys` every live key the principal's scope reaches with
+         *     its `spendLimitMinor`, `budgetDuration` and `windowStart`.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The budget snapshot */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["BudgetSnapshot"];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/billing-records": {
         parameters: {
             query?: never;
@@ -5468,7 +5518,7 @@ export interface components {
              */
             url: string;
             /** @description the event types this endpoint is subscribed to */
-            events: ("request.settled" | "org.suspended" | "deposit.credited" | "deposit.failed" | "deposit.reversed" | "balance.low" | "statement.finalized" | "statement.payment_overdue" | "statement.payment_status_updated" | "org.credit_limit_exceeded" | "anomaly.detected" | "budget.exhaustion_forecast")[];
+            events: ("request.settled" | "org.suspended" | "deposit.credited" | "deposit.failed" | "deposit.reversed" | "balance.low" | "statement.finalized" | "statement.payment_overdue" | "statement.payment_status_updated" | "org.credit_limit_exceeded" | "anomaly.detected" | "budget.exhaustion_forecast" | "budget.threshold_crossed")[];
             /** @description a disabled endpoint enqueues nothing */
             enabled: boolean;
             /**
@@ -5476,6 +5526,8 @@ export interface components {
              * @description the available-balance line `balance.low` fires below; absent or null leaves the endpoint deaf to the balance
              */
             balanceLowMinor?: number | null;
+            /** @description the consumption percentages `budget.threshold_crossed` fires at — each scope a settle re-evaluates (key spendLimitMinor, minting member's budgetLimitMinor, organization credit line) fires once per window; empty leaves the endpoint deaf */
+            budgetThresholdsPercent?: number[];
             /** @description the last four characters of the signing secret, for recognizing it */
             secretLast4?: string;
             /** Format: date-time */
@@ -5488,12 +5540,14 @@ export interface components {
              */
             url: string;
             /** @description the event types to subscribe; the catalog is listed under the operation's description */
-            events: ("request.settled" | "org.suspended" | "deposit.credited" | "deposit.failed" | "deposit.reversed" | "balance.low" | "statement.finalized" | "statement.payment_overdue" | "statement.payment_status_updated" | "org.credit_limit_exceeded" | "anomaly.detected" | "budget.exhaustion_forecast")[];
+            events: ("request.settled" | "org.suspended" | "deposit.credited" | "deposit.failed" | "deposit.reversed" | "balance.low" | "statement.finalized" | "statement.payment_overdue" | "statement.payment_status_updated" | "org.credit_limit_exceeded" | "anomaly.detected" | "budget.exhaustion_forecast" | "budget.threshold_crossed")[];
             /**
              * Format: int64
              * @description the available-balance line `balance.low` fires below; absent or null leaves the endpoint deaf to the balance
              */
             balanceLowMinor?: number | null;
+            /** @description the consumption percentages `budget.threshold_crossed` fires at (issue #232); absent or empty leaves the endpoint deaf */
+            budgetThresholdsPercent?: number[];
         };
         CreatedWebhook: components["schemas"]["WebhookEndpoint"] & {
             /** @description the signing secret (`whsec-…`); shown once, stored sealed under OXSUM_SECRET_KEY */
@@ -5704,6 +5758,45 @@ export interface components {
             /** Format: int64 */
             chargedMinor: number;
         };
+        BudgetSnapshot: {
+            organization: {
+                /** Format: int64 */
+                availableMinor: number;
+                /** Format: int64 */
+                reservedMinor: number;
+                /** Format: int64 */
+                creditLimitMinor?: number | null;
+                /** Format: int64 */
+                creditUsedMinor?: number | null;
+                /** @description creditUsed/creditLimit floored to a whole percent; null with no line */
+                consumedPercent?: number | null;
+            };
+            member: {
+                /** Format: int64 */
+                budgetLimitMinor?: number;
+                /** Format: int64 */
+                committedMinor?: number;
+                consumedPercent?: number | null;
+            } | null;
+            keys: {
+                /** Format: uuid */
+                keyId: string;
+                name?: string | null;
+                prefix: string;
+                /** Format: int64 */
+                spendLimitMinor?: number | null;
+                /** @enum {string|null} */
+                budgetDuration?: "daily" | "weekly" | "monthly" | null;
+                /**
+                 * Format: date
+                 * @description the UTC date the current budget window began; null for a cumulative limit
+                 */
+                windowStart?: string | null;
+                /** Format: int64 */
+                committedMinor: number;
+                consumedPercent?: number | null;
+            }[];
+        };
         BillingRecord: {
             /**
              * Format: date
@@ -5719,10 +5812,17 @@ export interface components {
             entryId: string;
             model: string;
             /**
+             * @description how the turn ended: `settled` covers every settled outcome including the anomalous kinds; `errored` marks the turns that served nothing after their hold (`upstream_error`, `upstream_unreachable`, `swept`); `refused` marks a request admission turned away before a hold, recorded as a marker entry so a 4xx or 429 still lands on the billing page
+             * @enum {string}
+             */
+            status?: "settled" | "errored" | "refused";
+            /** @description why the turn refused or errored, when the settlement recorded a reason — the caller-facing words the answer already carried; absent on a clean settle */
+            failureReason?: string;
+            /**
              * @description how the turn was priced
              * @enum {string}
              */
-            kind: "usage" | "estimated" | "client_cancelled" | "upstream_error" | "upstream_unreachable" | "capped" | "swept" | "unpriced" | "released";
+            kind: "usage" | "estimated" | "client_cancelled" | "upstream_error" | "upstream_unreachable" | "capped" | "swept" | "unpriced" | "released" | "refused";
             /**
              * Format: int64
              * @description tokens billed as input
@@ -6620,7 +6720,7 @@ export interface components {
         Error: {
             error: {
                 /** @enum {string} */
-                code: "VALIDATION_ERROR" | "UNAUTHORIZED" | "FORBIDDEN" | "INSUFFICIENT_FUNDS" | "KEY_LIMIT_EXCEEDED" | "RATE_LIMITED" | "TOO_MANY_HOLDS" | "TOKENS_PER_MINUTE" | "NOT_FOUND" | "CONFLICT" | "INTERNAL_ERROR" | "SERVICE_UNAVAILABLE";
+                code: "VALIDATION_ERROR" | "UNAUTHORIZED" | "FORBIDDEN" | "INSUFFICIENT_FUNDS" | "KEY_LIMIT_EXCEEDED" | "RATE_LIMITED" | "TOO_MANY_HOLDS" | "TOKENS_PER_MINUTE" | "POOL_BUSY" | "NOT_FOUND" | "CONFLICT" | "INTERNAL_ERROR" | "SERVICE_UNAVAILABLE";
                 message: string;
                 details: unknown[];
             };
@@ -6909,7 +7009,7 @@ export interface components {
                 /** @enum {string} */
                 type: "invalid_request_error" | "authentication_error" | "permission_error" | "rate_limit_exceeded" | "insufficient_quota" | "api_error";
                 param?: string | null;
-                /** @description oxsum's own code: VALIDATION_ERROR, UNAUTHORIZED, FORBIDDEN, CONFLICT, INSUFFICIENT_FUNDS, KEY_LIMIT_EXCEEDED, RATE_LIMITED, TOO_MANY_HOLDS, TOKENS_PER_MINUTE, IDEMPOTENCY_IN_FLIGHT, IDEMPOTENCY_MISMATCH, UPSTREAM_ERROR or INTERNAL_ERROR. A key past its spend limit arrives as 429 KEY_LIMIT_EXCEEDED with the `insufficient_quota` type, the same type the 402 INSUFFICIENT_FUNDS refusal carries; a key past its request, concurrency or settled-token allowance arrives as 429 with the `rate_limit_exceeded` type and the `Retry-After`/`X-RateLimit-*` headers. */
+                /** @description oxsum's own code: VALIDATION_ERROR, UNAUTHORIZED, FORBIDDEN, CONFLICT, INSUFFICIENT_FUNDS, KEY_LIMIT_EXCEEDED, RATE_LIMITED, TOO_MANY_HOLDS, TOKENS_PER_MINUTE, POOL_BUSY, IDEMPOTENCY_IN_FLIGHT, IDEMPOTENCY_MISMATCH, UPSTREAM_ERROR or INTERNAL_ERROR. A key past its spend limit arrives as 429 KEY_LIMIT_EXCEEDED with the `insufficient_quota` type, the same type the 402 INSUFFICIENT_FUNDS refusal carries; a key past its request, concurrency or settled-token allowance arrives as 429 with the `rate_limit_exceeded` type and the `Retry-After`/`X-RateLimit-*` headers. A saturated connection pool arrives as 429 POOL_BUSY with `Retry-After` alone — backpressure, not a caller quota. */
                 code?: string | null;
             };
         };
