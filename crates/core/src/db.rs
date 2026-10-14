@@ -155,6 +155,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0035_upstream_price_drift",
         include_str!("../migrations/0035_upstream_price_drift.sql"),
     ),
+    (
+        "0037_usage_outcome",
+        include_str!("../migrations/0037_usage_outcome.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.
