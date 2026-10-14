@@ -363,6 +363,29 @@ impl Db {
     /// # Errors
     ///
     /// Storage failures surface as [`WalletError`].
+    /// The committed-spend cap one member's seat carries (issue #232): `None`
+    /// when the seat has no limit — or when there is no seat, the same answer
+    /// `members` gives for an id that is not in.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn membership_budget(
+        &self,
+        organization_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<Option<i64>, WalletError> {
+        Ok(sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT budget_limit_minor FROM oxsum.memberships \
+             WHERE organization_id = $1 AND user_id = $2",
+        )
+        .bind(organization_id)
+        .bind(user_id)
+        .fetch_optional(self.pool())
+        .await?
+        .flatten())
+    }
+
     pub async fn members(&self, organization_id: Uuid) -> Result<Vec<Member>, WalletError> {
         let rows = sqlx::query(
             "SELECT m.user_id, u.email, m.role, m.budget_limit_minor, m.created_at \
@@ -572,6 +595,15 @@ impl Db {
             .bind(organization_id)
             .bind(user_id)
             .bind(budget)
+            .execute(&mut *tx)
+            .await?;
+            // The re-set budget re-arms the member's threshold latches
+            // (issue #232), the way the key PATCH clears its forecast date.
+            sqlx::query(
+                "DELETE FROM oxsum.budget_threshold_fires \
+                 WHERE scope = 'member' AND scope_id = $1",
+            )
+            .bind(user_id)
             .execute(&mut *tx)
             .await?;
             target.budget_limit_minor = budget;

@@ -1749,6 +1749,30 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/budget:
+    get:
+      summary: Budget-consumption snapshot
+      description: |
+        Every budget scope the caller can read, with the committed figure and the
+        percentage consumed of its limit (issue #232). `committed` is the figure the
+        hold-side checks read: settled spend plus every outstanding hold, windowed to
+        the key's `budgetDuration` when it has one. `consumedPercent` floors
+        `committed * 100 / limit` and is null where no numeric limit exists. Three
+        scopes: `organization` carries the credit line beside the wallet balances,
+        `member` the acting member's own `budgetLimitMinor` (null for a key and for a
+        seat with no limit), `keys` every live key the principal's scope reaches with
+        its `spendLimitMinor`, `budgetDuration` and `windowStart`.
+      responses:
+        "200":
+          description: The budget snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BudgetSnapshot" }
+        "401": { $ref: "#/components/responses/Error" }
   /api/v1/billing-records:
     get:
       summary: Settled turns, newest first
@@ -3897,6 +3921,7 @@ components:
               - org.credit_limit_exceeded
               - anomaly.detected
               - budget.exhaustion_forecast
+              - budget.threshold_crossed
           description: the event types this endpoint is subscribed to
         enabled: { type: boolean, description: "a disabled endpoint enqueues nothing" }
         balanceLowMinor:
@@ -3904,6 +3929,10 @@ components:
           format: int64
           nullable: true
           description: "the available-balance line `balance.low` fires below; absent or null leaves the endpoint deaf to the balance"
+        budgetThresholdsPercent:
+          type: array
+          items: { type: integer, minimum: 1, maximum: 100 }
+          description: "the consumption percentages `budget.threshold_crossed` fires at — each scope a settle re-evaluates (key spendLimitMinor, minting member's budgetLimitMinor, organization credit line) fires once per window; empty leaves the endpoint deaf"
         secretLast4: { type: string, description: "the last four characters of the signing secret, for recognizing it" }
         createdAt: { type: string, format: date-time }
     CreateWebhookRequest:
@@ -3929,6 +3958,7 @@ components:
               - org.credit_limit_exceeded
               - anomaly.detected
               - budget.exhaustion_forecast
+              - budget.threshold_crossed
           description: "the event types to subscribe; the catalog is listed under the operation's description"
         balanceLowMinor:
           type: integer
@@ -3936,6 +3966,10 @@ components:
           minimum: 0
           nullable: true
           description: "the available-balance line `balance.low` fires below; absent or null leaves the endpoint deaf to the balance"
+        budgetThresholdsPercent:
+          type: array
+          items: { type: integer, minimum: 1, maximum: 100 }
+          description: "the consumption percentages `budget.threshold_crossed` fires at (issue #232); absent or empty leaves the endpoint deaf"
     CreatedWebhook:
       allOf:
         - $ref: "#/components/schemas/WebhookEndpoint"
@@ -4095,6 +4129,40 @@ components:
         cachedTokens: { type: integer, format: int64 }
         reasoningTokens: { type: integer, format: int64 }
         chargedMinor: { type: integer, format: int64 }
+    BudgetSnapshot:
+      type: object
+      required: [organization, member, keys]
+      properties:
+        organization:
+          type: object
+          required: [availableMinor, reservedMinor]
+          properties:
+            availableMinor: { type: integer, format: int64 }
+            reservedMinor: { type: integer, format: int64 }
+            creditLimitMinor: { type: integer, format: int64, nullable: true }
+            creditUsedMinor: { type: integer, format: int64, nullable: true }
+            consumedPercent: { type: integer, nullable: true, description: "creditUsed/creditLimit floored to a whole percent; null with no line" }
+        member:
+          type: object
+          nullable: true
+          properties:
+            budgetLimitMinor: { type: integer, format: int64 }
+            committedMinor: { type: integer, format: int64 }
+            consumedPercent: { type: integer, nullable: true }
+        keys:
+          type: array
+          items:
+            type: object
+            required: [keyId, prefix, committedMinor]
+            properties:
+              keyId: { type: string, format: uuid }
+              name: { type: string, nullable: true }
+              prefix: { type: string }
+              spendLimitMinor: { type: integer, format: int64, nullable: true }
+              budgetDuration: { type: string, nullable: true, enum: [daily, weekly, monthly] }
+              windowStart: { type: string, format: date, nullable: true, description: "the UTC date the current budget window began; null for a cumulative limit" }
+              committedMinor: { type: integer, format: int64 }
+              consumedPercent: { type: integer, nullable: true }
     BillingRecord:
       type: object
       required: [bookedOn, requestId, entryId, model, kind, inputTokens, outputTokens, chargedMinor, upstreamAttempts]

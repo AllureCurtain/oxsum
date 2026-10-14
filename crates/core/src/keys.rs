@@ -88,7 +88,7 @@ impl BudgetDuration {
 
     /// The first day of the UTC calendar period `on` falls in: `daily` is `on` itself,
     /// `weekly` is the Monday of its ISO week, `monthly` is the first of its month.
-    pub(crate) fn period_start(self, on: time::Date) -> time::Date {
+    pub fn period_start(self, on: time::Date) -> time::Date {
         match self {
             Self::Daily => on,
             Self::Weekly => {
@@ -528,6 +528,17 @@ impl Db {
                 .await?
             }
         };
+        if row.is_some() {
+            // The re-set limit re-arms the key's threshold latches: a budget
+            // that already fired announces again under the new line (issue #232).
+            sqlx::query(
+                "DELETE FROM oxsum.budget_threshold_fires \
+                 WHERE scope = 'key' AND scope_id = $1",
+            )
+            .bind(key_id)
+            .execute(self.pool())
+            .await?;
+        }
         row.as_ref().map(key_from_row).transpose()
     }
 

@@ -16,6 +16,9 @@ pub(crate) struct CreateWebhookReq {
     /// The available-balance line `balance.low` fires below (issue #200);
     /// absent or null is off.
     balance_low_minor: Option<i64>,
+    /// The consumption percentages `budget.threshold_crossed` fires at
+    /// (issue #232) — integers 1–100; absent or empty is off.
+    budget_thresholds_percent: Option<Vec<i32>>,
 }
 
 /// Register a webhook endpoint; the signing secret is answered once, here.
@@ -39,6 +42,7 @@ pub(crate) async fn create_webhook(
             &r.url,
             &r.events,
             r.balance_low_minor,
+            r.budget_thresholds_percent.as_deref().unwrap_or(&[]),
             secret,
         )
         .await?)

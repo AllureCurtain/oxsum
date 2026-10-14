@@ -101,6 +101,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/balance", get(billing::balance))
         .route("/usage", get(usage::usage))
+        .route("/budget", get(usage::budget))
         .route("/billing-records", get(usage::billing_records))
         .route("/estimate-price", post(usage::estimate_price))
         .route("/pricing", get(usage::pricing))

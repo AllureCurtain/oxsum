@@ -103,6 +103,126 @@ pub(crate) struct UsageRes {
     days: Vec<oxsum_core::UsageDay>,
 }
 
+/// `GET /api/v1/budget` — every budget scope the caller can read, with the
+/// committed figure and the percentage consumed of its limit (issue #232).
+/// `committed` is the figure the hold-side checks read: settled spend plus
+/// outstanding holds, windowed to the key's `budgetDuration` when it has one.
+pub(crate) async fn budget(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+) -> ApiResult<BudgetRes> {
+    let organization = principal.organization();
+    let wallet = wallet(&state.tenants, organization).await?;
+    let (available, reserved, credit_limit, credit_used) = tokio::try_join!(
+        wallet.available(),
+        wallet.reserved(),
+        wallet.credit_limit(),
+        wallet.credit_used()
+    )?;
+    // The member's own seat when it carries a limit — a key names no member.
+    let member = match principal.user_id() {
+        Some(user_id) => match state.db.membership_budget(organization.id, user_id).await? {
+            Some(limit) => {
+                let committed = wallet.member_committed(&organization.id, &user_id).await?;
+                Some(MemberBudget {
+                    budget_limit_minor: limit,
+                    committed_minor: committed,
+                    consumed_percent: consumed_percent(committed, limit),
+                })
+            }
+            None => None,
+        },
+        None => None,
+    };
+    let today = today();
+    let keys = state
+        .db
+        .list_keys(organization.id, principal.key_scope())
+        .await?;
+    let mut key_budgets = Vec::with_capacity(keys.len());
+    for key in keys.iter().filter(|key| key.revoked_at.is_none()) {
+        let window_start = key
+            .budget_duration
+            .map(|duration| duration.period_start(today));
+        let committed = wallet.key_committed_window(&key.id, window_start).await?;
+        key_budgets.push(KeyBudget {
+            key_id: key.id,
+            name: key.name.clone(),
+            prefix: key.prefix.clone(),
+            spend_limit_minor: key.spend_limit_minor,
+            budget_duration: key
+                .budget_duration
+                .map(|duration| duration.as_str().to_owned()),
+            window_start,
+            committed_minor: committed,
+            consumed_percent: key
+                .spend_limit_minor
+                .and_then(|limit| consumed_percent(committed, limit)),
+        });
+    }
+    ok(BudgetRes {
+        organization: OrgBudget {
+            available_minor: available,
+            reserved_minor: reserved,
+            credit_limit_minor: (credit_limit > 0).then_some(credit_limit),
+            credit_used_minor: (credit_limit > 0).then_some(credit_used),
+            consumed_percent: consumed_percent(credit_used, credit_limit),
+        },
+        member,
+        keys: key_budgets,
+    })
+}
+
+/// The percentage `committed` is of `limit`, floored — `None` when there is no
+/// numeric line to measure against.
+fn consumed_percent(committed: i64, limit: i64) -> Option<i32> {
+    (limit > 0).then(|| (i128::from(committed.max(0)) * 100 / i128::from(limit)) as i32)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BudgetRes {
+    organization: OrgBudget,
+    /// The acting member's own budget — `null` for a key and for a seat with
+    /// no `budgetLimitMinor`.
+    member: Option<MemberBudget>,
+    keys: Vec<KeyBudget>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OrgBudget {
+    available_minor: i64,
+    reserved_minor: i64,
+    credit_limit_minor: Option<i64>,
+    credit_used_minor: Option<i64>,
+    consumed_percent: Option<i32>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MemberBudget {
+    budget_limit_minor: i64,
+    committed_minor: i64,
+    /// `null` when the limit is 0 — a line that admits nothing has no ratio.
+    consumed_percent: Option<i32>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct KeyBudget {
+    key_id: uuid::Uuid,
+    name: Option<String>,
+    prefix: String,
+    spend_limit_minor: Option<i64>,
+    budget_duration: Option<String>,
+    /// The UTC date the key's current window began — `null` for a cumulative
+    /// limit, whose consumption is all-time.
+    window_start: Option<time::Date>,
+    committed_minor: i64,
+    consumed_percent: Option<i32>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RecordsQuery {

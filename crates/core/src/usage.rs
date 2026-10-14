@@ -667,6 +667,12 @@ impl Db {
         // `spendLimitMinor` and `budgetDuration` is projected forward, and the
         // warning enqueues once per window when the projection crosses inside it.
         Self::forecast_key_budget(&mut tx, &row.tenant_id, row.key_id).await?;
+        // Armed budget thresholds re-evaluate off those same settled figures
+        // (issue #232) — an organization the settle belongs to and the ledger
+        // it posts to are both required for the read.
+        if let Ok(organization) = Uuid::parse_str(&row.tenant_id) {
+            Self::budget_thresholds(&mut tx, organization, &row.tenant_id, row.key_id).await?;
+        }
         tx.commit().await?;
         Ok(())
     }
@@ -768,6 +774,280 @@ impl Db {
         };
         forecast.key_id = key_id;
         Self::enqueue_budget_forecast(tx, tenant_id, &forecast).await
+    }
+
+    /// `budget.threshold_crossed` (issue #232): every budget scope this settle
+    /// burned against re-evaluates its consumption percentage, and each armed
+    /// line — `budgetThresholdsPercent` on an enabled subscribed endpoint —
+    /// fires at most once per window, latched by `budget_threshold_fires`
+    /// inside this transaction.
+    ///
+    /// Three scopes where a numeric limit exists: the settling key's
+    /// `spendLimitMinor` (windowed by its `budgetDuration`, cumulative without
+    /// one), the minting member's `budgetLimitMinor` across every key they
+    /// minted, and the organization's credit line. `committed` is the figure
+    /// the hold-side limit checks read — settled spend plus every outstanding
+    /// hold — and `consumedPercent` floors `committed * 100 / limit`, so the
+    /// crossing line is the one the caller sees.
+    ///
+    /// The latch write and the delivery enqueue happen in `record_usage`'s
+    /// transaction: commit lands both, rollback lands neither, a replayed
+    /// usage row refires nothing, and two settles racing the same threshold
+    /// cannot both pass — `INSERT … ON CONFLICT DO NOTHING` returns the newly
+    /// latched rows only. A constraint PATCH deletes the scope's rows, so a
+    /// re-set limit announces again.
+    async fn budget_thresholds(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        organization: Uuid,
+        tenant_id: &str,
+        key_id: Option<Uuid>,
+    ) -> Result<(), WalletError> {
+        // Nobody armed means no read at all — the usual case costs one EXISTS.
+        let armed: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM oxsum.webhook_endpoints \
+             WHERE organization_id = $1 AND enabled \
+               AND 'budget.threshold_crossed' = ANY(events) \
+               AND cardinality(budget_thresholds) > 0)",
+        )
+        .bind(organization)
+        .fetch_one(&mut **tx)
+        .await?;
+        if !armed {
+            return Ok(());
+        }
+        let ledger = format!("ledger_{}", tenant_id.replace('"', "\"\""));
+        let has_ledger = sqlx::query_scalar::<_, Option<String>>("SELECT to_regclass($1)::text")
+            .bind(format!("\"{ledger}\".accounts"))
+            .fetch_one(&mut **tx)
+            .await?
+            .is_some();
+        if !has_ledger {
+            return Ok(());
+        }
+        let accounts: Vec<(i32, String)> = sqlx::query_as(&format!(
+            "SELECT account_index, path FROM \"{ledger}\".accounts \
+             WHERE path = ANY($1)"
+        ))
+        .bind(vec![
+            crate::wallet::WALLET.to_owned(),
+            crate::wallet::BONUS.to_owned(),
+            crate::wallet::CREDIT_LINE.to_owned(),
+            crate::wallet::FACILITY.to_owned(),
+        ])
+        .fetch_all(&mut **tx)
+        .await?;
+        let pools: Vec<i32> = accounts
+            .iter()
+            .filter(|(_, path)| path != crate::wallet::FACILITY)
+            .map(|(index, _)| *index)
+            .collect();
+        if pools.is_empty() {
+            return Ok(());
+        }
+        let facility = accounts
+            .iter()
+            .find(|(_, path)| path == crate::wallet::FACILITY)
+            .map(|(index, _)| *index);
+        let credit_pool = accounts
+            .iter()
+            .find(|(_, path)| path == crate::wallet::CREDIT_LINE)
+            .map(|(index, _)| *index);
+
+        // `(scope, scope id, window start, limit, committed)` for every scope a
+        // settle can burn against. `window_start` latches on the epoch for the
+        // cumulative scopes — one row per endpoint+threshold until the limit
+        // itself is re-set.
+        let epoch = time::macros::date!(1970 - 01 - 01);
+        let today = OffsetDateTime::now_utc().date();
+        let mut scopes: Vec<(&'static str, Uuid, time::Date, i64, i64)> = Vec::new();
+        if let Some(key_id) = key_id {
+            let key = sqlx::query(
+                "SELECT spend_limit_minor, budget_duration, created_by \
+                 FROM oxsum.api_keys WHERE key_id = $1",
+            )
+            .bind(key_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+            if let Some(key) = key {
+                let limit: Option<i64> = key.try_get("spend_limit_minor")?;
+                let duration: Option<String> = key.try_get("budget_duration")?;
+                if let Some(limit) = limit {
+                    let window_start = duration
+                        .as_deref()
+                        .map(crate::keys::BudgetDuration::parse)
+                        .transpose()?
+                        .map(|duration| duration.period_start(today));
+                    let committed = Self::committed_for(
+                        tx,
+                        &ledger,
+                        &pools,
+                        &[key_id.as_simple().to_string()],
+                        window_start,
+                    )
+                    .await?;
+                    scopes.push((
+                        "key",
+                        key_id,
+                        window_start.unwrap_or(epoch),
+                        limit,
+                        committed,
+                    ));
+                }
+                // The member's own line: the budget a membership carries across
+                // every key its owner minted — cumulative, no window.
+                if let Some(member) = key.try_get::<Option<Uuid>, _>("created_by")? {
+                    let limit: Option<i64> = sqlx::query_scalar(
+                        "SELECT budget_limit_minor FROM oxsum.memberships \
+                         WHERE organization_id = $1 AND user_id = $2",
+                    )
+                    .bind(organization)
+                    .bind(member)
+                    .fetch_one(&mut **tx)
+                    .await?;
+                    if let Some(limit) = limit {
+                        let actors: Vec<String> = sqlx::query_scalar(
+                            "SELECT replace(key_id::text, '-', '') FROM oxsum.api_keys \
+                             WHERE organization_id = $1 AND created_by = $2",
+                        )
+                        .bind(organization)
+                        .bind(member)
+                        .fetch_all(&mut **tx)
+                        .await?;
+                        let committed =
+                            Self::committed_for(tx, &ledger, &pools, &actors, None).await?;
+                        scopes.push(("member", member, epoch, limit, committed));
+                    }
+                }
+            }
+        }
+        // The organization's line is the credit facility against what is drawn —
+        // settled draws plus the reservations in flight, like `credit_used`.
+        if let (Some(facility), Some(credit_pool)) = (facility, credit_pool) {
+            let limit: i64 = sqlx::query_scalar(&format!(
+                "SELECT -COALESCE(SUM(CASE WHEN p.direction = 'C' \
+                         THEN p.amount_minor ELSE -p.amount_minor END), 0)::bigint \
+                 FROM \"{ledger}\".postings p \
+                 JOIN \"{ledger}\".entries e ON e.entry_id = p.entry_id \
+                 WHERE p.account_index = $1 AND p.layer = 'settled' AND e.log_index IS NOT NULL"
+            ))
+            .bind(facility)
+            .fetch_one(&mut **tx)
+            .await?;
+            let headroom: i64 = sqlx::query_scalar(&format!(
+                "SELECT COALESCE(SUM(CASE \
+                         WHEN p.layer = 'settled' AND p.direction = 'C' THEN p.amount_minor \
+                         WHEN p.layer = 'settled' AND p.direction = 'D' THEN -p.amount_minor \
+                         WHEN p.layer = 'pending' AND p.direction = 'D' THEN -p.amount_minor \
+                         WHEN p.layer = 'pending' AND p.direction = 'C' THEN p.amount_minor \
+                         ELSE 0 END), 0)::bigint \
+                 FROM \"{ledger}\".postings p \
+                 JOIN \"{ledger}\".entries e ON e.entry_id = p.entry_id \
+                 WHERE p.account_index = $1 AND e.log_index IS NOT NULL"
+            ))
+            .bind(credit_pool)
+            .fetch_one(&mut **tx)
+            .await?;
+            if limit > 0 {
+                scopes.push((
+                    "organization",
+                    organization,
+                    epoch,
+                    limit,
+                    (limit - headroom).max(0),
+                ));
+            }
+        }
+
+        for (scope, scope_id, window_start, limit, committed) in scopes {
+            if limit <= 0 {
+                continue;
+            }
+            let consumed_percent = (i128::from(committed.max(0)) * 100 / i128::from(limit)) as i32;
+            // The crossing writes the latch row; `RETURNING` gives back only the
+            // thresholds latched by this settle — a refire is impossible even
+            // under two settles racing the same line.
+            let fired = sqlx::query(
+                "INSERT INTO oxsum.budget_threshold_fires \
+                 (endpoint_id, scope, scope_id, window_start, threshold_percent) \
+                 SELECT e.endpoint_id, $2, $3, $4, t \
+                 FROM oxsum.webhook_endpoints e \
+                 CROSS JOIN LATERAL unnest(e.budget_thresholds) AS t \
+                 WHERE e.organization_id = $1 AND e.enabled \
+                   AND 'budget.threshold_crossed' = ANY(e.events) AND t <= $5 \
+                 ON CONFLICT DO NOTHING \
+                 RETURNING endpoint_id, threshold_percent",
+            )
+            .bind(organization)
+            .bind(scope)
+            .bind(scope_id)
+            .bind(window_start)
+            .bind(consumed_percent)
+            .fetch_all(&mut **tx)
+            .await?;
+            let scope_key = match scope {
+                "key" => "keyId",
+                "member" => "memberId",
+                _ => "organizationId",
+            };
+            for fire in fired {
+                let endpoint_id: Uuid = fire.try_get("endpoint_id")?;
+                let threshold: i16 = fire.try_get("threshold_percent")?;
+                let delivery_id = Uuid::new_v4();
+                let payload = crate::webhooks::event_envelope(
+                    delivery_id,
+                    crate::webhooks::BUDGET_THRESHOLD_CROSSED,
+                    organization,
+                    serde_json::json!({
+                        "scope": scope,
+                        scope_key: scope_id,
+                        "limitMinor": limit,
+                        "committedMinor": committed,
+                        "consumedPercent": consumed_percent,
+                        "thresholdPercent": threshold,
+                        "windowStart": (window_start != epoch).then(|| window_start.to_string()),
+                    }),
+                );
+                sqlx::query(
+                    "INSERT INTO oxsum.webhook_deliveries \
+                     (delivery_id, endpoint_id, organization_id, event_type, payload) \
+                     VALUES ($1, $2, $3, $4, $5)",
+                )
+                .bind(delivery_id)
+                .bind(endpoint_id)
+                .bind(organization)
+                .bind(crate::webhooks::BUDGET_THRESHOLD_CROSSED)
+                .bind(payload)
+                .execute(&mut **tx)
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Settled spend plus outstanding holds attributed to `actors` — the
+    /// committed figure the budget scopes share, windowed to entries booked on
+    /// or after `since` when the scope's `budgetDuration` gives one (pending
+    /// always counts in full, like `key_committed_in`).
+    async fn committed_for(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        ledger: &str,
+        pools: &[i32],
+        actors: &[String],
+        since: Option<time::Date>,
+    ) -> Result<i64, WalletError> {
+        Ok(sqlx::query_scalar(&format!(
+            "SELECT COALESCE(SUM(CASE WHEN p.direction = 'D' THEN p.amount_minor \
+                                  ELSE -p.amount_minor END), 0)::bigint \
+             FROM \"{ledger}\".postings p \
+             JOIN \"{ledger}\".entries e ON e.entry_id = p.entry_id \
+             WHERE p.account_index = ANY($1) AND e.provenance_actor = ANY($2) \
+               AND (p.layer = 'pending' OR $3::date IS NULL OR e.booking_date >= $3)"
+        ))
+        .bind(pools)
+        .bind(actors)
+        .bind(since)
+        .fetch_one(&mut **tx)
+        .await?)
     }
 
     /// How many tokens a key has settled inside the trailing minute, and when
