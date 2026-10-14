@@ -65,7 +65,6 @@ enum Shared {
     /// database of its own, dropped when the harness is.
     External {
         base_url: String,
-        admin: sqlx::PgPool,
     },
 }
 
@@ -98,21 +97,12 @@ async fn shared() -> &'static Shared {
                 .ok()
                 .or_else(|| std::env::var("DATABASE_URL").ok())
             {
-                let admin = PgPoolOptions::new()
-                    .max_connections(4)
-                    // The shared cluster serializes concurrent CREATE/DROP
-                    // DATABASE on its catalog locks while twenty-something
-                    // nextest processes race it — sqlx's 30s acquire timeout
-                    // misreads that queue as a dead pool, so the harness waits
-                    // the way a `pg_sleep` test waits: patiently.
-                    .acquire_timeout(std::time::Duration::from_secs(120))
-                    .connect(&with_database(&url, "postgres"))
-                    .await
-                    .expect("connects to the maintenance database");
-                return Shared::External {
-                    base_url: url,
-                    admin,
-                };
+                // No pool lives here: `cargo test` runs every test on its own
+                // runtime in one process, so a shared pool would answer the
+                // next test's queries on a dead runtime ("context is being
+                // shutdown"). The URL is runtime-free; each harness builds its
+                // own maintenance pool inside its own test's runtime.
+                return Shared::External { base_url: url };
             }
             let container = PostgresImage::default()
                 .with_tag("17-alpine")
@@ -228,13 +218,25 @@ impl Harness {
                 let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/{name}");
                 Self::connect(url, name, None).await
             }
-            Shared::External { base_url, admin } => {
+            Shared::External { base_url } => {
+                // The shared cluster serializes concurrent CREATE/DROP
+                // DATABASE on its catalog locks while the workspace suite
+                // races it — sqlx's 30s acquire timeout misreads that queue as
+                // a dead pool, so the maintenance pool waits the way a
+                // `pg_sleep` test waits: patiently. One connection suffices:
+                // this harness's only catalog work is the create and the drop.
+                let admin = sqlx::postgres::PgPoolOptions::new()
+                    .max_connections(1)
+                    .acquire_timeout(std::time::Duration::from_secs(120))
+                    .connect(&with_database(base_url, "postgres"))
+                    .await
+                    .expect("connects to the maintenance database");
                 sqlx::query(&format!("CREATE DATABASE {name}"))
-                    .execute(admin)
+                    .execute(&admin)
                     .await
                     .expect("creates a database");
                 let url = with_database(base_url, &name);
-                Self::connect(url, name.clone(), Some((admin.clone(), name))).await
+                Self::connect(url, name.clone(), Some((admin, name))).await
             }
         }
     }
