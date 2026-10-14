@@ -143,6 +143,9 @@ impl GatewayError {
             | Self::Idempotency { .. }
             | Self::Unauthorized
             | Self::Conflict(_)
+            // A saturated pool refuses before any hold — nothing to record but
+            // the 429 itself; the variant carries no message by design.
+            | Self::PoolBusy
             | Self::Internal => None,
         }
     }
