@@ -357,9 +357,10 @@ impl Db {
         on: time::Date,
         discounted: bool,
     ) -> Result<Option<i64>, WalletError> {
-        let Some(model) = world.catalog.get(seq as usize % world.catalog.len()) else {
+        if world.catalog.is_empty() {
             return Ok(None);
-        };
+        }
+        let model = &world.catalog[seq as usize % world.catalog.len()];
         // Rotate the payer: the member's key every fifth turn so the budget has
         // spend to count, the constrained staging key every seventh on its one
         // allowed model, the owner's key otherwise.
