@@ -1800,7 +1800,9 @@ async fn an_upstream_error_is_a_billing_record_with_its_reason() {
     let response = chat(&world.app, &world.key, simple(&world.model("refuse"))).await;
     let id = request_id(&response);
     let (status, _) = json_of(response).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // Upstream refusals normalize to 502 — the gateway never lets upstream's
+    // status blame the client — while the error body passes through.
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
 
     let (status, page) = call(
         &world.app,
