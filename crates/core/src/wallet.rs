@@ -59,7 +59,7 @@ pub(crate) const CREDIT_LINE: &str = "Liabilities:CreditLine";
 /// draw. A draw never touches it — it moves between `CreditLine` and
 /// `Revenue` — so what the organization owes is the limit minus the line's
 /// balance, not a separate counter that could drift.
-const FACILITY: &str = "Assets:CreditFacility";
+pub(crate) const FACILITY: &str = "Assets:CreditFacility";
 
 /// The idempotency key under which the one-time pool migration posts its
 /// `debit Wallet, credit Bonus` entry. Deterministic, so a second
@@ -1166,6 +1166,32 @@ impl Wallet {
         self.key_committed_in(&mut conn, key_id, None).await
     }
 
+    /// The [`key_committed`](Self::key_committed) read for a window — settled
+    /// charges plus outstanding holds, the settled half scoped to entries
+    /// booked on or after `since` (issue #232: the consumption a
+    /// `budgetDuration` budget is measured against).
+    pub async fn key_committed_window(
+        &self,
+        key_id: &Uuid,
+        since: Option<Date>,
+    ) -> Result<i64, WalletError> {
+        let mut conn = self.store.pool().acquire().await?;
+        self.key_committed_in(&mut conn, key_id, since).await
+    }
+
+    /// The [`member_committed_in`](Self::member_committed_in) read on its own
+    /// connection: the member's committed spend across every key they minted
+    /// (issue #232).
+    pub async fn member_committed(
+        &self,
+        organization_id: &Uuid,
+        member: &Uuid,
+    ) -> Result<i64, WalletError> {
+        let mut conn = self.store.pool().acquire().await?;
+        self.member_committed_in(&mut conn, organization_id, member)
+            .await
+    }
+
     /// The [`key_committed`](Self::key_committed) read, on the caller's connection: the
     /// limit check runs it inside the transaction that holds the per-key advisory lock.
     ///
@@ -1656,6 +1682,15 @@ impl Wallet {
                 ))
             }
             Ok(receipt) => {
+                // The re-set line re-arms the organization's threshold latches
+                // (issue #232), like the key PATCH clears its forecast date.
+                sqlx::query(
+                    "DELETE FROM oxsum.budget_threshold_fires \
+                     WHERE scope = 'organization' AND scope_id = $1",
+                )
+                .bind(Uuid::parse_str(&self.tenant_id).unwrap_or_default())
+                .execute(&mut *tx)
+                .await?;
                 tx.commit().await?;
                 Ok(Some(receipt))
             }

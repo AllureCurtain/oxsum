@@ -405,6 +405,25 @@ async fn keys_page(cx: &Cx) -> Result<impl View> {
         .key_budget_forecasts(org_id, key_scope(&sctx.principal))
         .await
         .map_err(|_| internal("the budget forecasts could not be read"))?;
+    // The committed figure each budget line is measured against — settled spend
+    // plus outstanding holds inside the key's window (issue #232).
+    let wallet = sctx
+        .tenants
+        .get(&sctx.principal.organization.tenant_id)
+        .await
+        .map_err(|_| internal("the wallet could not be opened"))?;
+    let today = time::OffsetDateTime::now_utc().date();
+    let mut committed = std::collections::BTreeMap::new();
+    for key in &keys {
+        if key.spend_limit_minor.is_some() && key.revoked_at.is_none() {
+            let window = key.budget_duration.map(|d| d.period_start(today));
+            let figure = wallet
+                .key_committed_window(&key.id, window)
+                .await
+                .unwrap_or(0);
+            committed.insert(key.id, figure);
+        }
+    }
     Ok(view! {
         dashboard_frame(
             title: "Keys",
@@ -425,7 +444,7 @@ async fn keys_page(cx: &Cx) -> Result<impl View> {
                         <tr>
                             <td>(key.name.clone().unwrap_or_default())</td>
                             <td><code>(key.prefix.clone())</code></td>
-                            <td>(budget_line(&key, &forecasts))</td>
+                            <td>(budget_line(&key, &forecasts, committed.get(&key.id).copied()))</td>
                             <td>
                                 <form method="post" action="/dashboard/keys/revoke" style="display:inline">
                                     <input type="hidden" name="key_id" value=(key.id.to_string()) />
@@ -440,15 +459,32 @@ async fn keys_page(cx: &Cx) -> Result<impl View> {
     })
 }
 
-/// The budget cell one key row renders: the limit and its window when set, and the
-/// projected exhaustion date when the current burn rate crosses inside the period —
-/// the same date the `budget.exhaustion_forecast` webhook announces (issue #220).
-fn budget_line(key: &oxsum_core::ApiKey, forecasts: &[oxsum_core::BudgetForecast]) -> String {
+/// The budget cell one key row renders: the percentage consumed of the limit
+/// and its window (issue #232), and the projected exhaustion date when the
+/// current burn rate crosses inside the period — the same date the
+/// `budget.exhaustion_forecast` webhook announces (issue #220).
+fn budget_line(
+    key: &oxsum_core::ApiKey,
+    forecasts: &[oxsum_core::BudgetForecast],
+    committed: Option<i64>,
+) -> String {
     use std::fmt::Write as _;
-    let (Some(limit), Some(duration)) = (key.spend_limit_minor, key.budget_duration) else {
+    let Some(limit) = key.spend_limit_minor else {
         return String::new();
     };
-    let mut line = format!("{} / {}", credits(limit), duration.as_str());
+    let mut line = String::new();
+    if let Some(committed) = committed {
+        let pct = if limit > 0 {
+            (i128::from(committed.max(0)) * 100 / i128::from(limit)) as i64
+        } else {
+            0
+        };
+        let _ = write!(line, "{pct}% of ");
+    }
+    let _ = write!(line, "{}", credits(limit));
+    if let Some(duration) = key.budget_duration {
+        let _ = write!(line, " / {}", duration.as_str());
+    }
     if let Some(forecast) = forecasts.iter().find(|f| f.key_id == key.id) {
         let _ = write!(
             line,

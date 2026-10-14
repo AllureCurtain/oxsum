@@ -59,6 +59,16 @@ pub const ANOMALY_DETECTED: &str = "anomaly.detected";
 /// hold would otherwise be the first sign of. Fires once per key per window;
 /// the latch is the `budget_forecast_sent_for` date on the key row (issue #220).
 pub const BUDGET_EXHAUSTION_FORECAST: &str = "budget.exhaustion_forecast";
+/// A scoped budget crossed an armed consumption percentage (issue #232): the
+/// endpoint's `budgetThresholdsPercent` names the lines it watches, and each
+/// scope a settle re-evaluates — the key's `spendLimitMinor`, the minting
+/// member's `budgetLimitMinor`, and the organization's credit line — fires at
+/// most once per window per threshold, latched by `budget_threshold_fires`
+/// inside the settle's own transaction. `data` carries `scope`, the scope's
+/// own id (`keyId`, `memberId` or `organizationId`), `limitMinor`,
+/// `committedMinor`, `consumedPercent`, `thresholdPercent`, and `windowStart`
+/// for the windowed scopes. A constraint PATCH re-arms the scope's latches.
+pub const BUDGET_THRESHOLD_CROSSED: &str = "budget.threshold_crossed";
 
 /// Every event name a subscription may carry.
 const KNOWN_EVENTS: &[&str] = &[
@@ -74,6 +84,7 @@ const KNOWN_EVENTS: &[&str] = &[
     ORG_CREDIT_LIMIT_EXCEEDED,
     ANOMALY_DETECTED,
     BUDGET_EXHAUSTION_FORECAST,
+    BUDGET_THRESHOLD_CROSSED,
 ];
 
 /// How many times a delivery is attempted before it is marked `failed` — the
@@ -232,6 +243,10 @@ pub struct WebhookEndpoint {
     pub enabled: bool,
     /// The available-balance line `balance.low` fires below; `None` is off.
     pub balance_low_minor: Option<i64>,
+    /// The consumption percentages `budget.threshold_crossed` fires at; empty
+    /// is off (issue #232).
+    #[serde(rename = "budgetThresholdsPercent")]
+    pub budget_thresholds: Vec<i32>,
     pub secret_last4: String,
     pub created_at: OffsetDateTime,
 }
@@ -403,8 +418,8 @@ fn validate_events(events: &[String]) -> Result<(), WalletError> {
     Ok(())
 }
 
-const ENDPOINT_COLS: &str =
-    "endpoint_id, url, events, enabled, balance_low_minor, secret_last4, created_at";
+const ENDPOINT_COLS: &str = "endpoint_id, url, events, enabled, balance_low_minor, \
+     budget_thresholds, secret_last4, created_at";
 
 const DELIVERY_COLS: &str = "delivery_id, endpoint_id, event_type, status, attempts, \
      next_attempt_at, response_status, last_error, created_at, delivered_at, claimed_at";
@@ -417,6 +432,11 @@ fn endpoint_from_row(row: &sqlx::postgres::PgRow) -> Result<WebhookEndpoint, Wal
         events: row.try_get("events")?,
         enabled: row.try_get("enabled")?,
         balance_low_minor: row.try_get("balance_low_minor")?,
+        budget_thresholds: row
+            .try_get::<Vec<i16>, _>("budget_thresholds")?
+            .into_iter()
+            .map(i32::from)
+            .collect(),
         secret_last4: row.try_get("secret_last4")?,
         created_at: row.try_get("created_at")?,
     })
@@ -462,26 +482,29 @@ impl Db {
         events: &[String],
         secret_key: &SecretKey,
     ) -> Result<CreatedWebhook, WalletError> {
-        self.create_webhook_with_threshold(organization, url, events, None, secret_key)
+        self.create_webhook_with_threshold(organization, url, events, None, &[], secret_key)
             .await
     }
 
     /// Registers an endpoint, optionally armed with the `balance.low` threshold
-    /// `balance_low_minor` — the available-balance line the event fires below.
-    /// `None` leaves the endpoint deaf to the balance.
+    /// `balance_low_minor` — the available-balance line the event fires below —
+    /// and the consumption percentages `budget_thresholds` arms
+    /// `budget.threshold_crossed` at (issue #232). `None` and an empty list
+    /// leave the endpoint deaf to either.
     ///
     /// # Errors
     ///
     /// [`WalletError::InvalidInput`] on a malformed URL, a non-HTTPS host, an
-    /// empty or unknown event list, a negative threshold, or the organization
-    /// already carrying twenty endpoints; storage failures surface as
-    /// [`WalletError`].
+    /// empty or unknown event list, a negative threshold, a percentage outside
+    /// 1–100, or the organization already carrying twenty endpoints; storage
+    /// failures surface as [`WalletError`].
     pub async fn create_webhook_with_threshold(
         &self,
         organization: Uuid,
         url: &str,
         events: &[String],
         balance_low_minor: Option<i64>,
+        budget_thresholds: &[i32],
         secret_key: &SecretKey,
     ) -> Result<CreatedWebhook, WalletError> {
         let url = validate_url(url)?;
@@ -493,6 +516,17 @@ impl Db {
                 "balanceLowMinor must be zero or positive".to_owned(),
             ));
         }
+        let mut thresholds: Vec<i16> = Vec::with_capacity(budget_thresholds.len());
+        for percent in budget_thresholds {
+            if !(1..=100).contains(percent) {
+                return Err(WalletError::InvalidInput(
+                    "budgetThresholdsPercent entries must be between 1 and 100".to_owned(),
+                ));
+            }
+            thresholds.push(i16::try_from(*percent).unwrap_or(100));
+        }
+        thresholds.sort_unstable();
+        thresholds.dedup();
         let count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM oxsum.webhook_endpoints WHERE organization_id = $1",
         )
@@ -511,8 +545,8 @@ impl Db {
         let row = sqlx::query(&format!(
             "INSERT INTO oxsum.webhook_endpoints \
              (endpoint_id, organization_id, url, secret_sealed, secret_last4, events, \
-              balance_low_minor) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING {ENDPOINT_COLS}"
+              balance_low_minor, budget_thresholds) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING {ENDPOINT_COLS}"
         ))
         .bind(Uuid::new_v4())
         .bind(organization)
@@ -521,6 +555,7 @@ impl Db {
         .bind(&secret[secret.len() - 4..])
         .bind(&dedup)
         .bind(balance_low_minor)
+        .bind(&thresholds)
         .fetch_one(self.pool())
         .await?;
         Ok(CreatedWebhook {
