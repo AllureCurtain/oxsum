@@ -409,81 +409,38 @@ toolchain comes from `dtolnay/rust-toolchain@stable` with `toolchain: "1.98"` (m
 - `clippy`: `cargo clippy --workspace --all-targets` with `-D warnings`. No database
   is needed to compile: the tree uses no `sqlx::query!` macros, so compilation never
   touches a live database.
-- `test`: `cargo test --workspace` against a `postgres:17-alpine` service container
-  (with `DATABASE_URL` set, so the database tests run for real instead of skipping).
-  doubleentry's own Postgres conformance suite
+- `test`: the fast half of the split (issue #237): `cargo test --workspace --lib`
+  plus the doctests, with no postgres service and no integration binaries — the
+  heavy test targets (testcontainers, sqlx test deps) never compile in this job,
+  so a unit break answers in a few minutes instead of waiting on the full suite.
+- `test-integration`: `cargo nextest run --workspace` against a
+  `postgres:17-alpine` service container (with `DATABASE_URL` set, so the
+  database tests run for real instead of skipping), then the process-shared
+  suites on `cargo test` (`generative`, `seed`, `jobs` — nextest would race
+  their in-process mutexes). doubleentry's own Postgres conformance suite
   (`cargo test -p doubleentry --features postgres --test postgres`), which starts its
   own container through testcontainers, runs only when the run touches the vendored
   engine, the migration list or `Cargo.lock` — the crate is vendored and otherwise
   unchanged, so running it on every push bought several minutes for no signal.
   Docker makes it the one suite that cannot run on a plain developer machine, which
   is why the conditional lives in CI rather than a local gate.
-- `browser`: the browser contract gate. It adds the `wasm32-unknown-unknown` target,
-  installs `cargo-leptos` 0.3.11 (the version the Dockerfile pins; the binary is
-  cached by `actions/cache`, so only the first run after the pin changes compiles
-  it), runs `cargo leptos build`, and then runs the ignored `browser_contract` test
-  with `OXSUM_SITE_DIR=target/site`. No PostgreSQL service: the routes it checks are
-  answered without a database.
 
 The compile jobs cache the cargo registry and `target/` through
 `Swatinem/rust-cache`, so a run that touches one crate does not recompile the
-dependency tree. Every job is independent, so `browser` runs in parallel with the
-other three. `main` requires all four checks to pass — a pull request cannot merge
-while any of them is red.
-
-`wasm32-unknown-unknown` is a second compile target, and `cargo check`/`cargo clippy`
-never build it: `oxsum-web` code that only exists under `feature = "hydrate"` (event
-handlers, `web_sys` calls) compiles nowhere in the usual local gate. Before pushing
-a change to `crates/web`, check the browser side the same way the `browser` job does:
-
-```bash
-cargo check -p oxsum-web --target wasm32-unknown-unknown --no-default-features --features hydrate
-```
-
-(The `--no-default-features` matters: without it `ssr` stays enabled and pulls `axum`
-and `mio` into a target that cannot compile them.)
-
-## Browser contract
-
-`crates/server/tests/browser_contract.rs` is the one suite that checks the built site
-rather than a router. It is `#[ignore]`d, so `cargo test --workspace` stays green on a
-machine that never ran `cargo leptos build`; CI runs it explicitly, and it fails with a
-clear message when `OXSUM_SITE_DIR` is unset rather than skipping.
-
-```bash
-cargo leptos build
-OXSUM_SITE_DIR=target/site cargo test -p oxsum-server --test browser_contract -- --ignored --nocapture
-```
-
-A relative `OXSUM_SITE_DIR` resolves against the workspace root — where `cargo leptos
-build` writes `target/site`, and what `site-root` in the workspace `Cargo.toml` is
-relative to. It needs no database. The checks are the contract the two defects of
-2026-10-03 broke, and both are visible from the built site and the served HTML, without a
-browser:
-
-- the site holds the browser bundle: `pkg/oxsum.js` (the wasm-bindgen glue) and
-  `pkg/oxsum.wasm` (the module; wasm-bindgen emits `oxsum_bg.wasm`, and cargo-leptos
-  0.3.11 renames it to the name `HydrationScripts` computes). A missing, failed or
-  half-finished build fails here.
-- the server, built with the project's real Leptos options, serves both over HTTP with
-  200. A site root resolved against the working directory answers 404 and leaves every
-  page as inert as the server rendered it (issue #44).
-- `GET /login` carries leptos's hydration script, preloads `/pkg/oxsum.js`, and renders
-  the login form with `method="post"`, so a browser that never hydrates does not submit
-  the credentials in the query string (issue #46).
-- the glue exports `hydrate`, the entry point the generated HTML calls once the wasm has
-  loaded: `import("/pkg/oxsum.js").then(mod => mod.default({module_or_path:
-  "/pkg/oxsum.wasm"}).then(() => mod.hydrate()))`. Without that export the import throws
-  `mod.hydrate is not a function` and nothing on any page works (issue #46).
+dependency tree. Compiled object files themselves are cached across runs through
+`mozilla-actions/sccache-action` (`RUSTC_WRAPPER=sccache`, GitHub cache backend —
+issue #237), which is what cuts cold-run compile time once a commit reuses any
+of the workspace's dependency graph. Both test jobs run in parallel; `main`
+requires all four checks to pass — a pull request cannot merge while any of
+them is red.
 
 A second workflow, `.github/workflows/release-image.yml`, gates the release image
 itself: it runs on pushes to `main` and on `workflow_dispatch` — not on pull
-requests, where the `browser` job already compiles the same site the image
-packages, and a Docker build per push duplicated it for no extra signal.
+requests, where a Docker build per push duplicated the compile for no extra signal.
 It builds the `Dockerfile` with `docker/build-push-action` (`load: true`, so the image
 lands in the runner's own daemon and is never published) and
 `cache-from`/`cache-to` of `type=gha`, so a rebuild after a one-line change reuses the
-Rust and WASM layers instead of paying for another 20-40 minute release compile. The
+Rust layers instead of paying for another 20-40 minute release compile. The
 built image is then run with `--network host` against the same `postgres:17-alpine`
 service container: the runner is Linux, and the service publishes its port on the
 runner's loopback, so `DATABASE_URL` names `127.0.0.1:5432` to match that choice. The
@@ -492,13 +449,10 @@ bounded retry loop and asserts that:
 
 - `/healthz` answers 200. The image migrates at startup and refuses to boot at all
   against a database it cannot reach, so a 200 also means the schema is in place.
-- `/pkg/oxsum.js` and `/pkg/oxsum.wasm` answer 200 (`cargo-leptos` renames
-  wasm-bindgen's `oxsum_bg.wasm` to `oxsum.wasm`, and it is the name the shell's
-  module preload uses). A 404 here is the site root regression of issue #44: the
-  pages render and none of them hydrate.
-- `/login` carries the Leptos hydration script (`mod.hydrate()`) and a
-  `<form ... method="post"` form. Without the script the login form falls back to a
-  native GET submit, which puts the password in the query string (issue #46).
+- The dashboard's static assets answer 200 (`/style/main.css`, `/chat.js`,
+  `/admin.js` — all embedded in the binary itself).
+- `/login` carries a `<form ... method="post"` form: a native GET submit would
+  put the password in the query string (issue #46).
 
 When an assertion fails the step prints `docker logs` and exits non-zero, so a red run
 is diagnosable from its own log rather than by re-running it.

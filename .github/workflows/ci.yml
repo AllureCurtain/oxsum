@@ -28,6 +28,11 @@ env:
   # Test binaries don't need debuginfo (uv pattern): linking is the serial,
   # uncacheable part of CI, and debuginfo only makes it slower.
   CARGO_PROFILE_TEST_DEBUG: 0
+  # sccache: content-addressed compile caching across runs (issue #237). The
+  # rust-cache entries still cover registry/index/target-dir; sccache covers
+  # the object files themselves, which is what dominates a cold PR run.
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
 
 jobs:
   fmt:
@@ -68,14 +73,45 @@ jobs:
           # PR runs restore the cache but only main saves it (uv pattern):
           # keeps every push from thrashing the cache entry.
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Configure sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
       # No database is needed to compile: the tree uses no sqlx::query! macros,
       # so compilation never touches a live database.
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
     name: test
-    # Fail fast: the expensive suites never start when fmt or clippy is red
-    # (tokio's `basics` / diesel's `check_and_test` pattern).
+    # Fast signal first (issue #237): lib and doc tests — no postgres, no
+    # integration binaries — so a unit break answers in minutes rather than
+    # waiting for the DB-backed suites. `test-integration` below still runs
+    # everything before merge.
+    needs: [fmt, clippy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.98"
+      - name: Install mold
+        run: |
+          curl -sL https://github.com/rui314/mold/releases/download/v2.40.0/mold-2.40.0-x86_64-linux.tar.gz | sudo tar -xz -C /usr/local --strip-components=1
+          mold --version
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "ci"
+          cache-workspace-crates: "true"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Configure sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+      # `--lib` only builds the lib test binaries — the heavy integration
+      # targets (testcontainers, sqlx test deps) never compile here, which is
+      # where most of the job's wall time used to go.
+      - run: cargo test --workspace --lib
+      - run: cargo test --workspace --doc
+
+  test-integration:
+    name: test-integration
     needs: [fmt, clippy]
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -126,6 +162,8 @@ jobs:
           shared-key: "ci"
           cache-workspace-crates: "true"
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Configure sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
       # nextest runs the workspace's test binaries in parallel (tokio,
       # rust-analyzer and uv all use it); doctests still go through cargo test.
       - name: Install nextest
