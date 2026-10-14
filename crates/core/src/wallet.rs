@@ -260,6 +260,10 @@ pub struct RequestEntry {
     pub booked_on: Date,
     /// The request id from `x-oxsum-request-id`; the ledger keys are derived from it.
     pub request_id: String,
+    /// The settlement entry's own id — what `GET /api/v1/entries/{entryId}/proof` names to
+    /// reach this turn's inclusion proof (issue #236). Deriving it from the request id is
+    /// no longer the caller's job.
+    pub entry_id: EntryId,
     /// The model the caller asked for.
     pub model: String,
     /// How the turn was priced, read back as the settlement record's kind.
@@ -2571,6 +2575,7 @@ impl Wallet {
             .map(|turn| RequestEntry {
                 booked_on: turn.booked_on,
                 request_id: turn.record.request,
+                entry_id: turn.entry_id,
                 model: turn.record.model,
                 kind: turn.record.kind,
                 input_tokens: turn.record.input_tokens,
@@ -2613,6 +2618,7 @@ impl Wallet {
             let record = SettlementRecord::parse(stored.entry.description().as_str())?;
             Some(SettledTurn {
                 booked_on: stored.entry.booking_date(),
+                entry_id: stored.entry.id(),
                 record,
                 key_id: stored
                     .entry
@@ -2678,6 +2684,9 @@ impl Wallet {
 pub struct SettledTurn {
     /// The booking date: the server's UTC date when the settlement was written.
     pub booked_on: Date,
+    /// The settlement entry's own id (issue #236): the id `RequestEntry` and any
+    /// proof lookup name, straight off the stored record rather than derived.
+    pub entry_id: EntryId,
     /// What the turn charged, in the settlement record's own fields — channel, price
     /// version and freeze included, so the anomalies page can say where the platform
     /// lost money upstream.

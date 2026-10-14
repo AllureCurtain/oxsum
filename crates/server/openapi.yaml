@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.56.0
+  version: 0.58.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -1754,10 +1754,10 @@ paths:
       summary: Settled turns, newest first
       description: |
         The same page the dashboard's requests view reads: every settled gateway turn,
-        newest first, with the request id its ledger entries are keyed by — the proof of
-        any charge is `GET /api/v1/entries/{entryId}/proof` on `req-<requestId>:settle`.
-        `before` is the log index to resume above, and the page answers `nextCursor`
-        until the walk reaches the log's start.
+        newest first. Each row's `entryId` names its settlement entry — the proof of that
+        charge is `GET /api/v1/entries/{entryId}/proof` straight off the row, no request-id
+        bookkeeping needed (issue #236). `before` is the log index to resume above, and the
+        page answers `nextCursor` until the walk reaches the log's start.
       parameters:
         - name: before
           in: query
@@ -4097,12 +4097,16 @@ components:
         chargedMinor: { type: integer, format: int64 }
     BillingRecord:
       type: object
-      required: [bookedOn, requestId, model, kind, inputTokens, outputTokens, chargedMinor, upstreamAttempts]
+      required: [bookedOn, requestId, entryId, model, kind, inputTokens, outputTokens, chargedMinor, upstreamAttempts]
       properties:
         bookedOn: { type: string, format: date, description: the server's UTC date the settlement was written }
         requestId:
           type: string
           description: the caller's request id; the settlement entry is `req-<requestId>:settle`
+        entryId:
+          type: string
+          format: uuid
+          description: the settlement entry's own id — `GET /api/v1/entries/{entryId}/proof` answers this turn's proof bundle directly
         model: { type: string }
         kind:
           type: string
