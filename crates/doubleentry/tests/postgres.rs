@@ -63,9 +63,7 @@ enum Shared {
     /// the suite runs without Docker, issue #241. The URL's database is only
     /// read for its server and credentials; every test still gets a scratch
     /// database of its own, dropped when the harness is.
-    External {
-        base_url: String,
-    },
+    External { base_url: String },
 }
 
 /// `url` with its database path swapped for `database`, keeping scheme,
