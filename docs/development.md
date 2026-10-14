@@ -85,7 +85,7 @@ docker exec -i oxsum-postgres-1 psql -U postgres -d oxsum -f - < scripts/reset-d
 
 (`DATABASE_URL` comes from `.env` or the shell, as for the tests.) The script drops every `ledger_*` schema and truncates every mutable `oxsum` table, leaving `oxsum._migrations` — and therefore the schema version — untouched. It is a development-database reset: on a database holding anything worth keeping, dump it first. `TRUNCATE` is what the append-only triggers leave open: they refuse row rewrites, not a table reset, so this does not weaken the audit guarantees.
 
-`crates/doubleentry` Postgres tests run against throwaway containers instead, started by testcontainers. They clean up after themselves, but an interrupted run or a Docker restart can leave the container behind; `docker container prune` and `docker volume prune` clear what is no longer attached.
+`crates/doubleentry` Postgres tests run against throwaway containers by default, started by testcontainers. They clean up after themselves, but an interrupted run or a Docker restart can leave the container behind; `docker container prune` and `docker volume prune` clear what is no longer attached. A Docker-free alternative exists (issue #241): set `DOUBLEENTRY_DATABASE_URL` (or `DATABASE_URL`) to any local PostgreSQL — the suite creates each test's scratch database on that server and drops it when the test ends, so a developer running PostgreSQL directly (apt/brew install, no Docker) can still run the ledger conformance suite. Deferred-sequencing tests share the named instance in that mode and may wait on a neighbour's open transaction — a slowdown, never a wrong answer.
 
 ### Debug info in dev builds
 
@@ -231,7 +231,7 @@ creates `ledger_<tenant_id>` on first use.
 | Run the end-to-end demo | `python3 demo/demo.py` (needs `pip install -r demo/requirements.txt`; starts its own mock upstream and server) |
 | Generative sequences, quick run | `PROPTEST_CASES=50 cargo test -p oxsum-core --test generative` |
 | Real-provider end-to-end check | `cargo test -p oxsum-server --test real_upstream` (needs env vars — see "Real-provider smoke check") |
-| doubleentry's Postgres tests | `cargo test -p doubleentry --features postgres --test postgres` (spins up its own container via testcontainers) |
+| doubleentry's Postgres tests | `cargo test -p doubleentry --features postgres --test postgres` (spins up its own container via testcontainers; `DOUBLEENTRY_DATABASE_URL`/`DATABASE_URL` set → that server instead, no Docker) |
 | Format | `cargo fmt --all` |
 | Lint | `cargo clippy --workspace --all-targets` |
 
@@ -424,6 +424,16 @@ toolchain comes from `dtolnay/rust-toolchain@stable` with `toolchain: "1.98"` (m
   unchanged, so running it on every push bought several minutes for no signal.
   Docker makes it the one suite that cannot run on a plain developer machine, which
   is why the conditional lives in CI rather than a local gate.
+
+  Docker made it the one suite that could not run on a plain developer machine —
+  `DOUBLEENTRY_DATABASE_URL` now lifts that for local runs — which is why the
+  conditional lives in CI rather than a local gate.
+- `browser`: the browser contract gate. It adds the `wasm32-unknown-unknown` target,
+  installs `cargo-leptos` 0.3.11 (the version the Dockerfile pins; the binary is
+  cached by `actions/cache`, so only the first run after the pin changes compiles
+  it), runs `cargo leptos build`, and then runs the ignored `browser_contract` test
+  with `OXSUM_SITE_DIR=target/site`. No PostgreSQL service: the routes it checks are
+  answered without a database.
 
 The compile jobs cache the cargo registry and `target/` through
 `Swatinem/rust-cache`, so a run that touches one crate does not recompile the

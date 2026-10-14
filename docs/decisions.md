@@ -1467,3 +1467,14 @@ Usage stats answered token counts and charges, never "how much of the budget is 
 - **Thresholds are configured per endpoint, like `balanceLowMinor`.** `budgetThresholdsPercent` arms which consumption lines an endpoint hears; the eval runs inside `record_usage`'s transaction across the three scopes that carry a numeric limit — the settle's key, the minting member, the organization's credit line. No in-dashboard-only alerts: the event is the alert, and `GET /api/v1/budget` serves the dashboard's percent without a second accounting.
 - **The latch is a row, not a flag.** `budget_threshold_fires` keyed by `(endpoint, scope, scope id, window, threshold)` makes "once per crossing" a uniqueness constraint written inside the settle transaction — the concurrent-burn guarantee the acceptance criteria asks for, and a natural audit trail of which lines fired when. `window_start` latches cumulative scopes on the epoch; a constraint PATCH deletes the scope's rows, re-arming the way `budget_forecast_sent_for` resets.
 - **Percentages floor, and 1–100 bound the config.** `consumedPercent` is `floor(committed * 100 / limit)` — a whole number matching the threshold dimension exactly, so the line the endpoint armed is the line `consumedPercent` displays.
+
+## 2026-10-15 — doubleentry's Postgres tests take a `DATABASE_URL` over Docker (issue #241)
+
+The vendored ledger's `tests/postgres.rs` always started a throwaway container, so a developer without Docker could not run the conformance suite at all. `DOUBLEENTRY_DATABASE_URL` (falling back to `DATABASE_URL`) now points the suite at any reachable cluster: the harness creates each test's `de_<n>` scratch database through the maintenance connection and `DROP DATABASE … WITH (FORCE)` cleans it up when the harness drops — same per-test isolation, no container.
+
+- **The container stays the default.** With neither variable set the behaviour is byte-for-byte what CI runs today; the external path only exists because a developer named it.
+- **The URL's own database is never touched.** It supplies the server and credentials; the suite works in `de_<n>` scratch databases beside it, so pointing at the dev `oxsum` database is safe.
+- **`start_isolated` degrades to a scratch database on the shared cluster.** Its dedicated instance exists because deferred sequencing advances on a cluster-wide watermark — a neighbour's held-open transaction stalls it. On a borrowed cluster there is no second instance to give; the tests can wait, never answer wrong, and the doc comments say so.
+- **Cleanup runs in `Drop` under `Handle::try_current`, best-effort.** A normal test exit drops the database inside the still-live runtime; a hard abort leaves one named `de_<n>` database, identifiable and safe to drop by hand — strictly better than the orphaned containers the issue cites.
+
+All doubleentry tests must pass either way.
