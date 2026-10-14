@@ -32,6 +32,11 @@ dotenvy = "0.15"
 # The dashboard: Topcoat pages, server-side rendered, mounted into the same
 # binary as an axum fallback service (spike/topcoat-dashboard).
 topcoat = { version = "0.10", default-features = false, features = ["tower", "cookie", "view"] }
+# The React dashboard's built assets, embedded into the binary and served at
+# /app (issue #234). `debug-embed` reads them from disk in debug builds, so a
+# frontend rebuild needs no cargo step; release builds embed and are checked
+# in the Dockerfile.
+rust-embed = { version = "8.5", features = ["debug-embed"] }
 password-auth = "1"
 proptest = "1"
 rand = "0.10"

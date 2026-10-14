@@ -57,6 +57,9 @@ http-body-util.workspace = true
 # The dashboard pages: server-side rendered Topcoat views, mounted into the
 # same binary as an axum fallback service (spike/topcoat-dashboard).
 oxsum-web.workspace = true
+# The React dashboard scaffold's built `web/dist`, embedded and served at /app
+# (issue #234).
+rust-embed.workspace = true
 topcoat.workspace = true
 # Process telemetry: the recorder and its render handle live in AppState (see src/metrics.rs).
 metrics.workspace = true
