@@ -31,9 +31,11 @@ COPY crates/core/Cargo.toml crates/core/Cargo.toml
 COPY crates/verify/Cargo.toml crates/verify/Cargo.toml
 COPY crates/server/Cargo.toml crates/server/Cargo.toml
 COPY crates/web/Cargo.toml crates/web/Cargo.toml
+COPY crates/integrations/Cargo.toml crates/integrations/Cargo.toml
+COPY crates/testkit/Cargo.toml crates/testkit/Cargo.toml
 RUN mkdir -p crates/doubleentry/src crates/core/src crates/verify/src \
-        crates/server/src crates/web/src \
-    && for c in doubleentry core verify web; do echo "" > crates/$c/src/lib.rs; done \
+        crates/server/src crates/web/src crates/integrations/src crates/testkit/src \
+    && for c in doubleentry core verify web integrations testkit; do echo "" > crates/$c/src/lib.rs; done \
     && echo "" > crates/server/src/lib.rs \
     && echo 'fn main() {}' > crates/server/src/main.rs \
     && cargo build --release --workspace \
