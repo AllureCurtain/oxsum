@@ -82,6 +82,9 @@ fn teardown_suite_db() {
 }
 
 fn create_suite_db(slug: &str) -> Option<SuiteDb> {
+    // Consult .env first, matching the pre-testkit behavior (issue #18):
+    // a DATABASE_URL that only exists in .env must be honored, not skipped.
+    let _ = dotenvy::dotenv();
     let base_url = std::env::var("DATABASE_URL").ok()?;
     // The slug is a hardcoded file stem per test binary; the timestamp is
     // numeric. Reject anything else so the name is safe to interpolate.
