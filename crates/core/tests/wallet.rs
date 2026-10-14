@@ -31,13 +31,20 @@ fn fresh(name: &str) -> String {
     format!("{name}_{}", &uuid::Uuid::new_v4().simple().to_string()[..8])
 }
 
-/// The one pool a test works with, as the server holds one pool for the whole process.
+/// The one pool a test works with, as the server holds one pool for the whole
+/// process — migrated, since `set_credit_limit` now also touches the shared
+/// `oxsum.*` latch table (issue #232), not only the tenant schema.
 async fn pool(url: &str) -> PgPool {
-    sqlx::postgres::PgPoolOptions::new()
+    let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
         .connect(url)
         .await
-        .expect("connects to PostgreSQL")
+        .expect("connects to PostgreSQL");
+    oxsum_core::Db::from_pool(pool.clone())
+        .migrate()
+        .await
+        .expect("migrates the shared schema");
+    pool
 }
 
 macro_rules! db_or_skip {
