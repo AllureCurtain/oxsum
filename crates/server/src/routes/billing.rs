@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use oxsum_core::{Principal, SignedHead, WalletError, signing_key};
 
-use crate::error::{ApiError, ApiJson};
+use crate::error::{ApiError, ApiJson, ApiQuery};
 use crate::routes::{ApiResult, ok, verify_url, wallet};
 use crate::{AppState, today};
 
@@ -43,6 +43,130 @@ pub(crate) struct BalanceRes {
     credit_limit_minor: i64,
     /// The drawn plus reserved part of the credit line.
     credit_used_minor: i64,
+    /// What outstanding holds freeze right now — the dashboard's frozen total
+    /// (issue #234).
+    reserved_minor: i64,
+    /// What this UTC calendar month has settled so far — the dashboard's
+    /// month-spend figure.
+    spent_this_month_minor: i64,
+}
+
+/// One hold the ledger still reserves, as the dashboard's in-flight table
+/// lists it (issue #234).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OpenHoldRes {
+    request_id: String,
+    model: String,
+    freeze_minor: i64,
+    /// The display prefix of the key that took the hold; absent for
+    /// unattributed holds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    key_prefix: Option<String>,
+}
+
+/// `GET /api/v1/holds` answers `{holds: [...]}`.
+#[derive(Serialize)]
+pub(crate) struct HoldsRes {
+    holds: Vec<OpenHoldRes>,
+}
+
+/// The holds the ledger still reserves for this organization — the sweeper's
+/// watch list, newest first. Members see the organization's holds: the list
+/// names the request and the reservation, not another member's keys.
+pub(crate) async fn list_holds(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+) -> ApiResult<HoldsRes> {
+    let holds = state
+        .db
+        .open_holds_for_tenant(&principal.organization().tenant_id)
+        .await?;
+    let keys = state
+        .db
+        .list_keys(principal.organization().id, principal.key_scope())
+        .await?;
+    ok(HoldsRes {
+        holds: holds
+            .into_iter()
+            .map(|hold| OpenHoldRes {
+                request_id: hold.request_id,
+                model: hold.model,
+                freeze_minor: hold.freeze_minor,
+                key_prefix: hold.key_id.and_then(|id| {
+                    keys.iter()
+                        .find(|key| key.id == id)
+                        .map(|key| key.prefix.clone())
+                }),
+            })
+            .collect(),
+    })
+}
+
+/// One transaction as the bills page lists it (issue #234): the entry that
+/// moved money, with the hash its proof commits to.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BillRowRes {
+    index: u64,
+    entry_id: String,
+    booked_on: String,
+    kind: &'static str,
+    amount_minor: i64,
+    description: String,
+    content_hash: String,
+}
+
+/// `GET /api/v1/bills` answers `{rows, nextCursor}`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BillsRes {
+    rows: Vec<BillRowRes>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_cursor: Option<u64>,
+}
+
+/// The transactions query: `before` pages the log backwards.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BillsQuery {
+    before: Option<u64>,
+}
+
+/// The organization's transactions, newest first — top-ups, adjustments and
+/// settled turns, the rows the server-rendered bills page draws and its CSV
+/// and JSON exports carry. A member sees their own keys' rows plus the
+/// organization's unattributed entries — the same scope rule the requests
+/// list applies.
+pub(crate) async fn bills(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    ApiQuery(query): ApiQuery<BillsQuery>,
+) -> ApiResult<BillsRes> {
+    let w = wallet(&state.tenants, principal.organization()).await?;
+    let page = w.transactions_page(query.before, 50).await?;
+    let scoped = crate::routes::usage::scoped_key_ids(&state, &principal).await?;
+    ok(BillsRes {
+        rows: page
+            .rows
+            .into_iter()
+            .filter(|row| crate::routes::usage::in_scope(row.key_id.as_deref(), &scoped))
+            .map(|row| BillRowRes {
+                index: row.index,
+                entry_id: row.id,
+                booked_on: row.booked_on.to_string(),
+                kind: match row.kind {
+                    oxsum_core::TransactionKind::TopUp => "topUp",
+                    oxsum_core::TransactionKind::Adjustment => "adjustment",
+                    oxsum_core::TransactionKind::Settlement => "settlement",
+                },
+                amount_minor: row.amount_minor,
+                description: row.description,
+                content_hash: row.content_hash,
+            })
+            .collect(),
+        next_cursor: page.next_cursor,
+    })
 }
 
 pub(crate) async fn top_up(
@@ -526,5 +650,7 @@ pub(crate) async fn balance(
         available_minor: w.available().await?,
         credit_limit_minor: w.credit_limit().await?,
         credit_used_minor: w.credit_used().await?,
+        reserved_minor: w.reserved().await?,
+        spent_this_month_minor: w.month_spend().await?,
     })
 }

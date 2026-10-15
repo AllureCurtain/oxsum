@@ -27,7 +27,7 @@ mod device;
 mod keys;
 mod log;
 mod org;
-mod usage;
+pub(crate) mod usage;
 mod webhooks;
 
 /// Backstop for every request on the API and gateway surfaces: no handler may
@@ -61,7 +61,7 @@ pub fn router(state: AppState) -> Router {
             delete(keys::revoke_key).patch(keys::patch_key),
         )
         .route("/org/invitations", post(org::create_invitation))
-        .route("/org/members", post(org::add_member))
+        .route("/org/members", get(org::list_members).post(org::add_member))
         .route(
             "/org/members/{user_id}",
             delete(org::remove_member).patch(org::update_member),
@@ -91,7 +91,9 @@ pub fn router(state: AppState) -> Router {
         .route("/topups", post(billing::top_up))
         .route("/topups/stripe", post(billing::stripe_topup))
         .route("/redemptions", post(billing::redeem))
-        .route("/holds", post(billing::hold))
+        .route("/holds", get(billing::list_holds).post(billing::hold))
+        .route("/bills", get(billing::bills))
+        .route("/entries", get(log::entries))
         .route("/settlements", post(billing::settle))
         .route("/statements", get(billing::statements))
         .route("/statements/{statement_id}", get(billing::statement_detail))

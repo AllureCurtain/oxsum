@@ -674,3 +674,94 @@ async fn the_catalog_carries_no_credentials() {
     let (status, _) = call(&app, "GET", "/api/v1/pricing", None, None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
+
+// ── /api/v1/entries · /api/v1/bills · /api/v1/holds · /api/v1/org/members ───
+// The dashboard reads (issue #234): the log page, the bills table, the
+// in-flight holds and the members list, now on the API the SPA speaks.
+
+/// The entries page walks the ledger newest-first with its cursor, the bills
+/// page lists only money-moving rows, and an open hold appears in `holds`.
+#[tokio::test]
+async fn the_dashboard_reads_page_the_ledger() {
+    let (app, db) = app_or_skip!();
+    let tenants = Tenants::new(db.pool().clone());
+    let (tenant, key, key_id) = register(&app, "dash").await;
+    top_up(&app, &key, 50_000_000).await;
+    settle_request(&db, &tenants, &tenant, Some(key_id), "dash-1", "m1", 7_000).await;
+
+    let (status, entries) = call(&app, "GET", "/api/v1/entries?limit=100", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK, "{entries}");
+    let rows = entries["data"]["rows"].as_array().expect("rows");
+    assert!(
+        rows.len() >= 3,
+        "top-up, hold and settlement at least: {entries}"
+    );
+    assert!(rows[0]["index"].as_u64().unwrap() > rows[1]["index"].as_u64().unwrap());
+    assert!(
+        rows.iter()
+            .all(|row| row["id"].is_string() && row["contentHash"].is_string())
+    );
+
+    let (status, bills) = call(&app, "GET", "/api/v1/bills", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK, "{bills}");
+    let rows = bills["data"]["rows"].as_array().expect("rows");
+    // The top-up and the settlement: the bare hold never bills.
+    assert_eq!(rows.len(), 2, "{bills}");
+    assert_eq!(rows[0]["kind"], "settlement", "{bills}");
+    assert_eq!(rows[0]["amountMinor"], -7_000, "{bills}");
+    assert_eq!(rows[1]["kind"], "topUp", "{bills}");
+    assert_eq!(rows[1]["amountMinor"], 50_000_000, "{bills}");
+    assert!(rows[0]["entryId"].is_string(), "{bills}");
+
+    let (status, holds) = call(&app, "GET", "/api/v1/holds", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK, "{holds}");
+    assert_eq!(
+        holds["data"]["holds"].as_array().unwrap().len(),
+        0,
+        "{holds}"
+    );
+}
+
+/// The balance now carries the overview's frozen and month-spend figures.
+#[tokio::test]
+async fn the_balance_carries_reserved_and_month_spend() {
+    let (app, db) = app_or_skip!();
+    let tenants = Tenants::new(db.pool().clone());
+    let (tenant, key, key_id) = register(&app, "bal-dash").await;
+    top_up(&app, &key, 50_000_000).await;
+    settle_request(
+        &db,
+        &tenants,
+        &tenant,
+        Some(key_id),
+        "bal-dash-1",
+        "m1",
+        7_000,
+    )
+    .await;
+
+    let (status, body) = call(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let data = &body["data"];
+    assert_eq!(data["reservedMinor"], 0, "{data}");
+    assert_eq!(data["spentThisMonthMinor"], 7_000, "{data}");
+}
+
+/// The members list answers the organization's memberships; a member's own
+/// rows scope like the REST of the dashboard's surfaces.
+#[tokio::test]
+async fn the_members_list_reads() {
+    let (app, db) = app_or_skip!();
+    let tenants = Tenants::new(db.pool().clone());
+    let (_tenant, key, _key_id) = register(&app, "members-list").await;
+    let _ = (db, tenants);
+
+    let (status, body) = call(&app, "GET", "/api/v1/org/members", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let members = body["data"]["members"].as_array().expect("members");
+    assert_eq!(members.len(), 1, "{body}");
+    assert_eq!(members[0]["role"], "owner", "{body}");
+
+    let (status, _) = call(&app, "GET", "/api/v1/org/members", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
