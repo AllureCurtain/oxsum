@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.59.0
+  version: 0.60.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -383,6 +383,14 @@ info:
     that does not serve an oxsum-compatible catalog — records a probe outcome
     for that run rather than failing the pass; drift is detected, never
     inferred from silence.
+
+    0.60.0 serves the dashboard's remaining reads over the wire (issue #234): `GET
+    /api/v1/org/members` lists the organization's members, `GET /api/v1/holds`
+    lists the organization's in-flight holds, `GET /api/v1/entries` pages the
+    ledger's entries and `GET /api/v1/bills` pages its transactions — the four
+    reads the server-rendered dashboard drew straight from core. `GET
+    /api/v1/balance` additionally answers `reservedMinor` and
+    `spentThisMonthMinor`, the overview's frozen and month-spend figures.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -1184,6 +1192,30 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/members:
+    get:
+      summary: List the organization's members
+      description: |
+        The members the session's organization carries, with each member's role and
+        budget cap — the dashboard's members page. Reading is any member's right;
+        the writes beside this path are an owner or admin's.
+      responses:
+        "200":
+          description: The members
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [members]
+                    properties:
+                      members:
+                        type: array
+                        items: { $ref: "#/components/schemas/Member" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
     post:
       summary: Add an existing account to the organization as a member
       description: |
@@ -1542,6 +1574,31 @@ paths:
         "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/holds:
+    get:
+      summary: The organization's in-flight holds
+      description: |
+        The holds the ledger still reserves for this organization — the
+        dashboard's "in-flight" table. A hold listed here is one the sweeper
+        watches: rows whose ledger hold is gone heal themselves away, so the
+        list is the ledger's own outstanding set, newest first.
+      responses:
+        "200":
+          description: The open holds
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [holds]
+                    properties:
+                      holds:
+                        type: array
+                        items: { $ref: "#/components/schemas/OpenHoldView" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
     post:
       summary: Hold credits (before a streaming call starts)
       description: |
@@ -1595,6 +1652,43 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/bills:
+    get:
+      summary: The organization's transactions, newest first
+      description: |
+        Every ledger entry that moved money — top-ups, adjustments, settled
+        turns — as the dashboard's bills page lists them: the booking date, the
+        signed amount, the description and the content hash the entry's
+        inclusion proof commits to. `before` walks older pages by log index;
+        the answer's `nextCursor` is the cursor the next page asks with.
+      parameters:
+        - name: before
+          in: query
+          required: false
+          schema: { type: integer, format: int64, minimum: 0 }
+          description: the log index the page continues back from; absent means the newest page
+      responses:
+        "200":
+          description: The transaction page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [rows]
+                    properties:
+                      rows:
+                        type: array
+                        items: { $ref: "#/components/schemas/BillRow" }
+                      nextCursor:
+                        type: integer
+                        format: int64
+                        description: present while an older page exists
+        "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/statements:
     get:
@@ -1697,7 +1791,7 @@ paths:
                 properties:
                   data:
                     type: object
-                    required: [availableMinor, creditLimitMinor, creditUsedMinor]
+                    required: [availableMinor, creditLimitMinor, creditUsedMinor, reservedMinor, spentThisMonthMinor]
                     properties:
                       availableMinor: { type: integer, format: int64 }
                       creditLimitMinor:
@@ -1710,6 +1804,16 @@ paths:
                         format: int64
                         minimum: 0
                         description: the drawn plus reserved part of the credit line, in minor units
+                      reservedMinor:
+                        type: integer
+                        format: int64
+                        minimum: 0
+                        description: what outstanding holds freeze right now — the dashboard's frozen total
+                      spentThisMonthMinor:
+                        type: integer
+                        format: int64
+                        minimum: 0
+                        description: "what this UTC calendar month has settled so far — the dashboard's month-spend figure"
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/usage:
@@ -1918,6 +2022,47 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/entries:
+    get:
+      summary: The ledger's entries, newest first
+      description: |
+        Every entry the organization's append-only log carries — holds,
+        settlements, top-ups, markers — as the dashboard's transaction-log page
+        lists them: log index, entry id, description, content hash. `before`
+        walks older pages by log index; `nextCursor` is the cursor the next
+        page asks with. `limit` bounds the page (1–100, default 100).
+      parameters:
+        - name: before
+          in: query
+          required: false
+          schema: { type: integer, format: int64, minimum: 0 }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, format: int64, minimum: 1, maximum: 100, default: 100 }
+      responses:
+        "200":
+          description: The entries page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [rows]
+                    properties:
+                      rows:
+                        type: array
+                        items: { $ref: "#/components/schemas/LogEntryView" }
+                      nextCursor:
+                        type: integer
+                        format: int64
+                        description: present while an older page exists
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/log/head:
     get:
@@ -4152,6 +4297,44 @@ components:
       properties:
         model: { type: string }
         version: { type: integer, minimum: 1, description: the version this change appended }
+    OpenHoldView:
+      type: object
+      description: "one hold the ledger still reserves — the in-flight table's row"
+      required: [requestId, model, freezeMinor]
+      properties:
+        requestId: { type: string, description: "the caller's request id — `x-oxsum-request-id`" }
+        model: { type: string }
+        freezeMinor: { type: integer, format: int64, minimum: 0, description: "what the hold reserves, in minor units" }
+        keyPrefix:
+          type: string
+          description: the display prefix of the key that took the hold; absent for unattributed holds
+    LogEntryView:
+      type: object
+      description: one ledger entry as the transaction log lists it
+      required: [index, id, description, contentHash]
+      properties:
+        index: { type: integer, format: int64, description: "the entry's position in the log" }
+        id: { type: string, format: uuid, description: "the entry id — `GET /api/v1/entries/{entryId}/proof` names it" }
+        description: { type: string, description: "what the writer recorded — a settlement record, a hold, a reason" }
+        contentHash: { type: string, pattern: "^[0-9a-f]{64}$", description: "the hash the Merkle log commits to" }
+    BillRow:
+      type: object
+      description: one transaction as the bills page lists it — every ledger entry that moved money
+      required: [index, entryId, bookedOn, kind, amountMinor, description, contentHash]
+      properties:
+        index: { type: integer, format: int64 }
+        entryId: { type: string, format: uuid }
+        bookedOn: { type: string, format: date, description: "the server's UTC date the entry was written" }
+        kind:
+          type: string
+          enum: [topUp, adjustment, settlement]
+          description: "the entry's movement kind: money in, an operator's book entry, or a settled charge"
+        amountMinor:
+          type: integer
+          format: int64
+          description: "the entry's effect on the settled balance, signed: top-ups read positive, charges negative"
+        description: { type: string }
+        contentHash: { type: string, pattern: "^[0-9a-f]{64}$" }
     UsageDay:
       type: object
       required: [day, channel, model, turns, inputTokens, outputTokens, cachedTokens, reasoningTokens, chargedMinor]

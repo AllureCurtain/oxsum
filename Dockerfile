@@ -4,11 +4,24 @@
 # Build:  docker build -t oxsum .
 # Run:    docker run --rm -p 3000:3000 -e DATABASE_URL=postgresql://user:pass@host/oxsum oxsum
 #
-# The builder matches rust-toolchain.toml (Rust 1.98). The dashboard is
-# server-side rendered (Topcoat); its stylesheet is embedded in the binary
-# via `include_str!`, so there is no client bundle and no Node.js or npm is
-# needed. The runtime is slim: reqwest uses rustls, so the only system
-# package it needs is the CA bundle.
+# The builder matches rust-toolchain.toml (Rust 1.98). The Topcoat dashboard
+# is server-side rendered; the React scaffold (issue #234) builds in the
+# `frontend` stage and is embedded via rust-embed — the runtime is still the
+# single binary, reqwest uses rustls, so the only system package it needs is
+# the CA bundle.
+
+# ---------- frontend ----------
+# The React dashboard (issue #234): Vite + React, built to web/dist and
+# embedded into the binary via rust-embed. The node stage runs codegen from
+# crates/server/openapi.yaml so the typed client can never drift the contract.
+FROM node:22-alpine AS frontend
+
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+COPY crates/server/openapi.yaml /crates/server/openapi.yaml
+RUN npm run codegen && npm run build
 
 # ---------- builder ----------
 FROM rust:1.98-bookworm AS builder
@@ -43,6 +56,9 @@ RUN mkdir -p crates/doubleentry/src crates/core/src crates/verify/src \
 
 # Real sources. Only this layer and below rebuild when .rs files change.
 COPY . .
+# The built React app lands over the committed placeholder so rust-embed
+# embeds the real bundle.
+COPY --from=frontend /web/dist ./web/dist
 # The server binary lands in target/release/<bin-exe-name> (here: oxsum).
 # The dashboard is server-rendered; no WASM bundle is built.
 RUN cargo build --release \

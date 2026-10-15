@@ -215,6 +215,24 @@ pub(crate) struct TransferOwnershipReq {
 /// The acting role is checked here and in the domain layer (crates/core/src/orgs.rs): a
 /// membership write needs a session in the owner or admin role, so an API key is refused by
 /// `membership_actor` before the request reaches a rule.
+/// The organization's members, as the dashboard's members page lists them.
+/// Reading is any member's right — the membership writes on the same paths are
+/// the owner/admin-gated ones.
+pub(crate) async fn list_members(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+) -> ApiResult<MembersRes> {
+    ok(MembersRes {
+        members: state.db.members(principal.organization().id).await?,
+    })
+}
+
+/// `GET /api/v1/org/members` answers `{members: [...]}`.
+#[derive(serde::Serialize)]
+pub(crate) struct MembersRes {
+    members: Vec<Member>,
+}
+
 pub(crate) async fn add_member(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,

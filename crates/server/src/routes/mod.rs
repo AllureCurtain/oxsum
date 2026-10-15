@@ -27,7 +27,7 @@ mod device;
 mod keys;
 mod log;
 mod org;
-mod usage;
+pub(crate) mod usage;
 mod webhooks;
 
 /// Backstop for every request on the API and gateway surfaces: no handler may
@@ -61,7 +61,7 @@ pub fn router(state: AppState) -> Router {
             delete(keys::revoke_key).patch(keys::patch_key),
         )
         .route("/org/invitations", post(org::create_invitation))
-        .route("/org/members", post(org::add_member))
+        .route("/org/members", get(org::list_members).post(org::add_member))
         .route(
             "/org/members/{user_id}",
             delete(org::remove_member).patch(org::update_member),
@@ -91,7 +91,9 @@ pub fn router(state: AppState) -> Router {
         .route("/topups", post(billing::top_up))
         .route("/topups/stripe", post(billing::stripe_topup))
         .route("/redemptions", post(billing::redeem))
-        .route("/holds", post(billing::hold))
+        .route("/holds", get(billing::list_holds).post(billing::hold))
+        .route("/bills", get(billing::bills))
+        .route("/entries", get(log::entries))
         .route("/settlements", post(billing::settle))
         .route("/statements", get(billing::statements))
         .route("/statements/{statement_id}", get(billing::statement_detail))
@@ -204,6 +206,10 @@ pub fn router(state: AppState) -> Router {
                 REQUEST_TIMEOUT,
             )),
         );
+    // The React dashboard scaffold (issue #234): `web/dist` embedded into the
+    // binary and served at `/app`, inside the router rather than the fallback
+    // so it wins over the Topcoat pages' catch-all.
+    let router = router.nest("/app", crate::spa::router());
     // The dashboard pages, served by the same binary.
     // The request counter sits last so it sees every route the router answered, pages
     // included — labelled by the matched pattern, never the concrete path.

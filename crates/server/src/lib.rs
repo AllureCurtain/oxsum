@@ -11,6 +11,7 @@ pub mod jobs;
 mod metering;
 mod metrics;
 mod routes;
+mod spa;
 pub mod telemetry;
 mod web;
 pub mod webhooks;

@@ -23,7 +23,7 @@ pub(crate) struct UsageQuery {
 /// The keys this principal may attribute usage to: an API key or an owner/admin
 /// session sees every key of the organization, a member only their own — the
 /// dashboard's `key_scope` rule applied to the REST surface.
-async fn scoped_key_ids(
+pub(super) async fn scoped_key_ids(
     state: &AppState,
     principal: &Principal,
 ) -> Result<Option<Vec<String>>, ApiError> {
@@ -47,7 +47,7 @@ async fn scoped_key_ids(
 
 /// A row's attribution visible to the principal: unattributed rows are
 /// organization history everyone reads, a key outside the scope drops the row.
-fn in_scope(key_id: Option<&str>, scoped: &Option<Vec<String>>) -> bool {
+pub(super) fn in_scope(key_id: Option<&str>, scoped: &Option<Vec<String>>) -> bool {
     match (key_id, scoped) {
         (None, _) => true,
         (Some(_), None) => true,

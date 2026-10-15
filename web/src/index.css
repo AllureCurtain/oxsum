@@ -1,0 +1,44 @@
+@import "tailwindcss";
+
+/* DESIGN.md tokens, mapped onto the Tailwind theme so utility classes name
+ * the same palette the Topcoat dashboard uses (issue #234).
+ * Type scale 12 / 14 / 16 / 20 / 24, body 14; spacing in multiples of 4.
+ */
+@theme {
+  --color-primary: #1d4ed8;
+  --color-primary-hover: #1e40af;
+  --color-primary-soft: #dbeafe;
+  --color-danger: #b91c1c;
+  --color-danger-hover: #991b1b;
+  --color-success: #15803d;
+  --color-pending: #a16207;
+  --color-ink: #111827;
+  --color-muted: #6b7280;
+  --color-canvas: #f9fafb;
+  --color-surface: #ffffff;
+  --color-line: #e5e7eb;
+  --color-focus: #93c5fd;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+html {
+  font-size: 14px;
+}
+
+body {
+  color: var(--color-ink);
+  background: var(--color-canvas);
+}
+
+/* Amounts and hashes always monospace (DESIGN.md); amounts right-aligned. */
+.mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+/* Keyboard-visible focus ring on every interactive element (DESIGN.md). */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}

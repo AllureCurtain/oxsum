@@ -303,3 +303,59 @@ pub(crate) async fn log_key(State(state): State<AppState>) -> ApiResult<Verifyin
     let key = head_signing_key(&state)?;
     ok(VerifyingKeyRes::of(&KeyPublication::of(&key)))
 }
+
+/// The entries query: `before` pages the log backwards; `limit` bounds the
+/// page (1–100, default 100) — the same bounds `Wallet::entries_page` clamps.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EntriesQuery {
+    before: Option<u64>,
+    limit: Option<i64>,
+}
+
+/// One ledger entry as the transaction log lists it (issue #234).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LogEntryRes {
+    index: u64,
+    id: String,
+    description: String,
+    content_hash: String,
+}
+
+/// `GET /api/v1/entries` answers `{rows, nextCursor}`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EntriesRes {
+    rows: Vec<LogEntryRes>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_cursor: Option<u64>,
+}
+
+/// Every entry the organization's append-only log carries, newest first — the
+/// dashboard's transaction-log page's data (issue #234).
+pub(crate) async fn entries(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    ApiQuery(query): ApiQuery<EntriesQuery>,
+) -> ApiResult<EntriesRes> {
+    let limit = query.limit.unwrap_or(100);
+    if !(1..=100).contains(&limit) {
+        return Err(ApiError::Validation("limit must be 1 to 100".into()));
+    }
+    let w = wallet(&state.tenants, principal.organization()).await?;
+    let page = w.entries_page(query.before, limit as usize).await?;
+    ok(EntriesRes {
+        rows: page
+            .rows
+            .into_iter()
+            .map(|entry| LogEntryRes {
+                index: entry.index,
+                id: entry.id,
+                description: entry.description,
+                content_hash: entry.content_hash,
+            })
+            .collect(),
+        next_cursor: page.next_cursor,
+    })
+}

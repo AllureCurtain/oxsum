@@ -297,6 +297,18 @@ A tenant is an organization and its memberships carry a role (owner, admin, memb
 
 `GET /api/v1/admin/organizations` paginates (issue #93): `?limit=` caps a page at 100 rows (the default), and a page that is not the last answers `nextCursor` — an opaque string the next call echoes back as `?cursor=`; absent means the list is done. A cursor is a keyset bound, never a page/offset: a malformed one answers `400 VALIDATION_ERROR`. The dashboard's own lists paginate the same way — the bills, transaction-log and requests pages walk their ledgers with the log index as `?before=` — and bounded lists (`GET /api/v1/org/keys`, holds, anomalies, closings) answer in full.
 
+## Dashboard reads
+
+The SPA's dashboard pages read these (issue #234); all are session or key scoped to the caller's organization and share the cursor convention:
+
+| endpoint | answers |
+| --- | --- |
+| `GET /api/v1/org/members` | `{members}` — every membership with role and budget cap |
+| `GET /api/v1/holds` | `{holds}` — the organization's in-flight holds, newest first |
+| `GET /api/v1/entries?before&limit` | `{rows, nextCursor}` — every ledger entry (index, id, description, contentHash) |
+| `GET /api/v1/bills?before` | `{rows, nextCursor}` — only money-moving entries (topUp/adjustment/settlement, signed amount) |
+| `GET /api/v1/balance` | plus `reservedMinor` and `spentThisMonthMinor` — the frozen total and month spend |
+
 ## Change process
 
 1. Change `crates/server/openapi.yaml`
