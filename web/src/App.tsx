@@ -16,8 +16,11 @@ import { Keys } from "./pages/Keys";
 import { Log } from "./pages/Log";
 import { Members } from "./pages/Members";
 import { Overview } from "./pages/Overview";
+import { Pricing } from "./pages/Pricing";
 import { Requests } from "./pages/Requests";
+import { Settings } from "./pages/Settings";
 import { StatementDetail, Statements } from "./pages/Statements";
+import { Topup } from "./pages/Topup";
 import { Usage } from "./pages/Usage";
 import { Webhooks } from "./pages/Webhooks";
 
@@ -32,6 +35,9 @@ export function App() {
       <Route path="/verify-email" element={<VerifyEmail />} />
       <Route element={<AppShell />}>
         <Route index element={<Overview />} />
+        <Route path="topup" element={<Topup />} />
+        <Route path="pricing" element={<Pricing />} />
+        <Route path="settings" element={<Settings />} />
         <Route path="bills" element={<Bills />} />
         <Route path="requests" element={<Requests />} />
         <Route path="usage" element={<Usage />} />
