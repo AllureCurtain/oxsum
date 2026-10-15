@@ -30,18 +30,24 @@ Full command list in docs/development.md.
 ```bash
 docker compose up -d                       # start the database
 cargo run -p oxsum-server                  # start the server (needs variables from .env)
-cargo test --workspace                    # all tests (loads .env when present)
+cargo nextest run -p oxsum-<crate>       # focused tests while iterating (loads .env when present)
+cargo nextest run --workspace            # the full suite — once, before pushing
 cargo fmt --all && cargo clippy --workspace --all-targets
 ```
 
+`cargo nextest` is the default test runner: it runs test binaries in parallel
+and skips doctest compilation, so a workspace run is markedly faster than
+`cargo test --workspace`. `cargo test` remains the fallback and the only
+runner for doctests (`cargo test --doc`).
+
 ## Before pushing
 
-Never push after running only the tests the change touched — a green targeted suite has let regressions reach main twice (a hardcoded table list, a wasm-only compile error). The full local gate is:
+Never push after running only the tests the change touched — a green targeted suite has let regressions reach main twice (a hardcoded table list, a wasm-only compile error). Iterate with `cargo nextest run -p <crate>` on the crates you changed, then run the full gate once:
 
 ```bash
 cargo fmt --all --check
 cargo clippy --workspace --all-targets
-cargo test --workspace
+cargo nextest run --workspace
 ```
 
 ## Development process
