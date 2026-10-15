@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { RollingNumber } from "./cult/rolling-number";
 
 // Money is integer minor units, 1 credit = 1_000_000 — never float math.
 export function credits(minor: number): string {
@@ -20,6 +21,27 @@ export function Kpi(props: { label: string; value: ReactNode; hint?: string }) {
     <div className="rounded-md border border-line bg-surface p-4">
       <p className="text-xs text-muted">{props.label}</p>
       <p className="mt-1 text-2xl font-semibold tabular-nums">{props.value}</p>
+      {props.hint ? <p className="mt-1 text-xs text-muted">{props.hint}</p> : null}
+    </div>
+  );
+}
+
+/**
+ * A KPI whose value is a credit amount in minor units — the number rolls when it
+ * changes (live billing updates land here through /ws/billing).
+ */
+export function AnimatedKpi(props: { label: string; minor: number; hint?: string }) {
+  return (
+    <div className="rounded-md border border-line bg-surface p-4">
+      <p className="text-xs text-muted">{props.label}</p>
+      <p className="mt-1 text-2xl font-semibold tabular-nums">
+        <RollingNumber
+          value={props.minor / 1_000_000}
+          precision={6}
+          format={(v) => `${credits(Math.round(v * 1_000_000))}`}
+        />{" "}
+        <span className="text-sm font-normal text-muted">cr</span>
+      </p>
       {props.hint ? <p className="mt-1 text-xs text-muted">{props.hint}</p> : null}
     </div>
   );

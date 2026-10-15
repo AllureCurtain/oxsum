@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { ApiError } from "../api/client";
+import { HaloSwitch } from "../components/cult/halo-switch";
+import { CopyButton } from "../components/cult/copy-button";
 import {
   useCreateWebhook,
   useDeleteWebhook,
@@ -52,6 +54,7 @@ export function Webhooks() {
       {secret ? (
         <Banner tone="success">
           Endpoint created. Signing secret — shown once: <code className="mono">{secret}</code>
+          <CopyButton value={secret} aria-label="Copy signing secret" />
           <Button tone="ghost" className="ml-3" onClick={() => setSecret(null)}>
             Done
           </Button>
@@ -98,14 +101,12 @@ export function Webhooks() {
             <div className="grid grid-cols-2 gap-1 sm:grid-cols-3">
               {EVENT_TYPES.map((event) => (
                 <label key={event} className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
+                  <HaloSwitch
+                    size="sm"
                     checked={events.includes(event)}
-                    onChange={(e) =>
+                    onCheckedChange={(checked) =>
                       setEvents((current) =>
-                        e.target.checked
-                          ? [...current, event]
-                          : current.filter((x) => x !== event),
+                        checked ? [...current, event] : current.filter((x) => x !== event),
                       )
                     }
                   />
