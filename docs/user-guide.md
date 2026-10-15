@@ -50,7 +50,7 @@ Purpose: see and manage the organization in a browser instead of over the API.
 Open `/login` in a browser pointed at the server and log in with your email and
 password; `/dashboard` is the overview. `/logout` logs out.
 
-The same dashboard exists as a React app at `/app` (issue #234): every page here — overview, bills, requests, usage, keys, members, the transaction log, statements, webhooks, chat and the admin console — has its React twin there. Both read the same `/api/v1` surface; `/verify` keeps its server-rendered check on purpose.
+The same dashboard exists as a React app at `/app` (issue #234): every page here — overview, top-up, bills, requests, usage, pricing, keys, members, the transaction log, statements, webhooks, chat, settings and the admin console — has its React twin there, built on vendored Cult UI components over the DESIGN.md palette. Both read the same `/api/v1` surface; `/verify` keeps its server-rendered check on purpose.
 
 - **Overview**: the organization, who you are logged in as and in which role, the
   available balance, the frozen total (everything the organization's outstanding holds
