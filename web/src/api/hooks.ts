@@ -391,6 +391,27 @@ export function useHolds() {
   });
 }
 
+export function useCreateHold() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { idempotencyKey: string; amountMinor: number }) =>
+      api<Receipt>("/holds", { method: "POST", body }),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["holds"] }),
+  });
+}
+
+export function useSettleHold() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { holdKey: string; actualMinor: number }) =>
+      api<Receipt>("/settlements", { method: "POST", body }),
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: ["holds"] });
+      client.invalidateQueries({ queryKey: ["balance"] });
+    },
+  });
+}
+
 export function useEntries(limit = 100, before?: number) {
   return useQuery({
     queryKey: ["entries", limit, before ?? null],

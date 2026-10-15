@@ -1,7 +1,28 @@
 import { Link } from "react-router-dom";
-import { useBalance, useBudget, useEntries, useHolds, useSession } from "../api/hooks";
+import { useState } from "react";
+import {
+  useBalance,
+  useBudget,
+  useCreateHold,
+  useEntries,
+  useHolds,
+  useSession,
+  useSettleHold,
+} from "../api/hooks";
 import { HaloProgress } from "../components/cult/halo-progress";
-import { AnimatedKpi, Card, EmptyRows, Kpi, PageState, TableShell, credits } from "../components/ui";
+import { HaloButton } from "../components/cult/halo-button";
+import { HaloInput } from "../components/cult/halo-input";
+import {
+  AnimatedKpi,
+  Banner,
+  Card,
+  EmptyRows,
+  Field,
+  Kpi,
+  PageState,
+  TableShell,
+  credits,
+} from "../components/ui";
 
 export function Overview() {
   const session = useSession();
@@ -127,6 +148,7 @@ export function Overview() {
             ) : null}
           </TableShell>
         )}
+        <HoldBench />
       </Card>
 
       <Card
@@ -153,6 +175,108 @@ export function Overview() {
           </TableShell>
         )}
       </Card>
+    </div>
+  );
+}
+
+/** A hold you take by hand — the key is the idempotencyKey you pick, so the
+ *  settle form below already knows what to name. Settling at 0 is the release. */
+function HoldBench() {
+  const [amount, setAmount] = useState("");
+  const [holdKey, setHoldKey] = useState("");
+  const [actual, setActual] = useState("0");
+  const [msg, setMsg] = useState<string | null>(null);
+  const hold = useCreateHold();
+  const settle = useSettleHold();
+
+  return (
+    <div className="mt-3 flex flex-col gap-2 border-t border-line pt-3">
+      <p className="text-xs text-muted">
+        Manual hold (<code className="mono">POST /holds</code>,{" "}
+        <code className="mono">POST /settlements</code>) — useful to see the
+        freeze/settle pair land in the log.
+      </p>
+      <div className="flex flex-wrap items-end gap-2">
+        <Field label="Hold (credits)">
+          <HaloInput
+            type="number"
+            min="0"
+            step="any"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            className="w-28"
+          />
+        </Field>
+        <HaloButton
+          type="button"
+          isLoading={hold.isPending}
+          loadingText="Holding…"
+          onClick={async () => {
+            setMsg(null);
+            const key = `manual-${Date.now()}`;
+            try {
+              await hold.mutateAsync({
+                idempotencyKey: key,
+                amountMinor: Math.round(Number(amount) * 1_000_000),
+              });
+              setHoldKey(key);
+              setMsg(`held — key ${key}`);
+            } catch (err) {
+              setMsg(err instanceof Error ? err.message : "hold failed");
+            }
+          }}
+        >
+          Hold
+        </HaloButton>
+        <Field label="Actual (credits)">
+          <HaloInput
+            type="number"
+            min="0"
+            step="any"
+            value={actual}
+            onChange={(e) => setActual(e.target.value)}
+            className="w-28"
+          />
+        </Field>
+        <HaloButton
+          type="button"
+          disabled={!holdKey}
+          isLoading={settle.isPending}
+          loadingText="Settling…"
+          onClick={async () => {
+            setMsg(null);
+            try {
+              await settle.mutateAsync({
+                holdKey,
+                actualMinor: Math.round(Number(actual) * 1_000_000),
+              });
+              setMsg(`settled ${holdKey}`);
+              setHoldKey("");
+            } catch (err) {
+              setMsg(err instanceof Error ? err.message : "settle failed");
+            }
+          }}
+        >
+          Settle
+        </HaloButton>
+        <HaloButton
+          type="button"
+          disabled={!holdKey}
+          onClick={async () => {
+            setMsg(null);
+            try {
+              await settle.mutateAsync({ holdKey, actualMinor: 0 });
+              setMsg(`released ${holdKey}`);
+              setHoldKey("");
+            } catch (err) {
+              setMsg(err instanceof Error ? err.message : "release failed");
+            }
+          }}
+        >
+          Release
+        </HaloButton>
+      </div>
+      {msg ? <Banner tone={msg.includes("failed") ? "error" : "info"}>{msg}</Banner> : null}
     </div>
   );
 }
