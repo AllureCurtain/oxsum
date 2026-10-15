@@ -1,6 +1,6 @@
 # Design rules
 
-The UI is built in `crates/web` (Leptos); the concrete token values live in `crates/web/style/main.css`, and this file only records usage rules.
+The UI is built in `crates/web` (Topcoat); the concrete token values live in `crates/web/style/main.css`, and this file only records usage rules. The React dashboard under `web/` maps the same tokens into Tailwind's `@theme` in `web/src/index.css`, including the shadcn-style aliases (`background`, `foreground`, `muted-foreground`, `input`, `ring`, …) the vendored Cult UI components in `web/src/components/cult/` use — so the component layer wears this palette, not its own.
 
 ## Colors
 

@@ -1,5 +1,5 @@
 node_modules/
 dist/*
 !dist/index.html
-web/tsconfig.tsbuildinfo
-tsbuildinfo
+tsconfig.tsbuildinfo
+*.tsbuildinfo

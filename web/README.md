@@ -16,6 +16,14 @@ TanStack Query, talking to the same `/api/v1` REST surface.
 - `src/components/` — app shell and primitives styled by `src/index.css`,
   which maps the DESIGN.md tokens onto Tailwind's theme (`bg-primary`,
   `text-muted`, `border-line`, `mono`, …).
+- `src/components/cult/` — vendored Cult UI components (the `halo-*` family,
+  `rolling-number`, `copy-button`, `code-block`, `typewriter`,
+  `dynamic-island`, `bg-animated-fractal-dot-grid`, …) — copy-in source, not a
+  package. They speak the shadcn token names (`bg-background`,
+  `text-muted-foreground`, `border-input`, `ring`), which `index.css` aliases
+  onto the DESIGN.md palette.
+- `src/components/ui/` — the shadcn `button`/`badge` sources the vendored
+  components import.
 - `src/pages/` — one file per dashboard page; `Auth.tsx` holds the session
   pages, `Admin.tsx` the operator console.
 
@@ -64,8 +72,19 @@ checkout.
       anomalies, margin, reconciliation, closings, statements, redemptions,
       tiers, discounts, audit, credentials) — operator-token gated
 - [x] Budget snapshot widget (`GET /api/v1/budget`) on overview
-- [x] Anchored checkpoint display (`GET /api/v1/log/checkpoint`) on the log page
-- [x] Chat page — streams `/v1/chat/completions` with a per-browser `chat` key
+- [x] Anchored checkpoint display (`GET /api/v1/log/checkpoint`) and the
+      operator verifying key (`GET /api/v1/log/key`) on the log page
+- [x] Chat page — streams `/v1/chat/completions` with a per-browser `chat` key,
+      model picker from `/v1/models`
+- [x] Top up — manual rail, Stripe checkout redirect, redemption-code claim
+      (`POST /topups`, `/topups/stripe`, `/redemptions`)
+- [x] Pricing — the public catalog (`GET /pricing`), the estimate calculator
+      (`POST /estimate-price`), signed price heads (`GET /log/price-head`)
+- [x] Settings — account card, resend verification, server health
+      (`/healthz`), delete account (`DELETE /users/me`)
+- [x] Bill rows open the proof bundle in-page (`GET /entries/{entryId}/proof`)
+- [x] Admin covers statement ops (finalize / record payment / suspend), the
+      organization suspend toggle, and user password reset
 - [ ] Public `/verify` — stays server-rendered: verification must answer
       without trusting the server's own code, and a server-served JS bundle
       cannot certify that. `/verify` stays outside `/app` on purpose.
