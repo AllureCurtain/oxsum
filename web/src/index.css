@@ -19,6 +19,26 @@
   --color-line: #e5e7eb;
   --color-focus: #93c5fd;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* shadcn/Cult UI token aliases onto the same palette — the vendored
+   * components under components/cult/ and components/ui/ speak these names. */
+  --color-background: #f9fafb;
+  --color-foreground: #111827;
+  --color-card: #ffffff;
+  --color-card-foreground: #111827;
+  --color-popover: #ffffff;
+  --color-popover-foreground: #111827;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #f3f4f6;
+  --color-secondary-foreground: #111827;
+  --color-muted-foreground: #6b7280;
+  --color-accent: #dbeafe;
+  --color-accent-foreground: #1d4ed8;
+  --color-destructive: #b91c1c;
+  --color-destructive-foreground: #ffffff;
+  --color-border: #e5e7eb;
+  --color-input: #e5e7eb;
+  --color-ring: #93c5fd;
 }
 
 html {
