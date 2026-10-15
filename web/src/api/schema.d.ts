@@ -1421,7 +1421,38 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * List the organization's members
+         * @description The members the session's organization carries, with each member's role and
+         *     budget cap — the dashboard's members page. Reading is any member's right;
+         *     the writes beside this path are an owner or admin's.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The members */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: {
+                                members: components["schemas"]["Member"][];
+                            };
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
         put?: never;
         /**
          * Add an existing account to the organization as a member
@@ -2065,7 +2096,39 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * The organization's in-flight holds
+         * @description The holds the ledger still reserves for this organization — the
+         *     dashboard's "in-flight" table. A hold listed here is one the sweeper
+         *     watches: rows whose ledger hold is gone heal themselves away, so the
+         *     list is the ledger's own outstanding set, newest first.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The open holds */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: {
+                                holds: components["schemas"]["OpenHoldView"][];
+                            };
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
         put?: never;
         /**
          * Hold credits (before a streaming call starts)
@@ -2145,6 +2208,63 @@ export interface paths {
                 500: components["responses"]["Error"];
             };
         };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/bills": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The organization's transactions, newest first
+         * @description Every ledger entry that moved money — top-ups, adjustments, settled
+         *     turns — as the dashboard's bills page lists them: the booking date, the
+         *     signed amount, the description and the content hash the entry's
+         *     inclusion proof commits to. `before` walks older pages by log index;
+         *     the answer's `nextCursor` is the cursor the next page asks with.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description the log index the page continues back from; absent means the newest page */
+                    before?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The transaction page */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: {
+                                rows: components["schemas"]["BillRow"][];
+                                /**
+                                 * Format: int64
+                                 * @description present while an older page exists
+                                 */
+                                nextCursor?: number;
+                            };
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2348,6 +2468,16 @@ export interface paths {
                                  * @description the drawn plus reserved part of the credit line, in minor units
                                  */
                                 creditUsedMinor: number;
+                                /**
+                                 * Format: int64
+                                 * @description what outstanding holds freeze right now — the dashboard's frozen total
+                                 */
+                                reservedMinor: number;
+                                /**
+                                 * Format: int64
+                                 * @description what this UTC calendar month has settled so far — the dashboard's month-spend figure
+                                 */
+                                spentThisMonthMinor: number;
                             };
                         };
                     };
@@ -2699,6 +2829,64 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/entries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The ledger's entries, newest first
+         * @description Every entry the organization's append-only log carries — holds,
+         *     settlements, top-ups, markers — as the dashboard's transaction-log page
+         *     lists them: log index, entry id, description, content hash. `before`
+         *     walks older pages by log index; `nextCursor` is the cursor the next
+         *     page asks with. `limit` bounds the page (1–100, default 100).
+         */
+        get: {
+            parameters: {
+                query?: {
+                    before?: number;
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The entries page */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: {
+                                rows: components["schemas"]["LogEntryView"][];
+                                /**
+                                 * Format: int64
+                                 * @description present while an older page exists
+                                 */
+                                nextCursor?: number;
+                            };
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/log/head": {
         parameters: {
             query?: never;
@@ -2923,6 +3111,76 @@ export interface paths {
                 };
                 500: components["responses"]["Error"];
                 503: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/log/checkpoint": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Latest externally anchored checkpoint with witness cosignatures
+         * @description The head the `witness-checkpoints` pass last published to the witnesses
+         *     configured in `OXSUM_WITNESS_URLS`, together with the cosigned C2SP notes
+         *     they returned (issue #231). `note` is the operator-signed tlog-checkpoint
+         *     covering `headSize`; each `cosignatures[]` entry is one witness's signed
+         *     note for that same head — verify the signature lines against the keys the
+         *     respective witnesses publish. `data` is `null` while nothing is anchored:
+         *     before the first pass or when no witnesses are configured. A third party
+         *     verifies a head by checking the operator's signature (key at
+         *     `GET /api/v1/log/key`), the witnesses' signature lines, and — for their
+         *     own held head — a consistency proof from `GET /api/v1/log/consistency`.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The anchored checkpoint, or null */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: {
+                                /**
+                                 * Format: int64
+                                 * @description tree size the stored note attests
+                                 */
+                                headSize?: number;
+                                /** @description the operator-signed C2SP note covering the head, byte for byte */
+                                note?: string;
+                                cosignatures?: {
+                                    /** @description the witness endpoint as configured in OXSUM_WITNESS_URLS */
+                                    witnessUrl?: string;
+                                    /** @description the cosigned C2SP note the witness returned — its signature line is the verifiable part */
+                                    note?: string;
+                                    /** Format: date-time */
+                                    firstSeen?: string;
+                                }[];
+                                /** Format: date-time */
+                                updatedAt?: string;
+                            } | null;
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
             };
         };
         put?: never;
@@ -5728,6 +5986,60 @@ export interface components {
             model: string;
             /** @description the version this change appended */
             version: number;
+        };
+        /** @description one hold the ledger still reserves — the in-flight table's row */
+        OpenHoldView: {
+            /** @description the caller's request id — `x-oxsum-request-id` */
+            requestId: string;
+            model: string;
+            /**
+             * Format: int64
+             * @description what the hold reserves, in minor units
+             */
+            freezeMinor: number;
+            /** @description the display prefix of the key that took the hold; absent for unattributed holds */
+            keyPrefix?: string;
+        };
+        /** @description one ledger entry as the transaction log lists it */
+        LogEntryView: {
+            /**
+             * Format: int64
+             * @description the entry's position in the log
+             */
+            index: number;
+            /**
+             * Format: uuid
+             * @description the entry id — `GET /api/v1/entries/{entryId}/proof` names it
+             */
+            id: string;
+            /** @description what the writer recorded — a settlement record, a hold, a reason */
+            description: string;
+            /** @description the hash the Merkle log commits to */
+            contentHash: string;
+        };
+        /** @description one transaction as the bills page lists it — every ledger entry that moved money */
+        BillRow: {
+            /** Format: int64 */
+            index: number;
+            /** Format: uuid */
+            entryId: string;
+            /**
+             * Format: date
+             * @description the server's UTC date the entry was written
+             */
+            bookedOn: string;
+            /**
+             * @description the entry's movement kind: money in, an operator's book entry, or a settled charge
+             * @enum {string}
+             */
+            kind: "topUp" | "adjustment" | "settlement";
+            /**
+             * Format: int64
+             * @description the entry's effect on the settled balance, signed: top-ups read positive, charges negative
+             */
+            amountMinor: number;
+            description: string;
+            contentHash: string;
         };
         UsageDay: {
             /**

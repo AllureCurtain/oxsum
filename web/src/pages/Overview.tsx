@@ -1,65 +1,130 @@
 import { Link } from "react-router-dom";
-import { useBalance, useBillingRecords, useSession } from "../api/hooks";
+import { useBalance, useBudget, useEntries, useHolds, useSession } from "../api/hooks";
 import { Card, EmptyRows, Kpi, PageState, TableShell, credits } from "../components/ui";
 
 export function Overview() {
   const session = useSession();
   const balance = useBalance();
-  const records = useBillingRecords(5);
+  const budget = useBudget();
+  const holds = useHolds();
+  const entries = useEntries(10);
 
   return (
     <div className="flex flex-col gap-6">
       <h1 className="text-2xl font-bold">Overview</h1>
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      {!session.data?.user.emailVerified ? (
+        <p className="rounded-md border border-pending/40 bg-amber-50 px-3 py-2 text-sm text-pending">
+          Your email is not verified. Check your inbox for the verification mail.
+        </p>
+      ) : null}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Kpi
-          label="Available balance"
+          label="Available"
           value={balance.data ? `${credits(balance.data.availableMinor)} cr` : "…"}
         />
         <Kpi
-          label="Credit limit"
-          value={balance.data ? `${credits(balance.data.creditLimitMinor)} cr` : "…"}
+          label="Frozen"
+          value={balance.data ? `${credits(balance.data.reservedMinor)} cr` : "…"}
+          hint="what in-flight holds reserve"
         />
         <Kpi
-          label="Credit drawn"
-          value={balance.data ? `${credits(balance.data.creditUsedMinor)} cr` : "…"}
+          label="Spent this month"
+          value={balance.data ? `${credits(balance.data.spentThisMonthMinor)} cr` : "…"}
+        />
+        <Kpi
+          label="Credit line"
+          value={
+            balance.data
+              ? `${credits(balance.data.creditUsedMinor)} / ${credits(balance.data.creditLimitMinor)} cr`
+              : "…"
+          }
+          hint={
+            budget.data?.organization.consumedPercent != null
+              ? `${budget.data.organization.consumedPercent}% of the line committed`
+              : "no credit line"
+          }
         />
       </div>
-      <Card title="Recent bills">
-        {records.isLoading ? (
+
+      {budget.data?.member ? (
+        <Card title="Your member budget">
+          <p className="text-sm">
+            {budget.data.member.consumedPercent ?? 0}% of{" "}
+            {credits(budget.data.member.budgetLimitMinor)} cr committed this window.
+          </p>
+        </Card>
+      ) : null}
+
+      {budget.data && budget.data.keys.some((k) => k.spendLimitMinor != null) ? (
+        <Card title="Key budgets">
+          <TableShell head={["Key", "Window", "Committed", "Consumed"]}>
+            {budget.data.keys
+              .filter((k) => k.spendLimitMinor != null)
+              .map((k) => (
+                <tr key={k.keyId}>
+                  <td>
+                    {k.name ?? <code className="mono">{k.prefix}</code>}
+                  </td>
+                  <td>{k.budgetDuration ?? "cumulative"}</td>
+                  <td className="mono">{credits(k.committedMinor)} cr</td>
+                  <td>{k.consumedPercent != null ? `${k.consumedPercent}%` : "—"}</td>
+                </tr>
+              ))}
+          </TableShell>
+        </Card>
+      ) : null}
+
+      <Card
+        title="In-flight holds"
+        actions={
+          <Link to="/requests" className="text-sm text-primary">
+            Requests →
+          </Link>
+        }
+      >
+        {holds.isLoading ? (
           <PageState>Loading…</PageState>
-        ) : records.isError ? (
-          <PageState>The billing records could not be read.</PageState>
         ) : (
-          <TableShell head={["Booked", "Model", "Kind", "Charged", ""]}>
-            {(records.data?.rows ?? []).map((row) => (
-              <tr key={row.requestId}>
-                <td>{row.bookedOn}</td>
-                <td>{row.model}</td>
-                <td>{row.kind}</td>
-                <td className="num mono">{credits(row.chargedMinor)}</td>
-                <td>
-                  <a href={`/verify?entry=${row.entryId}`} className="text-primary">
-                    verify
-                  </a>
-                </td>
+          <TableShell head={["Request", "Model", "Key", "Frozen"]}>
+            {(holds.data?.holds ?? []).map((hold) => (
+              <tr key={hold.requestId}>
+                <td className="mono">{hold.requestId}</td>
+                <td>{hold.model}</td>
+                <td className="mono">{hold.keyPrefix ?? "—"}</td>
+                <td className="mono">{credits(hold.freezeMinor)} cr</td>
               </tr>
             ))}
-            {(records.data?.rows.length ?? 0) === 0 ? (
-              <EmptyRows colSpan={5}>No billing records yet.</EmptyRows>
+            {(holds.data?.holds.length ?? 0) === 0 ? (
+              <EmptyRows colSpan={4}>Nothing in flight.</EmptyRows>
             ) : null}
           </TableShell>
         )}
-        <p className="mt-3 text-sm">
-          <Link to="/bills" className="text-primary">
-            All bills →
-          </Link>
-        </p>
       </Card>
-      <p className="text-xs text-muted">
-        Signed in as {session.data?.user.email} — this is the React dashboard scaffold (issue
-        #234); the Topcoat pages under <a className="text-primary" href="/dashboard">/dashboard</a>{" "}
-        stay authoritative until parity.
-      </p>
+
+      <Card
+        title="Recent entries"
+        actions={
+          <Link to="/log" className="text-sm text-primary">
+            Full log →
+          </Link>
+        }
+      >
+        {entries.isLoading ? (
+          <PageState>Loading…</PageState>
+        ) : (
+          <TableShell head={["#", "Description"]}>
+            {(entries.data?.rows ?? []).map((entry) => (
+              <tr key={entry.id}>
+                <td className="mono">{entry.index}</td>
+                <td className="mono">{entry.description}</td>
+              </tr>
+            ))}
+            {(entries.data?.rows.length ?? 0) === 0 ? (
+              <EmptyRows colSpan={2}>No entries yet.</EmptyRows>
+            ) : null}
+          </TableShell>
+        )}
+      </Card>
     </div>
   );
 }

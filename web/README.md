@@ -2,8 +2,7 @@
 
 The standalone React frontend that will replace the Topcoat pages once it
 reaches parity (issue #234). Vite + React 19 + TypeScript + Tailwind v4 +
-TanStack Query, talking to the same `/api/v1` REST surface — no backend
-changes needed.
+TanStack Query, talking to the same `/api/v1` REST surface.
 
 ## Layout
 
@@ -12,10 +11,13 @@ changes needed.
   `crates/server/openapi.yaml`. Regenerate after any contract change:
   `npm run codegen`.
 - `src/api/hooks.ts` — TanStack Query hooks over the typed surface.
+- `src/api/ws.ts` — the `/ws/billing` socket: snapshot of in-flight holds,
+  then `turnStarted`/`turnProgress`/`turnSettled`.
 - `src/components/` — app shell and primitives styled by `src/index.css`,
   which maps the DESIGN.md tokens onto Tailwind's theme (`bg-primary`,
   `text-muted`, `border-line`, `mono`, …).
-- `src/pages/` — one file per dashboard page.
+- `src/pages/` — one file per dashboard page; `Auth.tsx` holds the session
+  pages, `Admin.tsx` the operator console.
 
 ## Development
 
@@ -40,22 +42,39 @@ checkout.
 
 ## Parity checklist — before Topcoat removal
 
-- [ ] Overview: balance, frozen total, month spend, in-flight holds, newest entries
-- [x] Bills list (read-only rows; pagination + CSV/JSON export still open)
-- [ ] Bill detail + `/verify` link flow
-- [ ] Requests list (key/model filters, in-flight + settled, live billing socket)
-- [x] Usage daily rollup (chart still open — table only today)
-- [x] API keys list (create/revoke/budget forms still open)
-- [ ] Key create/revoke/budget-duration forms (incl. `budgetThresholdsPercent` webhooks UI)
-- [ ] Members list + invites + role changes + remove
-- [ ] Webhooks endpoints + deliveries + test button
-- [ ] Statements list + detail + PDF export link
-- [ ] Org switcher + create organization
-- [ ] Session pages: verify email, forgot/reset password, device authorize
-- [ ] Admin console (channels, prices, organizations, anomalies, statements, ops) — admin-token surface
-- [ ] Public `/verify` page (stays server-rendered or gets its own entry; bundle verification must stay server-free — evaluate embedding `oxsum-verify` via wasm or calling the API)
-- [ ] Chat page (`/dashboard/chat`) — decision needed whether chat stays Topcoat or moves over
-- [ ] Budget snapshot widget (`GET /api/v1/budget`) on overview
-- [ ] Anchored checkpoint display (`GET /api/v1/log/checkpoint`) on the log page
+- [x] Overview: balance, frozen total, month spend, in-flight holds, newest entries
+- [x] Bills list (rows, pagination, CSV/JSON export links to the existing routes)
+- [x] Bill rows carry `entryId` → `/verify` link; the ledger-head archive check
+      is implemented (localStorage head + `GET /api/v1/log/consistency`)
+- [x] Requests list (key/model filters in the URL, in-flight + settled, live
+      `/ws/billing` socket)
+- [x] Usage daily rollup with a CSS bar chart
+- [x] API keys: list, create, revoke, constraints (budget, windows, RPM/TPM,
+      concurrency, allowlist) + committed-percent column
+- [x] Members: list, add by email, invitation links, role changes, remove,
+      ownership transfer
+- [x] Webhooks: endpoints, create (events, `balanceLowMinor`,
+      `budgetThresholdsPercent`), deliveries, delete — the test-delivery call
+      is not in the contract, so the UI checks deliveries instead
+- [x] Statements: list, detail, PDF export link, log anchor
+- [x] Org switcher + create organization
+- [x] Session pages: register, login (GitHub OAuth when configured),
+      verify email, forgot/reset password, device authorize, redeem invitation
+- [x] Admin console (channels+prices, organizations+adjustments, in-flight,
+      anomalies, margin, reconciliation, closings, statements, redemptions,
+      tiers, discounts, audit, credentials) — operator-token gated
+- [x] Budget snapshot widget (`GET /api/v1/budget`) on overview
+- [x] Anchored checkpoint display (`GET /api/v1/log/checkpoint`) on the log page
+- [x] Chat page — streams `/v1/chat/completions` with a per-browser `chat` key
+- [ ] Public `/verify` — stays server-rendered: verification must answer
+      without trusting the server's own code, and a server-served JS bundle
+      cannot certify that. `/verify` stays outside `/app` on purpose.
 - [ ] Accessibility pass: every component state (hover/focus/disabled/loading),
       every page state (loading/empty/error/normal) per DESIGN.md
+
+## API reads added for the SPA (0.60.0)
+
+`GET /api/v1/org/members`, `GET /api/v1/holds`, `GET /api/v1/entries`,
+`GET /api/v1/bills`, and `reservedMinor`/`spentThisMonthMinor` on
+`GET /api/v1/balance` — the four reads the server-rendered pages drew
+straight from core, plus the two overview figures no endpoint carried.
