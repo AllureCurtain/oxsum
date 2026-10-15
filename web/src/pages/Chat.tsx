@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useKeys, useCreateKey } from "../api/hooks";
-import { Banner, Card, TextInput } from "../components/ui";
+import { Banner, Card, Field, TextInput } from "../components/ui";
 import { HaloButton } from "../components/cult/halo-button";
 import {
   HaloSelect,
@@ -9,6 +9,13 @@ import {
   HaloSelectTrigger,
   HaloSelectValue,
 } from "../components/cult/halo-select";
+import {
+  HaloTabs,
+  HaloTabsContent,
+  HaloTabsList,
+  HaloTabsTrigger,
+} from "../components/cult/halo-tabs";
+import { CodeBlock } from "../components/cult/code-block";
 import { Typewriter } from "../components/cult/typewriter";
 import { api } from "../api/client";
 
@@ -176,6 +183,14 @@ export function Chat() {
               ))}
             </HaloSelectContent>
           </HaloSelect>
+          <HaloTabs defaultValue="chat">
+            <HaloTabsList>
+              <HaloTabsTrigger value="chat">Chat</HaloTabsTrigger>
+              <HaloTabsTrigger value="messages">Messages</HaloTabsTrigger>
+              <HaloTabsTrigger value="embeddings">Embeddings</HaloTabsTrigger>
+              <HaloTabsTrigger value="rerank">Rerank</HaloTabsTrigger>
+            </HaloTabsList>
+            <HaloTabsContent value="chat">
           <Card>
             <div className="flex min-h-64 flex-col gap-3">
               {messages.map((m, i) => (
@@ -226,8 +241,134 @@ export function Chat() {
               Send
             </HaloButton>
           </form>
+            </HaloTabsContent>
+            <HaloTabsContent value="messages">
+              <Probe
+                path="/v1/messages"
+                secret={secret}
+                build={(fields) => ({
+                  model,
+                  messages: [{ role: "user", content: fields.text ?? "" }],
+                })}
+                fields={[{ name: "text", label: "User message", kind: "textarea" }]}
+              />
+            </HaloTabsContent>
+            <HaloTabsContent value="embeddings">
+              <Probe
+                path="/v1/embeddings"
+                secret={secret}
+                build={(fields) => ({ model, input: fields.text ?? "" })}
+                fields={[{ name: "text", label: "Input text", kind: "textarea" }]}
+              />
+            </HaloTabsContent>
+            <HaloTabsContent value="rerank">
+              <Probe
+                path="/v1/rerank"
+                secret={secret}
+                build={(fields) => ({
+                  model,
+                  query: fields.query ?? "",
+                  documents: (fields.documents ?? "")
+                    .split("\n")
+                    .map((d) => d.trim())
+                    .filter(Boolean),
+                })}
+                fields={[
+                  { name: "query", label: "Query" },
+                  { name: "documents", label: "Documents, one per line", kind: "textarea" },
+                ]}
+              />
+            </HaloTabsContent>
+          </HaloTabs>
         </>
       )}
     </div>
+  );
+}
+
+interface ProbeField {
+  name: string;
+  label: string;
+  kind?: "text" | "textarea";
+}
+
+/** The non-chat gateway routes — a billed request the page POSTs against the
+ *  same `chat` key, answered as pretty JSON. `x-oxsum-charged-minor` on the
+ *  response headers shows what the turn actually settled for. */
+function Probe(props: {
+  path: string;
+  secret: string;
+  fields: ProbeField[];
+  build: (fields: Record<string, string>) => Record<string, unknown>;
+}) {
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+  const [charge, setCharge] = useState<string | null>(null);
+
+  return (
+    <Card title={props.path}>
+      <form
+        className="flex flex-col gap-3"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          setBusy(true);
+          setResult(null);
+          setCharge(null);
+          try {
+            const res = await fetch(props.path, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${props.secret}`,
+              },
+              body: JSON.stringify(props.build(values)),
+            });
+            setCharge(res.headers.get("x-oxsum-charged-minor"));
+            const text = await res.text();
+            try {
+              setResult(JSON.stringify(JSON.parse(text), null, 2));
+            } catch {
+              setResult(text);
+            }
+          } catch {
+            setResult("the request failed");
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        {props.fields.map((f) => (
+          <Field key={f.name} label={f.label}>
+            {f.kind === "textarea" ? (
+              <textarea
+                className="mono w-full rounded-md border border-line bg-surface px-2.5 py-1.5 text-sm"
+                rows={3}
+                value={values[f.name] ?? ""}
+                onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))}
+                required
+              />
+            ) : (
+              <TextInput
+                value={values[f.name] ?? ""}
+                onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))}
+                required
+              />
+            )}
+          </Field>
+        ))}
+        <div className="flex items-center gap-3">
+          <HaloButton type="submit" isLoading={busy} loadingText="Sending…">
+            Send
+          </HaloButton>
+          {charge != null ? (
+            <p className="text-xs text-muted">
+              charged <code className="mono">{charge}</code> minor
+            </p>
+          ) : null}
+        </div>
+        {result ? <CodeBlock code={result} language="json" /> : null}
+      </form>
+    </Card>
   );
 }

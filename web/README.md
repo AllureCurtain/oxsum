@@ -77,13 +77,21 @@ checkout.
 - [x] Anchored checkpoint display (`GET /api/v1/log/checkpoint`) and the
       operator verifying key (`GET /api/v1/log/key`) on the log page
 - [x] Chat page — streams `/v1/chat/completions` with a per-browser `chat` key,
-      model picker from `/v1/models`
+      model picker from `/v1/models`; tabs also drive `/v1/messages`,
+      `/v1/embeddings` and `/v1/rerank` as billed one-shot probes
+- [x] Manual hold/settle/release bench on the overview (`POST /holds`,
+      `POST /settlements`)
 - [x] Top up — manual rail, Stripe checkout redirect, redemption-code claim
       (`POST /topups`, `/topups/stripe`, `/redemptions`)
 - [x] Pricing — the public catalog (`GET /pricing`), the estimate calculator
       (`POST /estimate-price`), signed price heads (`GET /log/price-head`)
 - [x] Settings — account card, resend verification, server health
       (`/healthz`), delete account (`DELETE /users/me`)
+- [x] Device authorization page previews the pending request
+      (`GET /device/request`) before approve/deny; the other two legs
+      (`/device/code`, `/device/token`) are the CLI's side of the grant and
+      get no web UI by design — same for Stripe's server-to-server
+      `/webhooks/stripe` callback
 - [x] Bill rows open the proof bundle in-page (`GET /entries/{entryId}/proof`)
 - [x] Admin covers statement ops (finalize / record payment / suspend), the
       organization suspend toggle, and user password reset

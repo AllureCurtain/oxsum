@@ -1,6 +1,6 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { ApiError, api } from "../api/client";
 import { useAuthMethods, useLogin } from "../api/hooks";
 import { FractalDotGrid } from "../components/cult/bg-animated-fractal-dot-grid";
@@ -313,6 +313,15 @@ export function Device() {
   const [params] = useSearchParams();
   const [code, setCode] = useState(params.get("code") ?? "");
   const [done, setDone] = useState<"approved" | "denied" | null>(null);
+  const pending = useQuery({
+    queryKey: ["device-request", code],
+    queryFn: () =>
+      api<{ userCode: string; createdAt: string; expiresAt: string }>(
+        `/device/request?code=${encodeURIComponent(code)}`,
+      ),
+    enabled: code.trim().length >= 8,
+    retry: false,
+  });
   const authorize = useMutation({
     mutationFn: (body: { userCode: string; approve: boolean }) =>
       api("/device/authorize", { method: "POST", body }),
@@ -340,6 +349,13 @@ export function Device() {
               placeholder="XXXX-XXXX"
             />
           </Field>
+          {pending.data ? (
+            <Banner tone="info">
+              Request <code className="mono">{pending.data.userCode}</code>, minted{" "}
+              {new Date(pending.data.createdAt).toLocaleString()}, expires{" "}
+              {new Date(pending.data.expiresAt).toLocaleString()}.
+            </Banner>
+          ) : null}
           <ErrorText error={authorize.error} />
           <div className="flex gap-2">
             <Button type="submit" disabled={authorize.isPending}>
