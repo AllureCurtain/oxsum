@@ -15,6 +15,7 @@ import {
   credits,
 } from "../components/ui";
 import { ApiError } from "../api/client";
+import { CopyButton } from "../components/cult/copy-button";
 
 const DURATIONS = ["daily", "weekly", "monthly"] as const;
 
@@ -79,6 +80,7 @@ export function Keys() {
         <Banner tone="success">
           The key was created. The secret is shown here and nowhere else:
           <code className="mono ml-2">{secret}</code>
+          <CopyButton value={secret} aria-label="Copy key secret" />
           <Button tone="ghost" className="ml-3" onClick={() => setSecret(null)}>
             Done
           </Button>

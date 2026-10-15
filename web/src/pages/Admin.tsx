@@ -13,6 +13,13 @@ import {
   credits,
 } from "../components/ui";
 import { ApiError } from "../api/client";
+import { HaloSwitch } from "../components/cult/halo-switch";
+import { HaloButton } from "../components/cult/halo-button";
+import {
+  HaloTabs,
+  HaloTabsList,
+  HaloTabsTrigger,
+} from "../components/cult/halo-tabs";
 
 // The admin console: the operator surface, token-gated like the server-rendered
 // `/admin` — the token lives in this browser's localStorage and rides
@@ -66,6 +73,7 @@ const SECTIONS = [
   "discounts",
   "audit",
   "credentials",
+  "users",
 ] as const;
 
 export function Admin() {
@@ -122,18 +130,34 @@ export function Admin() {
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Admin</h1>
-        <Button tone="ghost" onClick={() => setToken(null)}>
-          Leave console
-        </Button>
-      </div>
-      <nav className="flex flex-wrap gap-2">
-        {SECTIONS.map((s) => (
-          <Button key={s} tone={s === section ? "primary" : "ghost"} onClick={() => setSection(s)}>
-            {s}
+        <div className="flex items-center gap-3">
+          <a href="/metrics" className="text-xs text-muted hover:text-ink" target="_blank" rel="noreferrer">
+            /metrics
+          </a>
+          <Button tone="ghost" onClick={() => setToken(null)}>
+            Leave console
           </Button>
-        ))}
-      </nav>
-      {verified === true && token ? <Section token={token} name={section} /> : <PageState>Checking token…</PageState>}
+        </div>
+      </div>
+      {verified === true && token ? (
+        <HaloTabs
+          value={section}
+          onValueChange={(v) => setSection(v as (typeof SECTIONS)[number])}
+        >
+          <HaloTabsList variant="underline" className="flex-wrap">
+            {SECTIONS.map((s) => (
+              <HaloTabsTrigger key={s} value={s}>
+                {s}
+              </HaloTabsTrigger>
+            ))}
+          </HaloTabsList>
+          <div className="mt-4">
+            <Section token={token} name={section} />
+          </div>
+        </HaloTabs>
+      ) : (
+        <PageState>Checking token…</PageState>
+      )}
     </div>
   );
 }
@@ -166,7 +190,71 @@ function Section({ token, name }: { token: string; name: (typeof SECTIONS)[numbe
       return <Audit token={token} />;
     case "credentials":
       return <Credentials token={token} />;
+    case "users":
+      return <UserReset token={token} />;
   }
+}
+
+function UserReset({ token }: { token: string }) {
+  const [userId, setUserId] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  return (
+    <Card title="Reset a user's password">
+      <form
+        className="flex flex-col gap-3"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          setBusy(true);
+          setMsg(null);
+          try {
+            const res = await adminApi<{ userId: string; sessionsRevoked: number }>(
+              token,
+              `/users/${userId}/password-reset`,
+              { method: "POST", body: { newPassword: password } },
+            );
+            setMsg(`password set — ${res.sessionsRevoked} session(s) revoked`);
+          } catch (err) {
+            setMsg(err instanceof ApiError ? err.message : "failed");
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <p className="text-sm text-muted">
+          Sets the password and revokes every session the user holds — the only recovery path, since
+          no mail goes out.
+        </p>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <Field label="User id">
+            <TextInput
+              value={userId}
+              onChange={(e) => setUserId(e.target.value)}
+              placeholder="uuid"
+              className="mono"
+              required
+            />
+          </Field>
+          <Field label="New password" hint="12+ characters">
+            <TextInput
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              minLength={12}
+              required
+            />
+          </Field>
+        </div>
+        <div className="flex items-center gap-3">
+          <HaloButton type="submit" isLoading={busy} loadingText="Resetting…">
+            Reset password
+          </HaloButton>
+          {msg ? <span className="text-sm text-muted">{msg}</span> : null}
+        </div>
+      </form>
+    </Card>
+  );
 }
 
 // A tiny query wrapper — the admin surface answers `data` arrays or objects.
@@ -418,6 +506,7 @@ function AdjustOrg({ token, id, onDone }: { token: string; id: string; onDone: (
   const [credit, setCredit] = useState("");
   const [terms, setTerms] = useState("");
   const [tier, setTier] = useState("");
+  const [suspend, setSuspend] = useState<boolean | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
 
   return (
@@ -437,7 +526,7 @@ function AdjustOrg({ token, id, onDone }: { token: string; id: string; onDone: (
                 },
               });
             }
-            if (credit !== "" || terms !== "" || tier !== "") {
+            if (credit !== "" || terms !== "" || tier !== "" || suspend !== null) {
               await adminApi(token, `/organizations/${id}`, {
                 method: "PATCH",
                 body: {
@@ -445,6 +534,7 @@ function AdjustOrg({ token, id, onDone }: { token: string; id: string; onDone: (
                   ...(credit !== "" ? { creditLimitMinor: Math.round(Number(credit) * 1_000_000) } : {}),
                   ...(terms !== "" ? { paymentTermsDays: Number(terms) } : {}),
                   ...(tier !== "" ? { tier } : {}),
+                  ...(suspend !== null ? { suspended: suspend } : {}),
                 },
               });
             }
@@ -469,6 +559,17 @@ function AdjustOrg({ token, id, onDone }: { token: string; id: string; onDone: (
         </Field>
         <Field label="Tier">
           <TextInput value={tier} onChange={(e) => setTier(e.target.value)} />
+        </Field>
+        <Field label="Suspend spend" hint="new holds refuse; in-flight still settles">
+          <div className="flex items-center gap-2 pt-2">
+            <HaloSwitch
+              checked={suspend ?? false}
+              onCheckedChange={(v) => setSuspend(v)}
+            />
+            <span className="text-xs text-muted">
+              {suspend === null ? "leave as is" : suspend ? "suspend" : "reinstate"}
+            </span>
+          </div>
         </Field>
         <div className="flex items-end gap-2">
           <Button type="submit">Apply</Button>
@@ -687,21 +788,7 @@ function AdminStatements({ token }: { token: string }) {
       ) : (
         <TableShell head={["Period", "Organization", "Status", "Payment", "Total", "Outstanding", ""]}>
           {(statements.data ?? []).map((s) => (
-            <tr key={s.id}>
-              <td>{s.period}</td>
-              <td className="mono">{s.organizationId.slice(0, 8)}…</td>
-              <td>{s.status}</td>
-              <td>{s.paymentStatus}</td>
-              <td className="mono">{credits(s.totalMinor)} cr</td>
-              <td className="mono">{credits(s.outstandingMinor)} cr</td>
-              <td>
-                {s.status === "finalized" ? (
-                  <a href={`/api/v1/admin/statements/${s.id}/export.pdf`} className="text-primary">
-                    PDF
-                  </a>
-                ) : null}
-              </td>
-            </tr>
+            <StatementRow key={s.id} token={token} s={s} onDone={statements.refresh} />
           ))}
           {(statements.data?.length ?? 0) === 0 ? (
             <EmptyRows colSpan={7}>No statements.</EmptyRows>
@@ -709,6 +796,127 @@ function AdminStatements({ token }: { token: string }) {
         </TableShell>
       )}
     </div>
+  );
+}
+
+type AdminStatement = {
+  id: string;
+  organizationId: string;
+  period: string;
+  status: string;
+  paymentStatus: string;
+  totalMinor: number;
+  creditDrawnMinor: number;
+  outstandingMinor: number;
+};
+
+function StatementRow({
+  token,
+  s,
+  onDone,
+}: {
+  token: string;
+  s: AdminStatement;
+  onDone: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [payment, setPayment] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const call = async (path: string, body?: unknown) => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await adminApi(token, path, { method: "POST", body });
+      onDone();
+    } catch (err) {
+      setMsg(err instanceof ApiError ? err.message : "failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <tr>
+        <td>{s.period}</td>
+        <td className="mono">{s.organizationId.slice(0, 8)}…</td>
+        <td>{s.status}</td>
+        <td>{s.paymentStatus}</td>
+        <td className="mono">{credits(s.totalMinor)} cr</td>
+        <td className="mono">{credits(s.outstandingMinor)} cr</td>
+        <td className="flex items-center gap-2">
+          {s.status === "finalized" ? (
+            <a href={`/api/v1/admin/statements/${s.id}/export.pdf`} className="text-primary">
+              PDF
+            </a>
+          ) : null}
+          <Button tone="ghost" onClick={() => setOpen((v) => !v)}>
+            {open ? "Close" : "Ops"}
+          </Button>
+        </td>
+      </tr>
+      {open ? (
+        <tr>
+          <td colSpan={7} className="bg-canvas">
+            <div className="flex flex-wrap items-end gap-2 py-1">
+              {s.status === "draft" ? (
+                <Button
+                  tone="ghost"
+                  disabled={busy}
+                  onClick={() =>
+                    call(`/statements/${s.id}/finalize`, {
+                      idempotencyKey: `fin-${s.id}-${Date.now()}`,
+                    })
+                  }
+                >
+                  Finalize
+                </Button>
+              ) : null}
+              {s.status === "finalized" && (s.paymentStatus === "pending" || s.paymentStatus === "overdue") ? (
+                <>
+                  <Field label="Payment (credits)">
+                    <NumberInput
+                      value={payment}
+                      onChange={(e) => setPayment(e.target.value)}
+                      min="0.000001"
+                    />
+                  </Field>
+                  <Button
+                    tone="ghost"
+                    disabled={busy || payment === ""}
+                    onClick={() =>
+                      call(`/statements/${s.id}/payments`, {
+                        amountMinor: Math.round(Number(payment) * 1_000_000),
+                        idempotencyKey: `pay-${s.id}-${Date.now()}`,
+                      })
+                    }
+                  >
+                    Record payment
+                  </Button>
+                  <Button
+                    tone="danger"
+                    disabled={busy}
+                    onClick={() =>
+                      call(`/statements/${s.id}/suspend`, {
+                        idempotencyKey: `sus-${s.id}-${Date.now()}`,
+                      })
+                    }
+                  >
+                    Suspend
+                  </Button>
+                </>
+              ) : null}
+              {s.status === "finalized" && s.paymentStatus === "suspended" ? (
+                <span className="text-xs text-muted">payment suspended</span>
+              ) : null}
+              {msg ? <span className="text-xs text-danger">{msg}</span> : null}
+            </div>
+          </td>
+        </tr>
+      ) : null}
+    </>
   );
 }
 

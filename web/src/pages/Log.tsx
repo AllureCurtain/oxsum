@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { useEntries, useLogHead, useWitnessCheckpoint } from "../api/hooks";
+import { useEntries, useLogHead, useLogKey, useWitnessCheckpoint } from "../api/hooks";
+import { CopyButton } from "../components/cult/copy-button";
 import { Button, Card, EmptyRows, PageState, TableShell } from "../components/ui";
 
 export function Log() {
@@ -7,6 +8,7 @@ export function Log() {
   const entries = useEntries(100, before);
   const head = useLogHead();
   const checkpoint = useWitnessCheckpoint();
+  const logKey = useLogKey();
 
   return (
     <div className="flex flex-col gap-6">
@@ -35,6 +37,22 @@ export function Log() {
           </p>
           <p className="mt-1 text-xs text-muted">
             Signed by {head.data.keyName} ({head.data.keyHash})
+          </p>
+        </Card>
+      ) : null}
+
+      {logKey.data ? (
+        <Card title="Operator verifying key">
+          <p className="text-xs text-muted">
+            The public half of the key that signs tree heads and price checkpoints. Fetching it here
+            is convenience — a verifier pins it through a channel the operator does not control.
+          </p>
+          <div className="mt-2 flex items-center gap-2">
+            <code className="mono text-sm">{logKey.data.publicKey}</code>
+            <CopyButton value={logKey.data.publicKey} aria-label="Copy verifying key" />
+          </div>
+          <p className="mt-1 text-xs text-muted">
+            {logKey.data.keyName} · keyHash {logKey.data.keyHash}
           </p>
         </Card>
       ) : null}

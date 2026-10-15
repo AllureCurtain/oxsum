@@ -1,6 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { useKeys, useCreateKey } from "../api/hooks";
-import { Banner, Button, Card, Select, TextInput } from "../components/ui";
+import { Banner, Card, TextInput } from "../components/ui";
+import { HaloButton } from "../components/cult/halo-button";
+import {
+  HaloSelect,
+  HaloSelectContent,
+  HaloSelectItem,
+  HaloSelectTrigger,
+  HaloSelectValue,
+} from "../components/cult/halo-select";
+import { Typewriter } from "../components/cult/typewriter";
 import { api } from "../api/client";
 
 // The chat page, moved from the server-rendered `/dashboard/chat`: the browser
@@ -155,13 +164,18 @@ export function Chat() {
         <p className="text-sm text-muted">Minting the chat key…</p>
       ) : (
         <>
-          <Select value={model} onChange={(e) => setModel(e.target.value)} className="w-72" aria-label="model">
-            {models.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </Select>
+          <HaloSelect value={model} onValueChange={(v) => setModel(String(v))} className="w-72">
+            <HaloSelectTrigger aria-label="model">
+              <HaloSelectValue />
+            </HaloSelectTrigger>
+            <HaloSelectContent>
+              {models.map((m) => (
+                <HaloSelectItem key={m} value={m}>
+                  {m}
+                </HaloSelectItem>
+              ))}
+            </HaloSelectContent>
+          </HaloSelect>
           <Card>
             <div className="flex min-h-64 flex-col gap-3">
               {messages.map((m, i) => (
@@ -176,7 +190,16 @@ export function Chat() {
                 </div>
               ))}
               {messages.length === 0 ? (
-                <p className="text-sm text-muted">No turns yet.</p>
+                <p className="text-sm text-muted">
+                  <Typewriter
+                    delay={80}
+                    texts={[
+                      "Ask anything — every turn is a billed request.",
+                      "The wallet freezes an upper bound before the stream starts…",
+                      "…and settles against real usage after it ends.",
+                    ]}
+                  />
+                </p>
               ) : null}
             </div>
           </Card>
@@ -194,9 +217,14 @@ export function Chat() {
               placeholder="Say something…"
               disabled={streaming}
             />
-            <Button type="submit" disabled={streaming || !input.trim()}>
-              {streaming ? "Streaming…" : "Send"}
-            </Button>
+            <HaloButton
+              type="submit"
+              isLoading={streaming}
+              loadingText="Streaming…"
+              disabled={!input.trim()}
+            >
+              Send
+            </HaloButton>
           </form>
         </>
       )}

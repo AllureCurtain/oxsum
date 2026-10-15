@@ -3,15 +3,28 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation } from "@tanstack/react-query";
 import { ApiError, api } from "../api/client";
 import { useAuthMethods, useLogin } from "../api/hooks";
+import { FractalDotGrid } from "../components/cult/bg-animated-fractal-dot-grid";
 import { Banner, Button, Field, TextInput } from "../components/ui";
 
-/** The centered card every session page shares. */
+/** The centered card every session page shares, over the animated dot grid. */
 function AuthCard(props: { title: string; children: ReactNode }) {
   return (
-    <main className="mx-auto mt-24 w-full max-w-sm px-4">
-      <div className="rounded-md border border-line bg-surface p-6">
-        <h1 className="text-2xl font-bold">{props.title}</h1>
-        <div className="mt-4">{props.children}</div>
+    <main className="relative flex min-h-screen items-start justify-center overflow-hidden">
+      <div className="absolute inset-0 opacity-60">
+        <FractalDotGrid
+          dotColor="rgba(37, 99, 235, 1)"
+          glowColor="rgba(37, 99, 235, 1)"
+          dotOpacity={0.25}
+          waveIntensity={18}
+          enableMouseGlow={false}
+          initialPerformance="low"
+        />
+      </div>
+      <div className="relative z-10 mt-24 w-full max-w-sm px-4">
+        <div className="rounded-md border border-line bg-surface p-6">
+          <h1 className="text-2xl font-bold">{props.title}</h1>
+          <div className="mt-4">{props.children}</div>
+        </div>
       </div>
     </main>
   );

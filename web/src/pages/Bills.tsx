@@ -11,7 +11,8 @@ import {
   NumberInput,
   signedCredits,
 } from "../components/ui";
-import { ApiError } from "../api/client";
+import { ApiError, api } from "../api/client";
+import { CodeBlock } from "../components/cult/code-block";
 
 // The archived head rides the browser's localStorage, like the Leptos
 // dashboard's archive: `decide` says what a served head means against it.
@@ -29,6 +30,64 @@ function archived(): ArchivedHead | null {
   } catch {
     return null;
   }
+}
+
+/** One bill row with an on-demand proof-bundle drawer (`GET /entries/{id}/proof`). */
+function BillRow({ row }: { row: { index: number; entryId: string; bookedOn: string; kind: string; amountMinor: number; description: string; contentHash: string } }) {
+  const [open, setOpen] = useState(false);
+  const [proof, setProof] = useState<unknown>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function toggle() {
+    if (!open && proof === null) {
+      setBusy(true);
+      try {
+        setProof(await api(`/entries/${row.entryId}/proof`));
+      } catch (e) {
+        setErr(e instanceof ApiError ? e.message : "the proof could not be read");
+      } finally {
+        setBusy(false);
+      }
+    }
+    setOpen(!open);
+  }
+
+  return (
+    <>
+      <tr key={row.entryId}>
+        <td className="mono">{row.index}</td>
+        <td>{row.bookedOn}</td>
+        <td>{row.kind}</td>
+        <td className="mono">{signedCredits(row.amountMinor)}</td>
+        <td className="mono">{row.description}</td>
+        <td className="mono">{row.contentHash.slice(0, 12)}…</td>
+        <td className="flex items-center gap-2">
+          <a href={`/verify?entry=${row.entryId}`} className="text-primary">
+            verify
+          </a>
+          <Button tone="ghost" onClick={toggle} disabled={busy}>
+            {open ? "hide" : busy ? "…" : "proof"}
+          </Button>
+        </td>
+      </tr>
+      {open ? (
+        <tr>
+          <td colSpan={7} className="bg-canvas">
+            {err ? (
+              <Banner tone="error">{err}</Banner>
+            ) : (
+              <CodeBlock language="json" code={JSON.stringify(proof, null, 2)} />
+            )}
+            <p className="mt-1 text-xs text-muted">
+              The bundle is the raw material <code className="mono">/verify</code> checks — signature,
+              path, and content hash.
+            </p>
+          </td>
+        </tr>
+      ) : null}
+    </>
+  );
 }
 
 export function Bills() {
@@ -77,19 +136,7 @@ export function Bills() {
         <>
           <TableShell head={["#", "Booked", "Kind", "Amount", "Description", "Hash", ""]}>
             {(bills.data?.rows ?? []).map((row) => (
-              <tr key={row.entryId}>
-                <td className="mono">{row.index}</td>
-                <td>{row.bookedOn}</td>
-                <td>{row.kind}</td>
-                <td className="mono">{signedCredits(row.amountMinor)}</td>
-                <td className="mono">{row.description}</td>
-                <td className="mono">{row.contentHash.slice(0, 12)}…</td>
-                <td>
-                  <a href={`/verify?entry=${row.entryId}`} className="text-primary">
-                    verify
-                  </a>
-                </td>
-              </tr>
+              <BillRow key={row.entryId} row={row} />
             ))}
             {(bills.data?.rows.length ?? 0) === 0 ? (
               <EmptyRows colSpan={7}>No transactions yet.</EmptyRows>
