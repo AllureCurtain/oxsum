@@ -1,3 +1,5 @@
+import { fileURLToPath, URL } from "node:url";
+
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
@@ -7,8 +9,31 @@ import { defineConfig } from "vite";
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   base: "/app/",
+  resolve: {
+    // Vendored Cult UI components import via the shadcn-style `@/` alias.
+    alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
+  },
   build: {
     outDir: "dist",
+    rollupOptions: {
+      output: {
+        // Vendor chunks keep the app code thin and let the browser cache the
+        // slow-moving libraries separately.
+        manualChunks: {
+          "react-vendor": ["react", "react-dom", "react-router-dom", "@tanstack/react-query"],
+          motion: ["motion"],
+          "ui-vendor": [
+            "@base-ui/react",
+            "radix-ui",
+            "lucide-react",
+            "@hugeicons/react",
+            "@hugeicons/core-free-icons",
+            "class-variance-authority",
+            "react-use-measure",
+          ],
+        },
+      },
+    },
   },
   server: {
     // Development talks to the locally running server
