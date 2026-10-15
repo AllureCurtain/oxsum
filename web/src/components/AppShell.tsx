@@ -9,18 +9,22 @@ import {
 import { ApiError } from "../api/client";
 import { useEffect, useState } from "react";
 import { Button, TextInput } from "./ui";
+import { LiveIsland } from "./LiveIsland";
 
 const NAV = [
   { to: "/", label: "Overview", end: true },
+  { to: "/topup", label: "Top up" },
   { to: "/bills", label: "Bills" },
   { to: "/requests", label: "Requests" },
   { to: "/usage", label: "Usage" },
+  { to: "/pricing", label: "Pricing" },
   { to: "/keys", label: "API keys" },
   { to: "/members", label: "Members" },
   { to: "/webhooks", label: "Webhooks" },
   { to: "/statements", label: "Statements" },
   { to: "/log", label: "Log" },
   { to: "/chat", label: "Chat" },
+  { to: "/settings", label: "Settings" },
 ] as const;
 
 function OrgSwitcher() {
@@ -142,6 +146,9 @@ export function AppShell() {
       </nav>
       <main className="max-w-5xl flex-1 px-6 py-6">
         <div className="mb-4 flex items-center justify-end gap-3 text-xs text-muted">
+          <div className="relative h-14 w-60 shrink-0">
+            <LiveIsland />
+          </div>
           <OrgSwitcher />
           <span>
             {user.email} · {role}

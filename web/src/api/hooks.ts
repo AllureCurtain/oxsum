@@ -198,6 +198,42 @@ export interface AuthMethods {
   turnstileSiteKey?: string | null;
 }
 
+export interface Receipt {
+  entryId: string;
+  logIndex?: number | null;
+  contentHash: string;
+  isNew: boolean;
+}
+
+export interface PricedModel {
+  model: string;
+  channel: string;
+  protocol: string;
+  version: number;
+  weight: number;
+  createdAt: string;
+  inputPricePerMillion: number;
+  outputPricePerMillion?: number;
+  maxOutputTokens?: number;
+  cacheReadPricePerMillion?: number;
+  cacheWrite5mPricePerMillion?: number;
+  cacheWrite1hPricePerMillion?: number;
+  reasoningPricePerMillion?: number;
+  costPerRequest?: number;
+}
+
+export interface PriceEstimate {
+  estimateMinor: number;
+  model: string;
+  version: number;
+}
+
+export interface VerifyingKey {
+  keyName: string;
+  publicKey: string;
+  keyHash: string;
+}
+
 export function useSession() {
   return useQuery({
     queryKey: ["session"],
@@ -472,6 +508,115 @@ export function useSwitchOrganization() {
     mutationFn: (organizationId: string) =>
       api("/session/organization", { method: "POST", body: { organizationId } }),
     onSettled: () => client.invalidateQueries(),
+  });
+}
+
+export function useTopup() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (amountMinor: number) =>
+      api<Receipt>("/topups", {
+        method: "POST",
+        body: { amountMinor, idempotencyKey: crypto.randomUUID() },
+      }),
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: ["balance"] });
+      client.invalidateQueries({ queryKey: ["bills"] });
+    },
+  });
+}
+
+export function useStripeTopup() {
+  return useMutation({
+    mutationFn: (amountMinor: number) =>
+      api<{ checkoutUrl: string; depositId: string }>("/topups/stripe", {
+        method: "POST",
+        body: { amountMinor, idempotencyKey: crypto.randomUUID() },
+      }),
+  });
+}
+
+export function useRedeemCode() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (code: string) =>
+      api<Receipt & { amountMinor: number }>("/redemptions", {
+        method: "POST",
+        body: { code },
+      }),
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: ["balance"] });
+      client.invalidateQueries({ queryKey: ["bills"] });
+    },
+  });
+}
+
+export function usePricing() {
+  return useQuery({
+    queryKey: ["pricing"],
+    queryFn: () => api<{ models: PricedModel[] }>("/pricing"),
+    staleTime: 60_000,
+  });
+}
+
+export function useEstimatePrice() {
+  return useMutation({
+    mutationFn: (body: {
+      model: string;
+      mode?: string;
+      inputTokens?: number;
+      outputTokens?: number;
+      serviceTier?: string;
+    }) => api<PriceEstimate>("/estimate-price", { method: "POST", body }),
+  });
+}
+
+export function usePriceHead(channel: string, model: string, version?: number) {
+  return useQuery({
+    queryKey: ["price-head", channel, model, version ?? null],
+    queryFn: () =>
+      api<SignedHead>(
+        `/log/price-head?channel=${encodeURIComponent(channel)}&model=${encodeURIComponent(model)}${version !== undefined ? `&version=${version}` : ""}`,
+      ),
+    enabled: channel !== "" && model !== "",
+    retry: false,
+  });
+}
+
+export function useLogKey() {
+  return useQuery({
+    queryKey: ["log-key"],
+    queryFn: () => api<VerifyingKey>("/log/key"),
+    retry: false,
+  });
+}
+
+export function useDeleteAccount() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (password: string) =>
+      api("/users/me", { method: "DELETE", body: { password } }),
+    onSettled: () => client.clear(),
+  });
+}
+
+export function useOrg() {
+  return useQuery({
+    queryKey: ["org"],
+    queryFn: () =>
+      api<{ id: string; name: string; tenantId: string; kind: string; createdAt: string }>("/org"),
+  });
+}
+
+export function useHealth() {
+  return useQuery({
+    queryKey: ["healthz"],
+    queryFn: async () => {
+      const res = await fetch("/healthz", { credentials: "same-origin" });
+      return res.ok ? ("ok" as const) : (`unhealthy: ${res.status}` as const);
+    },
+    refetchInterval: 30_000,
+    retry: false,
   });
 }
 
