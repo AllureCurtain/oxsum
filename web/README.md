@@ -71,6 +71,8 @@ checkout.
 - [x] Admin console (channels+prices, organizations+adjustments, in-flight,
       anomalies, margin, reconciliation, closings, statements, redemptions,
       tiers, discounts, audit, credentials) — operator-token gated
+- [x] Admin metering bench — `/api/v1/metering/*` (hold / settle / release /
+      one-shot bill) driven with a pasted service credential
 - [x] Budget snapshot widget (`GET /api/v1/budget`) on overview
 - [x] Anchored checkpoint display (`GET /api/v1/log/checkpoint`) and the
       operator verifying key (`GET /api/v1/log/key`) on the log page
@@ -88,8 +90,10 @@ checkout.
 - [ ] Public `/verify` — stays server-rendered: verification must answer
       without trusting the server's own code, and a server-served JS bundle
       cannot certify that. `/verify` stays outside `/app` on purpose.
-- [ ] Accessibility pass: every component state (hover/focus/disabled/loading),
-      every page state (loading/empty/error/normal) per DESIGN.md
+- [x] Accessibility pass: global `:focus-visible` ring in `index.css`,
+      disabled/loading states on the button primitives, `PageState`
+      (loading/empty/error/normal) on every page, `useReducedMotion` /
+      `motion-reduce` in the animated Cult components
 
 ## API reads added for the SPA (0.60.0)
 
