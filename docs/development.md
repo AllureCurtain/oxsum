@@ -227,8 +227,8 @@ creates `ledger_<tenant_id>` on first use.
 | Start the database | `docker compose up -d` |
 | Start the server | `cargo run -p oxsum-server` |
 | Seed the demo world | `cargo run -p oxsum-server -- seed` (populates, prints the credentials, exits — see "Demo data") |
-| All tests | `cargo test --workspace` (loads `DATABASE_URL` from `.env` or the shell) |
-| oxsum only | `cargo test -p oxsum-core -p oxsum-server` |
+| All tests | `cargo nextest run --workspace` — the pre-push gate (loads `DATABASE_URL` from `.env` or the shell; `cargo test --workspace` is the fallback and covers doctests) |
+| Focused while iterating | `cargo nextest run -p oxsum-<crate>` — only the crates the change touched; the workspace suite runs once before pushing, not per edit |
 | Run the end-to-end demo | `python3 demo/demo.py` (needs `pip install -r demo/requirements.txt`; starts its own mock upstream and server) |
 | Generative sequences, quick run | `PROPTEST_CASES=50 cargo test -p oxsum-core --test generative` |
 | Real-provider end-to-end check | `cargo test -p oxsum-server --test real_upstream` (needs env vars — see "Real-provider smoke check") |
