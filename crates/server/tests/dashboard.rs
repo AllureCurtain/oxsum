@@ -308,6 +308,7 @@ async fn billing_socket_sends_a_snapshot_then_live_events() {
         output_price: 2,
         freeze_minor: 1000,
         key_id: None,
+        mandate_id: None,
         end_user: None,
         service_tier: None,
         tags: Default::default(),

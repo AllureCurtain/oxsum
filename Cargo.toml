@@ -28,6 +28,10 @@ ctor = "0.2"
 # Sealing channel credentials at rest: AES-256-GCM, and the base64 the stored record uses.
 aes-gcm = "0.10"
 base64 = "0.21"
+# Signed spend mandates (issue #262): Ed25519 over the mandate's canonical body.
+# Same crate doubleentry's witness feature already resolves; no `rand_core`, so
+# seeds stay caller-supplied and the signing path deterministic.
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "zeroize"] }
 dotenvy = "0.15"
 # The dashboard: Topcoat pages, server-side rendered, mounted into the same
 # binary as an axum fallback service (spike/topcoat-dashboard).

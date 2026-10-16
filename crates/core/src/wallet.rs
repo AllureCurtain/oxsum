@@ -962,6 +962,13 @@ impl Wallet {
     /// split is computed on the transaction's connection so the lock, the limit read
     /// and the balance read agree on what is committed, and the whole flow retries
     /// when a racing append invalidates the split it chose.
+    /// `mandate` is a verified `X-Oxsum-Mandate` the caller parsed and checked
+    /// against the key's public half ([`crate::mandates::parse_presented`]).
+    /// `hold_for_key` applies its bounds on top of the key's own — window, cap
+    /// and model — under the same per-key lock, so a delegate's spend is
+    /// checked against the ledger-derived committed figure atomically with the
+    /// append, exactly like the key's own limit.
+    #[allow(clippy::too_many_arguments)]
     pub async fn hold_for_key(
         &self,
         key: &ActingKey,
@@ -970,12 +977,23 @@ impl Wallet {
         description: &str,
         minor: i64,
         on: Date,
+        mandate: Option<&crate::mandates::PresentedMandate>,
     ) -> Result<Receipt, WalletError> {
         positive(minor)?;
         let description = description_of(description)?;
-        let actor = Provenance::none()
+        let mut actor = Provenance::none()
             .with_actor(&key.key_id.as_simple().to_string())
             .map_err(invalid)?;
+        if let Some(mandate) = mandate {
+            // The mandate id rides the hold entry's provenance correlation, so
+            // the mandate's committed spend is readable from the ledger itself —
+            // settled charges and outstanding holds alike — the same way the
+            // key's own limit reads it, and a settle copies it onto the charge
+            // the way `outstanding_actor` is copied (issue #262).
+            actor = actor
+                .with_correlation(&mandate.verified.mandate_id.as_simple().to_string())
+                .map_err(invalid)?;
+        }
         let entry_id = entry_id_for(idem_key);
         // A committed entry under the key is this request's answer before any
         // constraint is consulted: a replayed hold gets its own receipt even
@@ -1125,6 +1143,50 @@ impl Wallet {
                         return Err(WalletError::TooManyHolds {
                             limit: i64::from(cap),
                             open,
+                        });
+                    }
+                }
+                // The mandate's own bounds, on top of the key's (issue #262). Its
+                // signature was already verified against the key's public half;
+                // what runs here under the per-key lock is what needs the
+                // ledger-derived figure: the window, the model subset and the
+                // committed-under-mandate cap.
+                if let Some(mandate) = mandate {
+                    let now = OffsetDateTime::now_utc();
+                    // The mandate delegates this key only — a blob minted for one
+                    // key never spends under another, and the `orgId` binding
+                    // keeps a mandate out of a different organization's ledger.
+                    if mandate.verified.key_id != key.key_id {
+                        return Err(WalletError::InvalidMandate);
+                    }
+                    // The window bound is the mandate's own, refused as its own
+                    // code so a delegate learns the delegation expired rather
+                    // than the organization's budget biting.
+                    if now.unix_timestamp() < mandate.not_before_ts() {
+                        return Err(WalletError::MandateOutOfWindow { not_yet: true });
+                    }
+                    if now.unix_timestamp() > mandate.not_after_ts() {
+                        return Err(WalletError::MandateOutOfWindow { not_yet: false });
+                    }
+                    // The mandate's allowlist narrows the key's, never widens:
+                    // the request's model must sit inside it.
+                    if let (Some(model), Some(models)) = (model, &mandate.verified.models)
+                        && !models.iter().any(|allowed| allowed == model)
+                    {
+                        return Err(WalletError::Forbidden(format!(
+                            "the mandate does not delegate model {model:?}"
+                        )));
+                    }
+                    // committed-under-mandate + this freeze ≤ cap, read from the
+                    // ledger under the per-key lock so a racing hold cannot both
+                    // fit — the same shape `key_committed_in` takes per key.
+                    let committed = self
+                        .mandate_committed_in(&mut tx, &mandate.verified.mandate_id)
+                        .await?;
+                    if committed + minor > mandate.verified.cap_minor {
+                        return Err(WalletError::MandateExceeded {
+                            cap_minor: mandate.verified.cap_minor,
+                            committed_minor: committed,
                         });
                     }
                 }
@@ -1314,6 +1376,45 @@ impl Wallet {
         Ok(open)
     }
 
+    /// What one mandate has committed: the settled charges under its
+    /// What one mandate has committed in total: the sum of settled charges and
+    /// outstanding holds its entries carry, read from the ledger by the mandate
+    /// id each writes into `provenance_correlation` — the same figure
+    /// [`key_committed_in`](Self::key_committed_in) answers per key, sliced by
+    /// the delegation instead of the key (issue #262).
+    ///
+    /// Run inside the transaction holding the per-key advisory lock, so the sum
+    /// and the hold append that follows it agree on what is committed. A hold's
+    /// pending debits count toward the cap; the settlement's release leg credits
+    /// the same accounts back, so a settled charge nets to what it billed.
+    async fn mandate_committed_in(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        mandate_id: &Uuid,
+    ) -> Result<i64, WalletError> {
+        // The schema name is assembled from the validated tenant id, like
+        // `Wallet::open` does; the mandate id is the entry's provenance
+        // correlation in uuid simple form, bound as a parameter.
+        let sql = format!(
+            "SELECT COALESCE(SUM(CASE WHEN p.direction = 'D' THEN p.amount_minor \
+                              ELSE -p.amount_minor END), 0)::bigint AS committed \
+             FROM ledger_{schema}.postings p \
+             JOIN ledger_{schema}.entries e ON e.entry_id = p.entry_id \
+             WHERE p.account_index = ANY($1) AND e.provenance_correlation = $2",
+            schema = self.tenant_id,
+        );
+        let committed: i64 = sqlx::query_scalar(&sql)
+            .bind(vec![
+                self.wallet.index() as i32,
+                self.bonus.index() as i32,
+                self.credit_line.index() as i32,
+            ])
+            .bind(mandate_id.as_simple().to_string())
+            .fetch_one(&mut *conn)
+            .await?;
+        Ok(committed)
+    }
+
     /// Settle: one entry does two things — releases the hold (a reversal in the pending layer)
     /// and charges the actual usage (recorded in the settled layer).
     ///
@@ -1356,7 +1457,7 @@ impl Wallet {
                 "actual must be within 0..=held".into(),
             ));
         }
-        let (bonus_held, wallet_held, credit_held, outstanding_actor) =
+        let (bonus_held, wallet_held, credit_held, outstanding_actor, outstanding_correlation) =
             self.outstanding_hold(hold_key).await?;
         if actual_minor > bonus_held + wallet_held + credit_held {
             return Err(WalletError::InvalidInput(
@@ -1371,9 +1472,18 @@ impl Wallet {
         // The settlement attributes to the key the hold attributed to: the release side and
         // the settled charge side both count toward that key's committed spend, with no
         // caller input to get wrong. A hold taken before key attribution existed settles
-        // unattributed, like it was held.
-        if let Some(actor) = outstanding_actor {
-            draft = draft.with_provenance(Provenance::none().with_actor(&actor).map_err(invalid)?);
+        // unattributed, like it was held. The mandate id the hold carried as its provenance
+        // correlation is copied the same way, so the settled charge lands inside the
+        // mandate's committed sum once the hold's reservation releases (issue #262).
+        if outstanding_actor.is_some() || outstanding_correlation.is_some() {
+            let mut provenance = Provenance::none();
+            if let Some(actor) = outstanding_actor {
+                provenance = provenance.with_actor(&actor).map_err(invalid)?;
+            }
+            if let Some(correlation) = outstanding_correlation {
+                provenance = provenance.with_correlation(&correlation).map_err(invalid)?;
+            }
+            draft = draft.with_provenance(provenance);
         }
         // The release returns exactly what the hold reserved in each pool.
         for (account, held_part) in [
@@ -1849,7 +1959,7 @@ impl Wallet {
     async fn outstanding_hold(
         &self,
         hold_key: &str,
-    ) -> Result<(i64, i64, i64, Option<String>), WalletError> {
+    ) -> Result<(i64, i64, i64, Option<String>, Option<String>), WalletError> {
         let Some(stored) = self.store.get(entry_id_for(hold_key)).await? else {
             return Err(WalletError::HoldNotFound(format!(
                 "no hold under key {hold_key:?}"
@@ -1879,13 +1989,16 @@ impl Wallet {
                 "key {hold_key:?} does not name a hold"
             )));
         }
-        let actor = stored
-            .entry
-            .provenance()
+        let provenance = stored.entry.provenance();
+        let actor = provenance
             .actor
             .as_ref()
             .map(|actor| actor.as_str().to_owned());
-        Ok((bonus_held, wallet_held, credit_held, actor))
+        let correlation = provenance
+            .correlation
+            .as_ref()
+            .map(|correlation| correlation.as_str().to_owned());
+        Ok((bonus_held, wallet_held, credit_held, actor, correlation))
     }
 
     /// The one-time pool migration (decision D1): moves the unspent remainder of
@@ -2177,6 +2290,7 @@ impl Wallet {
             charged: 0,
             freeze: 0,
             upstream_attempts: 0,
+            mandate: None,
             reason: Some(reason),
         }
         .description()?;

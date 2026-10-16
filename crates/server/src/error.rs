@@ -49,6 +49,17 @@ pub enum ApiError {
         limit: i64,
         open: i64,
     },
+    /// The presented mandate did not verify under the key's public half.
+    InvalidMandate,
+    /// The mandate's window does not cover the request.
+    MandateOutOfWindow {
+        not_yet: bool,
+    },
+    /// The mandate's `capMinor` is spent.
+    MandateExceeded {
+        cap_minor: i64,
+        committed_minor: i64,
+    },
     /// A device-grant poll inside the published `interval`: RFC 8628's
     /// `slow_down` — the answer carries `Retry-After` (issue #156).
     PollTooFast {
@@ -107,6 +118,15 @@ impl From<WalletError> for ApiError {
                 retry_after_secs,
             },
             WalletError::TooManyHolds { limit, open } => Self::TooManyHolds { limit, open },
+            WalletError::InvalidMandate => Self::InvalidMandate,
+            WalletError::MandateOutOfWindow { not_yet } => Self::MandateOutOfWindow { not_yet },
+            WalletError::MandateExceeded {
+                cap_minor,
+                committed_minor,
+            } => Self::MandateExceeded {
+                cap_minor,
+                committed_minor,
+            },
             // Saturation is expected under burst and the caller's signal is the
             // 429 itself — one warn line, not an error-level incident per request.
             WalletError::PoolBusy => {
@@ -227,6 +247,34 @@ impl IntoResponse for ApiError {
                 StatusCode::TOO_MANY_REQUESTS,
                 "TOO_MANY_HOLDS",
                 format!("this API key has {open} holds outstanding, at or over its cap of {limit}"),
+            ),
+            Self::InvalidMandate => (
+                StatusCode::FORBIDDEN,
+                "INVALID_MANDATE",
+                "the presented mandate is not valid for this key".into(),
+            ),
+            Self::MandateOutOfWindow { not_yet } => (
+                StatusCode::FORBIDDEN,
+                if not_yet {
+                    "MANDATE_NOT_YET_VALID"
+                } else {
+                    "MANDATE_EXPIRED"
+                },
+                if not_yet {
+                    "the presented mandate is not yet valid".into()
+                } else {
+                    "the presented mandate has expired".into()
+                },
+            ),
+            Self::MandateExceeded {
+                cap_minor,
+                committed_minor,
+            } => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "MANDATE_EXCEEDED",
+                format!(
+                    "the mandate has committed {committed_minor} of its {cap_minor} minor-unit cap"
+                ),
             ),
             Self::PollTooFast { retry_after_secs } => {
                 let body = json!({ "error": {

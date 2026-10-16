@@ -118,12 +118,12 @@ async fn hold_for_key_enforces_the_limit() {
 
     world
         .wallet
-        .hold_for_key(&world.key, None, "h1", "", 6 * ONE, D)
+        .hold_for_key(&world.key, None, "h1", "", 6 * ONE, D, None)
         .await
         .unwrap();
     let err = world
         .wallet
-        .hold_for_key(&world.key, None, "h2", "", 5 * ONE, D)
+        .hold_for_key(&world.key, None, "h2", "", 5 * ONE, D, None)
         .await
         .unwrap_err();
     let (limit, committed) = match err {
@@ -142,7 +142,7 @@ async fn hold_for_key_enforces_the_limit() {
     // Exactly at the limit still fits.
     world
         .wallet
-        .hold_for_key(&world.key, None, "h3", "", 4 * ONE, D)
+        .hold_for_key(&world.key, None, "h3", "", 4 * ONE, D, None)
         .await
         .unwrap();
 }
@@ -165,7 +165,7 @@ async fn settled_spend_counts_toward_the_limit() {
 
     world
         .wallet
-        .hold_for_key(&world.key, None, "h1", "", 6 * ONE, D)
+        .hold_for_key(&world.key, None, "h1", "", 6 * ONE, D, None)
         .await
         .unwrap();
     // Settles 2 of the 6: 4 return to the balance, 2 stay committed as the charge.
@@ -178,7 +178,7 @@ async fn settled_spend_counts_toward_the_limit() {
     // 2 committed + 9 held would exceed 10.
     let err = world
         .wallet
-        .hold_for_key(&world.key, None, "h2", "", 9 * ONE, D)
+        .hold_for_key(&world.key, None, "h2", "", 9 * ONE, D, None)
         .await
         .unwrap_err();
     assert!(
@@ -188,7 +188,7 @@ async fn settled_spend_counts_toward_the_limit() {
     // 2 committed + 8 held fits exactly.
     world
         .wallet
-        .hold_for_key(&world.key, None, "h3", "", 8 * ONE, D)
+        .hold_for_key(&world.key, None, "h3", "", 8 * ONE, D, None)
         .await
         .unwrap();
 }
@@ -218,7 +218,7 @@ async fn concurrent_holds_cannot_exceed_the_limit() {
         let key = world.key.clone();
         tasks.push(tokio::spawn(async move {
             wallet
-                .hold_for_key(&key, None, &format!("race-{i}"), "", 300, D)
+                .hold_for_key(&key, None, &format!("race-{i}"), "", 300, D, None)
                 .await
         }));
     }
@@ -251,7 +251,7 @@ async fn limit_changes_apply_to_later_holds() {
     // No limit: the hold lands.
     world
         .wallet
-        .hold_for_key(&world.key, None, "h1", "", 6 * ONE, D)
+        .hold_for_key(&world.key, None, "h1", "", 6 * ONE, D, None)
         .await
         .unwrap();
     // Lower the limit below what is already committed: the next hold is refused.
@@ -265,7 +265,7 @@ async fn limit_changes_apply_to_later_holds() {
     .unwrap();
     let err = world
         .wallet
-        .hold_for_key(&world.key, None, "h2", "", ONE, D)
+        .hold_for_key(&world.key, None, "h2", "", ONE, D, None)
         .await
         .unwrap_err();
     assert!(
@@ -283,7 +283,7 @@ async fn limit_changes_apply_to_later_holds() {
     .unwrap();
     world
         .wallet
-        .hold_for_key(&world.key, None, "h3", "", ONE, D)
+        .hold_for_key(&world.key, None, "h3", "", ONE, D, None)
         .await
         .unwrap();
 }
@@ -299,7 +299,7 @@ async fn unlimited_key_holds_freely_but_attributes() {
 
     world
         .wallet
-        .hold_for_key(&world.key, None, "h1", "", 6 * ONE, D)
+        .hold_for_key(&world.key, None, "h1", "", 6 * ONE, D, None)
         .await
         .unwrap();
     assert_eq!(
@@ -408,20 +408,20 @@ async fn identical_retry_replays_past_a_full_limit() {
 
     let first = world
         .wallet
-        .hold_for_key(&world.key, None, "h1", "", 6 * ONE, D)
+        .hold_for_key(&world.key, None, "h1", "", 6 * ONE, D, None)
         .await
         .unwrap();
     assert!(first.is_new);
     // Fill the limit with a second hold.
     world
         .wallet
-        .hold_for_key(&world.key, None, "h2", "", 4 * ONE, D)
+        .hold_for_key(&world.key, None, "h2", "", 4 * ONE, D, None)
         .await
         .unwrap();
     // The identical retry of the first hold replays: same entry, nothing new written.
     let replay = world
         .wallet
-        .hold_for_key(&world.key, None, "h1", "", 6 * ONE, D)
+        .hold_for_key(&world.key, None, "h1", "", 6 * ONE, D, None)
         .await
         .unwrap();
     assert!(!replay.is_new);
@@ -440,6 +440,7 @@ async fn identical_retry_replays_past_a_full_limit() {
             "a different description",
             6 * ONE,
             D,
+            None,
         )
         .await
         .unwrap_err();
@@ -486,13 +487,13 @@ async fn a_daily_budget_counts_the_current_day() {
     // Yesterday: a hold settled for 4, and a 2 hold left outstanding.
     world
         .wallet
-        .hold_for_key(&world.key, None, "h1", "", 6 * ONE, D)
+        .hold_for_key(&world.key, None, "h1", "", 6 * ONE, D, None)
         .await
         .unwrap();
     world.wallet.settle("h1", "", 4 * ONE, D).await.unwrap();
     world
         .wallet
-        .hold_for_key(&world.key, None, "h2", "", 2 * ONE, D)
+        .hold_for_key(&world.key, None, "h2", "", 2 * ONE, D, None)
         .await
         .unwrap();
 
@@ -500,7 +501,7 @@ async fn a_daily_budget_counts_the_current_day() {
     let tomorrow = D + time::Duration::days(1);
     let err = world
         .wallet
-        .hold_for_key(&world.key, None, "h3", "", 9 * ONE, tomorrow)
+        .hold_for_key(&world.key, None, "h3", "", 9 * ONE, tomorrow, None)
         .await
         .unwrap_err();
     assert!(
@@ -509,7 +510,7 @@ async fn a_daily_budget_counts_the_current_day() {
     );
     world
         .wallet
-        .hold_for_key(&world.key, None, "h4", "", 8 * ONE, tomorrow)
+        .hold_for_key(&world.key, None, "h4", "", 8 * ONE, tomorrow, None)
         .await
         .unwrap();
 }
@@ -536,7 +537,7 @@ async fn budget_windows_reset_on_their_boundaries() {
     .unwrap();
     world
         .wallet
-        .hold_for_key(&world.key, None, "w1", "", 6 * ONE, D)
+        .hold_for_key(&world.key, None, "w1", "", 6 * ONE, D, None)
         .await
         .unwrap();
     world.wallet.settle("w1", "", 6 * ONE, D).await.unwrap();
@@ -544,7 +545,7 @@ async fn budget_windows_reset_on_their_boundaries() {
     assert!(
         world
             .wallet
-            .hold_for_key(&world.key, None, "w2", "", 5 * ONE, sunday)
+            .hold_for_key(&world.key, None, "w2", "", 5 * ONE, sunday, None)
             .await
             .is_err(),
         "a 5 hold over a 6 charge does not fit a weekly 10"
@@ -552,7 +553,7 @@ async fn budget_windows_reset_on_their_boundaries() {
     // Next week: the window reset.
     world
         .wallet
-        .hold_for_key(&world.key, None, "w3", "", 9 * ONE, monday)
+        .hold_for_key(&world.key, None, "w3", "", 9 * ONE, monday, None)
         .await
         .unwrap();
     world
@@ -574,14 +575,14 @@ async fn budget_windows_reset_on_their_boundaries() {
     assert!(
         world
             .wallet
-            .hold_for_key(&world.key, None, "m1", "", 5 * ONE, sunday)
+            .hold_for_key(&world.key, None, "m1", "", 5 * ONE, sunday, None)
             .await
             .is_err(),
         "the October 5 hold saw the October charge"
     );
     world
         .wallet
-        .hold_for_key(&world.key, None, "m2", "", 8 * ONE, november)
+        .hold_for_key(&world.key, None, "m2", "", 8 * ONE, november, None)
         .await
         .unwrap();
 }
@@ -608,7 +609,7 @@ async fn concurrent_holds_cannot_exceed_a_period_budget() {
         let key = world.key.clone();
         tasks.push(tokio::spawn(async move {
             wallet
-                .hold_for_key(&key, None, &format!("race-{i}"), "", 300, D)
+                .hold_for_key(&key, None, &format!("race-{i}"), "", 300, D, None)
                 .await
         }));
     }
@@ -643,12 +644,12 @@ async fn a_model_allowlist_gates_named_models() {
 
     world
         .wallet
-        .hold_for_key(&world.key, Some("mock-a"), "h1", "", ONE, D)
+        .hold_for_key(&world.key, Some("mock-a"), "h1", "", ONE, D, None)
         .await
         .unwrap();
     let err = world
         .wallet
-        .hold_for_key(&world.key, Some("mock-c"), "h2", "", ONE, D)
+        .hold_for_key(&world.key, Some("mock-c"), "h2", "", ONE, D, None)
         .await
         .unwrap_err();
     assert!(
@@ -658,7 +659,7 @@ async fn a_model_allowlist_gates_named_models() {
     // No model named: the list does not apply.
     world
         .wallet
-        .hold_for_key(&world.key, None, "h3", "", ONE, D)
+        .hold_for_key(&world.key, None, "h3", "", ONE, D, None)
         .await
         .unwrap();
 }
@@ -681,7 +682,7 @@ async fn a_replayed_hold_survives_an_allowlist_change() {
 
     let first = world
         .wallet
-        .hold_for_key(&world.key, Some("mock-a"), "h1", "", ONE, D)
+        .hold_for_key(&world.key, Some("mock-a"), "h1", "", ONE, D, None)
         .await
         .unwrap();
     // The list drops mock-a.
@@ -695,7 +696,7 @@ async fn a_replayed_hold_survives_an_allowlist_change() {
     .unwrap();
     let replay = world
         .wallet
-        .hold_for_key(&world.key, Some("mock-a"), "h1", "", ONE, D)
+        .hold_for_key(&world.key, Some("mock-a"), "h1", "", ONE, D, None)
         .await
         .unwrap();
     assert!(!replay.is_new);
@@ -729,7 +730,7 @@ async fn a_concurrent_holds_cap_counts_open_holds() {
 
     let first = world
         .wallet
-        .hold_for_key(&world.key, None, "h1", "", ONE, D)
+        .hold_for_key(&world.key, None, "h1", "", ONE, D, None)
         .await
         .unwrap();
     assert!(first.is_new);
@@ -737,7 +738,7 @@ async fn a_concurrent_holds_cap_counts_open_holds() {
     // One hold open is the cap: a second is refused, and the refusal names the count.
     let err = world
         .wallet
-        .hold_for_key(&world.key, None, "h2", "", ONE, D)
+        .hold_for_key(&world.key, None, "h2", "", ONE, D, None)
         .await
         .unwrap_err();
     let (limit, open) = match err {
@@ -750,7 +751,7 @@ async fn a_concurrent_holds_cap_counts_open_holds() {
     // The identical retry is a replay, answered before the cap is counted.
     let replay = world
         .wallet
-        .hold_for_key(&world.key, None, "h1", "", ONE, D)
+        .hold_for_key(&world.key, None, "h1", "", ONE, D, None)
         .await
         .unwrap();
     assert!(!replay.is_new);
@@ -761,7 +762,7 @@ async fn a_concurrent_holds_cap_counts_open_holds() {
     world.wallet.settle("h1", "", ONE, D).await.unwrap();
     world
         .wallet
-        .hold_for_key(&world.key, None, "h2", "", ONE, D)
+        .hold_for_key(&world.key, None, "h2", "", ONE, D, None)
         .await
         .unwrap();
 }
@@ -775,7 +776,7 @@ async fn an_uncapped_key_holds_freely() {
     for n in 1..=3 {
         world
             .wallet
-            .hold_for_key(&world.key, None, &format!("h{n}"), "", ONE, D)
+            .hold_for_key(&world.key, None, &format!("h{n}"), "", ONE, D, None)
             .await
             .unwrap();
     }
@@ -825,12 +826,12 @@ async fn the_holds_cap_patches_and_validates() {
     .unwrap();
     world
         .wallet
-        .hold_for_key(&world.key, None, "h1", "", ONE, D)
+        .hold_for_key(&world.key, None, "h1", "", ONE, D, None)
         .await
         .unwrap();
     world
         .wallet
-        .hold_for_key(&world.key, None, "h2", "", ONE, D)
+        .hold_for_key(&world.key, None, "h2", "", ONE, D, None)
         .await
         .expect_err("the cap holds");
 
@@ -845,7 +846,7 @@ async fn the_holds_cap_patches_and_validates() {
     .unwrap();
     world
         .wallet
-        .hold_for_key(&world.key, None, "h2", "", ONE, D)
+        .hold_for_key(&world.key, None, "h2", "", ONE, D, None)
         .await
         .expect("the cap was cleared");
 }
@@ -882,17 +883,17 @@ async fn the_holds_cap_is_per_key() {
     // The first key's hold does not spend the second key's cap.
     world
         .wallet
-        .hold_for_key(&world.key, None, "h-first", "", ONE, D)
+        .hold_for_key(&world.key, None, "h-first", "", ONE, D, None)
         .await
         .unwrap();
     world
         .wallet
-        .hold_for_key(&second_key, None, "h-second-1", "", ONE, D)
+        .hold_for_key(&second_key, None, "h-second-1", "", ONE, D, None)
         .await
         .unwrap();
     world
         .wallet
-        .hold_for_key(&second_key, None, "h-second-2", "", ONE, D)
+        .hold_for_key(&second_key, None, "h-second-2", "", ONE, D, None)
         .await
         .expect_err("the second key's own cap holds");
 }

@@ -272,6 +272,7 @@ impl Db {
                     &hold_description(request, &model.model, freeze)?,
                     freeze,
                     today,
+                    None,
                 )
                 .await?;
             self.note_open_hold(&OpenHold {
@@ -285,6 +286,7 @@ impl Db {
                 output_price: model.price.output_price_per_million,
                 freeze_minor: freeze,
                 key_id: Some(acting.key_id),
+                mandate_id: None,
                 end_user: None,
                 service_tier: None,
                 tags: Default::default(),
@@ -416,6 +418,7 @@ impl Db {
                 &hold_description(request, &model.model, freeze)?,
                 freeze,
                 on,
+                None,
             )
             .await?;
         let description = Settlement {
@@ -432,6 +435,7 @@ impl Db {
             freeze,
             // A seeded turn is a single scripted call: no failover ever ran.
             upstream_attempts: 1,
+            mandate: None,
             reason: None,
         }
         .description()?;
@@ -446,6 +450,7 @@ impl Db {
                 request_id: request.to_owned(),
                 tenant_id: world.organization.tenant_id.clone(),
                 key_id: Some(acting.key_id),
+                mandate_id: None,
                 model: model.model.clone(),
                 channel: model.channel.clone(),
                 price_version: model.version,

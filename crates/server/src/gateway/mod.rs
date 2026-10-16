@@ -24,7 +24,7 @@ use futures_util::StreamExt;
 use http_body_util::{BodyExt, StreamBody};
 use oxsum_core::{
     ActingKey, BillingMode, Claim, OpenHold, Organization, Serving, SettlementKind, UsageRecord,
-    UsageRow, WalletError, fingerprint, hold_description, route_order,
+    UsageRow, WalletError, fingerprint, hold_description, parse_presented, route_order,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -143,6 +143,12 @@ async fn servings(state: &AppState, model: &str) -> Result<Vec<Serving>, Gateway
 
 /// The header a retry carries to claim the same turn, Stripe-shaped.
 const IDEMPOTENCY_KEY: &str = "idempotency-key";
+
+/// The header a delegated caller presents a signed spend mandate in (issue
+/// #262): `X-Oxsum-Mandate: <base64url(canonical body + sig)>`, minted by
+/// `POST /api/v1/org/keys/{keyId}/mandates` and verified against the key's
+/// public half.
+pub(crate) const MANDATE_HEADER: &str = "x-oxsum-mandate";
 
 /// The most of an upstream body the non-streaming path will buffer. A whole
 /// body has to sit in memory to be parsed as JSON, so a runaway or hostile
@@ -394,6 +400,7 @@ async fn record_refusal(
         request_id: request_id.to_owned(),
         tenant_id: organization.tenant_id.clone(),
         key_id: Some(key.key_id),
+        mandate_id: None,
         model: model.to_owned(),
         channel: String::new(),
         price_version: 0,
@@ -604,6 +611,27 @@ async fn run(
             retry_after_secs: limited.retry_after.as_secs(),
         });
     }
+    // A presented spend mandate is verified before it may constrain anything:
+    // the signature checks against the key's public half, so a blob that fails
+    // any step — base64, JSON, the Ed25519 verify — is `invalid_mandate` and the
+    // turn is refused before a hold is taken (issue #262). The window and cap
+    // checks run later, inside `hold_for_key`'s lock, where the committed sum
+    // they are judged against is read.
+    let mandate = match headers.get(MANDATE_HEADER).and_then(|v| v.to_str().ok()) {
+        Some(blob) => {
+            // No configured secret means no key ever carried a seed, so a
+            // presented mandate cannot verify — `invalid_mandate`, the same
+            // refusal any other unverifiable blob takes.
+            let secret = state.config.secret().ok_or(GatewayError::InvalidMandate)?;
+            let verifying = state
+                .db
+                .mandate_verifying_key(&key.key_id, secret)
+                .await?
+                .ok_or(GatewayError::InvalidMandate)?;
+            Some(parse_presented(blob, &verifying).ok_or(GatewayError::InvalidMandate)?)
+        }
+        None => None,
+    };
     // The routes for this model are resolved once, here, before anything is
     // frozen: this turn is priced by the versions in force when it starts,
     // whatever happens to prices later. A surface serves only the channels
@@ -762,6 +790,7 @@ async fn run(
             output_price: primary.price.output_price_per_million,
             freeze_minor: freeze,
             key_id: Some(key.key_id),
+            mandate_id: mandate.as_ref().map(|m| m.verified.mandate_id),
             end_user: request.attribution.end_user.clone(),
             service_tier: request.attribution.service_tier.clone(),
             tags: request.attribution.tags.clone(),
@@ -782,6 +811,7 @@ async fn run(
             &description,
             freeze,
             today(),
+            mandate.as_ref(),
         )
         .await
     {
@@ -844,6 +874,7 @@ async fn run(
         adapter,
         state.metrics.clone(),
         turn_span,
+        mandate,
     );
     turn.note_input_count(request.counted_input);
     // The dashboard's live section sees the turn from here: the hold is taken, upstream is

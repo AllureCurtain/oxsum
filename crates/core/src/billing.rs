@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::error::WalletError;
 use crate::usage::UsageRecord;
@@ -990,7 +991,7 @@ impl SettlementKind {
 /// another one is not this build's to interpret: `oxsum_verify`'s
 /// `verify_charge` dispatches on `v` and leaves those to inclusion proof alone
 /// (docs/decisions.md, T1-2).
-const DESCRIPTION_VERSION: i64 = 5;
+const DESCRIPTION_VERSION: i64 = 7;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1030,12 +1031,29 @@ pub struct Settlement<'a> {
     /// above 1 means it failed over between channels, or waited out a bounded
     /// `Retry-After` on a lone channel's 429. Written by the v5 description.
     pub upstream_attempts: i64,
+    /// The spend mandate the turn's hold ran under (issue #262): `{id, hash}` —
+    /// the mandate's own digest lands inside the hashed description, so a
+    /// settled bill proves which delegation authorized it. Absent on a turn no
+    /// mandate was presented for.
+    pub mandate: Option<SettlementMandate<'a>>,
     /// Why the turn refused or errored, when it did (issue #233): the refusal
     /// or upstream error in the caller-facing words the answer already carried,
     /// truncated to fit the description — under the hash, so a bill proves the
     /// reason it was given, not one invented after the fact.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<&'a str>,
+}
+
+/// The mandate a settled turn ran under, as the v7 description's `mandate`
+/// object: the mandate's id plus sha256 of the signed blob the delegate
+/// carried, so a verifier holding the blob checks `hash(mandate)` against it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettlementMandate<'a> {
+    /// The mandate's own id.
+    pub id: &'a uuid::Uuid,
+    /// sha256 of the signed mandate blob, hex.
+    pub hash: &'a str,
 }
 
 /// Whether a metered count is zero: zero fields are not written, so the common
@@ -1161,7 +1179,7 @@ impl<'de> Deserialize<'de> for BillLine {
 /// A settlement's description on the wire, versioned.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SettlementV5<'a> {
+struct SettlementV7<'a> {
     /// The schema version — [`DESCRIPTION_VERSION`]. Spelled `v` on the wire.
     v: i64,
     request: &'a str,
@@ -1182,6 +1200,10 @@ struct SettlementV5<'a> {
     upstream_attempts: i64,
     charged: i64,
     freeze: i64,
+    /// The mandate the turn ran under, v7's addition (issue #262): `{id, hash}`
+    /// of the signed blob, absent when the turn was not delegated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mandate: Option<SettlementMandate<'a>>,
     /// Why the turn refused or errored, when it did (issue #233): the caller's
     /// own answer words, under the content hash — absent for a clean settle.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1198,7 +1220,7 @@ impl Settlement<'_> {
     /// Refuses a description that cannot be serialised, which cannot happen for these fields; the
     /// `Result` keeps the caller honest rather than unwrapping a formality.
     pub fn description(&self) -> Result<String, WalletError> {
-        serde_json::to_string(&SettlementV5 {
+        serde_json::to_string(&SettlementV7 {
             v: DESCRIPTION_VERSION,
             request: self.request,
             channel: self.channel,
@@ -1212,6 +1234,7 @@ impl Settlement<'_> {
             upstream_attempts: self.upstream_attempts,
             charged: self.charged,
             freeze: self.freeze,
+            mandate: self.mandate.clone(),
             reason: self.reason,
         })
         .map_err(|error| WalletError::InvalidInput(format!("settlement record: {error}")))
@@ -1369,9 +1392,23 @@ pub struct SettlementRecord {
     /// The reporting service credential's name (v6, issue #172); `None` on a
     /// gateway turn's record, which has no reporter.
     pub service: Option<String>,
+    /// The mandate the turn ran under (v7, issue #262): `{id, hash}`; `None`
+    /// when the turn was not delegated and on records that predate it.
+    pub mandate: Option<MandateRef>,
     /// Why the turn refused or errored, when the writer recorded one (issue
     /// #233); `None` on a clean settle and on records that predate it.
     pub reason: Option<String>,
+}
+
+/// The mandate a settled record names, read back: `{id, hash}` — the mandate's
+/// id and the sha256 of the blob it was presented as.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MandateRef {
+    /// The mandate's own id.
+    pub id: Uuid,
+    /// sha256 of the presented mandate blob, hex.
+    pub hash: String,
 }
 
 /// The wire [`SettlementRecord::parse`] reads: [`SettlementV5`] owned, tolerant
@@ -1391,6 +1428,7 @@ struct SettlementRecordWire {
     discount_percent: Option<i64>,
     upstream_attempts: Option<i64>,
     service: Option<String>,
+    mandate: Option<MandateRef>,
     charged: i64,
     freeze: i64,
     reason: Option<String>,
@@ -1403,7 +1441,7 @@ impl SettlementRecord {
     #[must_use]
     pub fn parse(description: &str) -> Option<Self> {
         let wire: SettlementRecordWire = serde_json::from_str(description).ok()?;
-        if !(3..=METERED_DESCRIPTION_VERSION).contains(&wire.v) {
+        if !(3..=DESCRIPTION_VERSION).contains(&wire.v) {
             return None;
         }
         let price_of = |item: &str| {
@@ -1446,6 +1484,7 @@ impl SettlementRecord {
                 .upstream_attempts
                 .unwrap_or(if wire.v >= 6 { 0 } else { 1 }),
             service: wire.service,
+            mandate: wire.mandate,
             reason: wire.reason,
         })
     }
@@ -2037,12 +2076,13 @@ mod tests {
             charged: 316,
             freeze: 400,
             upstream_attempts: 1,
+            mandate: None,
             reason: None,
         };
         let json = settlement.description().unwrap();
         assert_eq!(
             json,
-            r#"{"v":5,"request":"abc","channel":"deepseek","model":"deepseek-chat","priceVersion":3,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100},"lines":[["input",116,1000000],["output",100,2000000]],"upstreamAttempts":1,"charged":316,"freeze":400}"#
+            r#"{"v":7,"request":"abc","channel":"deepseek","model":"deepseek-chat","priceVersion":3,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100},"lines":[["input",116,1000000],["output",100,2000000]],"upstreamAttempts":1,"charged":316,"freeze":400}"#
         );
         // Within the ledger's limit, whatever the model is called.
         assert!(json.len() < 512);
@@ -2162,6 +2202,7 @@ mod tests {
             charged: 316,
             freeze: 400,
             upstream_attempts: 1,
+            mandate: None,
             reason: None,
         }
         .description()
@@ -2211,6 +2252,7 @@ mod tests {
             charged: 1,
             freeze: 1,
             upstream_attempts: 1,
+            mandate: None,
             reason: None,
         }
         .description()
@@ -2242,6 +2284,7 @@ mod tests {
             charged: 316,
             freeze: 400,
             upstream_attempts: 2,
+            mandate: None,
             reason: None,
         };
         let record = SettlementRecord::parse(&settlement.description().unwrap()).unwrap();

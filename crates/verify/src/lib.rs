@@ -1055,7 +1055,7 @@ mod tests {
 
         fn settlement(channel: &str, model: &str, version: i64) -> String {
             serde_json::json!({
-                "v": 5,
+                "v": 7,
                 "channel": channel,
                 "model": model,
                 "priceVersion": version,

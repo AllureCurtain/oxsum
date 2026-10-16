@@ -132,7 +132,7 @@ async fn suspension_gates_new_holds() {
 
     let err = world
         .wallet
-        .hold_for_key(&world.key, None, "h-1", "", ONE, D)
+        .hold_for_key(&world.key, None, "h-1", "", ONE, D, None)
         .await
         .unwrap_err();
     assert!(matches!(err, WalletError::Forbidden(_)), "{err:?}");
@@ -152,7 +152,7 @@ async fn suspension_gates_new_holds() {
     );
     world
         .wallet
-        .hold_for_key(&world.key, None, "h-3", "", ONE, D)
+        .hold_for_key(&world.key, None, "h-3", "", ONE, D, None)
         .await
         .unwrap();
     world.wallet.hold("h-4", "", ONE, D).await.unwrap();
@@ -167,7 +167,7 @@ async fn an_in_flight_hold_still_settles() {
 
     world
         .wallet
-        .hold_for_key(&world.key, None, "open-hold", "", 10 * ONE, D)
+        .hold_for_key(&world.key, None, "open-hold", "", 10 * ONE, D, None)
         .await
         .unwrap();
     world
@@ -266,14 +266,14 @@ async fn a_member_budget_spans_the_member_keys() {
 
     world
         .wallet
-        .hold_for_key(&world.key, None, "mb-1", "", 6 * ONE, D)
+        .hold_for_key(&world.key, None, "mb-1", "", 6 * ONE, D, None)
         .await
         .unwrap();
     // 6 held by the first key + 6 asked by the second is past the member's 10,
     // however each key alone would have fit.
     let err = world
         .wallet
-        .hold_for_key(&second, None, "mb-2", "", 6 * ONE, D)
+        .hold_for_key(&second, None, "mb-2", "", 6 * ONE, D, None)
         .await
         .unwrap_err();
     assert!(
@@ -302,7 +302,7 @@ async fn a_member_budget_spans_the_member_keys() {
         .unwrap();
     world
         .wallet
-        .hold_for_key(&key, None, "mb-3", "", 6 * ONE, D)
+        .hold_for_key(&key, None, "mb-3", "", 6 * ONE, D, None)
         .await
         .unwrap();
 }
@@ -383,7 +383,7 @@ async fn a_member_budget_counts_settled_spend() {
 
     world
         .wallet
-        .hold_for_key(&world.key, None, "s-1", "", 8 * ONE, D)
+        .hold_for_key(&world.key, None, "s-1", "", 8 * ONE, D, None)
         .await
         .unwrap();
     world.wallet.settle("s-1", "", 8 * ONE, D).await.unwrap();
@@ -402,7 +402,7 @@ async fn a_member_budget_counts_settled_spend() {
     // 8 settled + 3 asked is past 10 — the cap does not forget what already charged.
     let err = world
         .wallet
-        .hold_for_key(&world.key, None, "s-2", "", 3 * ONE, D)
+        .hold_for_key(&world.key, None, "s-2", "", 3 * ONE, D, None)
         .await
         .unwrap_err();
     assert!(

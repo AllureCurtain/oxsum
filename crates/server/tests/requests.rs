@@ -256,6 +256,7 @@ async fn seed_request(
             &hold_description(request, model, freeze_minor).expect("the hold record serializes"),
             freeze_minor,
             today(),
+            None,
         )
         .await
         .expect("the hold is taken");
@@ -285,6 +286,7 @@ async fn seed_request(
         charged: cost_minor,
         freeze: freeze_minor,
         upstream_attempts: 1,
+        mandate: None,
         reason: None,
     };
     wallet
