@@ -159,11 +159,12 @@ pub(crate) fn parse_month(month: &str) -> Result<Date, ApiError> {
 /// PATCH needs `null` to mean "clear the tier". With `default` covering the
 /// absent case, a present field always yields `Some(…)` — `Some(None)` when
 /// it was `null`.
-pub(crate) fn double_option<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+pub(crate) fn double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
 {
-    Option::<String>::deserialize(deserializer).map(Some)
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 /// Opens the surface for the operator token, and for nothing else.
