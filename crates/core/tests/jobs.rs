@@ -340,6 +340,7 @@ async fn the_retention_pass_ages_out_each_rule_once() {
         request_id: request_id.clone(),
         tenant_id: tenant_id.clone(),
         key_id: None,
+        mandate_id: None,
         model: "m".to_owned(),
         channel: "c".to_owned(),
         price_version: 1,

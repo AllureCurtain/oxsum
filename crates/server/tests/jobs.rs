@@ -129,6 +129,7 @@ async fn stale_hold(world: &World) -> String {
             output_price: 1_000_000,
             freeze_minor: 100,
             key_id: None,
+            mandate_id: None,
             end_user: None,
             service_tier: None,
             tags: Default::default(),

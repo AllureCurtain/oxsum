@@ -212,6 +212,7 @@ async fn settle_request(
             &hold_description(request, "m", freeze).expect("the hold serializes"),
             freeze,
             today(),
+            None,
         )
         .await
         .expect("the hold is taken");
@@ -241,6 +242,7 @@ async fn settle_request(
         charged: 200,
         freeze,
         upstream_attempts: 1,
+        mandate: None,
         reason: None,
     };
     wallet
@@ -259,6 +261,7 @@ async fn settle_request(
         request_id: format!("{request}-{}", Uuid::new_v4().simple()),
         tenant_id: tenant_id.to_owned(),
         key_id: Some(key_id),
+        mandate_id: None,
         model: "m".to_owned(),
         channel: "mock".to_owned(),
         price_version: 1,

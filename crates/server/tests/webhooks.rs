@@ -156,6 +156,7 @@ fn usage_row(request_id: &str, tenant: &str) -> UsageRow {
         request_id: request_id.to_owned(),
         tenant_id: tenant.to_owned(),
         key_id: None,
+        mandate_id: None,
         model: "m".to_owned(),
         channel: "c".to_owned(),
         price_version: 1,

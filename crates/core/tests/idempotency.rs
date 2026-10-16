@@ -147,6 +147,7 @@ async fn a_settled_usage_row_completes_the_claim() {
         request_id: request_id.clone(),
         tenant_id: "no-such-ledger".to_owned(),
         key_id: None,
+        mandate_id: None,
         model: "m".to_owned(),
         channel: "c".to_owned(),
         price_version: 1,

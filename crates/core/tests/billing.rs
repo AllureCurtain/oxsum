@@ -82,6 +82,7 @@ fn golden(
         charged,
         freeze,
         upstream_attempts: 1,
+        mandate: None,
         reason: None,
     }
     .description()
@@ -151,6 +152,7 @@ fn settlement_descriptions_are_byte_stable() {
         charged: 0,
         freeze: 900_000,
         upstream_attempts: 1,
+        mandate: None,
         reason: None,
     }
     .description()
@@ -220,6 +222,7 @@ fn a_rule_priced_description_names_its_match() {
         charged: 181,
         freeze: 900_000,
         upstream_attempts: 1,
+        mandate: None,
         reason: None,
     }
     .description()
@@ -580,6 +583,7 @@ async fn every_settlement_kind_proves_and_recomputes() {
             charged,
             freeze: *freeze,
             upstream_attempts: 1,
+            mandate: None,
             reason: None,
         }
         .description()
@@ -615,6 +619,7 @@ async fn every_settlement_kind_proves_and_recomputes() {
             request_id: request.clone(),
             tenant_id: tenant.clone(),
             key_id: None,
+            mandate_id: None,
             model: record.model.clone(),
             channel: record.channel.clone(),
             price_version: record.price_version,

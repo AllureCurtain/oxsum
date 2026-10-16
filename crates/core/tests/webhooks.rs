@@ -77,6 +77,7 @@ fn usage_row(request_id: &str, tenant_id: &str) -> UsageRow {
         request_id: request_id.to_owned(),
         tenant_id: tenant_id.to_owned(),
         key_id: None,
+        mandate_id: None,
         model: "m".to_owned(),
         channel: "c".to_owned(),
         price_version: 1,
@@ -784,7 +785,7 @@ async fn a_budget_threshold_fires_once_per_crossing() {
     // Exactly at the line fires: 5_000 of 10_000 is 50% — `t <= pct` means the
     // boundary itself is a crossing, not just overshoot.
     wallet
-        .hold_for_key(&acting, None, "hold-1", "", 5_000, today)
+        .hold_for_key(&acting, None, "hold-1", "", 5_000, today, None)
         .await
         .unwrap();
     wallet.settle("hold-1", "", 5_000, today).await.unwrap();
@@ -822,7 +823,7 @@ async fn a_budget_threshold_fires_once_per_crossing() {
     // The next settle crosses 80: only the new line fires, the latched 50 does
     // not — and 80 carries the raised committed figure, not 50's snapshot.
     wallet
-        .hold_for_key(&acting, None, "hold-2", "", 4_000, today)
+        .hold_for_key(&acting, None, "hold-2", "", 4_000, today, None)
         .await
         .unwrap();
     wallet.settle("hold-2", "", 4_000, today).await.unwrap();
@@ -857,7 +858,7 @@ async fn a_budget_threshold_fires_once_per_crossing() {
     // is also the concurrent-burn guarantee: the insert-or-nothing latch row is
     // the at-most-once marker two racing settles cannot both write.
     wallet
-        .hold_for_key(&acting, None, "hold-3", "", 1_000, today)
+        .hold_for_key(&acting, None, "hold-3", "", 1_000, today, None)
         .await
         .unwrap();
     wallet.settle("hold-3", "", 1_000, today).await.unwrap();
@@ -1038,7 +1039,7 @@ async fn the_forecast_fires_once_per_window() {
     .await
     .unwrap();
     wallet
-        .hold_for_key(&acting, None, "hold-1", "", 10_000, today)
+        .hold_for_key(&acting, None, "hold-1", "", 10_000, today, None)
         .await
         .unwrap();
     wallet.settle("hold-1", "", 10_000, today).await.unwrap();

@@ -94,6 +94,7 @@ fn watch(tenant: &str, n: u64, freeze: i64) -> (String, String, OpenHold) {
         output_price: 1_000_000,
         freeze_minor: freeze,
         key_id: None,
+        mandate_id: None,
         end_user: None,
         service_tier: None,
         tags: Default::default(),
@@ -240,6 +241,7 @@ fn usage_settlement(request_id: &str, charged: i64, freeze: i64) -> String {
         charged,
         freeze,
         upstream_attempts: 1,
+        mandate: None,
         reason: None,
     }
     .description()
@@ -341,6 +343,7 @@ async fn a_usage_row_replay_is_ignored() {
         request_id: format!("replay-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]),
         tenant_id: world.tenant.clone(),
         key_id: None,
+        mandate_id: None,
         model: "test-model".to_owned(),
         channel: "test-channel".to_owned(),
         price_version: 1,

@@ -863,6 +863,7 @@ async fn the_anomalies_list_shows_the_turns_that_did_not_price_cleanly() {
             charged: 60,
             freeze: 900_000,
             upstream_attempts: 1,
+            mandate: None,
             reason: None,
         }
         .description()
@@ -947,6 +948,7 @@ async fn the_margin_view_sums_charges_against_upstream_costs() {
             request_id: format!("margin-{}-{i}", &channel[channel.len() - 8..]),
             tenant_id: "margin-test".to_owned(),
             key_id: None,
+            mandate_id: None,
             model: model.clone(),
             channel: channel.clone(),
             price_version: 1,

@@ -292,6 +292,7 @@ async fn seed_request(
                         .expect("the hold record serializes"),
                     freeze_minor,
                     today(),
+                    None,
                 )
                 .await
                 .expect("the hold is taken");
@@ -329,6 +330,7 @@ async fn seed_request(
         charged: cost_minor,
         freeze: freeze_minor,
         upstream_attempts: 1,
+        mandate: None,
         reason: None,
     };
     wallet
@@ -348,6 +350,7 @@ async fn seed_request(
         request_id: format!("{request}-{}", Uuid::new_v4().simple()),
         tenant_id: tenant_id.to_owned(),
         key_id,
+        mandate_id: None,
         model: model.to_owned(),
         channel: "mock".to_owned(),
         price_version: 1,

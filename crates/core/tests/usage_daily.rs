@@ -107,6 +107,7 @@ async fn turn(
         request_id: format!("{request}-{}", Uuid::new_v4().simple()),
         tenant_id: f.org.tenant_id.clone(),
         key_id,
+        mandate_id: None,
         model: model.to_owned(),
         channel: channel.to_owned(),
         price_version: 1,
