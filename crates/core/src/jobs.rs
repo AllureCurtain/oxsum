@@ -147,6 +147,10 @@ pub struct StatementReport {
     pub statements: i64,
     /// Finalized statements flipped to overdue.
     pub overdue_flipped: i64,
+    /// Organizations the dunning sweep suspended (issue #258).
+    pub suspended: i64,
+    /// Organizations the dunning sweep reinstated (issue #258).
+    pub reinstated: i64,
 }
 
 /// The claimed row's columns, `j`-qualified: the claim's CTE exposes a `job_id`
@@ -353,6 +357,13 @@ impl Db {
             }
         }
         report.overdue_flipped = self.flip_overdue(today).await?;
+        // Dunning follows the flip (issue #258): a statement that crossed its
+        // grace today suspends in the same pass, and a repaid line's sweep-set
+        // suspension lifts. `sweep_dunning` re-reads the standings the flip
+        // just wrote, so it must run after it.
+        let (suspended, reinstated) = self.sweep_dunning(today).await?;
+        report.suspended = suspended;
+        report.reinstated = reinstated;
         Ok(report)
     }
 }

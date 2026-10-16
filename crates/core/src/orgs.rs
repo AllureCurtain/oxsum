@@ -114,6 +114,14 @@ pub struct AdminOrganization {
     /// When the platform suspended the organization's spend (issue #162);
     /// `None` while it runs normally.
     pub suspended_at: Option<OffsetDateTime>,
+    /// Days past a finalized statement's due date before the dunning sweep
+    /// suspends the organization's spend (issue #258); `None` disables the
+    /// automation.
+    pub dunning_grace_days: Option<i32>,
+    /// Set when the dunning sweep itself placed the suspension — the marker
+    /// that lets the sweep reinstate the organization it cut off without
+    /// ever lifting a suspension the operator set by hand.
+    pub dunning_suspended_at: Option<OffsetDateTime>,
     pub created_at: OffsetDateTime,
 }
 
@@ -200,6 +208,8 @@ pub(crate) fn admin_organization(
         payment_terms_days: row.try_get("payment_terms_days")?,
         tier: row.try_get("tier")?,
         suspended_at: row.try_get("suspended_at")?,
+        dunning_grace_days: row.try_get("dunning_grace_days")?,
+        dunning_suspended_at: row.try_get("dunning_suspended_at")?,
         created_at: row.try_get("created_at")?,
     })
 }
@@ -215,7 +225,7 @@ impl Db {
     pub async fn organizations(&self) -> Result<Vec<AdminOrganization>, WalletError> {
         let rows = sqlx::query(
             "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, o.payment_terms_days, o.tier, o.suspended_at, \
-             count(m.user_id) AS members \
+             o.dunning_grace_days, o.dunning_suspended_at, count(m.user_id) AS members \
              FROM oxsum.organizations o LEFT JOIN oxsum.memberships m USING (organization_id) \
              GROUP BY o.organization_id ORDER BY o.created_at",
         )
@@ -252,7 +262,7 @@ impl Db {
         let wanted = limit.clamp(1, 100) as i64;
         let rows = sqlx::query(
             "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, o.payment_terms_days, o.tier, o.suspended_at, \
-             count(m.user_id) AS members \
+             o.dunning_grace_days, o.dunning_suspended_at, count(m.user_id) AS members \
              FROM oxsum.organizations o LEFT JOIN oxsum.memberships m USING (organization_id) \
              WHERE $1::timestamptz IS NULL OR o.created_at > $1 \
                 OR (o.created_at = $1 AND o.organization_id > $2) \
@@ -285,7 +295,7 @@ impl Db {
     /// failures surface as [`WalletError`].
     pub async fn organization_by_id(&self, id: Uuid) -> Result<AdminOrganization, WalletError> {
         let row = sqlx::query(
-            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, o.payment_terms_days, o.tier, o.suspended_at,              count(m.user_id) AS members              FROM oxsum.organizations o LEFT JOIN oxsum.memberships m USING (organization_id)              WHERE o.organization_id = $1 GROUP BY o.organization_id",
+            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, o.payment_terms_days, o.tier, o.suspended_at, o.dunning_grace_days, o.dunning_suspended_at,              count(m.user_id) AS members              FROM oxsum.organizations o LEFT JOIN oxsum.memberships m USING (organization_id)              WHERE o.organization_id = $1 GROUP BY o.organization_id",
         )
         .bind(id)
         .fetch_optional(self.pool())
@@ -667,6 +677,27 @@ impl Db {
         }
         tx.commit().await?;
         Ok(changed)
+    }
+
+    /// Drops the dunning sweep's ownership marker without touching `suspended_at`
+    /// (issue #258). An operator's manual suspend or reinstate through the PATCH
+    /// endpoint calls it after `set_suspended`: whoever manages the flag by hand
+    /// takes the sweep's marker off, so a later pass never "reinstates" a
+    /// suspension the operator owns now — or keeps the marker standing on an
+    /// organization the operator already reinstated.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn clear_dunning_suspension(&self, organization_id: Uuid) -> Result<(), WalletError> {
+        sqlx::query(
+            "UPDATE oxsum.organizations SET dunning_suspended_at = NULL \
+             WHERE organization_id = $1",
+        )
+        .bind(organization_id)
+        .execute(self.pool())
+        .await?;
+        Ok(())
     }
 
     /// Transfers ownership: the named member becomes the owner and the acting owner becomes
