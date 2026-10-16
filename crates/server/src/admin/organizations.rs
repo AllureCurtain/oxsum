@@ -171,11 +171,13 @@ pub(crate) async fn adjust_organization(
 }
 
 /// The body of `PATCH …/organizations/{id}`: the billing terms to set — the credit
-/// line absolute, the payment-terms day count, the tier assignment — and the
-/// idempotency key that makes a retried credit-limit change the same entry.
+/// line absolute, the payment-terms day count, the tier assignment, the dunning
+/// grace — and the idempotency key that makes a retried credit-limit change the
+/// same entry.
 ///
-/// `tier` is a double option: absent leaves the assignment alone, an explicit
-/// null clears it, a name assigns it.
+/// `tier` and `dunning_grace_days` are double options: absent leaves the
+/// assignment alone, an explicit `null` clears it (no tier, dunning automation
+/// off), a value sets it.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct UpdateOrganizationReq {
@@ -186,6 +188,11 @@ pub(crate) struct UpdateOrganizationReq {
     /// `true` suspends the organization's spend, `false` reinstates it;
     /// absent leaves it (issue #162).
     suspended: Option<bool>,
+    /// Days past a finalized statement's due date before the dunning sweep
+    /// suspends the organization's spend (issue #258); `null` disables the
+    /// automation.
+    #[serde(default, deserialize_with = "double_option")]
+    dunning_grace_days: Option<Option<i32>>,
     idempotency_key: String,
 }
 
@@ -206,6 +213,13 @@ pub(crate) struct BillingTermsRes {
     tier: Option<String>,
     /// Whether the organization's spend is suspended (issue #162).
     suspended: bool,
+    /// The dunning grace configured (issue #258); `None` when the sweep
+    /// automation is off.
+    dunning_grace_days: Option<i32>,
+    /// When the dunning sweep itself placed the suspension; `None` when the
+    /// standing suspension is the operator's or none.
+    #[serde(with = "time::serde::rfc3339::option")]
+    dunning_suspended_at: Option<OffsetDateTime>,
     /// The organization's spendable balance after the change, own funds plus
     /// undrawn credit.
     available_minor: i64,
@@ -230,9 +244,10 @@ pub(crate) async fn update_organization(
         && request.payment_terms_days.is_none()
         && request.tier.is_none()
         && request.suspended.is_none()
+        && request.dunning_grace_days.is_none()
     {
         return Err(ApiError::Validation(
-            "at least one of creditLimitMinor, paymentTermsDays, tier and suspended must be present"
+            "at least one of creditLimitMinor, paymentTermsDays, tier, suspended and dunningGraceDays must be present"
                 .into(),
         ));
     }
@@ -251,9 +266,15 @@ pub(crate) async fn update_organization(
     if let Some(suspended) = request.suspended {
         detail.insert("suspended".into(), suspended.into());
     }
+    if let Some(grace) = request.dunning_grace_days {
+        detail.insert("dunningGraceDays".into(), serde_json::json!(grace));
+    }
     let organization = state.db.organization_by_id(organization_id).await?;
     if let Some(days) = request.payment_terms_days {
         state.db.set_payment_terms(organization_id, days).await?;
+    }
+    if let Some(grace) = request.dunning_grace_days {
+        state.db.set_dunning_grace(organization_id, grace).await?;
     }
     if let Some(tier) = request.tier {
         state
@@ -263,8 +284,13 @@ pub(crate) async fn update_organization(
     }
     if let Some(suspended) = request.suspended {
         // A replayed flag writes nothing and enqueues no webhook — the
-        // transition, not the call, is what `org.suspended` announces.
+        // transition, not the call, is what `org.suspended` announces. The
+        // operator's own call also clears any dunning marker: whoever manages
+        // the flag by hand takes the sweep's marker off, so a later pass never
+        // reinstates a suspension the operator owns now — or keeps the marker
+        // standing on one the operator already reinstated (issue #258).
         state.db.set_suspended(organization_id, suspended).await?;
+        state.db.clear_dunning_suspension(organization_id).await?;
     }
     let wallet = state.tenants.get(&organization.tenant_id).await?;
     let receipt = match request.credit_limit_minor {
@@ -292,6 +318,8 @@ pub(crate) async fn update_organization(
         payment_terms_days: updated.payment_terms_days,
         tier: updated.tier,
         suspended: updated.suspended_at.is_some(),
+        dunning_grace_days: updated.dunning_grace_days,
+        dunning_suspended_at: updated.dunning_suspended_at,
         available_minor: wallet.available().await?,
     })
 }

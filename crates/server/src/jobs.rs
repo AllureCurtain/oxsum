@@ -236,6 +236,8 @@ async fn run_one(
                 organizations = report.organizations,
                 statements = report.statements,
                 overdue_flipped = report.overdue_flipped,
+                dunning_suspended = report.suspended,
+                dunning_reinstated = report.reinstated,
                 "the statements pass closed the ended month"
             );
         }

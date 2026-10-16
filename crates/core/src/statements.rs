@@ -300,7 +300,8 @@ impl Db {
     ) -> Result<Vec<crate::orgs::AdminOrganization>, WalletError> {
         let rows = sqlx::query(
             "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, \
-             o.payment_terms_days, o.tier, o.suspended_at, count(m.user_id) AS members \
+             o.payment_terms_days, o.tier, o.suspended_at, \
+             o.dunning_grace_days, o.dunning_suspended_at, count(m.user_id) AS members \
              FROM oxsum.organizations o \
              LEFT JOIN oxsum.memberships m USING (organization_id) \
              WHERE EXISTS (SELECT 1 FROM oxsum.usage_records u \
@@ -1008,6 +1009,202 @@ impl Db {
             ));
         }
         Ok(())
+    }
+
+    /// Sets the grace the dunning sweep gives an organization past a finalized
+    /// statement's due date before it suspends the spend (issue #258). `None`
+    /// disables the automation for the organization — the column's stored
+    /// meaning. Like `payment_terms_days` this is a column write: it moves the
+    /// sweep's verdict on statements already overdue too, since the sweep
+    /// re-derives the deadline from each statement's own `due_date`.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::InvalidInput`] for a negative count; [`WalletError::NotFound`]
+    /// for an unknown organization; storage failures surface as [`WalletError`].
+    pub async fn set_dunning_grace(
+        &self,
+        organization_id: Uuid,
+        days: Option<i32>,
+    ) -> Result<(), WalletError> {
+        if days.is_some_and(|d| d < 0) {
+            return Err(WalletError::InvalidInput(
+                "dunning grace cannot be negative".into(),
+            ));
+        }
+        let updated = sqlx::query(
+            "UPDATE oxsum.organizations SET dunning_grace_days = $2 \
+             WHERE organization_id = $1",
+        )
+        .bind(organization_id)
+        .bind(days)
+        .execute(self.pool())
+        .await?;
+        if updated.rows_affected() == 0 {
+            return Err(WalletError::NotFound(
+                "the organization is not known".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// The dunning sweep (issue #258): the statements job's enforcement half.
+    ///
+    /// Suspends every organization whose grace ran out — a finalized statement
+    /// in `pending`/`overdue`/`suspended` standing whose `due_date` plus the
+    /// organization's `dunning_grace_days` is before `today`, on an organization
+    /// that has the automation on (`dunning_grace_days` set) and is not already
+    /// suspended. Each suspension marks itself `dunning_suspended_at` so the
+    /// other half of the sweep can tell it apart from an operator's manual
+    /// `set_suspended`, suspends the outstanding statements, and fans out the
+    /// `org.suspended` webhook — all inside the org-admission advisory lock, so
+    /// the flag lands atomically against hold admission like `set_suspended`'s
+    /// own transaction does.
+    ///
+    /// Reinstates every organization the sweep suspended (the marker set) once
+    /// nothing unpaid stands past `due_date + grace`: the standing lifted is
+    /// the sweep's own, never an operator's. A suspended statement that gets
+    /// repaid through `reconcile_statements` turns `paid`, so the reinstatement
+    /// follows the same figure the statements do — no separate bookkeeping.
+    ///
+    /// Answers `(suspended, reinstated)` for the run report.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn sweep_dunning(&self, today: Date) -> Result<(i64, i64), WalletError> {
+        // The candidate rows: every grace-lapsed statement on an opted-in,
+        // not-yet-suspended organization. One org may owe several; each is
+        // suspended inside the same transaction that flags the org.
+        let lapsing = sqlx::query(
+            "SELECT s.statement_id, s.organization_id, s.period \
+             FROM oxsum.statements s \
+             JOIN oxsum.organizations o ON o.organization_id = s.organization_id \
+             WHERE s.status = 'finalized' \
+               AND s.payment_status IN ('pending', 'overdue', 'suspended') \
+               AND s.due_date IS NOT NULL \
+               AND o.dunning_grace_days IS NOT NULL \
+               AND s.due_date + o.dunning_grace_days < $1 \
+               AND o.suspended_at IS NULL \
+             ORDER BY s.organization_id, s.due_date",
+        )
+        .bind(today)
+        .fetch_all(self.pool())
+        .await?;
+        let mut suspended_orgs = std::collections::BTreeSet::new();
+        let mut suspended = 0i64;
+        for row in &lapsing {
+            use sqlx::Row;
+            let organization_id: Uuid = row.try_get("organization_id")?;
+            let statement_id: Uuid = row.try_get("statement_id")?;
+            // The flag write serializes against hold admission through the same
+            // advisory lock `set_suspended` takes; `suspended_at` guarded by the
+            // predicate makes the second statement of a lapsed pair a no-op on
+            // the flag while its own row still moves to `suspended`.
+            let mut tx = self.pool().begin().await?;
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1 || $2::text, 0))")
+                .bind(crate::wallet::ORG_ADMISSION_LOCK)
+                .bind(organization_id.to_string())
+                .execute(&mut *tx)
+                .await?;
+            let flagged = sqlx::query(
+                "UPDATE oxsum.organizations SET suspended_at = now(), \
+                     dunning_suspended_at = now() \
+                 WHERE organization_id = $1 AND suspended_at IS NULL \
+                 RETURNING organization_id",
+            )
+            .bind(organization_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .is_some();
+            if flagged {
+                Self::enqueue_event(
+                    &mut tx,
+                    organization_id,
+                    crate::webhooks::ORG_SUSPENDED,
+                    serde_json::json!({
+                        "organizationId": organization_id,
+                        "reason": "dunning",
+                        "statementId": statement_id,
+                    }),
+                )
+                .await?;
+            }
+            let moved = sqlx::query(
+                "UPDATE oxsum.statements SET payment_status = 'suspended', \
+                     suspended_at = COALESCE(suspended_at, now()), updated_at = now() \
+                 WHERE statement_id = $1 AND payment_status IN ('pending', 'overdue')",
+            )
+            .bind(statement_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+            if moved > 0 {
+                Self::enqueue_event(
+                    &mut tx,
+                    organization_id,
+                    crate::webhooks::STATEMENT_STATUS_UPDATED,
+                    serde_json::json!({
+                        "statementId": statement_id,
+                        "period": row.try_get::<String, _>("period")?,
+                        "paymentStatus": "suspended",
+                    }),
+                )
+                .await?;
+            }
+            tx.commit().await?;
+            if flagged && suspended_orgs.insert(organization_id) {
+                suspended += 1;
+            }
+        }
+
+        // Reinstatement: only a suspension the sweep itself placed lifts, and
+        // only once nothing unpaid stands past its grace — or when the admin
+        // switched the automation off (`dunning_grace_days` NULL), which is the
+        // operator saying this organization is managed by hand again. A manual
+        // suspension (`dunning_suspended_at` NULL) is never the sweep's to undo;
+        // a sweep suspension whose org still owes past grace keeps standing.
+        let reinstating = sqlx::query(
+            "SELECT o.organization_id \
+             FROM oxsum.organizations o \
+             WHERE o.dunning_suspended_at IS NOT NULL \
+               AND (o.dunning_grace_days IS NULL OR NOT EXISTS ( \
+                   SELECT 1 FROM oxsum.statements s \
+                   WHERE s.organization_id = o.organization_id \
+                     AND s.status = 'finalized' \
+                     AND s.payment_status IN ('pending', 'overdue', 'suspended') \
+                     AND s.due_date IS NOT NULL \
+                     AND s.due_date + o.dunning_grace_days < $1))",
+        )
+        .bind(today)
+        .fetch_all(self.pool())
+        .await?;
+        let mut reinstated = 0i64;
+        for row in &reinstating {
+            use sqlx::Row;
+            let organization_id: Uuid = row.try_get("organization_id")?;
+            let mut tx = self.pool().begin().await?;
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1 || $2::text, 0))")
+                .bind(crate::wallet::ORG_ADMISSION_LOCK)
+                .bind(organization_id.to_string())
+                .execute(&mut *tx)
+                .await?;
+            let lifted = sqlx::query(
+                "UPDATE oxsum.organizations SET suspended_at = NULL, \
+                     dunning_suspended_at = NULL \
+                 WHERE organization_id = $1 AND dunning_suspended_at IS NOT NULL \
+                 RETURNING organization_id",
+            )
+            .bind(organization_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .is_some();
+            tx.commit().await?;
+            if lifted {
+                reinstated += 1;
+            }
+        }
+        Ok((suspended, reinstated))
     }
 
     /// Flips pending finalized statements whose due date has passed to overdue —

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.61.0
+  version: 0.62.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -4630,12 +4630,25 @@ components:
             suspend the organization's spend (true) or reinstate it (false). A suspended
             organization's new holds refuse — 403 on `/v1` and `POST /api/v1/holds` alike —
             while its in-flight holds still settle and money-in still lands; suspending enqueues
-            `org.suspended` to its subscribed webhook endpoints.
+            `org.suspended` to its subscribed webhook endpoints. A manual suspension is
+            never the dunning sweep's to lift — reinstating here also clears any marker a
+            sweep-set suspension left.
+        dunningGraceDays:
+          type: integer
+          format: int32
+          minimum: 0
+          nullable: true
+          description: |
+            days past a finalized statement's due date before the statements job's
+            dunning sweep suspends the organization's spend — an explicit null switches
+            the automation off; absent leaves it alone. The sweep also marks and marks
+            its own suspensions, reinstating the organization once nothing unpaid stands
+            past grace (or when the grace is switched off here).
         idempotencyKey:
           type: string
           minLength: 1
           maxLength: 200
-          description: a retry writes no second entry; the same key replays the same change. At least one of creditLimitMinor, paymentTermsDays, tier and suspended must be present.
+          description: a retry writes no second entry; the same key replays the same change. At least one of creditLimitMinor, paymentTermsDays, tier, suspended and dunningGraceDays must be present.
     PasswordResetRequest:
       type: object
       required: [newPassword]
@@ -4665,7 +4678,7 @@ components:
           description: the organization's available balance after the adjustment
     AdminCreditLimit:
       type: object
-      required: [organizationId, creditLimitMinor, creditUsedMinor, availableMinor, paymentTermsDays, tier, suspended]
+      required: [organizationId, creditLimitMinor, creditUsedMinor, availableMinor, paymentTermsDays, tier, suspended, dunningGraceDays, dunningSuspendedAt]
       properties:
         entryId:
           type: string
@@ -4689,6 +4702,17 @@ components:
         suspended:
           type: boolean
           description: whether the organization's spend is suspended — new holds refuse, in-flight holds settle
+        dunningGraceDays:
+          type: integer
+          format: int32
+          minimum: 0
+          nullable: true
+          description: the dunning grace configured — null when the sweep automation is off
+        dunningSuspendedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: when the dunning sweep itself suspended the organization — null when the suspension standing is the operator's or none
     AdminOrganization:
       type: object
       required: [id, name, kind, members, createdAt, availableMinor, reservedMinor, creditLimitMinor, creditUsedMinor, suspended]
