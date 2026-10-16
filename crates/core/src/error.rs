@@ -75,6 +75,34 @@ pub enum WalletError {
     #[error("key has {open} holds outstanding, at or over its cap of {limit}")]
     TooManyHolds { limit: i64, open: i64 },
 
+    /// The presented `X-Oxsum-Mandate` did not verify — bad base64, bad JSON, or
+    /// a signature that fails under the key's mandate public key. The HTTP layer
+    /// answers 403 `invalid_mandate`, distinct from the key's own refusals so the
+    /// delegate learns it is the delegation that failed, not the credential.
+    #[error("the presented mandate is not valid for this key")]
+    InvalidMandate,
+
+    /// The mandate's window does not cover this request: before `notBefore` or
+    /// past `notAfter`. The HTTP layer answers 403; `not_yet` distinguishes the
+    /// two in the caller-facing message.
+    #[error("the presented mandate is {}", if *.not_yet { "not yet valid" } else { "expired" })]
+    MandateOutOfWindow {
+        /// `true` when `now < notBefore`, `false` when `now > notAfter`.
+        not_yet: bool,
+    },
+
+    /// A hold would push the mandate's committed spend past its `capMinor`:
+    /// settled charges plus outstanding holds under this `mandateId`, in minor
+    /// units, would exceed the cap. The HTTP layer answers 429
+    /// `mandate_exceeded`; the numbers are the mandate's own.
+    #[error(
+        "mandate cap exceeded: {committed_minor} of {cap_minor} minor units already committed under it"
+    )]
+    MandateExceeded {
+        cap_minor: i64,
+        committed_minor: i64,
+    },
+
     /// This deployment cannot serve what it was asked for: a stored channel credential that does not
     /// open under `OXSUM_SECRET_KEY`, or a key that is not configured at all. The message is for the
     /// operator; the HTTP layer answers 500 with a generic one, because this is neither the caller's

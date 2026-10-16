@@ -47,6 +47,10 @@ pub struct OpenHold {
     /// The key that took the hold, where one was attributed — what the settled
     /// turn's usage row records as its payer.
     pub key_id: Option<Uuid>,
+    /// The mandate the hold was taken under, when the caller delegated one —
+    /// carried so a swept settlement's usage row still names the delegation it
+    /// ran under. The cap itself reads the ledger, not this row (issue #262).
+    pub mandate_id: Option<Uuid>,
     /// The caller's attribution on the turn, carried so a swept settlement's usage
     /// row still says whose turn it was.
     pub end_user: Option<String>,
@@ -80,8 +84,8 @@ impl Db {
         sqlx::query(
             "INSERT INTO oxsum.open_holds \
              (hold_key, tenant_id, request_id, model, channel, price_version, \
-              input_price, output_price, freeze_minor, key_id, end_user, service_tier, tags) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
+              input_price, output_price, freeze_minor, key_id, mandate_id, end_user, service_tier, tags) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
              ON CONFLICT (hold_key) DO NOTHING",
         )
         .bind(&hold.hold_key)
@@ -94,6 +98,7 @@ impl Db {
         .bind(hold.output_price)
         .bind(hold.freeze_minor)
         .bind(hold.key_id)
+        .bind(hold.mandate_id)
         .bind(&hold.end_user)
         .bind(&hold.service_tier)
         .bind(serde_json::to_value(&hold.tags).unwrap_or_default())
@@ -140,7 +145,7 @@ impl Db {
     pub async fn open_hold(&self, hold_key: &str) -> Result<Option<OpenHold>, WalletError> {
         let row = sqlx::query(
             "SELECT hold_key, tenant_id, request_id, model, channel, \
-             price_version, input_price, output_price, freeze_minor, key_id, \
+             price_version, input_price, output_price, freeze_minor, key_id, mandate_id, \
              end_user, service_tier, tags, sweep_attempts, last_error, dead_at \
              FROM oxsum.open_holds WHERE hold_key = $1",
         )
@@ -215,7 +220,7 @@ impl Db {
     ) -> Result<Vec<OpenHold>, WalletError> {
         let rows = sqlx::query(
             "SELECT hold_key, tenant_id, request_id, model, channel, \
-             price_version, input_price, output_price, freeze_minor, key_id, \
+             price_version, input_price, output_price, freeze_minor, key_id, mandate_id, \
              end_user, service_tier, tags, sweep_attempts, last_error, dead_at \
              FROM oxsum.open_holds \
              WHERE opened_at < $1 \
@@ -243,7 +248,7 @@ impl Db {
     ) -> Result<Vec<OpenHold>, WalletError> {
         let rows = sqlx::query(
             "SELECT hold_key, tenant_id, request_id, model, channel, \
-             price_version, input_price, output_price, freeze_minor, key_id, \
+             price_version, input_price, output_price, freeze_minor, key_id, mandate_id, \
              end_user, service_tier, tags, sweep_attempts, last_error, dead_at \
              FROM oxsum.open_holds WHERE tenant_id = $1 ORDER BY opened_at DESC",
         )
@@ -338,6 +343,7 @@ fn open_hold_from_row(row: &sqlx::postgres::PgRow) -> Result<OpenHold, WalletErr
         output_price: row.try_get("output_price")?,
         freeze_minor: row.try_get("freeze_minor")?,
         key_id: row.try_get("key_id")?,
+        mandate_id: row.try_get("mandate_id")?,
         end_user: row.try_get("end_user")?,
         service_tier: row.try_get("service_tier")?,
         tags: serde_json::from_value(tags).unwrap_or_default(),
@@ -481,6 +487,7 @@ async fn sweep_one(
         // row only knows the hold existed, so the honest count is the one
         // attempt that began it (issue #168).
         upstream_attempts: 1,
+        mandate: None,
         reason: None,
     }
     .description()?;
@@ -523,6 +530,7 @@ async fn record_swept_usage(db: &Db, wallet: &Wallet, hold: &OpenHold) -> Result
             request_id: hold.request_id.clone(),
             tenant_id: hold.tenant_id.clone(),
             key_id: hold.key_id,
+            mandate_id: hold.mandate_id,
             model: hold.model.clone(),
             channel: hold.channel.clone(),
             price_version: hold.price_version,

@@ -3,7 +3,7 @@ use serde::Deserialize;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use oxsum_core::{ApiKey, CreatedApiKey, Principal, WalletError};
+use oxsum_core::{ApiKey, CreatedApiKey, CreatedMandate, Mandate, Principal, WalletError};
 
 use crate::AppState;
 use crate::error::{ApiError, ApiJson};
@@ -142,6 +142,73 @@ pub(crate) async fn revoke_key(
         Some(key) => ok(key),
         None => Err(ApiError::not_found()),
     }
+}
+
+/// The body of `POST /api/v1/org/keys/{keyId}/mandates` (issue #262): the bounds
+/// the delegate may spend inside — always narrowing the key's own.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CreateMandateReq {
+    /// Total committed spend this mandate may carry, in minor units.
+    cap_minor: i64,
+    /// The models the delegate may call — a subset of the key's allowlist;
+    /// absent means all the key serves.
+    #[serde(default)]
+    models: Option<Vec<String>>,
+    /// RFC 3339; absent means valid from now.
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    not_before: Option<OffsetDateTime>,
+    /// RFC 3339; required — mandates are bounded and never revoked.
+    #[serde(with = "time::serde::rfc3339")]
+    not_after: OffsetDateTime,
+}
+
+/// Mint a signed spend mandate on a key of the organization (issue #262). The
+/// key holder or an owner/admin session asks for one; the answer carries the
+/// signed blob exactly once, for the delegate to present in `X-Oxsum-Mandate`.
+/// A mandate may only narrow the key: a cap over its `spendLimitMinor` or a
+/// model outside its `modelAllowlist` is a 400.
+pub(crate) async fn create_mandate(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(key_id): Path<Uuid>,
+    ApiJson(r): ApiJson<CreateMandateReq>,
+) -> ApiResult<CreatedMandate> {
+    let secret = state
+        .config
+        .secret()
+        .ok_or_else(|| ApiError::ServiceUnavailable("mandate signing is not configured".into()))?;
+    match state
+        .db
+        .create_mandate(
+            principal.organization().id,
+            key_id,
+            principal.key_scope(),
+            r.cap_minor,
+            r.models,
+            r.not_before,
+            r.not_after,
+            secret,
+        )
+        .await?
+    {
+        Some(created) => ok(created),
+        None => Err(ApiError::not_found()),
+    }
+}
+
+/// The mandates a key has minted, newest first — metadata only, never the
+/// signed blob (the delegate already carries it). Scoped like the key list:
+/// a member sees only mandates on keys they created.
+pub(crate) async fn list_mandates(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(key_id): Path<Uuid>,
+) -> ApiResult<Vec<Mandate>> {
+    ok(state
+        .db
+        .list_mandates(principal.organization().id, key_id, principal.key_scope())
+        .await?)
 }
 
 pub(crate) async fn patch_key(

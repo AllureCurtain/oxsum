@@ -19,7 +19,7 @@ use serde_json::Value;
 /// written before descriptions were versioned counts as older; every `v` above
 /// this is newer than this build. Versions it does know each get their own
 /// rule: an old bill stays recomputable after the writer has moved on.
-const KNOWN_VERSION: i64 = 6;
+const KNOWN_VERSION: i64 = 7;
 
 /// The line items the input side prices: their units must account for the
 /// whole `inputTokens`, between them and the usage record — cached reads and
@@ -96,7 +96,8 @@ pub fn verify_charge(description: &str) -> ChargeCheck {
             Some(3) => recompute_v3(&value),
             Some(4) => recompute_v4(&value),
             Some(5) => recompute_v5(&value),
-            Some(KNOWN_VERSION) => recompute_v6(&value),
+            Some(6) => recompute_v6(&value),
+            Some(KNOWN_VERSION) => recompute_v7(&value),
             Some(v) if v > KNOWN_VERSION => ChargeCheck::NewerSchema { version: v },
             Some(_) => ChargeCheck::OlderSchema,
             // A `v` that names no version is a broken record, not an old one.
@@ -240,6 +241,49 @@ fn recompute_v6(value: &Value) -> ChargeCheck {
         Some(service) if !service.is_empty() => recompute_v4(value),
         _ => ChargeCheck::Mismatch,
     }
+}
+
+/// The v7 rule: a gateway turn under a spend mandate (issue #262) — v5's
+/// arithmetic unchanged, plus the optional `mandate` object naming which
+/// delegation authorized the charge. `mandate` is `{id, hash}` — the mandate's
+/// own id and sha256 of the blob the delegate presented — and either is absent
+/// or both are well-formed: `id` a UUID string, `hash` 64 lowercase hex. A
+/// `mandate` that is not that shape is not an honest write.
+fn recompute_v7(value: &Value) -> ChargeCheck {
+    if let Some(mandate) = value.get("mandate") {
+        let id_ok = mandate
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(is_uuid);
+        let hash_ok = mandate
+            .get("hash")
+            .and_then(Value::as_str)
+            .is_some_and(|h| {
+                h.len() == 64
+                    && h.bytes()
+                        .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            });
+        if !(id_ok && hash_ok) {
+            return ChargeCheck::Mismatch;
+        }
+    }
+    recompute_v5(value)
+}
+
+/// A UUID in its canonical `8-4-4-4-12` hex spelling — validated by hand so the
+/// verifier stays wasm32-clean without a `uuid` dependency.
+fn is_uuid(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 36 {
+        return false;
+    }
+    bytes.iter().enumerate().all(|(index, byte)| {
+        if matches!(index, 8 | 13 | 18 | 23) {
+            *byte == b'-'
+        } else {
+            byte.is_ascii_hexdigit()
+        }
+    })
 }
 
 /// The checks both itemized schemas share: the usage totals bind the *sum* of
@@ -457,6 +501,43 @@ mod tests {
         // And a request line cannot bill on a record that billed nothing.
         let fee = V6_RELEASED.replacen(r#""lines":[]"#, r#""lines":[["request",1,500000000]]"#, 1);
         assert_eq!(verify_charge(&fee), ChargeCheck::Mismatch);
+    }
+
+    /// The V5 turn at v7 under a spend mandate (issue #262): `mandate` names the
+    /// delegation `{id, hash}` and the arithmetic is v5's — 250 under the 400
+    /// freeze.
+    const V7: &str = r#"{"v":7,"request":"req-abc","channel":"backup","model":"deepseek-chat","priceVersion":2,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100,"cachedTokens":96,"reasoningTokens":20},"lines":[["input",20,1000000],["cache_read",96,100000],["output",80,2000000],["reasoning",20,3000000]],"upstreamAttempts":1,"mandate":{"id":"1ec7a2c2-3a13-4a2f-9b74-0f9d2e6a1b3c","hash":"a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1"},"charged":250,"freeze":400}"#;
+
+    #[test]
+    fn a_genuine_v7_record_recomputes() {
+        assert_eq!(verify_charge(V7), ChargeCheck::Recomputed);
+        // A turn no mandate was presented for is still an honest v7 write.
+        let plain = V7.replacen(
+            r#""mandate":{"id":"1ec7a2c2-3a13-4a2f-9b74-0f9d2e6a1b3c","hash":"a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1"},"#,
+            "",
+            1,
+        );
+        assert_eq!(verify_charge(&plain), ChargeCheck::Recomputed);
+    }
+
+    #[test]
+    fn a_v7_record_binds_the_mandate_shape() {
+        // A `mandate` that is not `{id: uuid, hash: 64-hex}` is not an honest
+        // write — the wrong id, a short hash, an uppercase hex digit.
+        for field in [
+            r#""mandate":{"id":"not-a-uuid","hash":"a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1"},"#,
+            r#""mandate":{"id":"1ec7a2c2-3a13-4a2f-9b74-0f9d2e6a1b3c","hash":"abc"},"#,
+            r#""mandate":{"id":"1ec7a2c2-3a13-4a2f-9b74-0f9d2e6a1b3c","hash":"A1B2C3D4E5F60718293A4B5C6D7E8F90A1B2C3D4E5F60718293A4B5C6D7E8F90A1"},"#,
+            r#""mandate":{"id":"1ec7a2c2-3a13-4a2f-9b74-0f9d2e6a1b3c"},"#,
+            r#""mandate":null,"#,
+        ] {
+            let bad = V7.replacen(
+                r#""mandate":{"id":"1ec7a2c2-3a13-4a2f-9b74-0f9d2e6a1b3c","hash":"a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1"},"#,
+                field,
+                1,
+            );
+            assert_eq!(verify_charge(&bad), ChargeCheck::Mismatch, "{field}");
+        }
     }
 
     #[test]

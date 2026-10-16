@@ -365,6 +365,7 @@ pub(crate) async fn redeem(
 pub(crate) async fn hold(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
+    headers: HeaderMap,
     ApiJson(r): ApiJson<AmountReq>,
 ) -> ApiResult<oxsum_core::Receipt> {
     let w = wallet(&state.tenants, principal.organization()).await?;
@@ -373,6 +374,32 @@ pub(crate) async fn hold(
     // spend limit; a session holds unattributed, with no limit to check.
     match principal.acting_key() {
         Some(key) => {
+            // A presented spend mandate is verified before the hold it would
+            // constrain is taken: the signature checks against the key's public
+            // half, and any way the blob can fail is `invalid_mandate`
+            // (issue #262). The window/cap/model checks run inside
+            // `hold_for_key`'s lock.
+            let mandate = match headers
+                .get(crate::gateway::MANDATE_HEADER)
+                .and_then(|v| v.to_str().ok())
+            {
+                Some(blob) => {
+                    // No configured secret means no key ever carried a seed, so
+                    // a presented mandate cannot verify — `invalid_mandate`, the
+                    // same refusal any other unverifiable blob takes.
+                    let secret = state.config.secret().ok_or(ApiError::InvalidMandate)?;
+                    let verifying = state
+                        .db
+                        .mandate_verifying_key(&key.key_id, secret)
+                        .await?
+                        .ok_or(ApiError::InvalidMandate)?;
+                    Some(
+                        oxsum_core::parse_presented(blob, &verifying)
+                            .ok_or(ApiError::InvalidMandate)?,
+                    )
+                }
+                None => None,
+            };
             // The rolling-minute allowance is spent at admission, the same as the
             // gateway's: a refused hold never reaches the wallet.
             if let Some(rpm) = key.requests_per_minute
@@ -430,7 +457,15 @@ pub(crate) async fn hold(
                 }
             }
             match w
-                .hold_for_key(key, None, &r.idempotency_key, "", r.amount_minor, today())
+                .hold_for_key(
+                    key,
+                    None,
+                    &r.idempotency_key,
+                    "",
+                    r.amount_minor,
+                    today(),
+                    mandate.as_ref(),
+                )
                 .await
             {
                 Ok(receipt) => ok(receipt),

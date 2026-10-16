@@ -171,6 +171,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0040_witness_checkpoints",
         include_str!("../migrations/0040_witness_checkpoints.sql"),
     ),
+    (
+        "0041_mandates",
+        include_str!("../migrations/0041_mandates.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.

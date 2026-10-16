@@ -335,6 +335,10 @@ pub struct UsageRow {
     pub tenant_id: String,
     /// The key that paid, where the hold attributed one.
     pub key_id: Option<Uuid>,
+    /// The mandate the turn's hold ran under (issue #262): the delegation the
+    /// settled charge attributes to on the bills page. `None` on an undelegated
+    /// turn. The mandate's committed spend is summed from the ledger, not here.
+    pub mandate_id: Option<Uuid>,
     /// What the turn was priced by, copied from the settlement record.
     pub model: String,
     pub channel: String,
@@ -415,7 +419,7 @@ impl Db {
         let mut tx = self.pool().begin().await?;
         let inserted = sqlx::query(
             "INSERT INTO oxsum.usage_records \
-             (request_id, tenant_id, key_id, model, channel, price_version, kind, entry_id, \
+             (request_id, tenant_id, key_id, mandate_id, model, channel, price_version, kind, entry_id, \
               input_tokens, output_tokens, cached_tokens, cache_write_5m_tokens, \
               cache_write_1h_tokens, reasoning_tokens, tool_calls, image_input_tokens, \
               audio_input_tokens, video_input_tokens, image_output_tokens, \
@@ -426,12 +430,13 @@ impl Db {
               status, failure_reason) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, \
                      $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, \
-                     $30, $31, $32, $33, $34, $35) \
+                     $30, $31, $32, $33, $34, $35, $36) \
              ON CONFLICT (request_id) DO NOTHING",
         )
         .bind(&row.request_id)
         .bind(&row.tenant_id)
         .bind(row.key_id)
+        .bind(row.mandate_id)
         .bind(&row.model)
         .bind(&row.channel)
         .bind(row.price_version)

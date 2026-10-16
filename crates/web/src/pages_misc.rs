@@ -103,7 +103,7 @@ async fn verify_submit(Form(form): Form<VerifyForm>) -> Result<impl View> {
     // bound to a checkpoint the operator signed (issue #204). The binding
     // reports under the pass, never a verdict of its own.
     enum Verdict {
-        Pass { charge: &'static str, price: String },
+        Pass { charge: String, price: String },
         ChargeMismatch,
         Fail,
     }
@@ -123,21 +123,36 @@ async fn verify_submit(Form(form): Form<VerifyForm>) -> Result<impl View> {
         match oxsum_verify::verify_charge(&description) {
             oxsum_verify::ChargeCheck::Mismatch => Verdict::ChargeMismatch,
             check => {
+                let mandate = serde_json::from_str::<serde_json::Value>(&description)
+                    .ok()
+                    .and_then(|record| record.get("mandate").cloned())
+                    .and_then(|mandate| {
+                        let id = mandate.get("id")?.as_str()?.to_owned();
+                        let hash = mandate.get("hash")?.as_str()?.to_owned();
+                        Some(format!(
+                            " The turn ran under spend mandate {id} (blob sha256 {}…).",
+                            &hash[..16.min(hash.len())]
+                        ))
+                    });
                 let charge = match check {
                     oxsum_verify::ChargeCheck::Recomputed => {
                         " The recorded charge itself recomputes from the usage and rates inside the entry."
+                            .to_owned()
                     }
                     oxsum_verify::ChargeCheck::NotASettlement => {
                         " The entry is not a usage settlement, so there is no charge to recompute."
+                            .to_owned()
                     }
                     oxsum_verify::ChargeCheck::OlderSchema => {
                         " The record predates charge verification — the entry is proven, but its arithmetic is too old to recompute."
+                            .to_owned()
                     }
                     oxsum_verify::ChargeCheck::NewerSchema { .. } => {
                         " The record is newer than this verifier — the entry is proven, but its arithmetic is skipped rather than guessed at."
+                            .to_owned()
                     }
                     oxsum_verify::ChargeCheck::Mismatch => unreachable!("handled above"),
-                };
+                } + mandate.as_deref().unwrap_or("");
                 let price = match oxsum_verify::verify_price_head(&inner) {
                     Ok(()) => {
                         " The price it names is bound to a checkpoint the operator signed.".to_owned()

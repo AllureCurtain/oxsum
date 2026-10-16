@@ -25,8 +25,9 @@ use axum::http::{HeaderMap, HeaderValue};
 use futures_core::Stream;
 use http_body::Frame;
 use oxsum_core::{
-    Attribution, CountsProvenance, Db, Price, Serving, Settlement, SettlementKind, UsageAdapter,
-    UsageRecord, UsageRow, Wallet, WalletError, entry_id_for, estimate_tokens, settlement_key_for,
+    Attribution, CountsProvenance, Db, PresentedMandate, Price, Serving, Settlement,
+    SettlementKind, SettlementMandate, UsageAdapter, UsageRecord, UsageRow, Wallet, WalletError,
+    entry_id_for, estimate_tokens, settlement_key_for,
 };
 use serde_json::Value;
 use tokio::sync::broadcast;
@@ -101,6 +102,11 @@ struct Plan {
     discount_percent: Option<i64>,
     /// The key that took the hold: what the usage row records as its payer.
     key_id: uuid::Uuid,
+    /// The spend mandate the turn's hold ran under (issue #262): the verified
+    /// fields land on the usage row's `mandate_id`, and `{id, hash}` on the v7
+    /// settlement description — so the bill proves which delegation authorized
+    /// it. `None` for a turn admitted under the key alone.
+    mandate: Option<PresentedMandate>,
     /// The caller's attribution on the turn, merged into the settled usage record.
     attribution: Attribution,
     /// The protocol adapter that reads this channel's usage reports.
@@ -226,6 +232,7 @@ impl Turn {
         adapter: &'static dyn UsageAdapter,
         metrics: crate::metrics::Metrics,
         span: tracing::Span,
+        mandate: Option<PresentedMandate>,
     ) -> Self {
         Self {
             plan: Some(Plan {
@@ -244,6 +251,7 @@ impl Turn {
                 freeze,
                 discount_percent,
                 key_id,
+                mandate,
                 attribution,
                 adapter,
                 texts,
@@ -598,6 +606,10 @@ impl Plan {
             charged,
             freeze: self.freeze,
             upstream_attempts: self.upstream_attempts,
+            mandate: self.mandate.as_ref().map(|m| SettlementMandate {
+                id: &m.verified.mandate_id,
+                hash: &m.verified.hash,
+            }),
             reason: reason.as_deref(),
         };
         let description = settlement.description()?;
@@ -625,6 +637,7 @@ impl Plan {
                     request_id: self.request.clone(),
                     tenant_id: self.tenant_id.clone(),
                     key_id: Some(self.key_id),
+                    mandate_id: self.mandate.as_ref().map(|m| m.verified.mandate_id),
                     model: self.model.clone(),
                     channel: self.channel.clone(),
                     price_version: self.version,

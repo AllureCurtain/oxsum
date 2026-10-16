@@ -50,6 +50,22 @@ pub enum GatewayError {
         limit: i64,
         retry_after_secs: u64,
     },
+    /// A presented spend mandate did not verify against the key's public half
+    /// (issue #262): bad base64, bad JSON, or a signature that does not check.
+    /// The caller cannot tell which check failed — `invalid_mandate` is one
+    /// refusal, because which step caught it is the verifier's business.
+    InvalidMandate,
+    /// The mandate's window does not cover the request: `notBefore` is still
+    /// ahead, or `notAfter` has passed (issue #262).
+    MandateOutOfWindow {
+        message: String,
+        /// `true` when the mandate is not yet valid rather than expired — the
+        /// answer's code changes (`MANDATE_NOT_YET_VALID` vs `MANDATE_EXPIRED`).
+        not_yet: bool,
+    },
+    /// The mandate's `capMinor` is spent: the committed usage it delegates is
+    /// at or over the ceiling the key minted.
+    MandateExceeded { message: String },
     /// A retried request collided with the first run of its idempotency key: the
     /// first turn is still executing (409 `IDEMPOTENCY_IN_FLIGHT`) or the key was
     /// claimed under a different request body (422 `IDEMPOTENCY_MISMATCH`).
@@ -139,6 +155,10 @@ impl GatewayError {
             | Self::KeyLimitExceeded(message)
             | Self::RateLimited { message, .. }
             | Self::Forbidden(message) => Some(message),
+            Self::InvalidMandate => Some("the presented mandate is not valid for this key"),
+            Self::MandateOutOfWindow { message, .. } | Self::MandateExceeded { message } => {
+                Some(message)
+            }
             Self::Upstream { .. }
             | Self::Idempotency { .. }
             | Self::Unauthorized
@@ -220,6 +240,24 @@ impl From<WalletError> for GatewayError {
                 limit,
                 retry_after_secs: 1,
             },
+            WalletError::InvalidMandate => Self::InvalidMandate,
+            WalletError::MandateOutOfWindow { not_yet } => Self::MandateOutOfWindow {
+                message: if not_yet {
+                    "the presented mandate is not yet valid".to_owned()
+                } else {
+                    "the presented mandate has expired".to_owned()
+                },
+                not_yet,
+            },
+            WalletError::MandateExceeded {
+                cap_minor,
+                committed_minor,
+            } => Self::MandateExceeded {
+                message: format!(
+                    "the mandate has committed {committed_minor} of its {cap_minor} \
+                     minor-unit cap"
+                ),
+            },
             // The gateway settles the hold it took itself in this turn; a hold it cannot find
             // is an internal inconsistency, not a caller error.
             WalletError::HoldNotFound(key) => {
@@ -300,6 +338,31 @@ impl IntoResponse for GatewayError {
                 )
                     .into_response()
             }
+            Self::InvalidMandate => error_response(
+                StatusCode::FORBIDDEN,
+                "the presented mandate is not valid for this key",
+                "permission_error",
+                "INVALID_MANDATE",
+                None,
+            ),
+            Self::MandateOutOfWindow { message, not_yet } => error_response(
+                StatusCode::FORBIDDEN,
+                &message,
+                "permission_error",
+                if not_yet {
+                    "MANDATE_NOT_YET_VALID"
+                } else {
+                    "MANDATE_EXPIRED"
+                },
+                None,
+            ),
+            Self::MandateExceeded { message } => error_response(
+                StatusCode::TOO_MANY_REQUESTS,
+                &message,
+                "insufficient_quota",
+                "MANDATE_EXCEEDED",
+                None,
+            ),
             Self::Idempotency {
                 status,
                 message,
@@ -409,6 +472,28 @@ impl GatewayError {
                 )
                     .into_response();
             }
+            Self::InvalidMandate => (
+                StatusCode::FORBIDDEN,
+                "the presented mandate is not valid for this key".to_owned(),
+                "permission_error",
+                "INVALID_MANDATE",
+            ),
+            Self::MandateOutOfWindow { message, not_yet } => (
+                StatusCode::FORBIDDEN,
+                message,
+                "permission_error",
+                if not_yet {
+                    "MANDATE_NOT_YET_VALID"
+                } else {
+                    "MANDATE_EXPIRED"
+                },
+            ),
+            Self::MandateExceeded { message } => (
+                StatusCode::TOO_MANY_REQUESTS,
+                message,
+                "invalid_request_error",
+                "MANDATE_EXCEEDED",
+            ),
             Self::Idempotency {
                 status,
                 message,

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.60.0
+  version: 0.61.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -391,6 +391,23 @@ info:
     reads the server-rendered dashboard drew straight from core. `GET
     /api/v1/balance` additionally answers `reservedMinor` and
     `spentThisMonthMinor`, the overview's frozen and month-spend figures.
+
+    0.61.0 adds signed spend mandates (issue #262): a key holder delegates a strictly
+    narrower slice of a key's authority to a bearer who does not hold the key. `POST
+    /api/v1/org/keys/{keyId}/mandates` mints a self-contained mandate — a canonical-JSON
+    body Ed25519-signed under the key's own `mandateSigningSeed`, base64url on the wire —
+    and `GET` on the same path lists the key's mandates. The delegate presents it in an
+    `X-Oxsum-Mandate` header on `/v1/*` and `POST /api/v1/holds`; the hold path verifies
+    the signature and applies the mandate's `capMinor`, `models` and `notBefore`/`notAfter`
+    on top of the key's own constraints — narrower only, never wider — refused
+    `invalid_mandate` / `mandate_expired` / `mandate_exceeded` / `model_not_served` rather
+    than the key's own codes, so a delegate learns the delegation bit, not the budget. A
+    mandate's committed spend is ledger-derived (the mandate id rides each entry's
+    provenance correlation, summed like a key's own committed spend), so its spend
+    is provable inside the ledger like everything else, and a
+    settled bill names the mandate under its content hash (settlement description v7). Every
+    mandate is `notAfter`-bounded and none is revocable — for revocable delegation, mint a
+    constrained key instead.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -1166,6 +1183,62 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/keys/{keyId}/mandates:
+    get:
+      summary: List a key's mandates
+      description: |
+        Every mandate minted for the key, newest first — metadata only: `mandate` is the
+        base64url body whose signature the delegate carries; the seed that signed it never
+        leaves. The scope rules are the revoke's: a member lists only the keys they created,
+        any other key id answers 404.
+      parameters: [{ $ref: "#/components/parameters/KeyId" }]
+      responses:
+        "200":
+          description: The key's mandates, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/Mandate" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Mint a spend mandate for a key
+      description: |
+        Delegates a strictly narrower slice of the key's authority to a bearer who does not
+        hold the key. The answer's `mandate` is the base64url body the delegate presents in
+        `X-Oxsum-Mandate` on `/v1/*` and `POST /api/v1/holds`; it is signed once, at mint,
+        under the key's `mandateSigningSeed`, and the delegate verifies nothing — the hold
+        path does. A mandate can only narrow the key's own constraints: `capMinor` and
+        `models` must sit inside the key's, and `notAfter` bounds how long it lives. Every
+        mandate carries a `nonce` for uniqueness, so two identical requests mint two
+        different mandates. Minting needs the key itself (`Authorization: Bearer oxs-…`) or
+        an owner/admin session — holding the credential is what authorizes delegation.
+      parameters: [{ $ref: "#/components/parameters/KeyId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateMandateRequest" }
+      responses:
+        "200":
+          description: The minted mandate — `mandate` is the signed blob the delegate carries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/CreatedMandate" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/invitations:
     post:
       summary: Mint an invitation link
@@ -1614,7 +1687,9 @@ paths:
         only once the key's settled-token window is already full — the hold spends
         no tokens itself, so it is refused 429 `TOKENS_PER_MINUTE` rather than let a
         settled-out key freeze more credit. A session holds unattributed, with no
-        limit to check.
+        limit to check. An `X-Oxsum-Mandate` header binds the hold inside the
+        mandate's bounds on top of the key's own (issue #262).
+      parameters: [{ $ref: "#/components/parameters/Mandate" }]
       requestBody:
         required: true
         content:
@@ -3491,7 +3566,9 @@ paths:
         `x-oxsum-charged-minor`: a header on a non-streamed answer and on a refusal that
         settled `Charge::Nothing`, and — because the head goes out before a streamed turn
         settles — an HTTP trailer on a streamed answer, announced by `Trailer`.
-      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/Mandate" }
       requestBody:
         required: true
         content:
@@ -3566,6 +3643,7 @@ paths:
       security: [{ bearer: [] }, { apiKeyHeader: [] }]
       parameters:
         - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/Mandate" }
         - name: anthropic-version
           in: header
           required: false
@@ -3627,7 +3705,9 @@ paths:
         Upstream is called at `{baseUrl}/embeddings` with the channel credential as
         `Authorization: Bearer`. A response without a usage report settles `estimated`,
         priced from the request's own input bound.
-      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/Mandate" }
       requestBody:
         required: true
         content:
@@ -3669,7 +3749,9 @@ paths:
         shared pipeline's, unchanged. Upstream is called at `{baseUrl}/rerank` with the
         channel credential as `Authorization: Bearer`; a response without a usage report
         settles `estimated` from the request's own input bound.
-      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/Mandate" }
       requestBody:
         required: true
         content:
@@ -3769,6 +3851,17 @@ components:
         makes a retried request the same turn: the same key under the same request body
         replays the first response, under a different body it is refused 422, and while the
         first turn is still running it is refused 409
+    Mandate:
+      name: X-Oxsum-Mandate
+      in: header
+      required: false
+      schema: { type: string }
+      description: >-
+        a signed spend mandate (issue #262): base64url of the canonical-JSON body plus its
+        Ed25519 signature, minted by `POST /api/v1/org/keys/{keyId}/mandates`. Presented on
+        `/v1/*` and `POST /api/v1/holds`, it binds the request inside the mandate's
+        `capMinor`, `models` and validity window — a refusal reads `invalid_mandate`,
+        `mandate_expired` or `mandate_exceeded`, distinct from the key's own limits
   headers:
     RequestId:
       description: "the id the ledger entries are keyed by: `req-<id>:hold` and `req-<id>:settle`"
@@ -4029,6 +4122,33 @@ components:
           required: [secret]
           properties:
             secret: { type: string, description: "the plaintext key; shown once and stored only as a SHA-256 hash" }
+    Mandate:
+      type: object
+      required: [mandateId, keyId, capMinor, models, notBefore, notAfter, nonce]
+      properties:
+        mandateId: { type: string, format: uuid, description: "the stable id a mandate's committed spend keys on" }
+        keyId: { type: string, format: uuid, description: "the key this delegates" }
+        capMinor: { type: integer, format: int64, minimum: 1, description: "total committed spend this mandate may carry, in minor units" }
+        models: { type: [array, "null"], items: { type: string }, description: "the model allowlist — a subset of the key's own; null means all the key serves" }
+        notBefore: { type: string, format: date-time }
+        notAfter: { type: string, format: date-time, description: "when the mandate expires — there is no revocation, so mandates are short-lived" }
+        nonce: { type: string, description: "uniqueness; hex of 16 random bytes" }
+        createdAt: { type: string, format: date-time }
+    CreatedMandate:
+      allOf:
+        - $ref: "#/components/schemas/Mandate"
+        - type: object
+          required: [mandate]
+          properties:
+            mandate: { type: string, description: "base64url of the canonical body plus its Ed25519 signature — the blob the delegate presents in `X-Oxsum-Mandate`" }
+    CreateMandateRequest:
+      type: object
+      required: [capMinor, notAfter]
+      properties:
+        capMinor: { type: integer, format: int64, minimum: 1, description: "total committed spend the mandate may carry — must sit inside the key's own `spendLimitMinor` when the key has one" }
+        models: { type: [array, "null"], items: { type: string }, description: "the model allowlist — must be a subset of the key's own `modelAllowlist` when the key has one; omitted or null means all the key serves" }
+        notBefore: { type: string, format: date-time, description: "when the mandate starts being honored; absent means now" }
+        notAfter: { type: string, format: date-time, description: "when the mandate expires — required, because no revocation exists" }
     Member:
       type: object
       required: [userId, email, role, joinedAt]
