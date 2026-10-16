@@ -215,6 +215,16 @@ Purpose: several integrations, one organization, revocable separately.
 - `GET /api/v1/org` describes the organization the credential belongs to.
 - A key that is unknown, revoked or expired all answer the same 401 `UNAUTHORIZED`, so a leaked key's state is not revealed by probing.
 
+### Delegating spend under a mandate
+
+A mandate hands a bearer who does not hold the key a strictly narrower slice of it — a cap, an optional model subset, and a validity window — as a signed blob the delegate presents instead of the key's own authority being shared. Use it to let a script, a CI job or a sub-agent spend a bounded amount without ever seeing the key.
+
+- `POST /api/v1/org/keys/{keyId}/mandates` mints one: `{"capMinor": …, "notAfter": "<rfc3339>"}`, plus an optional `models` allowlist and a `notBefore` to delay the window. The answer carries the `mandateId` and the `mandateBlob` — the signed, base64url string the delegate sends. A mandate may only narrow the key: a cap above the key's `spendLimitMinor`, a model outside its `modelAllowlist`, or an inverted window is refused `VALIDATION_ERROR` rather than minted.
+- `GET /api/v1/org/keys/{keyId}/mandates` lists what the key has issued — id, cap, models, window, creation time. Members list only the keys they created; a mandate id on someone else's key answers `NOT_FOUND`, so ids are not probeable.
+- The delegate sends the blob in `X-Oxsum-Mandate: <blob>` on the gateway (`/v1/*`) or on `POST /api/v1/holds`. A blob that fails to verify is 403 `INVALID_MANDATE`; outside its window is `MANDATE_NOT_YET_VALID`/`MANDATE_EXPIRED`; a hold that would push the mandate's committed spend past `capMinor` is 429 `MANDATE_EXCEEDED` — committed meaning settled charges plus still-open holds, counted from the ledger itself.
+- A mandate is short-lived by design and is never revoked: to cut a delegate off, tighten the key's own constraint or revoke the key — the delegate's window just runs out.
+- A settled delegated turn names the mandate in its settlement description (`{id, hash}` over the blob), so `/verify` proves which delegation authorized the charge.
+
 ## Top up
 
 Purpose: add balance to the organization's wallet.
