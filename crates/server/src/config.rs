@@ -122,6 +122,29 @@ impl Gateway {
     }
 }
 
+/// One pinned witness key — what a `cosignature/v1` signature line under
+/// `witness_url` must verify against (issue #259).
+///
+/// The pinset is the deployment's own claim about which keys are real: serving
+/// it on the checkpoint endpoint lets a reader run the check without trusting
+/// the server's verdict, while a verifier that distrusts the deployment can
+/// substitute its own pinset — the same choice `GET /api/v1/log/key` already
+/// offers for the operator's key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WitnessKey {
+    /// The witness endpoint this pin applies to, as `OXSUM_WITNESS_URLS` names it.
+    pub witness_url: String,
+    /// The name the witness's cosignature lines carry (`— <name> <blob>`).
+    pub key_name: String,
+    /// The Ed25519 verifying key, hex.
+    pub public_key: String,
+    /// The cosignature selector — `SHA-256(name || '\n' || 0x04 || public)`'s
+    /// first four bytes, hex. Validated against `key_name` + `public_key` at
+    /// boot, so a misconfigured pin refuses to start rather than answering
+    /// `BadSignature` forever.
+    pub key_hash: String,
+}
+
 /// An environment variable that counts as unset when it is absent or blank.
 fn var(name: &str) -> Option<String> {
     std::env::var(name)
@@ -167,6 +190,13 @@ pub struct Config {
     /// default — runs no anchoring: `/api/v1/log/checkpoint` serves an empty
     /// snapshot.
     witness_urls: Vec<String>,
+    /// The pinned keyset for those witnesses, `OXSUM_WITNESS_KEYS` as a JSON
+    /// array (issue #259): which `cosignature/v1` key a signature line under
+    /// each URL must verify against. Served on `/api/v1/log/checkpoint` as
+    /// `witnessKeys` so a reader can check the cosignatures itself — under the
+    /// same trust choice the operator's own published key already asks for.
+    /// Empty means the endpoint serves cosigned notes but no pins.
+    witness_keys: Vec<WitnessKey>,
     /// The deployment-wide display currency default (issue #257):
     /// `OXSUM_DISPLAY_CURRENCY` plus `OXSUM_DISPLAY_RATE_PER_CREDIT` — what an
     /// organization with no override of its own renders. `None` means the
@@ -195,6 +225,7 @@ impl Config {
             upstream_price_sync: false,
             otlp_endpoint: None,
             witness_urls: Vec::new(),
+            witness_keys: Vec::new(),
             display_currency: None,
         }
     }
@@ -313,6 +344,7 @@ impl Config {
             .transpose()?
             .unwrap_or(false);
         let witness_urls = witness_urls_of()?;
+        let witness_keys = witness_keys_of(&witness_urls)?;
         // Trailing slashes come off: the exporter appends `/v1/traces`, and a
         // doubled slash is only a cosmetic wrong.
         let otlp_endpoint = var("OXSUM_OTLP_ENDPOINT").map(|v| v.trim_end_matches('/').to_owned());
@@ -335,6 +367,7 @@ impl Config {
             upstream_price_sync,
             otlp_endpoint,
             witness_urls,
+            witness_keys,
             display_currency,
         })
     }
@@ -439,6 +472,16 @@ impl Config {
         &self.witness_urls
     }
 
+    /// The pinned witness keyset `OXSUM_WITNESS_KEYS` configured (issue #259):
+    /// served on `/api/v1/log/checkpoint` as `witnessKeys` so a reader can
+    /// verify each cosignature line itself. Empty means the endpoint serves
+    /// the cosigned notes with no pins — the notes are still verifiable
+    /// against a pinset the reader configured itself.
+    #[must_use]
+    pub fn witness_keys(&self) -> &[WitnessKey] {
+        &self.witness_keys
+    }
+
     /// The display unit an organization with no override of its own renders
     /// (issue #257): the org's stored `display_currency` pair when set, else
     /// the deployment's `OXSUM_DISPLAY_*` default, else `None` — credits only.
@@ -480,6 +523,14 @@ impl Config {
     #[must_use]
     pub fn with_witness_urls(mut self, urls: Vec<String>) -> Self {
         self.witness_urls = urls;
+        self
+    }
+
+    /// Sets the pinned witness keyset. Tests use this; the server reads
+    /// `OXSUM_WITNESS_KEYS`.
+    #[must_use]
+    pub fn with_witness_keys(mut self, keys: Vec<WitnessKey>) -> Self {
+        self.witness_keys = keys;
         self
     }
 
@@ -600,6 +651,92 @@ fn witness_urls_of() -> Result<Vec<String>, String> {
                 .map_err(|error| format!("OXSUM_WITNESS_URLS entry {entry:?} is no URL: {error}"))
         })
         .collect()
+}
+
+/// Parses `OXSUM_WITNESS_KEYS`: the deployment's pinned witness keyset, a JSON
+/// array of `{ "url", "keyName", "publicKey", "keyHash" }` (issue #259).
+/// Absent or empty means no pins — the checkpoint endpoint serves the cosigned
+/// notes and an empty `witnessKeys`, which a verifier holding its own pinset
+/// can still check.
+///
+/// Validation is deliberately at boot, not per request: a pin whose `url` is
+/// not one of `OXSUM_WITNESS_URLS`, whose `keyName` is not a valid note key
+/// name, whose `publicKey` is not a 32-byte Ed25519 point, or whose `keyHash`
+/// does not equal the recomputed cosignature selector is a misconfiguration —
+/// it refuses to start rather than serve a pinset that can only ever answer
+/// `BadSignature`.
+fn witness_keys_of(witness_urls: &[String]) -> Result<Vec<WitnessKey>, String> {
+    use oxsum_core::{VerifyingKey, WitnessKeyName};
+
+    let Some(raw) = var("OXSUM_WITNESS_KEYS") else {
+        return Ok(Vec::new());
+    };
+    let entries: Vec<serde_json::Value> = serde_json::from_str(&raw)
+        .map_err(|error| format!("OXSUM_WITNESS_KEYS is not a JSON array: {error}"))?;
+    entries
+        .iter()
+        .map(|entry| {
+            let field = |name: &str| {
+                entry
+                    .get(name)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .ok_or_else(|| format!("OXSUM_WITNESS_KEYS entry is missing {name:?}"))
+            };
+            let url = field("url")?;
+            let url = reqwest::Url::parse(&url)
+                .map(|_| url.trim_end_matches('/').to_owned())
+                .map_err(|error| format!("OXSUM_WITNESS_KEYS url {url:?} is no URL: {error}"))?;
+            if !witness_urls.iter().any(|u| u == &url) {
+                return Err(format!(
+                    "OXSUM_WITNESS_KEYS pins {url:?}, which OXSUM_WITNESS_URLS does not publish to"
+                ));
+            }
+            let key_name = field("keyName")?;
+            let name = WitnessKeyName::new(key_name.clone())
+                .map_err(|error| format!("OXSUM_WITNESS_KEYS keyName {key_name:?}: {error}"))?;
+            let public_key = field("publicKey")?;
+            let public = hex_decode::<32>(&public_key).map_err(|_| {
+                format!("OXSUM_WITNESS_KEYS publicKey {public_key:?} is not 32 bytes of hex")
+            })?;
+            let verifying = VerifyingKey::from_bytes(name, public).map_err(|_| {
+                format!("OXSUM_WITNESS_KEYS publicKey {public_key:?} is not an Ed25519 key")
+            })?;
+            let key_hash = field("keyHash")?;
+            let expected = verifying
+                .cosignature_key_hash()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>();
+            if !key_hash.eq_ignore_ascii_case(&expected) {
+                return Err(format!(
+                    "OXSUM_WITNESS_KEYS keyHash {key_hash:?} does not match the key's cosignature selector {expected:?}"
+                ));
+            }
+            Ok(WitnessKey {
+                witness_url: url,
+                key_name,
+                public_key: public_key.to_ascii_lowercase(),
+                key_hash: expected,
+            })
+        })
+        .collect()
+}
+
+/// Decodes a fixed-length hex string; used to validate `OXSUM_WITNESS_KEYS`
+/// pins at boot.
+fn hex_decode<const N: usize>(hex: &str) -> Result<[u8; N], ()> {
+    let bytes = hex.as_bytes();
+    if bytes.len() != N * 2 {
+        return Err(());
+    }
+    let mut out = [0u8; N];
+    for (i, &[hi, lo]) in bytes.as_chunks::<2>().0.iter().enumerate() {
+        let hi = (hi as char).to_digit(16).ok_or(())?;
+        let lo = (lo as char).to_digit(16).ok_or(())?;
+        out[i] = ((hi << 4) | lo) as u8;
+    }
+    Ok(out)
 }
 
 /// Parses `OXSUM_UPSTREAM_PRICE_SYNC`: whether the `SYNC_UPSTREAM_PRICES`

@@ -29,7 +29,7 @@ use time::OffsetDateTime;
 use tokio::sync::broadcast;
 
 pub use billing::BillingEvent;
-pub use config::{Config, Gateway, Signup};
+pub use config::{Config, Gateway, Signup, WitnessKey};
 pub use metrics::Metrics;
 pub use oxsum_integrations::mail::Mailer;
 
