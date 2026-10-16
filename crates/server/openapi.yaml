@@ -1051,6 +1051,40 @@ paths:
                   data: { $ref: "#/components/schemas/Organization" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+    patch:
+      summary: Set the organization's display currency
+      description: |
+        Sets the fiat unit the organization renders its balances, bills and
+        statements in (issue #257): `displayCurrency` is the code plus the rate
+        one credit converts at plus the decimals the render rounds to, and an
+        explicit `null` clears the display back to credits alone. The write is
+        presentational only — it touches no ledger and moves no money, so a
+        settled bill's verified charge can never depend on it.
+
+        A session in the owner or admin role writes it; a member's session and
+        an API key are refused — the display is the organization's own setting,
+        and a credential that is not a person cannot speak for it.
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateOrgDisplayRequest" }
+      responses:
+        "200":
+          description: The organization as it now reads
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/Organization" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/keys:
     get:
       summary: List the organization's API keys
@@ -4057,13 +4091,38 @@ components:
         turnstileSiteKey: { type: [string, "null"], description: "the Turnstile site key when the anti-bot check is configured — public by design, the page hands it to the widget" }
     Organization:
       type: object
-      required: [id, name, tenantId, kind, createdAt]
+      required: [id, name, tenantId, kind, createdAt, displayCurrency]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
         tenantId: { type: string, description: "ledger tenant id; the ledger lives in the schema ledger_<tenantId>" }
         kind: { type: string, enum: [personal, team] }
         createdAt: { type: string, format: date-time }
+        displayCurrency:
+          $ref: "#/components/schemas/DisplayCurrency"
+          description: "the fiat unit this organization displays its credit figures in — presentational only, set through `PATCH /api/v1/admin/organizations/{organizationId}`; null renders credits alone"
+    DisplayCurrency:
+      type: object
+      required: [code, ratePerCredit, decimals]
+      description: |
+        How one credit renders as a fiat amount (issue #257). Purely presentational:
+        ledger entries, settlement descriptions and proofs keep integer minor units of
+        credit, and the conversion never reaches a charge — so a display-currency
+        change can never alter a settled bill's verified charge.
+      properties:
+        code:
+          type: string
+          pattern: '^[A-Z]{3}$'
+          description: "the ISO 4217 unit — USD, EUR, CNY; informational: the conversion needs only the rate, so an unrecognized-but-well-formed code still renders"
+        ratePerCredit:
+          type: string
+          pattern: '^[0-9]+(\.[0-9]+)?$'
+          description: "how many of the unit one credit displays as, as a decimal literal — \"0.0014\" renders 1_500_000 minor (1.5 credits) as 0.00 at 2 decimals; stored as text so no float ever touches money"
+        decimals:
+          type: integer
+          minimum: 0
+          maximum: 6
+          description: "the decimal places the unit renders with — 2 for most currencies, 0 for JPY-shaped ones; the render rounds half-up to this precision"
     CreateKeyRequest:
       type: object
       properties:
@@ -4657,11 +4716,32 @@ components:
             the automation off; absent leaves it alone. The sweep also marks and marks
             its own suspensions, reinstating the organization once nothing unpaid stands
             past grace (or when the grace is switched off here).
+        displayCurrency:
+          $ref: "#/components/schemas/DisplayCurrency"
+          nullable: true
+          description: |
+            the fiat unit the organization displays its balances, bills and statements
+            in (issue #257) — `code` plus `ratePerCredit` (a decimal literal like
+            "0.0014": how much of the unit one credit renders as), plus the `decimals`
+            the figure rounds to. Presentational only: the write touches no ledger and
+            moves no money, so it never alters a settled bill's verified charge.
+            An explicit null clears the display — the organization renders credits alone.
         idempotencyKey:
           type: string
           minLength: 1
           maxLength: 200
-          description: a retry writes no second entry; the same key replays the same change. At least one of creditLimitMinor, paymentTermsDays, tier, suspended and dunningGraceDays must be present.
+          description: a retry writes no second entry; the same key replays the same change. At least one of creditLimitMinor, paymentTermsDays, tier, suspended, dunningGraceDays and displayCurrency must be present.
+    UpdateOrgDisplayRequest:
+      type: object
+      required: [displayCurrency]
+      properties:
+        displayCurrency:
+          $ref: "#/components/schemas/DisplayCurrency"
+          nullable: true
+          description: |
+            the fiat unit the organization renders in (issue #257), or null to
+            render credits alone — the only field this PATCH takes; the write is
+            presentational and moves no money.
     PasswordResetRequest:
       type: object
       required: [newPassword]
@@ -4691,7 +4771,7 @@ components:
           description: the organization's available balance after the adjustment
     AdminCreditLimit:
       type: object
-      required: [organizationId, creditLimitMinor, creditUsedMinor, availableMinor, paymentTermsDays, tier, suspended, dunningGraceDays, dunningSuspendedAt]
+      required: [organizationId, creditLimitMinor, creditUsedMinor, availableMinor, paymentTermsDays, tier, suspended, dunningGraceDays, dunningSuspendedAt, displayCurrency]
       properties:
         entryId:
           type: string
@@ -4726,9 +4806,13 @@ components:
           format: date-time
           nullable: true
           description: when the dunning sweep itself suspended the organization — null when the suspension standing is the operator's or none
+        displayCurrency:
+          $ref: "#/components/schemas/DisplayCurrency"
+          nullable: true
+          description: the display unit the organization renders in — null renders credits alone
     AdminOrganization:
       type: object
-      required: [id, name, kind, members, createdAt, availableMinor, reservedMinor, creditLimitMinor, creditUsedMinor, suspended]
+      required: [id, name, kind, members, createdAt, availableMinor, reservedMinor, creditLimitMinor, creditUsedMinor, suspended, displayCurrency]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
@@ -4748,6 +4832,10 @@ components:
           format: date-time
           nullable: true
           description: when the organization was suspended — null while its spend runs normally
+        displayCurrency:
+          $ref: "#/components/schemas/DisplayCurrency"
+          nullable: true
+          description: the display unit the organization renders in — null renders credits alone
     AdminHold:
       type: object
       required: [organization, requestId, model, channel, priceVersion, freezeMinor, openedAt]
