@@ -456,15 +456,18 @@ async fn seed_request(
 }
 
 /// The CSV export's header, which is also its field list.
-const CSV_HEADER: &str = "bookedOn,entryId,kind,amountMinor,description,contentHash";
+const CSV_HEADER: &str =
+    "bookedOn,entryId,kind,amountMinor,description,contentHash,displayAmount,displayCurrency";
 
 /// The JSON row's fields, sorted as the tests compare them: the CSV's field list plus
 /// `request`, the settled turn's parsed record.
-const JSON_FIELDS: [&str; 7] = [
+const JSON_FIELDS: [&str; 9] = [
     "amountMinor",
     "bookedOn",
     "contentHash",
     "description",
+    "displayAmount",
+    "displayCurrency",
     "entryId",
     "kind",
     "request",
@@ -559,21 +562,24 @@ async fn the_bills_page_lists_transactions_and_the_exports_carry_them() {
         5,
         "the header and the four transactions: {body}"
     );
+    // The two trailing `,,` are the display columns this organization never set —
+    // presentational only, so they read empty and the ledger's own figures are
+    // untouched.
     let expected = [
         format!(
-            "{today},{},settlement,0,,{}",
+            "{today},{},settlement,0,,{},,",
             free.entry_id, free.content_hash
         ),
         format!(
-            "{today},{},topUp,{},,{}",
+            "{today},{},topUp,{},,{},,",
             free.top_up_entry_id, free.top_up_minor, free.top_up_hash
         ),
         format!(
-            "{today},{},settlement,-{},,{}",
+            "{today},{},settlement,-{},,{},,",
             charged.entry_id, charged.charged_minor, charged.content_hash
         ),
         format!(
-            "{today},{},topUp,{},,{}",
+            "{today},{},topUp,{},,{},,",
             charged.top_up_entry_id, charged.top_up_minor, charged.top_up_hash
         ),
     ];
@@ -632,12 +638,13 @@ async fn the_bills_page_lists_transactions_and_the_exports_carry_them() {
     assert_eq!(rows[2]["entryId"], charged.entry_id.as_str());
     assert_eq!(rows[2]["amountMinor"], -316);
 
-    // And the two exports are the same records: each JSON row is the CSV line beside it.
+    // And the two exports are the same records: each JSON row is the CSV line beside
+    // it — the display columns trail empty for a credits-only organization.
     for (row, line) in rows.iter().zip(lines.iter().skip(1)) {
         assert_eq!(
             *line,
             format!(
-                "{},{},{},{},{},{}",
+                "{},{},{},{},{},{},,",
                 row["bookedOn"].as_str().unwrap(),
                 row["entryId"].as_str().unwrap(),
                 row["kind"].as_str().unwrap(),
