@@ -691,6 +691,8 @@ function AdjustOrg({ token, id, onDone }: { token: string; id: string; onDone: (
   const [credit, setCredit] = useState("");
   const [terms, setTerms] = useState("");
   const [tier, setTier] = useState("");
+  const [displayCode, setDisplayCode] = useState("");
+  const [displayRate, setDisplayRate] = useState("");
   const [suspend, setSuspend] = useState<boolean | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -711,7 +713,14 @@ function AdjustOrg({ token, id, onDone }: { token: string; id: string; onDone: (
                 },
               });
             }
-            if (credit !== "" || terms !== "" || tier !== "" || suspend !== null) {
+            if (
+              credit !== "" ||
+              terms !== "" ||
+              tier !== "" ||
+              suspend !== null ||
+              displayCode !== "" ||
+              displayRate !== ""
+            ) {
               await adminApi(token, `/organizations/${id}`, {
                 method: "PATCH",
                 body: {
@@ -720,6 +729,15 @@ function AdjustOrg({ token, id, onDone }: { token: string; id: string; onDone: (
                   ...(terms !== "" ? { paymentTermsDays: Number(terms) } : {}),
                   ...(tier !== "" ? { tier } : {}),
                   ...(suspend !== null ? { suspended: suspend } : {}),
+                  ...(displayCode !== ""
+                    ? {
+                        displayCurrency: {
+                          code: displayCode.trim().toUpperCase(),
+                          ratePerCredit: displayRate.trim(),
+                          decimals: 2,
+                        },
+                      }
+                    : {}),
                 },
               });
             }
@@ -744,6 +762,22 @@ function AdjustOrg({ token, id, onDone }: { token: string; id: string; onDone: (
         </Field>
         <Field label="Tier">
           <TextInput value={tier} onChange={(e) => setTier(e.target.value)} />
+        </Field>
+        <Field label="Display currency" hint="ISO code + rate per credit, e.g. USD / 0.0014">
+          <div className="flex gap-2">
+            <TextInput
+              value={displayCode}
+              onChange={(e) => setDisplayCode(e.target.value)}
+              placeholder="USD"
+              maxLength={3}
+              className="w-20 uppercase"
+            />
+            <TextInput
+              value={displayRate}
+              onChange={(e) => setDisplayRate(e.target.value)}
+              placeholder="0.0014"
+            />
+          </div>
         </Field>
         <Field label="Suspend spend" hint="new holds refuse; in-flight still settles">
           <div className="flex items-center gap-2 pt-2">

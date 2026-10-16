@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { ApiError, useBalance, useRedeemCode, useStripeTopup, useTopup } from "../api/hooks";
+import { ApiError, useBalance, useDisplay, useRedeemCode, useStripeTopup, useTopup } from "../api/hooks";
 import { HaloButton } from "../components/cult/halo-button";
 import { HaloInput } from "../components/cult/halo-input";
 import {
@@ -10,7 +10,7 @@ import {
   HaloTabsTrigger,
 } from "../components/cult/halo-tabs";
 import { CodeBlock } from "../components/cult/code-block";
-import { Banner, Card, Field, credits } from "../components/ui";
+import { Banner, Card, Cr, Field, creditsWithDisplay } from "../components/ui";
 
 function amountToMinor(raw: string): number | null {
   const value = Number(raw);
@@ -116,6 +116,7 @@ function StripeRail() {
 
 function RedeemRail() {
   const redeem = useRedeemCode();
+  const display = useDisplay();
   const [code, setCode] = useState("");
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -142,7 +143,7 @@ function RedeemRail() {
       {redeem.error instanceof ApiError ? <Banner tone="error">{redeem.error.message}</Banner> : null}
       {redeem.data ? (
         <div className="flex flex-col gap-2">
-          <Banner tone="success">Credited {credits(redeem.data.amountMinor)} cr.</Banner>
+          <Banner tone="success">Credited {creditsWithDisplay(redeem.data.amountMinor, display)}.</Banner>
           <ReceiptView receipt={redeem.data} />
         </div>
       ) : null}
@@ -152,12 +153,13 @@ function RedeemRail() {
 
 export function Topup() {
   const balance = useBalance();
+  const display = useDisplay();
   return (
     <div className="flex flex-col gap-6">
       <h1 className="text-2xl font-bold">Top up</h1>
       <Card title="Balance">
         <p className="text-2xl font-semibold tabular-nums">
-          {balance.data ? `${credits(balance.data.availableMinor)} cr` : "…"}
+          {balance.data ? <Cr minor={balance.data.availableMinor} currency={display} /> : "…"}
         </p>
       </Card>
       <HaloTabs defaultValue="manual">

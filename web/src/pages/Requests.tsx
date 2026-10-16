@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { useBillingRecords, useKeys } from "../api/hooks";
+import { useBillingRecords, useDisplay, useKeys } from "../api/hooks";
 import { useBillingSocket } from "../api/ws";
 import {
   EmptyRows,
@@ -9,7 +9,7 @@ import {
   TableShell,
   TextInput,
   Button,
-  credits,
+  Cr,
 } from "../components/ui";
 
 // The requests page: the newest gateway requests with the live socket's
@@ -20,6 +20,7 @@ export function Requests() {
   const [before, setBefore] = useState<number | undefined>(undefined);
   const records = useBillingRecords(100, before);
   const keys = useKeys();
+  const display = useDisplay();
   const socket = useBillingSocket();
 
   const keyFilter = params.get("key") ?? "";
@@ -98,11 +99,17 @@ export function Requests() {
                 <StatusBadge status={turn.state} />
               </td>
               <td className="mono">
-                {turn.state === "settled"
-                  ? `${credits(turn.chargedMinor ?? 0)} cr · ${turn.kind}`
-                  : turn.state === "streaming"
-                    ? `${turn.outputChars ?? 0} chars out`
-                    : `frozen ${credits(turn.freezeMinor ?? 0)} cr`}
+                {turn.state === "settled" ? (
+                  <>
+                    <Cr minor={turn.chargedMinor ?? 0} currency={display} /> · {turn.kind}
+                  </>
+                ) : turn.state === "streaming" ? (
+                  `${turn.outputChars ?? 0} chars out`
+                ) : (
+                  <>
+                    frozen <Cr minor={turn.freezeMinor ?? 0} currency={display} />
+                  </>
+                )}
               </td>
             </tr>
           ))}
@@ -164,7 +171,7 @@ export function Requests() {
                 </td>
                 <td className="mono">{row.inputTokens}</td>
                 <td className="mono">{row.outputTokens}</td>
-                <td className="mono">{credits(row.chargedMinor)} cr</td>
+                <td className="mono"><Cr minor={row.chargedMinor} currency={display} /></td>
                 <td>
                   <a href={`/verify?entry=${row.entryId}`} className="text-primary">
                     verify

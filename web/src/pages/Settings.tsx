@@ -1,10 +1,10 @@
 import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, ApiError } from "../api/client";
-import { useDeleteAccount, useHealth, useOrg, useSession } from "../api/hooks";
+import { useDeleteAccount, useHealth, useOrg, useSession, useUpdateOrgDisplay } from "../api/hooks";
 import { HaloButton } from "../components/cult/halo-button";
 import { HaloBadge } from "../components/cult/halo-badge";
-import { Banner, Card, Field, PageState, TextInput } from "../components/ui";
+import { Banner, Card, Field, NumberInput, PageState, TextInput } from "../components/ui";
 
 function DeleteAccount() {
   const del = useDeleteAccount();
@@ -65,6 +65,114 @@ function DeleteAccount() {
           <Banner tone="error">{del.error.message}</Banner>
         ) : null}
       </div>
+    </Card>
+  );
+}
+
+/** The display-currency form (issue #257). Only an owner or an admin may
+ * PATCH /api/v1/org — a member sees the current value read-only, and a key
+ * never reaches this page at all. The rate is a decimal string ("0.0014"),
+ * never a float input, so the wire carries the exact text the ledger later
+ * parses. */
+function DisplayCurrencyCard({ role }: { role: "owner" | "admin" | "member" }) {
+  const org = useOrg();
+  const update = useUpdateOrgDisplay();
+  const current = org.data?.displayCurrency ?? null;
+  const [code, setCode] = useState(current?.code ?? "");
+  const [rate, setRate] = useState(current?.ratePerCredit ?? "");
+  const [decimals, setDecimals] = useState(String(current?.decimals ?? 2));
+  const [msg, setMsg] = useState<string | null>(null);
+  const canWrite = role === "owner" || role === "admin";
+
+  // The org row can arrive after the form mounted — refresh the fields once.
+  const [hydrated, setHydrated] = useState(false);
+  if (!hydrated && current) {
+    setCode(current.code);
+    setRate(current.ratePerCredit);
+    setDecimals(String(current.decimals));
+    setHydrated(true);
+  }
+
+  function submit(e: FormEvent) {
+    e.preventDefault();
+    setMsg(null);
+    const value =
+      code.trim() === ""
+        ? null
+        : { code: code.trim().toUpperCase(), ratePerCredit: rate.trim(), decimals: Number(decimals) };
+    update.mutate(value, {
+      onSuccess: () => setMsg(value ? "Display currency saved." : "Display currency cleared."),
+      onError: (err) => setMsg(err instanceof ApiError ? err.message : "could not save"),
+    });
+  }
+
+  return (
+    <Card title="Display currency">
+      <form className="flex flex-col gap-3" onSubmit={submit}>
+        <p className="text-sm text-muted">
+          The ledger always keeps credits — this is only how the dashboard and the
+          statement PDF <em>render</em> them. Set a code and a rate per credit
+          (e.g. <code className="mono">USD</code> at <code className="mono">0.0014</code>
+          {" "}≈ $1.40 per 1,000 credits); leave the code empty to render credits alone.
+          The conversion is presentational — a bill's proof covers the credits,
+          never the fiat figure.
+        </p>
+        {canWrite ? (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
+            <Field label="Currency code" hint="ISO 4217, e.g. USD">
+              <TextInput
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                placeholder="—"
+                maxLength={3}
+                className="w-24 uppercase"
+              />
+            </Field>
+            <Field label="Rate per credit" hint="decimal, e.g. 0.0014">
+              <TextInput
+                value={rate}
+                onChange={(e) => setRate(e.target.value)}
+                placeholder="0.0014"
+                disabled={code.trim() === ""}
+              />
+            </Field>
+            <Field label="Decimals">
+              <NumberInput
+                value={decimals}
+                min={0}
+                max={6}
+                onChange={(e) => setDecimals(e.target.value)}
+                disabled={code.trim() === ""}
+              />
+            </Field>
+            <div className="flex items-end gap-2">
+              <HaloButton type="submit" isLoading={update.isPending} loadingText="Saving…">
+                Save
+              </HaloButton>
+            </div>
+          </div>
+        ) : (
+          <p className="text-sm">
+            {current ? (
+              <>
+                This organization renders credits as{" "}
+                <code className="mono">
+                  ≈ {current.ratePerCredit} {current.code}
+                </code>{" "}
+                per credit, {current.decimals} decimals.
+              </>
+            ) : (
+              "This organization renders credits alone."
+            )}{" "}
+            <span className="text-muted">(only an owner or an admin may change it)</span>
+          </p>
+        )}
+        {msg ? (
+          <Banner tone={msg.includes("could not") || msg.includes("error") ? "error" : "info"}>
+            {msg}
+          </Banner>
+        ) : null}
+      </form>
     </Card>
   );
 }
@@ -148,6 +256,7 @@ export function Settings() {
           </div>
         ) : null}
       </Card>
+      <DisplayCurrencyCard role={role} />
       <DeleteAccount />
     </div>
   );
