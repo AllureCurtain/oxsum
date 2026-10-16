@@ -74,11 +74,19 @@ fn ctx() -> JobContext {
 
 /// A due row of `kind`, enqueued the way the startup pass does.
 async fn enqueue(db: &Db, kind: &str) {
-    assert!(
-        db.enqueue_job(kind, OffsetDateTime::now_utc())
-            .await
-            .unwrap()
-    );
+    // `run_at` must come from the database, not the client clock: the claim's
+    // `run_at <= now()` is evaluated server-side, and a client clock even a few
+    // milliseconds behind the container's makes the row not-due-yet — `run_due`
+    // then claims nothing and the pass never runs (a silent `done = 0`).
+    let inserted: Option<Uuid> = sqlx::query_scalar(
+        "INSERT INTO oxsum.jobs (kind, run_at) VALUES ($1, now() - interval '1 second') \
+         ON CONFLICT DO NOTHING RETURNING job_id",
+    )
+    .bind(kind)
+    .fetch_optional(db.pool())
+    .await
+    .unwrap();
+    assert!(inserted.is_some(), "a due {kind} run was enqueued");
 }
 
 /// The row counts of `kind` per status — `(pending, running, done, dead)`.
