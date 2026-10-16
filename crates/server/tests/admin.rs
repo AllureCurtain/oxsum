@@ -930,6 +930,119 @@ async fn the_anomalies_list_shows_the_turns_that_did_not_price_cleanly() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
+/// Every anomaly carries a `score` (0–100) and `severity` band derived at read
+/// time (issue #263): `?severity=` filters to a band, `?sort=score` orders by
+/// score descending, and a bad filter value is a validation error.
+#[tokio::test]
+async fn anomalies_carry_a_score_and_filter_by_severity() {
+    let (app, pool) = app_or_skip!();
+    let (id, _key) = register(&app, "score").await;
+    let tenant_id: String =
+        sqlx::query_scalar("SELECT tenant_id FROM oxsum.organizations WHERE organization_id = $1")
+            .bind(uuid::Uuid::parse_str(&id).expect("a uuid"))
+            .fetch_one(&pool)
+            .await
+            .expect("the registered organization has a tenant");
+    let wallet = oxsum_core::Wallet::open(pool.clone(), &tenant_id)
+        .await
+        .expect("the organization's wallet opens");
+    let today = time::OffsetDateTime::now_utc().date();
+    wallet
+        .top_up(&fresh("topup-score"), 10_000_000, today)
+        .await
+        .expect("a top-up to settle against");
+
+    // A capped turn pressing most of the freeze (score 40 + ratio ~89% → +17 =
+    // 57 → medium) and a client_cancelled (score 10 → low): the bands the
+    // filter separates. `charged` stays below the freeze so the settle posts.
+    for (kind, request, charged) in [
+        ("capped", "sc-capped", 800_000),
+        ("client_cancelled", "sc-cancelled", 60),
+    ] {
+        let hold_key = fresh(request);
+        wallet
+            .hold(&hold_key, "", 900_000, today)
+            .await
+            .expect("a hold settles");
+        let usage = oxsum_core::UsageRecord::tokens(10, 20).expect("the seed counts");
+        // Both priced lines must be present — a record missing the `output`
+        // line is not a settlement `recent_settlements` lists.
+        let lines = [
+            oxsum_core::BillLine {
+                item: "input".to_owned(),
+                units: usage.input_tokens,
+                price_per_m: 1_000,
+            },
+            oxsum_core::BillLine {
+                item: "output".to_owned(),
+                units: usage.output_tokens,
+                price_per_m: 2_000,
+            },
+        ];
+        let description = oxsum_core::Settlement {
+            request,
+            channel: "chan-y",
+            model: "model-x",
+            price_version: 2,
+            kind: serde_json::from_str::<oxsum_core::SettlementKind>(&format!("\"{kind}\""))
+                .expect("a settlement kind"),
+            usage: &usage,
+            lines: &lines,
+            matched_rule: None,
+            discount_percent: None,
+            charged,
+            freeze: 900_000,
+            upstream_attempts: 1,
+            mandate: None,
+            reason: None,
+        }
+        .description()
+        .expect("the settlement record serializes");
+        wallet
+            .settle(&hold_key, &description, charged, today)
+            .await
+            .expect("the turn settles");
+    }
+
+    let (status, body) = call(&app, "GET", "/api/v1/admin/anomalies", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let rows = body["data"].as_array().unwrap();
+    let capped = rows
+        .iter()
+        .find(|r| r["requestId"] == "sc-capped")
+        .unwrap_or_else(|| panic!("the capped turn is listed: {body:#}"));
+    // 40 base + 800000/900000 ≈ 88% of the +20 cap term → 57.
+    assert_eq!(capped["score"], 57);
+    assert_eq!(capped["severity"], "medium");
+    let cancelled = rows
+        .iter()
+        .find(|r| r["requestId"] == "sc-cancelled")
+        .expect("the cancelled turn is listed");
+    assert_eq!(cancelled["score"], 10);
+    assert_eq!(cancelled["severity"], "low");
+
+    // `?severity=low` keeps only the low band.
+    let (status, body) = call(&app, "GET", "/api/v1/admin/anomalies?severity=low", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let rows = body["data"].as_array().unwrap();
+    assert!(rows.iter().any(|r| r["requestId"] == "sc-cancelled"));
+    assert!(!rows.iter().any(|r| r["requestId"] == "sc-capped"));
+
+    // `?sort=score` puts the highest first.
+    let (status, body) = call(&app, "GET", "/api/v1/admin/anomalies?sort=score", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let rows = body["data"].as_array().unwrap();
+    let scores: Vec<u64> = rows.iter().map(|r| r["score"].as_u64().unwrap()).collect();
+    assert!(
+        scores.windows(2).all(|w| w[0] >= w[1]),
+        "sorted descending: {scores:?}"
+    );
+
+    // A bad band is a validation error, not an empty list.
+    let (status, _) = call(&app, "GET", "/api/v1/admin/anomalies?severity=urgent", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
 /// `GET /api/v1/admin/margin` sums what the platform charged against what
 /// upstream cost it, per channel and model — and separates the turns no
 /// `upstream` block tracked from the ones it priced at zero (issue #112).

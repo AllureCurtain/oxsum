@@ -3,7 +3,10 @@
 //! admin write lands in.
 
 use axum::extract::State;
-use oxsum_core::{AuditEntry, InFlightHold, Reconciliation, SettlementKind, audit_action};
+use oxsum_core::{
+    AnomalyFacts, AuditEntry, InFlightHold, Reconciliation, SettlementKind, anomaly_score,
+    audit_action,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ApiError, ApiQuery};
@@ -81,6 +84,16 @@ const ANOMALOUS: &[SettlementKind] = &[
     SettlementKind::Unpriced,
 ];
 
+/// The anomalies query string: a band to filter to, and which order to walk in.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct AnomaliesQuery {
+    /// `low`/`medium`/`high` keeps the rows of one band; absent lists them all.
+    severity: Option<String>,
+    /// `score` orders by score descending; absent (or `date`) stays newest first.
+    sort: Option<String>,
+}
+
 /// One anomalous turn, as the anomalies endpoint answers it.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -98,17 +111,70 @@ pub(crate) struct AnomalyRes {
     freeze_minor: i64,
     /// The settlement's booking date, `YYYY-MM-DD`.
     booked_on: String,
+    /// The turn's severity 0–100 and the band it falls into (issue #263) —
+    /// derived at read time, never an input to what was charged.
+    score: u8,
+    severity: &'static str,
 }
 
-/// The settled turns that did not price cleanly, across all organizations, newest
-/// first — read back from each ledger's own settlement records, so every row is
-/// exactly what that turn's bill proves.
-pub(crate) async fn anomalies(State(state): State<AppState>) -> ApiResult<Vec<AnomalyRes>> {
+/// The settled turns that did not price cleanly, across all organizations — read
+/// back from each ledger's own settlement records, so every row is exactly what
+/// that turn's bill proves. Each carries a score and severity band derived at
+/// read time (issue #263): the kind's base weighted by the charge ratio, the
+/// upstream-cost divergence, the failover count and the request id's repeat
+/// count — never an input to what was charged or written.
+pub(crate) async fn anomalies(
+    State(state): State<AppState>,
+    ApiQuery(query): ApiQuery<AnomaliesQuery>,
+) -> ApiResult<Vec<AnomalyRes>> {
+    // A severity filter that names no band is a validation error, not an empty list.
+    let severity_filter = match query.severity.as_deref() {
+        None => None,
+        Some(s @ ("low" | "medium" | "high")) => Some(s),
+        Some(other) => {
+            return Err(ApiError::Validation(format!(
+                "severity must be low, medium or high, not {other:?}"
+            )));
+        }
+    };
+    let sort_by_score = match query.sort.as_deref() {
+        None | Some("date") => false,
+        Some("score") => true,
+        Some(other) => {
+            return Err(ApiError::Validation(format!(
+                "sort must be score or date, not {other:?}"
+            )));
+        }
+    };
+
     let mut answer = Vec::new();
     for organization in state.db.organizations().await? {
         let wallet = state.tenants.get(&organization.tenant_id).await?;
+        // The anomalous turns' records first, then one batched read of the usage
+        // rows' cost and repeat counts to score against.
+        let mut records = Vec::new();
         for turn in wallet.recent_settlements(100).await? {
-            if !ANOMALOUS.contains(&turn.record.kind) {
+            if ANOMALOUS.contains(&turn.record.kind) {
+                records.push(turn);
+            }
+        }
+        let request_ids: Vec<String> = records.iter().map(|t| t.record.request.clone()).collect();
+        let inputs = state.db.anomaly_inputs(&request_ids).await?;
+        for turn in records {
+            let (upstream_cost_minor, prior) = inputs
+                .get(&turn.record.request)
+                .copied()
+                .unwrap_or((None, 0));
+            let (score, severity) = anomaly_score(&AnomalyFacts {
+                kind: Some(turn.record.kind),
+                charged_minor: turn.record.charged,
+                freeze_minor: turn.record.freeze,
+                upstream_cost_minor,
+                upstream_attempts: turn.record.upstream_attempts,
+                prior_anomalies: prior,
+            });
+            let band = severity.as_str();
+            if severity_filter.is_some_and(|f| f != band) {
                 continue;
             }
             answer.push(AnomalyRes {
@@ -122,12 +188,22 @@ pub(crate) async fn anomalies(State(state): State<AppState>) -> ApiResult<Vec<An
                 charged_minor: turn.record.charged,
                 freeze_minor: turn.record.freeze,
                 booked_on: turn.booked_on.to_string(),
+                score,
+                severity: band,
             });
         }
     }
-    // Booking dates are days, so within one day the per-ledger order stands; across
-    // days newest first.
-    answer.sort_by(|a, b| b.booked_on.cmp(&a.booked_on));
+    if sort_by_score {
+        answer.sort_by(|a, b| {
+            b.score
+                .cmp(&a.score)
+                .then_with(|| b.booked_on.cmp(&a.booked_on))
+        });
+    } else {
+        // Booking dates are days, so within one day the per-ledger order stands;
+        // across days newest first.
+        answer.sort_by(|a, b| b.booked_on.cmp(&a.booked_on));
+    }
     ok(answer)
 }
 
