@@ -41,6 +41,16 @@ fn offline_app(seed: Option<[u8; 32]>) -> Router {
 
 /// An app over a real database with oxsum's tables migrated.
 async fn online_app(url: &str, seed: Option<[u8; 32]>) -> (Router, PgPool) {
+    online_app_with(url, seed, Vec::new()).await
+}
+
+/// `online_app` plus a pinned witness keyset — what `OXSUM_WITNESS_KEYS` would
+/// have configured (issue #259).
+async fn online_app_with(
+    url: &str,
+    seed: Option<[u8; 32]>,
+    witness_keys: Vec<oxsum_server::WitnessKey>,
+) -> (Router, PgPool) {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
         .connect(url)
@@ -48,7 +58,7 @@ async fn online_app(url: &str, seed: Option<[u8; 32]>) -> (Router, PgPool) {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
-    let mut config = Config::new(Signup::Open, None);
+    let mut config = Config::new(Signup::Open, None).with_witness_keys(witness_keys);
     if let Some(seed) = seed {
         config = config.with_head_signing_seed(seed);
     }
@@ -851,5 +861,118 @@ async fn log_checkpoint() {
             .unwrap()
             .contains("witness.example"),
         "{cosigs:?}"
+    );
+    // No `OXSUM_WITNESS_KEYS` configured: the endpoint serves the cosigned note
+    // but an empty pinset — a verifier holding its own pins can still check.
+    assert_eq!(
+        body["data"]["witnessKeys"].as_array().unwrap().len(),
+        0,
+        "{body}"
+    );
+}
+
+/// `/log/checkpoint` serves the deployment's pinned witness keyset as
+/// `witnessKeys` (issue #259), and the stored cosigned note verifies against
+/// the pinned key end-to-end.
+#[tokio::test]
+async fn log_checkpoint_serves_the_pinned_witness_keys() {
+    use doubleentry::witness::Origin;
+    use doubleentry::witness::signing::SigningKey;
+
+    let Some(url) = url() else {
+        eprintln!("DATABASE_URL not set, skipping");
+        return;
+    };
+
+    // A real witness key pair: the pin is what `OXSUM_WITNESS_KEYS` publishes —
+    // name, hex public key, hex cosignature selector — and the cosigned note it
+    // produces must verify against exactly that pin.
+    let witness_url = "https://witness.example.com";
+    let signing = SigningKey::from_seed(KeyName::new("w1").unwrap(), [7; 32]);
+    let verifying = signing.verifying_key();
+    let pin = oxsum_server::WitnessKey {
+        witness_url: witness_url.to_owned(),
+        key_name: verifying.name().as_str().to_owned(),
+        public_key: hex(&verifying.to_bytes()),
+        key_hash: hex(&verifying.cosignature_key_hash()),
+    };
+
+    let (app, pool) = online_app_with(&url, Some(SEED), vec![pin]).await;
+    let (registration, key) = register(&app, "checkpoint-keys").await;
+    top_up(&app, &key, 10_000).await;
+    let org_id = registration["organization"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Anchor a checkpoint the witness then cosigns: the operator-signed note
+    // plus the witness's own `cosignature/v1` line over the same body.
+    let (_, head_body) = call(&app, "GET", "/api/v1/log/head", None, Some(&key)).await;
+    let note = head_body["data"]["note"].as_str().unwrap().to_owned();
+    let size = head_body["data"]["size"].as_u64().unwrap() as i64;
+    let parsed = SignedTreeHead::parse(&note).unwrap();
+    let body_text = parsed.body();
+    let mut cosigned =
+        SignedTreeHead::new(Origin::new(parsed.origin.as_str()).unwrap(), parsed.head);
+    cosigned.add_signature(signing.cosign_body(&body_text, 1_762_000_000));
+    let cosigned_note = cosigned.to_note();
+
+    sqlx::query(
+        "INSERT INTO oxsum.witness_checkpoints (organization_id, head_size, note) \
+         VALUES ($1::uuid, $2, $3)",
+    )
+    .bind(&org_id)
+    .bind(size)
+    .bind(&note)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO oxsum.witness_cosignatures \
+         (organization_id, witness_url, head_size, note) \
+         VALUES ($1::uuid, $2, $3, $4)",
+    )
+    .bind(&org_id)
+    .bind(witness_url)
+    .bind(size)
+    .bind(&cosigned_note)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (status, body) = call(&app, "GET", "/api/v1/log/checkpoint", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let keys = body["data"]["witnessKeys"].as_array().unwrap();
+    assert_eq!(keys.len(), 1, "{body}");
+    assert_eq!(keys[0]["witnessUrl"], witness_url, "{body}");
+    assert_eq!(keys[0]["keyName"], "w1", "{body}");
+    assert_eq!(
+        keys[0]["keyHash"],
+        hex(&verifying.cosignature_key_hash()),
+        "{body}"
+    );
+
+    // The served pin verifies the served cosignature under the checkpoint's own
+    // origin and head — the check oxsum_verify::verify_witness runs.
+    let verified = oxsum_verify::verify_witness(
+        &oxsum_verify::WitnessNote {
+            witness_url,
+            note: &cosigned_note,
+        },
+        &[oxsum_verify::WitnessPin {
+            witness_url,
+            key_name: keys[0]["keyName"].as_str().unwrap(),
+            public_key: keys[0]["publicKey"].as_str().unwrap(),
+            key_hash: keys[0]["keyHash"].as_str().unwrap(),
+        }],
+        parsed.origin.as_str(),
+        &parsed.head,
+    );
+    assert!(
+        matches!(
+            verified,
+            oxsum_verify::WitnessVerdict::Verified { at: 1_762_000_000 }
+        ),
+        "{verified:?}"
     );
 }

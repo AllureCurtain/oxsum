@@ -117,7 +117,7 @@ pub(crate) async fn log_checkpoint(
         .db
         .witness_checkpoint(principal.organization().id)
         .await?;
-    ok(checkpoint.map(WitnessCheckpointRes::from))
+    ok(checkpoint.map(|c| WitnessCheckpointRes::with_keys(c, state.config.witness_keys())))
 }
 
 /// The anchored checkpoint as the API presents it.
@@ -129,7 +129,26 @@ pub(crate) struct WitnessCheckpointRes {
     note: String,
     /// One entry per witness that cosigned this head.
     cosignatures: Vec<WitnessCosignRes>,
+    /// The deployment's pinned witness keyset (`OXSUM_WITNESS_KEYS`, issue
+    /// #259) — which `cosignature/v1` key a signature line under each URL must
+    /// verify against. A verifier that does not trust the deployment's pinset
+    /// substitutes its own.
+    witness_keys: Vec<WitnessKeyRes>,
     updated_at: String,
+}
+
+/// One pinned witness key as the API presents it (issue #259).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WitnessKeyRes {
+    /// The witness endpoint this pin applies to.
+    witness_url: String,
+    /// The name the signature line carries (`— <keyName> <blob>`).
+    key_name: String,
+    /// The Ed25519 verifying key, hex.
+    public_key: String,
+    /// The C2SP cosignature selector the signature line's key hash must equal.
+    key_hash: String,
 }
 
 #[derive(Serialize)]
@@ -142,8 +161,11 @@ pub(crate) struct WitnessCosignRes {
     first_seen: String,
 }
 
-impl From<oxsum_core::WitnessCheckpoint> for WitnessCheckpointRes {
-    fn from(c: oxsum_core::WitnessCheckpoint) -> Self {
+impl WitnessCheckpointRes {
+    /// Builds the response: the stored checkpoint plus the deployment's pinned
+    /// keyset, which lives on `Config` rather than the row — the pins are a
+    /// deployment claim, not per-organization data.
+    fn with_keys(c: oxsum_core::WitnessCheckpoint, keys: &[crate::config::WitnessKey]) -> Self {
         Self {
             head_size: c.head_size,
             note: c.note,
@@ -154,6 +176,15 @@ impl From<oxsum_core::WitnessCheckpoint> for WitnessCheckpointRes {
                     witness_url: co.witness_url,
                     note: co.note,
                     first_seen: co.first_seen.to_string(),
+                })
+                .collect(),
+            witness_keys: keys
+                .iter()
+                .map(|k| WitnessKeyRes {
+                    witness_url: k.witness_url.clone(),
+                    key_name: k.key_name.clone(),
+                    public_key: k.public_key.clone(),
+                    key_hash: k.key_hash.clone(),
                 })
                 .collect(),
             updated_at: c.updated_at.to_string(),

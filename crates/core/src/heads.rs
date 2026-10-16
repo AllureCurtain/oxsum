@@ -21,7 +21,8 @@ use doubleentry::{ConsistencyProof, Hash, TreeHead};
 use crate::channels::ModelPrice;
 use crate::error::WalletError;
 
-pub use doubleentry::witness::signing::SigningKey as HeadSigningKey;
+pub use doubleentry::witness::KeyName as WitnessKeyName;
+pub use doubleentry::witness::signing::{SigningKey as HeadSigningKey, VerifyingKey};
 
 /// The key name the operator signs tree heads under.
 ///

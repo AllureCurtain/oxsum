@@ -3278,6 +3278,14 @@ export interface paths {
          *     verifies a head by checking the operator's signature (key at
          *     `GET /api/v1/log/key`), the witnesses' signature lines, and — for their
          *     own held head — a consistency proof from `GET /api/v1/log/consistency`.
+         *
+         *     `witnessKeys` (issue #259) carries the deployment's pinned witness
+         *     keyset — the same answer `OXSUM_WITNESS_KEYS` configured: a
+         *     `cosignature/v1` line under the listed `keyName`/`publicKey` is what a
+         *     real third-party witness produced. A verifier that does not trust the
+         *     deployment's pinset may substitute its own — the same "don't trust the
+         *     server for the key" choice the operator's published key already asks
+         *     for.
          */
         get: {
             parameters: {
@@ -3310,6 +3318,17 @@ export interface paths {
                                     note?: string;
                                     /** Format: date-time */
                                     firstSeen?: string;
+                                }[];
+                                /** @description the deployment's pinned witness keyset (OXSUM_WITNESS_KEYS): which `cosignature/v1` key a signature line under each URL must verify against */
+                                witnessKeys?: {
+                                    /** @description the witness endpoint this pin applies to */
+                                    witnessUrl?: string;
+                                    /** @description the name the signature line carries (`— <keyName> <blob>`) */
+                                    keyName?: string;
+                                    /** @description the Ed25519 verifying key, hex */
+                                    publicKey?: string;
+                                    /** @description the C2SP key hash (hex) the signature line's selector must equal */
+                                    keyHash?: string;
                                 }[];
                                 /** Format: date-time */
                                 updatedAt?: string;
