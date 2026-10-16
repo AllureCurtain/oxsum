@@ -171,6 +171,16 @@ Notes:
 - Amounts are in credits with six decimals on every page, the bills and requests pages
   included; the ledger keeps them as integers, and the CSV and JSON exports carry the
   ledger's own integers in minor units (`amountMinor`, signed, where 1 credit = 1,000,000).
+- An organization can also *render* its credits as a fiat unit (issue #257): on the
+  settings page an owner or an admin sets a currency code plus a rate per credit
+  (e.g. `USD` at `0.0014` — about $1.40 per thousand credits) and a decimals count,
+  and every page then shows the converted figure beside the credits
+  (`4.000000 cr ≈ 0.01 USD`), the statement PDF's money cells do the same, and the
+  bills exports gain `displayAmount`/`displayCurrency` columns. Leaving the code
+  empty renders credits alone again. This is a display only — what the ledger books,
+  what a proof covers and what a charge computes are always the credits; the
+  deployment can also name a fallback unit with `OXSUM_DISPLAY_CURRENCY` /
+  `OXSUM_DISPLAY_RATE_PER_CREDIT` for organizations that have not chosen one.
 
 ## Chat in the browser
 

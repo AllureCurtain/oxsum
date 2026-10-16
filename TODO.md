@@ -32,7 +32,7 @@ Post-roadmap backlog, one issue per item. The phase direction is settled in docs
 - **Q4 — OpenTelemetry trace export with GenAI conventions.** OTLP `gen_ai.*` spans (system, model, token counts), optional and env-gated, beside the existing `/metrics` scrape.
 - **Test database isolation (#226, in progress).** Each integration-test suite gets its own scratch PostgreSQL database (`oxsum_test_<slug>_<ts>_<pid>`), created on first use and dropped at suite exit via the shared `oxsum-testkit` helper — the shared dev database no longer accumulates test fixtures across runs.
 
-Deferred to the backlog after these: end-user passthrough signed billing reports, anomaly scoring beyond settlement-kind, multi-currency display, signed spend mandates and x402 rails (payment/agent surface, out of scope today), prepaid/postpaid polish.
+Deferred to the backlog after these: end-user passthrough signed billing reports and x402 rails (payment/agent surface, out of scope today), prepaid/postpaid polish. Shipped from the earlier backlog since: multi-currency display (issue #257 — the org declares a fiat rendering through `PATCH /api/v1/org`, every page and export carries the converted figure beside the ledger's credits, and the conversion is presentational only), signed spend mandates (issue #262), anomaly scoring beyond settlement-kind (issue #263).
 
 The original phases below are done — A, B and C closed, most recently C-11 (the chat page, issue #39).
 
