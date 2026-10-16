@@ -445,7 +445,11 @@ Paying a statement needs no dedicated call: any top-up or redemption repays the
 credit line first, and repayments always land on the oldest open statement — so a
 `POST /api/v1/topups` while a statement is outstanding settles it. `paymentStatus`
 reads `pending` until the due date has passed (then `overdue`), `suspended` while
-the platform holds the bill, and `paid` once repayments cover it.
+the platform holds the bill, and `paid` once repayments cover it. When the
+platform has opted the organization into dunning, a statement unpaid past
+`dueDate` plus the configured grace also suspends the organization's *spend* —
+new holds refuse `FORBIDDEN` until the line is repaid and the daily pass
+reinstates it — so paying an overdue bill is what restores the key's calls.
 
 ## Webhooks
 
