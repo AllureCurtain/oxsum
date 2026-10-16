@@ -1211,6 +1211,53 @@ impl Db {
         }
         Ok(margin)
     }
+
+    /// The upstream cost and the anomalous-row count for each request id, one
+    /// map for the anomalies endpoint to score against (issue #263).
+    ///
+    /// A request id repeats when the same `x-oxsum-request-id` settles more than
+    /// one anomalous row — the repeat-offender signal. `prior` counts every
+    /// anomalous row the id carries, so the first anomalous settle reads 1 and
+    /// each further one reads higher; the scorer turns it into a capped term.
+    /// `upstream_cost_minor` is `None` where the row never tracked it (an
+    /// untracked price, a swept hold, history).
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn anomaly_inputs(
+        &self,
+        request_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, (Option<i64>, i64)>, WalletError> {
+        if request_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        // Anomalous kinds, the same set the admin page reviews.
+        let rows = sqlx::query(
+            "SELECT request_id, \
+                    max(upstream_cost_minor) AS upstream_cost_minor, \
+                    count(*) FILTER (WHERE kind = ANY($2)) AS prior \
+             FROM oxsum.usage_records \
+             WHERE request_id = ANY($1) \
+             GROUP BY request_id",
+        )
+        .bind(request_ids)
+        .bind(SettlementKind::ANOMALOUS_STRS)
+        .fetch_all(self.pool())
+        .await?;
+        let mut map = std::collections::HashMap::with_capacity(rows.len());
+        for row in &rows {
+            use sqlx::Row;
+            map.insert(
+                row.try_get::<String, _>("request_id")?,
+                (
+                    row.try_get::<Option<i64>, _>("upstream_cost_minor")?,
+                    row.try_get::<i64, _>("prior")?,
+                ),
+            );
+        }
+        Ok(map)
+    }
 }
 
 /// One daily rollup row of `oxsum.usage_daily` — what the usage dashboard sums

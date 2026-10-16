@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.62.0
+  version: 0.63.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -2748,9 +2748,22 @@ paths:
         `swept` or `unpriced`, newest first — the turns where usage was never reported,
         the caller left mid-stream, the upstream price ran over the freeze, the sweeper
         had to release a hold nobody settled, or the usage named a dimension the price
-        book cannot bill. The records are the settlement descriptions the ledgers
-        themselves hold, so every row is exactly what its bill proves; a hand-driven
-        settlement carries no record and is not listed.
+        book cannot bill. Each row carries `score` (0–100) and `severity` (`low`,
+        `medium`, `high`) computed at read time from facts the ledger already stores —
+        the kind's base weighted by the charge ratio, the upstream-cost divergence,
+        failover attempts and the request id's repeat-offender count (issue #263).
+        `?severity=` filters to one band and `?sort=score` orders by score descending;
+        the default stays newest first. Scoring is read-only — it never changes what
+        a turn charged or wrote.
+      parameters:
+        - name: severity
+          in: query
+          schema: { type: string, enum: [low, medium, high] }
+          description: filter to one severity band
+        - name: sort
+          in: query
+          schema: { type: string, enum: [score, date] }
+          description: "`score` orders by score descending; `date` (default) is newest first"
       security:
         - adminToken: []
       responses:
@@ -4874,7 +4887,7 @@ components:
           description: the key the request carried, when it did — the write it names replays rather than doubles
     AdminAnomaly:
       type: object
-      required: [organization, requestId, model, channel, priceVersion, kind, upstreamAttempts, chargedMinor, freezeMinor, bookedOn]
+      required: [organization, requestId, model, channel, priceVersion, kind, upstreamAttempts, chargedMinor, freezeMinor, bookedOn, score, severity]
       properties:
         organization: { type: string, description: the organization whose ledger recorded the turn }
         requestId: { type: string }
@@ -4890,6 +4903,12 @@ components:
         chargedMinor: { type: integer, format: int64, minimum: 0, description: what the settlement charged, in minor units }
         freezeMinor: { type: integer, format: int64, minimum: 1, description: what had been frozen, in minor units }
         bookedOn: { type: string, format: date, description: the settlement's booking date }
+        score:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: "the anomaly's severity 0–100, derived at read time from the kind's base weighted by the charge ratio, upstream-cost divergence, failover attempts and the request's repeat-offender count (issue #263); read-only — never an input to what is charged"
+        severity: { type: string, enum: [low, medium, high], description: "the band `score` falls into — low < 40, medium < 70, high ≥ 70" }
     AdminMargin:
       type: object
       required: [channel, model, turns, chargedMinor, upstreamCostMinor, marginMinor, untrackedTurns]
