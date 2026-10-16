@@ -25,6 +25,55 @@ pub(crate) async fn organization(
     ok(principal.organization().clone())
 }
 
+/// The body of `PATCH /api/v1/org`: the display unit the organization renders
+/// in (issue #257), or null to render credits alone.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct UpdateOrgDisplayReq {
+    /// The fiat unit — `code`, `ratePerCredit`, `decimals` — or `null` to
+    /// clear it. Presentational only: no ledger write and no money moves.
+    display_currency: Option<oxsum_core::DisplayCurrency>,
+}
+
+/// Sets the organization's display currency (issue #257). A person-only write:
+/// the session must sit in the owner or admin role — a member's session and an
+/// API key are refused, the same rule membership management applies, because
+/// the display is the organization's own choice and a credential that is not a
+/// person cannot speak for it.
+pub(crate) async fn update_display(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    ApiJson(request): ApiJson<UpdateOrgDisplayReq>,
+) -> ApiResult<Organization> {
+    let actor = principal.membership_actor()?;
+    // Owner or admin only — the display is the organization's own setting, so
+    // the write borrows the membership rules' first check rather than adding a
+    // second role vocabulary for it.
+    match actor.role {
+        Role::Owner | Role::Admin => {}
+        Role::Member => {
+            return Err(oxsum_core::WalletError::Forbidden(
+                "only an owner or an admin may change the organization's display currency".into(),
+            )
+            .into());
+        }
+    }
+    state
+        .db
+        .set_display_currency(principal.organization().id, request.display_currency)
+        .await?;
+    // Read back what stands: the answer is the stored row's rendering, not the
+    // request's — a write that parsed differently in storage cannot drift the
+    // two apart.
+    let mut organization = principal.organization().clone();
+    organization.display_currency = state
+        .db
+        .organization_by_id(principal.organization().id)
+        .await?
+        .display_currency;
+    ok(organization)
+}
+
 /// Who may act on memberships of *several* organizations: a person, never a key.
 ///
 /// Listing, creating and switching between organizations are all a person's actions —

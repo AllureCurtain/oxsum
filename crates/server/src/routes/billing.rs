@@ -655,11 +655,13 @@ pub(crate) async fn statement_pdf(
     }
     let lines = state.db.statement_lines(statement_id).await?;
     let url = verify_url(&state);
+    let display = state.config.display_for(principal.organization());
     let bytes = oxsum_core::render_statement_pdf(
         &statement,
         &principal.organization().name,
         &lines,
         Some(&url),
+        display.as_ref(),
     )?;
     let filename = format!(
         "statement-{}-{}.pdf",
