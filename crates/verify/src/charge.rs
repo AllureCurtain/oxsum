@@ -506,14 +506,14 @@ mod tests {
     /// The V5 turn at v7 under a spend mandate (issue #262): `mandate` names the
     /// delegation `{id, hash}` and the arithmetic is v5's — 250 under the 400
     /// freeze.
-    const V7: &str = r#"{"v":7,"request":"req-abc","channel":"backup","model":"deepseek-chat","priceVersion":2,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100,"cachedTokens":96,"reasoningTokens":20},"lines":[["input",20,1000000],["cache_read",96,100000],["output",80,2000000],["reasoning",20,3000000]],"upstreamAttempts":1,"mandate":{"id":"1ec7a2c2-3a13-4a2f-9b74-0f9d2e6a1b3c","hash":"a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1"},"charged":250,"freeze":400}"#;
+    const V7: &str = r#"{"v":7,"request":"req-abc","channel":"backup","model":"deepseek-chat","priceVersion":2,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100,"cachedTokens":96,"reasoningTokens":20},"lines":[["input",20,1000000],["cache_read",96,100000],["output",80,2000000],["reasoning",20,3000000]],"upstreamAttempts":1,"mandate":{"id":"1ec7a2c2-3a13-4a2f-9b74-0f9d2e6a1b3c","hash":"a1b2c3d4e5f60718293a4b5c6d7e8f901234567890abcdef0123456789abcdef"},"charged":250,"freeze":400}"#;
 
     #[test]
     fn a_genuine_v7_record_recomputes() {
         assert_eq!(verify_charge(V7), ChargeCheck::Recomputed);
         // A turn no mandate was presented for is still an honest v7 write.
         let plain = V7.replacen(
-            r#""mandate":{"id":"1ec7a2c2-3a13-4a2f-9b74-0f9d2e6a1b3c","hash":"a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1"},"#,
+            r#""mandate":{"id":"1ec7a2c2-3a13-4a2f-9b74-0f9d2e6a1b3c","hash":"a1b2c3d4e5f60718293a4b5c6d7e8f901234567890abcdef0123456789abcdef"},"#,
             "",
             1,
         );
@@ -525,14 +525,14 @@ mod tests {
         // A `mandate` that is not `{id: uuid, hash: 64-hex}` is not an honest
         // write — the wrong id, a short hash, an uppercase hex digit.
         for field in [
-            r#""mandate":{"id":"not-a-uuid","hash":"a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1"},"#,
+            r#""mandate":{"id":"not-a-uuid","hash":"a1b2c3d4e5f60718293a4b5c6d7e8f901234567890abcdef0123456789abcdef"},"#,
             r#""mandate":{"id":"1ec7a2c2-3a13-4a2f-9b74-0f9d2e6a1b3c","hash":"abc"},"#,
-            r#""mandate":{"id":"1ec7a2c2-3a13-4a2f-9b74-0f9d2e6a1b3c","hash":"A1B2C3D4E5F60718293A4B5C6D7E8F90A1B2C3D4E5F60718293A4B5C6D7E8F90A1"},"#,
+            r#""mandate":{"id":"1ec7a2c2-3a13-4a2f-9b74-0f9d2e6a1b3c","hash":"A1B2C3D4E5F60718293A4B5C6D7E8F901234567890ABCDEF0123456789ABCDEF"},"#,
             r#""mandate":{"id":"1ec7a2c2-3a13-4a2f-9b74-0f9d2e6a1b3c"},"#,
             r#""mandate":null,"#,
         ] {
             let bad = V7.replacen(
-                r#""mandate":{"id":"1ec7a2c2-3a13-4a2f-9b74-0f9d2e6a1b3c","hash":"a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1"},"#,
+                r#""mandate":{"id":"1ec7a2c2-3a13-4a2f-9b74-0f9d2e6a1b3c","hash":"a1b2c3d4e5f60718293a4b5c6d7e8f901234567890abcdef0123456789abcdef"},"#,
                 field,
                 1,
             );
