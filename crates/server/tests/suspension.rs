@@ -450,3 +450,52 @@ async fn org_suspended_is_a_subscribable_event() {
     assert_eq!(deliveries.len(), 1);
     assert_eq!(deliveries[0]["eventType"], "org.suspended");
 }
+
+/// `dunningGraceDays` rides the same PATCH the other billing terms use (issue
+/// #258): set, echoed, and cleared by an explicit `null` — the double option
+/// that distinguishes "leave alone" from "switch the automation off".
+#[tokio::test]
+async fn dunning_grace_round_trips_through_the_admin_patch() {
+    let (app, pool) = app_or_skip!();
+    let account = register(&app, "grace").await;
+    let org = account.organization_id;
+
+    let res = patch_organization(
+        &app,
+        &org,
+        json!({"idempotencyKey": "g-1", "dunningGraceDays": 7}),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert_eq!(res.body["data"]["dunningGraceDays"], 7);
+    assert!(res.body["data"]["dunningSuspendedAt"].is_null());
+    let stored = oxsum_core::Db::from_pool(pool.clone())
+        .organization_by_id(org.parse().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(stored.dunning_grace_days, Some(7));
+
+    // An explicit null switches the automation off.
+    let res = patch_organization(
+        &app,
+        &org,
+        json!({"idempotencyKey": "g-2", "dunningGraceDays": null}),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert!(res.body["data"]["dunningGraceDays"].is_null());
+    let stored = oxsum_core::Db::from_pool(pool.clone())
+        .organization_by_id(org.parse().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(stored.dunning_grace_days, None);
+
+    // A negative grace is a validation error.
+    let res = patch_organization(
+        &app,
+        &org,
+        json!({"idempotencyKey": "g-3", "dunningGraceDays": -1}),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::BAD_REQUEST, "{}", res.body);
+}
