@@ -1,10 +1,12 @@
 import { useMemo, useState } from "react";
 import type { ApiKey } from "../api/hooks";
-import { useBudget, useCreateKey, useKeys, usePatchKey, useRevokeKey } from "../api/hooks";
+import type { DisplayCurrency } from "../components/ui";
+import { useBudget, useCreateKey, useDisplay, useKeys, usePatchKey, useRevokeKey } from "../api/hooks";
 import {
   Banner,
   Button,
   Card,
+  Cr,
   EmptyRows,
   Field,
   NumberInput,
@@ -12,7 +14,6 @@ import {
   Select,
   TableShell,
   TextInput,
-  credits,
 } from "../components/ui";
 import { ApiError } from "../api/client";
 import { CopyButton } from "../components/cult/copy-button";
@@ -22,6 +23,7 @@ const DURATIONS = ["daily", "weekly", "monthly"] as const;
 export function Keys() {
   const keys = useKeys();
   const budget = useBudget();
+  const display = useDisplay();
   const create = useCreateKey();
   const revoke = useRevokeKey();
   const [name, setName] = useState("");
@@ -146,6 +148,7 @@ export function Keys() {
               key={key.id}
               apiKey={key}
               committed={committedByKey.get(key.id)}
+              display={display}
               editing={editing === key.id}
               onEdit={() => setEditing(editing === key.id ? null : key.id)}
               onRevoke={() => revoke.mutate(key.id)}
@@ -161,6 +164,7 @@ export function Keys() {
 function KeyRow(props: {
   apiKey: ApiKey;
   committed?: { committedMinor: number; consumedPercent?: number | null; windowStart?: string | null };
+  display?: DisplayCurrency | null;
   editing: boolean;
   onEdit: () => void;
   onRevoke: () => void;
@@ -187,7 +191,7 @@ function KeyRow(props: {
           ) : (
             <>
               {props.committed?.consumedPercent != null ? `${props.committed.consumedPercent}% of ` : ""}
-              {credits(key.spendLimitMinor)} cr
+              <Cr minor={key.spendLimitMinor} currency={props.display} />
               {key.budgetDuration ? ` / ${key.budgetDuration}` : ""}
               {props.committed?.windowStart ? (
                 <span className="text-muted"> · since {props.committed.windowStart}</span>

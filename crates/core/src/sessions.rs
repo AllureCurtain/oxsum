@@ -245,7 +245,8 @@ impl Db {
             email_verified: row.try_get("email_verified")?,
         };
         let row = sqlx::query(
-            "SELECT m.role, o.organization_id, o.name, o.tenant_id, o.kind, o.created_at \
+            "SELECT m.role, o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, \
+                    o.display_currency, o.display_rate_per_credit \
              FROM oxsum.memberships m JOIN oxsum.organizations o USING (organization_id) \
              WHERE m.user_id = $1 ORDER BY m.created_at, m.organization_id LIMIT 1",
         )
@@ -303,7 +304,7 @@ impl Db {
             "SELECT s.session_id, s.created_at, s.expires_at, s.last_used_at, \
                     u.user_id, u.email, (u.email_verified_at IS NOT NULL) AS email_verified, \
                     o.organization_id, o.name, o.tenant_id, o.kind, o.created_at AS org_created_at, \
-                    m.role \
+                    o.display_currency, o.display_rate_per_credit, m.role \
              FROM oxsum.sessions s \
              JOIN oxsum.memberships m \
                ON m.user_id = s.user_id AND m.organization_id = s.organization_id \
@@ -325,6 +326,10 @@ impl Db {
             tenant_id: row.try_get("tenant_id")?,
             kind: orgs::Kind::parse(&row.try_get::<String, _>("kind")?)?,
             created_at: row.try_get("org_created_at")?,
+            display_currency: orgs::display_currency_pair(
+                row.try_get("display_currency")?,
+                row.try_get("display_rate_per_credit")?,
+            )?,
         };
         Ok(Some(SessionPrincipal {
             session: Session {
@@ -377,7 +382,10 @@ impl Db {
         organization_id: Uuid,
     ) -> Result<(Organization, Role), WalletError> {
         let row = sqlx::query(
-            "SELECT m.role, o.organization_id, o.name, o.tenant_id, o.kind, o.created_at              FROM oxsum.memberships m JOIN oxsum.organizations o USING (organization_id)              WHERE m.user_id = $1 AND m.organization_id = $2",
+            "SELECT m.role, o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, \
+                    o.display_currency, o.display_rate_per_credit \
+             FROM oxsum.memberships m JOIN oxsum.organizations o USING (organization_id) \
+             WHERE m.user_id = $1 AND m.organization_id = $2",
         )
         .bind(user_id)
         .bind(organization_id)

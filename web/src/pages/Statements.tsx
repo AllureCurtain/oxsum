@@ -1,9 +1,10 @@
 import { Link, useParams } from "react-router-dom";
-import { useStatement, useStatements } from "../api/hooks";
-import { Card, EmptyRows, PageState, StatusBadge, TableShell, credits } from "../components/ui";
+import { useDisplay, useStatement, useStatements } from "../api/hooks";
+import { Card, Cr, EmptyRows, PageState, StatusBadge, TableShell } from "../components/ui";
 
 export function Statements() {
   const statements = useStatements();
+  const display = useDisplay();
   return (
     <div className="flex flex-col gap-4">
       <h1 className="text-2xl font-bold">Statements</h1>
@@ -22,9 +23,9 @@ export function Statements() {
               <td>
                 <StatusBadge status={s.paymentStatus} />
               </td>
-              <td className="mono">{credits(s.totalMinor)} cr</td>
-              <td className="mono">{credits(s.creditDrawnMinor)} cr</td>
-              <td className="mono">{credits(s.outstandingMinor)} cr</td>
+              <td className="mono"><Cr minor={s.totalMinor} currency={display} /></td>
+              <td className="mono"><Cr minor={s.creditDrawnMinor} currency={display} /></td>
+              <td className="mono"><Cr minor={s.outstandingMinor} currency={display} /></td>
               <td>{s.dueDate ?? "—"}</td>
               <td>
                 <Link to={`/statements/${s.id}`} className="text-primary">
@@ -45,6 +46,7 @@ export function Statements() {
 export function StatementDetail() {
   const { id } = useParams<{ id: string }>();
   const detail = useStatement(id ?? "");
+  const display = useDisplay();
   const s = detail.data?.statement;
 
   return (
@@ -71,19 +73,19 @@ export function StatementDetail() {
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
             <div className="rounded-md border border-line bg-surface p-4">
               <p className="text-xs text-muted">Total</p>
-              <p className="mt-1 text-xl font-semibold mono">{credits(s.totalMinor)} cr</p>
+              <p className="mt-1 text-xl font-semibold mono"><Cr minor={s.totalMinor} currency={display} /></p>
             </div>
             <div className="rounded-md border border-line bg-surface p-4">
               <p className="text-xs text-muted">Credit drawn</p>
-              <p className="mt-1 text-xl font-semibold mono">{credits(s.creditDrawnMinor)} cr</p>
+              <p className="mt-1 text-xl font-semibold mono"><Cr minor={s.creditDrawnMinor} currency={display} /></p>
             </div>
             <div className="rounded-md border border-line bg-surface p-4">
               <p className="text-xs text-muted">Paid</p>
-              <p className="mt-1 text-xl font-semibold mono">{credits(s.paidMinor)} cr</p>
+              <p className="mt-1 text-xl font-semibold mono"><Cr minor={s.paidMinor} currency={display} /></p>
             </div>
             <div className="rounded-md border border-line bg-surface p-4">
               <p className="text-xs text-muted">Outstanding</p>
-              <p className="mt-1 text-xl font-semibold mono">{credits(s.outstandingMinor)} cr</p>
+              <p className="mt-1 text-xl font-semibold mono"><Cr minor={s.outstandingMinor} currency={display} /></p>
             </div>
           </div>
 
@@ -111,7 +113,7 @@ export function StatementDetail() {
                   <td className="mono">{line.outputTokens}</td>
                   <td className="mono">{line.cachedTokens}</td>
                   <td className="mono">{line.reasoningTokens}</td>
-                  <td className="mono">{credits(line.amountMinor)} cr</td>
+                  <td className="mono"><Cr minor={line.amountMinor} currency={display} /></td>
                 </tr>
               ))}
               {(detail.data?.lines.length ?? 0) === 0 ? (

@@ -41,6 +41,9 @@ pub(crate) struct OrganizationRes {
     /// When it was suspended; `None` while its spend runs normally.
     #[serde(with = "time::serde::rfc3339::option")]
     suspended_at: Option<OffsetDateTime>,
+    /// The fiat unit the organization renders in (issue #257); `None` renders
+    /// credits alone.
+    display_currency: Option<oxsum_core::DisplayCurrency>,
 }
 
 /// The organizations query string: the page size, and where the walk resumes — an
@@ -97,6 +100,7 @@ pub(crate) async fn organizations(
             tier: organization.tier.clone(),
             suspended: organization.suspended_at.is_some(),
             suspended_at: organization.suspended_at,
+            display_currency: organization.display_currency.clone(),
         });
     }
     ok(OrganizationsPageRes {
@@ -172,12 +176,12 @@ pub(crate) async fn adjust_organization(
 
 /// The body of `PATCH …/organizations/{id}`: the billing terms to set — the credit
 /// line absolute, the payment-terms day count, the tier assignment, the dunning
-/// grace — and the idempotency key that makes a retried credit-limit change the
-/// same entry.
+/// grace, the display unit — and the idempotency key that makes a retried
+/// credit-limit change the same entry.
 ///
-/// `tier` and `dunning_grace_days` are double options: absent leaves the
-/// assignment alone, an explicit `null` clears it (no tier, dunning automation
-/// off), a value sets it.
+/// `tier`, `dunning_grace_days` and `display_currency` are double options:
+/// absent leaves the assignment alone, an explicit `null` clears it (no tier,
+/// dunning automation off, credits-only display), a value sets it.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct UpdateOrganizationReq {
@@ -193,7 +197,25 @@ pub(crate) struct UpdateOrganizationReq {
     /// automation.
     #[serde(default, deserialize_with = "double_option")]
     dunning_grace_days: Option<Option<i32>>,
+    /// The fiat unit the organization renders in (issue #257); `null` renders
+    /// credits alone. Presentational only — never an input to a charge.
+    #[serde(default, deserialize_with = "double_option")]
+    display_currency: Option<Option<DisplayCurrencyReq>>,
     idempotency_key: String,
+}
+
+/// The `displayCurrency` body: the code, the rate one credit converts at, and
+/// the decimals the render rounds to.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct DisplayCurrencyReq {
+    code: String,
+    /// How much of the unit one credit displays as, as a decimal literal —
+    /// `"0.0014"`. A string, not a float, because the column stores text and no
+    /// float ever touches money.
+    rate_per_credit: String,
+    /// Decimal places the unit renders with — 2 for most, 0 for JPY-shaped.
+    decimals: u8,
 }
 
 /// The billing terms as they stand after the write, as the endpoint answers it.
@@ -220,6 +242,9 @@ pub(crate) struct BillingTermsRes {
     /// standing suspension is the operator's or none.
     #[serde(with = "time::serde::rfc3339::option")]
     dunning_suspended_at: Option<OffsetDateTime>,
+    /// The fiat unit the organization renders in (issue #257); `None` renders
+    /// credits alone.
+    display_currency: Option<oxsum_core::DisplayCurrency>,
     /// The organization's spendable balance after the change, own funds plus
     /// undrawn credit.
     available_minor: i64,
@@ -245,9 +270,10 @@ pub(crate) async fn update_organization(
         && request.tier.is_none()
         && request.suspended.is_none()
         && request.dunning_grace_days.is_none()
+        && request.display_currency.is_none()
     {
         return Err(ApiError::Validation(
-            "at least one of creditLimitMinor, paymentTermsDays, tier, suspended and dunningGraceDays must be present"
+            "at least one of creditLimitMinor, paymentTermsDays, tier, suspended, dunningGraceDays and displayCurrency must be present"
                 .into(),
         ));
     }
@@ -269,12 +295,35 @@ pub(crate) async fn update_organization(
     if let Some(grace) = request.dunning_grace_days {
         detail.insert("dunningGraceDays".into(), serde_json::json!(grace));
     }
+    if let Some(display) = &request.display_currency {
+        detail.insert(
+            "displayCurrency".into(),
+            serde_json::json!(display.as_ref().map(|d| {
+                serde_json::json!({
+                    "code": d.code,
+                    "ratePerCredit": d.rate_per_credit,
+                    "decimals": d.decimals,
+                })
+            })),
+        );
+    }
     let organization = state.db.organization_by_id(organization_id).await?;
     if let Some(days) = request.payment_terms_days {
         state.db.set_payment_terms(organization_id, days).await?;
     }
     if let Some(grace) = request.dunning_grace_days {
         state.db.set_dunning_grace(organization_id, grace).await?;
+    }
+    if let Some(display) = request.display_currency {
+        let display = display.map(|d| oxsum_core::DisplayCurrency {
+            code: d.code,
+            rate_per_credit: d.rate_per_credit,
+            decimals: d.decimals,
+        });
+        state
+            .db
+            .set_display_currency(organization_id, display)
+            .await?;
     }
     if let Some(tier) = request.tier {
         state
@@ -320,6 +369,7 @@ pub(crate) async fn update_organization(
         suspended: updated.suspended_at.is_some(),
         dunning_grace_days: updated.dunning_grace_days,
         dunning_suspended_at: updated.dunning_suspended_at,
+        display_currency: updated.display_currency,
         available_minor: wallet.available().await?,
     })
 }

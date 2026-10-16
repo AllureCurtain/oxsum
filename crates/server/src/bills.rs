@@ -111,13 +111,25 @@ async fn rows(state: &AppState, headers: &HeaderMap) -> Result<Vec<BillView>, Re
             tracing::error!(%error, "the keys could not be read");
             Refusal::internal("the keys could not be read")
         })?;
+    // The organization's display unit (issue #257): the export renders the
+    // converted figure beside the ledger's own minor units, and a deployment
+    // default stands in when the organization names none. The conversion is a
+    // column in the file, never a change to what the ledger holds.
+    let display = state.config.display_for(&principal.organization);
     Ok(transactions
         .iter()
         .filter(|tx| match tx.key_id.as_deref() {
             Some(id) => keys.iter().any(|key| key.id.as_simple().to_string() == id),
             None => true,
         })
-        .map(BillView::from)
+        .map(|tx| {
+            let mut view = BillView::from(tx);
+            if let Some(display) = &display {
+                view.display_amount = Some(display.render(tx.amount_minor));
+                view.display_currency = Some(display.currency().code.clone());
+            }
+            view
+        })
         .collect())
 }
 

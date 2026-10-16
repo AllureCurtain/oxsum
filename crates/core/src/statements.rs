@@ -301,7 +301,9 @@ impl Db {
         let rows = sqlx::query(
             "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, \
              o.payment_terms_days, o.tier, o.suspended_at, \
-             o.dunning_grace_days, o.dunning_suspended_at, count(m.user_id) AS members \
+             o.dunning_grace_days, o.dunning_suspended_at, \
+             o.display_currency, o.display_rate_per_credit, \
+             count(m.user_id) AS members \
              FROM oxsum.organizations o \
              LEFT JOIN oxsum.memberships m USING (organization_id) \
              WHERE EXISTS (SELECT 1 FROM oxsum.usage_records u \

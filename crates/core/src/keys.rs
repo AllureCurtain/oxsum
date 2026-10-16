@@ -429,6 +429,7 @@ impl Db {
         let hash = hash_secret(secret);
         let row = sqlx::query(
             "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, \
+                    o.display_currency, o.display_rate_per_credit, \
                     k.key_id, k.spend_limit_minor, k.requests_per_minute, \
                     k.tokens_per_minute, k.tokens_per_minute_scopes \
              FROM oxsum.api_keys k JOIN oxsum.organizations o USING (organization_id) \

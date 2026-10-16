@@ -237,8 +237,18 @@ pub(crate) async fn statement_pdf(
         Some(base) => format!("{}/verify", base.trim_end_matches('/')),
         None => "/verify".to_owned(),
     };
-    let bytes =
-        oxsum_core::render_statement_pdf(&statement, &organization.name, &lines, Some(&url))?;
+    // The admin export renders the organization's own display unit — the same
+    // document its holder reads, not the deployment's default.
+    let display = state
+        .config
+        .display_for_pair(organization.display_currency.as_ref());
+    let bytes = oxsum_core::render_statement_pdf(
+        &statement,
+        &organization.name,
+        &lines,
+        Some(&url),
+        display.as_ref(),
+    )?;
     let filename = format!(
         "statement-{}-{}.pdf",
         statement.period,

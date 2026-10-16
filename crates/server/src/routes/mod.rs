@@ -50,7 +50,7 @@ pub fn router(state: AppState) -> Router {
     // credentials. The credential is an API key or a session cookie; both resolve to a
     // principal.
     let authenticated = Router::new()
-        .route("/org", get(org::organization))
+        .route("/org", get(org::organization).patch(org::update_display))
         .route(
             "/orgs",
             get(org::my_organizations).post(org::create_organization),

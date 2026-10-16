@@ -4,6 +4,7 @@ import {
   useBalance,
   useBudget,
   useCreateHold,
+  useDisplay,
   useEntries,
   useHolds,
   useSession,
@@ -14,6 +15,7 @@ import { HaloButton } from "../components/cult/halo-button";
 import { HaloInput } from "../components/cult/halo-input";
 import {
   AnimatedKpi,
+  Cr,
   Banner,
   Card,
   EmptyRows,
@@ -22,6 +24,7 @@ import {
   PageState,
   TableShell,
   credits,
+  displayAmount,
 } from "../components/ui";
 
 export function Overview() {
@@ -30,6 +33,7 @@ export function Overview() {
   const budget = useBudget();
   const holds = useHolds();
   const entries = useEntries(10);
+  const display = useDisplay();
 
   return (
     <div className="flex flex-col gap-6">
@@ -50,13 +54,22 @@ export function Overview() {
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {balance.data ? (
           <>
-            <AnimatedKpi label="Available" minor={balance.data.availableMinor} />
+            <AnimatedKpi
+              label="Available"
+              minor={balance.data.availableMinor}
+              currency={display}
+            />
             <AnimatedKpi
               label="Frozen"
               minor={balance.data.reservedMinor}
               hint="what in-flight holds reserve"
+              currency={display}
             />
-            <AnimatedKpi label="Spent this month" minor={balance.data.spentThisMonthMinor} />
+            <AnimatedKpi
+              label="Spent this month"
+              minor={balance.data.spentThisMonthMinor}
+              currency={display}
+            />
           </>
         ) : (
           <>
@@ -73,6 +86,11 @@ export function Overview() {
               : "…"}{" "}
             <span className="text-sm font-normal text-muted">cr</span>
           </p>
+          {balance.data && display ? (
+            <p className="mt-0.5 text-xs text-muted">
+              ≈ {displayAmount(balance.data.creditUsedMinor, display)} {display.code} used
+            </p>
+          ) : null}
           {budget.data?.organization.consumedPercent != null ? (
             <div className="mt-2 flex flex-col gap-1">
               <HaloProgress
@@ -94,7 +112,8 @@ export function Overview() {
           <div className="flex flex-col gap-2">
             <p className="text-sm">
               {budget.data.member.consumedPercent ?? 0}% of{" "}
-              {credits(budget.data.member.budgetLimitMinor)} cr committed this window.
+              <Cr minor={budget.data.member.budgetLimitMinor} currency={display} /> committed this
+              window.
             </p>
             <HaloProgress
               value={Math.min(100, budget.data.member.consumedPercent ?? 0)}
@@ -115,7 +134,9 @@ export function Overview() {
                     {k.name ?? <code className="mono">{k.prefix}</code>}
                   </td>
                   <td>{k.budgetDuration ?? "cumulative"}</td>
-                  <td className="mono">{credits(k.committedMinor)} cr</td>
+                  <td className="mono">
+                    <Cr minor={k.committedMinor} currency={display} />
+                  </td>
                   <td>{k.consumedPercent != null ? `${k.consumedPercent}%` : "—"}</td>
                 </tr>
               ))}
@@ -140,7 +161,9 @@ export function Overview() {
                 <td className="mono">{hold.requestId}</td>
                 <td>{hold.model}</td>
                 <td className="mono">{hold.keyPrefix ?? "—"}</td>
-                <td className="mono">{credits(hold.freezeMinor)} cr</td>
+                <td className="mono">
+                  <Cr minor={hold.freezeMinor} currency={display} />
+                </td>
               </tr>
             ))}
             {(holds.data?.holds.length ?? 0) === 0 ? (

@@ -1158,7 +1158,49 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Set the organization's display currency
+         * @description Sets the fiat unit the organization renders its balances, bills and
+         *     statements in (issue #257): `displayCurrency` is the code plus the rate
+         *     one credit converts at plus the decimals the render rounds to, and an
+         *     explicit `null` clears the display back to credits alone. The write is
+         *     presentational only — it touches no ledger and moves no money, so a
+         *     settled bill's verified charge can never depend on it.
+         *
+         *     A session in the owner or admin role writes it; a member's session and
+         *     an API key are refused — the display is the organization's own setting,
+         *     and a credential that is not a person cannot speak for it.
+         */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["UpdateOrgDisplayRequest"];
+                };
+            };
+            responses: {
+                /** @description The organization as it now reads */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["Organization"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
         trace?: never;
     };
     "/api/v1/org/keys": {
@@ -5714,6 +5756,22 @@ export interface components {
             kind: "personal" | "team";
             /** Format: date-time */
             createdAt: string;
+            /** @description the fiat unit this organization displays its credit figures in — presentational only, set through `PATCH /api/v1/admin/organizations/{organizationId}`; null renders credits alone */
+            displayCurrency: components["schemas"]["DisplayCurrency"];
+        };
+        /**
+         * @description How one credit renders as a fiat amount (issue #257). Purely presentational:
+         *     ledger entries, settlement descriptions and proofs keep integer minor units of
+         *     credit, and the conversion never reaches a charge — so a display-currency
+         *     change can never alter a settled bill's verified charge.
+         */
+        DisplayCurrency: {
+            /** @description the ISO 4217 unit — USD, EUR, CNY; informational: the conversion needs only the rate, so an unrecognized-but-well-formed code still renders */
+            code: string;
+            /** @description how many of the unit one credit displays as, as a decimal literal — "0.0014" renders 1_500_000 minor (1.5 credits) as 0.00 at 2 decimals; stored as text so no float ever touches money */
+            ratePerCredit: string;
+            /** @description the decimal places the unit renders with — 2 for most currencies, 0 for JPY-shaped ones; the render rounds half-up to this precision */
+            decimals: number;
         };
         CreateKeyRequest: {
             name?: string;
@@ -6395,8 +6453,25 @@ export interface components {
              *     past grace (or when the grace is switched off here).
              */
             dunningGraceDays?: number | null;
-            /** @description a retry writes no second entry; the same key replays the same change. At least one of creditLimitMinor, paymentTermsDays, tier, suspended and dunningGraceDays must be present. */
+            /**
+             * @description the fiat unit the organization displays its balances, bills and statements
+             *     in (issue #257) — `code` plus `ratePerCredit` (a decimal literal like
+             *     "0.0014": how much of the unit one credit renders as), plus the `decimals`
+             *     the figure rounds to. Presentational only: the write touches no ledger and
+             *     moves no money, so it never alters a settled bill's verified charge.
+             *     An explicit null clears the display — the organization renders credits alone.
+             */
+            displayCurrency?: components["schemas"]["DisplayCurrency"];
+            /** @description a retry writes no second entry; the same key replays the same change. At least one of creditLimitMinor, paymentTermsDays, tier, suspended, dunningGraceDays and displayCurrency must be present. */
             idempotencyKey: string;
+        };
+        UpdateOrgDisplayRequest: {
+            /**
+             * @description the fiat unit the organization renders in (issue #257), or null to
+             *     render credits alone — the only field this PATCH takes; the write is
+             *     presentational and moves no money.
+             */
+            displayCurrency: components["schemas"]["DisplayCurrency"];
         };
         PasswordResetRequest: {
             /** @description the replacement password; the same rule signup applies */
@@ -6458,6 +6533,8 @@ export interface components {
              * @description when the dunning sweep itself suspended the organization — null when the suspension standing is the operator's or none
              */
             dunningSuspendedAt: string | null;
+            /** @description the display unit the organization renders in — null renders credits alone */
+            displayCurrency: components["schemas"]["DisplayCurrency"];
         };
         AdminOrganization: {
             /** Format: uuid */
@@ -6499,6 +6576,8 @@ export interface components {
              * @description when the organization was suspended — null while its spend runs normally
              */
             suspendedAt?: string | null;
+            /** @description the display unit the organization renders in — null renders credits alone */
+            displayCurrency: components["schemas"]["DisplayCurrency"];
         };
         AdminHold: {
             /** @description the name of the organization whose ledger holds the freeze */

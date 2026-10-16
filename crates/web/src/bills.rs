@@ -37,6 +37,13 @@ pub struct BillView {
     pub description: String,
     /// The content hash the entry's proof verifies against.
     pub content_hash: String,
+    /// What `amount_minor` renders as in the organization's display unit
+    /// (issue #257) — `"0.06"`, `None` when the organization renders credits
+    /// only. Presentational: a display change alters this column, never the
+    /// amount or the proof.
+    pub display_amount: Option<String>,
+    /// The unit `display_amount` is in, when set — `"USD"`.
+    pub display_currency: Option<String>,
     /// The settled turn's own fields, when the entry is a gateway settlement — the
     /// page renders these; `None` for every other row.
     pub request: Option<BillRequest>,
@@ -61,14 +68,18 @@ pub struct BillRequest {
 }
 
 /// The export's fields, in the order both exports write them: the CSV header is this
-/// list, and the JSON keys are the same names.
-const FIELDS: [&str; 6] = [
+/// list, and the JSON keys are the same names. `displayAmount` and
+/// `displayCurrency` are the fiat rendering (issue #257) — presentational only,
+/// appended at the end so an existing reader's columns are unmoved.
+const FIELDS: [&str; 8] = [
     "bookedOn",
     "entryId",
     "kind",
     "amountMinor",
     "description",
     "contentHash",
+    "displayAmount",
+    "displayCurrency",
 ];
 
 /// How many transactions one page lists (issue #93): the pager walks the rest, and
@@ -92,6 +103,10 @@ impl From<&oxsum_core::TransactionEntry> for BillView {
             amount_minor: entry.amount_minor,
             description: entry.description.clone(),
             content_hash: entry.content_hash.clone(),
+            // The display conversion is the export route's overlay: `From` knows
+            // the ledger's figure, not what unit the organization renders it in.
+            display_amount: None,
+            display_currency: None,
             request: entry.record.as_ref().map(|record| BillRequest {
                 request_id: record.request.clone(),
                 model: record.model.clone(),
@@ -114,6 +129,8 @@ pub fn csv(bills: &[BillView]) -> String {
     out.push('\n');
     for bill in bills {
         let amount = bill.amount_minor.to_string();
+        let display_amount = bill.display_amount.clone().unwrap_or_default();
+        let display_currency = bill.display_currency.clone().unwrap_or_default();
         let row = [
             bill.booked_on.as_str(),
             bill.entry_id.as_str(),
@@ -121,6 +138,8 @@ pub fn csv(bills: &[BillView]) -> String {
             amount.as_str(),
             bill.description.as_str(),
             bill.content_hash.as_str(),
+            display_amount.as_str(),
+            display_currency.as_str(),
         ];
         out.push_str(&row.map(field).join(","));
         out.push('\n');
@@ -164,6 +183,8 @@ mod tests {
             description: "req-…".to_owned(),
             content_hash: "ab".repeat(32),
             request: None,
+            display_amount: None,
+            display_currency: None,
         }
     }
 
@@ -171,13 +192,13 @@ mod tests {
     fn the_csv_writes_the_header_and_one_row_per_bill() {
         assert_eq!(
             csv(&[]),
-            "bookedOn,entryId,kind,amountMinor,description,contentHash\n"
+            "bookedOn,entryId,kind,amountMinor,description,contentHash,displayAmount,displayCurrency\n"
         );
         assert_eq!(
             csv(&[bill()]),
             format!(
-                "bookedOn,entryId,kind,amountMinor,description,contentHash\n\
-                 2026-10-03,0f8b0b0e-6a2f-5c3f-9c2a-1f2f3a4b5c6d,settlement,-316,req-…,{}\n",
+                "bookedOn,entryId,kind,amountMinor,description,contentHash,displayAmount,displayCurrency\n\
+                 2026-10-03,0f8b0b0e-6a2f-5c3f-9c2a-1f2f3a4b5c6d,settlement,-316,req-…,{},,\n",
                 "ab".repeat(32)
             )
         );
@@ -216,7 +237,7 @@ mod tests {
             ..bill()
         };
         let line = csv(&[row]).lines().nth(1).unwrap().to_owned();
-        assert_eq!(line.matches(',').count(), 5, "the JSON hides its commas");
+        assert_eq!(line.matches(',').count(), 7, "the JSON hides its commas");
         assert!(line.contains("\"{\"\"a\"\":1}\""));
     }
 

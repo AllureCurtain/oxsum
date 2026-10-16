@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useBills, useConsistency, useLogHead } from "../api/hooks";
+import { useBills, useConsistency, useDisplay, useLogHead } from "../api/hooks";
 import {
   Banner,
   Button,
@@ -10,6 +10,8 @@ import {
   TableShell,
   NumberInput,
   signedCredits,
+  displayAmount,
+  type DisplayCurrency,
 } from "../components/ui";
 import { ApiError, api } from "../api/client";
 import { CodeBlock } from "../components/cult/code-block";
@@ -32,8 +34,10 @@ function archived(): ArchivedHead | null {
   }
 }
 
-/** One bill row with an on-demand proof-bundle drawer (`GET /entries/{id}/proof`). */
-function BillRow({ row }: { row: { index: number; entryId: string; bookedOn: string; kind: string; amountMinor: number; description: string; contentHash: string } }) {
+/** One bill row with an on-demand proof-bundle drawer (`GET /entries/{id}/proof`).
+ *  The fiat figure is the row's `displayAmount` when the export already carried it,
+ *  else the org's current display rate converts it for the table. */
+function BillRow({ row, display }: { row: { index: number; entryId: string; bookedOn: string; kind: string; amountMinor: number; description: string; contentHash: string }; display: DisplayCurrency | null }) {
   const [open, setOpen] = useState(false);
   const [proof, setProof] = useState<unknown>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -59,7 +63,14 @@ function BillRow({ row }: { row: { index: number; entryId: string; bookedOn: str
         <td className="mono">{row.index}</td>
         <td>{row.bookedOn}</td>
         <td>{row.kind}</td>
-        <td className="mono">{signedCredits(row.amountMinor)}</td>
+        <td className="mono">
+          {signedCredits(row.amountMinor)}
+          {display ? (
+            <span className="block text-xs text-muted">
+              ≈ {displayAmount(row.amountMinor, display)} {display.code}
+            </span>
+          ) : null}
+        </td>
         <td className="mono">{row.description}</td>
         <td className="mono">{row.contentHash.slice(0, 12)}…</td>
         <td className="flex items-center gap-2">
@@ -94,6 +105,7 @@ export function Bills() {
   const [before, setBefore] = useState<number | undefined>(undefined);
   const bills = useBills(before);
   const head = useLogHead();
+  const display = useDisplay();
   const [archiveSize, setArchiveSize] = useState(() => archived()?.size ?? null);
   const [checkFrom, setCheckFrom] = useState<number | null>(null);
   const consistency = useConsistency(checkFrom);
@@ -136,7 +148,7 @@ export function Bills() {
         <>
           <TableShell head={["#", "Booked", "Kind", "Amount", "Description", "Hash", ""]}>
             {(bills.data?.rows ?? []).map((row) => (
-              <BillRow key={row.entryId} row={row} />
+              <BillRow key={row.entryId} row={row} display={display} />
             ))}
             {(bills.data?.rows.length ?? 0) === 0 ? (
               <EmptyRows colSpan={7}>No transactions yet.</EmptyRows>

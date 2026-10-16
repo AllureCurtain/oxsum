@@ -167,6 +167,11 @@ pub struct Config {
     /// default — runs no anchoring: `/api/v1/log/checkpoint` serves an empty
     /// snapshot.
     witness_urls: Vec<String>,
+    /// The deployment-wide display currency default (issue #257):
+    /// `OXSUM_DISPLAY_CURRENCY` plus `OXSUM_DISPLAY_RATE_PER_CREDIT` — what an
+    /// organization with no override of its own renders. `None` means the
+    /// deployment displays credits only.
+    display_currency: Option<oxsum_core::Display>,
 }
 
 impl Config {
@@ -190,6 +195,7 @@ impl Config {
             upstream_price_sync: false,
             otlp_endpoint: None,
             witness_urls: Vec::new(),
+            display_currency: None,
         }
     }
 
@@ -310,6 +316,7 @@ impl Config {
         // Trailing slashes come off: the exporter appends `/v1/traces`, and a
         // doubled slash is only a cosmetic wrong.
         let otlp_endpoint = var("OXSUM_OTLP_ENDPOINT").map(|v| v.trim_end_matches('/').to_owned());
+        let display_currency = display_currency_of()?;
         Ok(Self {
             signup,
             gateway: Gateway::from_env()?,
@@ -328,6 +335,7 @@ impl Config {
             upstream_price_sync,
             otlp_endpoint,
             witness_urls,
+            display_currency,
         })
     }
 
@@ -429,6 +437,42 @@ impl Config {
     #[must_use]
     pub fn witness_urls(&self) -> &[String] {
         &self.witness_urls
+    }
+
+    /// The display unit an organization with no override of its own renders
+    /// (issue #257): the org's stored `display_currency` pair when set, else
+    /// the deployment's `OXSUM_DISPLAY_*` default, else `None` — credits only.
+    /// Returns the owned [`Display`]; the conversion is a cheap struct, so a
+    /// per-request rebuild beats a borrowed cache an org override would
+    /// invalidate anyway.
+    #[must_use]
+    pub fn display_for(
+        &self,
+        organization: &oxsum_core::Organization,
+    ) -> Option<oxsum_core::Display> {
+        self.display_for_pair(organization.display_currency.as_ref())
+    }
+
+    /// The same resolution off the raw stored pair — for callers holding an
+    /// `AdminOrganization` rather than the org-facing `Organization` (the admin
+    /// statement export renders the organization's own unit, not the
+    /// deployment's default).
+    #[must_use]
+    pub fn display_for_pair(
+        &self,
+        stored: Option<&oxsum_core::DisplayCurrency>,
+    ) -> Option<oxsum_core::Display> {
+        stored
+            .and_then(|currency| {
+                oxsum_core::display_currency(
+                    Some(&currency.code),
+                    Some(&currency.rate_per_credit),
+                    currency.decimals,
+                )
+                .ok()
+                .flatten()
+            })
+            .or_else(|| self.display_currency.clone())
     }
 
     /// Sets the witness URL list. Tests use this; the server reads
@@ -572,6 +616,27 @@ fn upstream_price_sync_of(raw: String) -> Result<bool, String> {
             "OXSUM_UPSTREAM_PRICE_SYNC must be true or false, got {other:?}"
         )),
     }
+}
+
+/// Parses the deployment-wide display currency (issue #257):
+/// `OXSUM_DISPLAY_CURRENCY` (a three-letter code) plus
+/// `OXSUM_DISPLAY_RATE_PER_CREDIT` (a decimal literal — what one credit
+/// renders as in that unit) and the optional `OXSUM_DISPLAY_DECIMALS`
+/// (default 2). Either both of the first two are set, or neither: a rate
+/// without a unit and a unit without a rate are both half-configured.
+fn display_currency_of() -> Result<Option<oxsum_core::Display>, String> {
+    let code = var("OXSUM_DISPLAY_CURRENCY");
+    let rate = var("OXSUM_DISPLAY_RATE_PER_CREDIT");
+    let decimals = var("OXSUM_DISPLAY_DECIMALS")
+        .map(|raw| {
+            raw.trim()
+                .parse::<u8>()
+                .map_err(|_| format!("OXSUM_DISPLAY_DECIMALS must be a small integer, got {raw:?}"))
+        })
+        .transpose()?
+        .unwrap_or(2);
+    oxsum_core::display_currency(code.as_deref(), rate.as_deref(), decimals)
+        .map_err(|error| format!("OXSUM_DISPLAY_CURRENCY / OXSUM_DISPLAY_RATE_PER_CREDIT: {error}"))
 }
 
 /// Parses one `OXSUM_RETENTION_*` variable: a positive day count — `0` would

@@ -625,7 +625,34 @@ export function useOrg() {
   return useQuery({
     queryKey: ["org"],
     queryFn: () =>
-      api<{ id: string; name: string; tenantId: string; kind: string; createdAt: string }>("/org"),
+      api<{
+        id: string;
+        name: string;
+        tenantId: string;
+        kind: string;
+        createdAt: string;
+        // The fiat unit this org renders in (issue #257); null = credits only.
+        displayCurrency: { code: string; ratePerCredit: string; decimals: number } | null;
+      }>("/org"),
+  });
+}
+
+/** The organization's display currency — `null` renders credits only. Every
+ * money cell that wants the conversion reads the same cached org row. */
+export function useDisplay() {
+  const org = useOrg();
+  return org.data?.displayCurrency ?? null;
+}
+
+/** `PATCH /api/v1/org` — the owner-or-admin write that sets (or, with `null`,
+ * clears) the display currency. The rate is a decimal string so the wire
+ * never carries a float. */
+export function useUpdateOrgDisplay() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (displayCurrency: { code: string; ratePerCredit: string; decimals: number } | null) =>
+      api("/org", { method: "PATCH", body: { displayCurrency } }),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["org"] }),
   });
 }
 

@@ -3,6 +3,7 @@ import { ApiError } from "../api/client";
 import {
   useAddMember,
   useCreateInvitation,
+  useDisplay,
   useMembers,
   useRemoveMember,
   useSession,
@@ -19,12 +20,13 @@ import {
   Select,
   TableShell,
   TextInput,
-  credits,
+  Cr,
 } from "../components/ui";
 
 export function Members() {
   const session = useSession();
   const members = useMembers();
+  const display = useDisplay();
   const add = useAddMember();
   const update = useUpdateMember();
   const remove = useRemoveMember();
@@ -65,7 +67,7 @@ export function Members() {
               <td>{member.role}</td>
               <td>{member.joinedAt.slice(0, 10)}</td>
               <td className="mono">
-                {member.budgetLimitMinor != null ? `${credits(member.budgetLimitMinor)} cr` : "—"}
+                {member.budgetLimitMinor != null ? <Cr minor={member.budgetLimitMinor} currency={display} /> : "—"}
               </td>
               <td className="text-right">
                 {canManage && member.userId !== ownId ? (

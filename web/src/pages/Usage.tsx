@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
-import { useKeys, useUsage } from "../api/hooks";
-import { EmptyRows, PageState, Select, TableShell, credits } from "../components/ui";
+import { useDisplay, useKeys, useUsage } from "../api/hooks";
+import { Cr, EmptyRows, PageState, Select, TableShell, creditsWithDisplay } from "../components/ui";
 
 // The usage page: the trailing 30 UTC days, summed per day for the chart and
 // listed per (day, channel, model) slice in the table — the same window and
@@ -15,6 +15,7 @@ function dayString(offset: number): string {
 
 export function Usage() {
   const [keyFilter, setKeyFilter] = useState("");
+  const display = useDisplay();
   const keys = useKeys();
   const usage = useUsage(dayString(USAGE_DAYS - 1), dayString(0));
 
@@ -62,10 +63,10 @@ export function Usage() {
               key={day}
               className="group relative flex-1 rounded-t bg-primary/70 hover:bg-primary"
               style={{ height: `${Math.max(2, (charged / max) * 100)}%` }}
-              title={`${day}: ${credits(charged)} cr`}
+              title={`${day}: ${creditsWithDisplay(charged, display)}`}
             >
               <span className="pointer-events-none absolute -top-8 left-1/2 hidden -translate-x-1/2 whitespace-nowrap rounded bg-ink px-2 py-1 text-xs text-white group-hover:block">
-                {day}: {credits(charged)} cr
+                {day}: {creditsWithDisplay(charged, display)}
               </span>
             </div>
           ))}
@@ -89,7 +90,7 @@ export function Usage() {
               <td className="mono">{row.outputTokens}</td>
               <td className="mono">{row.cachedTokens}</td>
               <td className="mono">{row.reasoningTokens}</td>
-              <td className="mono">{credits(row.chargedMinor)} cr</td>
+              <td className="mono"><Cr minor={row.chargedMinor} currency={display} /></td>
             </tr>
           ))}
           {rows.length === 0 ? <EmptyRows colSpan={10}>No usage in this window.</EmptyRows> : null}
