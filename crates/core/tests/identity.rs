@@ -502,6 +502,7 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "idempotency_records".to_owned(),
             "invitations".to_owned(),
             "jobs".to_owned(),
+            "mandates".to_owned(),
             "memberships".to_owned(),
             "oauth_accounts".to_owned(),
             "oauth_states".to_owned(),
