@@ -22,11 +22,21 @@ export function Log() {
             {checkpoint.data.cosignatures.length === 1 ? "" : "es"} — the "this log cannot be
             rewritten" evidence.
           </p>
-          {checkpoint.data.cosignatures.map((cosig) => (
-            <code key={cosig.witnessUrl} className="mono mt-1 block text-xs">
-              {cosig.witnessUrl}
-            </code>
-          ))}
+          {checkpoint.data.cosignatures.map((cosig) => {
+            const pin = checkpoint.data?.witnessKeys.find(
+              (k) => k.witnessUrl === cosig.witnessUrl,
+            );
+            return (
+              <div key={cosig.witnessUrl} className="mt-1">
+                <code className="mono block text-xs">{cosig.witnessUrl}</code>
+                <p className="text-xs text-muted">
+                  {pin
+                    ? `pinned key ${pin.keyName} · keyHash ${pin.keyHash}`
+                    : "no pinned key — the deployment publishes no key for this witness"}
+                </p>
+              </div>
+            );
+          })}
         </Card>
       ) : null}
 

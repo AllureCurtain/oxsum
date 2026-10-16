@@ -185,6 +185,9 @@ export interface WitnessCheckpoint {
   headSize: number;
   note: string;
   cosignatures: { witnessUrl: string; note: string; firstSeen: string }[];
+  /** The deployment's pinned witness keyset (issue #259): which cosignature/v1
+   * key a signature line under each URL must verify against. */
+  witnessKeys: { witnessUrl: string; keyName: string; publicKey: string; keyHash: string }[];
   updatedAt: string;
 }
 

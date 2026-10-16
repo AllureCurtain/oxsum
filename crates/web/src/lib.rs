@@ -50,6 +50,24 @@ pub struct WebConfig {
     /// Whether the deployment offers GitHub OAuth: the login page only draws
     /// the button where the flow exists.
     pub oauth_github: bool,
+    /// The deployment's pinned witness keyset (issue #259), for the log page's
+    /// "anchored by N witnesses" line: each cosigned note is checked against
+    /// the pin for its URL rather than trusted on the server's say-so.
+    pub witness_keys: Vec<WitnessKeyPin>,
+}
+
+/// One pinned witness key, owned — the shape `WebConfig` carries since the
+/// pages cannot borrow the server's `Config`.
+#[derive(Debug, Clone)]
+pub struct WitnessKeyPin {
+    /// The witness endpoint this pin applies to.
+    pub witness_url: String,
+    /// The name the signature line carries.
+    pub key_name: String,
+    /// The Ed25519 verifying key, hex.
+    pub public_key: String,
+    /// The cosignature selector the signature line's key hash must equal, hex.
+    pub key_hash: String,
 }
 
 /// Builds the dashboard router: every page URL the Leptos dashboard served.

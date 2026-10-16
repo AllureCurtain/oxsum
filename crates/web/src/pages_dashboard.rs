@@ -801,6 +801,63 @@ async fn log_page(cx: &Cx) -> Result<impl View> {
         .witness_checkpoint(sctx.principal.organization.id)
         .await
         .map_err(|_| internal("the anchored checkpoint could not be read"))?;
+    // Check each cosignature against the deployment's pinned keyset (issue
+    // #259): the verdict names the witnesses that failed rather than only
+    // counting the ones that passed. A parse failure on the stored note is a
+    // server-side integrity bug — the checkpoint is rendered but flagged.
+    let witness_keys = web_config(cx)?.witness_keys;
+    let witness_verdicts = checkpoint.as_ref().and_then(|checkpoint| {
+        use oxsum_verify::{WitnessNote, WitnessPin};
+        let pins: Vec<WitnessPin<'_>> = witness_keys
+            .iter()
+            .map(|k| WitnessPin {
+                witness_url: &k.witness_url,
+                key_name: &k.key_name,
+                public_key: &k.public_key,
+                key_hash: &k.key_hash,
+            })
+            .collect();
+        let notes: Vec<WitnessNote<'_>> = checkpoint
+            .cosignatures
+            .iter()
+            .map(|co| WitnessNote {
+                witness_url: &co.witness_url,
+                note: &co.note,
+            })
+            .collect();
+        oxsum_core::SignedTreeHead::parse(&checkpoint.note)
+            .ok()
+            .map(move |parsed| {
+                oxsum_verify::verify_witnesses(&notes, &pins, parsed.origin.as_str(), &parsed.head)
+                    .into_iter()
+                    .map(|(url, verdict)| (url.to_owned(), verdict))
+                    .collect::<Vec<_>>()
+            })
+    });
+    // One line under the checkpoint: how many cosignatures verify, and the
+    // witnesses that failed named rather than counted (issue #259).
+    let witness_line = witness_verdicts.as_ref().map(|verdicts| {
+        let verified = verdicts
+            .iter()
+            .filter(|(_, v)| matches!(v, oxsum_verify::WitnessVerdict::Verified { .. }))
+            .count();
+        let failed: Vec<_> = verdicts
+            .iter()
+            .filter(|(_, v)| !matches!(v, oxsum_verify::WitnessVerdict::Verified { .. }))
+            .collect();
+        if failed.is_empty() && verified > 0 {
+            format!(
+                "Anchored by {verified} witness{} — every cosignature verifies under the deployment's pinned keys.",
+                if verified == 1 { "" } else { "es" }
+            )
+        } else {
+            let mut line = format!("{verified} of {} cosignatures verify.", verdicts.len());
+            for (url, verdict) in failed {
+                line.push_str(&format!(" {url}: {verdict}."));
+            }
+            line
+        }
+    });
     let rows = page.rows;
     let next_cursor = page.next_cursor;
     Ok(view! {
@@ -823,6 +880,9 @@ async fn log_page(cx: &Cx) -> Result<impl View> {
                         <code>(cosig.witness_url.clone())</code>
                     }
                 </p>
+                if let Some(line) = &witness_line {
+                    <p class="muted">(line.clone())</p>
+                }
             }
             <table>
                 <thead><tr><th>"#"</th><th>"Description"</th><th>"Content hash"</th></tr></thead>
