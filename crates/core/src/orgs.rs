@@ -18,6 +18,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::db::Db;
+use crate::display::DisplayCurrency;
 use crate::error::WalletError;
 use crate::keys::conflict_or_storage;
 use crate::wallet::ListPage;
@@ -93,6 +94,10 @@ pub struct Organization {
     pub kind: Kind,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    /// The fiat unit this organization displays its credit figures in (issue #257)
+    /// — presentational only; the ledger keeps integer minor units and no proof
+    /// ever carries it. `None` renders credits alone.
+    pub display_currency: Option<DisplayCurrency>,
 }
 
 /// An organization as the platform admin lists it: identity, kind, headcount, and the
@@ -122,6 +127,9 @@ pub struct AdminOrganization {
     /// that lets the sweep reinstate the organization it cut off without
     /// ever lifting a suspension the operator set by hand.
     pub dunning_suspended_at: Option<OffsetDateTime>,
+    /// The fiat unit this organization displays its credit figures in (issue #257);
+    /// `None` renders credits alone.
+    pub display_currency: Option<DisplayCurrency>,
     pub created_at: OffsetDateTime,
 }
 
@@ -210,8 +218,34 @@ pub(crate) fn admin_organization(
         suspended_at: row.try_get("suspended_at")?,
         dunning_grace_days: row.try_get("dunning_grace_days")?,
         dunning_suspended_at: row.try_get("dunning_suspended_at")?,
+        display_currency: display_currency_pair(
+            row.try_get("display_currency")?,
+            row.try_get("display_rate_per_credit")?,
+        )?,
         created_at: row.try_get("created_at")?,
     })
+}
+
+/// Reads the display-currency pair off two raw column values — shared by
+/// [`organization_from_row`], [`admin_organization`] and the session row's
+/// manual `Organization` construction, which all read different projections
+/// of the same table. The columns always move together (migration 0043's
+/// `organizations_display_pair`), so a half-pair cannot come out of storage;
+/// `decimals` is not stored — it is the render's own choice, and the default
+/// renders the conventional two places.
+///
+/// # Errors
+///
+/// [`WalletError::InvalidInput`] on a half-pair or a malformed value — which a
+/// stored row cannot carry, so a failure here means a contract broke.
+pub(crate) fn display_currency_pair(
+    code: Option<String>,
+    rate: Option<String>,
+) -> Result<Option<DisplayCurrency>, WalletError> {
+    Ok(
+        crate::display::display_currency(code.as_deref(), rate.as_deref(), 2)?
+            .map(|display| display.currency().clone()),
+    )
 }
 
 impl Db {
@@ -225,7 +259,8 @@ impl Db {
     pub async fn organizations(&self) -> Result<Vec<AdminOrganization>, WalletError> {
         let rows = sqlx::query(
             "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, o.payment_terms_days, o.tier, o.suspended_at, \
-             o.dunning_grace_days, o.dunning_suspended_at, count(m.user_id) AS members \
+             o.dunning_grace_days, o.dunning_suspended_at, o.display_currency, o.display_rate_per_credit, \
+             count(m.user_id) AS members \
              FROM oxsum.organizations o LEFT JOIN oxsum.memberships m USING (organization_id) \
              GROUP BY o.organization_id ORDER BY o.created_at",
         )
@@ -262,7 +297,8 @@ impl Db {
         let wanted = limit.clamp(1, 100) as i64;
         let rows = sqlx::query(
             "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, o.payment_terms_days, o.tier, o.suspended_at, \
-             o.dunning_grace_days, o.dunning_suspended_at, count(m.user_id) AS members \
+             o.dunning_grace_days, o.dunning_suspended_at, o.display_currency, o.display_rate_per_credit, \
+             count(m.user_id) AS members \
              FROM oxsum.organizations o LEFT JOIN oxsum.memberships m USING (organization_id) \
              WHERE $1::timestamptz IS NULL OR o.created_at > $1 \
                 OR (o.created_at = $1 AND o.organization_id > $2) \
@@ -295,7 +331,7 @@ impl Db {
     /// failures surface as [`WalletError`].
     pub async fn organization_by_id(&self, id: Uuid) -> Result<AdminOrganization, WalletError> {
         let row = sqlx::query(
-            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, o.payment_terms_days, o.tier, o.suspended_at, o.dunning_grace_days, o.dunning_suspended_at,              count(m.user_id) AS members              FROM oxsum.organizations o LEFT JOIN oxsum.memberships m USING (organization_id)              WHERE o.organization_id = $1 GROUP BY o.organization_id",
+            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, o.payment_terms_days, o.tier, o.suspended_at, o.dunning_grace_days, o.dunning_suspended_at,              o.display_currency, o.display_rate_per_credit,              count(m.user_id) AS members              FROM oxsum.organizations o LEFT JOIN oxsum.memberships m USING (organization_id)              WHERE o.organization_id = $1 GROUP BY o.organization_id",
         )
         .bind(id)
         .fetch_optional(self.pool())
@@ -315,7 +351,7 @@ impl Db {
         user_id: Uuid,
     ) -> Result<Vec<UserOrganization>, WalletError> {
         let rows = sqlx::query(
-            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, m.role              FROM oxsum.memberships m JOIN oxsum.organizations o USING (organization_id)              WHERE m.user_id = $1 ORDER BY m.created_at, m.organization_id",
+            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, m.role,              o.display_currency, o.display_rate_per_credit              FROM oxsum.memberships m JOIN oxsum.organizations o USING (organization_id)              WHERE m.user_id = $1 ORDER BY m.created_at, m.organization_id",
         )
         .bind(user_id)
         .fetch_all(self.pool())
@@ -679,6 +715,60 @@ impl Db {
         Ok(changed)
     }
 
+    /// Sets the fiat unit the organization displays its credit figures in
+    /// (issue #257) — a code plus the rate at which one credit renders.
+    /// `None` clears the pair: the organization renders credits alone.
+    ///
+    /// Presentational only: the write touches no ledger and moves no money, so
+    /// an old bill still verifies byte-for-byte after the display changes —
+    /// the proof covers the charge, never what it rendered as.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::InvalidInput`] on a malformed code or a non-positive rate,
+    /// and on a half-pair — the two set together or clear together;
+    /// [`WalletError::NotFound`] for an unknown organization.
+    pub async fn set_display_currency(
+        &self,
+        organization_id: Uuid,
+        display: Option<DisplayCurrency>,
+    ) -> Result<(), WalletError> {
+        // Validate through the same parser the reader runs, so a write cannot
+        // store what a read would fail on. A `Some` pair always parses to a
+        // `Some` display — the `?` below carries the malformed case out.
+        let (code, rate) = match &display {
+            Some(currency) => {
+                let checked = crate::display::display_currency(
+                    Some(&currency.code),
+                    Some(&currency.rate_per_credit),
+                    currency.decimals,
+                )?;
+                let checked = checked.map(|d| d.currency().clone());
+                match checked {
+                    Some(display) => (Some(display.code), Some(display.rate_per_credit)),
+                    None => (None, None),
+                }
+            }
+            None => (None, None),
+        };
+        let updated = sqlx::query(
+            "UPDATE oxsum.organizations \
+             SET display_currency = $2, display_rate_per_credit = $3 \
+             WHERE organization_id = $1",
+        )
+        .bind(organization_id)
+        .bind(code)
+        .bind(rate)
+        .execute(self.pool())
+        .await?;
+        if updated.rows_affected() == 0 {
+            return Err(WalletError::NotFound(
+                "the organization is not known".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Drops the dunning sweep's ownership marker without touching `suspended_at`
     /// (issue #258). An operator's manual suspend or reinstate through the PATCH
     /// endpoint calls it after `set_suspended`: whoever manages the flag by hand
@@ -885,6 +975,9 @@ pub(crate) async fn insert(
         tenant_id,
         kind,
         created_at,
+        // A fresh organization renders credits only; the display pair is a
+        // billing-terms write, not a registration one.
+        display_currency: None,
     })
 }
 
@@ -920,6 +1013,12 @@ pub(crate) async fn add_member(
 }
 
 /// Maps a row of the `organizations` projection to [`Organization`].
+///
+/// The projection is the identity columns plus the display pair; callers
+/// joining `oxsum.organizations` select them under the plain names, and the
+/// pair reads back through [`display_currency_pair`] — the same function
+/// the admin row uses, so every `Organization` answers its display unit
+/// identically.
 pub(crate) fn organization_from_row(
     row: &sqlx::postgres::PgRow,
 ) -> Result<Organization, WalletError> {
@@ -930,6 +1029,10 @@ pub(crate) fn organization_from_row(
         tenant_id: row.try_get("tenant_id")?,
         kind: Kind::parse(&row.try_get::<String, _>("kind")?)?,
         created_at: row.try_get("created_at")?,
+        display_currency: display_currency_pair(
+            row.try_get("display_currency")?,
+            row.try_get("display_rate_per_credit")?,
+        )?,
     })
 }
 

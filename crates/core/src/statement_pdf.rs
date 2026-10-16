@@ -47,6 +47,21 @@ fn credits(minor: i64) -> String {
     format!("{sign}{}.{:06}", abs / 1_000_000, abs % 1_000_000)
 }
 
+/// The line's money cell: the credits figure, plus the fiat rendering when the
+/// organization displays in one — `"4.000000 ≈ 0.06 USD"` — so the page says
+/// both what it charged and what the deployment reads that as.
+fn money_cell(minor: i64, display: Option<&crate::Display>) -> String {
+    match display {
+        Some(d) => format!(
+            "{} ≈ {} {}",
+            credits(minor),
+            d.render(minor),
+            d.currency().code
+        ),
+        None => credits(minor),
+    }
+}
+
 /// One text run on the page: `StartTextSection` … `EndTextSection` with the
 /// cursor set once, so every label lands where it was placed rather than
 /// flowing from the last.
@@ -144,6 +159,11 @@ fn qr(ops: &mut Vec<Op>, url: &str, x: f32, y: f32) -> Result<(), WalletError> {
 /// reaching here, and the function asserts the same so the bytes can never
 /// describe a working copy.
 ///
+/// `display` is the organization's fiat conversion (issue #257): when set,
+/// every money figure on the page gains a `≈ <amount> <code>` rendering
+/// beside its credits — presentational only, the printed conversion never
+/// feeds a charge.
+///
 /// # Errors
 ///
 /// Refuses a non-finalized statement, and reports a QR the URL cannot form.
@@ -152,6 +172,7 @@ pub fn render_statement_pdf(
     organization: &str,
     lines: &[StatementLine],
     verify_url: Option<&str>,
+    display: Option<&crate::Display>,
 ) -> Result<Vec<u8>, WalletError> {
     use crate::statements::StatementStatus;
     if statement.status != StatementStatus::Finalized {
@@ -249,7 +270,7 @@ pub fn render_statement_pdf(
             line.output_tokens.to_string(),
             line.cached_tokens.to_string(),
             line.reasoning_tokens.to_string(),
-            credits(line.amount_minor),
+            money_cell(line.amount_minor, display),
         ];
         for (x, cell) in COL.iter().zip(cells.iter()) {
             text(&mut ops, *x, y, BODY, false, cell);
@@ -280,7 +301,7 @@ pub fn render_statement_pdf(
             y,
             BODY,
             label == "Total",
-            &credits(amount),
+            &money_cell(amount, display),
         );
         y -= ROW_H;
     }
@@ -386,6 +407,7 @@ mod tests {
             "Acme Corp",
             &lines(),
             Some("https://ox.example/verify"),
+            None,
         )
         .expect("renders");
         assert!(bytes.starts_with(b"%PDF-"), "not a PDF header");
@@ -423,6 +445,26 @@ mod tests {
     fn a_draft_refuses_to_render() {
         let mut draft = statement();
         draft.status = crate::statements::StatementStatus::Draft;
-        assert!(render_statement_pdf(&draft, "Acme", &lines(), None).is_err());
+        assert!(render_statement_pdf(&draft, "Acme", &lines(), None, None).is_err());
+    }
+
+    /// The display conversion is printed beside the credits, never instead of
+    /// them: a configured fiat rate adds the `≈ <amount> <code>` rendering to
+    /// every money figure and changes no ledger figure the page carries.
+    #[test]
+    fn a_display_currency_adds_the_fiat_rendering() {
+        let usd = crate::display::display_currency(Some("USD"), Some("0.0014"), 2)
+            .expect("a valid rate")
+            .expect("a Some pair is a Some display");
+        let bytes = render_statement_pdf(&statement(), "Acme", &lines(), None, Some(&usd))
+            .expect("renders");
+        let parsed = PdfDocument::parse(&bytes, &Default::default(), &mut Vec::new())
+            .expect("the rendered bytes parse as a PDF");
+        let page_text = parsed.extract_text().remove(0).join("\n");
+        // 7 credits at $0.0014/credit renders $0.01 beside the credit figure.
+        assert!(
+            page_text.contains("7.000000") && page_text.contains("USD"),
+            "the page carries both the credits and the fiat rendering:\n{page_text}"
+        );
     }
 }

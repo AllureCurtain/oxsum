@@ -167,7 +167,8 @@ impl Db {
         // The organization row the response carries: it exists — the invitation's
         // foreign key insists — so a miss here is storage, not a state.
         let row = sqlx::query(
-            "SELECT organization_id, name, tenant_id, kind, created_at \
+            "SELECT organization_id, name, tenant_id, kind, created_at, \
+                    display_currency, display_rate_per_credit \
              FROM oxsum.organizations WHERE organization_id = $1",
         )
         .bind(organization_id)
