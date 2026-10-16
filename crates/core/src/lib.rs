@@ -8,6 +8,7 @@
 //! see [`Db`].
 
 mod adapters;
+mod anomaly;
 mod audit;
 mod billing;
 mod channels;
@@ -44,6 +45,7 @@ mod wallet;
 mod webhooks;
 
 pub use adapters::{ANTHROPIC, OPENAI, UsageAdapter, adapter_for, adapter_for_endpoint};
+pub use anomaly::{AnomalyFacts, Severity, anomaly_score};
 pub use audit::{AuditEntry, AuditPage, action as audit_action};
 pub use billing::{
     BillLine, BillingMode, ItemizedCharge, MandateRef, MeteredSettlement, MeteredUsage, Price,

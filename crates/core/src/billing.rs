@@ -941,6 +941,16 @@ pub enum SettlementKind {
 }
 
 impl SettlementKind {
+    /// The kinds the anomalies review lists — the stored spellings, shared by
+    /// the endpoint's filter and the anomaly scorer's repeat-offender count.
+    pub const ANOMALOUS_STRS: &'static [&'static str] = &[
+        "capped",
+        "estimated",
+        "client_cancelled",
+        "swept",
+        "unpriced",
+    ];
+
     /// The spelling a usage row stores for the kind: the record's own serde form.
     #[must_use]
     pub fn as_str(&self) -> &'static str {
