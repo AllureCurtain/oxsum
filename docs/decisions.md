@@ -2,6 +2,17 @@
 
 New decisions go on top. Overturned decisions are never deleted; mark them "Superseded" and name the decision that replaces it.
 
+## 2026-10-17 Test scratch cleanup is self-healing on the next run (issue #271)
+
+- Status: Adopted. Complements #226 (per-suite scratch databases) and #241 (doubleentry on `DATABASE_URL`).
+- Decision: drop-at-exit stays the last line, but the *first* line is a sweep run at setup time — a suite removes predecessors' residue before creating its own. `oxsum-testkit` drops `oxsum_test_*` older than 24 h inside `create_suite_db`; doubleentry's External path drops `de_*` databases whose v7-uuid timestamp is older than 24 h once per process. `scripts/drop-test-scratch.sql` offers the same pattern for immediate/manual cleanup.
+- Why not the alternatives that were tried first:
+  - `#[ctor::dtor]` in testkit never runs when the process is killed, times out, or panics through an unwind nextest cannot drive to completion — which is exactly when residue appears.
+  - `tokio::runtime::Handle::try_current().spawn(...)` inside `Drop` posts a task that the teardown-bound runtime never executes, so doubleentry's harness drop was structurally incapable of running at process exit.
+  - A janitor test or cron would still depend on something else choosing to run; making the sweep part of suite setup means every run pays the cleanup cost only when residue is actually present.
+- Why 24 hours: it is far longer than any test run, so a colleague's live suite on a shared cluster is never matched by the stale-name pattern; and it bounds accumulation to one day of crashed runs.
+- The `de_*` sweep keys on the name's own timestamp — a v7 uuid's first 48 bits are the unix-epoch millisecond the id was minted at — so a live neighbour's database is never selected, and no separate bookkeeping table is needed.
+
 ## 2026-10-12 Pages move back to Topcoat, replacing Leptos
 
 - Status: Adopted for the development phase. Supersedes "2026-10-01 Pages move to Leptos, replacing Topcoat" (marked Superseded below).

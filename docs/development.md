@@ -63,6 +63,21 @@ If a run is interrupted and leaves `oxsum_test_*` databases behind, drop them
 manually; the reset script below is still available for the development
 database itself.
 
+Cleanup is self-healing since #271: before creating its own scratch database a
+suite drops every `oxsum_test_*` older than 24 hours off the same admin
+connection, so a crashed run's residue is collected by the next run rather than
+left to accumulate. The doubleentry Postgres suite does the same for `de_*`
+databases on a `DATABASE_URL`/`DOUBLEENTRY_DATABASE_URL` cluster, reading each
+v7-uuid name's embedded timestamp so a live neighbour is never matched. For an
+immediate cleanup — the cluster already heavy, or a one-off check —
+`scripts/drop-test-scratch.sql` drops both families by name pattern:
+
+```bash
+psql -d postgres -f scripts/drop-test-scratch.sql
+# or against the Compose database directly:
+docker exec -i oxsum-postgres-1 psql -U postgres -d postgres -f - < scripts/drop-test-scratch.sql
+```
+
 ### Test residue in the development database
 
 The section above describes the current per-suite isolation. What follows is
@@ -85,7 +100,7 @@ docker exec -i oxsum-postgres-1 psql -U postgres -d oxsum -f - < scripts/reset-d
 
 (`DATABASE_URL` comes from `.env` or the shell, as for the tests.) The script drops every `ledger_*` schema and truncates every mutable `oxsum` table, leaving `oxsum._migrations` — and therefore the schema version — untouched. It is a development-database reset: on a database holding anything worth keeping, dump it first. `TRUNCATE` is what the append-only triggers leave open: they refuse row rewrites, not a table reset, so this does not weaken the audit guarantees.
 
-`crates/doubleentry` Postgres tests run against throwaway containers by default, started by testcontainers. They clean up after themselves, but an interrupted run or a Docker restart can leave the container behind; `docker container prune` and `docker volume prune` clear what is no longer attached. A Docker-free alternative exists (issue #241): set `DOUBLEENTRY_DATABASE_URL` (or `DATABASE_URL`) to any local PostgreSQL — the suite creates each test's scratch database on that server and drops it when the test ends, so a developer running PostgreSQL directly (apt/brew install, no Docker) can still run the ledger conformance suite. Deferred-sequencing tests prefer a dedicated testcontainers instance even under `DATABASE_URL` — on a shared cluster a neighbour's open transaction stalls the sequencing watermark and the conformance suite can read wrong, not just slow — so the shared-cluster path is the Docker-less fallback, never the default when Docker answers.
+`crates/doubleentry` Postgres tests run against throwaway containers by default, started by testcontainers. They clean up after themselves, but an interrupted run or a Docker restart can leave the container behind; `docker container prune` and `docker volume prune` clear what is no longer attached. A Docker-free alternative exists (issue #241): set `DOUBLEENTRY_DATABASE_URL` (or `DATABASE_URL`) to any local PostgreSQL — the suite creates each test's scratch database on that server and drops it when the test ends, so a developer running PostgreSQL directly (apt/brew install, no Docker) can still run the ledger conformance suite. That external mode also self-heals (issue #271): the first harness on a cluster sweeps `de_*` databases whose v7-uuid timestamp is older than 24 hours, so crashed runs cannot accumulate. Deferred-sequencing tests prefer a dedicated testcontainers instance even under `DATABASE_URL` — on a shared cluster a neighbour's open transaction stalls the sequencing watermark and the conformance suite can read wrong, not just slow — so the shared-cluster path is the Docker-less fallback, never the default when Docker answers.
 
 ### Debug info in dev builds
 
