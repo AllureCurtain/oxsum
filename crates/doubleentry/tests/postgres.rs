@@ -19,11 +19,6 @@
 //! cluster the URL points at and drops each one when its test ends — no Docker
 //! needed, and no `de_*` residue afterwards (issue #241). Unset, the container
 //! behaviour is unchanged.
-//!
-//! oxsum change (not upstream): the External path also sweeps — before the
-//! first harness opens, stale `de_*` databases from crashed runs are dropped
-//! (issue #271). The timestamp is read off the name's v7-uuid prefix, so a
-//! database a neighbour's live test is still using is never touched.
 
 #![cfg(feature = "postgres")]
 #![allow(
@@ -149,27 +144,19 @@ impl Drop for Harness {
         // database away — its connections are the store's own, closing the
         // moment the fields below drop.
         //
-        // oxsum change (not upstream): run the drop on a fresh thread with its
-        // own current-thread runtime rather than `Handle::try_current().spawn`.
-        // `spawn` posts a task the teardown-bound test runtime never schedules —
-        // nextest's per-test process is already inside `Drop` when this runs,
-        // so the spawned drop is silently dropped itself. A synchronous block
-        // on a runtime we own always executes (issue #271). Still best-effort:
-        // a crash can interrupt even a synchronous call, and the sweep in
-        // `start` is the next run's line of defence.
-        let _ = std::thread::spawn(move || {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .ok()?
-                .block_on(async move {
-                    sqlx::query(&format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)"))
-                        .execute(&admin)
-                        .await
-                        .ok()
-                })
-        })
-        .join();
+        // oxsum change (not upstream): spawn the drop on the current handle and
+        // move on. Nextest's per-test process is already inside `Drop` when this
+        // runs, so a blocking wait would only serialize every harness teardown
+        // on the shared cluster's slowest response — under CI's budget that is
+        // what pushes the conformance suite over the line (issue #271). What
+        // this misses is what the external sweep is for.
+        let _ = tokio::runtime::Handle::try_current().map(|handle| {
+            handle.spawn(async move {
+                let _ = sqlx::query(&format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)"))
+                    .execute(&admin)
+                    .await;
+            });
+        });
     }
 }
 
@@ -254,59 +241,6 @@ impl Harness {
                 let url = with_database(base_url, &name);
                 Self::connect(url, name.clone(), Some((admin, name))).await
             }
-        }
-    }
-
-    /// oxsum change (not upstream): drop `de_*` scratch databases older than
-    /// [`STALE_AGE`], identified by the millisecond timestamp a v7 uuid carries
-    /// in its first 48 bits (12 hex chars after `de_`). Best-effort — a stale
-    /// entry that cannot drop today is next run's, not a reason this test
-    /// should not get its database.
-    ///
-    /// The sweep is invoked externally (CI's `scripts/drop-test-scratch.sql`
-    /// step against the service container, or the same script manually on a
-    /// dev cluster), never inside a test binary — under nextest each test is
-    /// its own process, and a per-process sweep on the shared cluster is what
-    /// CI's job budget could not absorb (issue #271).
-    #[allow(dead_code)]
-    async fn sweep_stale_de(admin: &sqlx::PgPool) {
-        const STALE_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
-        let cutoff_ms = match std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()
-            .and_then(|now| now.checked_sub(STALE_AGE))
-        {
-            Some(d) => d.as_millis() as u64,
-            None => return,
-        };
-        let names: Vec<String> = sqlx::query_scalar(
-            "SELECT datname FROM pg_database WHERE datname ~ '^de_[0-9a-f]{32}$'",
-        )
-        .fetch_all(admin)
-        .await
-        .unwrap_or_default();
-        if !names.is_empty() {
-            // Bound each drop so a contended catalog row cannot stall the
-            // caller; a stuck one must fail fast, not hold the harness hostage.
-            let _ = sqlx::query("SET statement_timeout = '5s'")
-                .execute(admin)
-                .await;
-            for name in names {
-                // A v7 uuid's first 12 hex digits are the unix-epoch millisecond
-                // the id was minted at — the name carries its own birth certificate.
-                let born_ms = u64::from_str_radix(&name[3..15], 16).unwrap_or(u64::MAX);
-                if born_ms >= cutoff_ms {
-                    continue;
-                }
-                if sqlx::query(&format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)"))
-                    .execute(admin)
-                    .await
-                    .is_ok()
-                {
-                    eprintln!("swept stale scratch database {name}");
-                }
-            }
-            let _ = sqlx::query("RESET statement_timeout").execute(admin).await;
         }
     }
 
