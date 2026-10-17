@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.64.0
+  version: 0.65.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -452,6 +452,57 @@ paths:
             text/plain:
               schema: { type: string }
         "401": { $ref: "#/components/responses/Error" }
+  /add-checkpoint:
+    post:
+      summary: Offer a head to this deployment's tlog-witness (issue #260)
+      description: |
+        The [C2SP `tlog-witness`](https://c2sp.org/tlog-witness) endpoint: a
+        foreign transparency log asks this deployment to vouch for one history
+        and no other. Present on deployments that opt in with
+        `OXSUM_WITNESS_SIGNING_KEY` (and `OXSUM_WITNESS_KEY_NAME`); a deployment
+        that does not run a witness answers 404 like any unknown path.
+
+        The body is the tlog-witness request format: the submitting log's
+        signed checkpoint note (`origin`, `size`, `root`, a blank line, then
+        the submitter's own signature lines) followed by one base64 line per
+        consistency-proof hash proving the new head extends the head this
+        witness already vouched for. The old size is this witness's own state —
+        it is not read from the request, so a proof cannot be aimed at a head
+        the witness never accepted.
+
+        Which origins this witness tracks is out of band: `OXSUM_WITNESS_TRUST`
+        pins `origin=size:root` starting heads, and a submission for an
+        origin not in that set is refused — there is no trust-on-first-use,
+        and that is the point. The refusals are the witness's own vocabulary:
+        `404` for an origin it does not track, `409` for a checkpoint that
+        forks what it already vouched (same size, different root) or shrinks
+        below it, `400` for a malformed body or a consistency proof that does
+        not verify, `401` for a note carrying no signature line at all — a
+        witness signs nothing it cannot attribute to a log key.
+
+        On accept the witness stores the head and returns the note with its
+        own `cosignature/v1` (algorithm `0x04`) signature line appended — the
+        cosigned note the submitter files as its `witness_cosignatures` row.
+        A re-offer of the head already held answers the same cosigned note:
+        an at-least-once delivery path resends, and a witness that refused
+        would be unusable behind one.
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema:
+              type: string
+              description: "the signed checkpoint note, a blank line, then one base64 line per consistency-proof hash"
+      responses:
+        "200":
+          description: The checkpoint note with this witness's cosignature line appended
+          content:
+            text/plain:
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /api/v1/auth/register:
     post:
       summary: Register a user, its personal organization and the first API key
