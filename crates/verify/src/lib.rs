@@ -873,6 +873,299 @@ pub fn verify_statement_anchor(
     }
 }
 
+// ── end-user usage reports (issue #261) ──────────────────────────────────────
+
+/// What checking a usage report can fail with — one variant per distinct trust
+/// failure, so a page names what is wrong instead of only that something is.
+#[derive(Debug, PartialEq, Eq)]
+pub enum UsageReportError {
+    /// The bundle, the marker's description, or a hex field could not be parsed.
+    Malformed(String),
+    /// The marker's `DocumentRef` does not bind the subset digest — the entry
+    /// the report claims commits it is not the marker the descriptor describes.
+    MarkerMismatch,
+    /// The marker's description does not re-serialize to the canonical
+    /// commitment — the figures the report shows are not the ones committed.
+    CommitmentMismatch,
+    /// The marker or a shown entry's inclusion proof does not verify against
+    /// the served head — the row is not in the ledger the head attests.
+    Inclusion(String),
+    /// The shown entries' recomputed content hashes do not fold to the subset
+    /// digest the marker committed — a row was swapped, reordered, or the
+    /// subset shown is not the subset the marker attests.
+    SubsetMismatch,
+    /// The descriptor's own `subsetHash` does not equal the fold of the shown
+    /// hashes — the report's answer disagrees with its own commitment before
+    /// the ledger is even asked.
+    DescriptorMismatch,
+    /// The head carries no signature from the published key — unsigned
+    /// deployments serve no note to verify, which is `Unsigned`, not a pass.
+    Unsigned,
+    /// The published key rejects the head note's signature.
+    BadSignature,
+}
+
+impl std::fmt::Display for UsageReportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Malformed(what) => write!(f, "the usage report could not be parsed ({what})"),
+            Self::MarkerMismatch => write!(
+                f,
+                "the marker's DocumentRef does not bind the subset digest"
+            ),
+            Self::CommitmentMismatch => write!(
+                f,
+                "the marker's description is not the canonical commitment the report shows"
+            ),
+            Self::Inclusion(what) => write!(f, "an entry's inclusion proof failed: {what}"),
+            Self::SubsetMismatch => write!(
+                f,
+                "the shown entries do not fold to the subset digest the marker committed"
+            ),
+            Self::DescriptorMismatch => write!(
+                f,
+                "the report's subsetHash is not the fold of the entries it shows"
+            ),
+            Self::Unsigned => write!(f, "the head carries no signature from the published key"),
+            Self::BadSignature => write!(f, "the head's signature does not verify"),
+        }
+    }
+}
+
+impl std::error::Error for UsageReportError {}
+
+/// The domain the subset digest folds under — the same constant `oxsum_core`
+/// commits with (`USAGE_REPORT_DOMAIN`), redeclared so the verifier pins the
+/// byte string and cannot drift from what was committed.
+const USAGE_REPORT_DOMAIN: &[u8] = b"oxsum/usage-report/v1";
+
+/// The document id the marker's `DocumentRef` must carry.
+const USAGE_REPORT_DOCUMENT: &str = "oxsum/usage-report/v1";
+
+/// One entry in the bundle — the entry itself, the content hash the log
+/// recorded for it, and its inclusion proof. The hash is served alongside so
+/// the verifier can `adopt_verified` the entry (recompute-and-bind) instead of
+/// trusting the bytes it was handed.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReportEntryWire {
+    entry: Entry<Draft, SCALE>,
+    content_hash: String,
+    proof: InclusionProof,
+}
+
+impl ReportEntryWire {
+    /// Recomputes the entry's content hash and binds it to the recorded one —
+    /// a tampered entry fails adoption before its proof is ever asked. On a
+    /// clean bind returns the balanced entry whose `content_hash()` is now
+    /// trustworthy.
+    fn adopt(&self) -> Result<Entry<Balanced, SCALE>, UsageReportError> {
+        let recorded = Hash::parse_hex(&self.content_hash)
+            .map_err(|_| UsageReportError::Malformed("a content hash is not hex".into()))?;
+        // adopt_verified consumes the draft; clone so the caller still holds it.
+        self.entry.clone().adopt_verified(recorded).map_err(|_| {
+            UsageReportError::Malformed(
+                "an entry's bytes do not hash to its recorded content hash".into(),
+            )
+        })
+    }
+}
+
+/// The canonical commitment the marker's description must re-serialize to.
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UsageReportCommitment<'a> {
+    v: i64,
+    end_user: &'a str,
+    from: &'a str,
+    to: &'a str,
+    entry_count: i64,
+    charged_total_minor: i64,
+    subset_hash: &'a str,
+}
+
+/// The report bundle as `GET …/usage-reports` serves it — every field the
+/// check binds, redeclared wire-only so the verifier never imports the writer.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UsageReportWire {
+    /// The marker's ledger id — carried for the caller's bookkeeping; the
+    /// checks bind the digests and the head, not the id.
+    #[allow(dead_code)]
+    report_id: String,
+    end_user: String,
+    from: String,
+    to: String,
+    entry_count: i64,
+    charged_total_minor: i64,
+    subset_hash: String,
+    marker: ReportEntryWire,
+    entries: Vec<ReportEntryWire>,
+    head: TreeHead,
+    note: Option<String>,
+    key_name: Option<String>,
+    public_key: Option<String>,
+    key_hash: Option<String>,
+}
+
+/// Verifies a signed end-user usage report (issue #261).
+///
+/// `json` is the `data` object `GET …/usage-reports` answers. `expected_origin`
+/// is the tenant's ledger origin (`oxsum/ledgers/<tenant>`) the signed head is
+/// expected to name. `key` is the published head key the caller fetched
+/// through a channel it trusts — or the deployment's own claim, the same
+/// choice `verify_signed_head` already asks for. `expected_end_user` lets the
+/// verifier name who the report should be *for*: a report minted for somebody
+/// else verifies as a signature but answers a different question.
+///
+/// Six checks, in trust order:
+///
+/// 1. The bundle parses and the descriptor is self-consistent — `subsetHash`
+///    folds the shown entries' recomputed content hashes, or the report
+///    disagrees with itself before the ledger is asked (`DescriptorMismatch`).
+/// 2. The marker's `DocumentRef` carries `oxsum/usage-report/v1` bound to the
+///    same digest — the committed marker is the commitment the descriptor
+///    describes (`MarkerMismatch`).
+/// 3. The marker's description parses as the canonical commitment and matches
+///    the descriptor's figures — `endUser`, `from`, `to`, `entryCount`,
+///    `chargedTotalMinor` — so the document the customer reads is the document
+///    committed (`CommitmentMismatch`).
+/// 4. The marker and every shown entry verify inclusion against the head —
+///    each is in the ledger the head attests (`Inclusion`).
+/// 5. `entryCount` matches the shown entries' length and `end_user` the
+///    expected one — the subset is the one the verifier asked about.
+/// 6. On a signing deployment the head note parses under `expected_origin`,
+///    attests the served head, and verifies under the published key
+///    (`Unsigned`/`BadSignature`/`HeadMismatch`-shaped failures mapped in).
+///
+/// Completeness is the org's claim, recorded in `docs/decisions.md`: the
+/// marker attests the subset and binds it to the digest, and the customer
+/// cross-checks `entryCount`/`chargedTotalMinor` against their own records —
+/// the check cannot enumerate rows the org chose never to show.
+///
+/// # Errors
+///
+/// The first check that fails, as a [`UsageReportError`].
+pub fn verify_usage_report(
+    json: &str,
+    expected_origin: &str,
+    expected_end_user: &str,
+    key: Option<&PublishedKey<'_>>,
+) -> Result<(), UsageReportError> {
+    let wire: UsageReportWire =
+        serde_json::from_str(json).map_err(|e| UsageReportError::Malformed(e.to_string()))?;
+
+    // Bind every shown entry's bytes to its recorded content hash first — a
+    // tampered row fails adoption before its proof is ever asked.
+    let marker = wire.marker.adopt()?;
+    let mut shown = Vec::with_capacity(wire.entries.len());
+    for row in &wire.entries {
+        shown.push(row.adopt()?);
+    }
+
+    // The subset digest the descriptor commits — recompute it from the shown
+    // entries' now-verified hashes before asking the marker anything.
+    let mut payload = Vec::with_capacity(shown.len() * Hash::LEN);
+    for entry in &shown {
+        payload.extend_from_slice(entry.content_hash().as_bytes());
+    }
+    let folded = Hash::digest(USAGE_REPORT_DOMAIN, &payload);
+    if folded.to_hex() != wire.subset_hash {
+        return Err(UsageReportError::DescriptorMismatch);
+    }
+
+    // The marker binds the digest — the entry it claims commits is the one
+    // whose DocumentRef names the subset.
+    let Some(document) = marker.document() else {
+        return Err(UsageReportError::MarkerMismatch);
+    };
+    let bound = document
+        .content_hash
+        .map(|h| h.to_hex())
+        .unwrap_or_default();
+    if document.id.as_str() != USAGE_REPORT_DOCUMENT || bound != wire.subset_hash {
+        return Err(UsageReportError::MarkerMismatch);
+    }
+
+    // The marker's description re-serializes to the canonical commitment the
+    // descriptor shows — the figures the customer reads are the ones committed.
+    let commitment: UsageReportCommitment<'_> = serde_json::from_str(marker.description().as_str())
+        .map_err(|e| UsageReportError::Malformed(e.to_string()))?;
+    if commitment.v != 1
+        || commitment.end_user != wire.end_user
+        || commitment.from != wire.from
+        || commitment.to != wire.to
+        || commitment.entry_count != wire.entry_count
+        || commitment.charged_total_minor != wire.charged_total_minor
+        || commitment.subset_hash != wire.subset_hash
+    {
+        return Err(UsageReportError::CommitmentMismatch);
+    }
+
+    // Membership: the marker and every shown entry include against the head.
+    if !wire.marker.proof.verify(&marker.content_hash(), &wire.head) {
+        return Err(UsageReportError::Inclusion("the report marker".into()));
+    }
+    for (i, (row, entry)) in wire.entries.iter().zip(shown.iter()).enumerate() {
+        if !row.proof.verify(&entry.content_hash(), &wire.head) {
+            return Err(UsageReportError::Inclusion(format!("entry {i}")));
+        }
+    }
+
+    // The subset is the one the verifier asked about.
+    if wire.entry_count as usize != wire.entries.len() {
+        return Err(UsageReportError::SubsetMismatch);
+    }
+    if wire.end_user != expected_end_user {
+        return Err(UsageReportError::Malformed(format!(
+            "the report is for {expected_end_user:?} but commits {:?}",
+            wire.end_user
+        )));
+    }
+
+    // The head's signature, when the deployment signs heads — the same check
+    // `verify_signed_head` runs, mapped into this report's vocabulary.
+    let Some(note) = wire.note.as_deref() else {
+        // An unsigned deployment serves no note; the ledger membership is
+        // still proven, and the head is simply unattested — the report is
+        // verified to the two digests alone.
+        return Ok(());
+    };
+    let key = key.ok_or(UsageReportError::Unsigned)?;
+    // The bundle names the key it claims signed the head; when the verifier
+    // holds the published key already, the two must agree — a bundle that names
+    // a different key than the one being trusted is not self-consistent.
+    for (served, held, what) in [
+        (wire.key_name.as_deref(), key.key_name, "key name"),
+        (wire.public_key.as_deref(), key.public_key, "public key"),
+        (wire.key_hash.as_deref(), key.key_hash, "key hash"),
+    ] {
+        if let Some(served) = served
+            && served != held
+        {
+            return Err(UsageReportError::Malformed(format!(
+                "the bundle's {what} does not match the published key"
+            )));
+        }
+    }
+    verify_signed_head(note, &wire.head, expected_origin, key).map_err(|e| match e {
+        HeadError::Malformed(what) => UsageReportError::Malformed(what),
+        HeadError::WrongOrigin => {
+            UsageReportError::Malformed("the head names a different ledger".into())
+        }
+        HeadError::HeadMismatch => {
+            UsageReportError::Malformed("the signed head does not attest the served head".into())
+        }
+        HeadError::Unsigned => UsageReportError::Unsigned,
+        HeadError::BadSignature => UsageReportError::BadSignature,
+        // verify_signed_head's consistency-only variants cannot arise here.
+        HeadError::OldHeadMismatch | HeadError::Inconsistent => {
+            UsageReportError::Malformed(e.to_string())
+        }
+    })?;
+    Ok(())
+}
+
 /// Decodes exactly `N` bytes of hex, the shape both key fields on the wire take.
 fn hex_bytes<const N: usize>(hex: &str) -> Result<[u8; N], ()> {
     let bytes = hex.as_bytes();
