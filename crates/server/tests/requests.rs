@@ -363,7 +363,7 @@ async fn the_requests_list_carries_each_requests_status_usage_and_cost() {
     // Newest first: the swept request was written last.
     let swept = &rows[0];
     assert_eq!(swept["requestId"], "req-swept");
-    assert_eq!(swept["bookedOn"], today().to_string().as_str());
+    assert_eq!(swept["bookedOn"], serde_json::to_value(today()).unwrap());
     assert_eq!(swept["model"], "mock-b");
     assert_eq!(swept["keyId"], minted_id.as_simple().to_string().as_str());
     assert_eq!(swept["kind"], "swept", "the record's own word");
@@ -371,7 +371,7 @@ async fn the_requests_list_carries_each_requests_status_usage_and_cost() {
 
     let billed = &rows[1];
     assert_eq!(billed["requestId"], "req-usage");
-    assert_eq!(billed["bookedOn"], today().to_string().as_str());
+    assert_eq!(billed["bookedOn"], serde_json::to_value(today()).unwrap());
     assert_eq!(billed["model"], "mock-a");
     assert_eq!(
         billed["keyId"],
