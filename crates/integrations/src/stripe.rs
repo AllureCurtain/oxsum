@@ -112,11 +112,11 @@ impl Stripe {
                 ("client_reference_id", deposit_id.to_string()),
                 (
                     "success_url",
-                    format!("{}/dashboard/topups?session=success", self.public_url),
+                    format!("{}/app/topup?session=success", self.public_url),
                 ),
                 (
                     "cancel_url",
-                    format!("{}/dashboard/topups?session=cancel", self.public_url),
+                    format!("{}/app/topup?session=cancel", self.public_url),
                 ),
                 ("line_items[0][quantity]", "1".to_owned()),
                 ("line_items[0][price_data][currency]", "usd".to_owned()),

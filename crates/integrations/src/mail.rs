@@ -53,14 +53,18 @@ impl Mailer {
         })
     }
 
-    /// Mails the email-verification link: `/verify-email?token=…`.
+    /// Mails the email-verification link: `/app/verify-email?token=…`.
+    ///
+    /// The link lands on the React app's page directly — the legacy
+    /// `/verify-email` path only redirects there now (issue #256), so the mail
+    /// points where the page actually lives.
     pub async fn send_verification(&self, to: &str, token: &str) -> Result<(), String> {
         self.send(
             to,
             "Verify your oxsum email",
             &format!(
                 "Someone registered this address at oxsum. Open the link within seven days \
-                 to verify it:\n\n{}/verify-email?token={}\n\nIf this was not you, ignore \
+                 to verify it:\n\n{}/app/verify-email?token={}\n\nIf this was not you, ignore \
                  this mail — the address stays unverified and nothing else happens.",
                 self.public_url, token
             ),
@@ -68,7 +72,7 @@ impl Mailer {
         .await
     }
 
-    /// Mails the password-reset link: `/reset-password?token=…`.
+    /// Mails the password-reset link: `/app/reset-password?token=…`.
     pub async fn send_password_reset(&self, to: &str, token: &str) -> Result<(), String> {
         self.send(
             to,
@@ -76,7 +80,7 @@ impl Mailer {
             &format!(
                 "Someone asked to reset the password of the oxsum account registered with \
                  this address. Open the link within one hour to choose a new one:\n\n\
-                 {}/reset-password?token={}\n\nThe link works once. If this was not you, \
+                 {}/app/reset-password?token={}\n\nThe link works once. If this was not you, \
                  ignore this mail — the password is unchanged.",
                 self.public_url, token
             ),

@@ -217,9 +217,9 @@ pub(crate) struct OAuthCallbackQuery {
 }
 
 /// Finishes a GitHub OAuth login. The caller is a browser mid-redirect, so the
-/// answer is always a `Location` — `/dashboard` with the session cookie on
-/// success, `/login?error=oauth` on any failure; the detail goes to the logs,
-/// never to the query string the page would show.
+/// answer is always a `Location` — `/app` with the session cookie on success,
+/// `/app/login?error=oauth` on any failure; the detail goes to the logs, never
+/// to the query string the page would show.
 pub(crate) async fn oauth_github_callback(
     State(state): State<AppState>,
     ApiQuery(query): ApiQuery<OAuthCallbackQuery>,
@@ -228,7 +228,7 @@ pub(crate) async fn oauth_github_callback(
         Ok(response) => response,
         Err(why) => {
             tracing::warn!(error = %why, "github oauth login failed");
-            Redirect::to("/login?error=oauth").into_response()
+            Redirect::to("/app/login?error=oauth").into_response()
         }
     }
 }
@@ -268,7 +268,7 @@ async fn oauth_github_finish(
         .oauth_login(&identity, state.config.signup() == Signup::Open)
         .await
         .map_err(|e| e.to_string())?;
-    let mut response = Redirect::to("/dashboard").into_response();
+    let mut response = Redirect::to("/app").into_response();
     response.headers_mut().insert(
         SET_COOKIE,
         HeaderValue::from_str(&session_cookie(
