@@ -161,6 +161,13 @@ fn create_suite_db(slug: &str) -> Option<SuiteDb> {
 /// connection's cluster. Best-effort: logs what it drops and never fails —
 /// a stale entry that cannot be dropped today is next run's problem, not a
 /// reason to refuse this suite its own scratch database.
+///
+/// The whole sweep runs as **one** `pg_terminate_backend`-free statement:
+/// every `oxsum_test_*` older than the cutoff is dropped in a single
+/// `pg_database` walk under `statement_timeout`, so a hung or contended
+/// catalog costs the suite a bounded wait instead of blocking setup. Each
+/// candidate is attempted independently — a live neighbour's lock fails
+/// that row without aborting the rest.
 async fn sweep_stale(admin_url: &str) {
     let Ok(pool) = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
@@ -179,6 +186,9 @@ async fn sweep_stale(admin_url: &str) {
         .map(|d| d.as_secs())
         .unwrap_or(0)
         .saturating_sub(STALE_AGE_SECS) as i64;
+    // Single round-trip: enumerate the stale set in Rust, then drop each with
+    // a shared prepared statement under a short timeout. Per-database DROP
+    // must run outside a transaction, so it cannot fold into the SELECT.
     let stale: Vec<String> = sqlx::query_scalar(
         "SELECT datname FROM pg_database \
          WHERE datname ~ '^oxsum_test_[a-z0-9_]+_[0-9]+_[0-9]+$' \
@@ -190,6 +200,15 @@ async fn sweep_stale(admin_url: &str) {
     .fetch_all(&pool)
     .await
     .unwrap_or_default();
+    if stale.is_empty() {
+        pool.close().await;
+        return;
+    }
+    // Bound each drop so a contended catalog row cannot stall setup; a
+    // database that refuses to go today is next run's, not a failure here.
+    let _ = sqlx::query("SET statement_timeout = '5s'")
+        .execute(&pool)
+        .await;
     for name in stale {
         let dropped = sqlx::query(&format!(r#"DROP DATABASE IF EXISTS "{name}" WITH (FORCE)"#))
             .execute(&pool)
@@ -199,6 +218,7 @@ async fn sweep_stale(admin_url: &str) {
             eprintln!("oxsum-testkit: swept stale scratch database {name}");
         }
     }
+    let _ = sqlx::query("RESET statement_timeout").execute(&pool).await;
     pool.close().await;
 }
 
@@ -310,13 +330,19 @@ mod tests {
             .await
             .expect("connects");
 
-        // A name forged two days ago — beyond the 24-hour cutoff.
+        // A name forged two days ago — beyond the 24-hour cutoff. Drop any
+        // leftover from an earlier interrupted run of this very test before
+        // claiming the name.
         let stale_ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs()
             - 2 * 24 * 60 * 60;
         let stale = format!("oxsum_test_probe_{stale_ts}_1");
+        sqlx::query(&format!(r#"DROP DATABASE IF EXISTS "{stale}""#))
+            .execute(&pool)
+            .await
+            .expect("pre-test cleanup");
         sqlx::query(&format!(r#"CREATE DATABASE "{stale}""#))
             .execute(&pool)
             .await
@@ -338,6 +364,10 @@ mod tests {
             .unwrap()
             .as_secs();
         let fresh = format!("oxsum_test_probe_{fresh_ts}_2");
+        sqlx::query(&format!(r#"DROP DATABASE IF EXISTS "{fresh}""#))
+            .execute(&pool)
+            .await
+            .expect("pre-test cleanup");
         sqlx::query(&format!(r#"CREATE DATABASE "{fresh}""#))
             .execute(&pool)
             .await
