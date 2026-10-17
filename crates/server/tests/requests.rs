@@ -1,12 +1,11 @@
-//! HTTP tests for the requests page (issue #55).
+//! HTTP tests for the requests list (issue #55).
 //!
-//! What the page promises is one row per settled gateway request — its status, the tokens
-//! it used and what it charged (an integer in minor units in the payload), with the date, the request id, the key and
-//! the model that name it — filterable by key and by model out of the URL, and an empty
-//! table with a message when nothing matches. These tests seed organizations, write the
-//! requests the gateway itself writes (a hold under a key, then the settlement whose
-//! record carries the model, the token counts and the charge), and read the payload the
-//! page consumes through its own server function, plus the page as it is rendered.
+//! What the API promises is one row per settled gateway request — its status, the tokens
+//! it used and what it charged (an integer in minor units in the payload), with the date,
+//! the request id, the key and the model that name it. These tests seed organizations,
+//! write the requests the gateway itself writes (a hold under a key, then the settlement
+//! whose record carries the model, the token counts and the charge), and read
+//! `GET /api/v1/billing-records` the way the React requests page does.
 //!
 //! Needs DATABASE_URL and skips without it, like the other server suites.
 
@@ -60,7 +59,7 @@ macro_rules! app_or_skip {
     };
 }
 
-/// One response, with the body kept as bytes: the page is HTML, the server functions JSON.
+/// One response, with the body kept as bytes.
 struct Res {
     status: StatusCode,
     headers: HeaderMap,
@@ -68,10 +67,6 @@ struct Res {
 }
 
 impl Res {
-    fn text(&self) -> String {
-        String::from_utf8(self.body.clone()).expect("the body is text")
-    }
-
     fn json(&self) -> Value {
         serde_json::from_slice(&self.body).unwrap_or(Value::Null)
     }
@@ -104,12 +99,11 @@ async fn call(
 }
 
 /// A registered organization: the tenant its ledger lives in, the session that reads the
-/// page, and the key the organization signed up with.
+/// list, and the key the organization signed up with.
 struct Account {
     tenant_id: String,
     cookie: String,
     key_id: Uuid,
-    prefix: String,
 }
 
 /// Registers a fresh organization and logs in; the signup key is the first one it spends
@@ -143,10 +137,6 @@ async fn account(app: &Router, name: &str) -> Account {
         .expect("registration mints a key")
         .parse()
         .expect("the key id is a uuid");
-    let prefix = registered["data"]["apiKey"]["prefix"]
-        .as_str()
-        .expect("the key has a display prefix")
-        .to_owned();
     let res = call(
         app,
         "POST",
@@ -171,7 +161,6 @@ async fn account(app: &Router, name: &str) -> Account {
         tenant_id,
         cookie,
         key_id,
-        prefix,
     }
 }
 
@@ -302,80 +291,44 @@ async fn seed_request(
         .expect("the settlement lands");
 }
 
-/// The page's rows, the way the page's own code asks for it: `GET
-/// /dashboard/requests` with the session cookie, the two filters in the query
-/// string. The Topcoat dashboard renders server-side — there is no
-/// `/_pages/get_requests` server function anymore — so the helper parses the
-/// table back out of the HTML.
+/// The session's settled-turn rows, the way the React requests page asks for them:
+/// `GET /api/v1/billing-records` — then narrowed by key id and model the way the
+/// app's own filters narrow the list it already holds.
 async fn requests(
     app: &Router,
     cookie: &str,
-    key: Option<&str>,
+    key_id: Option<Uuid>,
     model: Option<&str>,
-) -> Vec<Vec<String>> {
-    let mut uri = String::from("/dashboard/requests");
-    let mut query = Vec::new();
-    if let Some(key) = key {
-        query.push(format!("key={}", encode(key)));
-    }
-    if let Some(model) = model {
-        query.push(format!("model={}", encode(model)));
-    }
-    if !query.is_empty() {
-        uri.push('?');
-        uri.push_str(&query.join("&"));
-    }
-    let req = Request::builder()
-        .method("GET")
-        .uri(uri)
-        .header("cookie", format!("oxsum_session={cookie}"))
-        .body(Body::empty())
-        .unwrap();
-    let res = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(res.status(), StatusCode::OK, "the requests page answers");
-    let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    let html = String::from_utf8(bytes.to_vec()).expect("the page is UTF-8");
-    // The table renders one `<tr>` per row, six `<td>` cells each:
-    // request, booked, model, key, status, cost.
-    html.split("<tr>")
-        .filter_map(|row| {
-            let mut cells = Vec::new();
-            let mut rest = row;
-            while let Some(start) = rest.find("<td>") {
-                rest = &rest[start + "<td>".len()..];
-                if let Some(end) = rest.find("</td>") {
-                    cells.push(rest[..end].to_owned());
-                    rest = &rest[end + "</td>".len()..];
-                } else {
-                    break;
-                }
-            }
-            if cells.len() == 6 { Some(cells) } else { None }
+) -> Vec<Value> {
+    let res = call(
+        app,
+        "GET",
+        "/api/v1/billing-records?limit=200",
+        None,
+        Some(cookie),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "the requests list answers");
+    res.json()["data"]["rows"]
+        .as_array()
+        .expect("the list shape")
+        .iter()
+        .filter(|row| {
+            key_id.is_none_or(|id| row["keyId"] == id.as_simple().to_string().as_str())
+                && model.is_none_or(|m| row["model"] == m)
         })
+        .cloned()
         .collect()
 }
 
-/// One value of the query string the page's filters travel in. The prefixes and
-/// model names these tests use need no encoding, but a value with a reserved
-/// character in it must not split the query string it sits in.
-fn encode(value: &str) -> String {
-    value
-        .replace('%', "%25")
-        .replace('&', "%26")
-        .replace('=', "%3D")
-        .replace('+', "%2B")
-        .replace(' ', "+")
-}
-
-/// Each request is one row with its status and its cost — as credits, like every
-/// other amount in the dashboard — beside the date, the request id, the key
-/// and the model that name it, newest first.
+/// Each request is one row with its status and its cost in minor units, beside the
+/// date, the request id, the key and the model that name it, newest first.
 #[tokio::test]
-async fn the_requests_page_lists_each_requests_status_usage_and_cost() {
+async fn the_requests_list_carries_each_requests_status_usage_and_cost() {
     let (app, db) = app_or_skip!();
     let account = account(&app, "requests-rows").await;
     top_up(&app, &account.cookie, 5_000_000).await;
-    let (minted_id, minted_prefix) = mint_key(&app, &account.cookie, "second").await;
+    let (minted_id, _minted_prefix) = mint_key(&app, &account.cookie, "second").await;
     let tenants = Tenants::new(db.pool().clone());
     seed_request(
         &tenants,
@@ -409,33 +362,37 @@ async fn the_requests_page_lists_each_requests_status_usage_and_cost() {
 
     // Newest first: the swept request was written last.
     let swept = &rows[0];
-    assert_eq!(swept[0], "req-swept");
-    assert_eq!(swept[1], today().to_string());
-    assert_eq!(swept[2], "mock-b");
-    assert_eq!(swept[3], minted_prefix.as_str());
-    assert_eq!(swept[4], "swept", "the record's own word");
-    assert_eq!(swept[5], "0.000000", "a swept turn charged nothing");
+    assert_eq!(swept["requestId"], "req-swept");
+    assert_eq!(swept["bookedOn"], today().to_string().as_str());
+    assert_eq!(swept["model"], "mock-b");
+    assert_eq!(swept["keyId"], minted_id.as_simple().to_string().as_str());
+    assert_eq!(swept["kind"], "swept", "the record's own word");
+    assert_eq!(swept["chargedMinor"], 0, "a swept turn charged nothing");
 
     let billed = &rows[1];
-    assert_eq!(billed[0], "req-usage");
-    assert_eq!(billed[1], today().to_string());
-    assert_eq!(billed[2], "mock-a");
-    assert_eq!(billed[3], account.prefix.as_str());
-    assert_eq!(billed[4], "usage");
+    assert_eq!(billed["requestId"], "req-usage");
+    assert_eq!(billed["bookedOn"], today().to_string().as_str());
+    assert_eq!(billed["model"], "mock-a");
     assert_eq!(
-        billed[5], "0.000316",
-        "what the settlement charged, as credits"
+        billed["keyId"],
+        account.key_id.as_simple().to_string().as_str()
+    );
+    assert_eq!(billed["kind"], "usage");
+    assert_eq!(
+        billed["chargedMinor"], 316,
+        "what the settlement charged, in minor units"
     );
 }
 
-/// The filters are the page's URL: one by key, one by model, and both together — including
-/// the combination that matches nothing, which is an empty list and not an error.
+/// The rows carry the key and the model that name each turn, so the app's filters
+/// narrow by either — including the combination that matches nothing, which is an
+/// empty list and not an error.
 #[tokio::test]
-async fn the_request_filters_narrow_by_key_and_by_model() {
+async fn the_request_rows_narrow_by_key_and_by_model() {
     let (app, db) = app_or_skip!();
     let account = account(&app, "requests-filters").await;
     top_up(&app, &account.cookie, 5_000_000).await;
-    let (minted_id, minted_prefix) = mint_key(&app, &account.cookie, "second").await;
+    let (minted_id, _minted_prefix) = mint_key(&app, &account.cookie, "second").await;
     let tenants = Tenants::new(db.pool().clone());
     seed_request(
         &tenants,
@@ -468,110 +425,42 @@ async fn the_request_filters_narrow_by_key_and_by_model() {
     assert_eq!(requests(&app, &account.cookie, None, None).await.len(), 2);
 
     // By key: only the turns that key paid.
-    let by_key = requests(&app, &account.cookie, Some(&account.prefix), None).await;
+    let by_key = requests(&app, &account.cookie, Some(account.key_id), None).await;
     assert_eq!(by_key.len(), 1, "{by_key:?}");
-    assert_eq!(by_key[0][0], "req-a");
-    let by_other_key = requests(&app, &account.cookie, Some(&minted_prefix), None).await;
+    assert_eq!(by_key[0]["requestId"], "req-a");
+    let by_other_key = requests(&app, &account.cookie, Some(minted_id), None).await;
     assert_eq!(by_other_key.len(), 1, "{by_other_key:?}");
-    assert_eq!(by_other_key[0][0], "req-b");
+    assert_eq!(by_other_key[0]["requestId"], "req-b");
 
     // By model: only the turns that model priced.
     let by_model = requests(&app, &account.cookie, None, Some("mock-b")).await;
     assert_eq!(by_model.len(), 1, "{by_model:?}");
-    assert_eq!(by_model[0][0], "req-b");
-    assert_eq!(by_model[0][4], "estimated");
+    assert_eq!(by_model[0]["requestId"], "req-b");
+    assert_eq!(by_model[0]["kind"], "estimated");
 
     // Both together: the one turn that is both.
-    let both = requests(&app, &account.cookie, Some(&account.prefix), Some("mock-a")).await;
+    let both = requests(&app, &account.cookie, Some(account.key_id), Some("mock-a")).await;
     assert_eq!(both.len(), 1, "{both:?}");
-    assert_eq!(both[0][0], "req-a");
+    assert_eq!(both[0]["requestId"], "req-a");
 
     // A combination that matches nothing: the key pays for one model, not the other.
-    let nothing = requests(&app, &account.cookie, Some(&account.prefix), Some("mock-b")).await;
+    let nothing = requests(&app, &account.cookie, Some(account.key_id), Some("mock-b")).await;
     assert!(nothing.is_empty(), "no rows, and no error: {nothing:?}");
 }
 
-/// An empty result is an empty table with a message, not an error: the page renders its
-/// filters out of the query string, and says why it has nothing to show.
+/// The list needs a session like every other organization read; without one it
+/// answers a refusal, not a shell.
 #[tokio::test]
-async fn the_requests_page_renders_its_filters_and_an_empty_table() {
-    let (app, db) = app_or_skip!();
-    let account = account(&app, "requests-page").await;
-    top_up(&app, &account.cookie, 5_000_000).await;
-    let tenants = Tenants::new(db.pool().clone());
-    seed_request(
-        &tenants,
-        &account.tenant_id,
-        account.key_id,
-        "req-page",
-        "mock-a",
-        SettlementKind::Usage,
-        116,
-        100,
-        316,
-        400,
-    )
-    .await;
-
-    // The filter the URL carries is the filter the page reads: the row's cost is rendered
-    // as credits, like every other amount in the dashboard, and the key filter fills the
-    // form's field.
-    let filtered = call(
-        &app,
-        "GET",
-        &format!("/dashboard/requests?key={}", account.prefix),
-        None,
-        Some(&account.cookie),
-    )
-    .await;
-    assert_eq!(filtered.status, StatusCode::OK);
-    let html = filtered.text();
-    assert!(html.contains("req-page"), "the row is rendered: {html}");
-    assert!(
-        html.contains(">0.000316<"),
-        "the cost is formatted as credits, like every other amount: {html}"
-    );
-    assert!(
-        !html.contains(">316<"),
-        "the page never shows the bare integer: {html}"
-    );
-    assert!(
-        html.contains(&format!("value=\"{}\"", account.prefix)),
-        "the filter is filled from the URL: {html}"
-    );
-
-    // A filter that matches nothing: 200, the table's header, and a message.
-    let empty = call(
-        &app,
-        "GET",
-        "/dashboard/requests?key=oxs-nothing&model=no-such-model",
-        None,
-        Some(&account.cookie),
-    )
-    .await;
-    assert_eq!(empty.status, StatusCode::OK);
-    let html = empty.text();
-    assert!(
-        html.contains("No requests match these filters."),
-        "an empty result says so: {html}"
-    );
-    assert!(html.contains("<th"), "the empty table keeps its header");
-    assert!(!html.contains("req-page"), "and lists nothing: {html}");
-
-    // The page needs a session like every other dashboard page; without one the
-    // server redirects to the login page instead of rendering a shell.
-    let anonymous = call(&app, "GET", "/dashboard/requests", None, None).await;
-    assert_eq!(
-        anonymous.status,
-        StatusCode::SEE_OTHER,
-        "the guard redirects"
-    );
+async fn the_requests_list_needs_a_session() {
+    let (app, _db) = app_or_skip!();
+    let res = call(&app, "GET", "/api/v1/billing-records", None, None).await;
+    assert_eq!(res.status, StatusCode::UNAUTHORIZED, "the list refuses");
 }
 
 /// One organization never reads another's requests: the rows come out of the organization's
 /// own ledger, and the keys that name them are its own.
 #[tokio::test]
-async fn the_requests_page_shows_only_the_sessions_organization() {
+async fn the_requests_list_shows_only_the_sessions_organization() {
     let (app, db) = app_or_skip!();
     let first = account(&app, "requests-first").await;
     let second = account(&app, "requests-second").await;
@@ -608,9 +497,12 @@ async fn the_requests_page_shows_only_the_sessions_organization() {
 
     let mine = requests(&app, &first.cookie, None, None).await;
     assert_eq!(mine.len(), 1, "{mine:?}");
-    assert_eq!(mine[0][0], "req-first");
-    assert_eq!(mine[0][3], first.prefix.as_str());
+    assert_eq!(mine[0]["requestId"], "req-first");
+    assert_eq!(
+        mine[0]["keyId"],
+        first.key_id.as_simple().to_string().as_str()
+    );
     let theirs = requests(&app, &second.cookie, None, None).await;
     assert_eq!(theirs.len(), 1, "{theirs:?}");
-    assert_eq!(theirs[0][0], "req-second");
+    assert_eq!(theirs[0]["requestId"], "req-second");
 }

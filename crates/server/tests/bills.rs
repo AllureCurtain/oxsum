@@ -1,14 +1,13 @@
-//! HTTP tests for the bills page and its two exports (issue #90).
+//! HTTP tests for the bills API and its two export downloads (issue #90).
 //!
-//! What the page promises is the organization's transactions — top-ups, adjustments
-//! and settled requests — newest first, each with its content hash, a signed amount
-//! in credits and a per-row verify link; what the exports promise is that same list
-//! as a file a browser saves, with the same fields in both and the amount as the
-//! ledger's signed integer in minor units. A member reads only what their own keys
-//! paid plus the key-less organization history, and the proof-bundle read the
-//! verify links use answers only inside the session's scope. These tests seed
-//! through the wallet API and the gateway's own hold/settle pair, then read the
-//! page, the page's server functions and both downloads.
+//! What the API promises is the organization's transactions — top-ups, adjustments
+//! and settled requests — newest first, each with its content hash and the amount
+//! as the ledger's signed integer in minor units; what the exports promise is that
+//! same list as a file a browser saves, with the same fields in both. A member
+//! reads only what their own keys paid plus the key-less organization history, and
+//! the proof-bundle read the verify links use answers only inside the session's
+//! scope. These tests seed through the wallet API and the gateway's own
+//! hold/settle pair, then read `/api/v1/bills` and both downloads.
 //!
 //! Needs DATABASE_URL and skips without it, like the other server suites.
 
@@ -114,13 +113,15 @@ async fn call(
     }
 }
 
-/// The bills page's HTML, the way the page's own code asks for it: `GET
-/// /dashboard/bills` with the session cookie. The Topcoat dashboard renders
-/// server-side — there is no `/_pages/get_bills` server function anymore.
-async fn bills_html(app: &Router, cookie: &str) -> String {
-    let res = call(app, "GET", "/dashboard/bills", None, Some(cookie)).await;
-    assert_eq!(res.status, StatusCode::OK, "the bills page renders");
-    res.text()
+/// The session's transaction rows, the way the React bills page asks for them:
+/// `GET /api/v1/bills`.
+async fn bills_rows(app: &Router, cookie: &str) -> Vec<Value> {
+    let res = call(app, "GET", "/api/v1/bills", None, Some(cookie)).await;
+    assert_eq!(res.status, StatusCode::OK, "the bills list answers");
+    res.json()["data"]["rows"]
+        .as_array()
+        .expect("the list shape")
+        .clone()
 }
 
 /// Minimal percent-encoding for the form bodies the tests post.
@@ -239,7 +240,7 @@ async fn login(app: &Router, email: &str) -> String {
 
 /// Gives `account` a `member` membership in `organization_id`, an hour before the
 /// personal membership signup created, so the account's next login acts as this
-/// organization — the members suite's seeding, for the page's scope tests.
+/// organization — the members suite's seeding, for the scope tests.
 async fn membership(pool: &PgPool, organization_id: Uuid, user_id: Uuid) {
     sqlx::query(
         "INSERT INTO oxsum.memberships (organization_id, user_id, role, created_at) \
@@ -473,11 +474,11 @@ const JSON_FIELDS: [&str; 9] = [
     "request",
 ];
 
-/// The page lists the organization's transactions — top-ups and settled entries, not
+/// The API lists the organization's transactions — top-ups and settled entries, not
 /// the holds between them — and both exports carry the same rows with the same
 /// fields.
 #[tokio::test]
-async fn the_bills_page_lists_transactions_and_the_exports_carry_them() {
+async fn the_bills_list_carries_transactions_and_the_exports_carry_them() {
     let (app, _db) = app_or_skip!();
     let org = account(&app, "bills").await;
 
@@ -486,51 +487,38 @@ async fn the_bills_page_lists_transactions_and_the_exports_carry_them() {
     // The posting date is the server's current UTC date (crates/server/AGENTS.md).
     let today = today().to_string();
 
-    // The page: both top-ups and both settlements, newest first, and neither hold.
-    let res = call(&app, "GET", "/dashboard/bills", None, Some(&org.cookie)).await;
-    assert_eq!(res.status, StatusCode::OK, "the bills page renders");
-    let html = res.text();
-    assert!(
-        html.contains("Bills"),
-        "the page names itself: {}",
-        &html[..html.len().min(400)]
-    );
+    // The list: both top-ups and both settlements, newest first, and neither hold.
+    let rows = bills_rows(&app, &org.cookie).await;
+    let hashes: Vec<&str> = rows
+        .iter()
+        .map(|row| row["contentHash"].as_str().unwrap())
+        .collect();
     for (name, hash) in [
         ("the charged settlement", &charged.content_hash),
         ("the free settlement", &free.content_hash),
         ("a top-up", &charged.top_up_hash),
     ] {
-        assert!(html.contains(hash), "{name} is a listed transaction");
+        assert!(
+            hashes.contains(&hash.as_str()),
+            "{name} is a listed transaction"
+        );
     }
     assert!(
-        !html.contains(&charged.hold_hash),
+        !hashes.contains(&charged.hold_hash.as_str()),
         "a hold bills nothing yet and is not listed"
     );
-    // The amount column is money a reader sees, so it is the dashboard's credits
-    // formatting with the ledger's sign: a charge reads negative, a top-up positive.
-    assert!(
-        html.contains(">-0.000316<"),
-        "a settled charge is signed credits, like every other amount in the dashboard"
-    );
-    assert!(
-        html.contains(">+0.001400<"),
-        "the top-up of 1_400 minor units reads with its plus"
-    );
-    assert!(
-        !html.contains(">316<"),
-        "the page never shows the bare integer"
-    );
-    // Every row links to /verify with its entry named, so a bill verifies straight
-    // from the page.
-    assert!(
-        html.contains(&format!("/verify?entry={}", charged.entry_id)),
-        "the row names its entry for the verify page"
-    );
-    assert!(
-        html.contains("/dashboard/bills/export.csv")
-            && html.contains("/dashboard/bills/export.json"),
-        "the page offers both exports"
-    );
+    // The amount is the ledger's signed integer in minor units: a charge reads
+    // negative, a top-up positive.
+    let charged_row = rows
+        .iter()
+        .find(|row| row["entryId"] == charged.entry_id.as_str())
+        .expect("the charged settlement is a row");
+    assert_eq!(charged_row["amountMinor"], -316);
+    let top_up_row = rows
+        .iter()
+        .find(|row| row["entryId"] == charged.top_up_entry_id.as_str())
+        .expect("the top-up is a row");
+    assert_eq!(top_up_row["amountMinor"], 1_400);
 
     // The CSV: a file, with the field list as its header and one row per transaction,
     // newest first — the free settlement, its top-up, the charged settlement, its
@@ -657,7 +645,7 @@ async fn the_bills_page_lists_transactions_and_the_exports_carry_them() {
     }
 }
 
-/// Both exports need the session the page needs: without it they answer a refusal, not
+/// Both exports need a session: without it they answer a refusal, not
 /// another organization's records.
 #[tokio::test]
 async fn the_exports_need_a_session() {
@@ -680,8 +668,8 @@ async fn the_exports_need_a_session() {
     }
 }
 
-/// The bills page and its exports are the acting organization's records only, whatever
-/// else the shared database holds.
+/// The bills surface is the acting organization's records only, whatever else the
+/// shared database holds.
 #[tokio::test]
 async fn one_organization_never_sees_anothers_bills() {
     let (app, _db) = app_or_skip!();
@@ -726,26 +714,16 @@ async fn one_organization_never_sees_anothers_bills() {
         "another organization's transactions must not appear"
     );
 
-    // The page itself needs a session: without one it sends the visitor to
-    // `/login` rather than rendering anyone's records.
-    let page = call(&app, "GET", "/dashboard/bills", None, None).await;
-    assert_eq!(
-        page.status,
-        StatusCode::SEE_OTHER,
-        "no session renders no page"
-    );
-    assert!(
-        page.headers
-            .get("location")
-            .is_some_and(|location| location == "/login"),
-        "the login page is where sessions start"
-    );
+    // The list itself needs a session: without one it answers a refusal, not
+    // anyone's records.
+    let res = call(&app, "GET", "/api/v1/bills", None, None).await;
+    assert_eq!(res.status, StatusCode::UNAUTHORIZED, "no session, no list");
 }
 
-/// A member's bills are the requests page's rule: the transactions their own keys
+/// A member's bills are the requests list's rule: the transactions their own keys
 /// paid, plus the organization's shared history — a top-up carries no key, so every
-/// member sees it — and never another member's spend. The export is the page's rows,
-/// so it filters the same way.
+/// member sees it — and never another member's spend. The export is the list's
+/// rows, so it filters the same way.
 #[tokio::test]
 async fn a_member_reads_own_key_spend_and_the_shared_history() {
     let (app, db) = app_or_skip!();
@@ -779,21 +757,25 @@ async fn a_member_reads_own_key_spend_and_the_shared_history() {
 
     // The member's rows: their own settlement and the organization's top-up — the
     // owner's settlement is another member's spend and must not appear.
-    let mine = bills_html(&app, &member_cookie).await;
+    let mine = bills_rows(&app, &member_cookie).await;
+    let descriptions: Vec<&str> = mine
+        .iter()
+        .map(|row| row["description"].as_str().unwrap_or_default())
+        .collect();
     assert!(
-        mine.contains("req-member"),
+        descriptions.iter().any(|d| d.contains("req-member")),
         "the member's own settlement is listed"
     );
     assert!(
-        mine.contains("topUp"),
+        mine.iter().any(|row| row["kind"] == "topUp"),
         "the key-less organization top-up is shared history"
     );
     assert!(
-        !mine.contains("req-owner"),
-        "another member's spend must not appear on the page"
+        !descriptions.iter().any(|d| d.contains("req-owner")),
+        "another member's spend must not appear in the list"
     );
 
-    // The export is the page's rows as a file, so it filters the same way.
+    // The export is the list's rows as a file, so it filters the same way.
     let csv = call(
         &app,
         "GET",
@@ -810,9 +792,14 @@ async fn a_member_reads_own_key_spend_and_the_shared_history() {
     );
 
     // The owner reads everything: both turns and the top-up.
-    let all = bills_html(&app, &owner.cookie).await;
+    let all = bills_rows(&app, &owner.cookie).await;
+    let descriptions: Vec<&str> = all
+        .iter()
+        .map(|row| row["description"].as_str().unwrap_or_default())
+        .collect();
     assert!(
-        all.contains("req-owner") && all.contains("req-member"),
+        descriptions.iter().any(|d| d.contains("req-owner"))
+            && descriptions.iter().any(|d| d.contains("req-member")),
         "the owner sees every member's spend"
     );
 }
@@ -890,9 +877,9 @@ async fn the_verify_page_checks_bundles_on_the_server() {
     );
 }
 
-/// The bills page is the session's scope made visible: a member's page carries
-/// verify links for their own rows, and never names another member's entries —
-/// there is no link to follow and nothing to leak.
+/// The bills list is the session's scope made visible: a member's rows carry the
+/// entry ids their verify links need, and never name another member's entries —
+/// there is nothing to leak.
 #[tokio::test]
 async fn a_member_never_sees_another_members_entries() {
     let (app, db) = app_or_skip!();
@@ -915,19 +902,28 @@ async fn a_member_never_sees_another_members_entries() {
         .await;
     }
 
-    let member_html = bills_html(&app, &member_cookie).await;
+    let member_rows = bills_rows(&app, &member_cookie).await;
     assert!(
-        member_html.contains("/verify?entry="),
-        "the member's own rows link to the verify page"
+        member_rows.iter().all(|row| row["entryId"].is_string()),
+        "the member's own rows name their entries for verification"
     );
+    let descriptions: Vec<&str> = member_rows
+        .iter()
+        .map(|row| row["description"].as_str().unwrap_or_default())
+        .collect();
     assert!(
-        !member_html.contains("req-owner"),
-        "another member's entries are never named on the member's page"
+        !descriptions.iter().any(|d| d.contains("req-owner")),
+        "another member's entries are never named in the member's list"
     );
 
-    let owner_html = bills_html(&app, &owner.cookie).await;
+    let owner_rows = bills_rows(&app, &owner.cookie).await;
+    let descriptions: Vec<&str> = owner_rows
+        .iter()
+        .map(|row| row["description"].as_str().unwrap_or_default())
+        .collect();
     assert!(
-        owner_html.contains("req-owner") && owner_html.contains("req-member"),
+        descriptions.iter().any(|d| d.contains("req-owner"))
+            && descriptions.iter().any(|d| d.contains("req-member")),
         "the owner sees every member's spend"
     );
 }

@@ -1,10 +1,9 @@
-//! The chat page's flow, end to end at the HTTP layer: login → top-up → pick a model
+//! The chat flow, end to end at the HTTP layer: login → top-up → pick a model
 //! → streaming chat turn → billing events on the WebSocket → proof verification.
 //!
-//! The page itself is server-rendered Topcoat plus vanilla JavaScript; what this pins
-//! is the path the page drives: every endpoint the page calls, in the order it calls
-//! them, against a scripted upstream. The literal one-browser-session walkthrough stays
-//! a manual check for the owner.
+//! The React app at `/app` drives this path; what this pins is every endpoint the
+//! app calls, in the order it calls them, against a scripted upstream. The literal
+//! one-browser-session walkthrough stays a manual check for the owner.
 //!
 //! Needs DATABASE_URL and skips without it, like the other server suites.
 
@@ -188,6 +187,7 @@ struct Res {
     status: StatusCode,
     body: Value,
     set_cookie: Option<String>,
+    location: Option<String>,
 }
 
 /// One HTTP call against the app, with an API key and/or a session cookie.
@@ -226,17 +226,21 @@ async fn call_raw(
         .expect("the test's own request");
     let res = app.clone().oneshot(req).await.expect("the router answers");
     let status = res.status();
-    let set_cookie = res
-        .headers()
-        .get("set-cookie")
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned);
+    let header = |name: &str| {
+        res.headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+    };
+    let set_cookie = header("set-cookie");
+    let location = header("location");
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
     let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     Res {
         status,
         body,
         set_cookie,
+        location,
     }
 }
 
@@ -321,13 +325,13 @@ async fn next_json(
 // ── the flow ─────────────────────────────────────────────────────────────────
 
 /// Login → top-up → pick a model → streaming chat → live billing → proof verification:
-/// the whole path the chat page drives, without touching the page itself.
+/// the whole path the chat page drives, without touching the app itself.
 #[tokio::test]
 async fn topup_chat_billing_and_proof() {
     let world = world!();
 
-    // The chat page renders for the session.
-    let (status, _) = call(
+    // The retired Topcoat chat page permanently redirects to its React twin.
+    let res = call_raw(
         &world.app,
         "GET",
         "/dashboard/chat",
@@ -336,7 +340,12 @@ async fn topup_chat_billing_and_proof() {
         Some(&world.cookie),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "the chat page renders");
+    assert_eq!(
+        res.status,
+        StatusCode::MOVED_PERMANENTLY,
+        "the old chat page moved"
+    );
+    assert_eq!(res.location.as_deref(), Some("/app/chat"));
 
     // Top-up through the session, the way the page's form does.
     let (status, body) = call(

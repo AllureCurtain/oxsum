@@ -53,10 +53,8 @@ macro_rules! app_or_skip {
 
 struct Res {
     status: StatusCode,
-    /// The body, parsed as JSON; `Value::Null` for a body that is not JSON (an HTML page).
+    /// The body, parsed as JSON.
     body: Value,
-    /// The body as it arrived, for the pages.
-    text: String,
     set_cookie: Option<String>,
 }
 
@@ -96,7 +94,6 @@ async fn call(
     Res {
         status,
         body,
-        text: String::from_utf8_lossy(&bytes).into_owned(),
         set_cookie,
     }
 }
@@ -189,97 +186,38 @@ async fn seed_membership(pool: &PgPool, organization_id: Uuid, account: &Account
     .expect("seeds a membership");
 }
 
-/// One HTML page of the dashboard, fetched the way the browser fetches it: the
-/// Topcoat dashboard renders server-side, so there are no `/_pages/*` server
-/// functions anymore.
-async fn get_html(app: &Router, path: &str, cookie: Option<&str>) -> (StatusCode, String) {
-    let mut req = Request::builder().method("GET").uri(path);
-    if let Some(cookie) = cookie {
-        req = req.header("cookie", format!("oxsum_session={cookie}"));
-    }
-    let res = app
+/// The members list the API answers for the session: `GET /api/v1/org/members`.
+async fn members_res(app: &Router, cookie: Option<&str>) -> Res {
+    call(app, "GET", "/api/v1/org/members", None, None, cookie).await
+}
+
+/// The members list, asserted to have loaded: the `members` array.
+async fn members(app: &Router, cookie: &str) -> Vec<Value> {
+    let res = members_res(app, Some(cookie)).await;
+    assert_eq!(res.status, StatusCode::OK, "the members list did not load");
+    res.body["data"]["members"]
+        .as_array()
+        .expect("the list shape")
         .clone()
-        .oneshot(req.body(Body::empty()).unwrap())
-        .await
-        .unwrap();
-    let status = res.status();
-    let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    (
-        status,
-        String::from_utf8(bytes.to_vec()).expect("the page is UTF-8"),
-    )
 }
 
-/// One dashboard form post, the way the pages' forms submit.
-async fn post_form(
-    app: &Router,
-    path: &str,
-    body: &str,
-    cookie: Option<&str>,
-) -> (StatusCode, String) {
-    let mut req = Request::builder()
-        .method("POST")
-        .uri(path)
-        .header("content-type", "application/x-www-form-urlencoded");
-    if let Some(cookie) = cookie {
-        req = req.header("cookie", format!("oxsum_session={cookie}"));
-    }
-    let res = app
-        .clone()
-        .oneshot(req.body(Body::from(body.to_owned())).unwrap())
-        .await
-        .unwrap();
-    let status = res.status();
-    let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    (
-        status,
-        String::from_utf8(bytes.to_vec()).expect("the page is UTF-8"),
-    )
-}
-
-/// The members page's own read: `GET /dashboard/members` with the session cookie.
-async fn members_page(app: &Router, cookie: Option<&str>) -> (StatusCode, String) {
-    get_html(app, "/dashboard/members", cookie).await
-}
-
-/// The members page's HTML, asserted to have loaded.
-async fn members(app: &Router, cookie: &str) -> String {
-    let (status, html) = members_page(app, Some(cookie)).await;
-    assert_eq!(status, StatusCode::OK, "the members list did not load");
-    html
-}
-
-/// The roles the members table shows, by email: each row renders
-/// `<tr><td>email</td><td>role</td><td>…</td></tr>`.
-fn roles_of(html: &str) -> Vec<(String, String)> {
-    html.split("<tr>")
-        .filter_map(|row| {
-            let mut cells = Vec::new();
-            let mut rest = row;
-            while let Some(start) = rest.find("<td>") {
-                rest = &rest[start + "<td>".len()..];
-                if let Some(end) = rest.find("</td>") {
-                    cells.push(rest[..end].to_owned());
-                    rest = &rest[end + "</td>".len()..];
-                } else {
-                    break;
-                }
-            }
-            if cells.len() >= 2 {
-                Some((cells[0].clone(), cells[1].clone()))
-            } else {
-                None
-            }
+/// The roles the members list carries, by email.
+fn roles_of(list: &[Value]) -> Vec<(String, String)> {
+    list.iter()
+        .filter_map(|member| {
+            Some((
+                member["email"].as_str()?.to_owned(),
+                member["role"].as_str()?.to_owned(),
+            ))
         })
         .collect()
 }
 
-/// The role one email holds in the table, or None.
-fn role_of(html: &str, email: &str) -> Option<String> {
-    roles_of(html)
-        .into_iter()
-        .find(|(member, _)| member == email)
-        .map(|(_, role)| role)
+/// The role one email holds in the list, or None.
+fn role_of(list: &[Value], email: &str) -> Option<String> {
+    list.iter()
+        .find(|member| member["email"].as_str() == Some(email))
+        .and_then(|member| member["role"].as_str().map(str::to_owned))
 }
 
 /// An organization with an owner, an admin and a member, all able to log in.
@@ -392,7 +330,11 @@ async fn an_unknown_email_is_not_found_and_a_second_add_is_a_conflict() {
 
     // Nothing was added, and a malformed address is a validation failure, not a 404.
     let after = members(&app, &f.owner_cookie).await;
-    assert_eq!(before, after, "the refused add changed nothing");
+    assert_eq!(
+        roles_of(&before),
+        roles_of(&after),
+        "the refused add changed nothing"
+    );
     let res = call(
         &app,
         "POST",
@@ -524,7 +466,7 @@ async fn an_owner_transfers_ownership_and_becomes_an_admin() {
             .filter(|(_, role)| role == "owner")
             .count(),
         1,
-        "exactly one owner: {list}"
+        "exactly one owner: {list:?}"
     );
 
     // The previous owner still manages members as an admin, but may not transfer ownership.
@@ -667,8 +609,7 @@ async fn an_admin_manages_members_but_may_not_touch_the_owner() {
     assert_eq!(role_of(&list, &f.member.email).as_deref(), Some("member"));
 }
 
-/// A member reaches no management endpoint, on any of the four actions — over REST and
-/// through the page's own server functions.
+/// A member reaches no management endpoint, on any of the four actions.
 #[tokio::test]
 async fn a_member_cannot_manage_memberships() {
     let (app, pool) = app_or_skip!();
@@ -712,18 +653,6 @@ async fn a_member_cannot_manage_memberships() {
     let list = members(&app, &f.member_cookie).await;
     assert!(role_of(&list, &extra.email).is_none());
     assert_eq!(role_of(&list, &f.admin.email).as_deref(), Some("admin"));
-
-    // The page's own form refuses the same call, with the same rule.
-    let (status, _) = post_form(
-        &app,
-        "/dashboard/members/add",
-        &format!("email={}", extra.email),
-        Some(&f.member_cookie),
-    )
-    .await;
-    assert_ne!(status, StatusCode::OK, "the page let a member add one");
-    let list = members(&app, &f.member_cookie).await;
-    assert!(role_of(&list, &extra.email).is_none());
 }
 
 /// Another organization's people manage only their own: no endpoint takes a tenant from the
@@ -973,24 +902,21 @@ async fn any_member_may_read_the_member_list() {
     let (app, pool) = app_or_skip!();
     let f = fixture(&app, &pool, "read").await;
 
-    for (cookie, role) in [
-        (&f.owner_cookie, "owner"),
-        (&f.admin_cookie, "admin"),
-        (&f.member_cookie, "member"),
-    ] {
+    for cookie in [&f.owner_cookie, &f.admin_cookie, &f.member_cookie] {
         let list = members(&app, cookie).await;
-        assert!(
-            list.contains(&format!("Your role: {role}")),
-            "the page names the caller's role"
-        );
         assert_eq!(role_of(&list, &f.owner.email).as_deref(), Some("owner"));
         assert_eq!(role_of(&list, &f.admin.email).as_deref(), Some("admin"));
         assert_eq!(role_of(&list, &f.member.email).as_deref(), Some("member"));
     }
 
-    // Without a session, the page's own read answers an error rather than a list.
-    let (status, _) = members_page(&app, None).await;
-    assert_ne!(status, StatusCode::OK, "the list was readable anonymously");
+    // Without a session the list answers an error rather than a list.
+    let res = members_res(&app, None).await;
+    assert_eq!(
+        res.status,
+        StatusCode::UNAUTHORIZED,
+        "the list was readable anonymously: {}",
+        res.body
+    );
 
     // A membership in the organization is what makes the list readable at all: resolution
     // joins `memberships`, so the session of someone who has been removed reads nothing.
@@ -1004,63 +930,14 @@ async fn any_member_may_read_the_member_list() {
     )
     .await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
-    let (status, _) = members_page(&app, Some(&f.member_cookie)).await;
-    assert_ne!(
-        status,
-        StatusCode::OK,
-        "a former member still read the list"
+    let res = members_res(&app, Some(&f.member_cookie)).await;
+    assert_eq!(
+        res.status,
+        StatusCode::UNAUTHORIZED,
+        "a former member still read the list: {}",
+        res.body
     );
     // And the organization's people still read it.
     let list = members(&app, &f.owner_cookie).await;
     assert!(role_of(&list, &f.member.email).is_none());
-}
-
-/// The members page renders the management controls only for the roles that may use them.
-#[tokio::test]
-async fn the_members_page_renders_controls_only_for_managers() {
-    let (app, pool) = app_or_skip!();
-    let f = fixture(&app, &pool, "html").await;
-
-    let owner_page = call(
-        &app,
-        "GET",
-        "/dashboard/members",
-        None,
-        None,
-        Some(&f.owner_cookie),
-    )
-    .await;
-    assert_eq!(owner_page.status, StatusCode::OK, "{}", owner_page.body);
-    assert!(
-        owner_page.text.contains("Add member"),
-        "an owner is offered the add form"
-    );
-    assert!(
-        owner_page.text.contains("Make owner"),
-        "an owner is offered the ownership transfer"
-    );
-
-    let member_page = call(
-        &app,
-        "GET",
-        "/dashboard/members",
-        None,
-        None,
-        Some(&f.member_cookie),
-    )
-    .await;
-    assert_eq!(member_page.status, StatusCode::OK, "{}", member_page.body);
-    // The list is HTML: the members are there, the controls are not.
-    assert!(
-        member_page.text.contains(&f.owner.email),
-        "a member still reads the list"
-    );
-    assert!(
-        !member_page.text.contains("Add member"),
-        "a member is offered no form"
-    );
-    assert!(
-        !member_page.text.contains("Make owner"),
-        "a member is offered no ownership transfer"
-    );
 }

@@ -136,7 +136,7 @@ async fn mint(app: &Router) -> (String, String) {
         data["verificationUri"]
             .as_str()
             .unwrap()
-            .ends_with("/device")
+            .ends_with("/app/device")
     );
     (
         data["deviceCode"].as_str().unwrap().to_owned(),

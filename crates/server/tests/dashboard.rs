@@ -1,5 +1,6 @@
-//! HTTP tests for the dashboard: the Topcoat pages are mounted into the same binary as
-//! the API, and `/ws/billing` pushes billing progress to a logged-in browser in real time.
+//! HTTP tests for `/ws/billing`: the socket pushes billing progress to a logged-in
+//! browser in real time — the unauthenticated refusals, and a connected socket's
+//! snapshot-then-live-events stream scoped to its own organization.
 //!
 //! Needs DATABASE_URL and skips without it, like the other server suites.
 
@@ -56,7 +57,6 @@ macro_rules! app_or_skip {
 
 struct Res {
     status: StatusCode,
-    headers: axum::http::HeaderMap,
     body: Value,
     set_cookie: Option<String>,
 }
@@ -81,8 +81,8 @@ async fn call(
         .unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
     let status = res.status();
-    let headers = res.headers().clone();
-    let set_cookie = headers
+    let set_cookie = res
+        .headers()
         .get("set-cookie")
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
@@ -90,7 +90,6 @@ async fn call(
     let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     Res {
         status,
-        headers,
         body,
         set_cookie,
     }
@@ -142,21 +141,6 @@ async fn logged_in(app: &Router, name: &str) -> (String, String) {
     (tenant_id, cookie)
 }
 
-/// The overview page's HTML, fetched with the session cookie: the page renders
-/// server-side, so the figures the old server function answered as JSON are in
-/// the markup as formatted credits.
-async fn dashboard_html(app: &Router, cookie: &str) -> String {
-    let req = Request::builder()
-        .uri("/dashboard")
-        .header("cookie", format!("oxsum_session={cookie}"))
-        .body(Body::empty())
-        .unwrap();
-    let res = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    String::from_utf8_lossy(&bytes).into_owned()
-}
-
 /// The dashboard socket refuses a request with no session: a probe learns nothing.
 #[tokio::test]
 async fn billing_socket_refuses_a_missing_session() {
@@ -178,113 +162,6 @@ async fn billing_socket_refuses_an_unknown_session() {
     )
     .await;
     assert_eq!(res.status, StatusCode::UNAUTHORIZED, "{}", res.body);
-}
-
-/// The pages are mounted into the same binary as the API: the login page renders.
-#[tokio::test]
-async fn the_login_page_is_served() {
-    let (app, _db, _billing) = app_or_skip!();
-    let res = call(&app, "GET", "/login", None, None).await;
-    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
-    let content_type = res
-        .headers
-        .get("content-type")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("");
-    assert!(
-        content_type.contains("text/html"),
-        "the login page is HTML, got {content_type}"
-    );
-}
-
-/// The dashboard shell renders server-side behind the session: without a session the
-/// server redirects to the login page instead of serving an empty shell (the guard
-/// that ran in the browser in the Leptos dashboard now runs here).
-#[tokio::test]
-async fn the_dashboard_shell_is_served() {
-    let (app, _db, _billing) = app_or_skip!();
-    let res = call(&app, "GET", "/dashboard", None, None).await;
-    assert_eq!(res.status, StatusCode::SEE_OTHER, "{}", res.body);
-    let location = res
-        .headers
-        .get("location")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default();
-    assert!(
-        location.ends_with("/login"),
-        "the redirect lands on the login page: {location}"
-    );
-}
-
-/// An organization that has moved no money owes nothing and holds nothing: the frozen
-/// total and this month's spend are 0, not an error. The ledger is created on this first
-/// read and has no postings at all.
-#[tokio::test]
-async fn a_new_organization_has_nothing_frozen_and_no_spend() {
-    let (app, _db, _billing) = app_or_skip!();
-    let (_tenant_id, cookie) = logged_in(&app, "untouched").await;
-    let html = dashboard_html(&app, &cookie).await;
-    let figure = "0.000000";
-    assert!(html.contains(figure), "the overview shows {figure}: {html}");
-}
-
-/// The overview's two figures, pinned as integers in minor units: the frozen total is what
-/// the outstanding hold reserved, and this month's spend is what the settled charge
-/// booked. The top-up is neither — it credits the wallet — and the hold that was settled
-/// no longer counts as frozen.
-#[tokio::test]
-async fn the_dashboard_shows_the_frozen_total_and_this_months_spend() {
-    let (app, _db, _billing) = app_or_skip!();
-    let (_tenant_id, cookie) = logged_in(&app, "totals").await;
-
-    // Fund the wallet: 5 credits in. Every `/api/v1` endpoint takes the session cookie as
-    // well as an API key, so the moves below need no second credential.
-    let res = call(
-        &app,
-        "POST",
-        "/api/v1/topups",
-        Some(json!({"idempotencyKey": "t1", "amountMinor": 5_000_000})),
-        Some(&cookie),
-    )
-    .await;
-    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
-
-    // One hold left outstanding: 1 credit frozen.
-    let res = call(
-        &app,
-        "POST",
-        "/api/v1/holds",
-        Some(json!({"idempotencyKey": "h1", "amountMinor": 1_000_000})),
-        Some(&cookie),
-    )
-    .await;
-    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
-
-    // A second hold, settled for less than it froze: 0.5 credit charged.
-    let res = call(
-        &app,
-        "POST",
-        "/api/v1/holds",
-        Some(json!({"idempotencyKey": "h2", "amountMinor": 2_000_000})),
-        Some(&cookie),
-    )
-    .await;
-    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
-    let res = call(
-        &app,
-        "POST",
-        "/api/v1/settlements",
-        Some(json!({"holdKey": "h2", "actualMinor": 500_000})),
-        Some(&cookie),
-    )
-    .await;
-    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
-
-    let html = dashboard_html(&app, &cookie).await;
-    // 5 credits topped up, 1 still frozen, 0.5 charged: 5 - 1 - 0.5 = 3.5 available.
-    for figure in ["3.500000", "1.000000", "0.500000"] {
-        assert!(html.contains(figure), "the overview shows {figure}: {html}");
-    }
 }
 
 /// A logged-in socket gets a snapshot of the in-flight holds first, then its

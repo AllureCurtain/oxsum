@@ -183,30 +183,6 @@ async fn acting(app: &Router, cookie: &str) -> String {
         .to_owned()
 }
 
-/// The dashboard overview page's HTML with the session cookie. The Topcoat
-/// dashboard renders server-side — there is no `get_dashboard` server function
-/// anymore.
-async fn dashboard_html(app: &Router, cookie: &str) -> (StatusCode, String) {
-    let res = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/dashboard")
-                .header("cookie", format!("oxsum_session={cookie}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let status = res.status();
-    let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    (
-        status,
-        String::from_utf8(bytes.to_vec()).expect("the page is UTF-8"),
-    )
-}
-
 /// A user creates a team organization and becomes its owner; the list shows both
 /// memberships, and the session keeps acting as the organization it had.
 #[tokio::test]
@@ -244,9 +220,9 @@ async fn a_user_creates_a_team_organization_and_becomes_its_owner() {
     );
 }
 
-/// Switching carries the session: the session row, the session read, the
-/// organization read and the dashboard all answer for the chosen organization —
-/// and switching back works the same way.
+/// Switching carries the session: the session row, the session read and the
+/// organization read all answer for the chosen organization — and switching back
+/// works the same way.
 #[tokio::test]
 async fn switching_the_organization_carries_the_session() {
     let (app, _pool) = app_or_skip!();
@@ -281,16 +257,14 @@ async fn switching_the_organization_carries_the_session() {
     );
     assert_eq!(res.body["data"]["role"], "owner");
 
-    // The same cookie now resolves to the team: session, organization and the
-    // dashboard's own read all agree.
+    // The same cookie now resolves to the team: session and organization agree.
     assert_eq!(acting(&app, &cookie).await, team_id);
     let res = call(&app, "GET", "/api/v1/org", None, None, Some(&cookie)).await;
     assert_eq!(res.body["data"]["id"].as_str(), Some(team_id.as_str()));
-    let (status, dashboard) = dashboard_html(&app, &cookie).await;
-    assert_eq!(status, StatusCode::OK, "the dashboard renders");
-    assert!(
-        dashboard.contains("Switch To Me"),
-        "the dashboard names the organization"
+    assert_eq!(
+        res.body["data"]["name"].as_str(),
+        Some("Switch To Me"),
+        "the organization read names the organization"
     );
 
     // And back.
