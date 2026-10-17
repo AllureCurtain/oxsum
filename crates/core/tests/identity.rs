@@ -525,6 +525,8 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "webhook_endpoints".to_owned(),
             "witness_checkpoints".to_owned(),
             "witness_cosignatures".to_owned(),
+            "witness_served".to_owned(),
+            "witness_vouched".to_owned(),
         ]
     );
 

@@ -15,14 +15,15 @@
 //! with software that is not this crate's.
 
 use doubleentry::witness::signing::SigningKey;
-use doubleentry::witness::{KeyName, NoteError, Origin, SignedTreeHead};
+use doubleentry::witness::{KeyName, NoteError, SignedTreeHead};
 use doubleentry::{ConsistencyProof, Hash, TreeHead};
 
 use crate::channels::ModelPrice;
 use crate::error::WalletError;
 
 pub use doubleentry::witness::KeyName as WitnessKeyName;
-pub use doubleentry::witness::signing::{SigningKey as HeadSigningKey, VerifyingKey};
+pub use doubleentry::witness::signing::{Cosigner, SigningKey as HeadSigningKey, VerifyingKey};
+pub use doubleentry::witness::{MemoryWitnessStore, Origin, Witness, WitnessError, WitnessStore};
 
 /// The key name the operator signs tree heads under.
 ///
@@ -588,6 +589,173 @@ impl crate::Db {
         .execute(&mut **tx)
         .await?;
         Ok(())
+    }
+
+    /// Serialises every `/add-checkpoint` submission for one origin: an
+    /// advisory transaction lock keyed on the origin's bytes (issue #260).
+    /// Two submitters racing the same log serialise here — the second reads
+    /// the head the first already accepted, so the witness state machine can
+    /// never sign two heads from one stale read.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn lock_witness_origin(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        origin: &str,
+    ) -> Result<(), WalletError> {
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+            .bind(origin)
+            .execute(&mut **tx)
+            .await?;
+        Ok(())
+    }
+
+    /// The head this witness last accepted for `origin` — `(size, root)` — or
+    /// `None` when the origin is not in `OXSUM_WITNESS_TRUST` (issue #260).
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn witness_served_head(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        origin: &str,
+    ) -> Result<Option<TreeHead>, WalletError> {
+        use base64::Engine as _;
+        use sqlx::Row;
+        sqlx::query("SELECT head_size, root_b64 FROM oxsum.witness_served WHERE origin = $1")
+            .bind(origin)
+            .fetch_optional(&mut **tx)
+            .await?
+            .map(|row| {
+                let size: i64 = row.try_get("head_size")?;
+                let root_b64: String = row.try_get("root_b64")?;
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(&root_b64)
+                    .map_err(|_| {
+                        WalletError::InvalidInput("a stored witness head root is not base64".into())
+                    })?;
+                let array: [u8; Hash::LEN] = bytes.as_slice().try_into().map_err(|_| {
+                    WalletError::InvalidInput("a stored witness head root is not 32 bytes".into())
+                })?;
+                Ok(TreeHead {
+                    size: size as u64,
+                    root: Hash::from_bytes(array),
+                })
+            })
+            .transpose()
+    }
+
+    /// Records the head this witness now accepts for `origin` — the trust
+    /// root's seed or a checkpoint advance — transactionally with the cosigned
+    /// note in [`Self::record_witness_vouched`] (issue #260).
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn record_witness_served(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        origin: &str,
+        head: TreeHead,
+    ) -> Result<(), WalletError> {
+        sqlx::query(
+            "INSERT INTO oxsum.witness_served (origin, head_size, root_b64) \
+             VALUES ($1, $2, $3) \
+             ON CONFLICT (origin) DO UPDATE \
+                 SET head_size = EXCLUDED.head_size, root_b64 = EXCLUDED.root_b64, \
+                     updated_at = now()",
+        )
+        .bind(origin)
+        .bind(head.size as i64)
+        .bind({
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode(head.root.as_bytes())
+        })
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
+    /// Appends one cosigned note this witness returned — `ON CONFLICT DO
+    /// NOTHING`, so a re-offer of the same head records once (issue #260).
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn record_witness_vouched(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        origin: &str,
+        head_size: i64,
+        note: &str,
+    ) -> Result<(), WalletError> {
+        sqlx::query(
+            "INSERT INTO oxsum.witness_vouched (origin, head_size, note) \
+             VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+        )
+        .bind(origin)
+        .bind(head_size)
+        .bind(note)
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
+    /// Seeds one `OXSUM_WITNESS_TRUST` root at boot (issue #260): inserts the
+    /// pinned starting head when the origin has no row yet.
+    ///
+    /// Re-seeding is deliberately *not* an upsert — a restart re-pins the same
+    /// root, and overwriting would roll the witness back onto whatever the
+    /// root's author wanted it to forget. The two honest cases are: the row is
+    /// absent (seed it), or the row holds this same root (no-op). The one that
+    /// must refuse loudly is a stored head at the same size under a different
+    /// root — that is the operator asking the witness to contradict a head it
+    /// already stands behind, which is exactly a fork.
+    ///
+    /// A stored head *past* the pinned size is fine: the witness advanced, and
+    /// the root is simply behind it now.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::Misconfigured`] when the stored head contradicts the pin
+    /// at the same size; storage failures surface as [`WalletError`].
+    pub async fn seed_witness_trust(
+        &self,
+        origin: &str,
+        size: u64,
+        root_b64: &str,
+    ) -> Result<(), WalletError> {
+        use sqlx::Row;
+        let existing =
+            sqlx::query("SELECT head_size, root_b64 FROM oxsum.witness_served WHERE origin = $1")
+                .bind(origin)
+                .fetch_optional(self.pool())
+                .await?;
+        match existing {
+            None => {
+                sqlx::query(
+                    "INSERT INTO oxsum.witness_served (origin, head_size, root_b64) \
+                     VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+                )
+                .bind(origin)
+                .bind(size as i64)
+                .bind(root_b64)
+                .execute(self.pool())
+                .await?;
+                Ok(())
+            }
+            Some(row) => {
+                let stored_size: i64 = row.try_get("head_size")?;
+                let stored_root: String = row.try_get("root_b64")?;
+                if stored_size == size as i64 && stored_root != root_b64 {
+                    return Err(WalletError::Misconfigured(format!(
+                        "OXSUM_WITNESS_TRUST pins {origin} at size {size} under a root the \
+                         stored witness head contradicts — the witness already stands behind a \
+                         different head at that size"
+                    )));
+                }
+                Ok(())
+            }
+        }
     }
 }
 

@@ -29,6 +29,7 @@ mod log;
 mod org;
 pub(crate) mod usage;
 mod webhooks;
+mod witness;
 
 /// Backstop for every request on the API and gateway surfaces: no handler may
 /// run longer than this. It bounds handler execution — the time until the
@@ -179,6 +180,12 @@ pub fn router(state: AppState) -> Router {
 
     let router: Router<AppState> = Router::new()
         .route("/healthz", get(|| async { "ok" }))
+        // The deployment's own tlog-witness (issue #260): a foreign log offers
+        // its head at the C2SP path, no org credential — the submitting log is
+        // named by the origin inside its note, and the witness's trust roots
+        // decide whether to vouch. On a deployment without
+        // `OXSUM_WITNESS_SIGNING_KEY` the handler answers 404 like any path.
+        .route("/add-checkpoint", post(witness::add_checkpoint))
         .merge(operator)
         // Live billing progress for the dashboard: session-cookie auth, like the pages.
         .route("/ws/billing", get(crate::ws::billing_ws))

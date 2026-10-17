@@ -14,6 +14,7 @@ Field definitions for each endpoint are authoritative in `crates/server/openapi.
 - `/v1/*` is a second surface with the same key: a protocol-native gateway whose bodies and errors are the client's own — OpenAI's on `/v1/chat/completions`, `/v1/embeddings` and `/v1/rerank`, Anthropic's on `/v1/messages`. It is documented in its own section below.
 - `/api/v1/metering/*` is a third: deployer-owned services report billable events against a named organization's wallet under an `oxs-svc-…` service credential (`Authorization: Bearer`). Neither an API key nor a session opens it, and the credential opens nothing else. It is documented in its own section below.
 - `/api/v1/admin/*` is a fourth: the platform admin's surface, opened by `OXSUM_ADMIN_TOKEN` rather than by an API key. It answers in the same envelope and the same error codes as the rest of `/api/v1`, and is documented in its own section below.
+- `POST /add-checkpoint` is a fifth, off the prefix entirely like `/healthz`: the deployment's own C2SP `tlog-witness` endpoint (issue #260). It speaks `text/plain` on the way in and out — a foreign log's signed checkpoint plus consistency-proof lines in, the note with this witness's `cosignature/v1` line out — not the `/api/v1` envelope, because the submitting witness client files the answer verbatim as its cosigned note. It is only mounted when `OXSUM_WITNESS_SIGNING_KEY` and `OXSUM_WITNESS_TRUST` are configured, and is documented under "Tree heads" below.
 
 ## Idempotency
 
@@ -156,6 +157,12 @@ Each organization's ledger is its own append-only Merkle log, and the operator s
 - `GET /api/v1/log/price-head?channel=<name>&model=<name>[&version=<n>]` — the operator-signed checkpoint of one channel-model price row (issue #204): `{note, origin, channel, model, version, rowHash, keyName, publicKey, keyHash}`. The note reuses the `tlog-checkpoint` shape — `origin` is `oxsum/price-catalog/<channel>`, the price version rides in `size`, and `root` carries the hash of the canonical row bytes (`{"v":1,"channel","model","version","weight","price"}` under the `oxsum/price-catalog/v1` domain). Absent `version` serves the latest; a bill names an older one explicitly. Signing is stateless and deterministic, so a stored row signs identically whenever asked — `version=1` still verifies after v2 lands. `NOT_FOUND` for an unwritten version, an unpriced model or an unknown channel; `model` is required, so a channel-only query is `VALIDATION_ERROR`.
 
 The key signs under the fixed name `oxsum/tree-heads`; the seed is `OXSUM_HEAD_SIGNING_KEY` (32 bytes, base64). A deployment that sets none serves the wallet but not the log surface: those routes answer `SERVICE_UNAVAILABLE`.
+
+### Serving as a witness (issue #260)
+
+A deployment that sets `OXSUM_WITNESS_SIGNING_KEY` runs its own `tlog-witness` beside the API: other logs' operators pin it as one of their `OXSUM_WITNESS_URLS`, and their `witness-checkpoints` passes submit here.
+
+- `POST /add-checkpoint` — root-level, `text/plain` both ways, per the C2SP spec. The request is the submitter's signed checkpoint note, a blank line, then one base64 line per consistency-proof hash; the answer on accept is `text/plain` — the same note plus this witness's `cosignature/v1` line (key name `OXSUM_WITNESS_KEY_NAME`, default `oxsum/witness`; public key derived from `OXSUM_WITNESS_SIGNING_KEY`). Refusals: 400 malformed body or a proof that is absent/does not verify, 401 a note carrying no signature line, 404 an origin this witness does not track (every tracked origin is pinned in `OXSUM_WITNESS_TRUST` — there is no trust-on-first-use), 409 a head that contradicts the one already vouched — same size different root, or shrunk behind it. A re-offer of the head the witness already vouched is a 200 with a fresh cosignature, never an error. The accepted head and the returned note land in `oxsum.witness_served`/`oxsum.witness_vouched` in the same transaction the response commits from — durable before it is signed.
 
 ## Response format
 

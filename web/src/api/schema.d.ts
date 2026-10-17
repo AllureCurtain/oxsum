@@ -88,6 +88,81 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/add-checkpoint": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Offer a head to this deployment's tlog-witness (issue
+         * @description The [C2SP `tlog-witness`](https://c2sp.org/tlog-witness) endpoint: a
+         *     foreign transparency log asks this deployment to vouch for one history
+         *     and no other. Present on deployments that opt in with
+         *     `OXSUM_WITNESS_SIGNING_KEY` (and `OXSUM_WITNESS_KEY_NAME`); a deployment
+         *     that does not run a witness answers 404 like any unknown path.
+         *
+         *     The body is the tlog-witness request format: the submitting log's
+         *     signed checkpoint note (`origin`, `size`, `root`, a blank line, then
+         *     the submitter's own signature lines) followed by one base64 line per
+         *     consistency-proof hash proving the new head extends the head this
+         *     witness already vouched for. The old size is this witness's own state —
+         *     it is not read from the request, so a proof cannot be aimed at a head
+         *     the witness never accepted.
+         *
+         *     Which origins this witness tracks is out of band: `OXSUM_WITNESS_TRUST`
+         *     pins `origin=size:root` starting heads, and a submission for an
+         *     origin not in that set is refused — there is no trust-on-first-use,
+         *     and that is the point. The refusals are the witness's own vocabulary:
+         *     `404` for an origin it does not track, `409` for a checkpoint that
+         *     forks what it already vouched (same size, different root) or shrinks
+         *     below it, `400` for a malformed body or a consistency proof that does
+         *     not verify, `401` for a checkpoint whose own signature fails.
+         *
+         *     On accept the witness stores the head and returns the note with its
+         *     own `cosignature/v1` (algorithm `0x04`) signature line appended — the
+         *     cosigned note the submitter files as its `witness_cosignatures` row.
+         *     A re-offer of the head already held answers the same cosigned note:
+         *     an at-least-once delivery path resends, and a witness that refused
+         *     would be unusable behind one.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "text/plain": string;
+                };
+            };
+            responses: {
+                /** @description The checkpoint note with this witness's cosignature line appended */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": string;
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/register": {
         parameters: {
             query?: never;

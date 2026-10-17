@@ -67,10 +67,10 @@ pub use doubleentry::{ConsistencyProof, EntryId, Hash, Seal, TreeHead};
 pub use email_tokens::{EmailPurpose, MintedEmailToken};
 pub use error::WalletError;
 pub use heads::{
-    Consistency, HeadSigningKey, KeyPublication, PRICE_ROW_DOMAIN, SignedHead, SignedPriceHead,
-    VerifyingKey, WitnessCheckpoint, WitnessCosign, WitnessKeyName, canonical_price_row,
-    origin_for, price_origin_for, price_row_hash, seed_from_base64, sign_head, sign_price_head,
-    signing_key,
+    Consistency, Cosigner, HeadSigningKey, KeyPublication, MemoryWitnessStore, Origin,
+    PRICE_ROW_DOMAIN, SignedHead, SignedPriceHead, VerifyingKey, Witness, WitnessCheckpoint,
+    WitnessCosign, WitnessError, WitnessKeyName, WitnessStore, canonical_price_row, origin_for,
+    price_origin_for, price_row_hash, seed_from_base64, sign_head, sign_price_head, signing_key,
 };
 pub use holds::{
     DEAD_AFTER_SWEEP_ATTEMPTS, DEFAULT_HOLD_TIMEOUT, InFlightHold, OpenHold, SWEEP_INTERVAL,

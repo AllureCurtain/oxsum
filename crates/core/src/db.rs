@@ -183,6 +183,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0043_display_currency",
         include_str!("../migrations/0043_display_currency.sql"),
     ),
+    (
+        "0044_witness_served",
+        include_str!("../migrations/0044_witness_served.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.

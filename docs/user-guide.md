@@ -577,6 +577,16 @@ The check above catches a rewrite between *two points you recorded* — but a si
 
 `GET /api/v1/log/checkpoint` answers the latest anchored head: `headSize`, the operator-signed `note`, `cosignatures[]` — one `{witnessUrl, note, firstSeen}` per witness that cosigned exactly that head — and `witnessKeys[]` (issue #259), the deployment's pinned keyset (`data` is `null` until the first pass anchors something). To verify by hand: check the operator's signature line in `note` against the key at `GET /api/v1/log/key`, and each cosigned note's additional signature line against the pinned `witnessKeys` entry for its URL — or your own pinset, if you do not trust the deployment's claim. The dashboard's transaction log page (`/dashboard/log`) shows the anchored head and its witnesses when anchoring is configured, and runs the same check itself: it reports "anchored by N witnesses" only when the cosignatures verify under the pinned keys, and names the witness whose line fails. A verifier that wants the real guarantee pins the keys through a channel the operator does not control — the endpoint is convenience, the pin is the trust choice.
 
+### Serving as a witness yourself
+
+An oxsum deployment can *be* the witness another log anchors against — including another oxsum deployment's (issue #260). Set three variables and `POST /add-checkpoint` answers foreign checkpoints at the root of the same server:
+
+- `OXSUM_WITNESS_SIGNING_KEY` — 32 bytes, base64: the Ed25519 seed the witness's `cosignature/v1` lines sign under.
+- `OXSUM_WITNESS_KEY_NAME` — the name those lines carry (default `oxsum/witness`); this is what a verifier's key hash selects by.
+- `OXSUM_WITNESS_TRUST` — comma-separated `origin=size:root_b64` pins: every log you vouch for and the head you start from. The other operator hands you their origin and a signed head out of band and you pin it here — a submission for an origin you never pinned is a 404, because a witness that accepts whatever arrives first could already be signing a fork. To onboard a brand-new log whose head is not worth pinning yet, pin `size=0`: the first non-empty head it is offered is taken on trust (every log extends the empty tree, so there is nothing provable earlier), and it is a real witness from then on.
+
+Two oxsum deployments point their `OXSUM_WITNESS_URLS` at each other — `https://b.example/add-checkpoint` in A's list and vice versa — each pinning the other's `oxsum/ledgers/<tenant>` origin at a head it signed, and they mutually witness with no third software. Once a checkpoint is accepted the witness stores it and files every note it returned; a restart re-pinning a root the stored head contradicts at the same size refuses to boot rather than roll back onto a fork it already moved off.
+
 ## Verifying a statement's anchor
 
 Purpose: confirm a finalized statement commits the *whole* covered set — every entry the month charged, in order — and that the figures the document shows are the figures the ledger committed, not just that the rows it chose to display add up.
