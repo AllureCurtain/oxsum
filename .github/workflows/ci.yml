@@ -171,7 +171,14 @@ jobs:
         with:
           tool: nextest
       # The database tests skip without DATABASE_URL; here it is set, so they
-      # run for real.
+      # run for real. Before any test binary runs, sweep stale scratch
+      # databases left by previous runs — per-suite drop is best-effort and
+      # an interrupted job's residue must not bleed into this one's timing
+      # (issue #271). psql against the service's maintenance database is the
+      # same shape scripts/drop-test-scratch.sql documents for local use.
+      - name: Sweep stale test scratch databases
+        run: |
+          psql "$DATABASE_URL" -d postgres -f scripts/drop-test-scratch.sql
       - name: Run the workspace test suites
         # Three suites coordinate through process-global state — the generative
         # property suite's OnceLock shared schemas, and the seed/jobs suites'
@@ -197,7 +204,7 @@ jobs:
           # running the suite.
           if [ "${base#0000000}" != "$base" ] || ! git cat-file -e "$base" 2>/dev/null; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
-          elif git diff --name-only "$base" HEAD | grep -qE '^(crates/doubleentry/|crates/core/migrations/|Cargo\.lock)'; then
+          elif git diff --name-only "$base" HEAD | grep -qE '^(crates/doubleentry/|crates/core/migrations/|Cargo\.lock|\.github/workflows/ci\.yml)'; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
