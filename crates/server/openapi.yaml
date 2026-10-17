@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.66.0
+  version: 0.67.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -408,6 +408,17 @@ info:
     settled bill names the mandate under its content hash (settlement description v7). Every
     mandate is `notAfter`-bounded and none is revocable — for revocable delegation, mint a
     constrained key instead.
+
+    0.67.0 adds the x402-shaped deposit rail (issue #264): `POST /api/v1/topups/x402`
+    credits a signed payment authorization — `{scheme, network, asset, amountMinor,
+    payTo, nonce, payer, signature}` as base64url `payment` — through the same
+    pending → confirmed → credited walk every rail shares, the signed `nonce`
+    anchoring `payment_ref` so a replay credits once. The verifier is the seam: a
+    real EIP-712/x402 verifier drops into the same interface later; today's stand-in
+    checks an Ed25519 test-scheme signature (`scheme: "exact"`, `network:
+    "oxsum-ed25519"`, `asset: "OXSUM-CREDIT"`) against `OXSUM_X402_VERIFYING_KEY`,
+    and an unconfigured deployment answers 503. No chain RPC, no finality check, no
+    real wallet signatures — the boundary is stubbed, the bookkeeping is real.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -1669,6 +1680,38 @@ paths:
                       depositId: { type: string, format: uuid, description: "the pending deposit this session confirms" }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/topups/x402:
+    post:
+      summary: Credit a signed x402 payment authorization
+      description: |
+        The `x402` deposit rail — an x402-*shaped*, mandate-verified crypto payment
+        interface (issue #264). The caller presents a signed payment authorization
+        (`payment`, base64url): `{scheme, network, asset, amountMinor, payTo, nonce,
+        payer, signature}`. The rail verifies the signature's shape and records the
+        deposit through the same pending → confirmed → credited walk every rail
+        shares — `payment_ref` carries the signed `nonce`, so a replayed
+        authorization credits once.
+
+        The seam is the verifier: a real EIP-712/x402 verifier drops into the same
+        interface later; today's implementation is a stand-in Ed25519 test scheme
+        (`scheme: "exact"`, `network: "oxsum-ed25519"`, `asset: "OXSUM-CREDIT"`)
+        checked against the key `OXSUM_X402_VERIFYING_KEY` pins. No chain RPC, no
+        settlement-finality check, no real wallet signatures are built — the
+        verification boundary is stubbed, the bookkeeping behind it is real
+        (docs/decisions.md). A deployment without `OXSUM_X402_VERIFYING_KEY` answers
+        503: the rail is configured or it is not.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/X402TopupRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/Receipt" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
   /api/v1/webhooks/stripe:
@@ -5431,6 +5474,19 @@ components:
       properties:
         idempotencyKey: { type: string, minLength: 1, maxLength: 128, description: UTF-8 idempotency key; the server accepts at most 128 bytes }
         amountMinor: { type: integer, format: int64, minimum: 1 }
+    X402TopupRequest:
+      type: object
+      required: [payment]
+      properties:
+        payment:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          description: |
+            base64url of the signed payment authorization
+            `{scheme, network, asset, amountMinor, payTo, nonce, payer, signature}`.
+            The rail verifies `signature` over the canonical body and credits
+            `amountMinor`; the signed `nonce` is the deposit's idempotency anchor.
     SettleRequest:
       type: object
       required: [holdKey, actualMinor]

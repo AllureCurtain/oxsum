@@ -96,6 +96,7 @@ pub fn router(state: AppState) -> Router {
         .route("/device/authorize", post(device::device_authorize))
         .route("/topups", post(billing::top_up))
         .route("/topups/stripe", post(billing::stripe_topup))
+        .route("/topups/x402", post(billing::x402_topup))
         .route("/redemptions", post(billing::redeem))
         .route("/holds", get(billing::list_holds).post(billing::hold))
         .route("/bills", get(billing::bills))

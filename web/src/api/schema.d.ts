@@ -2189,6 +2189,61 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/topups/x402": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Credit a signed x402 payment authorization
+         * @description The `x402` deposit rail — an x402-*shaped*, mandate-verified crypto payment
+         *     interface (issue #264). The caller presents a signed payment authorization
+         *     (`payment`, base64url): `{scheme, network, asset, amountMinor, payTo, nonce,
+         *     payer, signature}`. The rail verifies the signature's shape and records the
+         *     deposit through the same pending → confirmed → credited walk every rail
+         *     shares — `payment_ref` carries the signed `nonce`, so a replayed
+         *     authorization credits once.
+         *
+         *     The seam is the verifier: a real EIP-712/x402 verifier drops into the same
+         *     interface later; today's implementation is a stand-in Ed25519 test scheme
+         *     (`scheme: "exact"`, `network: "oxsum-ed25519"`, `asset: "OXSUM-CREDIT"`)
+         *     checked against the key `OXSUM_X402_VERIFYING_KEY` pins. No chain RPC, no
+         *     settlement-finality check, no real wallet signatures are built — the
+         *     verification boundary is stubbed, the bookkeeping behind it is real
+         *     (docs/decisions.md). A deployment without `OXSUM_X402_VERIFYING_KEY` answers
+         *     503: the rail is configured or it is not.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["X402TopupRequest"];
+                };
+            };
+            responses: {
+                200: components["responses"]["Receipt"];
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/webhooks/stripe": {
         parameters: {
             query?: never;
@@ -7361,6 +7416,15 @@ export interface components {
             idempotencyKey: string;
             /** Format: int64 */
             amountMinor: number;
+        };
+        X402TopupRequest: {
+            /**
+             * @description base64url of the signed payment authorization
+             *     `{scheme, network, asset, amountMinor, payTo, nonce, payer, signature}`.
+             *     The rail verifies `signature` over the canonical body and credits
+             *     `amountMinor`; the signed `nonce` is the deposit's idempotency anchor.
+             */
+            payment: string;
         };
         SettleRequest: {
             /** @description the idempotency key of the hold this settlement releases; the hold's amount is read from the ledger */
