@@ -83,95 +83,138 @@ struct VerifyForm {
 }
 
 /// Runs the proof check on the server and renders the verdict.
+///
+/// Two bundle shapes share the one form: a bill's proof bundle (`{entry, head,
+/// proof}`) checks against the pasted content hash, and an end-user usage
+/// report (`{subsetHash, marker, entries, …}`, issue #261) checks itself —
+/// the pasted `expected_hash` is ignored for the second, since the report's
+/// own commitment is what is under test. The shape, not a flag, decides which.
 #[page(POST "/verify")]
-async fn verify_submit(Form(form): Form<VerifyForm>) -> Result<impl View> {
-    let hash = oxsum_verify::Hash::parse_hex(form.expected_hash.trim())
-        .map_err(|_| bad_request("the content hash is not 64 hex characters"))?;
+async fn verify_submit(cx: &Cx, Form(form): Form<VerifyForm>) -> Result<impl View> {
     // The proof API wraps the bundle in its `data` envelope; a pasted bundle may be
     // either the envelope or the bundle itself.
     let bundle = form.bundle.trim();
-    let inner = serde_json::from_str::<serde_json::Value>(bundle)
-        .ok()
-        .and_then(|value| value.get("data").cloned())
-        .filter(|data| data.get("entry").is_some())
+    let value = serde_json::from_str::<serde_json::Value>(bundle)
+        .map_err(|_| bad_request("the bundle did not parse as JSON"))?;
+    let inner = value
+        .get("data")
+        .cloned()
+        .filter(|data| data.get("entry").is_some() || data.get("subsetHash").is_some())
         .map(|data| data.to_string())
         .unwrap_or_else(|| bundle.to_owned());
-    let ok = oxsum_verify::verify_bundle(&inner, &hash)
-        .map_err(|_| bad_request("the bundle did not parse as JSON"))?;
-    // Inclusion proven; now whether the charge inside the entry is what its own
-    // usage and rates add up to, and whether the price the description names is
-    // bound to a checkpoint the operator signed (issue #204). The binding
-    // reports under the pass, never a verdict of its own.
+
+    // A usage report carries `subsetHash` where a bill carries `entry` — the
+    // field, not a flag, picks the check. The report binds its own endUser and
+    // head note, so the verifier needs only the published key and the origin
+    // inside the note.
+    //
+    // For a bill: once inclusion is proven, whether the charge inside the entry
+    // is what its own usage and rates add up to, and whether the price the
+    // description names is bound to a checkpoint the operator signed (issue
+    // #204). The binding reports under the pass, never a verdict of its own.
     enum Verdict {
         Pass { charge: String, price: String },
         ChargeMismatch,
         Fail,
     }
-    let verdict = if !ok {
-        Verdict::Fail
+    // A usage report answers a different question than a bill, so it renders
+    // its own verdict — but inside the one view, since `impl View` unifies no
+    // two `view!` bodies.
+    enum Page {
+        Bill(Verdict),
+        UsageReport { passed: bool, detail: String },
+    }
+    let page = if serde_json::from_str::<serde_json::Value>(&inner)
+        .ok()
+        .and_then(|v| v.get("subsetHash").cloned())
+        .is_some()
+    {
+        let (passed, detail) = usage_report_outcome(cx, &inner).await?;
+        Page::UsageReport { passed, detail }
     } else {
-        let description = serde_json::from_str::<serde_json::Value>(&inner)
-            .ok()
-            .and_then(|bundle| {
-                bundle
-                    .get("entry")?
-                    .get("description")?
-                    .as_str()
-                    .map(str::to_owned)
-            })
-            .unwrap_or_default();
-        match oxsum_verify::verify_charge(&description) {
-            oxsum_verify::ChargeCheck::Mismatch => Verdict::ChargeMismatch,
-            check => {
-                let mandate = serde_json::from_str::<serde_json::Value>(&description)
-                    .ok()
-                    .and_then(|record| record.get("mandate").cloned())
-                    .and_then(|mandate| {
-                        let id = mandate.get("id")?.as_str()?.to_owned();
-                        let hash = mandate.get("hash")?.as_str()?.to_owned();
-                        Some(format!(
-                            " The turn ran under spend mandate {id} (blob sha256 {}…).",
-                            &hash[..16.min(hash.len())]
-                        ))
-                    });
-                let charge = match check {
-                    oxsum_verify::ChargeCheck::Recomputed => {
-                        " The recorded charge itself recomputes from the usage and rates inside the entry."
-                            .to_owned()
-                    }
-                    oxsum_verify::ChargeCheck::NotASettlement => {
-                        " The entry is not a usage settlement, so there is no charge to recompute."
-                            .to_owned()
-                    }
-                    oxsum_verify::ChargeCheck::OlderSchema => {
-                        " The record predates charge verification — the entry is proven, but its arithmetic is too old to recompute."
-                            .to_owned()
-                    }
-                    oxsum_verify::ChargeCheck::NewerSchema { .. } => {
-                        " The record is newer than this verifier — the entry is proven, but its arithmetic is skipped rather than guessed at."
-                            .to_owned()
-                    }
-                    oxsum_verify::ChargeCheck::Mismatch => unreachable!("handled above"),
-                } + mandate.as_deref().unwrap_or("");
-                let price = match oxsum_verify::verify_price_head(&inner) {
-                    Ok(()) => {
-                        " The price it names is bound to a checkpoint the operator signed.".to_owned()
-                    }
-                    Err(oxsum_verify::PriceError::Absent) => {
-                        " This bundle carries no signed price binding — the entry is proven, but its price is not independently attested.".to_owned()
-                    }
-                    Err(error) => format!(" Its price binding does not verify: {error}."),
-                };
-                Verdict::Pass { charge, price }
+        let hash = oxsum_verify::Hash::parse_hex(form.expected_hash.trim())
+            .map_err(|_| bad_request("the content hash is not 64 hex characters"))?;
+        let ok = oxsum_verify::verify_bundle(&inner, &hash)
+            .map_err(|_| bad_request("the bundle did not parse as JSON"))?;
+        let verdict = if !ok {
+            Verdict::Fail
+        } else {
+            let description = serde_json::from_str::<serde_json::Value>(&inner)
+                .ok()
+                .and_then(|bundle| {
+                    bundle
+                        .get("entry")?
+                        .get("description")?
+                        .as_str()
+                        .map(str::to_owned)
+                })
+                .unwrap_or_default();
+            match oxsum_verify::verify_charge(&description) {
+                oxsum_verify::ChargeCheck::Mismatch => Verdict::ChargeMismatch,
+                check => {
+                    let mandate = serde_json::from_str::<serde_json::Value>(&description)
+                        .ok()
+                        .and_then(|record| record.get("mandate").cloned())
+                        .and_then(|mandate| {
+                            let id = mandate.get("id")?.as_str()?.to_owned();
+                            let hash = mandate.get("hash")?.as_str()?.to_owned();
+                            Some(format!(
+                                " The turn ran under spend mandate {id} (blob sha256 {}…).",
+                                &hash[..16.min(hash.len())]
+                            ))
+                        });
+                    let charge = match check {
+                        oxsum_verify::ChargeCheck::Recomputed => {
+                            " The recorded charge itself recomputes from the usage and rates inside the entry."
+                                .to_owned()
+                        }
+                        oxsum_verify::ChargeCheck::NotASettlement => {
+                            " The entry is not a usage settlement, so there is no charge to recompute."
+                                .to_owned()
+                        }
+                        oxsum_verify::ChargeCheck::OlderSchema => {
+                            " The record predates charge verification — the entry is proven, but its arithmetic is too old to recompute."
+                                .to_owned()
+                        }
+                        oxsum_verify::ChargeCheck::NewerSchema { .. } => {
+                            " The record is newer than this verifier — the entry is proven, but its arithmetic is skipped rather than guessed at."
+                                .to_owned()
+                        }
+                        oxsum_verify::ChargeCheck::Mismatch => unreachable!("handled above"),
+                    } + mandate.as_deref().unwrap_or("");
+                    let price = match oxsum_verify::verify_price_head(&inner) {
+                        Ok(()) => {
+                            " The price it names is bound to a checkpoint the operator signed.".to_owned()
+                        }
+                        Err(oxsum_verify::PriceError::Absent) => {
+                            " This bundle carries no signed price binding — the entry is proven, but its price is not independently attested.".to_owned()
+                        }
+                        Err(error) => format!(" Its price binding does not verify: {error}."),
+                    };
+                    Verdict::Pass { charge, price }
+                }
             }
-        }
+        };
+        Page::Bill(verdict)
     };
     Ok(view! {
         plain(
             title: "Verification result",
             <div class="card">
                 <h1>"Verification result"</h1>
-                match verdict {
+                match page {
+                    Page::UsageReport { passed, detail } => {
+                        if passed {
+                            <p class="ok"><strong>"The usage report verifies."</strong></p>
+                            <p class="muted">
+                                "Every shown entry is in the ledger the signed head attests, their recomputed hashes fold to the subset digest the marker committed, and the marker's DocumentRef binds that digest — the subset the report shows is the subset the organization committed once, for this endUser, over this span."
+                            </p>
+                        } else {
+                            <p class="error"><strong>"The usage report does not verify."</strong></p>
+                            <p class="muted">(detail)</p>
+                        }
+                    }
+                    Page::Bill(verdict) => match verdict {
                     Verdict::Pass { charge, price } => {
                         <p class="ok"><strong>"The bill verifies."</strong></p>
                         <p class="muted">
@@ -192,6 +235,7 @@ async fn verify_submit(Form(form): Form<VerifyForm>) -> Result<impl View> {
                             "Either the bundle was altered, or the hash you recorded does not match this entry."
                         </p>
                     }
+                    }
                 }
                 <p><a href="/verify">"Verify another"</a></p>
             </div>
@@ -199,7 +243,75 @@ async fn verify_submit(Form(form): Form<VerifyForm>) -> Result<impl View> {
     })
 }
 
-/// The chat page's browser script: models, streaming chat, top-up and live
+/// Runs `oxsum_verify::verify_usage_report` on a pasted report and reduces the
+/// outcome to the `(passed, detail)` the shared result view renders (issue
+/// #261). The bundle is self-contained: the `endUser` it commits is the one
+/// the check expects, and the `note`'s origin names the ledger — so the only
+/// input the page adds is the deployment's published key, derived from
+/// `head_seed` like the other signed-head pages do.
+async fn usage_report_outcome(cx: &Cx, inner: &str) -> Result<(bool, String)> {
+    // The report's own descriptor answers who the report is for and which log
+    // its head names — both come off the bundle, never from the verifier, so a
+    // report minted for somebody else cannot pass by borrowing this page's org.
+    let value = serde_json::from_str::<serde_json::Value>(inner)
+        .map_err(|_| bad_request("the report did not parse as JSON"))?;
+    let end_user = value
+        .get("endUser")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| bad_request("the report carries no endUser"))?
+        .to_owned();
+    // The published key: present on a signing deployment, absent otherwise —
+    // `verify_usage_report` verifies membership to the two digests alone then.
+    // `PublishedKey` borrows, so the name and both hex strings outlive it in
+    // locals.
+    let publication = match crate::web_config(cx)?.head_seed {
+        Some(seed) => {
+            let signing = oxsum_core::signing_key(seed).map_err(|_| {
+                topcoat::router::error::internal_server_error(topcoat::Error::msg(
+                    "the head signing key is misconfigured",
+                ))
+            })?;
+            Some(oxsum_core::KeyPublication::of(&signing))
+        }
+        None => None,
+    };
+    let public_hex = publication
+        .as_ref()
+        .map(|k| {
+            k.public_key
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        })
+        .unwrap_or_default();
+    let hash_hex = publication
+        .as_ref()
+        .map(|k| {
+            k.key_hash
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        })
+        .unwrap_or_default();
+    let key = publication.as_ref().map(|k| oxsum_verify::PublishedKey {
+        key_name: &k.name,
+        public_key: &public_hex,
+        key_hash: &hash_hex,
+    });
+    // The origin the head note attests — parsed from the bundle, not assumed,
+    // so a report for another tenant's ledger is checked under its own origin.
+    let origin = value
+        .get("note")
+        .and_then(|v| v.as_str())
+        .and_then(|note| oxsum_core::SignedTreeHead::parse(note).ok())
+        .map(|parsed| parsed.origin.as_str().to_owned())
+        .unwrap_or_default();
+    let outcome = oxsum_verify::verify_usage_report(inner, &origin, &end_user, key.as_ref());
+    Ok(match outcome {
+        Ok(()) => (true, String::new()),
+        Err(error) => (false, format!("{error}.")),
+    })
+}
 /// billing — the Leptos chat page's browser logic in vanilla JavaScript,
 /// against the same endpoints.
 #[route(GET "/chat.js")]
