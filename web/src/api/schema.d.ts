@@ -120,7 +120,8 @@ export interface paths {
          *     `404` for an origin it does not track, `409` for a checkpoint that
          *     forks what it already vouched (same size, different root) or shrinks
          *     below it, `400` for a malformed body or a consistency proof that does
-         *     not verify, `401` for a checkpoint whose own signature fails.
+         *     not verify, `401` for a note carrying no signature line at all — a
+         *     witness signs nothing it cannot attribute to a log key.
          *
          *     On accept the witness stores the head and returns the note with its
          *     own `cosignature/v1` (algorithm `0x04`) signature line appended — the
@@ -2861,6 +2862,182 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/org/usage-reports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the organization's minted usage reports (issue
+         * @description Every usage report the organization has minted, newest first — the
+         *     descriptors a member's dashboard browses. The list carries no rows or
+         *     proofs: a mint is rare, so the descriptor alone is enough to pick the
+         *     report whose bundle `GET .../usage-reports/{reportId}` then serves.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The minted reports, newest first */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: {
+                                rows: components["schemas"]["UsageReportSummary"][];
+                            };
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Mint a signed usage report for one end-user over a period (issue
+         * @description An organization bills its own downstream customers out of the same
+         *     ledger that mixes every customer's usage — so a customer cannot verify
+         *     a bill by reading the ledger. A usage report is the bundle the org
+         *     hands one `endUser`: the subset of settlement entries attributed to
+         *     them over `[from, to]`, each with its own proof, plus a report marker
+         *     the org committed into the ledger once and can never supersede.
+         *
+         *     Producing the report appends a self-balancing marker entry
+         *     (`oxsum/usage-report/v1`) to the organization's own ledger whose
+         *     `DocumentRef` binds the subset digest — the fold of the shown
+         *     settlement entries' content hashes in log order — and whose
+         *     description commits `{endUser, from, to, entryCount,
+         *     chargedTotalMinor, subsetHash}`. One marker per
+         *     `(organization, endUser, from, to)`, ever: the marker's idempotency
+         *     key is derived from the span, so a second request for the same span
+         *     replays the standing report rather than committing a second subset —
+         *     an org cannot commit one subset to the ledger and show the customer
+         *     another.
+         *
+         *     Both dates are inclusive UTC `YYYY-MM-DD`, and `to` must be a fully
+         *     ended day: the subset is only complete once no more usage can book
+         *     into the span. A report over an open day is `VALIDATION_ERROR`, as is
+         *     an `endUser` the organization has no usage for — the report is a
+         *     commitment, and an empty one commits nothing.
+         *
+         *     Completeness is the org's signed claim, not a Merkle fact — the
+         *     marker attests "these are all the settlements attributed to
+         *     `endUser` over the span", and a customer who kept their own request
+         *     log detects a dropped row as a count or total mismatch the signature
+         *     attests. The bundle proves membership of every shown row and binds
+         *     the attested subset to the committed digest; it cannot itself
+         *     enumerate rows the org chose never to show. The trust model is
+         *     recorded in `docs/decisions.md`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @description the caller-declared end-user id the usage rows carry */
+                        endUser: string;
+                        /**
+                         * Format: date
+                         * @description first UTC day of the span, inclusive
+                         */
+                        from: string;
+                        /**
+                         * Format: date
+                         * @description last UTC day of the span, inclusive — must be fully ended
+                         */
+                        to: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description The report bundle — descriptor, marker proof, per-entry proofs, signed head */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["UsageReport"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/org/usage-reports/{reportId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Re-fetch a minted usage report (issue
+         * @description `reportId` is the marker entry's own id — the same id the `POST` answers
+         *     and the one a verifier resolves to the marker's inclusion proof. The
+         *     committed subset is frozen at mint: re-fetching serves the identical
+         *     descriptor and rows, never a re-query, so a report cannot grow to
+         *     absorb usage the org omitted the first time.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    reportId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The report bundle */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["UsageReport"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -6334,6 +6511,90 @@ export interface components {
             description: string;
             /** @description the hash the Merkle log commits to */
             contentHash: string;
+        };
+        /**
+         * @description A signed end-user usage report (issue #261): the committed subset of
+         *     settlement entries for one `endUser` over `[from, to]`, the marker
+         *     entry that bound it into the organization's ledger once, and every
+         *     shown entry's own inclusion proof — everything a third party needs to
+         *     run `oxsum_verify::verify_usage_report` with no second call.
+         */
+        UsageReport: {
+            /**
+             * Format: uuid
+             * @description the marker entry's own id — `GET .../entries/{id}/proof` resolves it
+             */
+            reportId: string;
+            endUser: string;
+            /** Format: date */
+            from: string;
+            /** Format: date */
+            to: string;
+            /**
+             * Format: int64
+             * @description settlements the subset commits — a customer's own count spot-checks this
+             */
+            entryCount: number;
+            /**
+             * Format: int64
+             * @description the subset's summed settled charge in minor units
+             */
+            chargedTotalMinor: number;
+            /** @description fold of the shown entries' content hashes in log order, `oxsum/usage-report/v1` */
+            subsetHash: string;
+            /** @description the usage-report marker entry — the entry itself (whose DocumentRef binds the subset digest and whose description commits the report), its recorded content hash, and its inclusion proof */
+            marker: {
+                /** @description the marker entry, doubleentry's serde encoding — the verifier recomputes its hash and reads its DocumentRef + description */
+                entry: Record<string, never>;
+                /** @description the hash the Merkle log commits to — the verifier re-derives it with `adopt_verified` before trusting the entry */
+                contentHash: string;
+                /** @description the marker's inclusion proof into `head` */
+                proof: Record<string, never>;
+            };
+            /** @description every settlement entry the subset shows, in log order — each proves its own membership against `head` */
+            entries: {
+                /** @description the settlement entry, doubleentry's serde encoding */
+                entry: Record<string, never>;
+                /** @description the hash the Merkle log commits to — re-derived with `adopt_verified` */
+                contentHash: string;
+                /** @description this entry's inclusion proof into `head` */
+                proof: Record<string, never>;
+            }[];
+            /** @description the tree head every proof anchors to, at report time */
+            head: {
+                /** Format: int64 */
+                size?: number;
+                root?: string;
+            };
+            /** @description the operator-signed head note, when the deployment signs heads */
+            note: string | null;
+            keyName: string | null;
+            /** @description the operator's Ed25519 verifying key */
+            publicKey: string | null;
+            /** @description the signature-line selector */
+            keyHash: string | null;
+        };
+        /**
+         * @description A minted usage report's descriptor — what `GET .../usage-reports` lists.
+         *     Carries no rows or proofs; `GET .../usage-reports/{reportId}` serves the
+         *     full bundle.
+         */
+        UsageReportSummary: {
+            /**
+             * Format: uuid
+             * @description the marker entry's own id — the bundle's `GET` path parameter
+             */
+            reportId: string;
+            endUser: string;
+            /** Format: date */
+            from: string;
+            /** Format: date */
+            to: string;
+            /** Format: int64 */
+            entryCount: number;
+            /** Format: int64 */
+            chargedTotalMinor: number;
+            subsetHash: string;
         };
         /** @description one transaction as the bills page lists it — every ledger entry that moved money */
         BillRow: {

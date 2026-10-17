@@ -520,6 +520,8 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "upstream_price_probes".to_owned(),
             "usage_daily".to_owned(),
             "usage_records".to_owned(),
+            "usage_report_rows".to_owned(),
+            "usage_reports".to_owned(),
             "users".to_owned(),
             "webhook_deliveries".to_owned(),
             "webhook_endpoints".to_owned(),

@@ -325,6 +325,74 @@ pub const STATEMENT_ROLLUP_DOMAIN: &[u8] = b"oxsum/statement-rollup/v1";
 /// statement's identity in its own system, bound to the window digest.
 pub const STATEMENT_ANCHOR_DOCUMENT: &str = "oxsum/statement-anchor/v1";
 
+// ── end-user usage reports (issue #261) ──────────────────────────────────────
+//
+// A usage report is the statement-anchor idea turned on its side: a statement
+// commits a *contiguous* ledger window (`logFromIndex`–`logToIndex`), while a
+// usage report commits a *subset* — the settlement entries attributed to one
+// `end_user`, interleaved through the log with every other customer's. There
+// is no window to pin, so the marker's `DocumentRef` binds a digest of the
+// subset's own content hashes, and the marker is idempotency-keyed once per
+// span so an org cannot commit one subset and show the customer another.
+
+/// The domain the subset digest folds under: the shown settlement entries'
+/// content hashes appended verbatim in log order, versioned so the fold can
+/// evolve without reinterpreting minted reports.
+pub const USAGE_REPORT_DOMAIN: &[u8] = b"oxsum/usage-report/v1";
+
+/// The document id the report marker's [`doubleentry::DocumentRef`] carries:
+/// the report's identity, bound to the subset digest.
+pub const USAGE_REPORT_DOCUMENT: &str = "oxsum/usage-report/v1";
+
+/// The subset digest: one fold over the shown entries' content hashes in log
+/// order — each `content_hash` appended verbatim as 32 raw bytes, the whole
+/// digested under [`USAGE_REPORT_DOMAIN`]. Order is load-bearing, as it is in
+/// the statement window: the same set folded another way commits a different
+/// subset.
+#[must_use]
+pub fn usage_report_subset_hash(hashes: &[Hash]) -> Hash {
+    let mut payload = Vec::with_capacity(hashes.len() * Hash::LEN);
+    for hash in hashes {
+        payload.extend_from_slice(hash.as_bytes());
+    }
+    Hash::digest(USAGE_REPORT_DOMAIN, &payload)
+}
+
+/// The canonical commitment the marker's description carries and the verifier
+/// re-checks: `{v, endUser, from, to, entryCount, chargedTotalMinor,
+/// subsetHash}` as compact JSON in declaration order — deterministic bytes the
+/// verifier hashes verbatim rather than re-serializing.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageReportV1<'a> {
+    /// Canonical-form version.
+    pub v: i64,
+    /// The end user the subset is attributed to, exactly as `usage_records`
+    /// carries the id.
+    pub end_user: &'a str,
+    /// First UTC day of the span, inclusive, `YYYY-MM-DD`.
+    pub from: &'a str,
+    /// Last UTC day of the span, inclusive — a fully ended day at mint.
+    pub to: &'a str,
+    /// Settlements the subset commits — the customer's own count spot-checks it.
+    pub entry_count: i64,
+    /// The subset's summed settled charge in minor units.
+    pub charged_total_minor: i64,
+    /// The subset digest the marker's `DocumentRef` also binds — kept inside
+    /// the canonical form so the two are bound to each other, not just the entry.
+    pub subset_hash: &'a str,
+}
+
+/// Renders the canonical commitment bytes.
+///
+/// # Errors
+///
+/// Serialization of these fields cannot fail; the `Result` keeps the caller honest.
+pub fn canonical_usage_report(report: &UsageReportV1<'_>) -> Result<String, WalletError> {
+    serde_json::to_string(report)
+        .map_err(|error| WalletError::InvalidInput(format!("canonical usage report: {error}")))
+}
+
 /// The window digest: one fold over `hashes` in log order.
 ///
 /// Each covered entry's `content_hash` is appended to the payload verbatim —

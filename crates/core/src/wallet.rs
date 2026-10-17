@@ -16,8 +16,8 @@ use uuid::Uuid;
 use crate::billing::{Settlement, SettlementKind, SettlementRecord};
 use crate::error::{WalletError, invalid};
 use crate::heads::{
-    Consistency, HeadSigningKey, STATEMENT_ANCHOR_DOCUMENT, SignedHead, canonical_price_row,
-    origin_for, sign_head, sign_price_head,
+    Consistency, HeadSigningKey, STATEMENT_ANCHOR_DOCUMENT, SignedHead, USAGE_REPORT_DOCUMENT,
+    canonical_price_row, origin_for, sign_head, sign_price_head,
 };
 use crate::keys::{ActingKey, BudgetDuration};
 use crate::proof::ProofBundle;
@@ -2243,6 +2243,150 @@ impl Wallet {
             WalletError::InvalidInput("the statement anchor did not sequence".into())
         })?;
         Ok((receipt.entry_id, index))
+    }
+
+    /// Appends a usage-report marker — the entry that commits an end-user's
+    /// subset into the tenant ledger (issue #261). `pub(crate)`: only
+    /// [`crate::Db::mint_usage_report`] calls it.
+    ///
+    /// One ledger entry per `(end_user, from, to)`: a 1-minor balanced
+    /// `Equity:Adjustments` debit/credit (the posting amount is immaterial —
+    /// the marker is metadata, not money), idempotency-keyed
+    /// `usage-report/<endUser>/<from>/<to>` so a re-request for the same span
+    /// replays the standing marker rather than committing a second subset —
+    /// the once-per-span rule the completeness claim rests on. The entry's
+    /// [`DocumentRef`] binds the marker to the subset digest, and its
+    /// description carries the canonical commitment.
+    ///
+    /// # Errors
+    ///
+    /// Storage and ledger failures surface as [`WalletError`].
+    pub(crate) async fn anchor_usage_report(
+        &self,
+        end_user: &str,
+        from: &str,
+        to: &str,
+        description_json: &str,
+        subset_hash: Hash,
+    ) -> Result<(EntryId, u64), WalletError> {
+        let key = format!("usage-report/{end_user}/{from}/{to}");
+        let minor = Credits::from_minor(1);
+        let entry = Entry::<Draft, SCALE>::new(
+            entry_id_for(&key),
+            idem(&key)?,
+            OffsetDateTime::now_utc().date(),
+        )
+        .with_document(DocumentRef::new(USAGE_REPORT_DOCUMENT, subset_hash).map_err(invalid)?)
+        .with_description(description_of(description_json)?)
+        .debit(self.adjustments, minor, currency())
+        .credit(self.adjustments, minor, currency());
+        let receipt = match self.append(entry).await {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                // A raced mint lands on the same idempotency key; the standing
+                // entry is the same report either way, so read it back.
+                let Some(stored) = self.store.get(entry_id_for(&key)).await? else {
+                    return Err(error);
+                };
+                stored_receipt(&stored)
+            }
+        };
+        let index = receipt.log_index.ok_or_else(|| {
+            WalletError::InvalidInput("the usage-report marker did not sequence".into())
+        })?;
+        Ok((receipt.entry_id, index))
+    }
+
+    /// Assembles a usage report's self-contained bundle under one head (issue
+    /// #261): the marker entry, every shown settlement entry, each with its
+    /// inclusion proof, all proven against the *same* head — then that head
+    /// signed when the deployment signs heads.
+    ///
+    /// The single head is the load-bearing detail. Proving each row against
+    /// the current head as it is read would let a concurrent append hand the
+    /// bundle two different heads, and a row's proof would fail against the
+    /// head the report actually attests. Here the head is read once and every
+    /// `prove_inclusion_at` pins to its size, so the bundle is internally
+    /// consistent even while the ledger grows.
+    ///
+    /// `rows` are the frozen `usage_report_rows` (or a fresh mint's subset): each
+    /// carries `entry_id`, `log_index` and the recorded `content_hash`. The
+    /// `entry` object is read back from the ledger by id — the bundle serves the
+    /// entry's full serde encoding so the verifier recomputes the hash rather
+    /// than trusting a served one. A row whose id no longer resolves, or whose
+    /// recomputed hash disagrees with what was frozen, is a data-integrity
+    /// failure and surfaces as [`WalletError::InvalidInput`].
+    ///
+    /// Returns `(marker_bundle, entry_bundles, head, signed_head)`; the route
+    /// serializes them into the `UsageReport` body. `signed_head` is `None` on a
+    /// deployment that does not sign heads — the bundle is then verified to the
+    /// digests alone, the same posture `receipt_proof` takes with `price`.
+    ///
+    /// # Errors
+    ///
+    /// Storage and ledger failures surface as [`WalletError`].
+    pub async fn usage_report_bundle(
+        &self,
+        marker_id: EntryId,
+        rows: &[crate::usage_reports::UsageReportRow],
+        key: Option<&HeadSigningKey>,
+    ) -> Result<
+        (
+            crate::usage_reports::ReportEntryBundle,
+            Vec<crate::usage_reports::ReportEntryBundle>,
+            doubleentry::TreeHead,
+            Option<SignedHead>,
+        ),
+        WalletError,
+    > {
+        let head = self.store.head().await?;
+        // The marker is identified by id and reports its own hash; the shown
+        // entries additionally pin the hash frozen at mint, so a ledger row
+        // altered underneath is reported rather than served.
+        let Some(stored) = self.store.get(marker_id).await? else {
+            return Err(WalletError::InvalidInput(
+                "the usage-report marker is gone from the ledger".into(),
+            ));
+        };
+        let marker = crate::usage_reports::ReportEntryBundle {
+            proof: self
+                .store
+                .prove_inclusion_at(stored.require_index().map_err(invalid)?, head.size)
+                .await
+                .map_err(invalid)?,
+            content_hash: stored.content_hash.to_hex(),
+            entry: stored.entry,
+        };
+        let mut entries = Vec::with_capacity(rows.len());
+        for row in rows {
+            let Some(stored) = self.store.get(EntryId::from_uuid(row.entry_id)).await? else {
+                return Err(WalletError::InvalidInput(
+                    "a usage-report row's entry is gone from the ledger".into(),
+                ));
+            };
+            if stored.content_hash.to_hex() != row.content_hash {
+                return Err(WalletError::InvalidInput(
+                    "a usage-report row's hash disagrees with the ledger".into(),
+                ));
+            }
+            entries.push(crate::usage_reports::ReportEntryBundle {
+                proof: self
+                    .store
+                    .prove_inclusion_at(stored.require_index().map_err(invalid)?, head.size)
+                    .await
+                    .map_err(invalid)?,
+                content_hash: stored.content_hash.to_hex(),
+                entry: stored.entry,
+            });
+        }
+        let signed = match key {
+            Some(key) => {
+                let origin = origin_for(&self.tenant_id).map_err(invalid)?;
+                Some(sign_head(key, &origin, head).map_err(invalid)?)
+            }
+            None => None,
+        };
+        Ok((marker, entries, head, signed))
     }
 
     /// A refused gateway request's billing record: one marker entry appended

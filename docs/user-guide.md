@@ -112,6 +112,22 @@ The same dashboard exists as a React app at `/app` (issue #234): every page here
 - **Verify a row**: every row's **verify** link opens `/verify` with the entry named;
   the page fetches that entry's proof bundle itself — inside your session and its
   scope — and runs the check on load.
+- **Verify an end-user report**: if your organization bills its own downstream
+  customers out of this ledger, a customer cannot read the ledger to check a bill —
+  every customer's usage mixes inside it. `POST /api/v1/org/usage-reports` with
+  `{"endUser", "from", "to"}` mints a signed usage report for one `endUser` over an
+  ended span (issue #261): the settlement entries attributed to them, plus a marker
+  the organization committed into the ledger once and can never supersede. Hand the
+  customer the bundle — it verifies offline with `oxsum_verify::verify_usage_report`,
+  and the `/verify` page accepts it pasted (it runs the same check server-side).
+  `GET /api/v1/org/usage-reports` lists what has been minted and
+  `GET /api/v1/org/usage-reports/{reportId}` re-serves the frozen bundle; a
+  re-request for the same span replays the first report, so the organization can
+  never commit one subset and show another. What the report proves is membership
+  and commitment — that the shown rows are in the ledger and bound to the digest
+  the marker committed; completeness is the organization's signed claim, which a
+  customer's own request log spot-checks by comparing the report's `entryCount` and
+  `chargedTotalMinor` against what it sent.
 - **Export**: **Download CSV** and **Download JSON** on the bills page save the
   organization's whole history as a file — every transaction, not just the page on
   screen. Both carry the same fields — `bookedOn`,
