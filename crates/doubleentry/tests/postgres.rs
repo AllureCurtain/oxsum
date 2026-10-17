@@ -247,14 +247,6 @@ impl Harness {
                     .connect(&with_database(base_url, "postgres"))
                     .await
                     .expect("connects to the maintenance database");
-                // oxsum change (not upstream): collect crashed predecessors'
-                // `de_*` databases before adding this run's own — the drop in
-                // `Harness::drop` is best-effort, so residue is the *next*
-                // suite's to sweep, not the cluster's to keep (issue #271).
-                // Once per process via `SWEPT`; the timestamp inside the v7
-                // uuid is the age signal, so a live neighbour is never matched.
-                static SWEPT: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
-                SWEPT.get_or_init(|| Self::sweep_stale_de(&admin)).await;
                 sqlx::query(&format!("CREATE DATABASE {name}"))
                     .execute(&admin)
                     .await
@@ -265,30 +257,19 @@ impl Harness {
         }
     }
 
-    /// Advisory-lock key serializing the sweep across test binaries that share
-    /// one cluster — only one process actually walks `pg_database`.
-    const SWEEP_LOCK: i64 = 0x6f78_7375_6d5f_6465; // "oxsum_de"
-
     /// oxsum change (not upstream): drop `de_*` scratch databases older than
     /// [`STALE_AGE`], identified by the millisecond timestamp a v7 uuid carries
     /// in its first 48 bits (12 hex chars after `de_`). Best-effort — a stale
     /// entry that cannot drop today is next run's, not a reason this test
     /// should not get its database.
     ///
-    /// Only the process holding [`SWEEP_LOCK`] pays the catalog walk; every
-    /// other binary fails `pg_try_advisory_lock` and returns inside a single
-    /// round-trip, because under nextest each test is its own process and a
-    /// per-process sweep on the shared cluster is what CI's job budget
-    /// could not absorb (issue #271).
+    /// The sweep is invoked externally (CI's `scripts/drop-test-scratch.sql`
+    /// step against the service container, or the same script manually on a
+    /// dev cluster), never inside a test binary — under nextest each test is
+    /// its own process, and a per-process sweep on the shared cluster is what
+    /// CI's job budget could not absorb (issue #271).
+    #[allow(dead_code)]
     async fn sweep_stale_de(admin: &sqlx::PgPool) {
-        let won: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
-            .bind(Self::SWEEP_LOCK)
-            .fetch_one(admin)
-            .await
-            .unwrap_or(false);
-        if !won {
-            return;
-        }
         const STALE_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
         let cutoff_ms = match std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -305,10 +286,8 @@ impl Harness {
         .await
         .unwrap_or_default();
         if !names.is_empty() {
-            // Bound each drop so a contended catalog row cannot stall setup —
-            // under CI's per-binary processes every sweep costs a catalog
-            // walk, and a stuck one must fail fast, not hold the suite's
-            // first harness hostage (issue #271).
+            // Bound each drop so a contended catalog row cannot stall the
+            // caller; a stuck one must fail fast, not hold the harness hostage.
             let _ = sqlx::query("SET statement_timeout = '5s'")
                 .execute(admin)
                 .await;
@@ -329,12 +308,6 @@ impl Harness {
             }
             let _ = sqlx::query("RESET statement_timeout").execute(admin).await;
         }
-        // Release before close so a second process does not queue behind this
-        // one's teardown; releasing a lock you do not hold is a no-op.
-        let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
-            .bind(Self::SWEEP_LOCK)
-            .execute(admin)
-            .await;
     }
 
     async fn connect(

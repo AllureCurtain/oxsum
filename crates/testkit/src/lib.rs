@@ -18,18 +18,19 @@
 //! database name (`oxsum_test_<slug>_<unix_timestamp>_<pid>`), so a stale
 //! database left behind by a crashed run is identifiable.
 //!
-//! Cleanup is self-healing: before creating its own scratch database, a suite
-//! drops every `oxsum_test_*` older than [`STALE_AGE_SECS`]. A crashed run's
-//! residue is collected by the *next* run, not by the process that died — the
-//! exit-time drop below is only the last line of defence (issue #271).
+//! Residue is collected between runs, not inside them: an external sweep —
+//! CI's `scripts/drop-test-scratch.sql` step, or the same script run by hand —
+//! drops `oxsum_test_*`/`de_*` older than 24 h before `nextest` starts. The
+//! drop is the next run's job, never a test process's own (issue #271).
 
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// How old an `oxsum_test_*` database must be before a later suite drops it.
+/// How old an `oxsum_test_*` database must be before a later sweep drops it.
 ///
 /// Twenty-four hours keeps a colleague's in-flight run on the same cluster
 /// from being dropped mid-suite while still collecting yesterday's residue.
+#[cfg(test)]
 const STALE_AGE_SECS: u64 = 24 * 60 * 60;
 
 /// State for this suite's scratch database. `None` when `DATABASE_URL` is
@@ -129,15 +130,7 @@ fn create_suite_db(slug: &str) -> Option<SuiteDb> {
                 .enable_all()
                 .build()
                 .ok()?;
-            rt.block_on(async move {
-                // Sweep stale scratch databases before making this suite's own:
-                // a crashed predecessor's residue is this run's to collect, not
-                // a permanent tenant of the cluster (issue #271). The sweep is
-                // best-effort — a busy cluster answers what it can and the
-                // suite still proceeds.
-                sweep_stale(&admin_url).await;
-                create_database(&admin_url, &name).await
-            })
+            rt.block_on(create_database(&admin_url, &name))
         }
     })
     .join()
@@ -157,50 +150,11 @@ fn create_suite_db(slug: &str) -> Option<SuiteDb> {
     })
 }
 
-/// Postgres advisory-lock key serializing the sweep across every test
-/// process that shares a cluster — the name is arbitrary, only its value
-/// must not collide with anything else oxsum locks on.
-const SWEEP_LOCK: i64 = 0x6f78_7375_6d5f_7473; // "oxsum_ts" as a tag
-
-/// Drops `oxsum_test_*` databases older than [`STALE_AGE_SECS`] on the admin
-/// connection's cluster. Best-effort: logs what it drops and never fails —
-/// a stale entry that cannot be dropped today is next run's problem, not a
-/// reason to refuse this suite its own scratch database.
-///
-/// Only the first process to grab [`SWEEP_LOCK`] actually walks the catalog;
-/// every other process fails `pg_try_advisory_lock` and returns in one
-/// round-trip. Under nextest each suite is its own process, so without the
-/// lock every binary paid a catalog scan plus N DROPs on the shared cluster —
-/// cumulative cost CI's 30-minute job budget could not absorb (issue #271).
-async fn sweep_stale(admin_url: &str) {
-    let Ok(pool) = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(1)
-        .connect(admin_url)
-        .await
-    else {
-        return;
-    };
-    // One sweeper per cluster at a time; the rest move on to their own test.
-    let won: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
-        .bind(SWEEP_LOCK)
-        .fetch_one(&pool)
-        .await
-        .unwrap_or(false);
-    if won {
-        sweep_stale_unchecked(&pool).await;
-        // Release before close so a second process does not queue behind this
-        // one's teardown; releasing a lock you do not hold is a no-op.
-        let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
-            .bind(SWEEP_LOCK)
-            .execute(&pool)
-            .await;
-    }
-    pool.close().await;
-}
-
-/// The catalog walk + drop half of [`sweep_stale`], advisory lock already
-/// held by the caller. Split out so tests can exercise the scan/drop path
-/// without racing every other suite's lock.
+/// Drop `oxsum_test_*` databases older than [`STALE_AGE_SECS`] on the pool's
+/// cluster — the scan/drop shape `scripts/drop-test-scratch.sql` runs outside
+/// the test binaries in CI. `#[cfg(test)]` so the helper exists for the
+/// stale-probe test without shipping as part of the public helper.
+#[cfg(test)]
 async fn sweep_stale_unchecked(pool: &sqlx::PgPool) {
     // The `~` pattern is the same shape the manual
     // `scripts/drop-test-scratch.sql` uses; an empty match set is the common
