@@ -7,7 +7,7 @@ A verifiable AI credit wallet: users top up credits, each streaming LLM call fre
 - Language: Rust 1.98, full stack, see `rust-toolchain.toml`
 - Ledger core: doubleentry, vendored in `crates/doubleentry`
 - Backend: axum 0.8 + sqlx + PostgreSQL 17
-- Frontend: Topcoat 0.10 in `crates/web` (server-side rendered, no browser bundle); verification runs `oxsum_verify::verify_bundle` on the server. A standalone React + Vite dashboard is being scaffolded in `web/` (issue #234), served embedded at `/app` — both coexist until parity
+- Frontend: React + Vite dashboard in `web/` (issue #234), embedded into the binary and served at `/app`; the Topcoat server-rendered pages retired to it (issue #256) — `crates/web` now holds only the deliberately server-rendered `/verify` page and the bills-export row types. Legacy `/dashboard/*`, auth and `/admin` paths `301` to `/app`. UI rules in DESIGN.md
 - Deployment: a single binary + PostgreSQL, database runs locally via Docker Compose
 
 ## Layout
@@ -18,8 +18,8 @@ crates/core/          Domain layer: multi-tenant wallet, hold/settle, bill proof
 crates/verify/        Pure verification (ProofBundle, verify_bundle), wasm32-clean for the browser
 crates/integrations/  Third-party service clients: GitHub OAuth, Stripe, Turnstile, SMTP mail
 crates/server/        HTTP layer: routing, auth, error mapping, produces the oxsum binary. Conventions in crates/server/AGENTS.md
-crates/web/           Topcoat pages (server-rendered), mounted into the same binary. UI rules in DESIGN.md
-web/                  React dashboard scaffold (issue #234), embedded at /app; README has the parity checklist
+crates/web/           The server-rendered sliver: `/verify` + its stylesheet + the bills-export types the server reuses. UI rules in DESIGN.md
+web/                  React dashboard (issue #234), embedded at /app; README has the parity checklist
 docs/                 Project documentation
 ```
 

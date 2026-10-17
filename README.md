@@ -63,7 +63,7 @@ Both proof bundles are checkable on the `/verify` page against their content has
 
 ## Docker
 
-The release image is a multi-stage build of the whole workspace, including the Topcoat dashboard (server-side rendered, no browser bundle). It runs the `oxsum` binary against an external PostgreSQL — no database is bundled:
+The release image is a multi-stage build of the whole workspace: the `web/` React frontend is built and embedded into the binary (served at `/app`), and the one server-rendered page (`/verify`) rides along in the same crate set. It runs the `oxsum` binary against an external PostgreSQL — no database is bundled:
 
 ```bash
 docker build -t oxsum .

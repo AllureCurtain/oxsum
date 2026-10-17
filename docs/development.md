@@ -261,18 +261,21 @@ creates `ledger_<tenant_id>` on first use.
 
 ## Web dashboard
 
-The dashboard lives in `crates/web` (Topcoat 0.10, server-side rendered): `/login`
-and `/logout` call the session endpoints from the browser, and `/dashboard` shows
-the organization, the members, the keys, the balance, the in-flight holds and the
-transaction log. Pages are served by the same `oxsum` binary, with the Topcoat
-router mounted as an axum `fallback_service`: API routes match first, everything
-else falls through to the pages. Page handlers call `oxsum-core` directly; the
-chat/admin live parts are vanilla JS against the API (not part of
-`crates/server/openapi.yaml`). The stylesheet is embedded in the binary via
-`include_str!` — there is no client bundle and no frontend build step.
+The dashboard is the React app under `web/` (Vite + React 19 + TypeScript +
+Tailwind v4 + TanStack Query, issue #234), built once into `web/dist` and
+embedded into the binary — `crates/server/src/spa.rs` serves it at `/app`, with
+client-side routes falling back to `index.html`. It replaced the server-rendered
+Topcoat dashboard, which retired in issue #256: `crates/web` is now only the
+deliberately server-rendered `/verify` page plus its stylesheet and the
+bills-export row types the server's download routes reuse, and the server
+answers every legacy `/dashboard/*`, auth and `/admin` path with a `301` to its
+`/app` twin (`crates/server/src/web.rs`).
 
-- `cargo run -p oxsum-server` serves the pages; `cargo build -p oxsum-server`
-  builds them. No extra tooling beyond cargo.
+- `cargo run -p oxsum-server` serves everything; `cargo build -p oxsum-server`
+  embeds whatever `web/dist` holds. To rebuild the frontend, `npm ci`,
+  `npm run codegen` (after an `openapi.yaml` change) and `npm run build` in
+  `web/` — see `web/README.md`; `npm run dev` proxies `/api` to a server on
+  `:3000` for iteration.
 - In-flight gateway turns are pushed to the dashboard over `/ws/billing` (WebSocket,
   session-cookie auth): a snapshot of the open holds on connect, then started, progress
   and settled events as turns happen. The events come from a process-wide broadcast the
@@ -462,12 +465,11 @@ toolchain comes from `dtolnay/rust-toolchain@stable` with `toolchain: "1.98"` (m
   Docker made doubleentry's suite the one that could not run on a plain
   developer machine — `DOUBLEENTRY_DATABASE_URL` lifts that for local runs —
   which is why the conditional lives in CI rather than a local gate.
-- `browser`: the browser contract gate. It adds the `wasm32-unknown-unknown` target,
-  installs `cargo-leptos` 0.3.11 (the version the Dockerfile pins; the binary is
-  cached by `actions/cache`, so only the first run after the pin changes compiles
-  it), runs `cargo leptos build`, and then runs the ignored `browser_contract` test
-  with `OXSUM_SITE_DIR=target/site`. No PostgreSQL service: the routes it checks are
-  answered without a database.
+
+The retired `browser` job that used to gate the Leptos/wasm bundle went with the
+Topcoat dashboard (issue #256): `browser_contract` is an ordinary integration
+test now — no build step, no `wasm32` target — so it runs inside
+`test-integration` like every other suite.
 
 The compile jobs cache the cargo registry and `target/` through
 `Swatinem/rust-cache`, so a run that touches one crate does not recompile the
@@ -503,9 +505,9 @@ is diagnosable from its own log rather than by re-running it.
 
 ## React dashboard (`web/`, issue #234)
 
-A standalone Vite + React 19 + TypeScript scaffold lives in `web/` and will
-replace the Topcoat dashboard once it reaches parity (`web/README.md` carries
-the checklist). It talks to `/api/v1` only — no backend changes were needed.
+The React app under `web/` is the shipped dashboard — it reached parity and the
+Topcoat pages retired to it (issue #256). It talks to `/api/v1` only — no
+backend changes were needed.
 
 ```bash
 npm --prefix web ci          # install the toolchain (Node 22+)
@@ -531,7 +533,7 @@ Tailwind v4 theme colors in `web/src/index.css`.
 - Integration tests:
   - `crates/core/tests/` exercises the wallet's invariants on real PostgreSQL: isolation, concurrent no-overdraw, hold/settle, idempotency, tamper detection, restart recovery, concurrent migrate; `crates/core/tests/identity.rs` covers registration, organizations and API keys, including that the plaintext secret is nowhere in the database; `crates/core/tests/sessions.rs` covers login, session authentication, logout and the key role scopes, including that the plaintext token is nowhere in the database and that a session dies with its membership.
   - `crates/core/tests/generative.rs` generates random sequences of top-ups, holds, settlements, replays and key collisions and checks each step against an in-memory model of the wallet account's two layers: the outcome the model predicted, the available balance, that it never went negative, the log size, and a proof for every entry the case wrote (including that a changed amount stops verifying). 1000 cases by default, `PROPTEST_CASES` to narrow it locally; a failure prints its seed and the shortest failing sequence. Since settlement-hold pairing (issue #10) a settlement names the hold it releases, and the oracle predicts `HoldNotFound` for a settlement naming a key that is not an outstanding hold. The suite loads `.env` before reading `DATABASE_URL` (issue #18): with the variable only in `.env` it runs for real, and with no database anywhere it skips all cases with a warning rather than failing.
-  - `crates/server/tests/` covers the HTTP layer: key auth, error format, full request chains, and that one organization's key cannot reach another's ledger; `crates/server/tests/sessions.rs` covers the login/logout/session endpoints, the cookie attributes, and the member/owner key rules over HTTP. `crates/server/tests/dashboard.rs` covers the pages' own contract: the pages render server-side, the pkg bundle is served from the real site root, the billing socket refuses an unknown session, and the shell's markup asks for the wasm module the built site holds (`pkg/oxsum.wasm`, the name cargo-leptos writes — issue #65).
+  - `crates/server/tests/` covers the HTTP layer: key auth, error format, full request chains, and that one organization's key cannot reach another's ledger; `crates/server/tests/sessions.rs` covers the login/logout/session endpoints, the cookie attributes, and the member/owner key rules over HTTP. `crates/server/tests/dashboard.rs` covers the billing WebSocket's contract — the snapshot of open holds, the live events, and that an unknown session is refused; `crates/server/tests/browser_contract.rs` covers the server-rendered sliver (`/verify`, its stylesheet) and the `301` map that sends the retired page paths to `/app` (issue #256).
 - doubleentry's own tests: changing `crates/doubleentry` requires all of them passing, including its conformance suite.
 - E2E: the full top-up → call → verify flow is covered. `crates/server/tests/chat_flow.rs` drives login, a top-up, one streaming chat turn through a scripted upstream, the billing events, and then fetches the settlement's proof bundle and verifies it with `oxsum_verify::verify_bundle`; `demo/demo.py` runs the same flow end to end with the official OpenAI SDK and prints both proof bundles for `/verify` to check. TODO.md carries the current status.
 - Real-provider E2E: `crates/server/tests/real_upstream.rs` runs the same bill path against a provider that is not a stub — registration, a manual-rail top-up, the model catalog, one non-streaming and one streaming completion against the real upstream, then reads the billing record back and verifies the proof bundle, the charge recomputation and the operator-signed tree head with the same `oxsum_verify` calls the browser makes. It is `#[ignore]`d and additionally skips unless `OXSUM_E2E_UPSTREAM_BASE_URL`, `OXSUM_E2E_UPSTREAM_API_KEY` and `OXSUM_E2E_MODEL` are all set, so it never runs in the ordinary gate or CI; the provider key lives only in the shell environment. Run it against a clean development database — the suite writes a channel sealed with its own key and needs `prepare` to open every stored channel:
@@ -565,8 +567,8 @@ Before committing, confirm:
 ## Release
 
 The release is a single binary plus a Docker image (TODO.md B-10, closed 2026-10-03):
-`cargo leptos build --release` produces the `oxsum` binary and `target/site`, and the
-`Dockerfile` packages them into the image described above. CI
+the `Dockerfile` builds the `web/` frontend, compiles `oxsum-server` (which
+embeds `web/dist`), and packages the one binary into the image described above. CI
 (`.github/workflows/ci.yml`) is the green gate on a fresh clone, and every pull request
 also builds the image and runs it against PostgreSQL
 (`.github/workflows/release-image.yml`, issue #49), so the artifact a release ships is
