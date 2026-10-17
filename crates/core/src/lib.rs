@@ -45,6 +45,7 @@ mod usage_reports;
 mod users;
 mod wallet;
 mod webhooks;
+mod x402;
 
 pub use adapters::{ANTHROPIC, OPENAI, UsageAdapter, adapter_for, adapter_for_endpoint};
 pub use anomaly::{AnomalyFacts, Severity, anomaly_score};
@@ -129,4 +130,8 @@ pub use webhooks::{
     DeliveryOutcome, DueDelivery, MAX_DELIVERY_ATTEMPTS, ORG_CREDIT_LIMIT_EXCEEDED, ORG_SUSPENDED,
     REQUEST_SETTLED, STATEMENT_FINALIZED, STATEMENT_OVERDUE, STATEMENT_STATUS_UPDATED,
     WebhookDelivery, WebhookEndpoint, forecast_exhaustion, retry_delay_secs, signature,
+};
+pub use x402::{
+    ASSET_CREDIT, Ed25519RailVerifier, NETWORK_ED25519, RAIL_X402, RailVerifier, SCHEME_EXACT,
+    VerifiedPayment,
 };
