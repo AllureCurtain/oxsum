@@ -449,14 +449,17 @@ async fn the_usage_page_sums_the_window() {
     .await;
 
     let days = usage(&app, &owner.cookie).await;
-    let today = today().to_string();
     // mock-a's two turns roll into one day row: 116 + 200 input tokens,
     // 100 + 50 output tokens, 616 minor charged.
     let mock_a = days
         .iter()
         .find(|row| row["model"] == "mock-a")
         .expect("the mock-a rollup row");
-    assert_eq!(mock_a["day"], today.as_str(), "today's rollup row");
+    assert_eq!(
+        mock_a["day"],
+        serde_json::to_value(today()).unwrap(),
+        "today's rollup row"
+    );
     assert_eq!(mock_a["inputTokens"], 316, "the input tokens sum");
     assert_eq!(mock_a["outputTokens"], 150, "the output tokens sum");
     assert_eq!(mock_a["chargedMinor"], 616, "the charged total");
