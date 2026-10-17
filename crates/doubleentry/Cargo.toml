@@ -118,6 +118,9 @@ uuid = { version = "1", features = ["js"] }
 [dev-dependencies]
 proptest   = "1"
 serde_json = "1"
+# oxsum change (not upstream): `dotenvy`, so the postgres suite honors a
+# `DATABASE_URL` kept only in `.env` the same way oxsum-testkit does (issue #277).
+dotenvy    = { workspace = true }
 # oxsum change (not upstream): `time`, for the lock-contention test's timeouts.
 tokio      = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 testcontainers = "0.27"

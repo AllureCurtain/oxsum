@@ -181,6 +181,12 @@ jobs:
           # `localhost` resolves to a Unix socket for psql — 127.0.0.1 forces TCP
           # to the service container.
           psql "postgresql://postgres:postgres@127.0.0.1:5432/postgres" -f scripts/drop-test-scratch.sql
+      # Containers are the other half of the residue: a container the
+      # doubleentry suite's Ryuk never reaped sits on the daemon until the
+      # runner is recycled. Same label- and age-gated shape as the database
+      # sweep (issue #277). `./scripts/clean-testcontainers.sh --drop`.
+      - name: Sweep stale testcontainers
+        run: ./scripts/clean-testcontainers.sh --drop
       - name: Run the workspace test suites
         # Three suites coordinate through process-global state — the generative
         # property suite's OnceLock shared schemas, and the seed/jobs suites'

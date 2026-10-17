@@ -24,6 +24,8 @@ Post-roadmap validation: a light dev deployment logged multi-second WARN entries
 
 Post-roadmap validation: a gate run found `a_settled_turn_enqueues_a_signed_delivery` flaking — the test asserts a global `count(*)` on `oxsum.webhook_deliveries` before and after a no-op usage row, so any parallel test on the shared database that enqueues a delivery between the two counts fails the assertion (~1 CI failure so far) (#195, shipped: the count is scoped to the test's own organization).
 
+Post-roadmap validation: the local Docker daemon accumulated eight orphaned `postgres:17-alpine` containers — testcontainers sidecars from the doubleentry suite that Ryuk never reaped, started because the suite reads `DATABASE_URL` only from the process environment and the local `.env` was invisible to it (#277, in progress: `postgres.rs` loads `.env` itself, `scripts/clean-testcontainers.sh` sweeps labeled containers older than an hour, CI runs it beside the database sweep).
+
 ## Next
 
 Post-roadmap backlog, one issue per item. The phase direction is settled in docs/decisions.md (2026-10-13, "deepens verifiability before widening the surface"); the four items below execute it in order. The server refactor that preceded it — `routes.rs` and `admin.rs` split into per-resource modules — shipped on this branch ahead of the roadmap. Q3 (#220, forecasted budget exhaustion) shipped. Q1 (#221, statement anchors to the transparency log) shipped. Q2 (#222, upstream price-catalog sync with drift alerts) shipped. Q4 (#224, OTLP `gen_ai.*` trace export) shipped — the phase is closed.

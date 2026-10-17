@@ -1378,6 +1378,7 @@ dependencies = [
  "arrow-array",
  "arrow-schema",
  "blake3",
+ "dotenvy",
  "ed25519-dalek",
  "iceberg",
  "parquet",
