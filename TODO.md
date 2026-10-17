@@ -24,7 +24,9 @@ Post-roadmap validation: a light dev deployment logged multi-second WARN entries
 
 Post-roadmap validation: a gate run found `a_settled_turn_enqueues_a_signed_delivery` flaking — the test asserts a global `count(*)` on `oxsum.webhook_deliveries` before and after a no-op usage row, so any parallel test on the shared database that enqueues a delivery between the two counts fails the assertion (~1 CI failure so far) (#195, shipped: the count is scoped to the test's own organization).
 
-Post-roadmap validation: the local Docker daemon accumulated eight orphaned `postgres:17-alpine` containers — testcontainers sidecars from the doubleentry suite that Ryuk never reaped, started because the suite reads `DATABASE_URL` only from the process environment and the local `.env` was invisible to it (#277, in progress: `postgres.rs` loads `.env` itself, `scripts/clean-testcontainers.sh` sweeps labeled containers older than an hour, CI runs it beside the database sweep).
+Post-roadmap validation: the local Docker daemon accumulated eight orphaned `postgres:17-alpine` containers — testcontainers sidecars from the doubleentry suite that Ryuk never reaped, started because the suite reads `DATABASE_URL` only from the process environment and the local `.env` was invisible to it (#277, shipped: `postgres.rs` loads `.env` itself, `scripts/clean-testcontainers.sh` sweeps labeled containers older than an hour, CI runs it beside the database sweep).
+
+Post-roadmap validation: `test-integration` was the merge-time bottleneck at ~13 minutes — disk prep, the workspace suite, the process-shared suites and the ledger gate all serialized onto one runner (#276, in progress: `build-tests` archives every test binary once, three `test-shard` jobs partition it under `cargo nextest run --archive-file … --partition count:i/3`, and `test-extras` runs the process-shared suites and the doubleentry gate off the same archives with no recompile).
 
 ## Next
 

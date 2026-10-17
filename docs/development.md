@@ -437,21 +437,31 @@ toolchain comes from `dtolnay/rust-toolchain@stable` with `toolchain: "1.98"` (m
   plus the doctests, with no postgres service and no integration binaries — the
   heavy test targets (testcontainers, sqlx test deps) never compile in this job,
   so a unit break answers in a few minutes instead of waiting on the full suite.
-- `test-integration`: `cargo nextest run --workspace` against a
-  `postgres:17-alpine` service container (with `DATABASE_URL` set, so the
-  database tests run for real instead of skipping), then the process-shared
-  suites on `cargo test` (`generative`, `seed`, `jobs` — nextest would race
-  their in-process mutexes). doubleentry's own Postgres conformance suite
-  (`cargo test -p doubleentry --features postgres --test postgres`), which starts its
-  own container through testcontainers, runs only when the run touches the vendored
-  engine, the migration list or `Cargo.lock` — the crate is vendored and otherwise
-  unchanged, so running it on every push bought several minutes for no signal.
-  Docker makes it the one suite that cannot run on a plain developer machine, which
-  is why the conditional lives in CI rather than a local gate.
+- `build-tests`: `cargo nextest archive --workspace` compiles every test
+  binary once into a `.tar.zst` artifact (issue #276). A second archive builds
+  doubleentry's postgres suite with the feature on — its
+  `#![cfg(feature = "postgres")]` gate means a plain `--workspace` archive would
+  ship an empty binary. `Free disk space` lives here, the only job that still
+  compiles the heavy targets.
+- `test-shard` (matrix of three): downloads the archive and runs
+  `cargo nextest run --archive-file … --partition count:i/3`, so the suite's
+  wall-clock is a third of one runner's. Each shard gets its own
+  `postgres:17-alpine` service and runs the scratch-database sweep before the
+  tests — an interrupted run's residue cannot bleed into the next shard's
+  timing (issue #271).
+- `test-extras`: downloads the same artifact, extracts both archives, and runs
+  the suites that cannot live under nextest — `generative`, `seed`, `jobs`
+  coordinate through process-global state — by invoking the binaries straight
+  from `target/debug/deps`, the same one-binary-per-process model `cargo test`
+  gives them. It also runs the ledger-gated doubleentry Postgres conformance
+  suite off the second archive (the vendored crate almost never changes, so
+  the gate keys on `crates/doubleentry/`, `crates/core/migrations/`,
+  `Cargo.lock`, or `ci.yml` itself), and sweeps stale testcontainers beside
+  it (issue #277).
 
-  Docker made it the one suite that could not run on a plain developer machine —
-  `DOUBLEENTRY_DATABASE_URL` now lifts that for local runs — which is why the
-  conditional lives in CI rather than a local gate.
+  Docker made doubleentry's suite the one that could not run on a plain
+  developer machine — `DOUBLEENTRY_DATABASE_URL` lifts that for local runs —
+  which is why the conditional lives in CI rather than a local gate.
 - `browser`: the browser contract gate. It adds the `wasm32-unknown-unknown` target,
   installs `cargo-leptos` 0.3.11 (the version the Dockerfile pins; the binary is
   cached by `actions/cache`, so only the first run after the pin changes compiles
@@ -464,9 +474,9 @@ The compile jobs cache the cargo registry and `target/` through
 dependency tree. Compiled object files themselves are cached across runs through
 `mozilla-actions/sccache-action` (`RUSTC_WRAPPER=sccache`, GitHub cache backend —
 issue #237), which is what cuts cold-run compile time once a commit reuses any
-of the workspace's dependency graph. Both test jobs run in parallel; `main`
-requires all four checks to pass — a pull request cannot merge while any of
-them is red.
+of the workspace's dependency graph. The three test shards and test-extras all
+run in parallel once build-tests hands them the archive; `main` requires every
+job to pass — a pull request cannot merge while any of them is red.
 
 A second workflow, `.github/workflows/release-image.yml`, gates the release image
 itself: it runs on pushes to `main` and on `workflow_dispatch` — not on pull
