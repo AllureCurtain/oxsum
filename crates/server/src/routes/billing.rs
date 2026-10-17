@@ -202,6 +202,51 @@ pub(crate) async fn top_up(
     ok(receipt)
 }
 
+/// The body of `POST /api/v1/topups/x402`: the signed payment authorization as
+/// base64url. The rail's verifier — the seam a real crypto rail drops into —
+/// checks the signature shape; the deposit's `payment_ref` anchors on the
+/// signed `nonce`, so a replayed authorization credits once.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct X402TopupReq {
+    payment: String,
+}
+
+/// `POST /api/v1/topups/x402`: the x402-shaped deposit rail (issue #264). The
+/// caller presents a signed payment authorization; the verifier proves it is a
+/// payment the rail honors, and the deposit credits through the same
+/// pending → confirmed → credited walk every rail shares. An unconfigured rail
+/// answers 503, an unverified authorization 403 — the seam refuses, the
+/// bookkeeping behind it is real. A replayed authorization answers the
+/// standing receipt (`is_new: false`), like every credit.
+pub(crate) async fn x402_topup(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    ApiJson(r): ApiJson<X402TopupReq>,
+) -> ApiResult<oxsum_core::Receipt> {
+    let verifier = state.config.x402().ok_or_else(|| {
+        ApiError::ServiceUnavailable("the x402 deposit rail is not configured".into())
+    })?;
+    let w = wallet(&state.tenants, principal.organization()).await?;
+    let receipt = state
+        .db
+        .credit_x402_deposit(
+            &w,
+            principal.organization().id,
+            verifier,
+            r.payment.as_bytes(),
+            today(),
+        )
+        .await?;
+    // Whatever the deposit repaid counts against the statement book, like the
+    // manual rail: open statements are repaid oldest first (issue #124).
+    state
+        .db
+        .reconcile_statements(principal.organization().id, &w, today())
+        .await?;
+    ok(receipt)
+}
+
 /// The body of `POST /api/v1/topups/stripe`: the amount to charge and the
 /// idempotency key that anchors the deposit.
 #[derive(Deserialize)]

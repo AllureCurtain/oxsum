@@ -246,6 +246,10 @@ pub struct Config {
     /// organization with no override of its own renders. `None` means the
     /// deployment displays credits only.
     display_currency: Option<oxsum_core::Display>,
+    /// The x402-shaped deposit rail's verifier (issue #264): the payer key
+    /// `OXSUM_X402_VERIFYING_KEY` pins. `None` — the default — runs no rail
+    /// and `POST /api/v1/topups/x402` answers 503.
+    x402: Option<oxsum_core::Ed25519RailVerifier>,
 }
 
 impl Config {
@@ -272,6 +276,7 @@ impl Config {
             witness_keys: Vec::new(),
             witness_serve: None,
             display_currency: None,
+            x402: None,
         }
     }
 
@@ -416,6 +421,7 @@ impl Config {
             witness_keys,
             witness_serve,
             display_currency,
+            x402: x402_of()?,
         })
     }
 
@@ -476,6 +482,26 @@ impl Config {
     #[must_use]
     pub fn with_stripe(mut self, stripe: crate::stripe::Stripe) -> Self {
         self.stripe = Some(stripe);
+        self
+    }
+
+    /// The x402-shaped deposit rail's verifier, or `None` when
+    /// `OXSUM_X402_VERIFYING_KEY` is unset — in which case `POST
+    /// /api/v1/topups/x402` answers 503. Returned behind the
+    /// [`RailVerifier`][oxsum_core::RailVerifier] trait: the rail's seam, so a
+    /// real crypto verifier drops in without touching the handler.
+    #[must_use]
+    pub fn x402(&self) -> Option<&dyn oxsum_core::RailVerifier> {
+        self.x402
+            .as_ref()
+            .map(|v| v as &dyn oxsum_core::RailVerifier)
+    }
+
+    /// Sets the x402 rail's verifier. Tests use this; the server reads
+    /// `OXSUM_X402_VERIFYING_KEY`.
+    #[must_use]
+    pub fn with_x402(mut self, verifier: oxsum_core::Ed25519RailVerifier) -> Self {
+        self.x402 = Some(verifier);
         self
     }
 
@@ -1080,6 +1106,20 @@ fn stripe_of() -> Result<Option<crate::stripe::Stripe>, String> {
         api_url,
         public_url,
     )))
+}
+
+/// Parses the x402 rail's pinned payer key: `OXSUM_X402_VERIFYING_KEY`, the
+/// hex Ed25519 public half the deployment trusts payment authorizations signed
+/// under. Unset means no rail — `POST /api/v1/topups/x402` answers 503 — and a
+/// malformed value is a startup error rather than a rail that only fails inside
+/// a request.
+fn x402_of() -> Result<Option<oxsum_core::Ed25519RailVerifier>, String> {
+    let Some(key) = var("OXSUM_X402_VERIFYING_KEY") else {
+        return Ok(None);
+    };
+    oxsum_core::Ed25519RailVerifier::from_hex(&key)
+        .map(Some)
+        .map_err(|error| error.to_string())
 }
 
 /// Parses the Turnstile pair: `OXSUM_TURNSTILE_SITE_KEY` and
