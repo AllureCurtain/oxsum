@@ -15,10 +15,12 @@
 //! source of failures that have nothing to do with the code under test.
 //!
 //! oxsum change (not upstream): with `DOUBLEENTRY_DATABASE_URL` (or
-//! `DATABASE_URL`) set, the suite instead creates its scratch databases on the
-//! cluster the URL points at and drops each one when its test ends — no Docker
-//! needed, and no `de_*` residue afterwards (issue #241). Unset, the container
-//! behaviour is unchanged.
+//! `DATABASE_URL`) set — in the environment or in the repo's `.env` — the suite
+//! instead creates its scratch databases on the cluster the URL points at and
+//! drops each one when its test ends; no Docker needed, no `de_*` residue
+//! afterwards (issues #241, #277). When neither is set anywhere, the container
+//! behaviour is unchanged and `scripts/clean-testcontainers.sh` sweeps any
+//! container the run leaves behind.
 
 #![cfg(feature = "postgres")]
 #![allow(
@@ -91,6 +93,11 @@ async fn shared() -> &'static Shared {
     POSTGRES
         .get_or_init(|| async {
             // oxsum change (not upstream): a local cluster wins over Docker.
+            // `.env` is consulted first, matching oxsum-testkit: a `DATABASE_URL`
+            // that only exists there must still skip the container, otherwise
+            // every worktree run without exported variables starts one and its
+            // teardown is Ryuk's problem (issue #277).
+            let _ = dotenvy::dotenv();
             if let Some(url) = std::env::var("DOUBLEENTRY_DATABASE_URL")
                 .ok()
                 .or_else(|| std::env::var("DATABASE_URL").ok())
