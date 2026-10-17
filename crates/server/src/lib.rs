@@ -29,7 +29,7 @@ use time::OffsetDateTime;
 use tokio::sync::broadcast;
 
 pub use billing::BillingEvent;
-pub use config::{Config, Gateway, Signup, WitnessKey};
+pub use config::{Config, Gateway, Signup, WitnessKey, WitnessServe, WitnessTrust};
 pub use metrics::Metrics;
 pub use oxsum_integrations::mail::Mailer;
 
@@ -109,6 +109,17 @@ pub fn app_with_billing(
 ///
 /// A message naming what is wrong, for `main` to print before it exits.
 pub async fn prepare(db: &Db, config: &Config) -> Result<(), WalletError> {
+    // The witness's trust roots (issue #260): seed each pinned origin's
+    // starting head into `witness_served`, without overwriting a head the
+    // witness already advanced past — a restart re-seeds the root it started
+    // from only when the row is absent, so re-pinning an older root can never
+    // roll the witness back onto a fork it already moved off.
+    if let Some(serve) = config.witness_serve() {
+        for trust in &serve.trust {
+            db.seed_witness_trust(&trust.origin, trust.size, &trust.root)
+                .await?;
+        }
+    }
     let Some(secret) = config.secret() else {
         // Without a key there can be no channels: either there are none and nothing is served, or
         // the deployment lost the key it wrote with and must not start.

@@ -145,6 +145,46 @@ pub struct WitnessKey {
     pub key_hash: String,
 }
 
+/// One trust root `OXSUM_WITNESS_TRUST` pins: a foreign log's origin and the
+/// starting head this witness vouches forward from (issue #260).
+///
+/// The root is the out-of-band act — the head the operator independently
+/// confirms the foreign log stands at before the first `/add-checkpoint`
+/// arrives. A submission for an origin with no root is refused: there is no
+/// trust-on-first-use, because a witness that accepts whatever arrives first
+/// has already been made to forget a fork.
+///
+/// Pinning `size: 0` is the deliberate onboarding case: a witness holding a
+/// size-0 root takes the first non-empty head it is offered on trust — every
+/// log extends the empty tree, so there is nothing to prove — and vouches
+/// forward from there. That is TOFU by explicit operator choice, which is how
+/// a brand-new log is enrolled; pinning a real head is the stronger act for a
+/// log whose history is already out there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WitnessTrust {
+    /// The log's origin, as the note's first line carries it
+    /// (`oxsum/ledgers/<tenant>` for an oxsum log, anything for a foreign one).
+    pub origin: String,
+    /// The starting tree size.
+    pub size: u64,
+    /// The starting head root, base64 — exactly as the note body carries it.
+    pub root: String,
+}
+
+/// The deployment's own tlog-witness, opted into by `OXSUM_WITNESS_SIGNING_KEY`
+/// (issue #260): the key it cosigns under, the name its signature lines carry,
+/// and the trust roots `OXSUM_WITNESS_TRUST` seeds.
+#[derive(Debug, Clone)]
+pub struct WitnessServe {
+    /// 32 bytes: the Ed25519 seed the witness's cosignatures are drawn from.
+    pub seed: [u8; 32],
+    /// The name the cosignature lines carry (`— <name> <blob>`), default
+    /// `oxsum/witness`.
+    pub key_name: String,
+    /// The trust roots, one per foreign log this witness vouches for.
+    pub trust: Vec<WitnessTrust>,
+}
+
 /// An environment variable that counts as unset when it is absent or blank.
 fn var(name: &str) -> Option<String> {
     std::env::var(name)
@@ -197,6 +237,10 @@ pub struct Config {
     /// same trust choice the operator's own published key already asks for.
     /// Empty means the endpoint serves cosigned notes but no pins.
     witness_keys: Vec<WitnessKey>,
+    /// The deployment's own tlog-witness, `OXSUM_WITNESS_SIGNING_KEY` plus
+    /// `OXSUM_WITNESS_KEY_NAME`/`OXSUM_WITNESS_TRUST` (issue #260). `None` —
+    /// the default — runs no witness and `/add-checkpoint` is 404.
+    witness_serve: Option<WitnessServe>,
     /// The deployment-wide display currency default (issue #257):
     /// `OXSUM_DISPLAY_CURRENCY` plus `OXSUM_DISPLAY_RATE_PER_CREDIT` — what an
     /// organization with no override of its own renders. `None` means the
@@ -226,6 +270,7 @@ impl Config {
             otlp_endpoint: None,
             witness_urls: Vec::new(),
             witness_keys: Vec::new(),
+            witness_serve: None,
             display_currency: None,
         }
     }
@@ -345,6 +390,7 @@ impl Config {
             .unwrap_or(false);
         let witness_urls = witness_urls_of()?;
         let witness_keys = witness_keys_of(&witness_urls)?;
+        let witness_serve = witness_serve_of()?;
         // Trailing slashes come off: the exporter appends `/v1/traces`, and a
         // doubled slash is only a cosmetic wrong.
         let otlp_endpoint = var("OXSUM_OTLP_ENDPOINT").map(|v| v.trim_end_matches('/').to_owned());
@@ -368,6 +414,7 @@ impl Config {
             otlp_endpoint,
             witness_urls,
             witness_keys,
+            witness_serve,
             display_currency,
         })
     }
@@ -531,6 +578,22 @@ impl Config {
     #[must_use]
     pub fn with_witness_keys(mut self, keys: Vec<WitnessKey>) -> Self {
         self.witness_keys = keys;
+        self
+    }
+
+    /// The deployment's own tlog-witness, or `None` when
+    /// `OXSUM_WITNESS_SIGNING_KEY` is unset — in which case `/add-checkpoint`
+    /// answers 404 like any path the server does not serve (issue #260).
+    #[must_use]
+    pub fn witness_serve(&self) -> Option<&WitnessServe> {
+        self.witness_serve.as_ref()
+    }
+
+    /// Sets the witness-serve config. Tests use this; the server reads
+    /// `OXSUM_WITNESS_SIGNING_KEY`/`OXSUM_WITNESS_KEY_NAME`/`OXSUM_WITNESS_TRUST`.
+    #[must_use]
+    pub fn with_witness_serve(mut self, serve: WitnessServe) -> Self {
+        self.witness_serve = Some(serve);
         self
     }
 
@@ -737,6 +800,88 @@ fn hex_decode<const N: usize>(hex: &str) -> Result<[u8; N], ()> {
         out[i] = ((hi << 4) | lo) as u8;
     }
     Ok(out)
+}
+
+/// Parses the deployment's own tlog-witness (issue #260):
+/// `OXSUM_WITNESS_SIGNING_KEY` (32 bytes, base64) opts in — unset means no
+/// witness and `/add-checkpoint` is 404. `OXSUM_WITNESS_KEY_NAME` names the
+/// cosignature lines, default `oxsum/witness`. `OXSUM_WITNESS_TRUST` is the
+/// trust roots, comma-separated `origin=size:root` entries — the heads the
+/// operator independently confirmed before any submission may arrive.
+///
+/// A seed without a valid base64, a key name that is not a valid note key
+/// name, or a trust entry that does not parse — or a trust list left empty
+/// when a seed is set — refuses to start: a witness that tracks nothing can
+/// only answer 404, and a misconfigured one would cosign under a key the
+/// operator cannot name.
+fn witness_serve_of() -> Result<Option<WitnessServe>, String> {
+    let Some(seed_raw) = var("OXSUM_WITNESS_SIGNING_KEY") else {
+        return Ok(None);
+    };
+    let seed = oxsum_core::seed_from_base64(&seed_raw)
+        .map_err(|error| format!("OXSUM_WITNESS_SIGNING_KEY: {error}"))?;
+    let key_name = var("OXSUM_WITNESS_KEY_NAME").unwrap_or_else(|| "oxsum/witness".to_owned());
+    oxsum_core::WitnessKeyName::new(key_name.clone())
+        .map_err(|error| format!("OXSUM_WITNESS_KEY_NAME {key_name:?}: {error}"))?;
+    let trust = var("OXSUM_WITNESS_TRUST")
+        .map(|raw| parse_witness_trust(&raw))
+        .transpose()?
+        .unwrap_or_default();
+    if trust.is_empty() {
+        return Err(
+            "OXSUM_WITNESS_SIGNING_KEY is set but OXSUM_WITNESS_TRUST names no origins \
+             — a witness that tracks nothing can only ever answer 404"
+                .to_owned(),
+        );
+    }
+    Ok(Some(WitnessServe {
+        seed,
+        key_name,
+        trust,
+    }))
+}
+
+/// Parses one `OXSUM_WITNESS_TRUST` entry list: comma-separated
+/// `origin=size:root`. The first `=` splits the pair — an origin never
+/// contains `=` — and the `:` after it splits size from root. An empty
+/// origin, a non-numeric size, an origin the note format would not carry, or
+/// a root that is not 32 bytes of base64 is a startup error.
+fn parse_witness_trust(raw: &str) -> Result<Vec<WitnessTrust>, String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            let (origin, head) = entry.split_once('=').ok_or_else(|| {
+                format!("OXSUM_WITNESS_TRUST entry {entry:?} is not `origin=size:root`")
+            })?;
+            let origin = origin.trim();
+            // The origin is the note's first line — validate it against the
+            // same rules the parser will apply, so a pin that could never
+            // match a submission fails at boot rather than at request time.
+            oxsum_core::Origin::new(origin)
+                .map_err(|error| format!("OXSUM_WITNESS_TRUST entry {entry:?}: {error}"))?;
+            let (size, root) = head.split_once(':').ok_or_else(|| {
+                format!("OXSUM_WITNESS_TRUST entry {entry:?} is not `origin=size:root`")
+            })?;
+            let size = size.trim().parse::<u64>().map_err(|_| {
+                format!("OXSUM_WITNESS_TRUST entry {entry:?} size is not an integer")
+            })?;
+            let root = root.trim();
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD
+                .decode(root)
+                .ok()
+                .filter(|b| b.len() == 32)
+                .ok_or_else(|| {
+                    format!("OXSUM_WITNESS_TRUST entry {entry:?} root is not 32 bytes of base64")
+                })?;
+            Ok(WitnessTrust {
+                origin: origin.to_owned(),
+                size,
+                root: root.to_owned(),
+            })
+        })
+        .collect()
 }
 
 /// Parses `OXSUM_UPSTREAM_PRICE_SYNC`: whether the `SYNC_UPSTREAM_PRICES`
