@@ -47,10 +47,10 @@ Notes:
 
 Purpose: see and manage the organization in a browser instead of over the API.
 
-Open `/login` in a browser pointed at the server and log in with your email and
-password; `/dashboard` is the overview. `/logout` logs out.
+Open `/app` in a browser pointed at the server and log in with your email and
+password; the app opens on the overview. Log out from the app.
 
-The same dashboard exists as a React app at `/app` (issue #234): every page here — overview, top-up, bills, requests, usage, pricing, keys, members, the transaction log, statements, webhooks, chat, settings and the admin console — has its React twin there, built on vendored Cult UI components over the DESIGN.md palette. Both read the same `/api/v1` surface; `/verify` keeps its server-rendered check on purpose.
+The dashboard is the React app under `web/` (issue #234): overview, top-up, bills, requests, usage, pricing, keys, members, the transaction log, statements, webhooks, chat, settings and the admin console, built on vendored Cult UI components over the DESIGN.md palette, all reading the same `/api/v1` surface. The server-rendered Topcoat pages retired to it (issue #256), so an old `/dashboard/*`, `/app/login` or `/admin` bookmark answers `301` to its `/app` twin — the page names below are the `/app` routes. `/verify` keeps its server-rendered check on purpose.
 
 - **Overview**: the organization, who you are logged in as and in which role, the
   available balance, the frozen total (everything the organization's outstanding holds
@@ -67,7 +67,7 @@ The same dashboard exists as a React app at `/app` (issue #234): every page here
   see and revoke only the keys they created, owners and admins see all. A freshly
   minted secret is shown once — store it then, it is never shown again.
   - A CLI or other tool without a keyboard-friendly way to paste a key uses the
-    device grant: it prints a short code like `ABCD-EFGH` and a link to `/device`;
+    device grant: it prints a short code like `ABCD-EFGH` and a link to `/app/device`;
     sign in, open the page, type the code, confirm it names the organization you
     expect, and approve or deny. Approved, the tool receives a key named
     `device ABCD-EFGH` on its next poll — listed under API keys and revocable
@@ -99,7 +99,7 @@ The same dashboard exists as a React app at `/app` (issue #234): every page here
 - **Transaction log**: the ledger entries, newest first: position, id,
   description and content hash — a hundred at a time, with **Older** and **Newest**
   links under the table walking further back.
-- **Bills**: the organization's transactions, newest first, at `/dashboard/bills`:
+- **Bills**: the organization's transactions, newest first, at `/app/bills`:
   top-ups, adjustments and settled requests, each with the date it was booked, its
   kind, what it was (a settled request shows its request id, model, token counts,
   freeze and settlement kind; a top-up or an adjustment shows its reason), the signed
@@ -148,13 +148,13 @@ The same dashboard exists as a React app at `/app` (issue #234): every page here
   sign heads — `OXSUM_HEAD_SIGNING_KEY`; without it the line says the check is
   unavailable.)
 - **Requests**: the organization's settled requests, newest first
-  (`/dashboard/requests`): when the settlement was booked, the request id (the
+  (`/app/requests`): when the settlement was booked, the request id (the
   `x-oxsum-request-id` the gateway answered with), the model, the key that paid, the
   status — how the turn was priced, in the bill's own words: `usage`, `estimated`,
   `capped`, `client_cancelled`, `upstream_error`, `upstream_unreachable`, `swept`
   or `unpriced` —
   and the input and output tokens it used and what it charged in credits. The
-  filters live in the URL: `/dashboard/requests?key=<prefix>&model=<name>`. Type a
+  filters live in the URL: `/app/requests?key=<prefix>&model=<name>`. Type a
   key's prefix (the keys page shows it) or a model name and press **Filter**, or click
   a key or a model in a row to filter by that value and keep the other filter. A
   filtered view is a link: it survives a reload and can be shared, and a filter that
@@ -163,7 +163,7 @@ The same dashboard exists as a React app at `/app` (issue #234): every page here
   filters in the link. A turn that is still in flight has not settled yet, so it is
   not here — the overview shows those live.
 - **Usage**: the organization's settled usage aggregated by day
-  (`/dashboard/usage`): a bar chart of what each of the last 30 days charged in
+  (`/app/usage`): a bar chart of what each of the last 30 days charged in
   credits — the day is the settlement's ledger booking date — a token-mix bar
   splitting the window's billed volume into fresh input, cached reads, output and
   reasoning, a table summing the window by the key that paid — labelled by the
@@ -205,7 +205,7 @@ turn's billing visible in real time.
 
 Steps:
 
-1. Log in at `/login` and open **Chat** in the dashboard (`/dashboard/chat`).
+1. Log in at `/app/login` and open **Chat** in the dashboard (`/app/chat`).
 2. **Top up**: enter an amount in credits and submit. The page calls the top-up
    endpoint with your login session; keep the content hash it shows — it is what
    the top-up's bill verifies against later.
@@ -601,7 +601,7 @@ The operator signs the head of your organization's log. Save the signed head fro
 
 The check above catches a rewrite between *two points you recorded* — but a signed head still attests *a* history the operator claims, not the one independent parties saw. Deployments that configure `OXSUM_WITNESS_URLS` close that gap: every hour the `witness-checkpoints` job hands each organization's signed head to external C2SP `tlog-witness` endpoints, which only cosign it when it extends the head they already vouched for — a rewritten history is refused at their side, not ours.
 
-`GET /api/v1/log/checkpoint` answers the latest anchored head: `headSize`, the operator-signed `note`, `cosignatures[]` — one `{witnessUrl, note, firstSeen}` per witness that cosigned exactly that head — and `witnessKeys[]` (issue #259), the deployment's pinned keyset (`data` is `null` until the first pass anchors something). To verify by hand: check the operator's signature line in `note` against the key at `GET /api/v1/log/key`, and each cosigned note's additional signature line against the pinned `witnessKeys` entry for its URL — or your own pinset, if you do not trust the deployment's claim. The dashboard's transaction log page (`/dashboard/log`) shows the anchored head and its witnesses when anchoring is configured, and runs the same check itself: it reports "anchored by N witnesses" only when the cosignatures verify under the pinned keys, and names the witness whose line fails. A verifier that wants the real guarantee pins the keys through a channel the operator does not control — the endpoint is convenience, the pin is the trust choice.
+`GET /api/v1/log/checkpoint` answers the latest anchored head: `headSize`, the operator-signed `note`, `cosignatures[]` — one `{witnessUrl, note, firstSeen}` per witness that cosigned exactly that head — and `witnessKeys[]` (issue #259), the deployment's pinned keyset (`data` is `null` until the first pass anchors something). To verify by hand: check the operator's signature line in `note` against the key at `GET /api/v1/log/key`, and each cosigned note's additional signature line against the pinned `witnessKeys` entry for its URL — or your own pinset, if you do not trust the deployment's claim. The dashboard's transaction log page (`/app/log`) shows the anchored head and its witnesses when anchoring is configured, and runs the same check itself: it reports "anchored by N witnesses" only when the cosignatures verify under the pinned keys, and names the witness whose line fails. A verifier that wants the real guarantee pins the keys through a channel the operator does not control — the endpoint is convenience, the pin is the trust choice.
 
 ### Serving as a witness yourself
 
@@ -635,8 +635,8 @@ The admin pages are not part of the dashboard: they open with the deployment's o
 
 Steps:
 
-1. Open `/admin` in the browser and enter the operator token. The page proves it against the real surface before remembering it — a refused token is reported, not stored — and keeps it in the browser's `localStorage`, the same place the chat page's key lives. A `401` on any later call forgets it and asks again.
-2. The channels and prices page (`/admin/channels`) lists every channel: its name, upstream address, the last four characters of its upstream key (the only part ever read back), and the current version of each model's price — input and output per million tokens, and the output cap a freeze is sized by.
+1. Open `/app/admin` in the browser and enter the operator token. The page proves it against the real surface before remembering it — a refused token is reported, not stored — and keeps it in the browser's `localStorage`, the same place the chat page's key lives. A `401` on any later call forgets it and asks again.
+2. The channels and prices page the `channels` section lists every channel: its name, upstream address, the last four characters of its upstream key (the only part ever read back), and the current version of each model's price — input and output per million tokens, and the output cap a freeze is sized by.
 3. "Add or repoint a channel" writes a channel: a name that already exists is repointed to the new address and key, and its price history stays where it is.
 4. "Append price" on a channel's card appends a new version for one model. Prices are append-only — a change is `v{n+1}`, never a rewrite — and "Show history" reads every version the channel has ever had, newest first. That history is what a bill's `priceVersion` is checked against later. A model may be priced on several channels: each route carries a `weight` (1–1000, default 100) — the relative preference for leading a request — so failover between channels is configured by pricing the same model again elsewhere, and the API takes the weight beside the price set. The API can say more than the form today: a price set may also carry cached-input, cache-write (5m and 1h) and reasoning rates, a flat per-request fee, the upstream's own prices, and conditional `rules` — a `match` on `serviceTier` or an input-token window swaps in a whole different set, most-specific-wins; see `PriceRequest` in `openapi.yaml`.
 
@@ -644,21 +644,21 @@ Note: a request resolves its price when it starts and carries the version to its
 
 Upstream-price drift is also watched automatically where the channel is another oxsum deployment: with `OXSUM_UPSTREAM_PRICE_SYNC` set (and `OXSUM_SECRET_KEY` present to unseal the channel credentials), a daily job probes each channel's `/api/v1/pricing`, and a stored `upstream` rate the live catalog contradicts opens a drift row — broadcasting `anomaly.detected` and listing in the reconciliation report — that resolves itself once the rates agree again. Every probe records an outcome (`ok`, `unreachable`, `invalid`, `auth`), so a channel that stops answering is visible too.
 
-The organizations page (`/admin/organizations`) lists every organization the ledger holds money for — its name, kind (personal or team), headcount, and what its wallet shows: the available balance and the frozen sum of its outstanding holds. Each row carries an "Adjust" form: a signed amount in credits (a leading `-` deducts) and a required reason, which the new entry stores as its description — part of what a bill's proof covers. A deduction the balance cannot carry is refused with `INSUFFICIENT_FUNDS`; nothing in the page ever rewrites history.
+The organizations page the `organizations` section lists every organization the ledger holds money for — its name, kind (personal or team), headcount, and what its wallet shows: the available balance and the frozen sum of its outstanding holds. Each row carries an "Adjust" form: a signed amount in credits (a leading `-` deducts) and a required reason, which the new entry stores as its description — part of what a bill's proof covers. A deduction the balance cannot carry is refused with `INSUFFICIENT_FUNDS`; nothing in the page ever rewrites history.
 
 A deployment can also start each new organization's wallet with credits: `OXSUM_SIGNUP_BONUS_MINOR` (default 0) grants that amount at self-registration, booked as an adjustment whose reason is "signup bonus". An invited account joins an existing organization and is granted nothing.
 
 A forgotten password resets itself when the deployment sends mail: the login page's "Forgot your password?" opens `/forgot-password`, the mailed link lands on `/reset-password`, and setting the new password revokes every session the account held — the admin reset's semantics, self-served. The forgot endpoint answers the same whether or not the address has an account, so it reveals nothing. A deployment without a mailer keeps the operator path: `POST /api/v1/admin/users/{userId}/password-reset` with `{"newPassword": "…"}` sets the replacement and revokes every session the user held at once; the answer's `sessionsRevoked` says how many died with it.
 
-The in-flight page (`/admin/in-flight`) lists every hold the platform is currently reserving, across all organizations and newest first — the organization, the request id, the model and channel, the price version the turn froze at, the frozen amount and when it opened. A hold that settled leaves the list; one older than the hold timeout (30 minutes) is one the sweeper is about to release as `swept`. A hold whose sweep keeps failing is marked `dead` after ten failed attempts — it retries hourly from then on, and the reconciliation page lists it under `holds_dead_lettered` for an operator to follow up.
+The in-flight page the `in-flight` section lists every hold the platform is currently reserving, across all organizations and newest first — the organization, the request id, the model and channel, the price version the turn froze at, the frozen amount and when it opened. A hold that settled leaves the list; one older than the hold timeout (30 minutes) is one the sweeper is about to release as `swept`. A hold whose sweep keeps failing is marked `dead` after ten failed attempts — it retries hourly from then on, and the reconciliation page lists it under `holds_dead_lettered` for an operator to follow up.
 
-The anomalies page (`/admin/anomalies`) reviews the settled turns that did not price cleanly, across all organizations and newest first: an `estimated` turn where upstream reported no usage, a `client_cancelled` one where the caller left mid-stream, a `capped` one whose upstream usage priced above the freeze, a `swept` one whose hold the sweeper had to release, and an `unpriced` one whose usage named a dimension the price book cannot bill — the computable part was charged and the rest is the platform's flagged loss, never a silent zero. Every row is the settlement record that turn's own ledger holds — organization, request id, model, channel, the price version in force, the charge and what had been frozen — plus a `score` (0–100) and a `severity` band (`low`/`medium`/`high`) the row earns from what it already records: how hard the charge pressed the freeze, what it cost the platform upstream, whether it had to fail over, and whether the same request id has shown up anomalous before (issue #263). The endpoint filters on the band (`?severity=`) and sorts by it (`?sort=score`), so the worst leaks surface first; scoring is read-only and never changes what was charged. A summary table on top counts the anomalous turns and their charged total per channel: where the platform is losing money upstream is the first thing the page answers.
+The anomalies page the `anomalies` section reviews the settled turns that did not price cleanly, across all organizations and newest first: an `estimated` turn where upstream reported no usage, a `client_cancelled` one where the caller left mid-stream, a `capped` one whose upstream usage priced above the freeze, a `swept` one whose hold the sweeper had to release, and an `unpriced` one whose usage named a dimension the price book cannot bill — the computable part was charged and the rest is the platform's flagged loss, never a silent zero. Every row is the settlement record that turn's own ledger holds — organization, request id, model, channel, the price version in force, the charge and what had been frozen — plus a `score` (0–100) and a `severity` band (`low`/`medium`/`high`) the row earns from what it already records: how hard the charge pressed the freeze, what it cost the platform upstream, whether it had to fail over, and whether the same request id has shown up anomalous before (issue #263). The endpoint filters on the band (`?severity=`) and sorts by it (`?sort=score`), so the worst leaks surface first; scoring is read-only and never changes what was charged. A summary table on top counts the anomalous turns and their charged total per channel: where the platform is losing money upstream is the first thing the page answers.
 
 The margin view has no page yet — it answers over the API: `GET /api/v1/admin/margin` sums what organizations were charged against what upstream cost the platform, per channel and model, and reports the difference as `marginMinor`. `untrackedTurns` counts the settled turns no `upstream` price block covered (a swept turn, a price without one, or history predating the column): read it as the coverage gap the margin is blind to, because an untracked turn is never a free one — the number to watch before trusting `marginMinor`.
 
-The reconciliation page (`/admin/reconciliation`) answers whether the projections still match the books: the scan reads every organization's ledger against the usage rows, the deposits and the hold watches, and lists each drift class that counted nonzero — a usage row whose settlement entry is missing, a settled turn that wrote no record, a deposit marked credited with no entry behind it, a rail that paid a different amount than expected, a deposit confirmed but never credited, a hold watch with no reservation behind it, a pending hold the sweeper cannot see, a hold whose sweep failed ten times and was dead-lettered, a periodic job run that exhausted its attempts, a log whose positions are not dense, and — at platform scope — a stored `upstream` rate the channel's live catalog contradicts (`upstream_price_drift`, sampled as `channel:model:field`). Each class carries its count and a bounded sample of identifiers to follow; `clean` means every class counted zero. The scan reports and never repairs — drift is for the operator to act on, not for a second writer to patch silently.
+The reconciliation page the `reconciliation` section answers whether the projections still match the books: the scan reads every organization's ledger against the usage rows, the deposits and the hold watches, and lists each drift class that counted nonzero — a usage row whose settlement entry is missing, a settled turn that wrote no record, a deposit marked credited with no entry behind it, a rail that paid a different amount than expected, a deposit confirmed but never credited, a hold watch with no reservation behind it, a pending hold the sweeper cannot see, a hold whose sweep failed ten times and was dead-lettered, a periodic job run that exhausted its attempts, a log whose positions are not dense, and — at platform scope — a stored `upstream` rate the channel's live catalog contradicts (`upstream_price_drift`, sampled as `channel:model:field`). Each class carries its count and a bounded sample of identifiers to follow; `clean` means every class counted zero. The scan reports and never repairs — drift is for the operator to act on, not for a second writer to patch silently.
 
-The closing page (`/admin/closing`) runs the monthly closing: pick a month that has fully ended and close it — the month is sealed in every organization's ledger, which produces its closing record (a seal committing to the log's tree head and the month's closing trial balance, chained onto the seal before it) and refuses any new entry dated into it from then on. The table lists the sealed months newest first: organization, period, how many entries it covers, the log's size at sealing, and the three hashes the record is made of. Closing a month twice is safe — the second run answers the records that already exist.
+The closing page the `closing` section runs the monthly closing: pick a month that has fully ended and close it — the month is sealed in every organization's ledger, which produces its closing record (a seal committing to the log's tree head and the month's closing trial balance, chained onto the seal before it) and refuses any new entry dated into it from then on. The table lists the sealed months newest first: organization, period, how many entries it covers, the log's size at sealing, and the three hashes the record is made of. Closing a month twice is safe — the second run answers the records that already exist.
 
 Like the margin view, the audit log answers over the API only: `GET /api/v1/admin/audit` reads back every mutating call this surface ever took, newest first — one row per write naming the action (`channel.set`, `discount.create`, `statement.finalize`, …), what it acted on, the request fields safe to show and the idempotency key it carried. Credentials are never in it — a channel's `apiKey`, a new password and a minted batch's codes stay out by construction — and a retried keyed write audits once. `?action=` narrows to one call kind, `?limit=` and `?cursor=` page it.
 

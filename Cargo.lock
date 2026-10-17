@@ -3303,12 +3303,9 @@ version = "0.1.0"
 dependencies = [
  "oxsum-core",
  "oxsum-verify",
- "percent-encoding",
  "serde",
  "serde_json",
- "time",
  "topcoat",
- "uuid",
 ]
 
 [[package]]

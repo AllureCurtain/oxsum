@@ -33,11 +33,14 @@ pub(crate) async fn device_code(State(state): State<AppState>) -> ApiResult<Devi
 }
 
 /// The page a user code lands on. `OXSUM_PUBLIC_URL` when the deployment names
-/// one, else the relative path — the browser resolves either.
+/// one, else the relative path — the browser resolves either. The approval
+/// page is the React app's `/app/device` since the Topcoat pages retired
+/// (issue #256); pointing straight there skips the `/device` → `/app/device`
+/// redirect.
 fn verification_uri(state: &AppState) -> String {
     match state.config.public_url() {
-        Some(base) => format!("{}/device", base.trim_end_matches('/')),
-        None => "/device".to_owned(),
+        Some(base) => format!("{}/app/device", base.trim_end_matches('/')),
+        None => "/app/device".to_owned(),
     }
 }
 

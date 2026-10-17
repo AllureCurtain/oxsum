@@ -285,7 +285,7 @@ async fn registration_mails_a_link_and_the_link_verifies() {
     assert_eq!(registration["user"]["emailVerified"], json!(false));
 
     let mail = next_mail(&mut stub).await;
-    assert!(mail.contains("/verify-email?token="), "{mail}");
+    assert!(mail.contains("/app/verify-email?token="), "{mail}");
     let token = mailed_token(&mail);
 
     let res = verify(&app, &token).await;
@@ -453,7 +453,7 @@ async fn forgot_answers_the_same_for_known_and_unknown_addresses() {
     let mail = tokio::time::timeout(Duration::from_secs(10), next_mail(&mut stub))
         .await
         .expect("the known address's mail");
-    assert!(mail.contains("/reset-password?token="), "{mail}");
+    assert!(mail.contains("/app/reset-password?token="), "{mail}");
 }
 
 #[tokio::test]
@@ -569,7 +569,7 @@ async fn redeeming_an_invitation_mails_the_verification_link() {
     assert_eq!(res.body["data"]["verificationSent"], json!(true));
 
     let mail = next_mail(&mut stub).await;
-    assert!(mail.contains("/verify-email?token="), "{mail}");
+    assert!(mail.contains("/app/verify-email?token="), "{mail}");
     assert_eq!(
         verify(&app, &mailed_token(&mail)).await.status,
         StatusCode::OK

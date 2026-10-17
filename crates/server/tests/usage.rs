@@ -1,11 +1,10 @@
-//! HTTP tests for the usage page (roadmap P3-3, issue #126).
+//! HTTP tests for the usage rollup (roadmap P3-3, issue #126).
 //!
-//! What the page promises is the daily rollup of the organization's settled usage —
+//! What the API promises is the daily rollup of the organization's settled usage —
 //! the `usage_daily` rows `record_usage` maintains beside every usage write — summed
-//! per day for the chart and per channel and model for the table, scoped by the
-//! session's keys the way the bills page scopes its rows. These tests seed
-//! organizations, settle requests the way the gateway does (hold, settle, usage row),
-//! and read the payload the page consumes through its own server function.
+//! per day per `(channel, model, key)` row, scoped by the session's keys the way the
+//! bills list scopes its rows. These tests seed organizations, settle requests the
+//! way the gateway does (hold, settle, usage row), and read `GET /api/v1/usage`.
 //!
 //! Needs DATABASE_URL and skips without it, like the other server suites.
 
@@ -372,17 +371,18 @@ async fn seed_request(
     .expect("the usage row is written");
 }
 
-/// The page's HTML, the way the page's own code asks for it: `GET
-/// /dashboard/usage` with the session cookie. The Topcoat dashboard renders
-/// server-side — there is no `/_pages/get_usage` server function anymore — so
-/// the tests assert on the rendered table instead of a JSON payload.
-async fn usage(app: &Router, cookie: &str) -> String {
-    let res = call(app, "GET", "/dashboard/usage", None, Some(cookie)).await;
-    assert_eq!(res.status, StatusCode::OK, "the usage page answers");
-    String::from_utf8(res.body).expect("the usage page is UTF-8")
+/// The session's usage rows, the way the React usage page asks for them:
+/// `GET /api/v1/usage`.
+async fn usage(app: &Router, cookie: &str) -> Vec<Value> {
+    let res = call(app, "GET", "/api/v1/usage", None, Some(cookie)).await;
+    assert_eq!(res.status, StatusCode::OK, "the usage rollup answers");
+    res.json()["data"]["days"]
+        .as_array()
+        .expect("the rollup shape")
+        .clone()
 }
 
-/// One owner's page answers the window's rollup, scoped to the organization.
+/// One owner's rollup answers the window, scoped to the organization.
 #[tokio::test]
 async fn the_usage_page_sums_the_window() {
     let (app, db) = app_or_skip!();
@@ -448,29 +448,34 @@ async fn the_usage_page_sums_the_window() {
     )
     .await;
 
-    let html = usage(&app, &owner.cookie).await;
-    let today = today().to_string();
-    assert!(html.contains("<h1>Usage</h1>"), "the usage page renders");
-    assert!(
-        html.contains(&format!("<td>{today}</td>")),
-        "today's rollup row renders"
-    );
+    let days = usage(&app, &owner.cookie).await;
     // mock-a's two turns roll into one day row: 116 + 200 input tokens,
     // 100 + 50 output tokens, 616 minor charged.
-    assert!(html.contains("<td>316</td>"), "the input tokens sum");
-    assert!(html.contains("<td>150</td>"), "the output tokens sum");
-    assert!(
-        html.contains("<td>0.000616</td>"),
-        "the charged total renders as credits"
+    let mock_a = days
+        .iter()
+        .find(|row| row["model"] == "mock-a")
+        .expect("the mock-a rollup row");
+    assert_eq!(
+        mock_a["day"],
+        serde_json::to_value(today()).unwrap(),
+        "today's rollup row"
     );
-    // The unattributed shared turn renders too.
+    assert_eq!(mock_a["inputTokens"], 316, "the input tokens sum");
+    assert_eq!(mock_a["outputTokens"], 150, "the output tokens sum");
+    assert_eq!(mock_a["chargedMinor"], 616, "the charged total");
+    // The unattributed shared turn rolls into its own row too.
+    let mock_b = days
+        .iter()
+        .find(|row| row["model"] == "mock-b")
+        .expect("the shared rollup row");
+    assert_eq!(mock_b["inputTokens"], 10, "the shared row's input tokens");
     assert!(
-        html.contains("<td>10</td>"),
-        "the shared row's input tokens"
+        mock_b["keyId"].is_null(),
+        "the shared row attributes no key"
     );
     // Another organization's usage never shows in this one's window.
     assert!(
-        !html.contains("<td>999</td>"),
+        !days.iter().any(|row| row["model"] == "mock-z"),
         "another organization's usage stays out"
     );
 }
@@ -527,28 +532,23 @@ async fn a_member_reads_own_usage_and_the_shared_rows() {
     )
     .await;
 
-    let html = usage(&app, &member_cookie).await;
-    // The member's own turn renders: 100 input tokens, 0.000200 credits.
+    let days = usage(&app, &member_cookie).await;
+    // The member's own turn rolls up: 100 input tokens, 200 minor charged.
+    let own = days
+        .iter()
+        .find(|row| row["model"] == "mock-member")
+        .expect("the member's own usage");
+    assert_eq!(own["inputTokens"], 100, "the member's own usage rolls up");
+    assert_eq!(own["chargedMinor"], 200, "the member's own charge");
+    // The shared unattributed turn rolls up too.
+    let shared = days
+        .iter()
+        .find(|row| row["model"] == "mock-shared")
+        .expect("the shared unattributed usage");
+    assert_eq!(shared["inputTokens"], 10, "the shared unattributed usage");
+    // The owner's spend stays out of the member's rollup.
     assert!(
-        html.contains("<td>100</td>"),
-        "the member's own usage renders"
-    );
-    assert!(
-        html.contains("<td>0.000200</td>"),
-        "the member's own charge renders"
-    );
-    // The shared unattributed turn renders too.
-    assert!(
-        html.contains("<td>10</td>"),
-        "the shared unattributed usage renders"
-    );
-    // The owner's spend stays out of the member's page.
-    assert!(
-        !html.contains("<td>900</td>"),
+        !days.iter().any(|row| row["model"] == "mock-owner"),
         "the owner's spend stays out"
-    );
-    assert!(
-        !html.contains("<td>0.009000</td>"),
-        "the owner's charge stays out"
     );
 }

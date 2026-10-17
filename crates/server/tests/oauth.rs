@@ -287,7 +287,7 @@ async fn the_full_flow_mints_a_session() {
     )
     .await;
     assert_eq!(res.status, StatusCode::SEE_OTHER);
-    assert_eq!(res.location.as_deref(), Some("/dashboard"));
+    assert_eq!(res.location.as_deref(), Some("/app"));
     let cookie = res.set_cookie.expect("the session cookie is set");
     assert!(cookie.contains("HttpOnly"));
 
@@ -312,7 +312,7 @@ async fn a_bad_state_bounces_back_to_login() {
         assert_eq!(res.status, StatusCode::SEE_OTHER, "{path}");
         assert_eq!(
             res.location.as_deref(),
-            Some("/login?error=oauth"),
+            Some("/app/login?error=oauth"),
             "{path}"
         );
         assert!(res.set_cookie.is_none(), "{path}");
@@ -331,10 +331,10 @@ async fn a_spent_state_cannot_log_in_twice() {
     let callback = format!("/api/v1/auth/oauth/github/callback?code=fine&state={state}");
 
     let first = get(&app, &callback, None).await;
-    assert_eq!(first.location.as_deref(), Some("/dashboard"));
+    assert_eq!(first.location.as_deref(), Some("/app"));
     // The replay: same code, same state — spent is spent.
     let second = get(&app, &callback, None).await;
-    assert_eq!(second.location.as_deref(), Some("/login?error=oauth"));
+    assert_eq!(second.location.as_deref(), Some("/app/login?error=oauth"));
 }
 
 #[tokio::test]
@@ -354,7 +354,7 @@ async fn an_unverified_email_completes_nothing() {
         None,
     )
     .await;
-    assert_eq!(res.location.as_deref(), Some("/login?error=oauth"));
+    assert_eq!(res.location.as_deref(), Some("/app/login?error=oauth"));
     assert!(res.set_cookie.is_none());
 }
 
@@ -371,7 +371,7 @@ async fn a_refused_exchange_bounces() {
         None,
     )
     .await;
-    assert_eq!(res.location.as_deref(), Some("/login?error=oauth"));
+    assert_eq!(res.location.as_deref(), Some("/app/login?error=oauth"));
 }
 
 #[tokio::test]
@@ -403,7 +403,7 @@ async fn an_invite_deployment_refuses_new_accounts_but_logs_existing_in() {
         None,
     )
     .await;
-    assert_eq!(res.location.as_deref(), Some("/login?error=oauth"));
+    assert_eq!(res.location.as_deref(), Some("/app/login?error=oauth"));
 
     // An account that exists still signs in: the mode gates registration, not
     // the credential. The account is made through core — the open signup
@@ -429,7 +429,7 @@ async fn an_invite_deployment_refuses_new_accounts_but_logs_existing_in() {
         None,
     )
     .await;
-    assert_eq!(res.location.as_deref(), Some("/dashboard"));
+    assert_eq!(res.location.as_deref(), Some("/app"));
     let res = get(
         &app,
         "/api/v1/session",

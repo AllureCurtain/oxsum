@@ -507,9 +507,10 @@ async fn what_could_not_be_used_is_refused_in_oxsums_shape() {
     assert_eq!(body["data"]["version"], 1, "{body}");
 }
 
-/// One GET whose body is kept as bytes: the server-rendered pages are HTML, and the
-/// error envelope's `serde_json` parse would drop what this test asserts on.
-async fn get_raw(app: &Router, path: &str) -> (StatusCode, String) {
+/// One GET whose body is kept as bytes, with the `Location` header lifted out:
+/// the legacy `/admin` pages moved to `/app/admin`, and the redirect is what this
+/// test asserts on.
+async fn get_raw(app: &Router, path: &str) -> (StatusCode, Option<String>, String) {
     let request = Request::builder()
         .method("GET")
         .uri(path)
@@ -521,43 +522,43 @@ async fn get_raw(app: &Router, path: &str) -> (StatusCode, String) {
         .await
         .expect("the router answers");
     let status = response.status();
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
     let bytes = response
         .into_body()
         .collect()
         .await
         .expect("collects the body")
         .to_bytes();
-    (status, String::from_utf8_lossy(&bytes).into_owned())
+    (
+        status,
+        location,
+        String::from_utf8_lossy(&bytes).into_owned(),
+    )
 }
 
-/// The platform-admin pages are served by the same binary: the token gate is what SSR
-/// renders (the credential is never the server's to hold), and it asks for the operator
-/// token rather than a login — no session enters this surface.
+/// The platform-admin pages moved to the React app: every legacy `/admin` path
+/// permanently redirects to the single `/app/admin` route, which carries the
+/// token gate.
 #[tokio::test]
-async fn the_admin_pages_render_the_token_gate() {
+async fn the_admin_pages_redirect_to_the_app() {
     let (app, _pool) = app_or_skip!();
-    let (status, html) = get_raw(&app, "/admin/channels").await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "GET /admin/channels answered {status}"
-    );
-    assert!(
-        html.contains("Platform admin"),
-        "GET /admin/channels renders the gate: {html}"
-    );
-    assert!(
-        html.contains("Operator token"),
-        "GET /admin/channels asks for the operator token: {html}"
-    );
-
-    // `/admin` lands on the channels page — by a redirect or by the rendered gate,
-    // whichever the router emits; a 404 is the wrong answer either way.
-    let (status, _) = get_raw(&app, "/admin").await;
-    assert!(
-        status.is_success() || status.is_redirection(),
-        "GET /admin answered {status}"
-    );
+    for path in ["/admin", "/admin/channels"] {
+        let (status, location, _) = get_raw(&app, path).await;
+        assert_eq!(
+            status,
+            StatusCode::MOVED_PERMANENTLY,
+            "GET {path} answered {status}"
+        );
+        assert_eq!(
+            location.as_deref(),
+            Some("/app/admin"),
+            "GET {path} redirects to the React admin"
+        );
+    }
 }
 
 /// Registers an account so a personal organization exists to list; answers its id and

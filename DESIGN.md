@@ -1,6 +1,6 @@
 # Design rules
 
-The UI is built in `crates/web` (Topcoat); the concrete token values live in `crates/web/style/main.css`, and this file only records usage rules. The React dashboard under `web/` maps the same tokens into Tailwind's `@theme` in `web/src/index.css`, including the shadcn-style aliases (`background`, `foreground`, `muted-foreground`, `input`, `ring`, …) the vendored Cult UI components in `web/src/components/cult/` use — so the component layer wears this palette, not its own.
+The UI is the React dashboard under `web/` (issue #256 retired the Topcoat crate); its concrete token values are mapped into Tailwind's `@theme` in `web/src/index.css`, including the shadcn-style aliases (`background`, `foreground`, `muted-foreground`, `input`, `ring`, …) the vendored Cult UI components in `web/src/components/cult/` use — so the component layer wears this palette, not its own. This file only records usage rules. The one server-rendered page left, `/verify`, keeps the shared palette through `crates/web/style/main.css`, the same tokens in plain CSS.
 
 ## Colors
 

@@ -249,7 +249,7 @@ GitHub OAuth, shipped when the deployment configures `OXSUM_GITHUB_CLIENT_ID`, `
 
 - `GET /api/v1/auth/methods` — which login methods the deployment offers: `{"oauthGithub": bool, "turnstileSiteKey": string|null}`. The login and register pages' only unauthenticated read; they draw the GitHub button and the Turnstile widget from it.
 - `GET /api/v1/auth/oauth/github` — the start: `303` to the provider's authorize page (`scope=read:user user:email`) carrying the minted state. `404` on a deployment without the pair configured.
-- `GET /api/v1/auth/oauth/github/callback?code=…&state=…` — the finish: consumes the state, exchanges the code, and resolves the account — a linked `oauth_accounts` row first, then a primary-or-verified email match that records the link, otherwise a registration when signup is `open`. Success answers `303` to `/dashboard` with the session `Set-Cookie`; the provider's own `error` parameter, a bad state, a failed exchange, and an identity with no verified email all answer `303` to `/login?error=oauth`.
+- `GET /api/v1/auth/oauth/github/callback?code=…&state=…` — the finish: consumes the state, exchanges the code, and resolves the account — a linked `oauth_accounts` row first, then a primary-or-verified email match that records the link, otherwise a registration when signup is `open`. Success answers `303` to `/app` with the session `Set-Cookie`; the provider's own `error` parameter, a bad state, a failed exchange, and an identity with no verified email all answer `303` to `/app/login?error=oauth`.
 
 An account the callback creates has no known password — the stored hash is argon2 over a random secret nobody holds, so the password path can never open it; a mailed or admin reset sets a real one. Its email lands `emailVerified` because the provider's report already did that work, and the link rows in `oxsum.oauth_accounts` key on the provider's own user id — never the email, which the provider may reassign.
 
@@ -292,7 +292,7 @@ A tenant is an organization and its memberships carry a role (owner, admin, memb
 - **An admin may not touch an owner.** An admin removing or re-rolling an owner is `FORBIDDEN`, not `CONFLICT`: the refusal is about the admin's authority, not about the owner count.
 - **No role change grants ownership.** The only path to `owner` is the ownership endpoint, so an admin cannot promote anyone (including themselves) to owner by any route.
 - **The acting role is checked before the target is looked at.** A caller who may not perform an action is refused `FORBIDDEN` whatever they name, so an admin's ownership transfer naming an account that is not even a member answers 403, not 404. Within the allowed roles, naming a non-member is 404.
-- **Any member may read the list.** Reading who is in the organization is not a management action, and the members page's `get_members` server function (`crates/web/src/api.rs`) is reachable by any live session; the session resolves through `memberships`, so a session can only ever read the list of an organization it is a member of (docs/decisions.md, issue #61).
+- **Any member may read the list.** Reading who is in the organization is not a management action, and `GET /api/v1/org/members` is reachable by any live session; the session resolves through `memberships`, so a session can only ever read the list of an organization it is a member of (docs/decisions.md, issue #61).
 - Adding the second person to a `personal` organization flips its `kind` to `team`; the ledger does not move and nothing flips back when a member is removed.
 
 ### Statuses
@@ -334,4 +334,4 @@ The SPA's dashboard pages read these (issue #234); all are session or key scoped
 
 1. Change `crates/server/openapi.yaml`
 2. Change the backend implementation, add integration tests
-3. Change the callers (Topcoat pages)
+3. Change the callers (the React dashboard under `web/`)

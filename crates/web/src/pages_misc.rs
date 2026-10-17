@@ -1,5 +1,10 @@
-//! The remaining pages: `/verify` (public bill verification) and `/device`
-//! (the device grant's approval page).
+//! The last server-rendered page: `/verify` (public bill verification), plus
+//! the stylesheet it links.
+//!
+//! Everything else the Topcoat dashboard served — the dashboard, auth and
+//! device pages — retired to the React app under `/app` (issue #256), which the
+//! server redirects the legacy paths to. `/verify` stays here on purpose: it is
+//! the one surface deliberately kept out of the browser bundle.
 //!
 //! ## `/verify` trust-model change
 //!
@@ -14,23 +19,21 @@
 use serde::Deserialize;
 use topcoat::Result;
 use topcoat::context::Cx;
-use topcoat::router::content::{Css, Form, Js};
+use topcoat::router::content::{Css, Form};
 use topcoat::router::error::bad_request;
 use topcoat::router::{RouterBuilder, page, parse_query_params, route};
 use topcoat::view::{View, view};
 
-use crate::session::page_ctx;
-use crate::views::{dashboard_frame, plain};
+use crate::views::plain;
 
-/// Registers the misc pages on the router builder.
+/// Registers the remaining server-rendered pages on the router builder.
+///
+/// Only `/verify` and its stylesheet are left: the dashboard, auth and device
+/// pages all retired to the React app under `/app` (issue #256), which the
+/// server redirects to. `/verify` stays server-rendered by design — see the
+/// module doc above.
 pub(crate) fn register(builder: RouterBuilder) -> RouterBuilder {
-    builder
-        .page(verify_page)
-        .page(verify_submit)
-        .route(chat_js)
-        .page(device_page)
-        .page(device_submit)
-        .route(style)
+    builder.page(verify_page).page(verify_submit).route(style)
 }
 
 /// The public verification page: anyone holding a bill and its content hash
@@ -312,231 +315,9 @@ async fn usage_report_outcome(cx: &Cx, inner: &str) -> Result<(bool, String)> {
         Err(error) => (false, format!("{error}.")),
     })
 }
-/// billing — the Leptos chat page's browser logic in vanilla JavaScript,
-/// against the same endpoints.
-#[route(GET "/chat.js")]
-async fn chat_js() -> Result<Js<&'static str>> {
-    Ok(Js(CHAT_JS))
-}
 
-const CHAT_JS: &str = r#"
-(function () {
-    const turnsEl = document.getElementById('turns');
-    const form = document.getElementById('chat-form');
-    const input = document.getElementById('input');
-    const modelSelect = document.getElementById('model');
-    const topupForm = document.getElementById('topup-form');
-    const topupAmount = document.getElementById('topup-amount');
-    const errorEl = document.getElementById('chat-error');
-    const KEY_STORAGE = 'oxsum-chat-key';
-    const HISTORY_STORAGE = 'oxsum-chat-history';
-    let turns = [];
-    try { turns = JSON.parse(localStorage.getItem(HISTORY_STORAGE) || '[]'); } catch (e) { turns = []; }
-    function saveHistory() {
-        try { localStorage.setItem(HISTORY_STORAGE, JSON.stringify(turns)); } catch (e) {}
-    }
-    function showError(message) {
-        errorEl.hidden = false;
-        errorEl.textContent = message;
-    }
-    function render() {
-        turnsEl.innerHTML = turns.map(function (t) {
-            return '<div class="turn"><p><strong>You:</strong> ' + esc(t.user_text) + '</p>' +
-                '<p><strong>' + esc(t.model) + ':</strong> ' + esc(t.answer) + '</p>' +
-                (t.failed ? '<p class="error">' + esc(t.failed) + '</p>' : '') + '</div>';
-        }).join('');
-    }
-    function esc(s) {
-        return String(s == null ? '' : s).replace(/[&<>"']/g, function (m) {
-            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m];
-        });
-    }
-    async function ensureKey() {
-        let key = localStorage.getItem(KEY_STORAGE);
-        if (key) return key;
-        const response = await fetch('/dashboard/chat/key', { method: 'POST' });
-        if (!response.ok) throw new Error('could not mint a chat key');
-        const body = await response.json();
-        localStorage.setItem(KEY_STORAGE, body.secret);
-        return body.secret;
-    }
-    async function loadModels(key) {
-        const response = await fetch('/v1/models', {
-            headers: { 'Authorization': 'Bearer ' + key },
-        });
-        if (response.status === 401) {
-            localStorage.removeItem(KEY_STORAGE);
-            throw new Error('that key is not valid — the gateway refused it');
-        }
-        if (!response.ok) throw new Error('the model list failed (' + response.status + ')');
-        const body = await response.json();
-        const models = (body.data || []).map(function (m) { return m.id; });
-        modelSelect.innerHTML = models.map(function (m) {
-            return '<option>' + esc(m) + '</option>';
-        }).join('') || '<option>No models</option>';
-    }
-    form.addEventListener('submit', async function (event) {
-        event.preventDefault();
-        const text = input.value.trim();
-        if (!text) return;
-        errorEl.hidden = true;
-        const turn = { id: Date.now(), model: modelSelect.value, user_text: text, answer: '' };
-        turns.push(turn);
-        input.value = '';
-        render();
-        try {
-            const key = await ensureKey();
-            const requestId = 'chat-' + turn.id;
-            const response = await fetch('/v1/chat/completions', {
-                method: 'POST',
-                headers: {
-                    'Authorization': 'Bearer ' + key,
-                    'Content-Type': 'application/json',
-                    'x-oxsum-request-id': requestId,
-                },
-                body: JSON.stringify({
-                    model: turn.model,
-                    messages: [{ role: 'user', content: text }],
-                    stream: true,
-                }),
-            });
-            if (!response.ok) throw new Error('the chat request failed (' + response.status + ')');
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-            for (;;) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n');
-                buffer = lines.pop();
-                for (const line of lines) {
-                    const trimmed = line.trim();
-                    if (!trimmed.startsWith('data:')) continue;
-                    const data = trimmed.slice(5).trim();
-                    if (data === '[DONE]') continue;
-                    try {
-                        const chunk = JSON.parse(data);
-                        const delta = chunk.choices && chunk.choices[0] && chunk.choices[0].delta;
-                        if (delta && delta.content) turn.answer += delta.content;
-                    } catch (e) {}
-                }
-                render();
-            }
-        } catch (error) {
-            turn.failed = String(error && error.message || error);
-            showError(turn.failed);
-        }
-        saveHistory();
-        render();
-    });
-    topupForm.addEventListener('submit', async function (event) {
-        event.preventDefault();
-        errorEl.hidden = true;
-        try {
-            const amount = topupAmount.value.trim();
-            const response = await fetch('/api/v1/topups', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    idempotencyKey: 'topup-' + Date.now(),
-                    amountMinor: Math.round(parseFloat(amount) * 1e6),
-                }),
-            });
-            if (!response.ok) throw new Error('top-up failed (' + response.status + ')');
-            topupAmount.value = '';
-        } catch (error) {
-            showError(String(error && error.message || error));
-        }
-    });
-    // Live billing: the /ws/billing socket pushes turn events; the browser sends
-    // the session cookie on its own.
-    try {
-        const ws = new WebSocket((location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws/billing');
-        ws.onmessage = function () { /* the watch table stays the record; a reload shows it */ };
-    } catch (e) {}
-    render();
-    ensureKey().then(loadModels).catch(showError);
-})();
-"#;
-
-/// The device grant's approval page: a tool's `userCode` lands here — session-gated
-/// inside the page, which sends visitors to `/login` first.
-#[page("/device")]
-async fn device_page(cx: &Cx) -> Result<impl View> {
-    let sctx = page_ctx(cx).await?;
-    let org_name = sctx.principal.organization.name.clone();
-    let user_email = sctx.principal.user.email.clone();
-    let query = parse_query_params::<DeviceQuery>(cx).unwrap_or_default();
-    let code = query.user_code.unwrap_or_default();
-    Ok(view! {
-        dashboard_frame(
-            title: "Device",
-            org_name: org_name,
-            user_email: user_email,
-            <h1>"Device approval"</h1>
-            <form method="post" action="/device">
-                <label>
-                    "User code"
-                    <input type="text" name="user_code" value=(code) placeholder="XXXX-XXXX" required="required" />
-                </label>
-                <button type="submit" name="approve" value="yes">"Approve"</button>
-                <button type="submit" name="approve" value="no">"Deny"</button>
-            </form>
-        )
-    })
-}
-
-#[derive(Deserialize, Default)]
-struct DeviceQuery {
-    user_code: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct DeviceForm {
-    user_code: String,
-    approve: String,
-}
-
-/// Approves or denies the device request.
-#[page(POST "/device")]
-async fn device_submit(cx: &Cx, Form(form): Form<DeviceForm>) -> Result<impl View> {
-    let sctx = page_ctx(cx).await?;
-    let org_name = sctx.principal.organization.name.clone();
-    let user_email = sctx.principal.user.email.clone();
-    let approve = form.approve == "yes";
-    let outcome = sctx
-        .db
-        .decide_device_request(
-            &form.user_code,
-            approve,
-            sctx.principal.user.id,
-            sctx.principal.organization.id,
-        )
-        .await;
-    let message: String = match outcome {
-        Ok(_) if approve => "The device request is approved.".to_owned(),
-        Ok(_) => "The device request is denied.".to_owned(),
-        Err(error) => match error {
-            oxsum_core::WalletError::NotFound(message) => message,
-            _ => "the decision could not be recorded".to_owned(),
-        },
-    };
-    Ok(view! {
-        dashboard_frame(
-            title: "Device",
-            org_name: org_name,
-            user_email: user_email,
-            <h1>"Device approval"</h1>
-            <p>(message)</p>
-            <p><a href="/device">"Another code"</a></p>
-        )
-    })
-}
-
-/// Serves the dashboard stylesheet: the source file, directly. (The Leptos
-/// build used to write a processed copy to the site dir; the spike skips the
-/// asset pipeline.)
+/// Serves the dashboard stylesheet: the source file, directly. The only page
+/// left that uses it is the server-rendered /verify form (issue #256).
 #[route(GET "/style/main.css")]
 async fn style() -> Result<Css<&'static str>> {
     Ok(Css(STYLE))

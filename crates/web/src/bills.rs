@@ -82,10 +82,6 @@ const FIELDS: [&str; 8] = [
     "displayCurrency",
 ];
 
-/// How many transactions one page lists (issue #93): the pager walks the rest, and
-/// the exports — an archive, not a page — walk the same read to the log's start.
-pub const BILLS_LIMIT: usize = 100;
-
 /// One transaction, as the page's server function and the export routes read it from
 /// the ledger.
 impl From<&oxsum_core::TransactionEntry> for BillView {
@@ -110,13 +106,34 @@ impl From<&oxsum_core::TransactionEntry> for BillView {
             request: entry.record.as_ref().map(|record| BillRequest {
                 request_id: record.request.clone(),
                 model: record.model.clone(),
-                kind: crate::requests::status(record.kind),
+                kind: settlement_status(record.kind),
                 input_tokens: record.input_tokens,
                 output_tokens: record.output_tokens,
                 freeze_minor: record.freeze,
             }),
         }
     }
+}
+
+/// The settlement kind spelled the way the entry's description spells it — the `kind`
+/// column of a settlement row. Exhaustive on purpose: a new settlement kind is a
+/// compile error here rather than a word the export invents. (Moved out of the
+/// retired requests page; the export is its only reader now.)
+fn settlement_status(kind: oxsum_core::SettlementKind) -> String {
+    use oxsum_core::SettlementKind;
+    match kind {
+        SettlementKind::Usage => "usage",
+        SettlementKind::Estimated => "estimated",
+        SettlementKind::ClientCancelled => "client_cancelled",
+        SettlementKind::UpstreamError => "upstream_error",
+        SettlementKind::UpstreamUnreachable => "upstream_unreachable",
+        SettlementKind::Capped => "capped",
+        SettlementKind::Swept => "swept",
+        SettlementKind::Unpriced => "unpriced",
+        SettlementKind::Released => "released",
+        SettlementKind::Refused => "refused",
+    }
+    .to_owned()
 }
 
 /// The CSV export: the header row, then one row per transaction, LF line endings.

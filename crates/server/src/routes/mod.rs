@@ -224,9 +224,9 @@ pub fn router(state: AppState) -> Router {
                 REQUEST_TIMEOUT,
             )),
         );
-    // The React dashboard scaffold (issue #234): `web/dist` embedded into the
+    // The React dashboard (issue #234): `web/dist` embedded into the
     // binary and served at `/app`, inside the router rather than the fallback
-    // so it wins over the Topcoat pages' catch-all.
+    // so it wins over the surviving page routes.
     let router = router.nest("/app", crate::spa::router());
     // The dashboard pages, served by the same binary.
     // The request counter sits last so it sees every route the router answered, pages

@@ -1,8 +1,9 @@
 # oxsum web (React dashboard)
 
-The standalone React frontend that will replace the Topcoat pages once it
-reaches parity (issue #234). Vite + React 19 + TypeScript + Tailwind v4 +
-TanStack Query, talking to the same `/api/v1` REST surface.
+The React dashboard — the oxsum UI. It reached parity and the Topcoat pages
+retired to it (issues #234, #256), so this is now the only dashboard; the legacy
+`/dashboard/*`, auth and `/admin` paths `301` here. Vite + React 19 + TypeScript
++ Tailwind v4 + TanStack Query, talking to the same `/api/v1` REST surface.
 
 ## Layout
 
@@ -48,7 +49,7 @@ still ships one binary. `dist/` is git-ignored except the committed
 placeholder `index.html`, which keeps the embed folder present on a fresh
 checkout.
 
-## Parity checklist — before Topcoat removal
+## Parity checklist — kept for reference (all ticked; Topcoat removed in #256)
 
 - [x] Overview: balance, frozen total, month spend, in-flight holds, newest entries
 - [x] Bills list (rows, pagination, CSV/JSON export links to the existing routes)
