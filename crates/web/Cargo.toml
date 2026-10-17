@@ -1,6 +1,6 @@
 [package]
 name = "oxsum-web"
-description = "oxsum web dashboard: Topcoat pages, server-side rendered, mounted into the same binary."
+description = "The server-rendered sliver the React dashboard does not own: the /verify page and the bills-export row types."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,21 +8,17 @@ license.workspace = true
 publish = false
 
 [dependencies]
-# The dashboard pages: server-side rendered Topcoat views, mounted into the
-# axum router as a fallback tower service (spike/topcoat-dashboard). No wasm
-# bundle, no client build step.
+# /verify is server-side rendered Topcoat, mounted into the axum router as a
+# fallback tower service — the one page deliberately kept out of the React
+# bundle (issue #256). No wasm bundle, no client build step.
 topcoat.workspace = true
-percent-encoding.workspace = true
-# The pages call the domain layer directly (docs/architecture.md).
+# The page reads the domain layer directly (docs/architecture.md).
 oxsum-core = { workspace = true }
-# The public /verify page runs the pure proof check on the server now: Topcoat
-# has no browser wasm target, so the browser-side check is gone (see lib.rs).
+# /verify runs the pure proof check on the server: a served bundle cannot
+# certify itself, so there is no browser-side check (see lib.rs).
 oxsum-verify = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
-# The usage page's lookback window is computed on the server.
-time.workspace = true
-uuid.workspace = true
 
 [lints]
 workspace = true
