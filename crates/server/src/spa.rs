@@ -1,7 +1,6 @@
 //! The React dashboard (`web/`, issue #234): its Vite build output lands in
-//! `web/dist` and is embedded into the binary, served under `/app` — the same
-//! single-binary deployment the Topcoat pages get, on a path of its own so
-//! the two frontends coexist until parity.
+//! `web/dist` and is embedded into the binary, served under `/app` — the one
+//! dashboard now that the Topcoat pages retired to it (issue #256).
 //!
 //! `rust-embed`'s `debug-embed` feature reads `web/dist` from disk in debug
 //! builds — a `npm run build` is visible without a cargo rebuild — while
