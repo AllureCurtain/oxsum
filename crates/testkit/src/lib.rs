@@ -157,17 +157,21 @@ fn create_suite_db(slug: &str) -> Option<SuiteDb> {
     })
 }
 
+/// Postgres advisory-lock key serializing the sweep across every test
+/// process that shares a cluster — the name is arbitrary, only its value
+/// must not collide with anything else oxsum locks on.
+const SWEEP_LOCK: i64 = 0x6f78_7375_6d5f_7473; // "oxsum_ts" as a tag
+
 /// Drops `oxsum_test_*` databases older than [`STALE_AGE_SECS`] on the admin
 /// connection's cluster. Best-effort: logs what it drops and never fails —
 /// a stale entry that cannot be dropped today is next run's problem, not a
 /// reason to refuse this suite its own scratch database.
 ///
-/// The whole sweep runs as **one** `pg_terminate_backend`-free statement:
-/// every `oxsum_test_*` older than the cutoff is dropped in a single
-/// `pg_database` walk under `statement_timeout`, so a hung or contended
-/// catalog costs the suite a bounded wait instead of blocking setup. Each
-/// candidate is attempted independently — a live neighbour's lock fails
-/// that row without aborting the rest.
+/// Only the first process to grab [`SWEEP_LOCK`] actually walks the catalog;
+/// every other process fails `pg_try_advisory_lock` and returns in one
+/// round-trip. Under nextest each suite is its own process, so without the
+/// lock every binary paid a catalog scan plus N DROPs on the shared cluster —
+/// cumulative cost CI's 30-minute job budget could not absorb (issue #271).
 async fn sweep_stale(admin_url: &str) {
     let Ok(pool) = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
@@ -176,6 +180,28 @@ async fn sweep_stale(admin_url: &str) {
     else {
         return;
     };
+    // One sweeper per cluster at a time; the rest move on to their own test.
+    let won: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
+        .bind(SWEEP_LOCK)
+        .fetch_one(&pool)
+        .await
+        .unwrap_or(false);
+    if won {
+        sweep_stale_unchecked(&pool).await;
+        // Release before close so a second process does not queue behind this
+        // one's teardown; releasing a lock you do not hold is a no-op.
+        let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
+            .bind(SWEEP_LOCK)
+            .execute(&pool)
+            .await;
+    }
+    pool.close().await;
+}
+
+/// The catalog walk + drop half of [`sweep_stale`], advisory lock already
+/// held by the caller. Split out so tests can exercise the scan/drop path
+/// without racing every other suite's lock.
+async fn sweep_stale_unchecked(pool: &sqlx::PgPool) {
     // The `~` pattern is the same shape the manual
     // `scripts/drop-test-scratch.sql` uses; an empty match set is the common
     // case and costs one index-only scan. The timestamp is the *second-to-last*
@@ -197,29 +223,26 @@ async fn sweep_stale(admin_url: &str) {
                  AS bigint) < $1",
     )
     .bind(cutoff)
-    .fetch_all(&pool)
+    .fetch_all(pool)
     .await
     .unwrap_or_default();
-    if stale.is_empty() {
-        pool.close().await;
-        return;
-    }
-    // Bound each drop so a contended catalog row cannot stall setup; a
-    // database that refuses to go today is next run's, not a failure here.
-    let _ = sqlx::query("SET statement_timeout = '5s'")
-        .execute(&pool)
-        .await;
-    for name in stale {
-        let dropped = sqlx::query(&format!(r#"DROP DATABASE IF EXISTS "{name}" WITH (FORCE)"#))
-            .execute(&pool)
-            .await
-            .is_ok();
-        if dropped {
-            eprintln!("oxsum-testkit: swept stale scratch database {name}");
+    if !stale.is_empty() {
+        // Bound each drop so a contended catalog row cannot stall setup; a
+        // database that refuses to go today is next run's, not a failure here.
+        let _ = sqlx::query("SET statement_timeout = '5s'")
+            .execute(pool)
+            .await;
+        for name in stale {
+            let dropped = sqlx::query(&format!(r#"DROP DATABASE IF EXISTS "{name}" WITH (FORCE)"#))
+                .execute(pool)
+                .await
+                .is_ok();
+            if dropped {
+                eprintln!("oxsum-testkit: swept stale scratch database {name}");
+            }
         }
+        let _ = sqlx::query("RESET statement_timeout").execute(pool).await;
     }
-    let _ = sqlx::query("RESET statement_timeout").execute(&pool).await;
-    pool.close().await;
 }
 
 async fn create_database(admin_url: &str, name: &str) -> Option<bool> {
@@ -291,7 +314,7 @@ fn replace_database(url: &str, new_db: &str) -> Option<String> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::replace_database;
-    use super::sweep_stale;
+    use super::sweep_stale_unchecked;
 
     #[test]
     fn replaces_the_database_keeping_the_rest() {
@@ -348,7 +371,7 @@ mod tests {
             .await
             .expect("stale db created");
 
-        sweep_stale(&admin_url).await;
+        sweep_stale_unchecked(&pool).await;
 
         let still_there: bool =
             sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)")
@@ -372,7 +395,7 @@ mod tests {
             .execute(&pool)
             .await
             .expect("fresh db created");
-        sweep_stale(&admin_url).await;
+        sweep_stale_unchecked(&pool).await;
         let survived: bool =
             sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)")
                 .bind(&fresh)
