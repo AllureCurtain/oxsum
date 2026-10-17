@@ -286,6 +286,16 @@ impl Harness {
         .fetch_all(admin)
         .await
         .unwrap_or_default();
+        if names.is_empty() {
+            return;
+        }
+        // oxsum change (not upstream): bound each drop so a contended catalog
+        // cannot stall setup — under CI's per-binary processes every sweep
+        // costs a catalog walk, and a stuck one must fail fast, not hold the
+        // suite's first harness hostage (issue #271).
+        let _ = sqlx::query("SET statement_timeout = '5s'")
+            .execute(admin)
+            .await;
         for name in names {
             // A v7 uuid's first 12 hex digits are the unix-epoch millisecond
             // the id was minted at — the name carries its own birth certificate.
@@ -301,6 +311,7 @@ impl Harness {
                 eprintln!("swept stale scratch database {name}");
             }
         }
+        let _ = sqlx::query("RESET statement_timeout").execute(admin).await;
     }
 
     async fn connect(
