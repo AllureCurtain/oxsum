@@ -178,7 +178,9 @@ jobs:
       # same shape scripts/drop-test-scratch.sql documents for local use.
       - name: Sweep stale test scratch databases
         run: |
-          psql "$DATABASE_URL" -d postgres -f scripts/drop-test-scratch.sql
+          # `localhost` resolves to a Unix socket for psql — 127.0.0.1 forces TCP
+          # to the service container.
+          psql "postgresql://postgres:postgres@127.0.0.1:5432/postgres" -f scripts/drop-test-scratch.sql
       - name: Run the workspace test suites
         # Three suites coordinate through process-global state — the generative
         # property suite's OnceLock shared schemas, and the seed/jobs suites'
