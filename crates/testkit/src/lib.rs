@@ -17,9 +17,20 @@
 //! The `slug` should be the test file's stem. It becomes part of the scratch
 //! database name (`oxsum_test_<slug>_<unix_timestamp>_<pid>`), so a stale
 //! database left behind by a crashed run is identifiable.
+//!
+//! Cleanup is self-healing: before creating its own scratch database, a suite
+//! drops every `oxsum_test_*` older than [`STALE_AGE_SECS`]. A crashed run's
+//! residue is collected by the *next* run, not by the process that died — the
+//! exit-time drop below is only the last line of defence (issue #271).
 
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// How old an `oxsum_test_*` database must be before a later suite drops it.
+///
+/// Twenty-four hours keeps a colleague's in-flight run on the same cluster
+/// from being dropped mid-suite while still collecting yesterday's residue.
+const STALE_AGE_SECS: u64 = 24 * 60 * 60;
 
 /// State for this suite's scratch database. `None` when `DATABASE_URL` is
 /// unset, in which case the suite skips.
@@ -118,7 +129,15 @@ fn create_suite_db(slug: &str) -> Option<SuiteDb> {
                 .enable_all()
                 .build()
                 .ok()?;
-            rt.block_on(create_database(&admin_url, &name))
+            rt.block_on(async move {
+                // Sweep stale scratch databases before making this suite's own:
+                // a crashed predecessor's residue is this run's to collect, not
+                // a permanent tenant of the cluster (issue #271). The sweep is
+                // best-effort — a busy cluster answers what it can and the
+                // suite still proceeds.
+                sweep_stale(&admin_url).await;
+                create_database(&admin_url, &name).await
+            })
         }
     })
     .join()
@@ -136,6 +155,51 @@ fn create_suite_db(slug: &str) -> Option<SuiteDb> {
         admin_url,
         name,
     })
+}
+
+/// Drops `oxsum_test_*` databases older than [`STALE_AGE_SECS`] on the admin
+/// connection's cluster. Best-effort: logs what it drops and never fails —
+/// a stale entry that cannot be dropped today is next run's problem, not a
+/// reason to refuse this suite its own scratch database.
+async fn sweep_stale(admin_url: &str) {
+    let Ok(pool) = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(admin_url)
+        .await
+    else {
+        return;
+    };
+    // The `~` pattern is the same shape the manual
+    // `scripts/drop-test-scratch.sql` uses; an empty match set is the common
+    // case and costs one index-only scan. The timestamp is the *second-to-last*
+    // `_`-separated field — the slug itself may carry underscores (e.g.
+    // `usage_daily`), so a fixed position cannot find it.
+    let cutoff = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+        .saturating_sub(STALE_AGE_SECS) as i64;
+    let stale: Vec<String> = sqlx::query_scalar(
+        "SELECT datname FROM pg_database \
+         WHERE datname ~ '^oxsum_test_[a-z0-9_]+_[0-9]+_[0-9]+$' \
+           AND CAST( \
+                 (regexp_match(datname, '_([0-9]+)_[0-9]+$'))[1] \
+                 AS bigint) < $1",
+    )
+    .bind(cutoff)
+    .fetch_all(&pool)
+    .await
+    .unwrap_or_default();
+    for name in stale {
+        let dropped = sqlx::query(&format!(r#"DROP DATABASE IF EXISTS "{name}" WITH (FORCE)"#))
+            .execute(&pool)
+            .await
+            .is_ok();
+        if dropped {
+            eprintln!("oxsum-testkit: swept stale scratch database {name}");
+        }
+    }
+    pool.close().await;
 }
 
 async fn create_database(admin_url: &str, name: &str) -> Option<bool> {
@@ -204,8 +268,10 @@ fn replace_database(url: &str, new_db: &str) -> Option<String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::replace_database;
+    use super::sweep_stale;
 
     #[test]
     fn replaces_the_database_keeping_the_rest() {
@@ -226,5 +292,70 @@ mod tests {
             Some("postgresql://h:5432/newdb".to_owned())
         );
         assert_eq!(replace_database("not-a-url", "newdb"), None);
+    }
+
+    /// A suite's setup drops `oxsum_test_*` databases older than
+    /// [`STALE_AGE_SECS`] before creating its own (issue #271).
+    #[tokio::test]
+    async fn a_stale_scratch_database_is_swept_on_the_next_run() {
+        let _ = dotenvy::dotenv();
+        let Some(base_url) = std::env::var("DATABASE_URL").ok() else {
+            eprintln!("DATABASE_URL unset — skipping");
+            return;
+        };
+        let admin_url = replace_database(&base_url, "postgres").expect("valid");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&admin_url)
+            .await
+            .expect("connects");
+
+        // A name forged two days ago — beyond the 24-hour cutoff.
+        let stale_ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - 2 * 24 * 60 * 60;
+        let stale = format!("oxsum_test_probe_{stale_ts}_1");
+        sqlx::query(&format!(r#"CREATE DATABASE "{stale}""#))
+            .execute(&pool)
+            .await
+            .expect("stale db created");
+
+        sweep_stale(&admin_url).await;
+
+        let still_there: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)")
+                .bind(&stale)
+                .fetch_one(&pool)
+                .await
+                .expect("reads catalogue");
+        assert!(!still_there, "the stale scratch database must be dropped");
+
+        // A fresh name — inside the cutoff — must survive the same sweep.
+        let fresh_ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let fresh = format!("oxsum_test_probe_{fresh_ts}_2");
+        sqlx::query(&format!(r#"CREATE DATABASE "{fresh}""#))
+            .execute(&pool)
+            .await
+            .expect("fresh db created");
+        sweep_stale(&admin_url).await;
+        let survived: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)")
+                .bind(&fresh)
+                .fetch_one(&pool)
+                .await
+                .expect("reads catalogue");
+        assert!(survived, "a fresh scratch database must not be swept");
+
+        // Leave the cluster clean.
+        sqlx::query(&format!(r#"DROP DATABASE "{fresh}""#))
+            .execute(&pool)
+            .await
+            .expect("fresh db dropped");
+        pool.close().await;
     }
 }
