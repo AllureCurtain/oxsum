@@ -110,29 +110,16 @@ jobs:
       - run: cargo test --workspace --lib
       - run: cargo test --workspace --doc
 
-  test-integration:
-    name: test-integration
+  # Build every test binary once, then hand the binaries off to the shard jobs.
+  # Compiling is the serial, uncacheable part of test-integration; archiving it
+  # into one artifact is what lets the shards run without each paying the full
+  # compile cost (issue #276).
+  build-tests:
+    name: build-tests
     needs: [fmt, clippy]
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    services:
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: oxsum
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 2s
-          --health-timeout 5s
-          --health-retries 15
-    env:
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/oxsum
     steps:
-      # Full history: the ledger-engine gate below diffs the push/PR base against HEAD.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -140,9 +127,6 @@ jobs:
         with:
           toolchain: "1.98"
           components: rustfmt, clippy
-      # Same mold requirement as the clippy job: the tracked .cargo/config.toml
-      # links through mold, which the stock image does not ship.
-      # Direct tarball download is faster than apt-get update (issue #237).
       - name: Install mold
         run: |
           curl -sL https://github.com/rui314/mold/releases/download/v2.40.0/mold-2.40.0-x86_64-linux.tar.gz | sudo tar -xz -C /usr/local --strip-components=1
@@ -164,42 +148,151 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Configure sccache
         uses: mozilla-actions/sccache-action@v0.0.9
-      # nextest runs the workspace's test binaries in parallel (tokio,
-      # rust-analyzer and uv all use it); doctests still go through cargo test.
       - name: Install nextest
         uses: taiki-e/install-action@v2
         with:
           tool: nextest
-      # The database tests skip without DATABASE_URL; here it is set, so they
-      # run for real. Before any test binary runs, sweep stale scratch
-      # databases left by previous runs — per-suite drop is best-effort and
-      # an interrupted job's residue must not bleed into this one's timing
-      # (issue #271). psql against the service's maintenance database is the
-      # same shape scripts/drop-test-scratch.sql documents for local use.
+      # Archive every test target — the process-shared suites and the
+      # doubleentry conformance binary are included, and their jobs run the
+      # same binaries straight from this archive instead of recompiling.
+      # doubleentry's postgres suite is feature-gated (`#![cfg(feature =
+      # "postgres")]`), so it gets a second archive built with the feature on;
+      # a plain --workspace build would archive an empty binary.
+      - name: Archive the test binaries
+        run: |
+          cargo nextest archive --workspace --archive-file nextest-archive.tar.zst
+          cargo nextest archive -p doubleentry --features postgres --archive-file doubleentry-archive.tar.zst
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nextest-archive
+          path: "*.tar.zst"
+          # Shards download the archive within the same run; 1 day is plenty.
+          retention-days: 1
+
+  # Run the workspace test binaries sharded over N runners. Each shard gets its
+  # own postgres service and sweeps it before running, so scratch databases from
+  # interrupted runs can't bleed into this one's timing (issue #271).
+  test-shard:
+    name: test-shard (${{ matrix.shard }}/3)
+    needs: [build-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: oxsum
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/oxsum
+    steps:
+      # The archive does not carry the workspace source — nextest requires the
+      # same tree checked out at the same revision to locate fixtures and set
+      # working directories.
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.98"
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      - uses: actions/download-artifact@v4
+        with:
+          name: nextest-archive
       - name: Sweep stale test scratch databases
         run: |
           # `localhost` resolves to a Unix socket for psql — 127.0.0.1 forces TCP
           # to the service container.
           psql "postgresql://postgres:postgres@127.0.0.1:5432/postgres" -f scripts/drop-test-scratch.sql
-      # Containers are the other half of the residue: a container the
-      # doubleentry suite's Ryuk never reaped sits on the daemon until the
-      # runner is recycled. Same label- and age-gated shape as the database
-      # sweep (issue #277). `./scripts/clean-testcontainers.sh --drop`.
+      # Three suites coordinate through process-global state — the generative
+      # property suite's OnceLock shared schemas, and the seed/jobs suites'
+      # in-process mutexes. nextest runs every test in its own process, so
+      # parallel workers race on that shared state (dropped schemas, double
+      # seeds). They stay on cargo test in test-extras, which runs one binary
+      # per process.
+      - name: Run the workspace test suites (shard ${{ matrix.shard }}/3)
+        run: >-
+          cargo nextest run --archive-file nextest-archive.tar.zst
+          --partition count:${{ matrix.shard }}/3
+          -E 'not binary(generative) and not binary(seed) and not binary(jobs)'
+
+  # The suites that can't run under nextest, plus doctests, plus doubleentry's
+  # Postgres conformance suite — all small enough to live on one runner that
+  # waits for the archive rather than recompiling them itself.
+  test-extras:
+    name: test-extras
+    needs: [build-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: oxsum
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/oxsum
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.98"
+      - uses: actions/download-artifact@v4
+        with:
+          name: nextest-archive
+      - name: Extract the test binaries
+        run: |
+          mkdir -p target/nextest/extracted target/nextest/extracted-de
+          tar -xf nextest-archive.tar.zst -C target/nextest/extracted
+          tar -xf doubleentry-archive.tar.zst -C target/nextest/extracted-de
+      - name: Sweep stale test scratch databases
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:5432/postgres" -f scripts/drop-test-scratch.sql
+      # Containers are the other half of the residue (issue #277): the
+      # doubleentry suite's deferred-sequencing tests start a dedicated
+      # container even under DATABASE_URL, and a Ryuk miss leaves it.
       - name: Sweep stale testcontainers
         run: ./scripts/clean-testcontainers.sh --drop
-      - name: Run the workspace test suites
-        # Three suites coordinate through process-global state — the generative
-        # property suite's OnceLock shared schemas, and the seed/jobs suites'
-        # in-process mutexes. nextest runs every test in its own process, so
-        # parallel workers race on that shared state (dropped schemas, double
-        # seeds). They stay on cargo test, which runs one binary per process.
-        run: cargo nextest run --workspace -E 'not binary(generative) and not binary(seed) and not binary(jobs)'
+      # Extracted archive binaries run directly under the shell — same
+      # process-per-binary model as `cargo test`, so the process-global
+      # coordination inside generative/seed/jobs stays sound. The binaries
+      # directory holds every compiled test binary plus binaries-metadata.json.
       - name: Run the process-shared suites
         run: |
-          cargo test -p oxsum-core --test generative --test seed --test jobs
-          cargo test -p oxsum-server --test jobs
-      - name: Run doctests
-        run: cargo test --workspace --doc
+          bins=target/nextest/extracted/target/debug/deps
+          # `jobs-*` matches two binaries (oxsum-core and oxsum-server both
+          # have a jobs suite) — run all of them, not just the first.
+          for f in generative seed jobs; do
+            find "$bins" -name "$f-*" -type f | while read -r exe; do
+              echo "=== $f -> $exe"
+              "$exe" --test-threads=4
+            done
+          done
+      # Doctests already run in the `test` job — no need to pay for a fresh
+      # compile here.
       # doubleentry's Postgres conformance suite spins up testcontainers for several
       # minutes. doubleentry is vendored and almost never changes, so the suite runs
       # only when the engine, the lockfile or the database migration list changed —
@@ -217,6 +310,16 @@ jobs:
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
+      # `DOUBLEENTRY_DATABASE_URL` makes the suite create its scratch
+      # databases on the service container instead of spinning up its own
+      # testcontainer (issue #241) — the binary was archived with the
+      # `postgres` feature on, so it is real code, not an empty cfg.
       - name: Run doubleentry's Postgres conformance suite
         if: steps.ledger.outputs.changed == 'true'
-        run: cargo test -p doubleentry --features postgres --test postgres
+        env:
+          DOUBLEENTRY_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+        run: |
+          bins=target/nextest/extracted-de/target/debug/deps
+          exe=$(find "$bins" -name "postgres-*" -type f | head -1)
+          echo "=== postgres -> $exe"
+          "$exe" --test-threads=4
