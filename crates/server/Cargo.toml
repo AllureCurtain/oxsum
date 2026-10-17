@@ -87,6 +87,8 @@ doubleentry.workspace = true
 oxsum-verify.workspace = true
 # Decoding the published verifying key in the head tests.
 base64.workspace = true
+# `x402.rs` signs test payment authorizations the way a payer would.
+ed25519-dalek.workspace = true
 
 [lints]
 workspace = true

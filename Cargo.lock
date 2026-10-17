@@ -3239,6 +3239,7 @@ dependencies = [
  "base64 0.21.7",
  "dotenvy",
  "doubleentry",
+ "ed25519-dalek",
  "futures-core",
  "futures-util",
  "hmac 0.13.0",
