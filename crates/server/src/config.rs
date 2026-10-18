@@ -1132,13 +1132,13 @@ fn x402_of() -> Result<Option<std::sync::Arc<dyn oxsum_core::RailVerifier>>, Str
         .iter()
         .filter(|v| v.is_some())
         .count();
-    if present == 4 {
+    if let (Some(url), Some(network), Some(asset), Some(pay_to)) = (url, network, asset, pay_to) {
         let verifier = oxsum_integrations::x402_facilitator::X402FacilitatorVerifier::new(
-            oxsum_integrations::facilitator::Facilitator::new(url.unwrap()),
+            oxsum_integrations::facilitator::Facilitator::new(url),
             reqwest::Client::new(),
-            network.unwrap(),
-            asset.unwrap(),
-            pay_to.unwrap(),
+            network,
+            asset,
+            pay_to,
         );
         return Ok(Some(std::sync::Arc::new(verifier)));
     }

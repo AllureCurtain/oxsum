@@ -338,12 +338,15 @@ async fn an_unconfigured_deployment_refuses_cleanly() {
 // paymentRequirements}` camelCase in, `{isValid, payer}` and `{success,
 // transaction, network, error_reason}` (snake_case on settle) out.
 
+/// What a scripted leg answers: (outcome flag, payload, reason).
+type ScriptedReply = (bool, Option<String>, Option<String>);
+
 #[derive(Clone, Default)]
 struct FacilitatorStub {
     /// What `/verify` answers: (isValid, payer, invalidReason).
-    verify: Arc<Mutex<(bool, Option<String>, Option<String>)>>,
+    verify: Arc<Mutex<ScriptedReply>>,
     /// What `/settle` answers: (success, transaction, error_reason).
-    settle: Arc<Mutex<(bool, Option<String>, Option<String>)>>,
+    settle: Arc<Mutex<ScriptedReply>>,
     /// The last paymentRequirements the verifier stated, for assertions.
     requirements: Arc<Mutex<Value>>,
     /// How many times `/settle` was called — the one-settle-per-nonce proof.
