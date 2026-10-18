@@ -252,6 +252,12 @@ pub struct Config {
     /// `None` — the default — runs no rail and `POST /api/v1/topups/x402`
     /// answers 503.
     x402: Option<std::sync::Arc<dyn oxsum_core::RailVerifier>>,
+    /// The provider the `upstream-bill-sync` job asks for each channel's daily
+    /// billed cost (issue #283): the OpenAI Costs impl when
+    /// `OXSUM_UPSTREAM_BILL_SYNC` is enabled (and `OXSUM_SECRET_KEY` present to
+    /// open `bill_key_sealed`), a test's stub otherwise. `None` — the default —
+    /// schedules no `upstream-bill-sync` pass.
+    bill_provider: Option<std::sync::Arc<dyn oxsum_core::UpstreamBillProvider>>,
 }
 
 impl Config {
@@ -279,6 +285,7 @@ impl Config {
             witness_serve: None,
             display_currency: None,
             x402: None,
+            bill_provider: None,
         }
     }
 
@@ -402,6 +409,9 @@ impl Config {
         // doubled slash is only a cosmetic wrong.
         let otlp_endpoint = var("OXSUM_OTLP_ENDPOINT").map(|v| v.trim_end_matches('/').to_owned());
         let display_currency = display_currency_of()?;
+        // Parsed before `secret` moves into the struct — it only reads the
+        // env flag and the sealing key's presence, not the struct itself.
+        let bill_provider = bill_provider_of(secret.as_ref())?;
         Ok(Self {
             signup,
             gateway: Gateway::from_env()?,
@@ -424,6 +434,7 @@ impl Config {
             witness_serve,
             display_currency,
             x402: x402_of()?,
+            bill_provider,
         })
     }
 
@@ -539,6 +550,14 @@ impl Config {
         self.upstream_price_sync
     }
 
+    /// The provider the `upstream-bill-sync` job reconciles through (issue
+    /// #283), or `None` when `OXSUM_UPSTREAM_BILL_SYNC` is off — the job is
+    /// only scheduled when `Some`.
+    #[must_use]
+    pub fn bill_provider(&self) -> Option<&std::sync::Arc<dyn oxsum_core::UpstreamBillProvider>> {
+        self.bill_provider.as_ref()
+    }
+
     /// The witness endpoints `OXSUM_WITNESS_URLS` configured (issue #231):
     /// the pass publishes each organization's signed head here; empty means
     /// no anchoring runs.
@@ -630,6 +649,18 @@ impl Config {
     #[must_use]
     pub fn with_upstream_price_sync(mut self, enabled: bool) -> Self {
         self.upstream_price_sync = enabled;
+        self
+    }
+
+    /// Mounts a bill provider — a test's scripted stub. Production reads it
+    /// through `OXSUM_UPSTREAM_BILL_SYNC` + `OXSUM_SECRET_KEY`; a test hands
+    /// the impl directly and needs no env.
+    #[must_use]
+    pub fn with_bill_provider(
+        mut self,
+        provider: impl oxsum_core::UpstreamBillProvider + 'static,
+    ) -> Self {
+        self.bill_provider = Some(std::sync::Arc::new(provider));
         self
     }
 
@@ -926,6 +957,42 @@ fn upstream_price_sync_of(raw: String) -> Result<bool, String> {
             "OXSUM_UPSTREAM_PRICE_SYNC must be true or false, got {other:?}"
         )),
     }
+}
+
+/// Parses the provider the `upstream-bill-sync` job reconciles through (issue
+/// #283). `OXSUM_UPSTREAM_BILL_SYNC` is the gate — `true`/`1` mounts the OpenAI
+/// Costs implementation, `false`/`0`/absent schedules no bill pass — and the
+/// whole thing needs `OXSUM_SECRET_KEY`, because `billable_channels` unseals
+/// every channel's `bill_key_sealed` under it before the provider is asked.
+/// Enabling without a sealing key is a startup error, the same shape
+/// `OXSUM_UPSTREAM_PRICE_SYNC` takes: a half-configured pass only fails at the
+/// first fetch, inside the worker.
+fn bill_provider_of(
+    secret: Option<&SecretKey>,
+) -> Result<Option<std::sync::Arc<dyn oxsum_core::UpstreamBillProvider>>, String> {
+    let enabled = var("OXSUM_UPSTREAM_BILL_SYNC")
+        .map(|raw| match raw.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" => Ok(true),
+            "false" | "0" => Ok(false),
+            other => Err(format!(
+                "OXSUM_UPSTREAM_BILL_SYNC must be true or false, got {other:?}"
+            )),
+        })
+        .transpose()?
+        .unwrap_or(false);
+    if !enabled {
+        return Ok(None);
+    }
+    if secret.is_none() {
+        return Err(
+            "OXSUM_UPSTREAM_BILL_SYNC needs OXSUM_SECRET_KEY — billable_channels \
+             unseals every channel's bill_key_sealed under it"
+                .into(),
+        );
+    }
+    Ok(Some(std::sync::Arc::new(
+        oxsum_integrations::openai_costs::OpenAiBillProvider::new(reqwest::Client::new()),
+    )))
 }
 
 /// Parses the deployment-wide display currency (issue #257):

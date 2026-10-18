@@ -52,6 +52,14 @@ pub struct JobContext {
     /// endpoints (issue #231). `None` — no witnesses or no signing key —
     /// schedules no `witness-checkpoints` runs.
     pub witness: Option<WitnessConfig>,
+    /// The provider-bill reconciliation's pieces (issue #283): the provider the
+    /// `upstream-bill-sync` pass asks for each channel's daily billed cost —
+    /// plus the sealing key `billable_channels` opens `bill_key_sealed` under.
+    /// `None` — no provider impl or no sealing key — schedules no bill pass.
+    pub bill_provider: Option<(
+        std::sync::Arc<dyn oxsum_core::UpstreamBillProvider>,
+        SecretKey,
+    )>,
 }
 
 /// The background task: startup enqueues whatever periodic kinds have nothing
@@ -73,6 +81,9 @@ pub fn spawn_worker(db: Db, ctx: JobContext) -> tokio::task::JoinHandle<()> {
         }
         if ctx.witness.is_some() {
             periodic.push(kinds::WITNESS_CHECKPOINTS);
+        }
+        if ctx.bill_provider.is_some() {
+            periodic.push(kinds::UPSTREAM_BILL_SYNC);
         }
         for kind in periodic {
             match db.enqueue_job(kind, OffsetDateTime::now_utc()).await {
@@ -271,6 +282,20 @@ async fn run_one(
                 cosigned = report.cosigned,
                 unreachable = report.unreachable,
                 "the witness-checkpoints pass published the heads"
+            );
+        }
+        kinds::UPSTREAM_BILL_SYNC => {
+            let Some((provider, secret)) = &ctx.bill_provider else {
+                return Err(oxsum_core::WalletError::Misconfigured(
+                    "upstream-bill-sync has no provider configured".into(),
+                ));
+            };
+            let report = sync_upstream_bills(db, provider.as_ref(), secret).await?;
+            info!(
+                channels = report.channels,
+                billed = report.billed,
+                flagged = report.flagged,
+                "the upstream-bill-sync pass reconciled the channels"
             );
         }
         kinds::RECONCILE => {
@@ -639,4 +664,52 @@ async fn probe_channel(
     )
     .await?;
     Ok(drifted)
+}
+
+/// What an `UPSTREAM_BILL_SYNC` pass did, for the worker's log line.
+struct BillSyncReport {
+    /// The channels the pass tried to reconcile.
+    channels: usize,
+    /// The channels whose provider answered a billed total — the rest recorded
+    /// a coverage-gap day (`provider_billed_minor` NULL).
+    billed: usize,
+    /// The bill rows whose drift crossed the alert threshold.
+    flagged: usize,
+}
+
+/// One `UPSTREAM_BILL_SYNC` pass: pull each channel's billed cost for
+/// yesterday, record it against the day's Σ `upstream_cost_minor`, and let the
+/// persistence layer flag drift over the alert threshold. Yesterday, not today —
+/// a provider's own day roll-up closes at midnight UTC, so pulling today's
+/// partial figure would read a half-day as a full bill and flag a false drift.
+/// One channel that will not answer records a coverage-gap row and the pass
+/// moves on; drift is detected, never inferred from silence.
+async fn sync_upstream_bills(
+    db: &Db,
+    provider: &dyn oxsum_core::UpstreamBillProvider,
+    secret: &SecretKey,
+) -> Result<BillSyncReport, oxsum_core::WalletError> {
+    let channels = db.billable_channels(secret).await?;
+    // Yesterday's closed day — the day a provider cost API has fully rolled up.
+    let date = (OffsetDateTime::now_utc() - time::Duration::days(1)).date();
+    let mut report = BillSyncReport {
+        channels: channels.len(),
+        billed: 0,
+        flagged: 0,
+    };
+    for channel in channels {
+        let bill = provider.daily_cost(&channel, date).await;
+        if bill.is_some() {
+            report.billed += 1;
+        }
+        match db.record_bill(&channel, date, bill).await {
+            Ok(row) => {
+                report.flagged += usize::from(row.flagged);
+            }
+            Err(error) => {
+                error!(channel = %channel.name, %error, "the bill record failed");
+            }
+        }
+    }
+    Ok(report)
 }
