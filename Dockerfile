@@ -41,9 +41,25 @@ RUN rustup target add wasm32-unknown-unknown \
             "wasm-bindgen-${WASM_BINDGEN_VERSION}-x86_64-unknown-linux-musl/wasm-bindgen"
 
 WORKDIR /app
+# .cargo/config.toml is deliberately not copied: it pins mold for Linux
+# links, and the host-side proc-macro builds would fail without mold
+# installed — the wasm bundle links nothing. Its release profile only costs
+# the bundle a little size, so the stage builds stock.
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+# cargo resolves the workspace before building -p oxsum-verify, so every
+# member's manifest must exist; only doubleentry + verify carry real sources.
 COPY crates/doubleentry ./crates/doubleentry
 COPY crates/verify ./crates/verify
+COPY crates/core/Cargo.toml crates/core/Cargo.toml
+COPY crates/server/Cargo.toml crates/server/Cargo.toml
+COPY crates/web/Cargo.toml crates/web/Cargo.toml
+COPY crates/integrations/Cargo.toml crates/integrations/Cargo.toml
+COPY crates/testkit/Cargo.toml crates/testkit/Cargo.toml
+RUN mkdir -p crates/core/src crates/server/src crates/web/src \
+        crates/integrations/src crates/testkit/src \
+    && for c in core web integrations testkit; do echo "" > crates/$c/src/lib.rs; done \
+    && echo "" > crates/server/src/lib.rs \
+    && echo 'fn main() {}' > crates/server/src/main.rs
 COPY scripts/build-verify-wasm.sh scripts/build-verify-wasm.sh
 RUN bash scripts/build-verify-wasm.sh
 
