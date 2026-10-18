@@ -244,6 +244,10 @@ async fn a_replayed_intent_answers_the_same_url() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["checkoutUrl"].as_str().unwrap(), first_url);
+    assert_eq!(
+        body["data"]["clientSecret"].as_str().unwrap(),
+        "int_test_123_client_secret"
+    );
     // Still exactly one upstream intent call: the replay hit the deposit row.
     assert_eq!(stub.calls.lock().unwrap().len(), 1);
 }

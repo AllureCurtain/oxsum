@@ -442,8 +442,9 @@ pub(crate) async fn airwallex_topup(
             .await?
             .ok_or_else(|| ApiError::Validation("deposit already resolved".into()))?;
         return ok(json!({
-            "checkoutUrl": existing.2.unwrap_or_default(),
+            "checkoutUrl": existing.3.unwrap_or_default(),
             "intentId": existing.1.unwrap_or_default(),
+            "clientSecret": existing.2.unwrap_or_default(),
             "depositId": existing.0,
         }));
     }
