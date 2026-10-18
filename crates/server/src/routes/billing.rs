@@ -203,13 +203,17 @@ pub(crate) async fn top_up(
 }
 
 /// The body of `POST /api/v1/topups/x402`: the signed payment authorization as
-/// base64url. The rail's verifier — the seam a real crypto rail drops into —
-/// checks the signature shape; the deposit's `payment_ref` anchors on the
-/// signed `nonce`, so a replayed authorization credits once.
+/// base64url, plus the caller-declared credit amount the rail must honor.
+/// `amountMinor` is optional — the facilitator verifier builds
+/// `paymentRequirements` around it, and without it the amount the
+/// authorization itself commits is what credits; the stand-in ignores it
+/// either way. The deposit's `payment_ref` anchors on the signed `nonce`, so
+/// a replayed authorization credits once.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct X402TopupReq {
     payment: String,
+    amount_minor: Option<i64>,
 }
 
 /// `POST /api/v1/topups/x402`: the x402-shaped deposit rail (issue #264). The
@@ -235,6 +239,7 @@ pub(crate) async fn x402_topup(
             principal.organization().id,
             verifier,
             r.payment.as_bytes(),
+            r.amount_minor,
             today(),
         )
         .await?;

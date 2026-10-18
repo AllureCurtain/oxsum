@@ -19,7 +19,7 @@ mod ws;
 
 // Third-party service clients live in oxsum-integrations; re-exported here so
 // existing paths (`crate::oauth::…`, `oxsum_server::stripe::…`) keep working.
-pub use oxsum_integrations::{antibot, mail, oauth, stripe};
+pub use oxsum_integrations::{antibot, facilitator, mail, oauth, stripe, x402_facilitator};
 
 use std::sync::Arc;
 
