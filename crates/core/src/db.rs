@@ -203,6 +203,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0048_facilitator_tx_hash",
         include_str!("../migrations/0048_facilitator_tx_hash.sql"),
     ),
+    (
+        "0049_upstream_bills",
+        include_str!("../migrations/0049_upstream_bills.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.

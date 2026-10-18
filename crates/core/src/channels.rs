@@ -151,6 +151,10 @@ pub struct Channel {
     pub protocol: String,
     /// The last four characters of the upstream key, and nothing more of it.
     pub api_key_last4: String,
+    /// The last four of the admin billing credential (issue #283), `None` when
+    /// the channel carries none — the read-back an operator uses to confirm a
+    /// billing key is attached without ever seeing it.
+    pub bill_key_last4: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
     /// One entry per model, at its current version.
@@ -284,6 +288,44 @@ impl Db {
         Ok(())
     }
 
+    /// Sets a channel's admin billing credential (issue #283): the key the
+    /// `upstream-bill-sync` pass reads the provider's cost API under. Sealed
+    /// beside `api_key_sealed` and deliberately separate — a metering key
+    /// serves the relay, a billing key reads the org's bill, and conflating
+    /// them hands every relay the power to bill-read. `None` clears it.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an unknown channel and a storage failure, in [`WalletError`].
+    pub async fn set_bill_key(
+        &self,
+        channel: &str,
+        bill_key: Option<&str>,
+        key: &SecretKey,
+    ) -> Result<(), WalletError> {
+        let (sealed, last4) = match bill_key {
+            Some(bill_key) => {
+                let bill_key = api_key_of(bill_key)?;
+                (Some(key.seal(bill_key)?), Some(last_chars(bill_key, LAST4)))
+            }
+            None => (None, None),
+        };
+        let touched = sqlx::query(
+            "UPDATE oxsum.channels SET bill_key_sealed = $2, bill_key_last4 = $3, \
+             updated_at = now() WHERE name = $1",
+        )
+        .bind(channel)
+        .bind(sealed)
+        .bind(last4)
+        .execute(self.pool())
+        .await?
+        .rows_affected();
+        if touched == 0 {
+            return Err(WalletError::NotFound(format!("channel {channel:?}")));
+        }
+        Ok(())
+    }
+
     /// Appends a price version for one of a channel's models, and returns the version it wrote.
     ///
     /// Versions are allocated per `(channel, model)` under the channel's own row lock, so two
@@ -368,7 +410,8 @@ impl Db {
     /// Every channel with the current version of each of its models, oldest first.
     pub async fn channels(&self) -> Result<Vec<Channel>, WalletError> {
         let rows = sqlx::query(
-            "SELECT channel_id, name, base_url, api_key_last4, created_at, protocol \
+            "SELECT channel_id, name, base_url, api_key_last4, bill_key_last4, \
+                    created_at, protocol \
              FROM oxsum.channels ORDER BY created_at, name",
         )
         .fetch_all(self.pool())
@@ -381,6 +424,7 @@ impl Db {
                 base_url: row.try_get("base_url")?,
                 protocol: row.try_get("protocol")?,
                 api_key_last4: row.try_get("api_key_last4")?,
+                bill_key_last4: row.try_get("bill_key_last4")?,
                 created_at: row.try_get("created_at")?,
                 models: current_prices(self, channel_id).await?,
             });
