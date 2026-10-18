@@ -1,5 +1,13 @@
 import { useState, type FormEvent } from "react";
-import { ApiError, useBalance, useDisplay, useRedeemCode, useStripeTopup, useTopup } from "../api/hooks";
+import {
+  ApiError,
+  useAirwallexTopup,
+  useBalance,
+  useDisplay,
+  useRedeemCode,
+  useStripeTopup,
+  useTopup,
+} from "../api/hooks";
 import { HaloButton } from "../components/cult/halo-button";
 import { HaloInput } from "../components/cult/halo-input";
 import {
@@ -114,6 +122,51 @@ function StripeRail() {
   );
 }
 
+function AirwallexRail() {
+  const airwallex = useAirwallexTopup();
+  const [amount, setAmount] = useState("");
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    const minor = amountToMinor(amount);
+    if (minor !== null) {
+      airwallex.mutate(minor, {
+        onSuccess: (res) => {
+          window.location.href = res.checkoutUrl;
+        },
+      });
+    }
+  };
+  return (
+    <form className="flex flex-col gap-3" onSubmit={submit}>
+      <p className="text-sm text-muted">
+        Opens the hosted Airwallex payment page; the deposit confirms through the Airwallex webhook
+        once the intent succeeds. A deployment without Airwallex configured answers 503.
+      </p>
+      <Field label="Amount (credits)">
+        <HaloInput
+          type="number"
+          step="any"
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
+          min="0.000001"
+          trailingSlot={<span className="text-xs text-muted-foreground">cr</span>}
+          required
+        />
+      </Field>
+      <HaloButton type="submit" isLoading={airwallex.isPending} loadingText="Opening payment page…">
+        Pay with Airwallex
+      </HaloButton>
+      {airwallex.error instanceof ApiError ? (
+        <Banner tone="error">
+          {airwallex.error.status === 503
+            ? "This deployment has no Airwallex rail configured."
+            : airwallex.error.message}
+        </Banner>
+      ) : null}
+    </form>
+  );
+}
+
 function RedeemRail() {
   const redeem = useRedeemCode();
   const display = useDisplay();
@@ -166,6 +219,7 @@ export function Topup() {
         <HaloTabsList variant="pill">
           <HaloTabsTrigger value="manual">Manual</HaloTabsTrigger>
           <HaloTabsTrigger value="stripe">Stripe</HaloTabsTrigger>
+          <HaloTabsTrigger value="airwallex">Airwallex</HaloTabsTrigger>
           <HaloTabsTrigger value="redeem">Redeem code</HaloTabsTrigger>
           <HaloTabsIndicator variant="pill" />
         </HaloTabsList>
@@ -177,6 +231,11 @@ export function Topup() {
         <HaloTabsContent value="stripe" className="mt-4">
           <Card title="Stripe checkout">
             <StripeRail />
+          </Card>
+        </HaloTabsContent>
+        <HaloTabsContent value="airwallex" className="mt-4">
+          <Card title="Airwallex payment page">
+            <AirwallexRail />
           </Card>
         </HaloTabsContent>
         <HaloTabsContent value="redeem" className="mt-4">

@@ -560,6 +560,19 @@ export function useStripeTopup() {
   });
 }
 
+export function useAirwallexTopup() {
+  return useMutation({
+    mutationFn: (amountMinor: number) =>
+      api<{ checkoutUrl: string; intentId: string; clientSecret?: string; depositId: string }>(
+        "/topups/airwallex",
+        {
+          method: "POST",
+          body: { amountMinor, idempotencyKey: crypto.randomUUID() },
+        },
+      ),
+  });
+}
+
 export function useRedeemCode() {
   const client = useQueryClient();
   return useMutation({

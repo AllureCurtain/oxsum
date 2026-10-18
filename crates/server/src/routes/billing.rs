@@ -395,6 +395,165 @@ pub(crate) async fn stripe_webhook(
     Ok(StatusCode::OK)
 }
 
+/// The body of `POST /api/v1/topups/airwallex`: the amount to charge and the
+/// idempotency key that anchors the deposit.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AirwallexTopupReq {
+    idempotency_key: String,
+    amount_minor: i64,
+}
+
+/// The Airwallex top-up intent (issue #285): opens a deposit, asks Airwallex
+/// for a PaymentIntent and answers the hosted-page URL plus the `client_secret`
+/// the payer's browser confirms against.
+///
+/// A replayed intent (same `idempotencyKey`) answers the same URL and secret —
+/// the deposit's `payment_ref` is the idempotency anchor.
+///
+/// A deployment without `OXSUM_AIRWALLEX_*` answers 503 — the rail is
+/// configured or it is not, never silently manual.
+pub(crate) async fn airwallex_topup(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    ApiJson(r): ApiJson<AirwallexTopupReq>,
+) -> ApiResult<serde_json::Value> {
+    let airwallex = state
+        .config
+        .airwallex()
+        .ok_or_else(|| ApiError::ServiceUnavailable("airwallex is not configured".into()))?;
+    let deposit_id = Uuid::new_v4();
+    let inserted = state
+        .db
+        .open_airwallex_deposit(
+            principal.organization().id,
+            deposit_id,
+            &r.idempotency_key,
+            r.amount_minor,
+        )
+        .await?;
+    if !inserted {
+        // A replayed intent: the deposit the key opened already carries its
+        // checkout URL and client secret in `meta` — answer them again rather
+        // than mint a second PaymentIntent.
+        let existing = state
+            .db
+            .find_airwallex_deposit(principal.organization().id, &r.idempotency_key)
+            .await?
+            .ok_or_else(|| ApiError::Validation("deposit already resolved".into()))?;
+        return ok(json!({
+            "checkoutUrl": existing.2.unwrap_or_default(),
+            "intentId": existing.1.unwrap_or_default(),
+            "depositId": existing.0,
+        }));
+    }
+    let intent = airwallex
+        .create_payment_intent(&state.http, deposit_id, r.amount_minor)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e.0, "airwallex payment intent failed");
+            ApiError::Internal
+        })?;
+    state
+        .db
+        .airwallex_intent(
+            deposit_id,
+            &intent.intent_id,
+            &intent.client_secret,
+            &intent.redirect_url,
+        )
+        .await?;
+    ok(json!({
+        "checkoutUrl": intent.redirect_url,
+        "intentId": intent.intent_id,
+        "clientSecret": intent.client_secret,
+        "depositId": deposit_id,
+    }))
+}
+
+/// Airwallex's inbound webhook: verifies `x-timestamp` + `x-signature`, then
+/// walks the deposit the event names. Org-agnostic — the signature is the
+/// credential, so this route sits on the `open` surface.
+///
+/// `payment_intent.succeeded` confirms the deposit and credits the wallet
+/// under `airwallex:<intent_id>`; `payment_intent.cancelled` and
+/// `payment_intent.expired` close it. Every other event type, every replay
+/// and every miss is a 200 — Airwallex retries until it hears one, and a row
+/// that does not exist is not this endpoint's business.
+pub(crate) async fn airwallex_webhook(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, ApiError> {
+    let airwallex = state.config.airwallex().ok_or_else(ApiError::not_found)?;
+    let timestamp = headers
+        .get("x-timestamp")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let signature = headers
+        .get("x-signature")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !airwallex.verify_signature(timestamp, signature, &body) {
+        return Err(ApiError::Unauthorized);
+    }
+    #[derive(Deserialize)]
+    struct Event {
+        name: Option<String>,
+        data: EventData,
+    }
+    #[derive(Deserialize)]
+    struct EventData {
+        object: serde_json::Value,
+    }
+    let event: Event = serde_json::from_slice(&body)
+        .map_err(|e| ApiError::Validation(format!("unreadable event: {e}")))?;
+    match event.name.as_deref() {
+        Some("payment_intent.succeeded") => {
+            let intent_id = event.data.object["id"]
+                .as_str()
+                .ok_or_else(|| ApiError::Validation("no intent id".into()))?;
+            // The intent reports `amount` in decimal major units; the deposit
+            // records `received_minor` in cents, like every rail.
+            let amount = event.data.object["amount"]
+                .as_f64()
+                .map(|major| (major * 100.0).round() as i64);
+            // Find the deposit this intent opened, then confirm + credit it.
+            // Only a `pending` deposit moves, so a replayed or raced webhook
+            // does nothing twice.
+            if let Some((deposit_id, organization_id, tenant_id)) =
+                state.db.find_airwallex_by_intent(intent_id).await?
+                && state.db.confirm_airwallex_deposit(deposit_id).await?
+            {
+                let w = state
+                    .tenants
+                    .get(&tenant_id)
+                    .await
+                    .map_err(ApiError::from)?;
+                state
+                    .db
+                    .credit_airwallex_deposit(&w, deposit_id, intent_id, amount, today())
+                    .await?;
+                // Whatever the deposit repaid counts against the statement book.
+                state
+                    .db
+                    .reconcile_statements(organization_id, &w, today())
+                    .await?;
+            }
+        }
+        Some("payment_intent.cancelled") | Some("payment_intent.expired") => {
+            let intent_id = event.data.object["id"]
+                .as_str()
+                .ok_or_else(|| ApiError::Validation("no intent id".into()))?;
+            if let Some((deposit_id, _, _)) = state.db.find_airwallex_by_intent(intent_id).await? {
+                state.db.expire_airwallex_deposit(deposit_id).await?;
+            }
+        }
+        _ => {}
+    }
+    Ok(StatusCode::OK)
+}
+
 pub(crate) async fn redeem(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
