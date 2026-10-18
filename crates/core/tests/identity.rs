@@ -516,6 +516,7 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "statements".to_owned(),
             "tier_profiles".to_owned(),
             "tpm_windows".to_owned(),
+            "upstream_bills".to_owned(),
             "upstream_price_drift".to_owned(),
             "upstream_price_probes".to_owned(),
             "usage_daily".to_owned(),
