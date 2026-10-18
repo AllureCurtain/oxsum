@@ -1187,14 +1187,23 @@ impl Db {
     ///
     /// Storage failures surface as [`WalletError`].
     pub async fn margin(&self) -> Result<Vec<Margin>, WalletError> {
+        // `provider_billed_minor` is channel-scoped: the LEFT JOIN maps the
+        // usage row's channel *name* through `oxsum.channels` to the bill's
+        // `channel_id`, then sums that channel's whole bill history. The same
+        // total repeats on every model row of the channel — documented on the
+        // field, so a reader dedupes by channel rather than sums the column.
         let rows = sqlx::query(
-            "SELECT channel, model, count(*) AS turns, \
-                    COALESCE(sum(charged_minor), 0)::bigint AS charged_minor, \
-                    COALESCE(sum(upstream_cost_minor), 0)::bigint AS upstream_cost_minor, \
-                    count(*) FILTER (WHERE upstream_cost_minor IS NULL) AS untracked_turns \
-             FROM oxsum.usage_records \
-             GROUP BY channel, model \
-             ORDER BY channel, model",
+            "SELECT u.channel, u.model, count(*) AS turns, \
+                    COALESCE(sum(u.charged_minor), 0)::bigint AS charged_minor, \
+                    COALESCE(sum(u.upstream_cost_minor), 0)::bigint AS upstream_cost_minor, \
+                    count(*) FILTER (WHERE u.upstream_cost_minor IS NULL) AS untracked_turns, \
+                    (SELECT sum(b.provider_billed_minor)::bigint \
+                     FROM oxsum.upstream_bills b \
+                     JOIN oxsum.channels c ON c.channel_id = b.channel_id \
+                     WHERE c.name = u.channel) AS provider_billed_minor \
+             FROM oxsum.usage_records u \
+             GROUP BY u.channel, u.model \
+             ORDER BY u.channel, u.model",
         )
         .fetch_all(self.pool())
         .await?;
@@ -1206,6 +1215,7 @@ impl Db {
                 turns: row.try_get("turns")?,
                 charged_minor: row.try_get("charged_minor")?,
                 upstream_cost_minor: row.try_get("upstream_cost_minor")?,
+                provider_billed_minor: row.try_get("provider_billed_minor")?,
                 untracked_turns: row.try_get("untracked_turns")?,
             });
         }
@@ -1298,6 +1308,13 @@ pub struct Margin {
     /// turns that track it. `chargedMinor` minus this is the margin, computed
     /// at the edge rather than stored.
     pub upstream_cost_minor: i64,
+    /// What the provider actually billed this channel, summed across every
+    /// `(channel, day)` bill row the `upstream-bill-sync` pass has written —
+    /// channel-scoped, so the same value repeats on each of that channel's
+    /// model rows (issue #283). `None` when the pass has never billed the
+    /// channel: a null is "no provider answer", not "the provider billed zero".
+    /// Sum only distinct channel values — a naive column total double-counts.
+    pub provider_billed_minor: Option<i64>,
     /// Settled turns with no upstream cost recorded — an untracked price, a
     /// swept hold, or history.
     pub untracked_turns: i64,
