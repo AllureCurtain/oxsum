@@ -3221,6 +3221,7 @@ dependencies = [
 name = "oxsum-integrations"
 version = "0.1.0"
 dependencies = [
+ "base64 0.21.7",
  "hmac 0.13.0",
  "lettre",
  "oxsum-core",
