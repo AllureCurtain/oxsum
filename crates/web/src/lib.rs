@@ -6,13 +6,13 @@
 //! (`crates/server/src/spa.rs`); the server redirects the legacy page paths
 //! there. What stays in this crate is deliberately not in the browser bundle:
 //!
-//! - `/verify` — the public bill/usage-report verification page. It ran
-//!   `oxsum_verify` **in the browser** under the Leptos dashboard (WASM), so a
-//!   user could verify a bill without trusting the server; Topcoat has no
-//!   browser target, so the check runs **on the server** and the user trusts
-//!   the answer. The proof math is unchanged. Keeping it server-rendered is a
-//!   choice, not a leftover: it is the one page whose whole point is not
-//!   trusting the served app.
+//! - `/verify` — the public bill/usage-report verification page: a plain
+//!   server-rendered form plus the `oxsum_verify` wasm bundle the page's
+//!   `verify.js` loads when the browser supports it (issue #284) — the check
+//!   runs on the client's machine when it can, on the server as the floor.
+//!   Keeping the skeleton server-rendered is a choice, not a leftover: the
+//!   one page whose whole point is not trusting the served app serves the
+//!   verifier itself, not a verdict.
 //! - `/style/main.css` — the stylesheet the verify page links.
 //! - [`BillView`] + [`csv`]/[`json`] — the bills-export row shape the server's
 //!   download routes (`crates/server/src/bills.rs`) build on.
