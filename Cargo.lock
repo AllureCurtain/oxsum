@@ -3297,6 +3297,7 @@ dependencies = [
  "doubleentry",
  "serde",
  "serde_json",
+ "wasm-bindgen",
 ]
 
 [[package]]

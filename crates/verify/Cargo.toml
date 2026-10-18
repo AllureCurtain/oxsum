@@ -7,6 +7,19 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+# `cdylib` lets a `--target wasm32-unknown-unknown` build emit the `.wasm`
+# artifact wasm-bindgen post-processes; `rlib` keeps the crate an ordinary
+# dependency everywhere else. Only `scripts/build-verify-wasm.sh` consumes the
+# cdylib.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# Browser bindings: the `#[wasm_bindgen]` exports in `src/wasm.rs`, compiled
+# only for wasm32. The feature is deliberately not additive to the public API —
+# nothing native ever enables it.
+wasm = ["dep:wasm-bindgen"]
+
 [dependencies]
 # Path, not the workspace entry: the workspace entry enables doubleentry's
 # `postgres` feature (sqlx plus the tokio `net` runtime), which cannot target
@@ -16,6 +29,9 @@ publish = false
 doubleentry = { path = "../doubleentry", default-features = false, features = ["serde", "witness"] }
 serde.workspace = true
 serde_json.workspace = true
+# The browser exports under the `wasm` feature; no `tsify` — the exports speak
+# JSON strings, so the page needs no generated TypeScript.
+wasm-bindgen = { version = "0.2", optional = true }
 
 [lints]
 workspace = true
