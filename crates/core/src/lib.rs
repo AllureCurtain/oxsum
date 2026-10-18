@@ -132,6 +132,6 @@ pub use webhooks::{
     WebhookDelivery, WebhookEndpoint, forecast_exhaustion, retry_delay_secs, signature,
 };
 pub use x402::{
-    ASSET_CREDIT, Ed25519RailVerifier, NETWORK_ED25519, RAIL_X402, RailVerifier, SCHEME_EXACT,
-    VerifiedPayment,
+    ASSET_CREDIT, Ed25519RailVerifier, NETWORK_ED25519, RAIL_X402, RailSettlement, RailVerifier,
+    SCHEME_EXACT, VerifiedPayment,
 };
