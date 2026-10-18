@@ -14,7 +14,9 @@
 
 use axum::Router;
 use axum::body::Body;
+use axum::extract::State;
 use axum::http::{Request, StatusCode};
+use axum::routing::post;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64URL;
 use ed25519_dalek::{Signer, SigningKey};
@@ -23,6 +25,7 @@ use oxsum_core::Db;
 use oxsum_server::{Config, Signup};
 use serde_json::{Value, json};
 use sqlx::PgPool;
+use std::sync::{Arc, Mutex};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -325,4 +328,242 @@ async fn an_unconfigured_deployment_refuses_cleanly() {
     )
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+// --- The facilitator-delegated rail (issue #282) ---
+//
+// A scripted x402-rs facilitator stub stands in for the sidecar: `/verify`
+// answers the validity it is told, `/settle` the transaction hash. The wire
+// the verifier speaks is the V1 protocol — `{x402Version, paymentPayload,
+// paymentRequirements}` camelCase in, `{isValid, payer}` and `{success,
+// transaction, network, error_reason}` (snake_case on settle) out.
+
+#[derive(Clone, Default)]
+struct FacilitatorStub {
+    /// What `/verify` answers: (isValid, payer, invalidReason).
+    verify: Arc<Mutex<(bool, Option<String>, Option<String>)>>,
+    /// What `/settle` answers: (success, transaction, error_reason).
+    settle: Arc<Mutex<(bool, Option<String>, Option<String>)>>,
+    /// The last paymentRequirements the verifier stated, for assertions.
+    requirements: Arc<Mutex<Value>>,
+    /// How many times `/settle` was called — the one-settle-per-nonce proof.
+    settle_calls: Arc<Mutex<usize>>,
+}
+
+async fn stub_facilitator() -> (String, FacilitatorStub) {
+    let stub = FacilitatorStub::default();
+    let app = Router::new()
+        .route(
+            "/verify",
+            post(|State(stub): State<FacilitatorStub>, body: String| async move {
+                let v: Value = serde_json::from_str(&body).unwrap();
+                *stub.requirements.lock().unwrap() = v["paymentRequirements"].clone();
+                let (valid, payer, reason) = stub.verify.lock().unwrap().clone();
+                axum::Json(json!({
+                    "isValid": valid,
+                    "payer": payer,
+                    "invalidReason": reason,
+                }))
+            }),
+        )
+        .route(
+            "/settle",
+            post(|State(stub): State<FacilitatorStub>, _body: String| async move {
+                *stub.settle_calls.lock().unwrap() += 1;
+                let (success, tx, reason) = stub.settle.lock().unwrap().clone();
+                axum::Json(json!({
+                    "success": success,
+                    "transaction": tx,
+                    "network": "base-sepolia",
+                    "error_reason": reason,
+                }))
+            }),
+        )
+        .with_state(stub.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{addr}"), stub)
+}
+
+/// A deployment with the facilitator rail configured: the verifier delegates
+/// to the stub sidecar on `base-sepolia`.
+async fn facilitator_world() -> Option<(Router, Db, FacilitatorStub)> {
+    let u = url()?;
+    let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&u)
+        .await
+        .expect("connects to PostgreSQL");
+    let db = Db::from_pool(pool);
+    db.migrate().await.expect("migrates");
+    let (base_url, stub) = stub_facilitator().await;
+    *stub.verify.lock().unwrap() = (true, Some("0xPAYER".to_owned()), None);
+    *stub.settle.lock().unwrap() = (true, Some("0xTXHASH".to_owned()), None);
+    let config = Config::new(Signup::Open, None).with_x402(
+        oxsum_server::x402_facilitator::X402FacilitatorVerifier::new(
+            oxsum_server::facilitator::Facilitator::new(base_url),
+            reqwest::Client::new(),
+            "base-sepolia".to_owned(),
+            "0x036CbD53842c5426634e7929541eC2318f3dCF7e".to_owned(),
+            "0xRECEIVER".to_owned(),
+        ),
+    );
+    Some((oxsum_server::app(db.clone(), config), db, stub))
+}
+
+/// A V1 `PaymentPayload` the way a wallet presents it — the `X-PAYMENT`
+/// header's base64url decode. `nonce` doubles as the deposit's payment_ref.
+fn x402_payload(nonce: &str, value: &str) -> String {
+    BASE64URL.encode(format!(
+        "{{\"x402Version\":1,\"scheme\":\"exact\",\"network\":\"base-sepolia\",\
+         \"payload\":{{\"signature\":\"0xSIG\",\"authorization\":{{\
+         \"from\":\"0xPAYER\",\"to\":\"0xRECEIVER\",\"value\":\"{value}\",\
+         \"validAfter\":\"0\",\"validBefore\":\"9999999999\",\"nonce\":\"{nonce}\"}}}}}}"
+    ))
+}
+
+/// A facilitator-verified payment settles on-chain and credits, its tx hash
+/// landing on the deposit row.
+#[tokio::test]
+async fn a_facilitator_payment_settles_and_credits() {
+    let Some((app, db, stub)) = facilitator_world().await else {
+        return;
+    };
+    let key = register(&app).await;
+    let before = balance(&app, &key).await;
+
+    let payment = x402_payload("nonce-f1", "5000000");
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/x402",
+        Some(json!({"payment": payment, "amountMinor": 5_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["isNew"].as_bool(), Some(true));
+    assert_eq!(balance(&app, &key).await - before, 5_000_000);
+
+    // The deployment's requirements reached the facilitator: the declared
+    // amount, the configured network's payTo/asset.
+    let req = stub.requirements.lock().unwrap().clone();
+    assert_eq!(req["network"], "base-sepolia");
+    assert_eq!(req["maxAmountRequired"], "5000000");
+    assert_eq!(req["payTo"], "0xRECEIVER");
+    assert_eq!(*stub.settle_calls.lock().unwrap(), 1);
+
+    // The chain's transaction hash is on the deposit row for ops.
+    let tx_hash: Option<String> = sqlx::query_scalar(
+        "SELECT facilitator_tx_hash FROM oxsum.deposits WHERE payment_ref = 'nonce-f1'",
+    )
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(tx_hash.as_deref(), Some("0xTXHASH"));
+}
+
+/// The same authorization presented twice credits once — and settles once:
+/// the row lock makes the second call wait out the first's settle, see the
+/// recorded hash, and skip the chain.
+#[tokio::test]
+async fn a_replayed_facilitator_payment_settles_once() {
+    let Some((app, _db, stub)) = facilitator_world().await else {
+        return;
+    };
+    let key = register(&app).await;
+    let payment = x402_payload("nonce-f2", "3000000");
+    for expected_new in [true, false] {
+        let (status, body) = call(
+            &app,
+            "POST",
+            "/api/v1/topups/x402",
+            Some(json!({"payment": payment})),
+            Some(&key),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["data"]["isNew"].as_bool(), Some(expected_new), "{body}");
+    }
+    assert_eq!(*stub.settle_calls.lock().unwrap(), 1);
+}
+
+/// A facilitator refusal to verify is the same 403 the stand-in's bad
+/// signature earns — which leg failed is the rail's business.
+#[tokio::test]
+async fn a_facilitator_refusal_is_forbidden() {
+    let Some((app, _db, stub)) = facilitator_world().await else {
+        return;
+    };
+    *stub.verify.lock().unwrap() = (false, None, Some("invalid signature".to_owned()));
+    let key = register(&app).await;
+    let payment = x402_payload("nonce-f3", "2000000");
+    let (status, _body) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/x402",
+        Some(json!({"payment": payment})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(*stub.settle_calls.lock().unwrap(), 0);
+}
+
+/// A payment the chain cannot land — the facilitator's settle says
+/// `success: false` — refuses the top-up and books nothing.
+#[tokio::test]
+async fn an_unsettled_payment_is_refused() {
+    let Some((app, db, stub)) = facilitator_world().await else {
+        return;
+    };
+    *stub.settle.lock().unwrap() = (false, None, Some("insufficient funds".to_owned()));
+    let key = register(&app).await;
+    let before = balance(&app, &key).await;
+    let payment = x402_payload("nonce-f4", "2000000");
+    let (status, _body) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/x402",
+        Some(json!({"payment": payment})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(balance(&app, &key).await, before);
+    // The refused settle leaves the deposit un-credited — a retry can land it.
+    let status_row: String = sqlx::query_scalar(
+        "SELECT status FROM oxsum.deposits WHERE payment_ref = 'nonce-f4'",
+    )
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(status_row, "confirmed");
+}
+
+/// A payload on a foreign network or scheme is refused before the facilitator
+/// is asked — the deployment's own gate runs first.
+#[tokio::test]
+async fn a_foreign_network_is_refused_before_the_facilitator() {
+    let Some((app, _db, stub)) = facilitator_world().await else {
+        return;
+    };
+    let key = register(&app).await;
+    let payment = BASE64URL.encode(
+        "{\"x402Version\":1,\"scheme\":\"exact\",\"network\":\"eip155:1\",\
+         \"payload\":{\"signature\":\"0x\",\"authorization\":{\"from\":\"0xA\",\
+         \"to\":\"0xB\",\"value\":\"1000\",\"validAfter\":\"0\",\"validBefore\":\"9\",\
+         \"nonce\":\"n\"}}}",
+    );
+    let (status, _body) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/x402",
+        Some(json!({"payment": payment})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(*stub.settle_calls.lock().unwrap(), 0);
 }
