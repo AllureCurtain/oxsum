@@ -321,13 +321,12 @@ impl crate::Db {
             .await
             .ok_or_else(|| WalletError::Forbidden("the payment is not verified".into()))?;
 
-        // Claim the deposit row and hold it through settle: the INSERT stakes
-        // the nonce anchor, the FOR UPDATE makes the "did we already move the
-        // money" read serial — the loser of a race waits for the winner's
-        // commit and sees `facilitator_tx_hash` filled rather than settling a
-        // second time on-chain.
+        // Claim the deposit row first and commit it: the INSERT stakes the
+        // nonce anchor and the row lands `confirmed`, durable whether or not
+        // the settle that follows lands — a refused settle must leave the
+        // claim standing so a retry under the same nonce can resume it rather
+        // than losing the deposit entirely.
         let deposit_id = Uuid::new_v4();
-        let mut tx = self.pool().begin().await?;
         sqlx::query(
             "INSERT INTO oxsum.deposits \
                  (deposit_id, organization_id, rail, payment_ref, amount_minor, \
@@ -346,8 +345,16 @@ impl crate::Db {
             "asset": ASSET_CREDIT,
             "payer": payment.payer,
         }))
-        .execute(&mut *tx)
+        .execute(self.pool())
         .await?;
+
+        // Now take the row `FOR UPDATE` across the settle call: the lock makes
+        // the "did we already move the money" read serial — the loser of a
+        // same-nonce race waits for the winner's commit and sees
+        // `facilitator_tx_hash` filled rather than settling a second time
+        // on-chain. The claim itself is already durable, so a settle refusal
+        // rolls back only the hash write, not the deposit.
+        let mut tx = self.pool().begin().await?;
         let (status, settled_hash): (String, Option<String>) = sqlx::query_as(
             "SELECT status, facilitator_tx_hash FROM oxsum.deposits \
              WHERE rail = $1 AND organization_id = $2 AND payment_ref = $3 \
@@ -364,7 +371,9 @@ impl crate::Db {
             // declaration. A rail that cannot land the verified payment
             // refuses the top-up — an unsettled credit would be free money.
             // The lock is held across the call so a concurrent request with
-            // the same authorization serializes behind it.
+            // the same authorization serializes behind it. The returned Err
+            // drops `tx` uncommitted, but the deposit claim already committed
+            // above, so the row stays `confirmed` for a retry to land.
             let settlement = verifier
                 .settle(&payment)
                 .await
