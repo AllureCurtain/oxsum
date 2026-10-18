@@ -96,6 +96,7 @@ pub fn router(state: AppState) -> Router {
         .route("/device/authorize", post(device::device_authorize))
         .route("/topups", post(billing::top_up))
         .route("/topups/stripe", post(billing::stripe_topup))
+        .route("/topups/airwallex", post(billing::airwallex_topup))
         .route("/topups/x402", post(billing::x402_topup))
         .route("/redemptions", post(billing::redeem))
         .route("/holds", get(billing::list_holds).post(billing::hold))
@@ -164,7 +165,10 @@ pub fn router(state: AppState) -> Router {
         // Stripe's webhook: the provider calls here, the `Stripe-Signature`
         // header is the credential — org-agnostic, so it must not sit behind
         // the session or the API key.
-        .route("/webhooks/stripe", post(billing::stripe_webhook));
+        .route("/webhooks/stripe", post(billing::stripe_webhook))
+        // Airwallex's webhook (issue #285): same open-surface rule — the
+        // `x-timestamp` + `x-signature` pair is the credential.
+        .route("/webhooks/airwallex", post(billing::airwallex_webhook));
 
     // The platform admin: an operator token, not an organization key, and its own middleware.
     let admin = crate::admin::router(state.clone());

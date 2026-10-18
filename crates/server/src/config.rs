@@ -213,6 +213,10 @@ pub struct Config {
     github: Option<crate::oauth::GitHub>,
     turnstile: Option<crate::antibot::Turnstile>,
     stripe: Option<crate::stripe::Stripe>,
+    /// The Airwallex deposit rail (issue #285): the credential pair plus
+    /// webhook secret when the `OXSUM_AIRWALLEX_*` set is complete, `None` —
+    /// the default — when the deployment takes no Airwallex payments.
+    airwallex: Option<crate::airwallex::Airwallex>,
     /// The deployment's public origin, `OXSUM_PUBLIC_URL` — required by the
     /// mailer and the OAuth client, optional on its own: the device grant
     /// builds `verificationUri` from it when set (issue #156).
@@ -276,6 +280,7 @@ impl Config {
             github: None,
             turnstile: None,
             stripe: None,
+            airwallex: None,
             public_url: None,
             retention: oxsum_core::Retention::default(),
             upstream_price_sync: false,
@@ -390,6 +395,7 @@ impl Config {
         let github = github_of()?;
         let turnstile = turnstile_of()?;
         let stripe = stripe_of()?;
+        let airwallex = airwallex_of()?;
         // Optional on its own: the mailer and the OAuth client each require it,
         // and the device grant only prefers it for a stable `verificationUri`.
         let public_url = var("OXSUM_PUBLIC_URL");
@@ -425,6 +431,7 @@ impl Config {
             github,
             turnstile,
             stripe,
+            airwallex,
             public_url,
             retention,
             upstream_price_sync,
@@ -495,6 +502,25 @@ impl Config {
     #[must_use]
     pub fn with_stripe(mut self, stripe: crate::stripe::Stripe) -> Self {
         self.stripe = Some(stripe);
+        self
+    }
+
+    /// The Airwallex rail, or `None` when `OXSUM_AIRWALLEX_CLIENT_ID`,
+    /// `OXSUM_AIRWALLEX_API_KEY`, `OXSUM_AIRWALLEX_WEBHOOK_SECRET` and
+    /// `OXSUM_PUBLIC_URL` are not all set — in which case
+    /// `POST /api/v1/topups/airwallex` answers 503 and
+    /// `POST /api/v1/webhooks/airwallex` answers 404.
+    #[must_use]
+    pub fn airwallex(&self) -> Option<&crate::airwallex::Airwallex> {
+        self.airwallex.as_ref()
+    }
+
+    /// Sets the Airwallex rail. Tests use this; the server reads the
+    /// `OXSUM_AIRWALLEX_*` set plus `OXSUM_PUBLIC_URL` together — a subset is
+    /// a startup error.
+    #[must_use]
+    pub fn with_airwallex(mut self, airwallex: crate::airwallex::Airwallex) -> Self {
+        self.airwallex = Some(airwallex);
         self
     }
 
@@ -1173,6 +1199,43 @@ fn stripe_of() -> Result<Option<crate::stripe::Stripe>, String> {
         secret_key,
         webhook_secret,
         api_url,
+        public_url,
+    )))
+}
+
+/// Parses the Airwallex rail (issue #285): `OXSUM_AIRWALLEX_CLIENT_ID`,
+/// `OXSUM_AIRWALLEX_API_KEY` and `OXSUM_AIRWALLEX_WEBHOOK_SECRET` together or
+/// not at all — a subset is a startup error, because a half-configured rail
+/// only fails inside a request. `OXSUM_PUBLIC_URL` is required alongside: the
+/// intent's `return_url` is built on it. `OXSUM_AIRWALLEX_API_URL` and
+/// `OXSUM_AIRWALLEX_CHECKOUT_URL` override the API and hosted-page origins;
+/// nothing but a test points them anywhere else.
+fn airwallex_of() -> Result<Option<crate::airwallex::Airwallex>, String> {
+    let client_id = var("OXSUM_AIRWALLEX_CLIENT_ID");
+    let api_key = var("OXSUM_AIRWALLEX_API_KEY");
+    let webhook_secret = var("OXSUM_AIRWALLEX_WEBHOOK_SECRET");
+    if client_id.is_none() && api_key.is_none() && webhook_secret.is_none() {
+        return Ok(None);
+    }
+    let public_url = var("OXSUM_PUBLIC_URL");
+    let (Some(client_id), Some(api_key), Some(webhook_secret), Some(public_url)) =
+        (client_id, api_key, webhook_secret, public_url)
+    else {
+        return Err("OXSUM_AIRWALLEX_CLIENT_ID, OXSUM_AIRWALLEX_API_KEY, \
+             OXSUM_AIRWALLEX_WEBHOOK_SECRET and OXSUM_PUBLIC_URL are set together, \
+             or none of them"
+            .into());
+    };
+    let api_url =
+        var("OXSUM_AIRWALLEX_API_URL").unwrap_or_else(|| "https://api.airwallex.com".to_owned());
+    let checkout_url = var("OXSUM_AIRWALLEX_CHECKOUT_URL")
+        .unwrap_or_else(|| "https://checkout.airwallex.com".to_owned());
+    Ok(Some(crate::airwallex::Airwallex::new(
+        client_id,
+        api_key,
+        webhook_secret,
+        api_url,
+        checkout_url,
         public_url,
     )))
 }

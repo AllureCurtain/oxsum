@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.69.0
+  version: 0.70.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -444,13 +444,27 @@ info:
     credential, sealed beside the metering key and deliberately separate, so a
     relay credential never reads the org's bill.
 
+    0.70.0 adds the Airwallex deposit rail (issue #285): `POST /api/v1/topups/airwallex`
+    opens a `pending` deposit, asks Airwallex for a PaymentIntent and answers
+    `{checkoutUrl, intentId, clientSecret, depositId}` — the hosted-page URL the
+    payer's browser follows plus the SDK secret it confirms against. The signed
+    webhook at `POST /api/v1/webhooks/airwallex` (`x-timestamp` + `x-signature`,
+    HMAC-SHA256 of `timestamp + body`) confirms and credits the deposit the intent
+    names under the fixed ledger key `airwallex:<intent_id>` — a replayed or raced
+    delivery credits once — and `payment_intent.cancelled`/`payment_intent.expired`
+    close it. The `rail` CHECK widens to admit `airwallex` (migration 0050). The
+    rail needs `OXSUM_AIRWALLEX_CLIENT_ID`, `OXSUM_AIRWALLEX_API_KEY`,
+    `OXSUM_AIRWALLEX_WEBHOOK_SECRET` and `OXSUM_PUBLIC_URL` together; a deployment
+    without them answers 503 on the intent and 404 on the webhook.
+
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
     whose job precedes authentication: `/api/v1/auth/login`, `/api/v1/auth/logout`,
     `/api/v1/auth/register`, `/api/v1/auth/oauth/github`, `/api/v1/auth/oauth/github/callback`,
     `/api/v1/auth/methods`, `/api/v1/auth/verify`, `/api/v1/auth/password/forgot`,
     `/api/v1/auth/password/reset`, `/api/v1/invitations/redeem`, `/api/v1/device/code`,
-    `/api/v1/device/token`, `/api/v1/log/key` and `/api/v1/webhooks/stripe`. The cookie is never accepted on `/v1`: the
+    `/api/v1/device/token`, `/api/v1/log/key`, `/api/v1/webhooks/stripe` and
+    `/api/v1/webhooks/airwallex`. The cookie is never accepted on `/v1`: the
     gateway takes an API key only — `Authorization: Bearer` or `x-api-key`.
 servers:
   - url: http://localhost:3000
@@ -1706,6 +1720,44 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /api/v1/topups/airwallex:
+    post:
+      summary: Open an Airwallex payment page to top up
+      description: |
+        The `airwallex` deposit rail (issue #285): opens a `pending` deposit
+        (`payment_ref` = the `idempotencyKey`), asks Airwallex for a
+        PaymentIntent and answers the hosted-page URL the payer's browser
+        follows plus the `clientSecret` the SDK confirms against. A replayed
+        intent (same `idempotencyKey`) answers the same URL and secret — the
+        deposit's unique constraint is the idempotency anchor, not a lookup. A
+        deployment without `OXSUM_AIRWALLEX_*` answers 503: the rail is
+        configured or it is not.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AmountRequest" }
+      responses:
+        "200":
+          description: The hosted-page URL, the intent identity and the deposit it credits
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [checkoutUrl, intentId, depositId]
+                    properties:
+                      checkoutUrl: { type: string, format: uri, description: "the hosted-payment-page URL the browser follows" }
+                      intentId: { type: string, description: "the PaymentIntent id the webhook names" }
+                      clientSecret: { type: string, description: "the secret the hosted page's SDK confirms against; absent on a replayed intent" }
+                      depositId: { type: string, format: uuid, description: "the pending deposit this intent confirms" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /api/v1/topups/x402:
     post:
       summary: Credit a signed x402 payment authorization
@@ -1768,6 +1820,35 @@ paths:
             schema:
               type: object
               description: the raw Stripe event envelope; `data.object.id` is the session
+      responses:
+        "200":
+          description: acknowledged — every verified event is answered 200 whether the deposit moved or not
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /api/v1/webhooks/airwallex:
+    post:
+      summary: Airwallex's deposit-rail callback
+      description: |
+        The provider's unauthenticated webhook (issue #285): `x-timestamp` and
+        `x-signature` verify the body under `OXSUM_AIRWALLEX_WEBHOOK_SECRET` —
+        hex HMAC-SHA256 of `timestamp + raw_body`, compared in constant time.
+        `payment_intent.succeeded` confirms and credits the deposit the intent
+        names — the credit replays under `airwallex:<intent_id>` so a retried
+        or raced delivery writes nothing twice — and
+        `payment_intent.cancelled`/`payment_intent.expired` close it.
+        `data.object.amount` (decimal major units) converts to the recorded
+        `received_minor` in cents; a number that disagrees with `amount_minor`
+        is for a human, never auto-patched. A deployment without
+        `OXSUM_AIRWALLEX_*` answers 404: an unconfigured rail has no webhook to
+        verify.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: the raw Airwallex event envelope; `data.object.id` is the intent
       responses:
         "200":
           description: acknowledged — every verified event is answered 200 whether the deposit moved or not
