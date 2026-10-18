@@ -10,12 +10,14 @@ publish = false
 [dependencies]
 # /verify is server-side rendered Topcoat, mounted into the axum router as a
 # fallback tower service — the one page deliberately kept out of the React
-# bundle (issue #256). No wasm bundle, no client build step.
+# bundle (issue #256). Its `verify.js` loader and the wasm-bindgen output in
+# verify-wasm/ are plain embedded assets, not a client framework.
 topcoat.workspace = true
 # The page reads the domain layer directly (docs/architecture.md).
 oxsum-core = { workspace = true }
-# /verify runs the pure proof check on the server: a served bundle cannot
-# certify itself, so there is no browser-side check (see lib.rs).
+# /verify runs the same oxsum_verify functions on the server (the form's POST)
+# as the wasm build exports to the browser (issue #284) — one verifier, two
+# execution sides.
 oxsum-verify = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true

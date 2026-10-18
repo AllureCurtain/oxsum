@@ -23,6 +23,30 @@ COPY web/ ./
 COPY crates/server/openapi.yaml /crates/server/openapi.yaml
 RUN npm run codegen && npm run build
 
+# ---------- verify wasm ----------
+# The /verify page's in-browser verifier (issue #284): oxsum_verify compiled
+# for wasm32 and post-processed by wasm-bindgen into the ES module the page
+# imports, written to crates/web/verify-wasm/ where pages_misc.rs embeds it.
+# The CLI is the prebuilt release binary whose version must equal the
+# wasm-bindgen crate's (Cargo.lock) — the generated module embeds a schema
+# version the CLI validates.
+FROM rust:1.98-bookworm AS wasm
+
+ARG WASM_BINDGEN_VERSION=0.2.129
+RUN rustup target add wasm32-unknown-unknown \
+    && curl -fsSL \
+        "https://github.com/rustwasm/wasm-bindgen/releases/download/${WASM_BINDGEN_VERSION}/wasm-bindgen-${WASM_BINDGEN_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+        | tar -xz --strip-components=1 \
+            -C /usr/local/bin \
+            "wasm-bindgen-${WASM_BINDGEN_VERSION}-x86_64-unknown-linux-musl/wasm-bindgen"
+
+WORKDIR /app
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY crates/doubleentry ./crates/doubleentry
+COPY crates/verify ./crates/verify
+COPY scripts/build-verify-wasm.sh scripts/build-verify-wasm.sh
+RUN bash scripts/build-verify-wasm.sh
+
 # ---------- builder ----------
 FROM rust:1.98-bookworm AS builder
 
@@ -57,10 +81,11 @@ RUN mkdir -p crates/doubleentry/src crates/core/src crates/verify/src \
 # Real sources. Only this layer and below rebuild when .rs files change.
 COPY . .
 # The built React app lands over the committed placeholder so rust-embed
-# embeds the real bundle.
+# embeds the real bundle; the verify wasm artifacts land over the committed
+# placeholders pages_misc.rs embeds the same way.
 COPY --from=frontend /web/dist ./web/dist
+COPY --from=wasm /app/crates/web/verify-wasm ./crates/web/verify-wasm
 # The server binary lands in target/release/<bin-exe-name> (here: oxsum).
-# The dashboard is server-rendered; no WASM bundle is built.
 RUN cargo build --release \
     && test -x /app/target/release/oxsum
 

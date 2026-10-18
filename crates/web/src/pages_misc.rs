@@ -6,20 +6,24 @@
 //! server redirects the legacy paths to. `/verify` stays here on purpose: it is
 //! the one surface deliberately kept out of the browser bundle.
 //!
-//! ## `/verify` trust-model change
+//! ## `/verify` trust model
 //!
-//! The Leptos dashboard ran `oxsum_verify::verify_bundle` **in the browser**
-//! (WASM): anyone holding a bill and its content hash could verify it without
-//! trusting the server. Topcoat has no browser target, so the check now runs
-//! **on the server**: the page posts the bundle JSON and the expected hash,
-//! the server recomputes and answers. The proof math is unchanged, but the
-//! user must trust the server's answer — the "don't trust the server" property
-//! is gone.
+//! The page is a plain server-rendered form plus a progressive enhancement:
+//! with no JavaScript it posts the bundle to the server and the server runs
+//! `oxsum_verify` — the same check it always ran. When the browser supports
+//! it, `verify.js` loads the `oxsum_verify` wasm build the crate exports
+//! (`#[wasm_bindgen]` bindings in `crates/verify/src/wasm.rs`, issue #284) and
+//! runs the proof check on the client's own machine — the verifier's bytes
+//! travel to the user instead of the user trusting a verdict the server
+//! rendered. The check is identical either way; only whose machine runs it
+//! differs. A deployment built without the wasm toolchain serves the committed
+//! placeholder module, which fails to import and quietly leaves the form on
+//! the server path.
 
 use serde::Deserialize;
 use topcoat::Result;
 use topcoat::context::Cx;
-use topcoat::router::content::{Css, Form};
+use topcoat::router::content::{Css, Form, Js, Wasm};
 use topcoat::router::error::bad_request;
 use topcoat::router::{RouterBuilder, page, parse_query_params, route};
 use topcoat::view::{View, view};
@@ -33,7 +37,13 @@ use crate::views::plain;
 /// server redirects to. `/verify` stays server-rendered by design — see the
 /// module doc above.
 pub(crate) fn register(builder: RouterBuilder) -> RouterBuilder {
-    builder.page(verify_page).page(verify_submit).route(style)
+    builder
+        .page(verify_page)
+        .page(verify_submit)
+        .route(style)
+        .route(verify_js)
+        .route(verify_wasm_js)
+        .route(verify_wasm_wasm)
 }
 
 /// The public verification page: anyone holding a bill and its content hash
@@ -51,7 +61,7 @@ async fn verify_page(cx: &Cx) -> Result<impl View> {
                 <h1>"Verify a bill"</h1>
                 <p class="muted">
                     "Paste a bill's proof bundle and the content hash you recorded with it. "
-                    "The check runs on this server."
+                    "The check runs in this browser when the verifier is served, on this server otherwise."
                 </p>
                 <form method="post" action="/verify">
                     <label>
@@ -65,6 +75,7 @@ async fn verify_page(cx: &Cx) -> Result<impl View> {
                     <input type="hidden" name="entry" value=(entry) />
                     <button type="submit">"Verify"</button>
                 </form>
+                <script type="module" src="/verify.js"></script>
             </div>
         )
     })
@@ -111,10 +122,10 @@ async fn verify_submit(cx: &Cx, Form(form): Form<VerifyForm>) -> Result<impl Vie
     // head note, so the verifier needs only the published key and the origin
     // inside the note.
     //
-    // For a bill: once inclusion is proven, whether the charge inside the entry
-    // is what its own usage and rates add up to, and whether the price the
-    // description names is bound to a checkpoint the operator signed (issue
-    // #204). The binding reports under the pass, never a verdict of its own.
+    // For a bill: `verify_bill` composes inclusion, the charge recompute and
+    // the price binding into one verdict — the same call the browser's wasm
+    // export makes (issue #284), so the page reads the same whichever side ran
+    // it. The binding reports under the pass, never a verdict of its own.
     enum Verdict {
         Pass { charge: String, price: String },
         ChargeMismatch,
@@ -137,66 +148,15 @@ async fn verify_submit(cx: &Cx, Form(form): Form<VerifyForm>) -> Result<impl Vie
     } else {
         let hash = oxsum_verify::Hash::parse_hex(form.expected_hash.trim())
             .map_err(|_| bad_request("the content hash is not 64 hex characters"))?;
-        let ok = oxsum_verify::verify_bundle(&inner, &hash)
+        let bill = oxsum_verify::verify_bill(&inner, &hash)
             .map_err(|_| bad_request("the bundle did not parse as JSON"))?;
-        let verdict = if !ok {
-            Verdict::Fail
-        } else {
-            let description = serde_json::from_str::<serde_json::Value>(&inner)
-                .ok()
-                .and_then(|bundle| {
-                    bundle
-                        .get("entry")?
-                        .get("description")?
-                        .as_str()
-                        .map(str::to_owned)
-                })
-                .unwrap_or_default();
-            match oxsum_verify::verify_charge(&description) {
-                oxsum_verify::ChargeCheck::Mismatch => Verdict::ChargeMismatch,
-                check => {
-                    let mandate = serde_json::from_str::<serde_json::Value>(&description)
-                        .ok()
-                        .and_then(|record| record.get("mandate").cloned())
-                        .and_then(|mandate| {
-                            let id = mandate.get("id")?.as_str()?.to_owned();
-                            let hash = mandate.get("hash")?.as_str()?.to_owned();
-                            Some(format!(
-                                " The turn ran under spend mandate {id} (blob sha256 {}…).",
-                                &hash[..16.min(hash.len())]
-                            ))
-                        });
-                    let charge = match check {
-                        oxsum_verify::ChargeCheck::Recomputed => {
-                            " The recorded charge itself recomputes from the usage and rates inside the entry."
-                                .to_owned()
-                        }
-                        oxsum_verify::ChargeCheck::NotASettlement => {
-                            " The entry is not a usage settlement, so there is no charge to recompute."
-                                .to_owned()
-                        }
-                        oxsum_verify::ChargeCheck::OlderSchema => {
-                            " The record predates charge verification — the entry is proven, but its arithmetic is too old to recompute."
-                                .to_owned()
-                        }
-                        oxsum_verify::ChargeCheck::NewerSchema { .. } => {
-                            " The record is newer than this verifier — the entry is proven, but its arithmetic is skipped rather than guessed at."
-                                .to_owned()
-                        }
-                        oxsum_verify::ChargeCheck::Mismatch => unreachable!("handled above"),
-                    } + mandate.as_deref().unwrap_or("");
-                    let price = match oxsum_verify::verify_price_head(&inner) {
-                        Ok(()) => {
-                            " The price it names is bound to a checkpoint the operator signed.".to_owned()
-                        }
-                        Err(oxsum_verify::PriceError::Absent) => {
-                            " This bundle carries no signed price binding — the entry is proven, but its price is not independently attested.".to_owned()
-                        }
-                        Err(error) => format!(" Its price binding does not verify: {error}."),
-                    };
-                    Verdict::Pass { charge, price }
-                }
-            }
+        let verdict = match bill.verdict {
+            "pass" => Verdict::Pass {
+                charge: bill.charge,
+                price: bill.price,
+            },
+            "chargeMismatch" => Verdict::ChargeMismatch,
+            _ => Verdict::Fail,
         };
         Page::Bill(verdict)
     };
@@ -324,3 +284,35 @@ async fn style() -> Result<Css<&'static str>> {
 }
 
 const STYLE: &str = include_str!("../style/main.css");
+
+/// The page's own script: intercepts the form's submit and runs the wasm
+/// verifier when the browser has one. Checked in, not generated — this is the
+/// page's behavior, not wasm-bindgen's output.
+#[route(GET "/verify.js")]
+async fn verify_js() -> Result<Js<&'static str>> {
+    Ok(Js(VERIFY_JS))
+}
+
+const VERIFY_JS: &str = include_str!("verify.js");
+
+/// The wasm-bindgen ES-module glue for `oxsum_verify` — generated by
+/// `scripts/build-verify-wasm.sh` into `verify-wasm/` and embedded here. The
+/// committed file is a placeholder whose `init` throws when no wasm build ran,
+/// so the page's loader fails over to the server-side form.
+#[route(GET "/verify-wasm/verify_wasm.js")]
+async fn verify_wasm_js() -> Result<Js<&'static str>> {
+    Ok(Js(VERIFY_WASM_JS))
+}
+
+const VERIFY_WASM_JS: &str = include_str!("../verify-wasm/verify_wasm.js");
+
+/// The `oxsum_verify` wasm module itself, beside its glue so the generated
+/// `new URL("verify_wasm_bg.wasm", import.meta.url)` resolves under the same
+/// `/verify-wasm/` prefix. `application/wasm` is required for the browser's
+/// streaming compilation entry points.
+#[route(GET "/verify-wasm/verify_wasm_bg.wasm")]
+async fn verify_wasm_wasm() -> Result<Wasm<&'static [u8]>> {
+    Ok(Wasm(VERIFY_WASM))
+}
+
+const VERIFY_WASM: &[u8] = include_bytes!("../verify-wasm/verify_wasm_bg.wasm");
