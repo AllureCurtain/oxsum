@@ -273,7 +273,10 @@ with `idempotencyKey` and `amountMinor` answers `{"checkoutUrl", "depositId"}` �
 the URL, pay on Stripe's hosted page, and the signed webhook credits the purchased
 pool when the session completes. Repeating the call with the same key answers the
 same checkout URL rather than opening a second session, and a session left unpaid
-expires without moving money.
+expires without moving money. The Airwallex rail (`OXSUM_AIRWALLEX_*`; issue #285)
+works the same shape: `POST /api/v1/topups/airwallex` answers `{"checkoutUrl",
+"intentId", "clientSecret", "depositId"}` — open the URL, pay on Airwallex's hosted
+page, and the signed webhook credits the pool when the intent succeeds.
 
 On a deployment running the real rail (`OXSUM_X402_FACILITATOR_*` — an x402-rs
 facilitator sidecar verifies the authorization on-chain, settles it, and the
