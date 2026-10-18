@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.67.0
+  version: 0.68.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -419,6 +419,18 @@ info:
     "oxsum-ed25519"`, `asset: "OXSUM-CREDIT"`) against `OXSUM_X402_VERIFYING_KEY`,
     and an unconfigured deployment answers 503. No chain RPC, no finality check, no
     real wallet signatures — the boundary is stubbed, the bookkeeping is real.
+
+    0.68.0 makes the x402 rail real (issue #282): the `OXSUM_X402_FACILITATOR_*`
+    set (`URL` + `NETWORK` + `ASSET` + `PAY_TO`, all-or-none) swaps the stand-in
+    for a verifier delegating to an x402-rs facilitator sidecar — `/verify`
+    proves the EIP-3009 authorization's signature and limits, `/settle` lands
+    the transfer on-chain, and the chain's transaction hash records into
+    `deposits.facilitator_tx_hash` (migration 0048). The request gains optional
+    `amountMinor` — the `paymentRequirements.maxAmountRequired` the facilitator
+    is asked to enforce — and `payment` now carries whichever wire the
+    configured rail speaks: the V1 `PaymentPayload` under the facilitator, the
+    test-scheme body under the stand-in. A same-nonce race settles once: the
+    deposit row is claimed `FOR UPDATE` across the on-chain call.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -1686,22 +1698,30 @@ paths:
     post:
       summary: Credit a signed x402 payment authorization
       description: |
-        The `x402` deposit rail — an x402-*shaped*, mandate-verified crypto payment
-        interface (issue #264). The caller presents a signed payment authorization
-        (`payment`, base64url): `{scheme, network, asset, amountMinor, payTo, nonce,
-        payer, signature}`. The rail verifies the signature's shape and records the
-        deposit through the same pending → confirmed → credited walk every rail
-        shares — `payment_ref` carries the signed `nonce`, so a replayed
-        authorization credits once.
+        The `x402` deposit rail (issues #264, #282): the caller presents a
+        signed payment authorization (`payment`, base64url) and the rail
+        verifies it, settles it, and books the deposit through the same
+        pending → confirmed → credited walk every rail shares —
+        `payment_ref` carries the signed `nonce`, so a replayed authorization
+        credits once (and settles once: the deposit row's `FOR UPDATE` claim
+        serializes a same-nonce race behind the winner's on-chain settle).
 
-        The seam is the verifier: a real EIP-712/x402 verifier drops into the same
-        interface later; today's implementation is a stand-in Ed25519 test scheme
-        (`scheme: "exact"`, `network: "oxsum-ed25519"`, `asset: "OXSUM-CREDIT"`)
-        checked against the key `OXSUM_X402_VERIFYING_KEY` pins. No chain RPC, no
-        settlement-finality check, no real wallet signatures are built — the
-        verification boundary is stubbed, the bookkeeping behind it is real
-        (docs/decisions.md). A deployment without `OXSUM_X402_VERIFYING_KEY` answers
-        503: the rail is configured or it is not.
+        Two verifier configurations:
+
+        - **Facilitator-delegated** (issue #282): `OXSUM_X402_FACILITATOR_URL` +
+          `OXSUM_X402_NETWORK` + `OXSUM_X402_ASSET` + `OXSUM_X402_PAY_TO` —
+          verify and settle delegate to an x402-rs facilitator sidecar over
+          its V1 HTTP API, and the settle answer's chain transaction hash lands
+          on the deposit's `facilitator_tx_hash`. This is the real rail:
+          EIP-3009 signatures, real wallet authorizations, real finality.
+        - **Ed25519 stand-in** (issue #264): `OXSUM_X402_VERIFYING_KEY` alone
+          keeps the test scheme (`scheme: "exact"`, `network: "oxsum-ed25519"`,
+          `asset: "OXSUM-CREDIT"`) — no chain, for tests and for deployments
+          exercising the bookkeeping without a payment network. A deployment
+          with neither answers 503: the rail is configured or it is not.
+
+        Whichever rail serves, a payload that fails its wire's parse is the
+        same 403 an unverified signature earns.
       requestBody:
         required: true
         content:
@@ -5481,12 +5501,34 @@ components:
         payment:
           type: string
           minLength: 1
-          maxLength: 4096
+          maxLength: 8192
           description: |
-            base64url of the signed payment authorization
-            `{scheme, network, asset, amountMinor, payTo, nonce, payer, signature}`.
-            The rail verifies `signature` over the canonical body and credits
-            `amountMinor`; the signed `nonce` is the deposit's idempotency anchor.
+            base64url of the signed payment authorization. Two wires, one field —
+            whichever rail is configured parses it:
+
+            - **facilitator** (`OXSUM_X402_FACILITATOR_*` set): the V1 x402
+              `PaymentPayload` — `{x402Version, scheme, network, payload:
+              {signature, authorization: {from, to, value, validAfter,
+              validBefore, nonce}}}` — the same blob the protocol's `X-PAYMENT`
+              header carries. `authorization.nonce` anchors `payment_ref`.
+            - **stand-in** (`OXSUM_X402_VERIFYING_KEY` only): the test-scheme
+              `{scheme, network, asset, amountMinor, payTo, nonce, payer,
+              signature}` whose Ed25519 `signature` is checked against the
+              pinned key.
+
+            A payload that is not the configured rail's wire is a 403,
+            indistinguishable from an unverified one.
+        amountMinor:
+          type: integer
+          format: int64
+          minimum: 1
+          description: |
+            The credit amount the deployment requires the payment to cover.
+            Under the facilitator rail this becomes the `paymentRequirements`'s
+            `maxAmountRequired` — unset, the authorization's own `value` stands
+            (chain-asset atomic units, USDC's 6 decimals, map 1:1 onto credit
+            minor units). The stand-in ignores it: the signed body commits the
+            amount.
     SettleRequest:
       type: object
       required: [holdKey, actualMinor]
