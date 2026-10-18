@@ -44,6 +44,14 @@ pub fn router(state: AppState) -> Router<AppState> {
             "/channels/{name}/prices",
             get(channels::history).post(channels::append),
         )
+        .route(
+            "/channels/{name}/aliases",
+            get(channels::aliases).post(channels::set_alias),
+        )
+        .route(
+            "/channels/{name}/aliases/{alias}",
+            delete(channels::delete_alias),
+        )
         .route("/organizations", get(organizations::organizations))
         .route(
             "/organizations/{organization_id}",

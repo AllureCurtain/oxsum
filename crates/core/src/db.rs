@@ -211,6 +211,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0050_airwallex_rail",
         include_str!("../migrations/0050_airwallex_rail.sql"),
     ),
+    (
+        "0051_model_aliases",
+        include_str!("../migrations/0051_model_aliases.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.

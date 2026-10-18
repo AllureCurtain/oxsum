@@ -425,6 +425,7 @@ impl Db {
             request,
             channel: &model.channel,
             model: &model.model,
+            upstream_model: None,
             price_version: model.version,
             kind,
             usage: &usage,

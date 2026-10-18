@@ -854,6 +854,7 @@ async fn the_anomalies_list_shows_the_turns_that_did_not_price_cleanly() {
             request,
             channel: "chan-y",
             model: "model-x",
+            upstream_model: None,
             price_version: 2,
             kind: serde_json::from_str::<oxsum_core::SettlementKind>(&format!("\"{kind}\""))
                 .expect("a settlement kind"),
@@ -984,6 +985,7 @@ async fn anomalies_carry_a_score_and_filter_by_severity() {
             request,
             channel: "chan-y",
             model: "model-x",
+            upstream_model: None,
             price_version: 2,
             kind: serde_json::from_str::<oxsum_core::SettlementKind>(&format!("\"{kind}\""))
                 .expect("a settlement kind"),
@@ -2148,4 +2150,138 @@ async fn an_input_only_price_carries_no_output_side() {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{price}: {body}");
         assert_eq!(body["error"]["code"], "VALIDATION_ERROR", "{price}: {body}");
     }
+}
+
+/// An alias claims a public name for one channel's upstream model (issue #286):
+/// the round-trip creates, lists and deletes it, an unknown channel is 404,
+/// and the one-name-one-route-set rule conflicts a second claim — as an alias
+/// on another channel, or as a direct model name on one.
+#[tokio::test]
+async fn an_alias_renames_a_channels_upstream_model() {
+    let (app, _pool) = app_or_skip!();
+    let channel = fresh("alias");
+    let other = fresh("alias-other");
+    let alias = fresh("public");
+    let upstream = fresh("upstream");
+
+    for name in [&channel, &other] {
+        let (status, body) = call(
+            &app,
+            "POST",
+            "/api/v1/admin/channels",
+            Some(json!({
+                "name": name,
+                "baseUrl": "https://upstream.example/v1",
+                "apiKey": "sk-upstream-abcd1234",
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    // The other channel serves a direct model whose name will collide below.
+    let direct = fresh("direct");
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/channels/{other}/prices"),
+        Some(json!({
+            "model": direct,
+            "inputPricePerMillion": 1_000_000,
+            "outputPricePerMillion": 2_000_000,
+            "maxOutputTokens": 1000,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Unknown channel: the list and the claim are both 404.
+    let aliases = format!("/api/v1/admin/channels/{channel}/aliases");
+    let (status, body) = call(
+        &app,
+        "GET",
+        "/api/v1/admin/channels/no-such-channel/aliases",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/admin/channels/no-such-channel/aliases",
+        Some(json!({"alias": alias, "upstreamModel": upstream})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+
+    // The claim answers the written row.
+    let (status, body) = call(
+        &app,
+        "POST",
+        &aliases,
+        Some(json!({"alias": alias, "upstreamModel": upstream})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["alias"], alias.as_str());
+    assert_eq!(body["data"]["channel"], channel.as_str());
+    assert_eq!(body["data"]["upstreamModel"], upstream.as_str());
+    assert!(body["data"]["createdAt"].is_string(), "{body}");
+
+    // The list carries it.
+    let (status, body) = call(&app, "GET", &aliases, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let listed = body["data"].as_array().expect("a list of aliases");
+    assert_eq!(listed.len(), 1, "{body}");
+    assert_eq!(listed[0]["alias"], alias.as_str());
+    assert_eq!(listed[0]["upstreamModel"], upstream.as_str());
+
+    // One name, one route set: the same alias on the other channel conflicts,
+    // and so does a name another channel serves directly.
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/channels/{other}/aliases"),
+        Some(json!({"alias": alias, "upstreamModel": upstream})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let (status, body) = call(
+        &app,
+        "POST",
+        &aliases,
+        Some(json!({"alias": direct, "upstreamModel": upstream})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+    // The delete drops it — and a second delete, or a delete on the channel
+    // that never claimed it, is a 404.
+    let (status, body) = call(&app, "DELETE", &format!("{aliases}/{alias}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = call(&app, "GET", &aliases, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"].as_array().expect("a list").len(), 0);
+    let (status, body) = call(&app, "DELETE", &format!("{aliases}/{alias}"), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let (status, body) = call(
+        &app,
+        "DELETE",
+        &format!("/api/v1/admin/channels/{other}/aliases/{alias}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+
+    // The deletes land in the audit log beside the claim.
+    let (status, body) = call(&app, "GET", "/api/v1/admin/audit?limit=50", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let actions: Vec<&str> = body["data"]["entries"]
+        .as_array()
+        .expect("audit rows")
+        .iter()
+        .filter(|row| row["target"] == channel.as_str())
+        .filter_map(|row| row["action"].as_str())
+        .collect();
+    assert!(actions.contains(&"channel.alias.set"), "{actions:?}");
+    assert!(actions.contains(&"channel.alias.delete"), "{actions:?}");
 }

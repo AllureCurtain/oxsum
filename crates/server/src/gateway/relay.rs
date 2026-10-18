@@ -93,6 +93,11 @@ struct Plan {
     channel: String,
     version: i64,
     model: String,
+    /// The upstream model the channel actually serves when `model` is an alias
+    /// (issue #286): `Some` only for an aliased turn, and written into the v8
+    /// settlement description as `upstreamModel` so a bill says both the name
+    /// the caller asked for and the model that answered.
+    upstream_model: Option<String>,
     price: Price,
     freeze: i64,
     /// The discount the organization qualified for when the turn started
@@ -221,6 +226,7 @@ impl Turn {
         wallet: Arc<Wallet>,
         request_id: &str,
         model: &str,
+        upstream_model: Option<String>,
         serving: &Serving,
         freeze: i64,
         discount_percent: Option<i64>,
@@ -247,6 +253,7 @@ impl Turn {
                 channel: serving.channel.clone(),
                 version: serving.version,
                 model: model.to_owned(),
+                upstream_model,
                 price: serving.price.clone(),
                 freeze,
                 discount_percent,
@@ -597,6 +604,7 @@ impl Plan {
             request: &self.request,
             channel: &self.channel,
             model: &self.model,
+            upstream_model: self.upstream_model.as_deref(),
             price_version: self.version,
             kind,
             usage: &usage,

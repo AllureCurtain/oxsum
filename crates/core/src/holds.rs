@@ -474,6 +474,10 @@ async fn sweep_one(
         request: &hold.request_id,
         channel: &hold.channel,
         model: &hold.model,
+        // The watch row knows the served name the hold was taken under; the
+        // upstream resolution happened at admission and is lost with it — an
+        // honest record leaves the field out rather than reconstructing it.
+        upstream_model: None,
         price_version: hold.price_version,
         kind: SettlementKind::Swept,
         usage: &usage,

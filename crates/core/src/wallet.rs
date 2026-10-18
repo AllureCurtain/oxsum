@@ -2425,6 +2425,8 @@ impl Wallet {
             request: request_id,
             channel,
             model,
+            // A refused request never resolved its route — nothing upstream to name.
+            upstream_model: None,
             price_version: 0,
             kind: SettlementKind::Refused,
             usage: &usage,

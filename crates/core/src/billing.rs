@@ -1000,8 +1000,10 @@ impl SettlementKind {
 /// which differs only by the absent `discountPercent`. A record that names
 /// another one is not this build's to interpret: `oxsum_verify`'s
 /// `verify_charge` dispatches on `v` and leaves those to inclusion proof alone
-/// (docs/decisions.md, T1-2).
-const DESCRIPTION_VERSION: i64 = 7;
+/// (docs/decisions.md, T1-2). v8 adds the optional `upstreamModel` — the
+/// upstream name an alias resolved to, absent when the served name is the
+/// upstream's own (issue #286).
+const DESCRIPTION_VERSION: i64 = 8;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1012,6 +1014,10 @@ pub struct Settlement<'a> {
     pub channel: &'a str,
     /// The model the caller asked for.
     pub model: &'a str,
+    /// The upstream model name the served name resolved to (issue #286): the
+    /// alias's target, present only when `model` is an alias — absent means the
+    /// caller's name is the upstream's own.
+    pub upstream_model: Option<&'a str>,
     /// The price version in force when the request started.
     pub price_version: i64,
     /// How this turn was priced.
@@ -1189,12 +1195,17 @@ impl<'de> Deserialize<'de> for BillLine {
 /// A settlement's description on the wire, versioned.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SettlementV7<'a> {
+struct SettlementV8<'a> {
     /// The schema version — [`DESCRIPTION_VERSION`]. Spelled `v` on the wire.
     v: i64,
     request: &'a str,
     channel: &'a str,
     model: &'a str,
+    /// The upstream name an alias resolved to, v8's addition (issue #286):
+    /// absent when the served name is the upstream's own — metadata for the
+    /// audit, never a price input.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    upstream_model: Option<&'a str>,
     price_version: i64,
     kind: SettlementKind,
     usage: MeteredUsage,
@@ -1230,11 +1241,12 @@ impl Settlement<'_> {
     /// Refuses a description that cannot be serialised, which cannot happen for these fields; the
     /// `Result` keeps the caller honest rather than unwrapping a formality.
     pub fn description(&self) -> Result<String, WalletError> {
-        serde_json::to_string(&SettlementV7 {
+        serde_json::to_string(&SettlementV8 {
             v: DESCRIPTION_VERSION,
             request: self.request,
             channel: self.channel,
             model: self.model,
+            upstream_model: self.upstream_model,
             price_version: self.price_version,
             kind: self.kind,
             usage: MeteredUsage::from(self.usage),
@@ -1368,6 +1380,10 @@ pub struct SettlementRecord {
     pub channel: String,
     /// The model the caller asked for.
     pub model: String,
+    /// The upstream model the served name resolved to (v8, issue #286):
+    /// `Some` on an aliased turn, `None` when the caller's name is the
+    /// upstream's own — and on records that predate aliases.
+    pub upstream_model: Option<String>,
     /// The price version in force when the request started.
     pub price_version: i64,
     /// How this turn was priced, in the record's own spelling.
@@ -1421,8 +1437,9 @@ pub struct MandateRef {
     pub hash: String,
 }
 
-/// The wire [`SettlementRecord::parse`] reads: [`SettlementV5`] owned, tolerant
-/// of v3, v4 and v6 — the differences are fields the other writers never carried.
+/// The wire [`SettlementRecord::parse`] reads: [`SettlementV8`] owned, tolerant
+/// of every version since v3 — the differences are fields the other writers
+/// never carried.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SettlementRecordWire {
@@ -1430,6 +1447,10 @@ struct SettlementRecordWire {
     request: String,
     channel: String,
     model: String,
+    /// The upstream name an alias resolved to — optional on every version:
+    /// written from v8 on, absent earlier and on a turn that named the
+    /// upstream's own model.
+    upstream_model: Option<String>,
     price_version: i64,
     kind: SettlementKind,
     usage: MeteredUsage,
@@ -1480,6 +1501,7 @@ impl SettlementRecord {
             request: wire.request,
             channel: wire.channel,
             model: wire.model,
+            upstream_model: wire.upstream_model,
             price_version: wire.price_version,
             kind: wire.kind,
             charged: wire.charged,
@@ -2077,6 +2099,7 @@ mod tests {
             request: "abc",
             channel: "deepseek",
             model: "deepseek-chat",
+            upstream_model: None,
             price_version: 3,
             kind: SettlementKind::Usage,
             usage: &usage,
@@ -2092,7 +2115,7 @@ mod tests {
         let json = settlement.description().unwrap();
         assert_eq!(
             json,
-            r#"{"v":7,"request":"abc","channel":"deepseek","model":"deepseek-chat","priceVersion":3,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100},"lines":[["input",116,1000000],["output",100,2000000]],"upstreamAttempts":1,"charged":316,"freeze":400}"#
+            r#"{"v":8,"request":"abc","channel":"deepseek","model":"deepseek-chat","priceVersion":3,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100},"lines":[["input",116,1000000],["output",100,2000000]],"upstreamAttempts":1,"charged":316,"freeze":400}"#
         );
         // Within the ledger's limit, whatever the model is called.
         assert!(json.len() < 512);
@@ -2203,6 +2226,7 @@ mod tests {
             request: "abc",
             channel: "c",
             model: "m",
+            upstream_model: None,
             price_version: 3,
             kind: SettlementKind::Usage,
             usage: &usage,
@@ -2253,6 +2277,7 @@ mod tests {
             request: "abc",
             channel: "c",
             model: "m",
+            upstream_model: None,
             price_version: 1,
             kind: SettlementKind::Usage,
             usage: &usage,
@@ -2285,6 +2310,7 @@ mod tests {
             request: "abc",
             channel: "deepseek",
             model: "deepseek-chat",
+            upstream_model: None,
             price_version: 3,
             kind: SettlementKind::Usage,
             usage: &usage,
@@ -2331,6 +2357,47 @@ mod tests {
             .unwrap();
             assert_eq!(SettlementRecord::parse(&text).unwrap().kind, kind);
         }
+    }
+
+    /// An aliased turn's description (issue #286): the writer puts the upstream
+    /// name beside the alias in `model`, and the record reads both back.
+    #[test]
+    fn an_aliased_settlement_description_reads_back_the_upstream_model() {
+        let usage = UsageRecord::tokens(116, 100).unwrap();
+        let lines = lines(116, 100);
+        let settlement = Settlement {
+            request: "abc",
+            channel: "deepseek",
+            model: "public-name",
+            upstream_model: Some("deepseek-chat"),
+            price_version: 3,
+            kind: SettlementKind::Usage,
+            usage: &usage,
+            lines: &lines,
+            matched_rule: None,
+            discount_percent: None,
+            charged: 316,
+            freeze: 400,
+            upstream_attempts: 1,
+            mandate: None,
+            reason: None,
+        };
+        let text = settlement.description().unwrap();
+        assert!(
+            text.contains("\"upstreamModel\":\"deepseek-chat\""),
+            "{text}"
+        );
+        let record = SettlementRecord::parse(&text).unwrap();
+        assert_eq!(record.model, "public-name");
+        assert_eq!(record.upstream_model.as_deref(), Some("deepseek-chat"));
+        // A direct name writes nothing: the field stays absent, not null.
+        let plain = Settlement {
+            upstream_model: None,
+            ..settlement.clone()
+        };
+        let text = plain.description().unwrap();
+        assert!(!text.contains("upstreamModel"), "{text}");
+        assert_eq!(SettlementRecord::parse(&text).unwrap().upstream_model, None);
     }
 
     /// A hold's description is not a settlement's, and neither is text that is not a record

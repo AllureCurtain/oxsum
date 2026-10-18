@@ -190,3 +190,89 @@ pub(crate) async fn history(
         None => Err(ApiError::not_found()),
     }
 }
+
+/// An alias to claim for a channel, as the admin API takes it (issue #286):
+/// the public name callers write, and the upstream model the channel relays.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct AliasReq {
+    alias: String,
+    upstream_model: String,
+}
+
+/// One channel's aliases, oldest first.
+///
+/// An unknown channel is not found, as in [`append`]: the request is well
+/// formed and names something that is not there.
+pub(crate) async fn aliases(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> ApiResult<Vec<oxsum_core::ModelAlias>> {
+    match state.db.list_aliases(&name).await? {
+        Some(aliases) => ok(aliases),
+        None => Err(ApiError::not_found()),
+    }
+}
+
+/// Claims an alias for a channel: callers write `alias`, the channel relays
+/// `upstreamModel` (issue #286).
+///
+/// The one-name-one-route-set rule is enforced in core: a name already claimed
+/// as an alias on any channel, or spelled as a direct model on a different
+/// channel, is a 409 — two routes can never split a served name's traffic.
+pub(crate) async fn set_alias(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    ApiJson(request): ApiJson<AliasReq>,
+) -> ApiResult<oxsum_core::ModelAlias> {
+    let written = state
+        .db
+        .create_alias(&name, &request.alias, &request.upstream_model)
+        .await
+        .map_err(|error| match &error {
+            // An unknown channel is not found, like `append`'s: the alias is
+            // well formed and names something that is not there.
+            oxsum_core::WalletError::InvalidInput(message)
+                if message.starts_with("no channel named") =>
+            {
+                ApiError::not_found()
+            }
+            _ => ApiError::from(error),
+        })?;
+    record(
+        &state,
+        audit_action::CHANNEL_ALIAS_SET,
+        Some(name),
+        serde_json::json!({
+            "alias": written.alias,
+            "upstreamModel": written.upstream_model,
+        }),
+        None,
+    )
+    .await?;
+    ok(written)
+}
+
+/// Drops one of a channel's aliases.
+///
+/// A name that is not this channel's — unknown to it, or claimed by another
+/// channel — is a 404: the caller asked to remove something this channel does
+/// not have. Aliases are routing configuration, not ledger data, so the delete
+/// is hard (docs/decisions.md).
+pub(crate) async fn delete_alias(
+    State(state): State<AppState>,
+    Path((name, alias)): Path<(String, String)>,
+) -> ApiResult<serde_json::Value> {
+    if !state.db.delete_alias(&name, &alias).await? {
+        return Err(ApiError::not_found());
+    }
+    record(
+        &state,
+        audit_action::CHANNEL_ALIAS_DELETE,
+        Some(name),
+        serde_json::json!({ "alias": alias }),
+        None,
+    )
+    .await?;
+    ok(serde_json::json!({}))
+}

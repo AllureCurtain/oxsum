@@ -57,8 +57,8 @@ pub use billing::{
     SettlementRecord, UpstreamPrices, estimate_tokens, hold_description, input_upper_bound,
 };
 pub use channels::{
-    CatalogModel, Channel, MAX_WEIGHT, ModelPrice, ProbeChannel, SecretKey, Serving, event_price,
-    price_row, route_order,
+    CatalogModel, Channel, MAX_WEIGHT, ModelAlias, ModelPrice, ProbeChannel, SecretKey, Serving,
+    event_price, price_row, route_order,
 };
 pub use db::{Db, SCHEMA};
 pub use deposits::{CodeBatch, MAX_BATCH, Redemption};
