@@ -36,6 +36,8 @@ pub const RAIL_MANUAL: &str = "manual";
 pub const RAIL_REDEMPTION: &str = "redemption";
 /// The rail Stripe Checkout writes under (issue #201).
 pub const RAIL_STRIPE: &str = "stripe";
+/// The rail Airwallex's hosted payment page writes under (issue #285).
+pub const RAIL_AIRWALLEX: &str = "airwallex";
 
 /// A freshly minted batch: the only time the codes are visible.
 #[derive(Debug, Clone, Serialize)]
@@ -378,6 +380,268 @@ impl Db {
         )
         .bind(deposit_id)
         .bind(RAIL_STRIPE)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
+    /// Opens an Airwallex-rail deposit before the payment intent exists:
+    /// `pending`, keyed by `payment_ref = <idempotency_key>`, which stays the
+    /// row's anchor for its whole life — the intent id lands in `meta` when
+    /// Airwallex answers. Same shape [`Db::open_stripe_deposit`] proves: the
+    /// caller's key makes the intent row itself replay-safe.
+    ///
+    /// Returns `true` when the row was inserted — a `false` answer means the
+    /// idempotency key already opened this deposit, and the caller should look
+    /// up the existing row rather than open a second intent.
+    pub async fn open_airwallex_deposit(
+        &self,
+        organization_id: Uuid,
+        deposit_id: Uuid,
+        idempotency_key: &str,
+        amount_minor: i64,
+    ) -> Result<bool, WalletError> {
+        if amount_minor <= 0 {
+            return Err(WalletError::InvalidInput(
+                "a deposit's amount must be positive".into(),
+            ));
+        }
+        let inserted = sqlx::query(
+            "INSERT INTO oxsum.deposits \
+                 (deposit_id, organization_id, rail, payment_ref, amount_minor, status) \
+             VALUES ($1, $2, $3, $4, $5, 'pending') \
+             ON CONFLICT (rail, organization_id, payment_ref) DO NOTHING",
+        )
+        .bind(deposit_id)
+        .bind(organization_id)
+        .bind(RAIL_AIRWALLEX)
+        .bind(idempotency_key)
+        .bind(amount_minor)
+        .execute(self.pool())
+        .await?
+        .rows_affected();
+        Ok(inserted > 0)
+    }
+
+    /// Finds the pending deposit an idempotency key already opened — the
+    /// lookup `POST /topups/airwallex` runs on a replayed intent, to answer
+    /// the same hosted-page URL instead of minting a second PaymentIntent.
+    /// Returns the deposit's id, the intent id and the URL recorded in `meta`.
+    pub async fn find_airwallex_deposit(
+        &self,
+        organization_id: Uuid,
+        idempotency_key: &str,
+    ) -> Result<Option<(Uuid, Option<String>, Option<String>)>, WalletError> {
+        let row = sqlx::query(
+            "SELECT deposit_id, meta->>'airwallexIntentId' AS intent_id, \
+                    meta->>'airwallexCheckoutUrl' AS checkout_url \
+             FROM oxsum.deposits \
+             WHERE rail = $1 AND organization_id = $2 AND payment_ref = $3",
+        )
+        .bind(RAIL_AIRWALLEX)
+        .bind(organization_id)
+        .bind(idempotency_key)
+        .fetch_optional(self.pool())
+        .await?;
+        match row {
+            Some(row) => {
+                use sqlx::Row;
+                Ok(Some((
+                    row.try_get("deposit_id")?,
+                    row.try_get("intent_id")?,
+                    row.try_get("checkout_url")?,
+                )))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Records Airwallex's intent id, `client_secret` and the hosted-page URL
+    /// in the deposit's metadata. The `payment_ref` stays the caller's
+    /// idempotency key — the UNIQUE constraint is what makes a replayed intent
+    /// idempotent — while `meta.airwallexIntentId` is the handle the webhook
+    /// names when it comes back, and `meta.airwallexCheckoutUrl` /
+    /// `meta.airwallexClientSecret` are what a replayed intent answers.
+    pub async fn airwallex_intent(
+        &self,
+        deposit_id: Uuid,
+        intent_id: &str,
+        client_secret: &str,
+        checkout_url: &str,
+    ) -> Result<(), WalletError> {
+        sqlx::query(
+            "UPDATE oxsum.deposits \
+             SET meta = meta || jsonb_build_object(\
+                     'airwallexIntentId', $1::text, \
+                     'airwallexClientSecret', $2::text, \
+                     'airwallexCheckoutUrl', $3::text\
+                 ), \
+                 updated_at = now() \
+             WHERE deposit_id = $4 AND rail = $5 AND status = 'pending'",
+        )
+        .bind(intent_id)
+        .bind(client_secret)
+        .bind(checkout_url)
+        .bind(deposit_id)
+        .bind(RAIL_AIRWALLEX)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
+    /// Finds the Airwallex deposit a webhook names: `meta.airwallexIntentId`
+    /// matches the intent Airwallex calls back for. `payment_ref` is the
+    /// caller's idempotency key, not the intent id — the webhook identifies
+    /// the deposit through the intent id, which the intent handler wrote into
+    /// metadata when the PaymentIntent was created.
+    pub async fn find_airwallex_by_intent(
+        &self,
+        intent_id: &str,
+    ) -> Result<Option<(Uuid, Uuid, String)>, WalletError> {
+        let row = sqlx::query(
+            "SELECT d.deposit_id, d.organization_id, o.tenant_id \
+             FROM oxsum.deposits d \
+             JOIN oxsum.organizations o ON o.organization_id = d.organization_id \
+             WHERE d.rail = $1 AND d.meta->>'airwallexIntentId' = $2 \
+             ORDER BY d.created_at DESC LIMIT 1",
+        )
+        .bind(RAIL_AIRWALLEX)
+        .bind(intent_id)
+        .fetch_optional(self.pool())
+        .await?;
+        match row {
+            Some(row) => {
+                use sqlx::Row;
+                Ok(Some((
+                    row.try_get("deposit_id")?,
+                    row.try_get("organization_id")?,
+                    row.try_get("tenant_id")?,
+                )))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Moves an Airwallex deposit to `confirmed` — the webhook's first act on
+    /// `payment_intent.succeeded`, before the ledger credit runs.
+    ///
+    /// Returns `true` when the row moved, `false` when it was already past
+    /// `pending` — a replayed or raced webhook answers `false` and credits
+    /// nothing twice.
+    pub async fn confirm_airwallex_deposit(&self, deposit_id: Uuid) -> Result<bool, WalletError> {
+        let flipped = sqlx::query(
+            "UPDATE oxsum.deposits \
+             SET status = 'confirmed', updated_at = now() \
+             WHERE deposit_id = $1 AND rail = $2 AND status = 'pending'",
+        )
+        .bind(deposit_id)
+        .bind(RAIL_AIRWALLEX)
+        .execute(self.pool())
+        .await?
+        .rows_affected();
+        Ok(flipped > 0)
+    }
+
+    /// Credits the wallet for a confirmed Airwallex deposit and flips the row
+    /// to `credited` — the same `deposit.credited` event and `balance.low`
+    /// latch-clear as every other rail, in the deposit-update transaction.
+    ///
+    /// The credit runs under the fixed key `airwallex:<intent_id>`: a replayed
+    /// webhook finds its own credited deposit and writes nothing twice, and a
+    /// crash between the ledger append and the row flip leaves a confirmed
+    /// deposit the retry resumes.
+    ///
+    /// `received_minor` is what Airwallex reports the intent paid (decimal
+    /// major units converted back to cents): a number that disagrees with
+    /// `amount_minor` is recorded for a human, never auto-patched (decision
+    /// D2).
+    ///
+    /// Returns the receipt and organization id when a credit ran, `None` when
+    /// the deposit was already credited or was never confirmed.
+    pub async fn credit_airwallex_deposit(
+        &self,
+        wallet: &Wallet,
+        deposit_id: Uuid,
+        intent_id: &str,
+        received_minor: Option<i64>,
+        on: time::Date,
+    ) -> Result<Option<(Receipt, Uuid)>, WalletError> {
+        let mut tx = self.pool().begin().await?;
+        let row = sqlx::query(
+            "SELECT organization_id, amount_minor, status, payment_ref \
+             FROM oxsum.deposits \
+             WHERE deposit_id = $1 AND rail = $2 \
+             FOR UPDATE",
+        )
+        .bind(deposit_id)
+        .bind(RAIL_AIRWALLEX)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        use sqlx::Row;
+        let organization_id: Uuid = row.try_get("organization_id")?;
+        let amount_minor: i64 = row.try_get("amount_minor")?;
+        let status: String = row.try_get("status")?;
+        let payment_ref: String = row.try_get("payment_ref")?;
+        // `confirmed` is the only state a credit proceeds from: `pending` was
+        // never confirmed (the intent expired before paying), `credited` is
+        // already done.
+        if status != "confirmed" {
+            tx.commit().await?;
+            return Ok(None);
+        }
+        // The ledger append replays under the intent id — a webhook retried
+        // after a crash finds its own entry rather than opening a second one.
+        let receipt = wallet
+            .top_up(&format!("airwallex:{intent_id}"), amount_minor, on)
+            .await?;
+        // Record what the rail reported paid; a mismatch with amount_minor is
+        // a human's call, never auto-patched (decision D2).
+        let flipped = sqlx::query(
+            "UPDATE oxsum.deposits \
+             SET status = 'credited', entry_id = $1, received_minor = $2, \
+                 updated_at = now() \
+             WHERE deposit_id = $3 AND status = 'confirmed'",
+        )
+        .bind(*receipt.entry_id.as_uuid())
+        .bind(received_minor)
+        .bind(deposit_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if flipped > 0 {
+            Self::enqueue_event(
+                &mut tx,
+                organization_id,
+                crate::webhooks::DEPOSIT_CREDITED,
+                serde_json::json!({
+                    "rail": RAIL_AIRWALLEX,
+                    "paymentRef": payment_ref,
+                    "amountMinor": amount_minor,
+                    "entryId": receipt.entry_id.as_uuid(),
+                }),
+            )
+            .await?;
+            if let Ok(available) = wallet.available().await {
+                Self::clear_balance_low(&mut tx, organization_id, available).await?;
+            }
+        }
+        tx.commit().await?;
+        Ok(Some((receipt, organization_id)))
+    }
+
+    /// Moves an Airwallex deposit to `expired` — a terminal-state webhook's
+    /// outcome (`payment_intent.cancelled`, `payment_intent.expired`), a no-op
+    /// on a row that already ended its walk.
+    pub async fn expire_airwallex_deposit(&self, deposit_id: Uuid) -> Result<(), WalletError> {
+        sqlx::query(
+            "UPDATE oxsum.deposits SET status = 'expired', updated_at = now() \
+             WHERE deposit_id = $1 AND rail = $2 AND status IN ('pending', 'confirmed')",
+        )
+        .bind(deposit_id)
+        .bind(RAIL_AIRWALLEX)
         .execute(self.pool())
         .await?;
         Ok(())
