@@ -246,10 +246,12 @@ pub struct Config {
     /// organization with no override of its own renders. `None` means the
     /// deployment displays credits only.
     display_currency: Option<oxsum_core::Display>,
-    /// The x402-shaped deposit rail's verifier (issue #264): the payer key
-    /// `OXSUM_X402_VERIFYING_KEY` pins. `None` — the default — runs no rail
-    /// and `POST /api/v1/topups/x402` answers 503.
-    x402: Option<oxsum_core::Ed25519RailVerifier>,
+    /// The x402 deposit rail's verifier (issues #264, #282): the facilitator-
+    /// delegated implementation when the `OXSUM_X402_FACILITATOR_*` set is
+    /// complete, else the Ed25519 stand-in `OXSUM_X402_VERIFYING_KEY` pins.
+    /// `None` — the default — runs no rail and `POST /api/v1/topups/x402`
+    /// answers 503.
+    x402: Option<std::sync::Arc<dyn oxsum_core::RailVerifier>>,
 }
 
 impl Config {
@@ -485,23 +487,23 @@ impl Config {
         self
     }
 
-    /// The x402-shaped deposit rail's verifier, or `None` when
-    /// `OXSUM_X402_VERIFYING_KEY` is unset — in which case `POST
-    /// /api/v1/topups/x402` answers 503. Returned behind the
+    /// The x402 deposit rail's verifier, or `None` when neither the
+    /// facilitator set nor `OXSUM_X402_VERIFYING_KEY` is configured — in which
+    /// case `POST /api/v1/topups/x402` answers 503. Returned behind the
     /// [`RailVerifier`][oxsum_core::RailVerifier] trait: the rail's seam, so a
     /// real crypto verifier drops in without touching the handler.
     #[must_use]
     pub fn x402(&self) -> Option<&dyn oxsum_core::RailVerifier> {
         self.x402
             .as_ref()
-            .map(|v| v as &dyn oxsum_core::RailVerifier)
+            .map(|v| v.as_ref() as &dyn oxsum_core::RailVerifier)
     }
 
-    /// Sets the x402 rail's verifier. Tests use this; the server reads
-    /// `OXSUM_X402_VERIFYING_KEY`.
+    /// Sets the x402 rail's verifier. Tests use this; the server reads the
+    /// `OXSUM_X402_*` environment.
     #[must_use]
-    pub fn with_x402(mut self, verifier: oxsum_core::Ed25519RailVerifier) -> Self {
-        self.x402 = Some(verifier);
+    pub fn with_x402(mut self, verifier: impl oxsum_core::RailVerifier + 'static) -> Self {
+        self.x402 = Some(std::sync::Arc::new(verifier));
         self
     }
 
@@ -1108,17 +1110,52 @@ fn stripe_of() -> Result<Option<crate::stripe::Stripe>, String> {
     )))
 }
 
-/// Parses the x402 rail's pinned payer key: `OXSUM_X402_VERIFYING_KEY`, the
-/// hex Ed25519 public half the deployment trusts payment authorizations signed
-/// under. Unset means no rail — `POST /api/v1/topups/x402` answers 503 — and a
-/// malformed value is a startup error rather than a rail that only fails inside
-/// a request.
-fn x402_of() -> Result<Option<oxsum_core::Ed25519RailVerifier>, String> {
+/// Parses the x402 rail's verifier (issues #264, #282). Two configurations:
+///
+/// - **The real rail**: `OXSUM_X402_FACILITATOR_URL` + `OXSUM_X402_NETWORK` +
+///   `OXSUM_X402_ASSET` + `OXSUM_X402_PAY_TO` — all four or none, a subset is a
+///   startup error like the Stripe trio. Delegates verify/settle to the x402-rs
+///   facilitator sidecar.
+/// - **The stand-in**: `OXSUM_X402_VERIFYING_KEY` alone, unchanged — a
+///   test-scheme Ed25519 check for deployments and suites without a chain.
+///
+/// Unset both and the rail is absent — `POST /api/v1/topups/x402` answers 503.
+/// A facilitator URL beside a stray subset of its set is a startup error; the
+/// stand-in key is ignored when the facilitator is configured (the real rail
+/// wins, never a silent fallback).
+fn x402_of() -> Result<Option<std::sync::Arc<dyn oxsum_core::RailVerifier>>, String> {
+    let url = var("OXSUM_X402_FACILITATOR_URL");
+    let network = var("OXSUM_X402_NETWORK");
+    let asset = var("OXSUM_X402_ASSET");
+    let pay_to = var("OXSUM_X402_PAY_TO");
+    let present = [&url, &network, &asset, &pay_to]
+        .iter()
+        .filter(|v| v.is_some())
+        .count();
+    if present == 4 {
+        let verifier = oxsum_integrations::x402_facilitator::X402FacilitatorVerifier::new(
+            oxsum_integrations::facilitator::Facilitator::new(url.unwrap()),
+            reqwest::Client::new(),
+            network.unwrap(),
+            asset.unwrap(),
+            pay_to.unwrap(),
+        );
+        return Ok(Some(std::sync::Arc::new(verifier)));
+    }
+    if present > 0 {
+        return Err(
+            "OXSUM_X402_FACILITATOR_URL, OXSUM_X402_NETWORK, OXSUM_X402_ASSET and \
+             OXSUM_X402_PAY_TO are set together, or none"
+                .into(),
+        );
+    }
     let Some(key) = var("OXSUM_X402_VERIFYING_KEY") else {
         return Ok(None);
     };
     oxsum_core::Ed25519RailVerifier::from_hex(&key)
-        .map(Some)
+        .map(|v| {
+            Some(std::sync::Arc::new(v) as std::sync::Arc<dyn oxsum_core::RailVerifier>)
+        })
         .map_err(|error| error.to_string())
 }
 
