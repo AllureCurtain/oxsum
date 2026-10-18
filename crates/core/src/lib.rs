@@ -39,6 +39,7 @@ mod statement_pdf;
 mod statements;
 mod tenants;
 mod tiers;
+mod upstream_bills;
 mod upstream_sync;
 mod usage;
 mod usage_reports;
@@ -113,6 +114,10 @@ pub use statements::{
 };
 pub use tenants::Tenants;
 pub use tiers::TierProfile;
+pub use upstream_bills::{
+    ChannelBilling, DRIFT_ALERT_FLOOR_MINOR, DRIFT_ALERT_PCT, DailyBill, UpstreamBill,
+    UpstreamBillProvider,
+};
 pub use upstream_sync::{FieldDrift, ModelPair, ProbeOutcome, diff_upstream};
 pub use usage::{
     Attribution, CountsProvenance, MAX_CONTEXT_NAME, MAX_END_USER, MAX_TAG, MAX_TAGS, Margin,

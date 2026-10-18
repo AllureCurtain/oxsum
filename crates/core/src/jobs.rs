@@ -39,6 +39,10 @@ pub mod kinds {
     pub const RETENTION: &str = "retention";
     /// The upstream price-catalog probe and drift diff (issue #222).
     pub const SYNC_UPSTREAM_PRICES: &str = "sync-upstream-prices";
+    /// The daily provider-bill reconciliation (issue #283): pull each channel's
+    /// billed cost for yesterday, record it against the day's Σ
+    /// `upstream_cost_minor`, and flag the drift over the alert threshold.
+    pub const UPSTREAM_BILL_SYNC: &str = "upstream-bill-sync";
     /// The external witness anchoring pass (issue #231): publish each
     /// organization's latest signed head to the configured witnesses and store
     /// the cosigned notes they answer.
@@ -93,6 +97,7 @@ pub fn requires_leader(kind: &str) -> bool {
             | STATEMENTS
             | RETENTION
             | SYNC_UPSTREAM_PRICES
+            | UPSTREAM_BILL_SYNC
             | RECONCILE
     )
 }
@@ -159,7 +164,9 @@ pub fn next_run(kind: &str) -> Option<Duration> {
     Some(match kind {
         SWEEP_HOLDS => Duration::seconds(60),
         DELIVER_WEBHOOKS => Duration::seconds(30),
-        RECONCILE | STATEMENTS | RETENTION | SYNC_UPSTREAM_PRICES => Duration::days(1),
+        RECONCILE | STATEMENTS | RETENTION | SYNC_UPSTREAM_PRICES | UPSTREAM_BILL_SYNC => {
+            Duration::days(1)
+        }
         // Anchoring is hourly: often enough that a head ages at most an hour
         // before a witness vouches for it, rare enough that every pass is one
         // request per organization per witness.
