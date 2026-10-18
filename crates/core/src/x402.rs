@@ -101,9 +101,7 @@ pub trait RailVerifier: std::fmt::Debug + Send + Sync {
         &'a self,
         payload: &'a [u8],
         amount_minor: Option<i64>,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Option<VerifiedPayment>> + Send + 'a>,
-    >;
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<VerifiedPayment>> + Send + 'a>>;
 
     /// Land a verified payment. `None` means the rail could not settle — a
     /// refused or unreachable facilitator, a reverted transfer — which the
@@ -222,9 +220,8 @@ impl RailVerifier for Ed25519RailVerifier {
         &'a self,
         payload: &'a [u8],
         _amount_minor: Option<i64>,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Option<VerifiedPayment>> + Send + 'a>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<VerifiedPayment>> + Send + 'a>>
+    {
         Box::pin(async move {
             let payload_str = std::str::from_utf8(payload).ok()?.trim();
             let json = BASE64URL.decode(payload_str).ok()?;

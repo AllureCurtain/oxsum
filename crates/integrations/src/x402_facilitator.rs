@@ -129,9 +129,8 @@ impl RailVerifier for X402FacilitatorVerifier {
         &'a self,
         payload: &'a [u8],
         amount_minor: Option<i64>,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Option<VerifiedPayment>> + Send + 'a>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<VerifiedPayment>> + Send + 'a>>
+    {
         Box::pin(async move {
             let payload_str = std::str::from_utf8(payload).ok()?.trim();
             let json = BASE64URL.decode(payload_str).ok()?;
