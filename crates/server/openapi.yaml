@@ -1752,7 +1752,7 @@ paths:
                     properties:
                       checkoutUrl: { type: string, format: uri, description: "the hosted-payment-page URL the browser follows" }
                       intentId: { type: string, description: "the PaymentIntent id the webhook names" }
-                      clientSecret: { type: string, description: "the secret the hosted page's SDK confirms against; absent on a replayed intent" }
+                      clientSecret: { type: string, description: "the secret the hosted page's SDK confirms against" }
                       depositId: { type: string, format: uuid, description: "the pending deposit this intent confirms" }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }

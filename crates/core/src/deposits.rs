@@ -425,15 +425,17 @@ impl Db {
 
     /// Finds the pending deposit an idempotency key already opened — the
     /// lookup `POST /topups/airwallex` runs on a replayed intent, to answer
-    /// the same hosted-page URL instead of minting a second PaymentIntent.
-    /// Returns the deposit's id, the intent id and the URL recorded in `meta`.
+    /// the same hosted-page URL and `client_secret` instead of minting a
+    /// second PaymentIntent. Returns the deposit's id and the intent id,
+    /// `client_secret` and URL recorded in `meta`.
     pub async fn find_airwallex_deposit(
         &self,
         organization_id: Uuid,
         idempotency_key: &str,
-    ) -> Result<Option<(Uuid, Option<String>, Option<String>)>, WalletError> {
+    ) -> Result<Option<(Uuid, Option<String>, Option<String>, Option<String>)>, WalletError> {
         let row = sqlx::query(
             "SELECT deposit_id, meta->>'airwallexIntentId' AS intent_id, \
+                    meta->>'airwallexClientSecret' AS client_secret, \
                     meta->>'airwallexCheckoutUrl' AS checkout_url \
              FROM oxsum.deposits \
              WHERE rail = $1 AND organization_id = $2 AND payment_ref = $3",
@@ -449,6 +451,7 @@ impl Db {
                 Ok(Some((
                     row.try_get("deposit_id")?,
                     row.try_get("intent_id")?,
+                    row.try_get("client_secret")?,
                     row.try_get("checkout_url")?,
                 )))
             }
