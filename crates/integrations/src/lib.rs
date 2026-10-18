@@ -6,12 +6,14 @@
 //!
 //! - [`oauth`]: the GitHub OAuth provider legs (issue #152).
 //! - [`stripe`]: the Stripe deposit rail client and webhook signature (issue #201).
+//! - [`airwallex`]: the Airwallex deposit rail client and webhook signature (issue #285).
 //! - [`antibot`]: the Cloudflare Turnstile anti-bot check (issue #154).
 //! - [`mail`]: the SMTP mailer for the verification and password-reset flows (issue #150).
 //! - [`facilitator`]: the x402-rs facilitator's verify/settle client (issue #282).
 //! - [`x402_facilitator`]: the facilitator-delegated `RailVerifier` (issue #282).
 //! - [`openai_costs`]: the OpenAI Costs admin-API bill provider (issue #283).
 
+pub mod airwallex;
 pub mod antibot;
 pub mod facilitator;
 pub mod mail;
