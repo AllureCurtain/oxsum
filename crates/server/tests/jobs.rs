@@ -612,12 +612,18 @@ async fn upstream_bill_sync_records_and_flags_drift() {
     .execute(world.db.pool())
     .await
     .unwrap();
+    // The endpoint id scopes the delivery count below: the suite shares one
+    // scratch database across its tests (issue #271), so a bare
+    // `WHERE event_type = 'anomaly.detected'` would also count a delivery an
+    // earlier price-sync drift left behind — the count must name the endpoint
+    // this test subscribed.
+    let endpoint_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO oxsum.webhook_endpoints \
              (endpoint_id, organization_id, url, secret_sealed, secret_last4, events, enabled) \
          VALUES ($1, $2, 'https://hook.invalid/', 'sealed', 'xxxx', $3, true)",
     )
-    .bind(Uuid::new_v4())
+    .bind(endpoint_id)
     .bind(organization)
     .bind(vec!["anomaly.detected".to_owned()])
     .execute(world.db.pool())
@@ -648,10 +654,19 @@ async fn upstream_bill_sync_records_and_flags_drift() {
     );
     assert!(flagged, "a 100% drift crosses the alert threshold");
 
-    // The anomaly broadcast enqueued a delivery a webhook pass can see.
+    // The anomaly broadcast enqueued a delivery a webhook pass can see —
+    // exactly one, on this endpoint and for this channel. The broadcast fans
+    // out to every subscribed endpoint of every organization, and the suite
+    // shares one scratch database (issue #271), so the count must name both the
+    // endpoint and the channel in the payload — another test's leftover channel
+    // drift-flagging in the same `run_due` would otherwise double it.
     let anomalies: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM oxsum.webhook_deliveries WHERE event_type = 'anomaly.detected'",
+        "SELECT count(*) FROM oxsum.webhook_deliveries \
+         WHERE event_type = 'anomaly.detected' AND endpoint_id = $1 \
+           AND payload->'data'->>'channel' = $2",
     )
+    .bind(endpoint_id)
+    .bind(&channel)
     .fetch_one(world.db.pool())
     .await
     .unwrap();
