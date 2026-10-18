@@ -1,0 +1,5 @@
+# wasm-bindgen's TypeScript declarations are developer aids, not embedded —
+# only verify_wasm.js and verify_wasm_bg.wasm are served, and those paths hold
+# committed placeholders that `scripts/build-verify-wasm.sh` overwrites in a
+# real build (the same trade-off web/dist/index.html takes).
+*.d.ts
