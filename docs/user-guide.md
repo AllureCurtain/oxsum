@@ -275,15 +275,18 @@ pool when the session completes. Repeating the call with the same key answers th
 same checkout URL rather than opening a second session, and a session left unpaid
 expires without moving money.
 
-On a deployment that pins a payer key (`OXSUM_X402_VERIFYING_KEY`; without it the
-endpoint answers 503), a signed crypto-rail authorization credits the same way:
-`POST /api/v1/topups/x402` with `{"payment": "<base64url authorization>"}` — the
-authorization names `scheme`, `network`, `asset`, `amountMinor`, `payTo`, `nonce`,
-`payer` and `signature`, and its `nonce` is the idempotency anchor, so a repeated
-call replays the credit (`isNew: false`). Anything that does not verify — a bad
-signature, a foreign scheme or network — is refused `FORBIDDEN`. Today's rail
-verifies a stand-in Ed25519 test signature; a real chain verification (EIP-712,
-on-chain settlement) plugs into the same interface later.
+On a deployment running the real rail (`OXSUM_X402_FACILITATOR_*` — an x402-rs
+facilitator sidecar verifies the authorization on-chain, settles it, and the
+chain transaction hash lands on the deposit row) or pinning a stand-in payer key
+(`OXSUM_X402_VERIFYING_KEY`; without either the endpoint answers 503), a signed
+crypto-rail authorization credits the same way: `POST /api/v1/topups/x402` with
+`{"payment": "<base64url authorization>"}` — the authorization names `scheme`,
+`network`, `asset`, `amountMinor`, `payTo`, `nonce`, `payer` and `signature`,
+and its `nonce` is the idempotency anchor, so a repeated call replays the
+credit (`isNew: false`). Anything that does not verify — a bad signature, a
+foreign scheme or network, a settle the chain refuses — is `FORBIDDEN`. The
+stand-in verifies a test-scheme Ed25519 signature for development and tests
+only; the facilitator configuration is what production runs.
 
 Note: the unit is minor, 1 credit = 1_000_000.
 
