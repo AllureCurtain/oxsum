@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.68.0
+  version: 0.69.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -431,6 +431,18 @@ info:
     configured rail speaks: the V1 `PaymentPayload` under the facilitator, the
     test-scheme body under the stand-in. A same-nonce race settles once: the
     deposit row is claimed `FOR UPDATE` across the on-chain call.
+
+    0.69.0 reconciles the upstream cost estimate against the billed fact (issue
+    #283): `AdminMargin` gains `providerBilledMinor` — the channel's cumulative
+    provider-billed total, channel-scoped so the same figure repeats on each of
+    that channel's model rows (null when the `upstream-bill-sync` pass has never
+    reconciled the channel). The daily leader-required `upstream-bill-sync` job
+    pulls each channel's billed cost for the day just closed, records it beside
+    the day's summed `upstream_cost_minor` in `oxsum.upstream_bills` (migration
+    0049), and flags drift over the alert threshold as `anomaly.detected`.
+    `channels` gains `bill_key_sealed`/`bill_key_last4` — the admin billing
+    credential, sealed beside the metering key and deliberately separate, so a
+    relay credential never reads the org's bill.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -3082,7 +3094,11 @@ paths:
         a price without an `upstream` block, a swept hold, history from before
         the column existed. `untrackedTurns` is the number a growing gap in the
         coverage shows up in first; it is also where upstream misbilling would
-        hide if a channel were priced but not tracked.
+        hide if a channel were priced but not tracked. `providerBilledMinor`
+        (issue #283) is what the provider actually billed the channel — the
+        daily `upstream-bill-sync` pass's answer against the estimate
+        `upstreamCostMinor` keeps — channel-scoped and repeated per model row,
+        `null` while no bill pass has reconciled the channel.
       security:
         - adminToken: []
       responses:
@@ -4645,15 +4661,17 @@ components:
         name: { type: string, minLength: 1, maxLength: 40, pattern: "^[A-Za-z0-9._-]+$", description: the channel's identity; posting an existing name replaces its connection }
         baseUrl: { type: string, format: uri, description: "where the upstream surface lives, http or https; the protocol's path (`/chat/completions`, `/messages`) is appended to it" }
         apiKey: { type: string, minLength: 1, description: "the upstream credential; sealed with OXSUM_SECRET_KEY, only its last four characters readable afterwards. Sent upstream as `Authorization: Bearer` on an `openai` channel and as `x-api-key` on an `anthropic` one" }
+        billKey: { type: string, minLength: 1, nullable: true, description: "the admin billing credential the upstream-bill-sync pass reads the provider's cost API under (issue #283) — sealed beside apiKey, deliberately separate so a metering credential never reads the org's bill. Omit to leave any stored billing key untouched; explicit null clears it." }
         protocol: { type: string, enum: [openai, anthropic], description: "the upstream protocol the channel speaks, which selects the usage adapter its reports are normalized by and which `/v1` surface serves its models; defaults to `openai` — any other name is VALIDATION_ERROR" }
     Channel:
       type: object
-      required: [name, baseUrl, protocol, apiKeyLast4, createdAt, models]
+      required: [name, baseUrl, protocol, apiKeyLast4, billKeyLast4, createdAt, models]
       properties:
         name: { type: string }
         baseUrl: { type: string }
         protocol: { type: string, description: "the upstream protocol the channel speaks" }
         apiKeyLast4: { type: string, description: "the last four characters of the stored credential, and nothing more of it" }
+        billKeyLast4: { type: string, nullable: true, description: "the last four characters of the admin billing credential (issue #283), and nothing more of it; null when the channel carries none" }
         createdAt: { type: string, format: date-time }
         models:
           type: array
@@ -5356,6 +5374,7 @@ components:
         turns: { type: integer, format: int64, minimum: 0, description: the settled turns the row sums }
         chargedMinor: { type: integer, format: int64, description: what the organizations were charged, in minor units }
         upstreamCostMinor: { type: integer, format: int64, description: what the channel's upstream prices made of the same usage, over the turns that track it }
+        providerBilledMinor: { type: integer, format: int64, nullable: true, description: what the provider actually billed the channel, summed across every (channel, day) bill row the upstream-bill-sync pass has written — channel-scoped, so the same value repeats on each of that channel's model rows; null when the pass has never reconciled the channel }
         marginMinor: { type: integer, format: int64, description: chargedMinor minus upstreamCostMinor }
         untrackedTurns: { type: integer, format: int64, minimum: 0, description: settled turns with no upstream cost recorded — an untracked price, a swept hold, or history }
     ReconciliationReport:

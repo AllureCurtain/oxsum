@@ -10,10 +10,12 @@
 //! - [`mail`]: the SMTP mailer for the verification and password-reset flows (issue #150).
 //! - [`facilitator`]: the x402-rs facilitator's verify/settle client (issue #282).
 //! - [`x402_facilitator`]: the facilitator-delegated `RailVerifier` (issue #282).
+//! - [`openai_costs`]: the OpenAI Costs admin-API bill provider (issue #283).
 
 pub mod antibot;
 pub mod facilitator;
 pub mod mail;
 pub mod oauth;
+pub mod openai_costs;
 pub mod stripe;
 pub mod x402_facilitator;
