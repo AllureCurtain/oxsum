@@ -15,5 +15,17 @@ services:
       interval: 2s
       retries: 15
 
+  # The x402-rs facilitator sidecar (issue #282): the real rail oxsum's
+  # `OXSUM_X402_FACILITATOR_*` set delegates verify/settle to. Uncomment to run
+  # one locally; it needs a config.json naming chains, signers and RPCs — see
+  # docs/development.md ("x402 facilitator sidecar"). Off by default: the
+  # stand-in verifier covers development and the test suites.
+  # facilitator:
+  #   image: ghcr.io/x402-rs/x402-facilitator:main
+  #   volumes:
+  #     - ./facilitator.config.json:/app/config.json
+  #   ports:
+  #     - "127.0.0.1:8080:8080"
+
 volumes:
   pgdata:

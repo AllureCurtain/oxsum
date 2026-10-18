@@ -106,6 +106,25 @@ docker exec -i oxsum-postgres-1 psql -U postgres -d oxsum -f - < scripts/reset-d
 
 `.cargo/config.toml` sets `[profile.dev] debug = 1` — line tables, not full debuginfo. This is not a speed preference: at full `debug = 2` the `liboxsum_server` rlib grows past 4 GB, and the COFF archive index cannot address members beyond 4 GiB, so `cargo build -p oxsum-server` fails at link time with a hundred-odd unresolved oxsum_server symbols (issue #176). Line tables keep file:line in backtraces while staying well under the limit. Anyone who needs full debuginfo for a session can override per invocation — `CARGO_PROFILE_DEV_DEBUG=2 cargo build ...` — knowing the resulting rlib may not link on MSVC.
 
+### x402 facilitator sidecar
+
+The real x402 rail (issue #282) delegates verify/settle to an [x402-rs facilitator](https://github.com/x402-rs/x402-rs) — a standalone service, deliberately not an in-process crate, so chain RPC connections and signer keys stay out of the billing binary. The commented `facilitator` service in `compose.yaml` runs `ghcr.io/x402-rs/x402-facilitator`; it wants a `facilitator.config.json` at the repo root naming chains, signer keys and RPC endpoints:
+
+```json
+{
+  "chains": {
+    "eip155:84532": {
+      "eip1559": true,
+      "signers": ["$FACILITATOR_PRIVATE_KEY"],
+      "rpc": [{ "http": "https://sepolia.base.org" }]
+    }
+  },
+  "schemes": [{ "scheme": "exact", "chains": ["eip155:84532"] }]
+}
+```
+
+`OXSUM_X402_NETWORK` uses the V1 network name (`base-sepolia` for the CAIP-2 `eip155:84532` chain above); `OXSUM_X402_ASSET` is the USDC contract on that chain, `OXSUM_X402_PAY_TO` the deployment's receiving address. Base Sepolia USDC is free from the Circle faucet, so a full real-rail exercise costs nothing. Without any of this the stand-in verifier (`OXSUM_X402_VERIFYING_KEY`) still covers local development and every test suite.
+
 ## Branch naming
 
 Each branch contains one issue or PR and uses lowercase ASCII in this form:
@@ -160,7 +179,8 @@ Copy `.env.example` to `.env` and the server and the tests pick it up automatica
 | `OXSUM_STRIPE_SECRET_KEY` | Optional; the Stripe API key the checkout-session POST authenticates with (`sk_live_…`/`sk_test_…`) — set together with `OXSUM_STRIPE_WEBHOOK_SECRET` and `OXSUM_PUBLIC_URL`, a subset is a startup error. Unset, the rail is absent: `POST /api/v1/topups/stripe` answers 503 and `/api/v1/webhooks/stripe` 404. Keep it out of logs the way `OXSUM_SECRET_KEY` is kept |
 | `OXSUM_STRIPE_WEBHOOK_SECRET` | Optional; the `whsec_…` secret that verifies the `Stripe-Signature` header on `POST /api/v1/webhooks/stripe` — the endpoint Stripe's dashboard registers is `<public-url>/api/v1/webhooks/stripe` |
 | `OXSUM_STRIPE_API_URL` | Tests only; the Stripe API origin the checkout-session POST goes to, default `https://api.stripe.com` — `crates/server/tests/stripe.rs` stands a stub there |
-| `OXSUM_X402_VERIFYING_KEY` | Optional; the hex Ed25519 public key the x402-shaped rail pins as its trusted payer — `POST /api/v1/topups/x402` verifies signed payment authorizations against it (issue #264). Unset, the rail is absent and the endpoint answers 503; a malformed value is a startup error. The stand-in verifier is documented in docs/decisions.md — a real chain verifier drops into the same `RailVerifier` seam |
+| `OXSUM_X402_FACILITATOR_URL` + `OXSUM_X402_NETWORK` + `OXSUM_X402_ASSET` + `OXSUM_X402_PAY_TO` | Optional as a set; all four or none (a subset is a startup error). The real x402 rail (issue #282): `POST /api/v1/topups/x402` delegates verify/settle to an x402-rs facilitator sidecar (`OXSUM_X402_FACILITATOR_URL`, e.g. `http://localhost:8080` or the hosted `https://facilitator.x402.rs`) over its V1 HTTP API. `NETWORK` is the V1 chain name (`base-sepolia` for tests, `base` for production), `ASSET` the accepted token contract (USDC on base-sepolia: `0x036CbD53842c5426634e7929541eC2318f3dCF7e`), `PAY_TO` the deployment's receiving address. The settle answer's chain hash lands on `deposits.facilitator_tx_hash` |
+| `OXSUM_X402_VERIFYING_KEY` | Optional; the hex Ed25519 public key the x402 stand-in rail pins as its trusted payer (issue #264) — the test-scheme fallback read only when the facilitator set is entirely absent. Unset both, the rail is absent and the endpoint answers 503; a malformed value is a startup error. The stand-in is documented in docs/decisions.md |
 | `OXSUM_E2E_UPSTREAM_BASE_URL`, `OXSUM_E2E_UPSTREAM_API_KEY`, `OXSUM_E2E_MODEL` | Tests only; all three together opt `crates/server/tests/real_upstream.rs` into reaching a real provider — the base URL, the provider's key, and the model name it serves. Unset, the test skips before touching the network; `cargo test` never sets them and neither does CI. Keep the key in the shell environment, never in `.env` or any tracked file — the test seals it into `oxsum.channels` like a real deployment |
 | `OXSUM_UPSTREAM_PRICE_SYNC` | Optional; `true` schedules the daily `sync-upstream-prices` job that probes each channel's `GET {baseUrl}/api/v1/pricing` and opens upstream-price-drift rows where the stored `upstream` rates disagree (issue #222). The job also needs `OXSUM_SECRET_KEY` to unseal channel credentials — it is only enqueued when both exist. Default unset: the job never runs, and channels pointing at non-oxsum upstreams are better left unprobed anyway — only an oxsum-compatible catalog answers that path |
 | `OXSUM_RETENTION_PROVIDER_RAW_DAYS` | Optional; days a usage row keeps `usage_details.provider_raw` before the daily `retention` job nulls it — the privacy window, since the raw payload may carry prompt fragments. Default 7; the normalized columns are kept forever |
