@@ -88,6 +88,11 @@ pub fn spawn_worker(db: Db, ctx: JobContext) -> tokio::task::JoinHandle<()> {
     })
 }
 
+/// How far out a leader-required row is pushed when this worker cannot take
+/// the kind's advisory lock — the leader is mid-pass, so the row should not
+/// be reclaimable again in the next 5-second poll.
+const LEADER_YIELD: time::Duration = time::Duration::seconds(60);
+
 /// Claims due runs and dispatches each to its kind's pass — one iteration of
 /// the worker loop, exposed so tests can drive it without the timer.
 pub async fn run_due(db: &Db, ctx: &JobContext) {
@@ -99,7 +104,61 @@ pub async fn run_due(db: &Db, ctx: &JobContext) {
         }
     };
     for job in jobs {
-        match run_one(db, ctx, &job).await {
+        // Leader election (issue #281): a leader-required run executes under a
+        // session-scoped advisory lock held on a dedicated connection for the
+        // whole pass. The lock outlives the claim lease, so a pass that runs
+        // past CLAIM_LEASE_SECS cannot be reclaimed and duplicated mid-flight —
+        // the reclaiming worker's try-lock fails and it hands the row back.
+        // A crashed holder releases the lock with its connection, so the next
+        // claim simply takes over.
+        let mut leader_conn = if job.requires_leader {
+            match db.pool().acquire().await {
+                Ok(mut conn) => match Db::try_leader_lock(&mut conn, &job.kind).await {
+                    Ok(true) => Some(conn),
+                    Ok(false) => {
+                        // Another instance is mid-pass on this kind. Yield:
+                        // return the row to pending a little out so it is not
+                        // hot-looped; this is the normal handoff, not a failure.
+                        let _ = db
+                            .unclaim_job(job.job_id, job.claimed_at, LEADER_YIELD)
+                            .await;
+                        ctx.metrics.job_run(&job.kind, "yielded");
+                        continue;
+                    }
+                    Err(error) => {
+                        // Cannot tell whether the lock is held — yield rather
+                        // than run unlocked and risk a duplicate pass.
+                        warn!(kind = %job.kind, %error, "could not try the job leader lock");
+                        let _ = db
+                            .unclaim_job(job.job_id, job.claimed_at, LEADER_YIELD)
+                            .await;
+                        ctx.metrics.job_run(&job.kind, "yielded");
+                        continue;
+                    }
+                },
+                Err(error) => {
+                    warn!(kind = %job.kind, %error, "could not check out a leader-lock connection");
+                    let _ = db
+                        .unclaim_job(job.job_id, job.claimed_at, LEADER_YIELD)
+                        .await;
+                    ctx.metrics.job_run(&job.kind, "yielded");
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
+        let ran = run_one(db, ctx, &job).await;
+        if let Some(conn) = leader_conn.as_mut() {
+            match Db::leader_unlock(conn, &job.kind).await {
+                Ok(true) => {}
+                Ok(false) => warn!(kind = %job.kind, "the job leader lock was not held at release"),
+                Err(error) => {
+                    warn!(kind = %job.kind, %error, "could not release the job leader lock")
+                }
+            }
+        }
+        match ran {
             Ok(()) => {
                 ctx.metrics.job_run(&job.kind, "done");
                 if db

@@ -70,6 +70,40 @@ pub struct Job {
     /// lapsed cannot overwrite the next claimant's state.
     pub claimed_at: OffsetDateTime,
     pub payload: Value,
+    /// Whether the kind runs under the advisory-lock leader election (issue
+    /// #281): a worker claiming a leader-required run that cannot take the
+    /// lock hands the row back instead of duplicating the pass.
+    pub requires_leader: bool,
+}
+
+/// Whether a kind runs under the advisory-lock leader election — exactly one
+/// instance may hold the lock at a time, so a pass that outlives its claim
+/// lease (a `statements` pass over many organizations, a witness round-trip)
+/// cannot be claimed and re-run by a second instance mid-flight. The sweep,
+/// the month-end aggregation and the outbound passes qualify: duplicating any
+/// of them is wasted work and a double-fired webhook. `deliver-webhooks`
+/// stays unleadered — its rows are claimed `SKIP LOCKED` individually, so a
+/// second runner is a throughput gain, not a duplicate.
+pub fn requires_leader(kind: &str) -> bool {
+    use kinds::*;
+    matches!(
+        kind,
+        SWEEP_HOLDS
+            | WITNESS_CHECKPOINTS
+            | STATEMENTS
+            | RETENTION
+            | SYNC_UPSTREAM_PRICES
+            | RECONCILE
+    )
+}
+
+/// The advisory-lock key namespace for leader election. `pg_try_advisory_lock`
+/// takes a bigint; `hashtext` folds the name into an i32 Postgres widens, and
+/// the `oxsum.job-leader:` prefix keeps the keys disjoint from every other
+/// advisory lock the codebase takes (per-key hold locks, credit-limit locks,
+/// the witness serve lock) — a collision would deadlock a periodic chain.
+pub fn leader_lock_key(kind: &str) -> String {
+    format!("oxsum.job-leader:{kind}")
 }
 
 /// What a failed run became — the worker logs and counts on it.
@@ -155,7 +189,8 @@ pub struct StatementReport {
 
 /// The claimed row's columns, `j`-qualified: the claim's CTE exposes a `job_id`
 /// of its own, so bare names would be ambiguous in the RETURNING.
-const JOB_COLS: &str = "j.job_id, j.kind, j.run_at, j.status, j.attempts, j.claimed_at, j.payload";
+const JOB_COLS: &str =
+    "j.job_id, j.kind, j.run_at, j.status, j.attempts, j.claimed_at, j.payload, j.requires_leader";
 
 fn job_from_row(row: &sqlx::postgres::PgRow) -> Result<Job, WalletError> {
     Ok(Job {
@@ -165,24 +200,28 @@ fn job_from_row(row: &sqlx::postgres::PgRow) -> Result<Job, WalletError> {
         attempts: row.try_get("attempts")?,
         claimed_at: row.try_get("claimed_at")?,
         payload: row.try_get("payload")?,
+        requires_leader: row.try_get("requires_leader")?,
     })
 }
 
 impl Db {
     /// Enqueues one run of `kind` due at `run_at`. The `(kind)` partial unique
     /// index makes the insert idempotent — a pending or running row of the same
-    /// kind means one is already scheduled, and this call answers `false`.
+    /// kind means one is already scheduled, and this call answers `false`. The
+    /// row inherits the kind's [`requires_leader`] flag: leader election is a
+    /// property of the kind, not something one run may opt out of.
     pub async fn enqueue_job(
         &self,
         kind: &str,
         run_at: OffsetDateTime,
     ) -> Result<bool, WalletError> {
         let inserted: Option<Uuid> = sqlx::query_scalar(
-            "INSERT INTO oxsum.jobs (kind, run_at) VALUES ($1, $2) \
+            "INSERT INTO oxsum.jobs (kind, run_at, requires_leader) VALUES ($1, $2, $3) \
              ON CONFLICT DO NOTHING RETURNING job_id",
         )
         .bind(kind)
         .bind(run_at)
+        .bind(requires_leader(kind))
         .fetch_optional(self.pool())
         .await?;
         Ok(inserted.is_some())
@@ -208,6 +247,63 @@ impl Db {
         .fetch_all(self.pool())
         .await?;
         rows.iter().map(job_from_row).collect()
+    }
+
+    /// Hands a claimed run back to `pending` without spending an attempt — the
+    /// yield a worker performs when it takes a leader-required row but cannot
+    /// take the kind's advisory lock (someone else is mid-pass). `postpone`
+    /// pushes `run_at` out so the same row is not reclaimed in a hot loop
+    /// while the leader is still working. Fenced on the claim stamp like
+    /// [`finish_job`](Self::finish_job); `false` when the lease already moved
+    /// the row to a new claimant.
+    pub async fn unclaim_job(
+        &self,
+        job_id: Uuid,
+        claimed_at: OffsetDateTime,
+        postpone: Duration,
+    ) -> Result<bool, WalletError> {
+        let changed = sqlx::query(
+            "UPDATE oxsum.jobs SET status = 'pending', claimed_at = NULL, run_at = $3 \
+             WHERE job_id = $1 AND claimed_at = $2",
+        )
+        .bind(job_id)
+        .bind(claimed_at)
+        .bind(OffsetDateTime::now_utc() + postpone)
+        .execute(self.pool())
+        .await?;
+        Ok(changed.rows_affected() > 0)
+    }
+
+    /// Tries to take the kind's leader-election advisory lock on the given
+    /// connection (issue #281). The lock is session-scoped — it survives the
+    /// statement that takes it — so the caller must hold the same connection
+    /// for the whole pass and release with `pg_advisory_unlock` (or by closing
+    /// it) afterwards. `pg_try_advisory_lock` never blocks: a `false` answer
+    /// means another instance is mid-pass and this tick should yield.
+    pub async fn try_leader_lock(
+        conn: &mut sqlx::postgres::PgConnection,
+        kind: &str,
+    ) -> Result<bool, WalletError> {
+        let taken: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock(hashtext($1))")
+            .bind(leader_lock_key(kind))
+            .fetch_one(&mut *conn)
+            .await?;
+        Ok(taken)
+    }
+
+    /// Releases the kind's leader-election lock on the same connection that
+    /// took it. A `false` answer means the connection did not hold it — already
+    /// released, or a different connection took it — which the caller logs
+    /// rather than treats as fatal.
+    pub async fn leader_unlock(
+        conn: &mut sqlx::postgres::PgConnection,
+        kind: &str,
+    ) -> Result<bool, WalletError> {
+        let released: bool = sqlx::query_scalar("SELECT pg_advisory_unlock(hashtext($1))")
+            .bind(leader_lock_key(kind))
+            .fetch_one(&mut *conn)
+            .await?;
+        Ok(released)
     }
 
     /// Marks a claimed run `done`; `false` when the claim stamp no longer
