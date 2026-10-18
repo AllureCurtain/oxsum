@@ -243,6 +243,23 @@ pub struct Serving {
     pub price: Price,
 }
 
+/// A public model name that resolves to one channel's upstream model (issue
+/// #286): the alias is what a caller asks for and what its bill names; the
+/// upstream model is what the channel's upstream is told.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelAlias {
+    /// The public name callers write — unique across channels, enforced at write time.
+    pub alias: String,
+    /// The channel that serves the alias.
+    pub channel: String,
+    /// The upstream model name the channel relays.
+    pub upstream_model: String,
+    /// When the alias was claimed.
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+}
+
 impl Db {
     /// Creates a channel, or replaces the connection of one that already exists.
     ///
@@ -555,6 +572,254 @@ impl Db {
                 .fetch_all(self.pool())
                 .await?;
         Ok(rows)
+    }
+
+    // ── model aliases (issue #286) ────────────────────────────────────────────
+
+    /// Claims a public alias for one of a channel's upstream models.
+    ///
+    /// Uniqueness is the point and it is enforced at write time: a name already
+    /// claimed as an alias on any channel is a conflict, and so is a name that
+    /// is another channel's direct model — the one-name-one-route-set rule, so
+    /// two channels can never split a served name's traffic.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::InvalidInput`] for an unknown channel or a name the model
+    /// rules refuse; [`WalletError::Conflict`] when the name is already taken.
+    pub async fn create_alias(
+        &self,
+        channel: &str,
+        alias: &str,
+        upstream_model: &str,
+    ) -> Result<ModelAlias, WalletError> {
+        let channel = channel_name(channel)?;
+        let alias = model_name(alias)?;
+        let upstream_model = model_name(upstream_model)?;
+        let mut tx = self.pool().begin().await?;
+        let channel_id: Uuid =
+            sqlx::query_scalar("SELECT channel_id FROM oxsum.channels WHERE name = $1")
+                .bind(channel)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or_else(|| {
+                    WalletError::InvalidInput(format!("no channel named {channel:?}"))
+                })?;
+        // The name must not be claimed already — as an alias on any channel,
+        // or as a direct model name on a different channel. Checked under the
+        // alias row's key range: the primary-key insert is the final guard,
+        // the explicit check is what spells the conflict in caller terms.
+        let claimed_by: Option<Uuid> =
+            sqlx::query_scalar("SELECT channel_id FROM oxsum.model_aliases WHERE alias = $1")
+                .bind(alias)
+                .fetch_optional(&mut *tx)
+                .await?;
+        if let Some(owner) = claimed_by {
+            return Err(WalletError::Conflict(if owner == channel_id {
+                format!("alias {alias:?} is already claimed by this channel")
+            } else {
+                format!("alias {alias:?} is already claimed by another channel")
+            }));
+        }
+        let direct: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM oxsum.channel_prices p \
+             WHERE p.model = $1 AND p.channel_id <> $2)",
+        )
+        .bind(alias)
+        .bind(channel_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if direct {
+            return Err(WalletError::Conflict(format!(
+                "alias {alias:?} collides with a model another channel serves directly"
+            )));
+        }
+        let row = sqlx::query(
+            "INSERT INTO oxsum.model_aliases (alias, channel_id, upstream_model) \
+             VALUES ($1, $2, $3) \
+             RETURNING alias, upstream_model, created_at",
+        )
+        .bind(alias)
+        .bind(channel_id)
+        .bind(upstream_model)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(ModelAlias {
+            alias: row.try_get("alias")?,
+            channel: channel.to_owned(),
+            upstream_model: row.try_get("upstream_model")?,
+            created_at: row.try_get("created_at")?,
+        })
+    }
+
+    /// One channel's aliases, oldest first. `None`: no such channel.
+    pub async fn list_aliases(
+        &self,
+        channel: &str,
+    ) -> Result<Option<Vec<ModelAlias>>, WalletError> {
+        let Some(channel_id): Option<Uuid> =
+            sqlx::query_scalar("SELECT channel_id FROM oxsum.channels WHERE name = $1")
+                .bind(channel)
+                .fetch_optional(self.pool())
+                .await?
+        else {
+            return Ok(None);
+        };
+        let rows = sqlx::query(
+            "SELECT alias, upstream_model, created_at FROM oxsum.model_aliases \
+             WHERE channel_id = $1 ORDER BY created_at, alias",
+        )
+        .bind(channel_id)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(Some(
+            rows.iter()
+                .map(|row| {
+                    Ok(ModelAlias {
+                        alias: row.try_get("alias")?,
+                        channel: channel.to_owned(),
+                        upstream_model: row.try_get("upstream_model")?,
+                        created_at: row.try_get("created_at")?,
+                    })
+                })
+                .collect::<Result<Vec<_>, WalletError>>()?,
+        ))
+    }
+
+    /// Drops one of a channel's aliases; `false` when the name is not this
+    /// channel's to drop — unknown to it, or claimed by another channel.
+    ///
+    /// Aliases are mutable routing configuration, not ledger data: a delete is
+    /// a hard delete, and bills already written still name the alias the caller
+    /// used.
+    pub async fn delete_alias(&self, channel: &str, alias: &str) -> Result<bool, WalletError> {
+        let dropped = sqlx::query(
+            "DELETE FROM oxsum.model_aliases a USING oxsum.channels c \
+             WHERE a.alias = $1 AND a.channel_id = c.channel_id AND c.name = $2",
+        )
+        .bind(alias)
+        .bind(channel)
+        .execute(self.pool())
+        .await?
+        .rows_affected();
+        Ok(dropped > 0)
+    }
+
+    /// Resolves a served name to its route: `Some((channel name, upstream
+    /// model))` when the name is an alias, `None` when it is a direct name —
+    /// today's per-model multi-channel routing, unchanged.
+    pub async fn resolve_alias(
+        &self,
+        model: &str,
+    ) -> Result<Option<(String, String)>, WalletError> {
+        let row = sqlx::query(
+            "SELECT c.name, a.upstream_model FROM oxsum.model_aliases a \
+             JOIN oxsum.channels c USING (channel_id) WHERE a.alias = $1",
+        )
+        .bind(model)
+        .fetch_optional(self.pool())
+        .await?;
+        row.map(|row| {
+            Ok((
+                row.try_get::<String, _>("name")?,
+                row.try_get::<String, _>("upstream_model")?,
+            ))
+        })
+        .transpose()
+    }
+
+    /// Every alias with its channel, for `GET /v1/models` — aliases are served
+    /// names, listed beside the direct models even when nothing prices them yet.
+    pub async fn all_aliases(&self) -> Result<Vec<ModelAlias>, WalletError> {
+        let rows = sqlx::query(
+            "SELECT a.alias, c.name AS channel, a.upstream_model, a.created_at \
+             FROM oxsum.model_aliases a JOIN oxsum.channels c USING (channel_id) \
+             ORDER BY a.alias",
+        )
+        .fetch_all(self.pool())
+        .await?;
+        rows.iter()
+            .map(|row| {
+                Ok(ModelAlias {
+                    alias: row.try_get("alias")?,
+                    channel: row.try_get("channel")?,
+                    upstream_model: row.try_get("upstream_model")?,
+                    created_at: row.try_get("created_at")?,
+                })
+            })
+            .collect()
+    }
+
+    /// The servings a request naming `model` may take, resolving an alias
+    /// first: when `model` is an alias the answer is the one route on the
+    /// alias's channel — priced by the alias's own price row if the channel
+    /// wrote one, the upstream model's otherwise (the alias price wins, so the
+    /// public name can be priced differently). When `model` is not an alias the
+    /// answer is [`servings`](Self::servings)' — every channel serving the name.
+    ///
+    /// The second element of the pair is the upstream name the channel relays:
+    /// the alias's `upstream_model`, or `model` itself for a direct name.
+    ///
+    /// # Errors
+    ///
+    /// As [`servings`](Self::servings).
+    pub async fn servings_named(
+        &self,
+        model: &str,
+        key: &SecretKey,
+    ) -> Result<(Vec<Serving>, Option<String>), WalletError> {
+        let Some((channel, upstream_model)) = self.resolve_alias(model).await? else {
+            return Ok((self.servings(model, key).await?, None));
+        };
+        // The alias's own price wins when the channel wrote one; the upstream
+        // model's is the fallback that keeps an unpriced public name servable.
+        let serving = match self.serving_on(&channel, model, key).await? {
+            Some(serving) => Some(serving),
+            None => self.serving_on(&channel, &upstream_model, key).await?,
+        };
+        Ok((serving.into_iter().collect(), Some(upstream_model)))
+    }
+
+    /// One channel's current price for one name, as a [`Serving`] — the
+    /// alias-path half of [`servings_named`](Self::servings_named): the route is
+    /// pinned, the name is whichever price the alias rule resolved to.
+    async fn serving_on(
+        &self,
+        channel: &str,
+        model: &str,
+        key: &SecretKey,
+    ) -> Result<Option<Serving>, WalletError> {
+        let row = sqlx::query(
+            "SELECT c.name, c.base_url, c.api_key_sealed, c.protocol, p.version, p.weight, \
+                    p.input_price_per_million, p.output_price_per_million, p.max_output_tokens, \
+                    p.cache_read_price_per_million, p.cache_write_5m_price_per_million, \
+                    p.cache_write_1h_price_per_million, p.reasoning_price_per_million, \
+                    p.cost_per_request, p.mode, p.upstream_prices, p.rules \
+             FROM (SELECT p.*, row_number() OVER (ORDER BY version DESC) AS rank \
+                   FROM oxsum.channel_prices p \
+                   JOIN oxsum.channels c0 USING (channel_id) \
+                   WHERE c0.name = $1 AND p.model = $2) p \
+             JOIN oxsum.channels c ON c.name = $1 AND c.channel_id = p.channel_id \
+             WHERE rank = 1",
+        )
+        .bind(channel)
+        .bind(model)
+        .fetch_optional(self.pool())
+        .await?;
+        row.map(|row| {
+            let sealed: String = row.try_get("api_key_sealed")?;
+            Ok(Serving {
+                channel: row.try_get("name")?,
+                base_url: row.try_get("base_url")?,
+                protocol: row.try_get("protocol")?,
+                api_key: key.open(&sealed)?,
+                version: i64::from(row.try_get::<i32, _>("version")?),
+                weight: i64::from(row.try_get::<i32, _>("weight")?),
+                price: price_from_row(&row)?,
+            })
+        })
+        .transpose()
     }
 
     /// Whether any channel is configured.

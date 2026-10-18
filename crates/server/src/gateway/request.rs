@@ -86,6 +86,11 @@ pub struct GatewayRequest {
     surface: Surface,
     /// The model the caller asked for, which must have a configured price.
     pub model: String,
+    /// The upstream model the request resolves to when `model` is an alias
+    /// (issue #286): set during admission by the alias-aware serving lookup and
+    /// written into the forwarded body, so upstream sees the name it serves.
+    /// `None` for a request that asked under the served name itself.
+    pub upstream_model: Option<String>,
     /// Whether the caller asked for a streamed answer.
     pub stream: bool,
     /// The text of every message, for the input upper bound and the local estimate. A message with
@@ -161,6 +166,9 @@ impl GatewayRequest {
             body,
             surface,
             model,
+            // Resolution lands only once admission has looked the name up; a
+            // parsed request is not yet routed.
+            upstream_model: None,
             stream,
             texts,
             max_tokens,
@@ -178,9 +186,18 @@ impl GatewayRequest {
     /// chunk is where that protocol reports it; Anthropic reports usage on every stream
     /// already, so nothing is added there. The input-only surfaces have no output
     /// bound to write: their bodies forward untouched (issue #170).
+    ///
+    /// An aliased request also has its `model` rewritten to the upstream name
+    /// (issue #286): the caller's name is the alias the gateway bills under,
+    /// and upstream answers only for the model it actually serves.
     #[must_use]
     pub fn forwarded(&self, output_bound: i64) -> Value {
         let mut body = self.body.clone();
+        if let Some(upstream) = &self.upstream_model
+            && *upstream != self.model
+        {
+            body.insert("model".to_owned(), json!(upstream));
+        }
         if self.surface.billing_mode().meters_output() {
             body.insert("max_tokens".to_owned(), json!(output_bound));
             body.remove("max_completion_tokens");

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.70.0
+  version: 0.71.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -456,6 +456,17 @@ info:
     rail needs `OXSUM_AIRWALLEX_CLIENT_ID`, `OXSUM_AIRWALLEX_API_KEY`,
     `OXSUM_AIRWALLEX_WEBHOOK_SECRET` and `OXSUM_PUBLIC_URL` together; a deployment
     without them answers 503 on the intent and 404 on the webhook.
+
+    0.71.0 adds model aliases (issue #286): a channel may serve a public name that
+    renames the upstream model it relays. `POST /api/v1/admin/channels/{channelName}/aliases`
+    claims an alias for a channel, `GET` lists one channel's aliases and
+    `DELETE …/aliases/{alias}` drops one. An alias is a rename, not a routing
+    layer — the name resolves to the one channel that claims it, the gateway
+    forwards the upstream name, and `GET /v1/models` lists the alias beside the
+    direct names. A settlement under an alias describes itself at version 8:
+    `model` stays the asked-for alias and a new `upstreamModel` names what
+    answered. The alias's own price row wins over the upstream model's on that
+    channel, so a public name can be priced differently.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -2953,6 +2964,95 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/channels/{channelName}/aliases:
+    get:
+      summary: One channel's aliases, oldest first
+      description: |
+        The public names this channel serves that rename the upstream model they
+        relay (issue #286). `GET /v1/models` lists them beside the direct names.
+      security:
+        - adminToken: []
+      parameters: [{ $ref: "#/components/parameters/ChannelName" }]
+      responses:
+        "200":
+          description: The channel's aliases, oldest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/ModelAlias" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Claim an alias for a channel
+      description: |
+        Callers write `alias` on every surface the channel speaks; the gateway
+        forwards `upstreamModel` instead (issue #286). An alias is a rename, not
+        a routing layer — the name resolves to this one channel.
+
+        One name answers one route set: a name already claimed as an alias on
+        any channel, or spelled as a direct model name on a different channel,
+        is a `409`. The alias's own price row wins over the upstream model's on
+        this channel, so a public name can be priced differently; an alias with
+        no price of its own bills at the upstream model's.
+      security:
+        - adminToken: []
+      parameters: [{ $ref: "#/components/parameters/ChannelName" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AliasRequest" }
+      responses:
+        "200":
+          description: The alias as claimed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ModelAlias" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/channels/{channelName}/aliases/{alias}:
+    delete:
+      summary: Drop one of a channel's aliases
+      description: |
+        Aliases are mutable routing configuration, not ledger data: the delete
+        is hard, and bills already written still name the alias the caller used
+        (issue #286). A name that is not this channel's — unknown to it, or
+        claimed by another channel — is a `404`.
+      security:
+        - adminToken: []
+      parameters:
+        - { $ref: "#/components/parameters/ChannelName" }
+        - name: alias
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 200 }
+          description: the alias to drop, as callers wrote it
+      responses:
+        "200":
+          description: The alias is gone
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { type: object }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/admin/organizations:
     get:
       summary: List every organization, with its balance
@@ -3917,7 +4017,9 @@ paths:
         frozen, so it cannot be served — and a `mode: event` price is a billable code for
         `/api/v1/metering`, not a model any `/v1` surface relays, so it is not listed either.
         `owned_by` is the channel that serves the model, and `created` is when the version in force
-        was written.
+        was written. Model aliases are listed beside the direct names (issue
+        #286): a caller writes the public name and the channel relays the
+        upstream model it renames.
       responses:
         "200":
           description: The model list
@@ -4844,6 +4946,21 @@ components:
       properties:
         model: { type: string }
         version: { type: integer, minimum: 1, description: the version this change appended }
+    AliasRequest:
+      type: object
+      required: [alias, upstreamModel]
+      description: "an alias claim (issue #286): the public name callers write, and the upstream model the channel relays it as"
+      properties:
+        alias: { type: string, minLength: 1, maxLength: 200, description: "the public name; unique across channels — a name another channel serves directly is a conflict" }
+        upstreamModel: { type: string, minLength: 1, maxLength: 200, description: "the model the channel actually serves, forwarded upstream in place of the alias" }
+    ModelAlias:
+      type: object
+      required: [alias, channel, upstreamModel, createdAt]
+      properties:
+        alias: { type: string, description: "the public name callers write" }
+        channel: { type: string, description: "the channel that claims the alias" }
+        upstreamModel: { type: string, description: "the upstream model the channel relays" }
+        createdAt: { type: string, format: date-time, description: "when the alias was claimed" }
     OpenHoldView:
       type: object
       description: "one hold the ledger still reserves — the in-flight table's row"

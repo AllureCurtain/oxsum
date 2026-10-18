@@ -1172,7 +1172,7 @@ async fn a_conditional_price_bills_each_dimension_on_its_own_line() {
     // 2 reasoning at 8e6, and the 100-minor flat fee spelled per-million — one
     // ceiling over the sum.
     let record = world.settlement(&id).await.expect("the turn settled");
-    assert_eq!(record["v"], 7);
+    assert_eq!(record["v"], 8);
     assert_eq!(record["priceVersion"], 2);
     assert_eq!(record["matchedRule"]["serviceTier"], "priority");
     let lines = record["lines"].as_array().expect("itemized lines");
@@ -3870,7 +3870,7 @@ async fn a_discounted_turn_charges_the_discounted_price() {
         .settlement_description(&id)
         .await
         .expect("the turn settled");
-    assert!(description.contains("\"v\":7"), "{description}");
+    assert!(description.contains("\"v\":8"), "{description}");
     assert_eq!(
         oxsum_core::verify_charge(&description),
         oxsum_core::ChargeCheck::Recomputed
@@ -4804,5 +4804,156 @@ async fn a_retried_embeddings_turn_replays_its_answer() {
     assert_eq!(
         world.settlement(&first_id).await.expect("the turn settled")["charged"],
         11
+    );
+}
+
+/// A model alias is a rename, not a routing layer (issue #286): a channel
+/// serving `ok` claims the public name `public`, a caller asking for it is
+/// relayed under the upstream name, `/v1/models` lists the alias beside the
+/// direct names, and the v8 settlement names the alias in `model` and the
+/// served model in `upstreamModel` — which the verifier still recomputes.
+#[tokio::test]
+async fn an_alias_serves_the_channels_upstream_model() {
+    let world = world!(1_000_000);
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+    let upstream = world.model("ok");
+    let alias = format!("public-{}", world.suffix);
+
+    // The claim goes through the admin surface, the way an operator writes it.
+    let admin = admin_app(&world);
+    let (status, body) = call(
+        &admin,
+        "POST",
+        &format!("/api/v1/admin/channels/{}/aliases", world.channel),
+        Some(json!({"alias": alias, "upstreamModel": upstream})),
+        Some(OPERATOR_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // `GET /v1/models` lists the public name beside the direct one, owned by
+    // the channel that claims it.
+    let request = Request::builder()
+        .uri("/v1/models")
+        .header("authorization", format!("Bearer {}", world.key))
+        .body(Body::empty())
+        .expect("the test's own request");
+    let (status, body) = json_of(
+        world
+            .app
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("the router answers"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let listed = body["data"].as_array().expect("a list of models");
+    let mine = listed
+        .iter()
+        .find(|model| model["id"] == alias.as_str())
+        .unwrap_or_else(|| panic!("{alias} is listed in {listed:?}"));
+    assert_eq!(mine["object"], "model");
+    assert_eq!(mine["owned_by"], world.channel.as_str());
+
+    // Asking for the alias relays under the upstream name.
+    let response = chat(&world.app, &world.key, simple(&alias)).await;
+    let id = request_id(&response);
+    let (status, _) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+    let seen = world.script.seen();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].body["model"], upstream.as_str());
+
+    // The settlement names the alias the caller asked for, plus what answered.
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["v"], 8);
+    assert_eq!(record["model"], alias.as_str());
+    assert_eq!(record["upstreamModel"], upstream.as_str());
+    let description = world
+        .settlement_description(&id)
+        .await
+        .expect("the turn settled");
+    assert_eq!(
+        oxsum_core::verify_charge(&description),
+        oxsum_core::ChargeCheck::Recomputed
+    );
+    // And the record reads back the same pair through the typed parser.
+    let parsed = oxsum_core::SettlementRecord::parse(&description).expect("the record parses");
+    assert_eq!(parsed.model, alias);
+    assert_eq!(parsed.upstream_model.as_deref(), Some(upstream.as_str()));
+
+    // A malformed `upstreamModel` on an otherwise-good record does not verify.
+    let bad = description.replacen(
+        &format!("\"upstreamModel\":\"{upstream}\""),
+        "\"upstreamModel\":\"\"",
+        1,
+    );
+    assert_eq!(
+        oxsum_core::verify_charge(&bad),
+        oxsum_core::ChargeCheck::Mismatch
+    );
+
+    // Asking under the served name directly is unchanged: the same upstream
+    // sees its own name, and the record writes no `upstreamModel`.
+    let response = chat(&world.app, &world.key, simple(&upstream)).await;
+    let id = request_id(&response);
+    let (status, _) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+    let seen = world.script.seen();
+    assert_eq!(seen[1].body["model"], upstream.as_str());
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["model"], upstream.as_str());
+    assert!(record.get("upstreamModel").is_none(), "{record}");
+}
+
+/// An alias's own price row wins over the upstream model's on its channel
+/// (issue #286): the public name can be priced differently, and the bill is
+/// the alias's.
+#[tokio::test]
+async fn an_alias_prices_under_its_own_row() {
+    let world = world!(1_000_000);
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+    let upstream = world.model("ok");
+    let alias = format!("dear-{}", world.suffix);
+    let db = Db::from_pool(world.pool.clone());
+    db.create_alias(&world.channel, &alias, &upstream)
+        .await
+        .expect("the alias is claimed");
+    // Ten times the channel's rate, under the public name.
+    let price: oxsum_core::Price = serde_json::from_value(json!({
+        "inputPricePerMillion": 10_000_000,
+        "outputPricePerMillion": 10_000_000,
+        "maxOutputTokens": 1000,
+    }))
+    .expect("the test's own price parses");
+    db.append_price(&world.channel, &alias, price, 100)
+        .await
+        .expect("the alias price is written");
+
+    let response = chat(&world.app, &world.key, simple(&alias)).await;
+    let id = request_id(&response);
+    let (status, _) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+    // 10 + 2 tokens at ten minor units each: the alias priced it, not `ok`'s 1.
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["charged"], 120);
+    let description = world
+        .settlement_description(&id)
+        .await
+        .expect("the turn settled");
+    assert_eq!(
+        oxsum_core::verify_charge(&description),
+        oxsum_core::ChargeCheck::Recomputed
     );
 }

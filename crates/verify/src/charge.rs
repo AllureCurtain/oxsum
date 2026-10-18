@@ -19,7 +19,7 @@ use serde_json::Value;
 /// written before descriptions were versioned counts as older; every `v` above
 /// this is newer than this build. Versions it does know each get their own
 /// rule: an old bill stays recomputable after the writer has moved on.
-const KNOWN_VERSION: i64 = 7;
+const KNOWN_VERSION: i64 = 8;
 
 /// The line items the input side prices: their units must account for the
 /// whole `inputTokens`, between them and the usage record — cached reads and
@@ -97,7 +97,8 @@ pub fn verify_charge(description: &str) -> ChargeCheck {
             Some(4) => recompute_v4(&value),
             Some(5) => recompute_v5(&value),
             Some(6) => recompute_v6(&value),
-            Some(KNOWN_VERSION) => recompute_v7(&value),
+            Some(7) => recompute_v7(&value),
+            Some(KNOWN_VERSION) => recompute_v8(&value),
             Some(v) if v > KNOWN_VERSION => ChargeCheck::NewerSchema { version: v },
             Some(_) => ChargeCheck::OlderSchema,
             // A `v` that names no version is a broken record, not an old one.
@@ -268,6 +269,22 @@ fn recompute_v7(value: &Value) -> ChargeCheck {
         }
     }
     recompute_v5(value)
+}
+
+/// The v8 rule: a turn the caller asked for under an alias (issue #286) —
+/// v7's arithmetic unchanged, plus the optional `upstreamModel` naming the
+/// model the channel actually served while the record's `model` stays the
+/// asked-for alias. It is metadata, not a price input: the rule is only that
+/// a present `upstreamModel` is a non-empty string — anything else is not an
+/// honest write.
+fn recompute_v8(value: &Value) -> ChargeCheck {
+    if let Some(upstream) = value.get("upstreamModel") {
+        match upstream.as_str() {
+            Some(name) if !name.is_empty() => {}
+            _ => return ChargeCheck::Mismatch,
+        }
+    }
+    recompute_v7(value)
 }
 
 /// A UUID in its canonical `8-4-4-4-12` hex spelling — validated by hand so the
@@ -538,6 +555,42 @@ mod tests {
             );
             assert_eq!(verify_charge(&bad), ChargeCheck::Mismatch, "{field}");
         }
+    }
+
+    /// The V7 turn at v8 answered under an alias (issue #286): `model` is the
+    /// public name the caller asked for, `upstreamModel` what the channel
+    /// served, and the arithmetic is v7's — 250 under the 400 freeze.
+    const V8: &str = r#"{"v":8,"request":"req-abc","channel":"backup","model":"public-name","upstreamModel":"deepseek-chat","priceVersion":2,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100,"cachedTokens":96,"reasoningTokens":20},"lines":[["input",20,1000000],["cache_read",96,100000],["output",80,2000000],["reasoning",20,3000000]],"upstreamAttempts":1,"charged":250,"freeze":400}"#;
+
+    #[test]
+    fn a_genuine_v8_record_recomputes() {
+        assert_eq!(verify_charge(V8), ChargeCheck::Recomputed);
+        // A turn that asked under the served name writes no `upstreamModel`
+        // and is still an honest v8 write.
+        let plain = V8.replacen(r#""upstreamModel":"deepseek-chat","#, "", 1);
+        assert_eq!(verify_charge(&plain), ChargeCheck::Recomputed);
+    }
+
+    #[test]
+    fn a_v8_record_binds_the_upstream_model_shape() {
+        // A present `upstreamModel` that is empty, not a string, or null is
+        // not an honest write — only absence and a non-empty string are.
+        for field in [
+            r#""upstreamModel":"","#,
+            r#""upstreamModel":7,"#,
+            r#""upstreamModel":null,"#,
+        ] {
+            let bad = V8.replacen(r#""upstreamModel":"deepseek-chat","#, field, 1);
+            assert_eq!(verify_charge(&bad), ChargeCheck::Mismatch, "{field}");
+        }
+        // And the name is metadata, not a price input: the arithmetic does
+        // not read it, so a different honest claim still recomputes.
+        let renamed = V8.replacen(
+            r#""upstreamModel":"deepseek-chat""#,
+            r#""upstreamModel":"deepseek-v3""#,
+            1,
+        );
+        assert_eq!(verify_charge(&renamed), ChargeCheck::Recomputed);
     }
 
     #[test]

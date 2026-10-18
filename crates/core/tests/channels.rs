@@ -531,3 +531,111 @@ async fn names_addresses_and_prices_that_could_not_be_used_are_refused() {
         .unwrap();
     assert!(listed.models.is_empty());
 }
+
+/// A model alias renames what a channel relays (issue #286): the name resolves
+/// to the claiming channel alone, priced by the alias's own row when the
+/// channel wrote one and by the upstream model's otherwise — and the
+/// one-name-one-route-set rule refuses a second claim, whether it comes as an
+/// alias on another channel or as a name another channel serves directly.
+#[tokio::test]
+async fn an_alias_resolves_to_its_channel_and_prices_by_its_own_row() {
+    let url = db_or_skip!();
+    let db = db(&url).await;
+    let channel = fresh("alias");
+    let other = fresh("other");
+    let upstream = fresh("real");
+    let alias = fresh("public");
+    db.set_channel(&channel, "https://a.example/v1", "sk-a", "openai", &key())
+        .await
+        .unwrap();
+    db.set_channel(&other, "https://b.example/v1", "sk-b", "openai", &key())
+        .await
+        .unwrap();
+    db.append_price(&channel, &upstream, price(10, 20, 100), 100)
+        .await
+        .unwrap();
+
+    // The claim: write, read back on the channel's list, resolve.
+    let written = db.create_alias(&channel, &alias, &upstream).await.unwrap();
+    assert_eq!(written.alias, alias);
+    assert_eq!(written.channel, channel);
+    assert_eq!(written.upstream_model, upstream);
+    let listed = db.list_aliases(&channel).await.unwrap().unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].alias, alias);
+    assert!(db.list_aliases(&fresh("absent")).await.unwrap().is_none());
+    assert_eq!(
+        db.resolve_alias(&alias).await.unwrap(),
+        Some((channel.clone(), upstream.clone()))
+    );
+    assert!(db.resolve_alias(&upstream).await.unwrap().is_none());
+
+    // No alias-named price yet: the route is the channel's, priced by the
+    // upstream model's row, and the upstream name rides along.
+    let (servings, resolved) = db.servings_named(&alias, &key()).await.unwrap();
+    assert_eq!(resolved.as_deref(), Some(upstream.as_str()));
+    let serving = servings.into_iter().next().unwrap();
+    assert_eq!(serving.channel, channel);
+    assert_eq!(serving.price, price(10, 20, 100));
+
+    // The alias's own price wins once the channel writes one.
+    db.append_price(&channel, &alias, price(99, 88, 77), 100)
+        .await
+        .unwrap();
+    let (servings, _) = db.servings_named(&alias, &key()).await.unwrap();
+    let serving = servings.into_iter().next().unwrap();
+    assert_eq!(serving.price, price(99, 88, 77));
+    assert_eq!(serving.version, 1, "the alias's own version lineage");
+
+    // A name that is no alias resolves like before — every channel serving it,
+    // and no upstream name follows.
+    let (servings, resolved) = db.servings_named(&upstream, &key()).await.unwrap();
+    assert_eq!(resolved, None);
+    assert_eq!(servings.len(), 1);
+
+    // One name, one route set: the alias on another channel conflicts, and so
+    // does a name another channel serves directly — while the same channel may
+    // freely alias a name it serves itself.
+    let conflict = db
+        .create_alias(&other, &alias, &upstream)
+        .await
+        .unwrap_err();
+    assert!(matches!(conflict, WalletError::Conflict(_)), "{conflict:?}");
+    let own = fresh("own");
+    db.append_price(&other, &own, price(1, 2, 3), 100)
+        .await
+        .unwrap();
+    let conflict = db
+        .create_alias(&channel, &own, &upstream)
+        .await
+        .unwrap_err();
+    assert!(matches!(conflict, WalletError::Conflict(_)), "{conflict:?}");
+
+    // Validation: empty names are refused; an unknown channel is not found.
+    assert!(matches!(
+        db.create_alias(&channel, "", &upstream).await.unwrap_err(),
+        WalletError::InvalidInput(_)
+    ));
+    assert!(matches!(
+        db.create_alias(&channel, &fresh("x"), "")
+            .await
+            .unwrap_err(),
+        WalletError::InvalidInput(_)
+    ));
+    assert!(matches!(
+        db.create_alias(&fresh("missing"), &fresh("x"), &upstream)
+            .await
+            .unwrap_err(),
+        WalletError::InvalidInput(_)
+    ));
+
+    // The delete is this channel's alone, and hard.
+    assert!(db.delete_alias(&channel, &alias).await.unwrap());
+    assert!(!db.delete_alias(&channel, &alias).await.unwrap());
+    assert!(db.resolve_alias(&alias).await.unwrap().is_none());
+    // Deleting against the channel that never claimed it is false, not an error.
+    let again = fresh("public");
+    db.create_alias(&channel, &again, &upstream).await.unwrap();
+    assert!(!db.delete_alias(&other, &again).await.unwrap());
+    assert!(db.resolve_alias(&again).await.unwrap().is_some());
+}

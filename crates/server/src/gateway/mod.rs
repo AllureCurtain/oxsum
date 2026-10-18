@@ -124,21 +124,57 @@ async fn models(State(state): State<AppState>) -> Response {
                 .or_insert(entry);
         }
     }
+    // Aliases list beside the served names, under the channel that claims them
+    // (issue #286): a caller can point at the public name on every surface the
+    // channel speaks. A name listed twice — once as a served model, once as an
+    // alias — keeps the direct entry: one name answers one route set, and the
+    // admin checks keep the two from colliding across channels.
+    match state.db.all_aliases().await {
+        Ok(aliases) => {
+            for alias in aliases {
+                listed.entry(alias.alias.clone()).or_insert_with(|| {
+                    (
+                        0,
+                        json!({
+                            "id": alias.alias,
+                            "object": "model",
+                            "created": alias.created_at.unix_timestamp(),
+                            "owned_by": alias.channel,
+                        }),
+                    )
+                });
+            }
+        }
+        Err(error) => {
+            tracing::error!(%error, "listing the model aliases failed");
+            return GatewayError::upstream(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "the model list could not be read".to_owned(),
+                None,
+            )
+            .into_response();
+        }
+    }
     let data: Vec<Value> = listed.into_values().map(|(_, entry)| entry).collect();
     Json(json!({ "object": "list", "data": data })).into_response()
 }
 
-/// The routes a request for this model may take, or none when nothing serves it.
+/// The routes a request for this model may take, plus the upstream name an
+/// alias resolved to (issue #286) — `None` when the asked name is served
+/// directly or when nothing serves it.
 ///
 /// A deployment with no sealing key serves no channel at all: `app` refuses to start when channels
 /// exist without one, so this is the "the wallet is running, the gateway is not configured" case.
 /// A credential that will not open is [`oxsum_core::WalletError::Misconfigured`], which becomes a
 /// 500: the operator's mistake, not the caller's.
-async fn servings(state: &AppState, model: &str) -> Result<Vec<Serving>, GatewayError> {
+async fn servings_named(
+    state: &AppState,
+    model: &str,
+) -> Result<(Vec<Serving>, Option<String>), GatewayError> {
     let Some(secret) = state.config.secret() else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), None));
     };
-    Ok(state.db.servings(model, secret).await?)
+    Ok(state.db.servings_named(model, secret).await?)
 }
 
 /// The header a retry carries to claim the same turn, Stripe-shaped.
@@ -536,7 +572,7 @@ async fn run(
     headers: &HeaderMap,
     surface: Surface,
 ) -> Result<Response, GatewayError> {
-    let request = GatewayRequest::parse(body, surface)?;
+    let mut request = GatewayRequest::parse(body, surface)?;
     // The turn's OTLP span (issue #224): created once the model is known,
     // held by the settlement plan so it stays open until the charge is
     // written — a streamed turn's span outlives this function by exactly the
@@ -555,14 +591,19 @@ async fn run(
     // The three admission-time reads are independent — the tier's capability
     // package, the model's servings, the discount in force — so they run
     // concurrently instead of as three serial pool round trips. A failure in
-    // any one still surfaces the same error the serial order produced.
+    // any one still surfaces the same error the serial order produced. The
+    // serving lookup is alias-aware (issue #286): an alias resolves to the
+    // channel that claims it, priced by the alias's own row when the price
+    // book has one, and the upstream name rides along for the forwarded body
+    // and the settlement description.
     let (tier, servings, discount) = tokio::join!(
         state.db.tier_of(organization.id),
-        servings(state, &request.model),
+        servings_named(state, &request.model),
         state.db.discount_percent(organization.id, &request.model),
     );
     let tier = tier?;
-    let candidates = servings?;
+    let (candidates, upstream_model) = servings?;
+    request.upstream_model = upstream_model;
     let discount_percent = discount?.map(i64::from);
     // The organization's tier is a capability package — limits and allowlists,
     // never a pricing input (issue #158): its model allowlist refuses 403 and
@@ -863,6 +904,7 @@ async fn run(
         wallet,
         request_id,
         &request.model,
+        request.upstream_model.clone(),
         primary,
         freeze,
         discount_percent,

@@ -232,6 +232,7 @@ fn usage_settlement(request_id: &str, charged: i64, freeze: i64) -> String {
         request: request_id,
         channel: "test-channel",
         model: "test-model",
+        upstream_model: None,
         price_version: 1,
         kind: SettlementKind::Usage,
         usage: &usage,
