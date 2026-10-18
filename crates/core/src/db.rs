@@ -195,6 +195,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0046_x402_rail",
         include_str!("../migrations/0046_x402_rail.sql"),
     ),
+    (
+        "0047_job_leader",
+        include_str!("../migrations/0047_job_leader.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.
