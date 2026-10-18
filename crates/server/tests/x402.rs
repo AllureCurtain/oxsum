@@ -355,29 +355,33 @@ async fn stub_facilitator() -> (String, FacilitatorStub) {
     let app = Router::new()
         .route(
             "/verify",
-            post(|State(stub): State<FacilitatorStub>, body: String| async move {
-                let v: Value = serde_json::from_str(&body).unwrap();
-                *stub.requirements.lock().unwrap() = v["paymentRequirements"].clone();
-                let (valid, payer, reason) = stub.verify.lock().unwrap().clone();
-                axum::Json(json!({
-                    "isValid": valid,
-                    "payer": payer,
-                    "invalidReason": reason,
-                }))
-            }),
+            post(
+                |State(stub): State<FacilitatorStub>, body: String| async move {
+                    let v: Value = serde_json::from_str(&body).unwrap();
+                    *stub.requirements.lock().unwrap() = v["paymentRequirements"].clone();
+                    let (valid, payer, reason) = stub.verify.lock().unwrap().clone();
+                    axum::Json(json!({
+                        "isValid": valid,
+                        "payer": payer,
+                        "invalidReason": reason,
+                    }))
+                },
+            ),
         )
         .route(
             "/settle",
-            post(|State(stub): State<FacilitatorStub>, _body: String| async move {
-                *stub.settle_calls.lock().unwrap() += 1;
-                let (success, tx, reason) = stub.settle.lock().unwrap().clone();
-                axum::Json(json!({
-                    "success": success,
-                    "transaction": tx,
-                    "network": "base-sepolia",
-                    "error_reason": reason,
-                }))
-            }),
+            post(
+                |State(stub): State<FacilitatorStub>, _body: String| async move {
+                    *stub.settle_calls.lock().unwrap() += 1;
+                    let (success, tx, reason) = stub.settle.lock().unwrap().clone();
+                    axum::Json(json!({
+                        "success": success,
+                        "transaction": tx,
+                        "network": "base-sepolia",
+                        "error_reason": reason,
+                    }))
+                },
+            ),
         )
         .with_state(stub.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -484,7 +488,11 @@ async fn a_replayed_facilitator_payment_settles_once() {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!(body["data"]["isNew"].as_bool(), Some(expected_new), "{body}");
+        assert_eq!(
+            body["data"]["isNew"].as_bool(),
+            Some(expected_new),
+            "{body}"
+        );
     }
     assert_eq!(*stub.settle_calls.lock().unwrap(), 1);
 }
@@ -533,12 +541,11 @@ async fn an_unsettled_payment_is_refused() {
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(balance(&app, &key).await, before);
     // The refused settle leaves the deposit un-credited — a retry can land it.
-    let status_row: String = sqlx::query_scalar(
-        "SELECT status FROM oxsum.deposits WHERE payment_ref = 'nonce-f4'",
-    )
-    .fetch_one(db.pool())
-    .await
-    .unwrap();
+    let status_row: String =
+        sqlx::query_scalar("SELECT status FROM oxsum.deposits WHERE payment_ref = 'nonce-f4'")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
     assert_eq!(status_row, "confirmed");
 }
 

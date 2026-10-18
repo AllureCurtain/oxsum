@@ -1153,9 +1153,7 @@ fn x402_of() -> Result<Option<std::sync::Arc<dyn oxsum_core::RailVerifier>>, Str
         return Ok(None);
     };
     oxsum_core::Ed25519RailVerifier::from_hex(&key)
-        .map(|v| {
-            Some(std::sync::Arc::new(v) as std::sync::Arc<dyn oxsum_core::RailVerifier>)
-        })
+        .map(|v| Some(std::sync::Arc::new(v) as std::sync::Arc<dyn oxsum_core::RailVerifier>))
         .map_err(|error| error.to_string())
 }
 
