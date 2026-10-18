@@ -445,3 +445,216 @@ async fn the_retention_pass_ages_out_each_rule_once() {
         .unwrap();
     assert_eq!(old_job_left, 0);
 }
+
+// --- Leader election (issue #281) ---
+
+#[test]
+fn the_leader_required_kinds_are_the_singleton_passes() {
+    use oxsum_core::requires_leader;
+    // The kinds a duplicated pass would hurt: sweep, month-end, and every
+    // outbound pass. `deliver-webhooks` stays unleadered — a second runner is
+    // throughput, not duplication, because its rows are claimed one by one.
+    assert!(requires_leader(kinds::SWEEP_HOLDS));
+    assert!(requires_leader(kinds::WITNESS_CHECKPOINTS));
+    assert!(requires_leader(kinds::STATEMENTS));
+    assert!(requires_leader(kinds::RETENTION));
+    assert!(requires_leader(kinds::SYNC_UPSTREAM_PRICES));
+    assert!(requires_leader(kinds::RECONCILE));
+    assert!(!requires_leader(kinds::DELIVER_WEBHOOKS));
+    assert!(!requires_leader("not-a-kind"));
+}
+
+#[tokio::test]
+async fn an_enqueued_row_inherits_the_kinds_leader_flag() {
+    let _guard = JOBS_LOCK.lock().await;
+    let url = db_or_skip!();
+    let (db, _, _) = world(&url).await;
+
+    // Clear any pending reconcile the suite's own worker enqueued — the
+    // singleton index would make this enqueue a no-op.
+    sqlx::query("DELETE FROM oxsum.jobs WHERE kind = 'reconcile'")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    assert!(
+        db.enqueue_job(kinds::RECONCILE, OffsetDateTime::now_utc())
+            .await
+            .unwrap()
+    );
+    let flagged: bool = sqlx::query_scalar(
+        "SELECT requires_leader FROM oxsum.jobs WHERE kind = 'reconcile' ORDER BY created_at DESC LIMIT 1",
+    )
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert!(flagged);
+    // The claim reads the flag back onto the row the worker sees.
+    let job = db
+        .claim_due_jobs(64)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|j| j.kind == kinds::RECONCILE)
+        .expect("claimed");
+    assert!(job.requires_leader);
+    sqlx::query("DELETE FROM oxsum.jobs WHERE kind = 'reconcile'")
+        .execute(db.pool())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn the_leader_lock_excludes_a_second_holder_until_released() {
+    let _guard = JOBS_LOCK.lock().await;
+    let url = db_or_skip!();
+    let (db, _, _) = world(&url).await;
+    let kind = kind();
+
+    // The lock is session-scoped: two connections stand in for two instances.
+    let mut first = db.pool().acquire().await.unwrap();
+    assert!(Db::try_leader_lock(&mut first, &kind).await.unwrap());
+
+    let mut second = db.pool().acquire().await.unwrap();
+    assert!(!Db::try_leader_lock(&mut second, &kind).await.unwrap());
+    // The contender releases nothing.
+    assert!(!Db::leader_unlock(&mut second, &kind).await.unwrap());
+
+    // Releasing on the holder's connection frees the kind for the next claim.
+    assert!(Db::leader_unlock(&mut first, &kind).await.unwrap());
+    assert!(Db::try_leader_lock(&mut second, &kind).await.unwrap());
+    assert!(Db::leader_unlock(&mut second, &kind).await.unwrap());
+}
+
+#[tokio::test]
+async fn a_yielded_row_returns_to_pending_without_spending_an_attempt() {
+    let _guard = JOBS_LOCK.lock().await;
+    let url = db_or_skip!();
+    let (db, _, _) = world(&url).await;
+    let kind = kind();
+    let job_id = enqueued(&db, &kind).await;
+
+    let job = db
+        .claim_due_jobs(4)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|j| j.job_id == job_id)
+        .expect("claimed");
+    assert_eq!(job.attempts, 0);
+
+    // The yield postpones the row: not due now, pending again, attempt unspent.
+    assert!(
+        db.unclaim_job(job.job_id, job.claimed_at, Duration::seconds(60))
+            .await
+            .unwrap()
+    );
+    assert_eq!(status_of(&db, job_id).await, "pending");
+    let (attempts, run_at): (i32, OffsetDateTime) =
+        sqlx::query_as("SELECT attempts, run_at FROM oxsum.jobs WHERE job_id = $1")
+            .bind(job_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(attempts, 0);
+    assert!(run_at > OffsetDateTime::now_utc() + Duration::seconds(30));
+
+    // Fast-forward past the postponement: the row claims and finishes normally.
+    sqlx::query("UPDATE oxsum.jobs SET run_at = now() WHERE job_id = $1")
+        .bind(job_id)
+        .execute(db.pool())
+        .await
+        .unwrap();
+    let job = db
+        .claim_due_jobs(4)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|j| j.job_id == job_id)
+        .expect("reclaimed after the yield");
+    assert!(db.finish_job(job.job_id, job.claimed_at).await.unwrap());
+    sqlx::query("DELETE FROM oxsum.jobs WHERE kind = $1")
+        .bind(&kind)
+        .execute(db.pool())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_reclaimed_leader_row_yields_while_the_lock_is_held() {
+    let _guard = JOBS_LOCK.lock().await;
+    let url = db_or_skip!();
+    let (db, _, _) = world(&url).await;
+
+    // Simulate the mid-flight scenario the lock exists for: a leader-required
+    // row reclaimed after its lease lapsed while the kind's lock is still held
+    // on another connection (the first worker is slow, not dead).
+    let mut leader = db.pool().acquire().await.unwrap();
+    assert!(
+        Db::try_leader_lock(&mut leader, kinds::RETENTION)
+            .await
+            .unwrap()
+    );
+
+    sqlx::query("DELETE FROM oxsum.jobs WHERE kind = 'retention'")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    assert!(
+        db.enqueue_job(kinds::RETENTION, OffsetDateTime::now_utc())
+            .await
+            .unwrap()
+    );
+    let job = db
+        .claim_due_jobs(64)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|j| j.kind == kinds::RETENTION)
+        .expect("claimed");
+    assert!(job.requires_leader);
+
+    // The reclaiming worker cannot take the lock — it yields the row back.
+    let mut contender = db.pool().acquire().await.unwrap();
+    assert!(
+        !Db::try_leader_lock(&mut contender, job.kind.as_str())
+            .await
+            .unwrap()
+    );
+    assert!(
+        db.unclaim_job(job.job_id, job.claimed_at, Duration::seconds(60))
+            .await
+            .unwrap()
+    );
+
+    // Once the leader releases, the row claims and runs under the lock.
+    assert!(
+        Db::leader_unlock(&mut leader, kinds::RETENTION)
+            .await
+            .unwrap()
+    );
+    sqlx::query("UPDATE oxsum.jobs SET run_at = now() WHERE kind = 'retention'")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    let job = db
+        .claim_due_jobs(64)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|j| j.kind == kinds::RETENTION)
+        .expect("reclaimed after the leader finished");
+    assert!(
+        Db::try_leader_lock(&mut contender, job.kind.as_str())
+            .await
+            .unwrap()
+    );
+    assert!(
+        Db::leader_unlock(&mut contender, job.kind.as_str())
+            .await
+            .unwrap()
+    );
+    sqlx::query("DELETE FROM oxsum.jobs WHERE kind = 'retention'")
+        .execute(db.pool())
+        .await
+        .unwrap();
+}
