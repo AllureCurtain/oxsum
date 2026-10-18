@@ -93,6 +93,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }),
                 _ => None,
             },
+            // The bill pass needs the provider to ask and the sealing key to
+            // open each channel's bill_key_sealed — both or neither.
+            bill_provider: match (config.bill_provider(), config.secret()) {
+                (Some(provider), Some(secret)) => Some((provider.clone(), secret.clone())),
+                _ => None,
+            },
         },
     );
     let listener = tokio::net::TcpListener::bind(addr).await?;

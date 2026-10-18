@@ -17,6 +17,12 @@ pub(crate) struct ChannelReq {
     base_url: String,
     /// The upstream credential. Stored sealed; only its last four characters are ever read back.
     api_key: String,
+    /// The admin billing credential the `upstream-bill-sync` pass reads the
+    /// provider's cost API under (issue #283): triple-state like the other
+    /// optional constraint fields — absent leaves a stored billing key
+    /// untouched, `null` clears it, a value replaces it.
+    #[serde(default, deserialize_with = "crate::admin::double_option")]
+    bill_key: Option<Option<String>>,
     /// The upstream protocol the channel speaks; defaults to `openai`, the only
     /// protocol this build knows.
     protocol: Option<String>,
@@ -83,6 +89,15 @@ pub(crate) async fn set(
             &secret,
         )
         .await?;
+    // The billing credential is independent of the connection above: a present
+    // `billKey` replaces or clears it, an absent one leaves it untouched —
+    // posting a fresh `apiKey` is not a reason to drop the billing key.
+    if let Some(bill_key) = request.bill_key {
+        state
+            .db
+            .set_bill_key(&request.name, bill_key.as_deref(), &secret)
+            .await?;
+    }
     let channel = state
         .db
         .channels()

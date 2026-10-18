@@ -217,6 +217,10 @@ pub(crate) struct MarginRes {
     charged_minor: i64,
     upstream_cost_minor: i64,
     margin_minor: i64,
+    /// The channel's cumulative provider-billed total — channel-scoped, so the
+    /// same figure repeats on each of that channel's model rows; null when the
+    /// bill pass has never reconciled the channel (issue #283).
+    provider_billed_minor: Option<i64>,
     untracked_turns: i64,
 }
 
@@ -233,6 +237,7 @@ pub(crate) async fn margin(State(state): State<AppState>) -> ApiResult<Vec<Margi
             turns: row.turns,
             charged_minor: row.charged_minor,
             upstream_cost_minor: row.upstream_cost_minor,
+            provider_billed_minor: row.provider_billed_minor,
             untracked_turns: row.untracked_turns,
         });
     }
