@@ -4,7 +4,7 @@
 
 ```
 Browser ──→ React dashboard /app (Vite build, rust-embed'd)         │
-          ──→ /verify, server-rendered (Topcoat, no browser bundle) │
+          ──→ /verify, server-rendered skeleton + wasm verifier (Topcoat) │
 LLM clients ──→ Gateway /v1/chat/completions, /v1/messages, ───────┤  one process, one binary
                 /v1/embeddings, /v1/rerank                          │
 API callers ──→ axum /api/v1 ──────────────────────────────────────┤
@@ -98,7 +98,9 @@ crates/
   verify/               Pure verification shared with the browser: the proof bundle,
                         verify_bundle, the signed-head and consistency checks, and the
                         money SCALE; wasm32-clean, re-exported by
-                        oxsum-core so one implementation serves the server and the page
+                        oxsum-core so one implementation serves the server and the page,
+                        and compiled to wasm under its `wasm` feature (src/wasm.rs) so
+                        the page can run it in the browser (issue #284)
   server/               HTTP assembly: axum Router, error mapping, auth middleware,
                         exposing core as /api/v1 and the gateway as /v1
     src/gateway/        exists: the /v1 surface — router, OpenAI error shape, request
@@ -107,10 +109,13 @@ crates/
     src/bills.rs        exists: the bills export — the dashboard's two GET routes that
                         answer the page's list as CSV and JSON (issue #54)
   web/                  The server-rendered sliver the React app does not own (issue #256):
-                        `src/pages_misc.rs` the `/verify` page and its stylesheet,
+                        `src/pages_misc.rs` the `/verify` page and its stylesheet plus the
+                        wasm-asset routes, `src/verify.js` the page's loader script,
                         `src/views.rs` the one plain layout, `src/bills.rs` the bills-export
                         row shape the server's download routes reuse, `style/main.css` the
-                        tokens (see DESIGN.md); plain `cargo build`, no client bundle
+                        tokens (see DESIGN.md), `verify-wasm/` the wasm-bindgen output
+                        embedded into the binary (placeholders committed, the real
+                        bundle from `scripts/build-verify-wasm.sh`, issue #284)
 web/                    The React dashboard (issue #234): the whole member/admin surface,
                         Vite-built into `web/dist` and rust-embed'd at `/app`
 ```
@@ -121,7 +126,7 @@ Principle: **domain logic belongs in core; the gateway does protocol and orchest
 
 - External callers use REST/JSON; the contract is `crates/server/openapi.yaml`.
 - The dashboard is a single-page React app (`web/`) served at `/app`; it talks to `/api/v1` in the browser, with no server-side page handlers. The bills export (`GET /dashboard/bills/export.csv` and `.json`) stays a server route — a download is a response, not a page — and the platform-admin pages call `/api/v1/admin/*` straight from the browser with the operator token, because that bearer credential is the deployment's and no session could hold it (docs/decisions.md).
-- The one page still server-rendered is `/verify` (in `crates/web`): the bill/usage-report check runs `oxsum_verify` on the server, so a deployment cannot certify its own verification by serving the checker. `crates/verify` stays wasm32-clean so the same proof code can run in a browser where a bundle is trusted (uuid's wasm32 randomness source solved with the `js` feature, see docs/decisions.md).
+- The one page still server-rendered is `/verify` (in `crates/web`): the skeleton is a plain form whose `verify.js` loader runs the `oxsum_verify` wasm build in the browser when the bundle ships (issue #284) — the verifier's bytes travel to the client rather than the client trusting a verdict the server rendered — and the form's native POST runs the same `oxsum_verify` on the server as the no-JavaScript floor. `crates/verify` is wasm32-clean by design (uuid's wasm32 randomness solved with the `js` feature, see docs/decisions.md); its `wasm` feature exports the `verify_*` functions over wasm-bindgen, and `scripts/build-verify-wasm.sh` produces the bundle `crates/web` embeds — a build without the toolchain ships the committed placeholder and the page stays on the server path.
 
 ## Auth and permissions
 

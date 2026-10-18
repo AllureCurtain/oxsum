@@ -115,6 +115,60 @@ async fn the_verify_page_is_public() {
         res.text().contains("Proof bundle"),
         "the verify page names the bundle field"
     );
+    // The in-browser verifier is an enhancement, not the only path: the page
+    // still posts its form to the server, and it loads the wasm loader as a
+    // module (issue #284).
+    let html = res.text();
+    assert!(
+        html.contains(r#"method="post" action="/verify""#)
+            || html.contains(r#"action="/verify" method="post""#),
+        "the verify page keeps its server-posted form"
+    );
+    assert!(
+        html.contains(r#""/verify.js""#),
+        "the verify page loads its wasm loader script"
+    );
+}
+
+/// The verifier's JavaScript pieces are served with the right media types:
+/// the page's own loader as an ES module, and wasm-bindgen's generated glue
+/// under `/verify-wasm/` so its relative `verify_wasm_bg.wasm` fetch resolves.
+/// Without a wasm build the committed placeholders answer instead — still
+/// valid modules, just ones whose `init` throws.
+#[tokio::test]
+async fn the_verify_assets_are_served() {
+    let app = app();
+
+    let res = get(&app, "/verify.js").await;
+    assert_eq!(res.status, StatusCode::OK);
+    assert!(
+        res.content_type().contains("text/javascript"),
+        "verify.js is JavaScript, got {}",
+        res.content_type()
+    );
+
+    let res = get(&app, "/verify-wasm/verify_wasm.js").await;
+    assert_eq!(res.status, StatusCode::OK);
+    assert!(
+        res.content_type().contains("text/javascript"),
+        "the wasm glue is JavaScript, got {}",
+        res.content_type()
+    );
+
+    // Streaming compilation wants exactly `application/wasm` — anything else
+    // fails `instantiateStreaming` even on real bytes.
+    let res = get(&app, "/verify-wasm/verify_wasm_bg.wasm").await;
+    assert_eq!(res.status, StatusCode::OK);
+    assert_eq!(
+        res.content_type(),
+        "application/wasm",
+        "the wasm module needs the exact media type"
+    );
+    // Even the placeholder is a valid empty module — `\0asm` plus version 1.
+    assert!(
+        res.body.starts_with(b"\0asm\x01\0\0\0"),
+        "the wasm artifact is not a wasm module"
+    );
 }
 
 /// Every retired page path answers `301 Moved Permanently` at its `/app` twin,

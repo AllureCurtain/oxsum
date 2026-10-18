@@ -303,8 +303,14 @@ answers every legacy `/dashboard/*`, auth and `/admin` path with a `301` to its
   gateway publishes to — best-effort and in-memory; the watch table stays the record.
 - The public `/verify` page needs no login: it posts a proof bundle and a content hash,
   and the server runs `oxsum_verify::verify_bundle` plus the charge and price-binding
-  checks, then renders the verdict. The pure verification logic lives in `crates/verify`
-  (`oxsum-verify`); the check runs server-side (docs/decisions.md, 2026-10-12).
+  checks, then renders the verdict. When the deployment shipped the wasm bundle, the
+  page's `verify.js` loader runs the *same* `oxsum_verify` functions in the browser
+  instead (issue #284) — the page is the no-JavaScript floor, the wasm is the
+  don't-trust-the-server path. The pure verification logic lives in `crates/verify`
+  (`oxsum-verify`); its `wasm` feature exports the `verify_*` functions over
+  wasm-bindgen, and `scripts/build-verify-wasm.sh` emits the module into
+  `crates/web/verify-wasm/` over the committed placeholders — a cargo build without
+  the toolchain still works and the page keeps its server-side form.
 
 ## Docker image
 
