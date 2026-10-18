@@ -69,6 +69,7 @@ fn ctx() -> JobContext {
         retention: Retention::default(),
         upstream_price_sync: false,
         witness: None,
+        bill_provider: None,
     }
 }
 
@@ -489,4 +490,257 @@ async fn witness_checkpoints_anchor_and_collect_cosignatures() {
 
     let (pending, running, done, dead) = counts(&world.db, kinds::WITNESS_CHECKPOINTS).await;
     assert_eq!((pending, running, done, dead), (1, 0, 2, 0));
+}
+
+// --- Provider bill reconciliation (issue #283) ---
+
+/// A scripted `UpstreamBillProvider`: answers what the test programs it to, one
+/// day's billed total in minor units — the stand-in for the OpenAI Costs API,
+/// same seam a real client drops into.
+#[derive(Debug)]
+struct StubBillProvider {
+    /// What `daily_cost` answers for the day — the provider-billed minor total.
+    /// `None` means the provider answered nothing (a coverage gap).
+    billed: Option<i64>,
+    /// How many channels the pass asked — the coverage check.
+    calls: std::sync::Mutex<usize>,
+}
+
+impl StubBillProvider {
+    fn answering(billed: i64) -> Self {
+        Self {
+            billed: Some(billed),
+            calls: std::sync::Mutex::new(0),
+        }
+    }
+}
+
+impl oxsum_core::UpstreamBillProvider for StubBillProvider {
+    fn daily_cost<'a>(
+        &'a self,
+        _channel: &'a oxsum_core::ChannelBilling,
+        _date: time::Date,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Option<oxsum_core::DailyBill>> + Send + 'a>,
+    > {
+        *self.calls.lock().unwrap() += 1;
+        let billed = self.billed;
+        Box::pin(async move {
+            billed.map(|provider_billed_minor| oxsum_core::DailyBill {
+                provider_billed_minor,
+            })
+        })
+    }
+}
+
+/// A channel seeded with a billing credential and a day's usage, ready for the
+/// bill pass. Returns its `channel_id`.
+async fn billable_channel(world: &World, secret: &SecretKey, name: &str) -> uuid::Uuid {
+    world
+        .db
+        .set_channel(
+            name,
+            "http://provider.invalid",
+            "sk-metering",
+            "openai",
+            secret,
+        )
+        .await
+        .unwrap();
+    world
+        .db
+        .set_bill_key(name, Some("sk-billing-admin"), secret)
+        .await
+        .unwrap();
+    sqlx::query_scalar("SELECT channel_id FROM oxsum.channels WHERE name = $1")
+        .bind(name)
+        .fetch_one(world.db.pool())
+        .await
+        .unwrap()
+}
+
+/// A usage row costing `our_cost_minor`, settled inside `date` UTC — the
+/// estimate the provider bill is reconciled against.
+async fn settle_usage(world: &World, channel: &str, our_cost_minor: i64, date: time::Date) {
+    sqlx::query(
+        "INSERT INTO oxsum.usage_records \
+             (request_id, tenant_id, model, channel, price_version, kind, entry_id, \
+              input_tokens, output_tokens, charged_minor, freeze_minor, \
+              upstream_cost_minor, settled_at) \
+         VALUES ($1, $2, 'test-model', $3, 1, 'usage', $4, 10, 20, $5, $5, $5, $6)",
+    )
+    .bind(format!("req-{}", &Uuid::new_v4().simple().to_string()[..8]))
+    .bind(&world.tenant)
+    .bind(channel)
+    .bind(Uuid::new_v4())
+    .bind(our_cost_minor)
+    .bind(date.midnight().assume_utc() + time::Duration::hours(12))
+    .execute(world.db.pool())
+    .await
+    .unwrap();
+}
+
+/// The bill pass reconciles a channel against its provider's billed total and
+/// flags drift over the alert threshold as `anomaly.detected` (issue #283).
+#[tokio::test]
+async fn upstream_bill_sync_records_and_flags_drift() {
+    let _guard = JOBS_LOCK.lock().await;
+    let Some(url) = url() else {
+        eprintln!("DATABASE_URL not set, skipping");
+        return;
+    };
+    let world = world(&url).await;
+    let secret = SecretKey::from_bytes([7; 32]);
+    let channel = fresh("bill");
+    let channel_id = billable_channel(&world, &secret, &channel).await;
+
+    // Our estimate: 10.00 credits billed at upstream cost; the provider says
+    // 20.00 — a 100% drift, past the 5% alert threshold and the 1-credit floor.
+    let yesterday = (OffsetDateTime::now_utc() - time::Duration::days(1)).date();
+    settle_usage(&world, &channel, 10_000_000, yesterday).await;
+
+    // A subscribed endpoint, so the drift's `anomaly.detected` broadcast has
+    // somewhere to land — the broadcast fans out only to enabled subscribers.
+    let organization = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO oxsum.organizations (organization_id, name, tenant_id, kind) \
+         VALUES ($1, $2, $3, 'team')",
+    )
+    .bind(organization)
+    .bind("bill-drift-org")
+    .bind(&world.tenant)
+    .execute(world.db.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO oxsum.webhook_endpoints \
+             (endpoint_id, organization_id, url, secret_sealed, secret_last4, events, enabled) \
+         VALUES ($1, $2, 'https://hook.invalid/', 'sealed', 'xxxx', $3, true)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(organization)
+    .bind(vec!["anomaly.detected".to_owned()])
+    .execute(world.db.pool())
+    .await
+    .unwrap();
+
+    let ctx = JobContext {
+        bill_provider: Some((Arc::new(StubBillProvider::answering(20_000_000)), secret)),
+        ..ctx()
+    };
+    enqueue(&world.db, kinds::UPSTREAM_BILL_SYNC).await;
+    run_due(&world.db, &ctx).await;
+
+    // The bill row recorded the provider's total beside ours, and the drift.
+    let (provider_minor, our_minor, drift_minor, flagged): (i64, i64, i64, bool) = sqlx::query_as(
+        "SELECT provider_billed_minor, our_cost_minor, drift_minor, \
+                    reconciliation_entry_id IS NOT NULL AS flagged \
+             FROM oxsum.upstream_bills WHERE channel_id = $1 AND bill_date = $2",
+    )
+    .bind(channel_id)
+    .bind(yesterday)
+    .fetch_one(world.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        (provider_minor, our_minor, drift_minor),
+        (20_000_000, 10_000_000, 10_000_000)
+    );
+    assert!(flagged, "a 100% drift crosses the alert threshold");
+
+    // The anomaly broadcast enqueued a delivery a webhook pass can see.
+    let anomalies: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM oxsum.webhook_deliveries WHERE event_type = 'anomaly.detected'",
+    )
+    .fetch_one(world.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(anomalies, 1, "the drift broadcast one anomaly.detected");
+
+    let (pending, running, done, dead) = counts(&world.db, kinds::UPSTREAM_BILL_SYNC).await;
+    assert_eq!((pending, running, done, dead), (1, 0, 1, 0));
+}
+
+/// A drift under the alert threshold records the row but flags nothing — a
+/// provider's sub-credit rounding is not an operator's page (issue #283).
+#[tokio::test]
+async fn upstream_bill_sync_under_threshold_flags_nothing() {
+    let _guard = JOBS_LOCK.lock().await;
+    let Some(url) = url() else {
+        eprintln!("DATABASE_URL not set, skipping");
+        return;
+    };
+    let world = world(&url).await;
+    let secret = SecretKey::from_bytes([7; 32]);
+    let channel = fresh("bill");
+    let channel_id = billable_channel(&world, &secret, &channel).await;
+
+    let yesterday = (OffsetDateTime::now_utc() - time::Duration::days(1)).date();
+    // 10.00 ours vs 10.10 provider — 1% drift, under the 5% threshold.
+    settle_usage(&world, &channel, 10_000_000, yesterday).await;
+
+    let ctx = JobContext {
+        bill_provider: Some((Arc::new(StubBillProvider::answering(10_100_000)), secret)),
+        ..ctx()
+    };
+    enqueue(&world.db, kinds::UPSTREAM_BILL_SYNC).await;
+    run_due(&world.db, &ctx).await;
+
+    let flagged: bool = sqlx::query_scalar(
+        "SELECT reconciliation_entry_id IS NOT NULL FROM oxsum.upstream_bills \
+         WHERE channel_id = $1 AND bill_date = $2",
+    )
+    .bind(channel_id)
+    .bind(yesterday)
+    .fetch_one(world.db.pool())
+    .await
+    .unwrap();
+    assert!(!flagged, "a 1% drift stays under the alert");
+}
+
+/// A provider that answers nothing records a coverage-gap row — `provider_billed_minor`
+/// null, drift null — rather than a false zero that would read as the provider
+/// billing nothing (issue #283).
+#[tokio::test]
+async fn upstream_bill_sync_no_provider_answer_records_a_gap() {
+    let _guard = JOBS_LOCK.lock().await;
+    let Some(url) = url() else {
+        eprintln!("DATABASE_URL not set, skipping");
+        return;
+    };
+    let world = world(&url).await;
+    let secret = SecretKey::from_bytes([7; 32]);
+    let channel = fresh("bill");
+    let channel_id = billable_channel(&world, &secret, &channel).await;
+
+    let yesterday = (OffsetDateTime::now_utc() - time::Duration::days(1)).date();
+    settle_usage(&world, &channel, 10_000_000, yesterday).await;
+
+    let ctx = JobContext {
+        bill_provider: Some((
+            Arc::new(StubBillProvider {
+                billed: None,
+                calls: std::sync::Mutex::new(0),
+            }),
+            secret,
+        )),
+        ..ctx()
+    };
+    enqueue(&world.db, kinds::UPSTREAM_BILL_SYNC).await;
+    run_due(&world.db, &ctx).await;
+
+    let (provider_minor, drift_minor): (Option<i64>, Option<i64>) = sqlx::query_as(
+        "SELECT provider_billed_minor, drift_minor FROM oxsum.upstream_bills \
+         WHERE channel_id = $1 AND bill_date = $2",
+    )
+    .bind(channel_id)
+    .bind(yesterday)
+    .fetch_one(world.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        provider_minor, None,
+        "an unanswered day is a coverage gap, not a zero"
+    );
+    assert_eq!(drift_minor, None);
 }
