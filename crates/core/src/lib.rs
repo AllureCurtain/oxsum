@@ -86,7 +86,7 @@ pub use idempotency::{Claim, fingerprint};
 pub use invitations::CreatedInvitation;
 pub use jobs::{
     CLAIM_LEASE_SECS, DEAD_RESCHEDULE, Job, JobOutcome, MAX_ATTEMPTS, Retention, RetentionReport,
-    StatementReport, kinds, next_run,
+    StatementReport, kinds, leader_lock_key, next_run, requires_leader,
 };
 pub use keys::{
     ActingKey, ApiKey, BudgetDuration, CreatedApiKey, KeyConstraints, TagScope, TpmScope, TpmScopes,
