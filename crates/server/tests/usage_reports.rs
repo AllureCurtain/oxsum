@@ -865,3 +865,135 @@ async fn an_end_user_link_names_the_customer_and_validation_refuses_the_rest() {
     .await;
     assert_eq!(foreign_revoke.status, StatusCode::NOT_FOUND);
 }
+
+/// The public bill page: the token alone opens it, the frozen figures render,
+/// and the security headers ride along. Revoking the link closes the page.
+#[tokio::test]
+async fn a_bill_link_renders_the_frozen_report_with_its_headers() {
+    let (app, db) = app_or_skip!();
+    let account = account(&app, "bill").await;
+    top_up(&app, &account.cookie, 1_000_000_000).await;
+    let tenants = Tenants::new(db.pool().clone());
+    let end_user = "customer-1";
+    let to = today() - time::Duration::days(1);
+    seed_request(
+        &db,
+        &tenants,
+        &account.tenant_id,
+        "req-a",
+        end_user,
+        300,
+        400,
+        to,
+    )
+    .await;
+    let to = to.to_string();
+    let report = mint(&app, &account.cookie, end_user, &to, &to).await.json()["data"].clone();
+    let report_id = report["reportId"].as_str().expect("a report id").to_owned();
+
+    let created = call(
+        &app,
+        "POST",
+        &format!("/api/v1/org/usage-reports/{report_id}/links"),
+        Some(json!({})),
+        Some(&account.cookie),
+    )
+    .await;
+    let token = created.json()["data"]["token"]
+        .as_str()
+        .expect("a token")
+        .to_owned();
+
+    let page = call(&app, "GET", &format!("/bill/{token}"), None, None).await;
+    assert_eq!(page.status, StatusCode::OK, "the page did not render");
+    let body = String::from_utf8(page.body.clone()).expect("the page is UTF-8");
+    assert!(body.contains(end_user), "the bill names the customer");
+    assert!(body.contains("1 entry"), "the frozen count renders");
+    assert!(body.contains("0.000300"), "the frozen charge renders");
+    assert!(
+        body.contains("Operator key: ") && !body.contains("not published"),
+        "a signing deployment publishes its key on the page"
+    );
+    assert_eq!(page.header("referrer-policy"), "no-referrer");
+    assert_eq!(page.header("cache-control"), "private, no-store");
+    assert_eq!(page.header("x-robots-tag"), "noindex");
+    assert!(
+        !body.contains("<script"),
+        "the page carries no third-party script"
+    );
+
+    // Unknown, revoked and expired tokens are the same 404.
+    let unknown = call(&app, "GET", "/bill/oxb-unknown", None, None).await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+
+    let link_id = created.json()["data"]["link"]["linkId"]
+        .as_str()
+        .expect("a link id")
+        .to_owned();
+    let revoked = call(
+        &app,
+        "DELETE",
+        &format!("/api/v1/org/usage-reports/links/{link_id}"),
+        None,
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(revoked.status, StatusCode::OK);
+    let closed = call(&app, "GET", &format!("/bill/{token}"), None, None).await;
+    assert_eq!(closed.status, StatusCode::NOT_FOUND);
+}
+
+/// The customer-scoped link lists every report issued to that customer, one
+/// section per report, without any per-report token.
+#[tokio::test]
+async fn an_end_user_bill_link_lists_every_report() {
+    let (app, db) = app_or_skip!();
+    let account = account(&app, "portal-page").await;
+    top_up(&app, &account.cookie, 1_000_000_000).await;
+    let tenants = Tenants::new(db.pool().clone());
+    let end_user = "customer-1";
+    let older = today() - time::Duration::days(2);
+    let newer = today() - time::Duration::days(1);
+    for (request, day, charge) in [("req-a", older, 300), ("req-b", newer, 400)] {
+        seed_request(
+            &db,
+            &tenants,
+            &account.tenant_id,
+            request,
+            end_user,
+            charge,
+            500,
+            day,
+        )
+        .await;
+        let day = day.to_string();
+        let minted = mint(&app, &account.cookie, end_user, &day, &day).await;
+        assert_eq!(minted.status, StatusCode::OK, "{}", minted.json());
+    }
+
+    let created = call(
+        &app,
+        "POST",
+        "/api/v1/org/usage-reports/links",
+        Some(json!({"endUser": end_user})),
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.json());
+    let token = created.json()["data"]["token"]
+        .as_str()
+        .expect("a token")
+        .to_owned();
+
+    let page = call(&app, "GET", &format!("/bill/{token}"), None, None).await;
+    assert_eq!(page.status, StatusCode::OK);
+    let body = String::from_utf8(page.body.clone()).expect("the page is UTF-8");
+    assert!(body.contains(end_user));
+    assert!(body.contains("0.000300"), "the older report renders");
+    assert!(body.contains("0.000400"), "the newer report renders");
+    assert_eq!(
+        body.matches("<section class=\"bill\">").count(),
+        2,
+        "one section per issued report"
+    );
+}

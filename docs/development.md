@@ -289,10 +289,10 @@ Tailwind v4 + TanStack Query, issue #234), built once into `web/dist` and
 embedded into the binary — `crates/server/src/spa.rs` serves it at `/app`, with
 client-side routes falling back to `index.html`. It replaced the server-rendered
 Topcoat dashboard, which retired in issue #256: `crates/web` is now only the
-deliberately server-rendered `/verify` page plus its stylesheet and the
-bills-export row types the server's download routes reuse, and the server
-answers every legacy `/dashboard/*`, auth and `/admin` path with a `301` to its
-`/app` twin (`crates/server/src/web.rs`).
+deliberately server-rendered `/verify` and `/bill/{token}` pages plus their
+stylesheet and the bills-export row types the server's download routes reuse, and
+the server answers every legacy `/dashboard/*`, auth and `/admin` path with a
+`301` to its `/app` twin (`crates/server/src/web.rs`).
 
 - `cargo run -p oxsum-server` serves everything; `cargo build -p oxsum-server`
   embeds whatever `web/dist` holds. To rebuild the frontend, `npm ci`,
@@ -313,6 +313,13 @@ answers every legacy `/dashboard/*`, auth and `/admin` path with a `301` to its
   wasm-bindgen, and `scripts/build-verify-wasm.sh` emits the module into
   `crates/web/verify-wasm/` over the committed placeholders — a cargo build without
   the toolchain still works and the page keeps its server-side form.
+- The public bill page (`/bill/{token}`, issue #302) is the customer's side of a
+  usage report: the token is the whole credential, `Db::resolve_report_link` turns
+  it into the frozen report, and the page renders the figures beside the operator
+  key and the ledger head. It is server-rendered and needs no JavaScript; the
+  response layer in `crates/server/src/web.rs` sets `Referrer-Policy: no-referrer`,
+  `X-Robots-Tag: noindex` and, for the bill only, `Cache-Control: private, no-store`.
+  No third-party script runs on it.
 
 ## Docker image
 
