@@ -6,7 +6,7 @@ Updated: 2026-10-22
 
 The next-phase gap plan is closed: #276's test-sharding shipped (PR #279); job leader election (#281) shipped (PR #288); the x402 facilitator rail (#282) shipped (PR #289); upstream bill reconciliation (#283) shipped (PR #290); /verify browser-side wasm (#284) shipped (PR #291); the Airwallex deposit rail (#285) shipped (PR #292); model aliases (#286) shipped (PR #294); the demo GIF automation (#287) is closed as not planned — a live demo supersedes the recording.
 
-The release gate is green again: the wasm stage builds on the pinned toolchain (#295, PR #298), PRs build the image stages while the post-merge smoke probes the SPA surface (#296, PR #301), and the TODO/README/development truth sweep landed (#297, PR #299).
+The release gate is green again: the wasm stage builds on the pinned toolchain (#295, PR #298), PRs build the image stages while the post-merge smoke probes the SPA surface (#296, PR #301), the TODO/README/development truth sweep landed (#297, PR #299), and the frontend stage joins the PR gate (#309, in review).
 
 Share links for usage reports (#300) shipped (PR #303); the public bill page that opens one (#302) shipped (PR #304); browser verification on that page (#305) shipped (PR #306); the dashboard's Reports page that mints and shares them (#307) shipped (PR #308); the dashboard's plain-language kind labels (#310) shipped (PR #311); the customer's verification guide (#312) is in review.
 
