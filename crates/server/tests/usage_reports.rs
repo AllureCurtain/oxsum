@@ -570,3 +570,298 @@ async fn a_tampered_bundle_does_not_verify() {
         "a tampered bundle must not verify: {outcome:?}"
     );
 }
+
+/// A report link is the customer's only credential: the token is answered once,
+/// resolves to the report without a session, and never appears in the list.
+#[tokio::test]
+async fn a_report_link_resolves_and_is_listed_without_its_token() {
+    let (app, db) = app_or_skip!();
+    let account = account(&app, "link").await;
+    top_up(&app, &account.cookie, 1_000_000_000).await;
+    let tenants = Tenants::new(db.pool().clone());
+    let end_user = "customer-1";
+    let to = today() - time::Duration::days(1);
+    seed_request(
+        &db,
+        &tenants,
+        &account.tenant_id,
+        "req-a",
+        end_user,
+        300,
+        400,
+        to,
+    )
+    .await;
+    let to = to.to_string();
+    let report = mint(&app, &account.cookie, end_user, &to, &to).await.json()["data"].clone();
+    let report_id = report["reportId"].as_str().expect("a report id").to_owned();
+
+    let created = call(
+        &app,
+        "POST",
+        &format!("/api/v1/org/usage-reports/{report_id}/links"),
+        Some(json!({"label": "August bill"})),
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(
+        created.status,
+        StatusCode::OK,
+        "the mint failed: {}",
+        created.json()
+    );
+    let data = created.json()["data"].clone();
+    let token = data["token"].as_str().expect("the token is answered once");
+    assert!(token.starts_with("oxb-"), "the mark identifies the token");
+    assert_eq!(data["link"]["scope"].as_str(), Some("report"));
+    assert_eq!(data["link"]["reportId"].as_str(), Some(report_id.as_str()));
+    assert_eq!(data["link"]["endUser"].as_str(), Some(end_user));
+    assert_eq!(data["link"]["label"].as_str(), Some("August bill"));
+    assert_eq!(data["link"]["revokedAt"], Value::Null);
+
+    // The token alone loads the bill: the page has no session to spend.
+    let resolved = db
+        .resolve_report_link(token)
+        .await
+        .expect("the lookup runs")
+        .expect("the link resolves");
+    assert_eq!(resolved.tenant_id, account.tenant_id);
+    assert_eq!(resolved.end_user, end_user);
+    assert_eq!(
+        resolved.report_id,
+        Some(Uuid::parse_str(&report_id).expect("the id parses"))
+    );
+
+    // Resolution touched `lastUsedAt`; the list serves the descriptor, not the secret.
+    let listed = call(
+        &app,
+        "GET",
+        "/api/v1/org/usage-reports/links",
+        None,
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(listed.status, StatusCode::OK);
+    let rows = listed.json()["data"]["rows"].clone();
+    let row = rows
+        .as_array()
+        .expect("rows is a list")
+        .iter()
+        .find(|row| row["linkId"] == data["link"]["linkId"])
+        .expect("the minted link is listed")
+        .clone();
+    assert!(row["lastUsedAt"].is_string(), "resolution is recorded");
+    assert!(
+        row.get("token").is_none(),
+        "the list never echoes the token"
+    );
+}
+
+/// Revocation and expiry both stop a link, and revocation is idempotent.
+#[tokio::test]
+async fn a_revoked_or_expired_link_resolves_to_nothing() {
+    let (app, db) = app_or_skip!();
+    let account = account(&app, "revoke").await;
+    top_up(&app, &account.cookie, 1_000_000_000).await;
+    let tenants = Tenants::new(db.pool().clone());
+    let end_user = "customer-1";
+    let to = today() - time::Duration::days(1);
+    seed_request(
+        &db,
+        &tenants,
+        &account.tenant_id,
+        "req-a",
+        end_user,
+        300,
+        400,
+        to,
+    )
+    .await;
+    let to = to.to_string();
+    let report = mint(&app, &account.cookie, end_user, &to, &to).await.json()["data"].clone();
+    let report_id = report["reportId"].as_str().expect("a report id").to_owned();
+
+    let created = call(
+        &app,
+        "POST",
+        &format!("/api/v1/org/usage-reports/{report_id}/links"),
+        Some(json!({})),
+        Some(&account.cookie),
+    )
+    .await;
+    let data = created.json()["data"].clone();
+    let link_id = data["link"]["linkId"]
+        .as_str()
+        .expect("a link id")
+        .to_owned();
+    let token = data["token"].as_str().expect("a token").to_owned();
+
+    let revoked = call(
+        &app,
+        "DELETE",
+        &format!("/api/v1/org/usage-reports/links/{link_id}"),
+        None,
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(revoked.status, StatusCode::OK, "{}", revoked.json());
+    assert!(revoked.json()["data"]["revokedAt"].is_string());
+    assert!(
+        db.resolve_report_link(&token)
+            .await
+            .expect("the lookup runs")
+            .is_none(),
+        "a revoked link resolves to nothing"
+    );
+
+    // Deleting again is the same answer, not a conflict.
+    let again = call(
+        &app,
+        "DELETE",
+        &format!("/api/v1/org/usage-reports/links/{link_id}"),
+        None,
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(again.status, StatusCode::OK);
+
+    // An expired link is indistinguishable from a revoked one.
+    let second = call(
+        &app,
+        "POST",
+        &format!("/api/v1/org/usage-reports/{report_id}/links"),
+        Some(json!({})),
+        Some(&account.cookie),
+    )
+    .await
+    .json()["data"]
+        .clone();
+    let second_id = Uuid::parse_str(second["link"]["linkId"].as_str().expect("a link id"))
+        .expect("the id parses");
+    sqlx::query(
+        "UPDATE oxsum.report_links SET expires_at = now() - interval '1 second' WHERE link_id = $1",
+    )
+    .bind(second_id)
+    .execute(db.pool())
+    .await
+    .expect("the expiry moves into the past");
+    assert!(
+        db.resolve_report_link(second["token"].as_str().expect("a token"))
+            .await
+            .expect("the lookup runs")
+            .is_none(),
+        "an expired link resolves to nothing"
+    );
+    assert!(
+        db.resolve_report_link("oxb-unknown")
+            .await
+            .expect("the lookup runs")
+            .is_none(),
+        "an unknown token resolves to nothing"
+    );
+}
+
+/// The end-user scope lists a customer's reports; the bounds and the
+/// cross-organization rule refuse the rest.
+#[tokio::test]
+async fn an_end_user_link_names_the_customer_and_validation_refuses_the_rest() {
+    let (app, db) = app_or_skip!();
+    let account = account(&app, "portal").await;
+    top_up(&app, &account.cookie, 1_000_000_000).await;
+    let tenants = Tenants::new(db.pool().clone());
+    let end_user = "customer-1";
+    let to = today() - time::Duration::days(1);
+    seed_request(
+        &db,
+        &tenants,
+        &account.tenant_id,
+        "req-a",
+        end_user,
+        300,
+        400,
+        to,
+    )
+    .await;
+    let to = to.to_string();
+    let report = mint(&app, &account.cookie, end_user, &to, &to).await.json()["data"].clone();
+    let report_id = report["reportId"].as_str().expect("a report id").to_owned();
+
+    let created = call(
+        &app,
+        "POST",
+        "/api/v1/org/usage-reports/links",
+        Some(json!({"endUser": end_user, "label": "customer portal"})),
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(
+        created.status,
+        StatusCode::OK,
+        "the mint failed: {}",
+        created.json()
+    );
+    let data = created.json()["data"].clone();
+    assert_eq!(data["link"]["scope"].as_str(), Some("end_user"));
+    assert_eq!(data["link"]["reportId"], Value::Null);
+    let resolved = db
+        .resolve_report_link(data["token"].as_str().expect("a token"))
+        .await
+        .expect("the lookup runs")
+        .expect("the link resolves");
+    assert_eq!(resolved.scope, oxsum_core::LinkScope::EndUser);
+    assert_eq!(resolved.report_id, None);
+
+    // A customer nothing was billed to, an expiry past 90 days and an oversized
+    // label are all refused as caller mistakes.
+    let unknown = call(
+        &app,
+        "POST",
+        "/api/v1/org/usage-reports/links",
+        Some(json!({"endUser": "nobody"})),
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(unknown.status, StatusCode::BAD_REQUEST);
+    let too_far = call(
+        &app,
+        "POST",
+        "/api/v1/org/usage-reports/links",
+        Some(json!({"endUser": end_user, "expiresAt": "2099-01-01T00:00:00Z"})),
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(too_far.status, StatusCode::BAD_REQUEST);
+    let long_label = call(
+        &app,
+        "POST",
+        "/api/v1/org/usage-reports/links",
+        Some(json!({"endUser": end_user, "label": "x".repeat(129)})),
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(long_label.status, StatusCode::BAD_REQUEST);
+
+    // Another organization cannot mint or revoke a link for this report.
+    let other = self::account(&app, "other").await;
+    let foreign = call(
+        &app,
+        "POST",
+        &format!("/api/v1/org/usage-reports/{report_id}/links"),
+        Some(json!({})),
+        Some(&other.cookie),
+    )
+    .await;
+    assert_eq!(foreign.status, StatusCode::NOT_FOUND);
+    let foreign_revoke = call(
+        &app,
+        "DELETE",
+        &format!(
+            "/api/v1/org/usage-reports/links/{}",
+            data["link"]["linkId"].as_str().expect("a link id")
+        ),
+        None,
+        Some(&other.cookie),
+    )
+    .await;
+    assert_eq!(foreign_revoke.status, StatusCode::NOT_FOUND);
+}
