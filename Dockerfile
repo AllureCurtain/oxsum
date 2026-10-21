@@ -33,8 +33,9 @@ RUN npm run codegen && npm run build
 FROM rust:1.98-bookworm AS wasm
 
 ARG WASM_BINDGEN_VERSION=0.2.129
-RUN rustup target add wasm32-unknown-unknown \
-    && curl -fsSL \
+# The CLI is a toolchain-independent binary, so its download keeps a layer of
+# its own: a manifest or source edit never re-fetches it.
+RUN curl -fsSL \
         "https://github.com/rustwasm/wasm-bindgen/releases/download/${WASM_BINDGEN_VERSION}/wasm-bindgen-${WASM_BINDGEN_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
         | tar -xz --strip-components=1 \
             -C /usr/local/bin \
@@ -46,6 +47,13 @@ WORKDIR /app
 # installed — the wasm bundle links nothing. Its release profile only costs
 # the bundle a little size, so the stage builds stock.
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+# The target is added here, after the manifest, and never before this COPY:
+# rust-toolchain.toml pins the channel, and rustup installs a target for the
+# toolchain it resolves at the moment it runs. Added before the COPY, wasm32
+# landed on the image's default toolchain while the build used the pinned one,
+# and the stage failed with "can't find crate for `core`" — the failure #49
+# fixed for the Leptos build, reintroduced by #284's rewrite.
+RUN rustup target add wasm32-unknown-unknown
 # cargo resolves the workspace before building -p oxsum-verify, so every
 # member's manifest must exist; only doubleentry + verify carry real sources.
 COPY crates/doubleentry ./crates/doubleentry
