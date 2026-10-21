@@ -128,7 +128,10 @@ The dashboard is the React app under `web/` (issue #234): overview, top-up, bill
   the marker committed; completeness is the organization's signed claim, which a
   customer's own request log spot-checks by comparing the report's `entryCount` and
   `chargedTotalMinor` against what it sent.
-- **Share a bill as a link**: handing a customer a JSON file is not a bill. `POST
+- **Share a bill as a link**: handing a customer a JSON file is not a bill. The
+  dashboard's **Reports** page (`/app/reports`) mints a report and either link
+  scope, shows the token once and lists what you shared. The same operations over
+  the API: `POST
   /api/v1/org/usage-reports/{reportId}/links` mints a capability link (issue #300)
   and answers its `token` once — only the hash is stored. The link expires 30 days
   out by default (90 at most), stops working when you `DELETE …/links/{linkId}`,

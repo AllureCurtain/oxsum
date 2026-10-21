@@ -18,6 +18,7 @@ import { Members } from "./pages/Members";
 import { Overview } from "./pages/Overview";
 import { Pricing } from "./pages/Pricing";
 import { Requests } from "./pages/Requests";
+import { Reports } from "./pages/Reports";
 import { Settings } from "./pages/Settings";
 import { StatementDetail, Statements } from "./pages/Statements";
 import { Topup } from "./pages/Topup";
@@ -46,6 +47,7 @@ export function App() {
         <Route path="webhooks" element={<Webhooks />} />
         <Route path="statements" element={<Statements />} />
         <Route path="statements/:id" element={<StatementDetail />} />
+        <Route path="reports" element={<Reports />} />
         <Route path="log" element={<Log />} />
         <Route path="chat" element={<Chat />} />
         <Route path="device" element={<Device />} />

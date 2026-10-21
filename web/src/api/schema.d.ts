@@ -2189,6 +2189,77 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/topups/airwallex": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open an Airwallex payment page to top up
+         * @description The `airwallex` deposit rail (issue #285): opens a `pending` deposit
+         *     (`payment_ref` = the `idempotencyKey`), asks Airwallex for a
+         *     PaymentIntent and answers the hosted-page URL the payer's browser
+         *     follows plus the `clientSecret` the SDK confirms against. A replayed
+         *     intent (same `idempotencyKey`) answers the same URL and secret — the
+         *     deposit's unique constraint is the idempotency anchor, not a lookup. A
+         *     deployment without `OXSUM_AIRWALLEX_*` answers 503: the rail is
+         *     configured or it is not.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["AmountRequest"];
+                };
+            };
+            responses: {
+                /** @description The hosted-page URL, the intent identity and the deposit it credits */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: {
+                                /**
+                                 * Format: uri
+                                 * @description the hosted-payment-page URL the browser follows
+                                 */
+                                checkoutUrl: string;
+                                /** @description the PaymentIntent id the webhook names */
+                                intentId: string;
+                                /** @description the secret the hosted page's SDK confirms against */
+                                clientSecret?: string;
+                                /**
+                                 * Format: uuid
+                                 * @description the pending deposit this intent confirms
+                                 */
+                                depositId: string;
+                            };
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/topups/x402": {
         parameters: {
             query?: never;
@@ -2200,22 +2271,30 @@ export interface paths {
         put?: never;
         /**
          * Credit a signed x402 payment authorization
-         * @description The `x402` deposit rail — an x402-*shaped*, mandate-verified crypto payment
-         *     interface (issue #264). The caller presents a signed payment authorization
-         *     (`payment`, base64url): `{scheme, network, asset, amountMinor, payTo, nonce,
-         *     payer, signature}`. The rail verifies the signature's shape and records the
-         *     deposit through the same pending → confirmed → credited walk every rail
-         *     shares — `payment_ref` carries the signed `nonce`, so a replayed
-         *     authorization credits once.
+         * @description The `x402` deposit rail (issues #264, #282): the caller presents a
+         *     signed payment authorization (`payment`, base64url) and the rail
+         *     verifies it, settles it, and books the deposit through the same
+         *     pending → confirmed → credited walk every rail shares —
+         *     `payment_ref` carries the signed `nonce`, so a replayed authorization
+         *     credits once (and settles once: the deposit row's `FOR UPDATE` claim
+         *     serializes a same-nonce race behind the winner's on-chain settle).
          *
-         *     The seam is the verifier: a real EIP-712/x402 verifier drops into the same
-         *     interface later; today's implementation is a stand-in Ed25519 test scheme
-         *     (`scheme: "exact"`, `network: "oxsum-ed25519"`, `asset: "OXSUM-CREDIT"`)
-         *     checked against the key `OXSUM_X402_VERIFYING_KEY` pins. No chain RPC, no
-         *     settlement-finality check, no real wallet signatures are built — the
-         *     verification boundary is stubbed, the bookkeeping behind it is real
-         *     (docs/decisions.md). A deployment without `OXSUM_X402_VERIFYING_KEY` answers
-         *     503: the rail is configured or it is not.
+         *     Two verifier configurations:
+         *
+         *     - **Facilitator-delegated** (issue #282): `OXSUM_X402_FACILITATOR_URL` +
+         *       `OXSUM_X402_NETWORK` + `OXSUM_X402_ASSET` + `OXSUM_X402_PAY_TO` —
+         *       verify and settle delegate to an x402-rs facilitator sidecar over
+         *       its V1 HTTP API, and the settle answer's chain transaction hash lands
+         *       on the deposit's `facilitator_tx_hash`. This is the real rail:
+         *       EIP-3009 signatures, real wallet authorizations, real finality.
+         *     - **Ed25519 stand-in** (issue #264): `OXSUM_X402_VERIFYING_KEY` alone
+         *       keeps the test scheme (`scheme: "exact"`, `network: "oxsum-ed25519"`,
+         *       `asset: "OXSUM-CREDIT"`) — no chain, for tests and for deployments
+         *       exercising the bookkeeping without a payment network. A deployment
+         *       with neither answers 503: the rail is configured or it is not.
+         *
+         *     Whichever rail serves, a payload that fails its wire's parse is the
+         *     same 403 an unverified signature earns.
          */
         post: {
             parameters: {
@@ -2265,6 +2344,60 @@ export interface paths {
          *     disagrees with `amount_minor` is for a human, never auto-patched.
          *     A deployment without `OXSUM_STRIPE_*` answers 404: an unconfigured
          *     rail has no webhook to verify.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            responses: {
+                /** @description acknowledged — every verified event is answered 200 whether the deposit moved or not */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/webhooks/airwallex": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Airwallex's deposit-rail callback
+         * @description The provider's unauthenticated webhook (issue #285): `x-timestamp` and
+         *     `x-signature` verify the body under `OXSUM_AIRWALLEX_WEBHOOK_SECRET` —
+         *     hex HMAC-SHA256 of `timestamp + raw_body`, compared in constant time.
+         *     `payment_intent.succeeded` confirms and credits the deposit the intent
+         *     names — the credit replays under `airwallex:<intent_id>` so a retried
+         *     or raced delivery writes nothing twice — and
+         *     `payment_intent.cancelled`/`payment_intent.expired` close it.
+         *     `data.object.amount` (decimal major units) converts to the recorded
+         *     `received_minor` in cents; a number that disagrees with `amount_minor`
+         *     is for a human, never auto-patched. A deployment without
+         *     `OXSUM_AIRWALLEX_*` answers 404: an unconfigured rail has no webhook to
+         *     verify.
          */
         post: {
             parameters: {
@@ -3099,6 +3232,199 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/org/usage-reports/{reportId}/links": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mint a share link to one usage report (issue
+         * @description A downstream customer holds no account, so the link is the capability:
+         *     the plaintext token is answered once, only its SHA-256 is stored, and
+         *     the organization can revoke it. The link carries no rows itself — the
+         *     deployment's `/bill/{token}` page resolves it to the frozen report
+         *     bundle without a session.
+         *
+         *     The report must belong to the acting organization: an id guessed from
+         *     another tenant answers 404. `expiresAt` defaults to 30 days from now and
+         *     may not be more than 90 days out; `label` is the organization's own note
+         *     for the recipient.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    reportId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["CreateReportLinkRequest"];
+                };
+            };
+            responses: {
+                /** @description The link descriptor and its one-time token */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["CreatedReportLink"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/org/usage-reports/links": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the organization's report share links (issue
+         * @description Every link the organization minted, newest first — descriptors only,
+         *     never tokens. `lastUsedAt` is the operator's signal that the customer
+         *     opened the bill; `revokedAt` and `expiresAt` are the two ways a link
+         *     stops resolving.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The organization's links, newest first */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: {
+                                rows: components["schemas"]["ReportLink"][];
+                            };
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Mint a share link to one downstream customer's reports (issue
+         * @description The `end_user` scope: one link that lists every report the organization
+         *     has issued that customer. The customer must have usage in the
+         *     organization's ledger — a name nothing was billed to is refused, because
+         *     the page it opened would read as a broken bill. Same token, expiry and
+         *     label rules as the report-scoped mint.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CreateEndUserLinkRequest"];
+                };
+            };
+            responses: {
+                /** @description The link descriptor and its one-time token */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["CreatedReportLink"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/org/usage-reports/links/{linkId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revoke a report share link (issue
+         * @description Idempotent: revoking an already-revoked link answers the same descriptor.
+         *     An id of another organization answers 404, the same as an unknown one —
+         *     whether a link exists elsewhere is not this organization's business.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    linkId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The revoked link descriptor */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ReportLink"];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
         options?: never;
         head?: never;
         patch?: never;
@@ -4060,6 +4386,151 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/channels/{channelName}/aliases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One channel's aliases, oldest first
+         * @description The public names this channel serves that rename the upstream model they
+         *     relay (issue #286). `GET /v1/models` lists them beside the direct names.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description the channel's name, which is its identity */
+                    channelName: components["parameters"]["ChannelName"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The channel's aliases, oldest first */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ModelAlias"][];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Claim an alias for a channel
+         * @description Callers write `alias` on every surface the channel speaks; the gateway
+         *     forwards `upstreamModel` instead (issue #286). An alias is a rename, not
+         *     a routing layer — the name resolves to this one channel.
+         *
+         *     One name answers one route set: a name already claimed as an alias on
+         *     any channel, or spelled as a direct model name on a different channel,
+         *     is a `409`. The alias's own price row wins over the upstream model's on
+         *     this channel, so a public name can be priced differently; an alias with
+         *     no price of its own bills at the upstream model's.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description the channel's name, which is its identity */
+                    channelName: components["parameters"]["ChannelName"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["AliasRequest"];
+                };
+            };
+            responses: {
+                /** @description The alias as claimed */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ModelAlias"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/channels/{channelName}/aliases/{alias}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Drop one of a channel's aliases
+         * @description Aliases are mutable routing configuration, not ledger data: the delete
+         *     is hard, and bills already written still name the alias the caller used
+         *     (issue #286). A name that is not this channel's — unknown to it, or
+         *     claimed by another channel — is a `404`.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description the channel's name, which is its identity */
+                    channelName: components["parameters"]["ChannelName"];
+                    /** @description the alias to drop, as callers wrote it */
+                    alias: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The alias is gone */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: Record<string, never>;
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/organizations": {
         parameters: {
             query?: never;
@@ -4382,7 +4853,11 @@ export interface paths {
          *     a price without an `upstream` block, a swept hold, history from before
          *     the column existed. `untrackedTurns` is the number a growing gap in the
          *     coverage shows up in first; it is also where upstream misbilling would
-         *     hide if a channel were priced but not tracked.
+         *     hide if a channel were priced but not tracked. `providerBilledMinor`
+         *     (issue #283) is what the provider actually billed the channel — the
+         *     daily `upstream-bill-sync` pass's answer against the estimate
+         *     `upstreamCostMinor` keeps — channel-scoped and repeated per model row,
+         *     `null` while no bill pass has reconciled the channel.
          */
         get: {
             parameters: {
@@ -5516,7 +5991,9 @@ export interface paths {
          *     frozen, so it cannot be served — and a `mode: event` price is a billable code for
          *     `/api/v1/metering`, not a model any `/v1` surface relays, so it is not listed either.
          *     `owned_by` is the channel that serves the model, and `created` is when the version in force
-         *     was written.
+         *     was written. Model aliases are listed beside the direct names (issue
+         *     #286): a caller writes the public name and the channel relays the
+         *     upstream model it renames.
          */
         get: {
             parameters: {
@@ -6398,6 +6875,8 @@ export interface components {
             baseUrl: string;
             /** @description the upstream credential; sealed with OXSUM_SECRET_KEY, only its last four characters readable afterwards. Sent upstream as `Authorization: Bearer` on an `openai` channel and as `x-api-key` on an `anthropic` one */
             apiKey: string;
+            /** @description the admin billing credential the upstream-bill-sync pass reads the provider's cost API under (issue #283) — sealed beside apiKey, deliberately separate so a metering credential never reads the org's bill. Omit to leave any stored billing key untouched; explicit null clears it. */
+            billKey?: string | null;
             /**
              * @description the upstream protocol the channel speaks, which selects the usage adapter its reports are normalized by and which `/v1` surface serves its models; defaults to `openai` — any other name is VALIDATION_ERROR
              * @enum {string}
@@ -6411,6 +6890,8 @@ export interface components {
             protocol: string;
             /** @description the last four characters of the stored credential, and nothing more of it */
             apiKeyLast4: string;
+            /** @description the last four characters of the admin billing credential (issue #283), and nothing more of it; null when the channel carries none */
+            billKeyLast4: string | null;
             /** Format: date-time */
             createdAt: string;
             /** @description one entry per model, at its current version */
@@ -6537,6 +7018,26 @@ export interface components {
             /** @description the version this change appended */
             version: number;
         };
+        /** @description an alias claim (issue #286): the public name callers write, and the upstream model the channel relays it as */
+        AliasRequest: {
+            /** @description the public name; unique across channels — a name another channel serves directly is a conflict */
+            alias: string;
+            /** @description the model the channel actually serves, forwarded upstream in place of the alias */
+            upstreamModel: string;
+        };
+        ModelAlias: {
+            /** @description the public name callers write */
+            alias: string;
+            /** @description the channel that claims the alias */
+            channel: string;
+            /** @description the upstream model the channel relays */
+            upstreamModel: string;
+            /**
+             * Format: date-time
+             * @description when the alias was claimed
+             */
+            createdAt: string;
+        };
         /** @description one hold the ledger still reserves — the in-flight table's row */
         OpenHoldView: {
             /** @description the caller's request id — `x-oxsum-request-id` */
@@ -6650,6 +7151,70 @@ export interface components {
             /** Format: int64 */
             chargedTotalMinor: number;
             subsetHash: string;
+        };
+        /**
+         * @description What a share link resolves to: `report` pins one minted usage report —
+         *     the customer's bill for one span — while `end_user` names one downstream
+         *     customer and lists the reports the organization has issued them.
+         * @enum {string}
+         */
+        LinkScope: "report" | "end_user";
+        /**
+         * @description A capability link the organization minted. The token itself is never
+         *     part of this shape; it exists only in the create response.
+         */
+        ReportLink: {
+            /** Format: uuid */
+            linkId: string;
+            scope: components["schemas"]["LinkScope"];
+            /**
+             * Format: uuid
+             * @description the pinned report for `report` scope; absent for `end_user`
+             */
+            reportId?: string | null;
+            endUser: string;
+            /** @description the organization's own note for the recipient */
+            label?: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description when the link stops resolving
+             */
+            expiresAt: string;
+            /** Format: date-time */
+            revokedAt?: string | null;
+            /**
+             * Format: date-time
+             * @description when the link last resolved — the customer opened the bill
+             */
+            lastUsedAt?: string | null;
+        };
+        CreatedReportLink: {
+            link: components["schemas"]["ReportLink"];
+            /**
+             * @description the plaintext capability token, answered once — the deployment serves
+             *     `/bill/{token}` for it and the database keeps only its SHA-256
+             */
+            token: string;
+        };
+        CreateReportLinkRequest: {
+            label?: string | null;
+            /**
+             * Format: date-time
+             * @description defaults to 30 days from now; at most 90 days out
+             */
+            expiresAt?: string | null;
+        };
+        CreateEndUserLinkRequest: {
+            /** @description the downstream customer the reports are attributed to */
+            endUser: string;
+            label?: string | null;
+            /**
+             * Format: date-time
+             * @description defaults to 30 days from now; at most 90 days out
+             */
+            expiresAt?: string | null;
         };
         /** @description one transaction as the bills page lists it — every ledger entry that moved money */
         BillRow: {
@@ -7168,6 +7733,11 @@ export interface components {
             upstreamCostMinor: number;
             /**
              * Format: int64
+             * @description what the provider actually billed the channel
+             */
+            providerBilledMinor?: number | null;
+            /**
+             * Format: int64
              * @description chargedMinor minus upstreamCostMinor
              */
             marginMinor: number;
@@ -7419,12 +7989,33 @@ export interface components {
         };
         X402TopupRequest: {
             /**
-             * @description base64url of the signed payment authorization
-             *     `{scheme, network, asset, amountMinor, payTo, nonce, payer, signature}`.
-             *     The rail verifies `signature` over the canonical body and credits
-             *     `amountMinor`; the signed `nonce` is the deposit's idempotency anchor.
+             * @description base64url of the signed payment authorization. Two wires, one field —
+             *     whichever rail is configured parses it:
+             *
+             *     - **facilitator** (`OXSUM_X402_FACILITATOR_*` set): the V1 x402
+             *       `PaymentPayload` — `{x402Version, scheme, network, payload:
+             *       {signature, authorization: {from, to, value, validAfter,
+             *       validBefore, nonce}}}` — the same blob the protocol's `X-PAYMENT`
+             *       header carries. `authorization.nonce` anchors `payment_ref`.
+             *     - **stand-in** (`OXSUM_X402_VERIFYING_KEY` only): the test-scheme
+             *       `{scheme, network, asset, amountMinor, payTo, nonce, payer,
+             *       signature}` whose Ed25519 `signature` is checked against the
+             *       pinned key.
+             *
+             *     A payload that is not the configured rail's wire is a 403,
+             *     indistinguishable from an unverified one.
              */
             payment: string;
+            /**
+             * Format: int64
+             * @description The credit amount the deployment requires the payment to cover.
+             *     Under the facilitator rail this becomes the `paymentRequirements`'s
+             *     `maxAmountRequired` — unset, the authorization's own `value` stands
+             *     (chain-asset atomic units, USDC's 6 decimals, map 1:1 onto credit
+             *     minor units). The stand-in ignores it: the signed body commits the
+             *     amount.
+             */
+            amountMinor?: number;
         };
         SettleRequest: {
             /** @description the idempotency key of the hold this settlement releases; the hold's amount is read from the ledger */
