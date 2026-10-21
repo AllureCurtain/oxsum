@@ -1727,3 +1727,14 @@ The customer a share link belongs to holds no account, so `/bill/{token}` is the
 - **Headers are part of the design.** `Referrer-Policy: no-referrer` keeps the token out of any outbound link; `X-Robots-Tag: noindex` keeps a bill out of search engines; `Cache-Control: private, no-store` keeps a shared cache from handing one customer's bill to the next request. A middleware on the page fallback sets them, so a future page inherits the rule instead of remembering it.
 - **No third-party script, and no script at all in the floor.** The page runs nothing; the browser verifier is the next step and will be the only script, served from the binary like `/verify.js`.
 - **Two scopes, one renderer.** A report link renders its one frozen report; a customer link lists every report issued to them, one section each. The per-report token is still the narrowest capability, so the customer link is the organization's deliberate choice.
+
+
+## 2026-10-22 — The bill verifier runs in the browser over the bundle the page embeds (issue #305)
+
+The bill page rendered the frozen report but could not prove it: the customer still had to paste the bundle into `/verify`. This issue closes the loop without adding an API.
+
+- **The bundle rides in the page, not in a second request.** Each report's `UsageReport` JSON is serialized server-side and embedded as a `data-bundle` attribute on its verify button. The script checks exactly the bytes the page rendered — there is no window in which a different bundle could be fetched, and the page stays a single response. The trade-off is size: a very large monthly bill makes a large attribute, accepted for now; an endpoint is the escape hatch if it ever bites.
+- **The verifier is fetched and hashed, not trusted.** `bill.js` fetches `/verify-wasm/verify_wasm_bg.wasm`, instantiates it, and shows the SHA-256 of the bytes it ran (where SubtleCrypto exists). The customer can compare the hash with a known artifact; the page never claims a verdict from a module it cannot name.
+- **The bundle's own key is the trust anchor.** The verifier is handed `{keyName, publicKey, keyHash}` from the bundle, so the head's signature is checked against what the report names, and the page prints that public key. An unsigned deployment carries no key, verifies membership to the committed digests alone, and says so.
+- **No JavaScript is still a bill.** The page renders the figures and the key without the script; the button simply does nothing. The check is progressive enhancement, not the page.
+- **What it proves is stated, and what it does not.** The verdict names membership, the subset fold, the marker binding and the head signature, and says completeness remains the organization's claim.

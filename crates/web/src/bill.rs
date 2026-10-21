@@ -5,27 +5,41 @@
 //! organization committed — no session, no account, no bundle to paste. The
 //! page is server-rendered on purpose, the same choice `/verify` makes: the
 //! numbers come from the ledger, and the evidence block names the operator key
-//! and the head the rows prove against, so the next step (running the verifier
-//! in the browser) has something honest to check.
+//! and the head the rows prove against. `bill.js` (issue #305) then runs the
+//! same verifier in the browser over the bundle the page embeds, so the check
+//! happens on the customer's machine — the page renders, the customer checks.
 
+use serde::Serialize;
 use topcoat::Result;
 use topcoat::context::Cx;
+use topcoat::router::content::Js;
 use topcoat::router::error::{internal_server_error, not_found};
-use topcoat::router::{RouterBuilder, page, path_param};
+use topcoat::router::{RouterBuilder, page, path_param, route};
 use topcoat::view::{View, view};
 
 use oxsum_core::{
-    Db, EntryId, KeyPublication, LinkScope, SettlementKind, SettlementRecord, Tenants, signing_key,
+    Db, EntryId, KeyPublication, LinkScope, ReportEntryBundle, SettlementKind, SettlementRecord,
+    Tenants, signing_key,
 };
 
 use crate::views::plain;
 
 path_param!(token);
 
-/// Registers the bill page on the server-rendered router.
+/// Registers the bill page and its script on the server-rendered router.
 pub(crate) fn register(builder: RouterBuilder) -> RouterBuilder {
-    builder.page(bill_page)
+    builder.page(bill_page).route(bill_js)
 }
+
+/// The page's own script: runs the verifier over the embedded bundle when the
+/// browser has a wasm engine. Checked in, not generated — the page's behavior,
+/// the same split `/verify.js` keeps.
+#[route(GET "/bill.js")]
+async fn bill_js() -> Result<Js<&'static str>> {
+    Ok(Js(BILL_JS))
+}
+
+const BILL_JS: &str = include_str!("bill.js");
 
 /// One row of a bill: the settled entry as the customer reads it.
 struct BillRow {
@@ -46,6 +60,56 @@ struct BillSection {
     head_size: u64,
     head_root: String,
     rows: Vec<BillRow>,
+    /// The bundle the browser verifier runs on, serialized once here so the
+    /// page and the script check the same bytes (issue #305).
+    bundle_json: String,
+}
+
+/// The `UsageReport` wire shape `verify_usage_report` parses — the same fields
+/// the API serves, assembled here for the embedded bundle.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BundleWire {
+    report_id: String,
+    end_user: String,
+    from: String,
+    to: String,
+    entry_count: i64,
+    charged_total_minor: i64,
+    subset_hash: String,
+    marker: EntryWire,
+    entries: Vec<EntryWire>,
+    head: HeadWire,
+    note: Option<String>,
+    key_name: Option<String>,
+    public_key: Option<String>,
+    key_hash: Option<String>,
+}
+
+/// One entry with its recorded hash and inclusion proof.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EntryWire {
+    entry: oxsum_core::Entry<oxsum_core::Balanced, { oxsum_core::SCALE }>,
+    content_hash: String,
+    proof: oxsum_core::InclusionProof,
+}
+
+impl From<ReportEntryBundle> for EntryWire {
+    fn from(bundle: ReportEntryBundle) -> Self {
+        Self {
+            entry: bundle.entry,
+            content_hash: bundle.content_hash,
+            proof: bundle.proof,
+        }
+    }
+}
+
+/// The tree head the proofs anchor to, hex-encoded as the verifier reads it.
+#[derive(Serialize)]
+struct HeadWire {
+    size: u64,
+    root: String,
 }
 
 /// `GET /bill/{token}` — expired, revoked and unknown tokens are one 404.
@@ -106,7 +170,7 @@ async fn bill_page(cx: &Cx) -> Result<impl View> {
 
     let mut bills = Vec::new();
     for report in reports {
-        let (_marker, entries, head, _signed) = wallet
+        let (marker, entries, head, signed) = wallet
             .usage_report_bundle(
                 EntryId::from_uuid(report.report_id),
                 &report.rows,
@@ -144,6 +208,39 @@ async fn bill_page(cx: &Cx) -> Result<impl View> {
                 }
             })
             .collect();
+        let (note, key_name, public_key, key_hash) = match signed {
+            Some(signed) => (
+                Some(signed.note),
+                Some(signed.key.name),
+                Some(hex(&signed.key.public_key)),
+                Some(hex(&signed.key.key_hash)),
+            ),
+            None => (None, None, None, None),
+        };
+        let bundle = BundleWire {
+            report_id: report.report_id.to_string(),
+            end_user: report.end_user.clone(),
+            from: report.from_date.to_string(),
+            to: report.to_date.to_string(),
+            entry_count: report.entry_count,
+            charged_total_minor: report.charged_total_minor,
+            subset_hash: report.subset_hash.clone(),
+            marker: marker.into(),
+            entries: entries.into_iter().map(Into::into).collect(),
+            head: HeadWire {
+                size: head.size,
+                root: head.root.to_hex(),
+            },
+            note,
+            key_name,
+            public_key,
+            key_hash,
+        };
+        let bundle_json = serde_json::to_string(&bundle).map_err(|error| {
+            internal_server_error(topcoat::Error::msg(format!(
+                "the bill bundle did not serialize: {error}"
+            )))
+        })?;
         bills.push(BillSection {
             end_user: report.end_user,
             from: report.from_date.to_string(),
@@ -157,6 +254,7 @@ async fn bill_page(cx: &Cx) -> Result<impl View> {
             head_size: head.size,
             head_root: head.root.to_hex(),
             rows,
+            bundle_json,
         });
     }
 
@@ -215,6 +313,13 @@ async fn bill_page(cx: &Cx) -> Result<impl View> {
                         <p class="muted head">
                             (format!("Ledger head {} · root {}", bill.head_size, bill.head_root))
                         </p>
+                        <p class="verdict" aria-live="polite"></p>
+                        <button
+                            type="button"
+                            class="verify-bill"
+                            data-end-user=(bill.end_user)
+                            data-bundle=(bill.bundle_json)
+                        >"Verify this bill"</button>
                     </section>
                 }
                 <p class="muted head">(format!("Operator key: {fingerprint}"))</p>
@@ -223,6 +328,7 @@ async fn bill_page(cx: &Cx) -> Result<impl View> {
                      the head above is the log they belong to. The bundle itself is what a \
                      verifier checks — this page does not ask you to trust its rendering."
                 </p>
+                <script type="module" src="/bill.js"></script>
             </div>
         )
     })

@@ -137,7 +137,10 @@ The dashboard is the React app under `web/` (issue #234): overview, top-up, bill
   other scope: one link that lists every report issued to that customer. The
   customer opens `/bill/{token}`: the page needs no account, renders the frozen
   figures beside the operator key and the ledger head, and works without
-  JavaScript. It is never indexed and never cached.
+  JavaScript. It is never indexed and never cached. Pressing **Verify this bill**
+  runs the verifier in the customer's own browser over the bundle the page embeds
+  and reports what it checked — membership, the subset fold, the marker binding and
+  the head's signature — and what it did not: completeness.
 - **Export**: **Download CSV** and **Download JSON** on the bills page save the
   organization's whole history as a file — every transaction, not just the page on
   screen. Both carry the same fields — `bookedOn`,
