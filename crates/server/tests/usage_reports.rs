@@ -11,6 +11,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::time::Duration;
+
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode};
@@ -19,8 +21,11 @@ use oxsum_core::{
     BillLine, Db, Settlement, SettlementKind, Tenants, UsageRecord, UsageRow, entry_id_for,
     settlement_key_for,
 };
-use oxsum_server::{Config, Signup};
+use oxsum_server::{Config, Mailer, Signup};
 use serde_json::{Value, json};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpListener;
+use tokio::sync::mpsc;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -1032,5 +1037,257 @@ async fn an_end_user_bill_link_lists_every_report() {
         body.matches("<section class=\"bill\">").count(),
         2,
         "one section per issued report"
+    );
+}
+
+/// A minimal SMTP stub: one connection at a time, the verbs lettre sends, and
+/// the DATA body handed back to the test. The bill-mail test needs to see what
+/// actually went out — the database keeps only the token's hash.
+struct SmtpStub {
+    url: String,
+    mails: mpsc::Receiver<String>,
+}
+
+async fn smtp_stub() -> SmtpStub {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("binds a stub SMTP");
+    let port = listener.local_addr().expect("an address").port();
+    let (tx, mails) = mpsc::channel(8);
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let (read, mut write) = stream.into_split();
+                if write.write_all(b"220 stub ESMTP\r\n").await.is_err() {
+                    return;
+                }
+                let mut reader = BufReader::new(read);
+                let mut data = String::new();
+                let mut in_data = false;
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
+                        return;
+                    }
+                    if in_data {
+                        if line.trim_end_matches(['\r', '\n']) == "." {
+                            let _ = tx.send(std::mem::take(&mut data)).await;
+                            in_data = false;
+                            if write.write_all(b"250 queued\r\n").await.is_err() {
+                                return;
+                            }
+                        } else {
+                            data.push_str(&line);
+                        }
+                        continue;
+                    }
+                    let verb = line
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("")
+                        .to_ascii_uppercase();
+                    let reply = match verb.as_str() {
+                        "EHLO" | "HELO" => "250 stub\r\n",
+                        "MAIL" | "RCPT" | "RSET" | "NOOP" => "250 ok\r\n",
+                        "DATA" => {
+                            in_data = true;
+                            "354 go ahead\r\n"
+                        }
+                        "QUIT" => {
+                            let _ = write.write_all(b"221 bye\r\n").await;
+                            return;
+                        }
+                        _ => "502 not implemented\r\n",
+                    };
+                    if write.write_all(reply.as_bytes()).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    SmtpStub {
+        url: format!("smtp://127.0.0.1:{port}"),
+        mails,
+    }
+}
+
+/// The next mail the stub captured, unwrapped from its quoted-printable
+/// soft breaks (`=\r\n`) and `=3D` escapes.
+async fn next_mail(stub: &mut SmtpStub) -> String {
+    let raw = tokio::time::timeout(Duration::from_secs(10), stub.mails.recv())
+        .await
+        .expect("a mail arrives")
+        .expect("the stub keeps running");
+    raw.replace("=\r\n", "")
+        .replace("=\n", "")
+        .replace("=3D", "=")
+}
+
+/// An app over a real database with its mailer pointed at a stub.
+async fn mailing_app(url: &str) -> (Router, Db, SmtpStub) {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .connect(url)
+        .await
+        .expect("connects to PostgreSQL");
+    let db = Db::from_pool(pool.clone());
+    db.migrate().await.expect("migrates");
+    let stub = smtp_stub().await;
+    let mailer = Mailer::new(
+        &stub.url,
+        "oxsum <noreply@oxsum.test>",
+        "http://oxsum.test/",
+    )
+    .expect("a mailer over the stub");
+    let config = Config::new(Signup::Open, None)
+        .with_head_signing_seed(HEAD_SEED)
+        .with_mailer(mailer);
+    (oxsum_server::app(db.clone(), config), db, stub)
+}
+
+/// The next mail that carries `needle` — registration already sends a
+/// verification mail through the same stub, so the bill mail is not necessarily
+/// the first one.
+async fn mail_with(stub: &mut SmtpStub, needle: &str) -> String {
+    for _ in 0..5 {
+        let mail = next_mail(stub).await;
+        if mail.contains(needle) {
+            return mail;
+        }
+    }
+    panic!("no captured mail carried {needle}");
+}
+
+/// A link minted with an `email` mails the customer the `/bill/{token}` URL and
+/// says `sent`; the mail carries the period and total too (issue #315).
+#[tokio::test]
+async fn an_emailed_bill_link_reaches_the_customer() {
+    let Some(url) = url() else {
+        eprintln!("DATABASE_URL not set, skipping");
+        return;
+    };
+    let (app, db, mut stub) = mailing_app(&url).await;
+    let account = account(&app, "mail-link").await;
+    top_up(&app, &account.cookie, 1_000_000_000).await;
+    let tenants = Tenants::new(db.pool().clone());
+    let end_user = "customer-1";
+    let to = today() - time::Duration::days(1);
+    seed_request(
+        &db,
+        &tenants,
+        &account.tenant_id,
+        "req-a",
+        end_user,
+        300,
+        400,
+        to,
+    )
+    .await;
+    let to = to.to_string();
+    let report = mint(&app, &account.cookie, end_user, &to, &to).await.json()["data"].clone();
+    let report_id = report["reportId"].as_str().expect("a report id").to_owned();
+
+    let created = call(
+        &app,
+        "POST",
+        &format!("/api/v1/org/usage-reports/{report_id}/links"),
+        Some(json!({"email": "customer@example.com", "label": "August"})),
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.json());
+    assert_eq!(
+        created.json()["data"]["delivery"].as_str(),
+        Some("sent"),
+        "the response names the delivery"
+    );
+    let token = created.json()["data"]["token"]
+        .as_str()
+        .expect("a token")
+        .to_owned();
+
+    let mail = mail_with(&mut stub, "/bill/").await;
+    assert!(
+        mail.contains(&format!("/bill/{token}")),
+        "the mail carries the capability link: {mail}"
+    );
+    assert!(mail.contains(end_user), "the mail names the customer");
+    assert!(
+        mail.contains("0.000300"),
+        "the mail carries the bill total: {mail}"
+    );
+    assert!(
+        mail.contains("Verify this bill"),
+        "the mail names the browser check"
+    );
+}
+
+/// `email` on a deployment without a mailer is a caller mistake: the link is not
+/// minted, so the operator never believes a mail went out.
+#[tokio::test]
+async fn email_without_a_mailer_is_refused() {
+    let (app, db) = app_or_skip!();
+    let account = account(&app, "no-mailer").await;
+    top_up(&app, &account.cookie, 1_000_000_000).await;
+    let tenants = Tenants::new(db.pool().clone());
+    let end_user = "customer-1";
+    let to = today() - time::Duration::days(1);
+    seed_request(
+        &db,
+        &tenants,
+        &account.tenant_id,
+        "req-a",
+        end_user,
+        300,
+        400,
+        to,
+    )
+    .await;
+    let to = to.to_string();
+    let report = mint(&app, &account.cookie, end_user, &to, &to).await.json()["data"].clone();
+    let report_id = report["reportId"].as_str().expect("a report id").to_owned();
+
+    let refused = call(
+        &app,
+        "POST",
+        &format!("/api/v1/org/usage-reports/{report_id}/links"),
+        Some(json!({"email": "customer@example.com"})),
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        refused.json()["error"]["code"].as_str(),
+        Some("VALIDATION_ERROR")
+    );
+
+    let malformed = call(
+        &app,
+        "POST",
+        &format!("/api/v1/org/usage-reports/{report_id}/links"),
+        Some(json!({"email": "not-an-address"})),
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(malformed.status, StatusCode::BAD_REQUEST);
+
+    // Nothing was minted by either refusal.
+    let links = call(
+        &app,
+        "GET",
+        "/api/v1/org/usage-reports/links",
+        None,
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(
+        links.json()["data"]["rows"].as_array().map(Vec::len),
+        Some(0)
     );
 }
