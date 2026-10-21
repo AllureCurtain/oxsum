@@ -7197,6 +7197,13 @@ export interface components {
              *     `/bill/{token}` for it and the database keeps only its SHA-256
              */
             token: string;
+            /**
+             * @description present only when the mint asked for a mail: `sent` when the SMTP
+             *     transport accepted it, `failed` when it did not — the link and token
+             *     are still the answer, so the operator can pass the link on by hand
+             * @enum {string|null}
+             */
+            delivery?: "sent" | "failed" | null;
         };
         CreateReportLinkRequest: {
             label?: string | null;
@@ -7205,6 +7212,12 @@ export interface components {
              * @description defaults to 30 days from now; at most 90 days out
              */
             expiresAt?: string | null;
+            /**
+             * Format: email
+             * @description mail the link here at creation — the only moment the plaintext token
+             *     exists; a deployment without a mailer refuses it
+             */
+            email?: string | null;
         };
         CreateEndUserLinkRequest: {
             /** @description the downstream customer the reports are attributed to */
@@ -7215,6 +7228,12 @@ export interface components {
              * @description defaults to 30 days from now; at most 90 days out
              */
             expiresAt?: string | null;
+            /**
+             * Format: email
+             * @description mail the link here at creation — the only moment the plaintext token
+             *     exists; a deployment without a mailer refuses it
+             */
+            email?: string | null;
         };
         /** @description one transaction as the bills page lists it — every ledger entry that moved money */
         BillRow: {

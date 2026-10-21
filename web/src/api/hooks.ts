@@ -721,7 +721,7 @@ export function useCreateReportLink() {
     mutationFn: ({
       reportId,
       ...body
-    }: { reportId: string; label?: string; expiresAt?: string }) =>
+    }: { reportId: string; label?: string; expiresAt?: string; email?: string }) =>
       api<CreatedReportLink>(`/org/usage-reports/${reportId}/links`, {
         method: "POST",
         body,
@@ -733,7 +733,7 @@ export function useCreateReportLink() {
 export function useCreateCustomerLink() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (body: { endUser: string; label?: string; expiresAt?: string }) =>
+    mutationFn: (body: { endUser: string; label?: string; expiresAt?: string; email?: string }) =>
       api<CreatedReportLink>("/org/usage-reports/links", { method: "POST", body }),
     onSuccess: () => client.invalidateQueries({ queryKey: ["report-links"] }),
   });

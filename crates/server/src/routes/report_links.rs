@@ -10,20 +10,22 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use oxsum_core::{LinkScope, MintedReportLink, Principal, ReportLink};
+use oxsum_core::{LinkScope, MintedReportLink, Principal, ReportLink, WalletError};
 
 use crate::AppState;
 use crate::error::{ApiError, ApiJson};
 use crate::routes::{ApiResult, ok};
 
-/// The body every link mint accepts: an optional operator label and an optional
-/// expiry (defaults to 30 days, capped at 90 by the domain layer).
+/// The body every link mint accepts: an optional operator label, an optional
+/// expiry (defaults to 30 days, capped at 90 by the domain layer) and an
+/// optional address to mail the link to (issue #315).
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct CreateLinkBody {
     label: Option<String>,
     #[serde(default, with = "time::serde::rfc3339::option")]
     expires_at: Option<OffsetDateTime>,
+    email: Option<String>,
 }
 
 /// The end-user link body: the customer the reports belong to.
@@ -35,6 +37,8 @@ pub(crate) struct CreateEndUserLinkBody {
     label: Option<String>,
     #[serde(default, with = "time::serde::rfc3339::option")]
     expires_at: Option<OffsetDateTime>,
+    #[serde(default)]
+    email: Option<String>,
 }
 
 /// One link as the organization's API answers it — the token is never echoed.
@@ -72,21 +76,65 @@ impl From<ReportLink> for ReportLinkRes {
     }
 }
 
-/// A freshly minted link: the only response that carries the plaintext token.
+/// A freshly minted link: the only response that carries the plaintext token,
+/// and the only place `delivery` says whether the mail went out.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreatedReportLinkRes {
     link: ReportLinkRes,
     token: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    delivery: Option<&'static str>,
 }
 
-impl From<MintedReportLink> for CreatedReportLinkRes {
-    fn from(minted: MintedReportLink) -> Self {
-        Self {
-            link: minted.link.into(),
-            token: minted.token,
+/// The one address rule applied before minting: a single address the mailer can
+/// parse. A malformed one is a caller mistake, not a reason to mint a link the
+/// operator believes was mailed.
+fn email_of(email: Option<&str>) -> Result<Option<&str>, ApiError> {
+    let Some(email) = email.map(str::trim).filter(|text| !text.is_empty()) else {
+        return Ok(None);
+    };
+    let valid = email.len() <= 254
+        && email.matches('@').count() == 1
+        && !email.starts_with('@')
+        && !email.ends_with('@')
+        && !email.chars().any(char::is_whitespace);
+    if valid {
+        Ok(Some(email))
+    } else {
+        Err(WalletError::InvalidInput("email must be a single address".into()).into())
+    }
+}
+
+/// Sends the mail and reduces the outcome to the wire's `delivery`. A send
+/// failure never turns the mint into an error: the link exists, and its token is
+/// in the answer for the operator to pass on by hand.
+async fn deliver(
+    state: &AppState,
+    email: Option<&str>,
+    minted: &MintedReportLink,
+    customer: &str,
+    detail: &str,
+) -> Option<&'static str> {
+    let email = email?;
+    let mailer = state.config.mailer()?;
+    match mailer
+        .send_bill_link(email, &minted.token, customer, detail)
+        .await
+    {
+        Ok(()) => Some("sent"),
+        Err(error) => {
+            tracing::warn!(%error, "the bill link mail was not sent");
+            Some("failed")
         }
     }
+}
+
+/// Minor units as credits with six decimals — the page's spelling.
+fn credits(minor: i64) -> String {
+    let sign = if minor < 0 { "-" } else { "" };
+    let absolute = minor.unsigned_abs();
+    format!("{sign}{}.{:06}", absolute / 1_000_000, absolute % 1_000_000)
 }
 
 /// The organization's links, newest first.
@@ -105,6 +153,12 @@ pub(crate) async fn create_for_report(
     body: Option<ApiJson<CreateLinkBody>>,
 ) -> ApiResult<CreatedReportLinkRes> {
     let body = body.map_or_else(CreateLinkBody::default, |ApiJson(body)| body);
+    let email = email_of(body.email.as_deref())?;
+    if email.is_some() && state.config.mailer().is_none() {
+        return Err(
+            WalletError::InvalidInput("this deployment has no mailer configured".into()).into(),
+        );
+    }
     let minted = state
         .db
         .create_report_link(
@@ -115,7 +169,28 @@ pub(crate) async fn create_for_report(
             principal.user_id(),
         )
         .await?;
-    ok(minted.into())
+    let delivery = match email {
+        None => None,
+        Some(_) => {
+            let report = state
+                .db
+                .usage_report(report_id)
+                .await?
+                .ok_or_else(ApiError::not_found)?;
+            let detail = format!(
+                "Period: {} to {}\nTotal: {} credits",
+                report.from_date,
+                report.to_date,
+                credits(report.charged_total_minor)
+            );
+            deliver(&state, email, &minted, &report.end_user, &detail).await
+        }
+    };
+    ok(CreatedReportLinkRes {
+        link: minted.link.into(),
+        token: minted.token,
+        delivery,
+    })
 }
 
 /// `POST /api/v1/org/usage-reports/links` — a capability link to one downstream
@@ -125,6 +200,12 @@ pub(crate) async fn create_for_end_user(
     Extension(principal): Extension<Principal>,
     ApiJson(body): ApiJson<CreateEndUserLinkBody>,
 ) -> ApiResult<CreatedReportLinkRes> {
+    let email = email_of(body.email.as_deref())?;
+    if email.is_some() && state.config.mailer().is_none() {
+        return Err(
+            WalletError::InvalidInput("this deployment has no mailer configured".into()).into(),
+        );
+    }
     let minted = state
         .db
         .create_end_user_link(
@@ -135,7 +216,19 @@ pub(crate) async fn create_for_end_user(
             principal.user_id(),
         )
         .await?;
-    ok(minted.into())
+    let delivery = deliver(
+        &state,
+        email,
+        &minted,
+        &minted.link.end_user,
+        "This link lists every bill the operator has issued to you.",
+    )
+    .await;
+    ok(CreatedReportLinkRes {
+        link: minted.link.into(),
+        token: minted.token,
+        delivery,
+    })
 }
 
 /// `GET /api/v1/org/usage-reports/links` — every link the organization minted,

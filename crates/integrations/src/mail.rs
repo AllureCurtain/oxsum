@@ -88,6 +88,35 @@ impl Mailer {
         .await
     }
 
+    /// Mails a customer their bill link: `/bill/{token}` (issue #315).
+    ///
+    /// `detail` is the line the caller already knows — the period and total for
+    /// one report, or the sentence naming the customer scope. The link is a
+    /// capability, so the mail is as sensitive as the bill: it goes to the
+    /// address the operator named, once, and never appears in the database.
+    pub async fn send_bill_link(
+        &self,
+        to: &str,
+        token: &str,
+        customer: &str,
+        detail: &str,
+    ) -> Result<(), String> {
+        self.send(
+            to,
+            "Your oxsum bill is ready",
+            &format!(
+                "A bill for {customer} is ready.\n\n{detail}\n\nOpen it here:\n\
+                 {}/bill/{token}\n\nThe page needs no account. Press \"Verify this bill\" to \
+                 check it in your browser — it proves the rows are in the operator's ledger and \
+                 that nothing was altered; it does not prove completeness, so compare the count \
+                 and total with your own records.\n\nThe link expires in 30 days, or earlier if \
+                 the operator revokes it.",
+                self.public_url
+            ),
+        )
+        .await
+    }
+
     /// Sends one plain-text mail. Failures are a description string: the callers
     /// log them and answer as if nothing had happened — a mail that never
     /// arrives must not turn a registration or a forgot-answer into an error.
