@@ -166,9 +166,10 @@ The dashboard is the React app under `web/` (issue #234): overview, top-up, bill
 - **Requests**: the organization's settled requests, newest first
   (`/app/requests`): when the settlement was booked, the request id (the
   `x-oxsum-request-id` the gateway answered with), the model, the key that paid, the
-  status — how the turn was priced, in the bill's own words: `usage`, `estimated`,
-  `capped`, `client_cancelled`, `upstream_error`, `upstream_unreachable`, `swept`
-  or `unpriced` —
+  status — how the turn ended, in plain words: *settled*, *estimated*, *capped at
+  freeze*, *client cancelled*, *upstream error*, *upstream unreachable*, *hold
+  timed out*, *partly unpriced*, *released* or *refused*; hover the label for the
+  one-line reason —
   and the input and output tokens it used and what it charged in credits. The
   filters live in the URL: `/app/requests?key=<prefix>&model=<name>`. Type a
   key's prefix (the keys page shows it) or a model name and press **Filter**, or click
