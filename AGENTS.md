@@ -109,6 +109,7 @@ All project documentation, code comments, and commit messages are written in Eng
 | Environment, commands, tests, release | docs/development.md |
 | Changing the technical approach | docs/decisions.md |
 | User-visible feature changes | docs/user-guide.md |
+| Verifying a bill as its customer | docs/verify-your-bill.md |
 
 ## Doc update rules
 
