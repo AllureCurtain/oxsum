@@ -316,17 +316,20 @@ answers every legacy `/dashboard/*`, auth and `/admin` path with a `301` to its
 
 ## Docker image
 
-The release image is built by the `Dockerfile` at the repo root: a multi-stage build of
-the whole workspace, including the Topcoat dashboard.
+The release image is built by the `Dockerfile` at the repo root. It is a multi-stage build:
+the React dashboard is built by the `frontend` stage (Node 22, `npm ci` then `npm run build`),
+the `/verify` verifier is compiled to wasm in the `wasm` stage (`scripts/build-verify-wasm.sh`
+with a wasm-bindgen CLI pinned to the crate's version), the `builder` stage compiles the
+`oxsum` binary in release mode and copies both artifacts over the committed placeholders, and
+the runtime stage is `debian:bookworm-slim` plus `ca-certificates`.
 
 ```bash
 docker build -t oxsum .
 docker run --rm -p 3000:3000 -e DATABASE_URL=postgresql://user:pass@dbhost/oxsum oxsum
 ```
 
-- Builder: `rust:1.98-bookworm` (matches `rust-toolchain.toml`). `cargo build --release`
-  compiles the `oxsum` server binary; the dashboard's style is plain CSS embedded in
-  the binary, so no Node.js or npm is needed.
+- Build-time only: Node for the dashboard bundle, and the `wasm32-unknown-unknown` target plus
+  the pinned wasm-bindgen CLI for the verifier. Neither reaches the runtime image.
 - Runtime: `debian:bookworm-slim` plus `ca-certificates`. reqwest uses rustls, so no
   OpenSSL is required. It carries the `oxsum` binary.
 - The image never bakes in `.env` (`.dockerignore` excludes it); `DATABASE_URL` points
@@ -334,9 +337,10 @@ docker run --rm -p 3000:3000 -e DATABASE_URL=postgresql://user:pass@dbhost/oxsum
   settings above. `OXSUM_ADDR` defaults to `0.0.0.0:3000` inside the image so the port
   mapping works. The schema is migrated at startup, so there is no separate migrate step.
 
-Every pull request builds this image and smoke-tests it over HTTP against a real
-PostgreSQL, see "Continuous integration" below: the image is the only release
-artifact, and nothing else in the gates runs it.
+The `Release image` workflow builds this image on every push to `main` (docs-only and
+markdown-only pushes are skipped) and smoke-tests it over HTTP against a real PostgreSQL —
+that is the only gate that runs the artifact. Pull requests are covered by CI's compile and
+test jobs; the image itself is not built on every PR.
 
 ## Deployment runbook
 
