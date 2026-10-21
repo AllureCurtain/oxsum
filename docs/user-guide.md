@@ -130,7 +130,10 @@ The dashboard is the React app under `web/` (issue #234): overview, top-up, bill
   `chargedTotalMinor` against what it sent.
 - **Share a bill as a link**: handing a customer a JSON file is not a bill. The
   dashboard's **Reports** page (`/app/reports`) mints a report and either link
-  scope, shows the token once and lists what you shared. The same operations over
+  scope, shows the token once and lists what you shared. Enter an address in the
+  link form and the customer is mailed the bill at creation — the plaintext token
+  exists only then — and the notice says whether the mail went out. The same
+  operations over
   the API: `POST
   /api/v1/org/usage-reports/{reportId}/links` mints a capability link (issue #300)
   and answers its `token` once — only the hash is stored. The link expires 30 days
