@@ -305,6 +305,24 @@ fn origin_of(account: &Account) -> String {
     format!("oxsum/ledgers/{}", account.tenant_id)
 }
 
+/// Reads an escaped `name="…"` attribute back out of the rendered page — the
+/// same decoding a browser does — so the embedded bundle can be verified.
+fn attribute(body: &str, name: &str) -> String {
+    let needle = format!("{name}=\"");
+    let start = body.find(&needle).expect("the attribute is present") + needle.len();
+    let rest = &body[start..];
+    let end = rest.find('"').expect("the attribute closes");
+    rest[..end]
+        .replace("&quot;", "\"")
+        .replace("&#34;", "\"")
+        .replace("&#39;", "'")
+        .replace("&#x27;", "'")
+        .replace("&apos;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+}
+
 /// Two requests, one `end_user`, settle over yesterday — a span that has fully
 /// ended — and the minted report verifies and replays.
 #[tokio::test]
@@ -917,10 +935,29 @@ async fn a_bill_link_renders_the_frozen_report_with_its_headers() {
     assert_eq!(page.header("referrer-policy"), "no-referrer");
     assert_eq!(page.header("cache-control"), "private, no-store");
     assert_eq!(page.header("x-robots-tag"), "noindex");
+
+    // The page ships exactly one script — its own — and embeds the bundle the
+    // browser verifier runs on. That bundle must verify offline, or the button
+    // would check bytes the page never showed.
     assert!(
-        !body.contains("<script"),
+        body.contains("src=\"/bill.js\""),
+        "the page loads its own verifier script"
+    );
+    assert_eq!(
+        body.matches("<script").count(),
+        1,
         "the page carries no third-party script"
     );
+    assert!(body.contains("Verify this bill"), "the button is rendered");
+    let embedded = attribute(&body, "data-bundle");
+    let bundle: Value = serde_json::from_str(&embedded).expect("the embedded bundle parses");
+    oxsum_verify::verify_usage_report(
+        &embedded,
+        &origin_of(&account),
+        end_user,
+        Some(&published_key(&bundle)),
+    )
+    .expect("the embedded bundle verifies offline");
 
     // Unknown, revoked and expired tokens are the same 404.
     let unknown = call(&app, "GET", "/bill/oxb-unknown", None, None).await;
