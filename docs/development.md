@@ -319,7 +319,11 @@ the server answers every legacy `/dashboard/*`, auth and `/admin` path with a
   key and the ledger head. It is server-rendered and needs no JavaScript; the
   response layer in `crates/server/src/web.rs` sets `Referrer-Policy: no-referrer`,
   `X-Robots-Tag: noindex` and, for the bill only, `Cache-Control: private, no-store`.
-  No third-party script runs on it.
+  No third-party script runs on it. Pressing **Verify this bill** runs the same
+  verifier in the browser over the bundle the page embeds (`bill.js`, issue #305):
+  the script fetches the wasm artifact, hashes it, calls `verifyUsageReport` with
+  the bundle's own key, and reports what it checked. Without JavaScript the bill
+  still renders and the button simply does nothing.
 
 ## Docker image
 
