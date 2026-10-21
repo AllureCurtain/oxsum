@@ -215,6 +215,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0051_model_aliases",
         include_str!("../migrations/0051_model_aliases.sql"),
     ),
+    (
+        "0052_report_links",
+        include_str!("../migrations/0052_report_links.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.
