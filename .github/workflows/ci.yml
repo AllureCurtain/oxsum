@@ -79,11 +79,11 @@ jobs:
       # so compilation never touches a live database.
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
-  # The image's language-boundary stages (issue #296). The release-image gate only
-  # runs after merge, which is how #284 shipped a wasm stage that could not build
-  # and #256 removed the assets its smoke test still probed. This job builds the
-  # stage before merge. It always runs so it can be a required check; the Docker
-  # build is skipped when the PR touches nothing the image depends on.
+  # The image's language-boundary stages (issues #296/#309). The release-image gate
+  # only runs after merge, which is how #284 shipped a wasm stage that could not
+  # build and #256 removed the assets its smoke test still probed. These jobs build
+  # each stage before merge. They always run so they can be required checks; the
+  # Docker build is skipped when the PR touches nothing the stage depends on.
   wasm:
     name: wasm
     runs-on: ubuntu-latest
@@ -100,12 +100,11 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'scripts/**'
-              - 'web/**'
               - 'crates/verify/**'
               - '.github/workflows/**'
-      - name: No image stage changed
+      - name: No wasm stage change
         if: steps.filter.outputs.stages != 'true'
-        run: echo "no Dockerfile/wasm/frontend change; skipping the stage build"
+        run: echo "no Dockerfile/wasm change; skipping the stage build"
       - uses: docker/setup-buildx-action@v4
         if: steps.filter.outputs.stages == 'true'
       - uses: docker/build-push-action@v7
@@ -113,6 +112,39 @@ jobs:
         with:
           context: .
           target: wasm
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # The SPA half of the image (issue #309): the frontend stage runs `npm ci`,
+  # regenerates the typed client from openapi.yaml and builds the Vite bundle.
+  # Without this job a TypeScript error reaches main and only the post-merge
+  # release image notices.
+  frontend:
+    name: frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            stages:
+              - 'Dockerfile'
+              - '.dockerignore'
+              - 'web/**'
+              - 'crates/server/openapi.yaml'
+              - '.github/workflows/**'
+      - name: No frontend stage change
+        if: steps.filter.outputs.stages != 'true'
+        run: echo "no frontend change; skipping the stage build"
+      - uses: docker/setup-buildx-action@v4
+        if: steps.filter.outputs.stages == 'true'
+      - uses: docker/build-push-action@v7
+        if: steps.filter.outputs.stages == 'true'
+        with:
+          context: .
+          target: frontend
           push: false
           cache-from: type=gha
           cache-to: type=gha,mode=max

@@ -482,10 +482,14 @@ toolchain comes from `dtolnay/rust-toolchain@stable` with `toolchain: "1.98"` (m
   touches a live database.
 - `wasm`: builds the image's `wasm` stage (`docker build --target wasm .`) before
   merge, but only when the change can affect it — `Dockerfile`, `.dockerignore`,
-  `rust-toolchain.toml`, the manifests and lockfile, `scripts/`, `web/`,
+  `rust-toolchain.toml`, the manifests and lockfile, `scripts/`,
   `crates/verify/` or a workflow file (issue #296). The job always runs and
   succeeds as a no-op otherwise, so it can be a required check; it is the only
   PR-time gate that compiles the verifier for wasm32.
+- `frontend`: builds the image's `frontend` stage (`docker build --target frontend .`)
+  before merge when `web/`, `crates/server/openapi.yaml`, the `Dockerfile` or a
+  workflow file changes (issue #309). Always runs, no-op otherwise: it is the
+  PR-time check that `npm ci`, the openapi codegen and the Vite build all succeed.
 - `test`: the fast half of the split (issue #237): `cargo test --workspace --lib`
   plus the doctests, with no postgres service and no integration binaries — the
   heavy test targets (testcontainers, sqlx test deps) never compile in this job,
