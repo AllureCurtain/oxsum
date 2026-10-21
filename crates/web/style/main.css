@@ -232,6 +232,12 @@ form.card {
     border-top: 1px solid var(--border);
 }
 
+/* The bill page's verdict placeholder stays out of the flow until the browser
+   check writes one. */
+.verdict:empty {
+    display: none;
+}
+
 .verdict p {
     margin: 4px 0;
 }
