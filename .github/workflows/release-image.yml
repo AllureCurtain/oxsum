@@ -149,16 +149,30 @@ jobs:
           # starts serving, and refuses to boot at all if the database is unreachable.
           expect_status /healthz 200
 
-          # The dashboard's static assets are served by the binary itself (the
-          # stylesheet is embedded via `include_str!`); the chat/admin live parts
-          # are vanilla JS against the API.
-          expect_status /style/main.css 200
-          expect_status /chat.js 200
-          expect_status /admin.js 200
+          # The dashboard is the React bundle the frontend stage embeds (issue
+          # #234): the shell names a hashed entry bundle, and both must be served
+          # by the binary itself.
+          expect_status /app 200
+          expect_body /app 'id="root"' 'the SPA shell'
+          asset=$(curl --silent "$base/app" \
+            | grep -oE 'src="/app/assets/[^"]+"' | head -n1 | cut -d'"' -f2)
+          if [ -z "$asset" ]; then
+            echo "FAILED   /app names no entry bundle"
+            failed=1
+          else
+            expect_status "$asset" 200 "the SPA entry bundle"
+          fi
 
-          # The login form must POST: a native GET submit would put the password
-          # in the query string (#46).
-          expect_body /login '<form[^>]*method="post"' 'the login form with method="post"'
+          # The retired Topcoat pages redirect to their /app twins (issue #256).
+          redirect=$(curl --silent --output /dev/null \
+            --write-out '%{http_code} %{redirect_url}' "$base/login")
+          case "$redirect" in
+            "301 $base/app/login") echo "ok       /login redirects to /app/login" ;;
+            *) echo "FAILED   /login -> $redirect (expected 301 /app/login)"; failed=1 ;;
+          esac
+
+          # The stylesheet the server-rendered /verify page serves.
+          expect_status /style/main.css 200
 
           # The public verify page renders without a session.
           expect_status /verify 200

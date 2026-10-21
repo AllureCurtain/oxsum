@@ -469,6 +469,12 @@ toolchain comes from `dtolnay/rust-toolchain@stable` with `toolchain: "1.98"` (m
 - `clippy`: `cargo clippy --workspace --all-targets` with `-D warnings`. No database
   is needed to compile: the tree uses no `sqlx::query!` macros, so compilation never
   touches a live database.
+- `wasm`: builds the image's `wasm` stage (`docker build --target wasm .`) before
+  merge, but only when the change can affect it — `Dockerfile`, `.dockerignore`,
+  `rust-toolchain.toml`, the manifests and lockfile, `scripts/`, `web/`,
+  `crates/verify/` or a workflow file (issue #296). The job always runs and
+  succeeds as a no-op otherwise, so it can be a required check; it is the only
+  PR-time gate that compiles the verifier for wasm32.
 - `test`: the fast half of the split (issue #237): `cargo test --workspace --lib`
   plus the doctests, with no postgres service and no integration binaries — the
   heavy test targets (testcontainers, sqlx test deps) never compile in this job,
@@ -502,7 +508,9 @@ toolchain comes from `dtolnay/rust-toolchain@stable` with `toolchain: "1.98"` (m
 The retired `browser` job that used to gate the Leptos/wasm bundle went with the
 Topcoat dashboard (issue #256): `browser_contract` is an ordinary integration
 test now — no build step, no `wasm32` target — so it runs inside
-`test-integration` like every other suite.
+`test-integration` like every other suite. The `wasm` job added later gates a
+different artifact: the verifier crate the `/verify` page serves, built into the
+image's `wasm` stage rather than a Leptos site.
 
 The compile jobs cache the cargo registry and `target/` through
 `Swatinem/rust-cache`, so a run that touches one crate does not recompile the
@@ -528,10 +536,13 @@ bounded retry loop and asserts that:
 
 - `/healthz` answers 200. The image migrates at startup and refuses to boot at all
   against a database it cannot reach, so a 200 also means the schema is in place.
-- The dashboard's static assets answer 200 (`/style/main.css`, `/chat.js`,
-  `/admin.js` — all embedded in the binary itself).
-- `/login` carries a `<form ... method="post"` form: a native GET submit would
-  put the password in the query string (issue #46).
+- `/app` answers 200 with `id="root"`, and the hashed `/app/assets/*` script its
+  shell names answers 200 — proof that the frontend stage's bundle was embedded
+  (issue #234).
+- `/login` answers `301` to `/app/login`: the Topcoat pages retired to the SPA
+  (issue #256).
+- `/style/main.css` and `/verify` answer 200; `/verify` is the server-rendered
+  page that hosts the browser verifier.
 
 When an assertion fails the step prints `docker logs` and exits non-zero, so a red run
 is diagnosable from its own log rather than by re-running it.
