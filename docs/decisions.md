@@ -1716,3 +1716,14 @@ The downstream customer a usage report is about holds nothing: no session, no ke
 - **Expired, revoked, unknown and other-organization links are one 404.** Whether a link exists elsewhere is not this organization's business, the same refusal-shape the API keeps for other tenants' ids.
 - **`last_used_at` is touched on resolution, and is not a delivery receipt.** It tells the operator the customer opened the bill; a mail client prefetching the link would touch it too, so it is evidence of access, not of reading.
 - **The link resolves without a session; the page that consumes it is separate.** This issue ships the capability only — the `/bill/{token}` page is the next piece, and keeping the two apart means the security model (token TTL, revocation, 404 shape) is settled before any customer-facing HTML exists.
+
+
+## 2026-10-22 — The bill page is server-rendered, scriptless and one 404 (issue #302)
+
+The customer a share link belongs to holds no account, so `/bill/{token}` is the page the capability opens. It is deliberately the same shape as `/verify`, not a React route: the numbers come from the ledger, the operator key and head are printed beside them, and a customer can read the bill with JavaScript disabled.
+
+- **Server-rendered, not the SPA.** The dashboard is the React bundle served at `/app`; the bill page is the one page whose whole point is to be read by someone who does not trust the served app, so it stays in `crates/web` beside `/verify`. Its rendering is derived from the frozen report (`Db::usage_report` + `Wallet::usage_report_bundle`), never from a live usage query — a bill cannot grow after issue.
+- **The token is the whole credential.** No session, no cookie, no account. The page resolves the token through `Db::resolve_report_link`; expired, revoked, unknown and other-organization tokens are the same 404.
+- **Headers are part of the design.** `Referrer-Policy: no-referrer` keeps the token out of any outbound link; `X-Robots-Tag: noindex` keeps a bill out of search engines; `Cache-Control: private, no-store` keeps a shared cache from handing one customer's bill to the next request. A middleware on the page fallback sets them, so a future page inherits the rule instead of remembering it.
+- **No third-party script, and no script at all in the floor.** The page runs nothing; the browser verifier is the next step and will be the only script, served from the binary like `/verify.js`.
+- **Two scopes, one renderer.** A report link renders its one frozen report; a customer link lists every report issued to them, one section each. The per-report token is still the narrowest capability, so the customer link is the organization's deliberate choice.
