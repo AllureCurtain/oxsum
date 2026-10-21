@@ -32,6 +32,7 @@ mod orgs;
 mod proof;
 mod ratelimit;
 mod reconcile;
+mod report_links;
 mod seed;
 mod service_credentials;
 mod sessions;
@@ -102,6 +103,7 @@ pub use orgs::{
 pub use proof::{ChargeCheck, ProofBundle, verify_bundle, verify_charge};
 pub use ratelimit::{RateAllowance, RateLimited, RateLimiter, SlidingWindow};
 pub use reconcile::{DriftClass, DriftKind, DriftSample, Reconciliation};
+pub use report_links::{LinkScope, MintedReportLink, ReportLink, ResolvedReportLink};
 pub use seed::{DEMO_EMAIL, DEMO_ORGANIZATION, DEMO_PASSWORD, MEMBER_EMAIL, SeedReport};
 pub use service_credentials::{ActingService, CreatedServiceCredential, ServiceCredential};
 pub use sessions::{

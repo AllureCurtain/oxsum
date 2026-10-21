@@ -27,6 +27,7 @@ mod device;
 mod keys;
 mod log;
 mod org;
+mod report_links;
 pub(crate) mod usage;
 mod usage_reports;
 mod webhooks;
@@ -118,6 +119,18 @@ pub fn router(state: AppState) -> Router {
             get(usage_reports::list).post(usage_reports::mint),
         )
         .route("/org/usage-reports/{report_id}", get(usage_reports::get))
+        .route(
+            "/org/usage-reports/links",
+            get(report_links::list).post(report_links::create_for_end_user),
+        )
+        .route(
+            "/org/usage-reports/links/{link_id}",
+            delete(report_links::revoke),
+        )
+        .route(
+            "/org/usage-reports/{report_id}/links",
+            post(report_links::create_for_report),
+        )
         .route("/estimate-price", post(usage::estimate_price))
         .route("/pricing", get(usage::pricing))
         .route("/entries/{entry_id}/proof", get(log::proof))

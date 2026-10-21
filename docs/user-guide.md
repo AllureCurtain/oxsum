@@ -128,6 +128,15 @@ The dashboard is the React app under `web/` (issue #234): overview, top-up, bill
   the marker committed; completeness is the organization's signed claim, which a
   customer's own request log spot-checks by comparing the report's `entryCount` and
   `chargedTotalMinor` against what it sent.
+- **Share a bill as a link**: handing a customer a JSON file is not a bill. `POST
+  /api/v1/org/usage-reports/{reportId}/links` mints a capability link (issue #300)
+  and answers its `token` once — only the hash is stored. The link expires 30 days
+  out by default (90 at most), stops working when you `DELETE …/links/{linkId}`,
+  and `GET …/links` lists what you shared with `lastUsedAt` showing whether the
+  customer opened it. `POST …/usage-reports/links` with `{"endUser": …}` is the
+  other scope: one link that lists every report issued to that customer. The page
+  that consumes the token is the next step; the API mints and revokes the links it
+  will serve.
 - **Export**: **Download CSV** and **Download JSON** on the bills page save the
   organization's whole history as a file — every transaction, not just the page on
   screen. Both carry the same fields — `bookedOn`,
