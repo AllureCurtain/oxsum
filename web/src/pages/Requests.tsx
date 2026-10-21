@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import { settlementOutcome } from "../lib/kinds";
 import { useBillingRecords, useDisplay, useKeys } from "../api/hooks";
 import { useBillingSocket } from "../api/ws";
 import {
@@ -101,7 +102,10 @@ export function Requests() {
               <td className="mono">
                 {turn.state === "settled" ? (
                   <>
-                    <Cr minor={turn.chargedMinor ?? 0} currency={display} /> · {turn.kind}
+                    <Cr minor={turn.chargedMinor ?? 0} currency={display} /> ·{" "}
+                    <span title={settlementOutcome(turn.kind).detail}>
+                      {settlementOutcome(turn.kind).label}
+                    </span>
                   </>
                 ) : turn.state === "streaming" ? (
                   `${turn.outputChars ?? 0} chars out`
@@ -164,7 +168,12 @@ export function Requests() {
                 </td>
                 <td>
                   <StatusBadge status={row.status} />
-                  <span className="ml-1 text-xs text-muted">{row.kind}</span>
+                  <span
+                    className="ml-1 text-xs text-muted"
+                    title={settlementOutcome(row.kind).detail}
+                  >
+                    {settlementOutcome(row.kind).label}
+                  </span>
                   {row.failureReason ? (
                     <p className="text-xs text-danger">{row.failureReason}</p>
                   ) : null}

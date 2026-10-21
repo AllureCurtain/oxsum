@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { settlementOutcome } from "../lib/kinds";
 import {
   Banner,
   Button,
@@ -849,7 +850,9 @@ function Anomalies({ token }: { token: string }) {
               <td className="mono">{a.requestId}</td>
               <td>{a.model}</td>
               <td>{a.channel}</td>
-              <td>{a.kind}</td>
+              <td title={settlementOutcome(a.kind).detail}>
+                {settlementOutcome(a.kind).label}
+              </td>
               <td className="mono">{credits(a.freezeMinor)} cr</td>
               <td className="mono">{credits(a.chargedMinor)} cr</td>
               <td className="mono">{a.upstreamAttempts}</td>

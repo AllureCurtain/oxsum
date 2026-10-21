@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useBills, useConsistency, useDisplay, useLogHead } from "../api/hooks";
+import { entryKind } from "../lib/kinds";
 import {
   Banner,
   Button,
@@ -62,7 +63,7 @@ function BillRow({ row, display }: { row: { index: number; entryId: string; book
       <tr key={row.entryId}>
         <td className="mono">{row.index}</td>
         <td>{row.bookedOn}</td>
-        <td>{row.kind}</td>
+        <td>{entryKind(row.kind)}</td>
         <td className="mono">
           {signedCredits(row.amountMinor)}
           {display ? (
