@@ -17,6 +17,7 @@
 //! - [`BillView`] + [`csv`]/[`json`] — the bills-export row shape the server's
 //!   download routes (`crates/server/src/bills.rs`) build on.
 
+mod bill;
 mod bills;
 mod pages_misc;
 mod views;
@@ -53,6 +54,7 @@ pub fn router(db: Db, tenants: Tenants, config: WebConfig) -> Router {
         .app_context(config)
         .cookies();
     let builder = pages_misc::register(builder);
+    let builder = bill::register(builder);
     builder.build()
 }
 

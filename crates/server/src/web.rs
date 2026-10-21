@@ -7,25 +7,45 @@
 //! with its original URI intact.
 
 use axum::Router;
-use axum::extract::Path;
+use axum::extract::{Path, Request};
+use axum::http::header::{CACHE_CONTROL, REFERRER_POLICY};
 use axum::http::{HeaderValue, StatusCode, Uri, header::LOCATION};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use topcoat::router::tower::TowerService;
+use tower::ServiceBuilder;
 
 use crate::AppState;
 
-/// Mounts `/verify` (and its stylesheet) as the router's fallback: the API
-/// routes, the `/app` SPA and the legacy-path redirects keep precedence, and
-/// every other path lands on the surviving server-rendered page.
+/// Mounts `/verify`, the public bill page and the stylesheet as the router's
+/// fallback: the API routes, the `/app` SPA and the legacy-path redirects keep
+/// precedence, and every other path lands on the server-rendered pages.
 pub fn mount(router: Router<AppState>, state: &AppState) -> Router<AppState> {
     let config = oxsum_web::WebConfig {
         head_seed: state.config.head_signing_seed(),
     };
     let dashboard = oxsum_web::router(state.db.clone(), state.tenants.clone(), config);
-    router
-        .merge(redirects())
-        .fallback_service(TowerService::new(dashboard))
+    let pages = ServiceBuilder::new()
+        .layer(middleware::from_fn(page_headers))
+        .service(TowerService::new(dashboard));
+    router.merge(redirects()).fallback_service(pages)
+}
+
+/// Headers every server-rendered page carries: the pages are not indexed, and a
+/// bill link — a capability in the URL — must not leak through a referrer. The
+/// bill itself is also never cached: a shared cache holding it would hand one
+/// customer's bill to the next request for that URL.
+async fn page_headers(request: Request, next: Next) -> Response {
+    let bill = request.uri().path().starts_with("/bill/");
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    headers.insert(REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    headers.insert("x-robots-tag", HeaderValue::from_static("noindex"));
+    if bill {
+        headers.insert(CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
+    }
+    response
 }
 
 /// Every page URL the retired Topcoat dashboard answered, mapped onto the React

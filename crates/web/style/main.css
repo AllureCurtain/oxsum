@@ -574,3 +574,21 @@ form.row label {
         overflow-x: auto;
     }
 }
+
+/* The public bill page (issue #302): amounts are monospace and right-aligned
+   (DESIGN.md), and the ledger head is a long hex string that must wrap rather
+   than push the page sideways. */
+.bill {
+    margin-top: 24px;
+}
+
+.bill .amount {
+    text-align: right;
+    white-space: nowrap;
+}
+
+.bill .head,
+.card > .head {
+    font-family: var(--mono);
+    word-break: break-all;
+}
