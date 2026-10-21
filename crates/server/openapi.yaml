@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.71.0
+  version: 0.72.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -467,6 +467,15 @@ info:
     `model` stays the asked-for alias and a new `upstreamModel` names what
     answered. The alias's own price row wins over the upstream model's on that
     channel, so a public name can be priced differently.
+
+    0.72.0 adds share links for usage reports (issue #300): a downstream customer
+    holds no account, so a link is the capability. `POST …/usage-reports/{reportId}/links`
+    pins one report, `POST …/usage-reports/links` names one customer and lists
+    the reports issued to them, `GET` lists the organization's links and
+    `DELETE …/links/{linkId}` revokes one. The plaintext token is answered once;
+    the database keeps only its SHA-256. Links expire (30 days by default, 90 at
+    most), and the customer-facing `/bill/{token}` page that resolves them is
+    served by the deployment rather than this API.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -2366,6 +2375,122 @@ paths:
                 properties:
                   data: { $ref: "#/components/schemas/UsageReport" }
         "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/usage-reports/{reportId}/links:
+    post:
+      summary: Mint a share link to one usage report (issue #300)
+      description: |
+        A downstream customer holds no account, so the link is the capability:
+        the plaintext token is answered once, only its SHA-256 is stored, and
+        the organization can revoke it. The link carries no rows itself — the
+        deployment's `/bill/{token}` page resolves it to the frozen report
+        bundle without a session.
+
+        The report must belong to the acting organization: an id guessed from
+        another tenant answers 404. `expiresAt` defaults to 30 days from now and
+        may not be more than 90 days out; `label` is the organization's own note
+        for the recipient.
+      parameters:
+        - name: reportId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateReportLinkRequest" }
+      responses:
+        "200":
+          description: The link descriptor and its one-time token
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/CreatedReportLink" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/usage-reports/links:
+    get:
+      summary: List the organization's report share links (issue #300)
+      description: |
+        Every link the organization minted, newest first — descriptors only,
+        never tokens. `lastUsedAt` is the operator's signal that the customer
+        opened the bill; `revokedAt` and `expiresAt` are the two ways a link
+        stops resolving.
+      responses:
+        "200":
+          description: The organization's links, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [rows]
+                    properties:
+                      rows:
+                        type: array
+                        items: { $ref: "#/components/schemas/ReportLink" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Mint a share link to one downstream customer's reports (issue #300)
+      description: |
+        The `end_user` scope: one link that lists every report the organization
+        has issued that customer. The customer must have usage in the
+        organization's ledger — a name nothing was billed to is refused, because
+        the page it opened would read as a broken bill. Same token, expiry and
+        label rules as the report-scoped mint.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateEndUserLinkRequest" }
+      responses:
+        "200":
+          description: The link descriptor and its one-time token
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/CreatedReportLink" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/usage-reports/links/{linkId}:
+    delete:
+      summary: Revoke a report share link (issue #300)
+      description: |
+        Idempotent: revoking an already-revoked link answers the same descriptor.
+        An id of another organization answers 404, the same as an unknown one —
+        whether a link exists elsewhere is not this organization's business.
+      parameters:
+        - name: linkId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The revoked link descriptor
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ReportLink" }
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
@@ -5075,6 +5200,86 @@ components:
         subsetHash:
           type: string
           pattern: "^[0-9a-f]{64}$"
+    LinkScope:
+      type: string
+      enum: [report, end_user]
+      description: |
+        What a share link resolves to: `report` pins one minted usage report —
+        the customer's bill for one span — while `end_user` names one downstream
+        customer and lists the reports the organization has issued them.
+    ReportLink:
+      type: object
+      description: |
+        A capability link the organization minted. The token itself is never
+        part of this shape; it exists only in the create response.
+      required: [linkId, scope, endUser, createdAt, expiresAt]
+      properties:
+        linkId: { type: string, format: uuid }
+        scope: { $ref: "#/components/schemas/LinkScope" }
+        reportId:
+          type: string
+          format: uuid
+          nullable: true
+          description: the pinned report for `report` scope; absent for `end_user`
+        endUser: { type: string }
+        label:
+          type: string
+          nullable: true
+          description: the organization's own note for the recipient
+        createdAt: { type: string, format: date-time }
+        expiresAt:
+          type: string
+          format: date-time
+          description: when the link stops resolving
+        revokedAt:
+          type: string
+          format: date-time
+          nullable: true
+        lastUsedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: when the link last resolved — the customer opened the bill
+    CreatedReportLink:
+      type: object
+      required: [link, token]
+      properties:
+        link: { $ref: "#/components/schemas/ReportLink" }
+        token:
+          type: string
+          description: |
+            the plaintext capability token, answered once — the deployment serves
+            `/bill/{token}` for it and the database keeps only its SHA-256
+    CreateReportLinkRequest:
+      type: object
+      properties:
+        label:
+          type: string
+          maxLength: 128
+          nullable: true
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: defaults to 30 days from now; at most 90 days out
+    CreateEndUserLinkRequest:
+      type: object
+      required: [endUser]
+      properties:
+        endUser:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: the downstream customer the reports are attributed to
+        label:
+          type: string
+          maxLength: 128
+          nullable: true
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: defaults to 30 days from now; at most 90 days out
     BillRow:
       type: object
       description: one transaction as the bills page lists it — every ledger entry that moved money
