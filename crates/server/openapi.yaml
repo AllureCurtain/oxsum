@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.72.0
+  version: 0.73.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -476,6 +476,12 @@ info:
     the database keeps only its SHA-256. Links expire (30 days by default, 90 at
     most), and the customer-facing `/bill/{token}` page that resolves them is
     served by the deployment rather than this API.
+
+    0.73.0 lets the mint mail the link (issue #315): both request bodies accept an
+    optional `email`, and the response's `delivery` says `sent` or `failed` when a
+    mail was attempted. A deployment with no mailer refuses `email` with
+    `VALIDATION_ERROR`; a send failure still answers the token and `delivery:
+    failed`, because the link exists and can be passed on by hand.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -5250,6 +5256,14 @@ components:
           description: |
             the plaintext capability token, answered once — the deployment serves
             `/bill/{token}` for it and the database keeps only its SHA-256
+        delivery:
+          type: string
+          enum: [sent, failed]
+          nullable: true
+          description: |
+            present only when the mint asked for a mail: `sent` when the SMTP
+            transport accepted it, `failed` when it did not — the link and token
+            are still the answer, so the operator can pass the link on by hand
     CreateReportLinkRequest:
       type: object
       properties:
@@ -5262,6 +5276,14 @@ components:
           format: date-time
           nullable: true
           description: defaults to 30 days from now; at most 90 days out
+        email:
+          type: string
+          format: email
+          maxLength: 254
+          nullable: true
+          description: |
+            mail the link here at creation — the only moment the plaintext token
+            exists; a deployment without a mailer refuses it
     CreateEndUserLinkRequest:
       type: object
       required: [endUser]
@@ -5280,6 +5302,14 @@ components:
           format: date-time
           nullable: true
           description: defaults to 30 days from now; at most 90 days out
+        email:
+          type: string
+          format: email
+          maxLength: 254
+          nullable: true
+          description: |
+            mail the link here at creation — the only moment the plaintext token
+            exists; a deployment without a mailer refuses it
     BillRow:
       type: object
       description: one transaction as the bills page lists it — every ledger entry that moved money
