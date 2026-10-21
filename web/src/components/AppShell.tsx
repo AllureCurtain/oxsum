@@ -22,6 +22,7 @@ const NAV = [
   { to: "/members", label: "Members" },
   { to: "/webhooks", label: "Webhooks" },
   { to: "/statements", label: "Statements" },
+  { to: "/reports", label: "Reports" },
   { to: "/log", label: "Log" },
   { to: "/chat", label: "Chat" },
   { to: "/settings", label: "Settings" },
