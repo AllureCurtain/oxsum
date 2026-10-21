@@ -1738,3 +1738,13 @@ The bill page rendered the frozen report but could not prove it: the customer st
 - **The bundle's own key is the trust anchor.** The verifier is handed `{keyName, publicKey, keyHash}` from the bundle, so the head's signature is checked against what the report names, and the page prints that public key. An unsigned deployment carries no key, verifies membership to the committed digests alone, and says so.
 - **No JavaScript is still a bill.** The page renders the figures and the key without the script; the button simply does nothing. The check is progressive enhancement, not the page.
 - **What it proves is stated, and what it does not.** The verdict names membership, the subset fold, the marker binding and the head signature, and says completeness remains the organization's claim.
+
+
+## 2026-10-22 — The bill link is mailed at creation, because that is when the token exists (issue #315)
+
+The database keeps only the token's hash, so a link can be mailed exactly once: in the response to the mint. Waiting — a later "send" button, a job, an email log — would need the plaintext at rest, which is the one thing the design refuses.
+
+- **Mail at creation, not later.** Both mints accept an optional `email`; the mail is sent inside the request and `delivery` reports `sent` or `failed`. No token is ever queued, logged or stored.
+- **No mailer is a refusal, not a silent skip.** A deployment without `OXSUM_SMTP_URL`, `OXSUM_MAIL_FROM` and `OXSUM_PUBLIC_URL` answers 400 when an address is asked for: minting a link the operator believes was mailed is worse than refusing.
+- **A send failure keeps the link.** The token is in the response either way, so the operator can pass it on by hand; turning the mint into an error would invite a retry and a second link.
+- **The mail is as sensitive as the bill.** It goes to the address the operator named, carries the `/bill/{token}` capability and the completeness caveat, and is not a generic notification.

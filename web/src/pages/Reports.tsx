@@ -43,6 +43,18 @@ function linkState(link: ReportLink): string {
   return new Date(link.expiresAt).getTime() < Date.now() ? "expired" : "active";
 }
 
+/// What the notice says about a minted link: whether the mail went out, and if
+/// it did not, that the token below is still the way to pass it on.
+function delivered(link: CreatedReportLink): string {
+  if (link.delivery === "sent") {
+    return "The link was created and emailed.";
+  }
+  if (link.delivery === "failed") {
+    return "The link was created, but the mail did not go out — copy it below and pass it on.";
+  }
+  return "The link was created.";
+}
+
 function TokenOnce({ created }: { created: CreatedReportLink }) {
   const [copied, setCopied] = useState(false);
   const url = `${window.location.origin}/bill/${created.token}`;
@@ -87,7 +99,9 @@ export function Reports() {
   const [linkFor, setLinkFor] = useState<string | null>(null);
   const [label, setLabel] = useState("");
   const [expiresAt, setExpiresAt] = useState("");
+  const [reportEmail, setReportEmail] = useState("");
   const [customer, setCustomer] = useState("");
+  const [customerEmail, setCustomerEmail] = useState("");
   const [created, setCreated] = useState<CreatedReportLink | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -194,12 +208,20 @@ export function Reports() {
 
       {linkFor && selected ? (
         <Card title={`Share ${selected.endUser} — ${selected.from} to ${selected.to}`}>
-          <div className="grid gap-3 sm:grid-cols-4">
+          <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Label (optional)">
               <TextInput
                 value={label}
                 onChange={(event) => setLabel(event.target.value)}
                 placeholder="August bill"
+              />
+            </Field>
+            <Field label="Email the link to (optional)">
+              <TextInput
+                type="email"
+                value={reportEmail}
+                onChange={(event) => setReportEmail(event.target.value)}
+                placeholder="customer@example.com"
               />
             </Field>
             <Field label="Expires (optional, 30 days by default)">
@@ -218,13 +240,16 @@ export function Reports() {
                     {
                       reportId: linkFor,
                       label: label.trim() || undefined,
+                      email: reportEmail.trim() || undefined,
                       expiresAt: expiryToRfc3339(expiresAt),
                     },
                     {
                       onSuccess: (link) => {
                         setCreated(link);
+                        setNotice(delivered(link));
                         setLinkFor(null);
                         setLabel("");
+                        setReportEmail("");
                         setExpiresAt("");
                       },
                     },
@@ -285,12 +310,20 @@ export function Reports() {
           One link that lists every report issued to a customer — for the customer who wants their
           history, not one bill.
         </p>
-        <div className="mt-3 grid gap-3 sm:grid-cols-4">
+        <div className="mt-3 grid gap-3 sm:grid-cols-3">
           <Field label="Customer (endUser)">
             <TextInput
               value={customer}
               onChange={(event) => setCustomer(event.target.value)}
               placeholder="customer-1"
+            />
+          </Field>
+          <Field label="Email the link to (optional)">
+            <TextInput
+              type="email"
+              value={customerEmail}
+              onChange={(event) => setCustomerEmail(event.target.value)}
+              placeholder="customer@example.com"
             />
           </Field>
           <div className="flex items-end">
@@ -299,11 +332,16 @@ export function Reports() {
               disabled={createCustomerLink.isPending || customer.trim() === ""}
               onClick={() =>
                 createCustomerLink.mutate(
-                  { endUser: customer.trim() },
+                  {
+                    endUser: customer.trim(),
+                    email: customerEmail.trim() || undefined,
+                  },
                   {
                     onSuccess: (link) => {
                       setCreated(link);
+                      setNotice(delivered(link));
                       setCustomer("");
+                      setCustomerEmail("");
                     },
                   },
                 )
