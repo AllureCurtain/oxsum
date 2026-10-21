@@ -1748,3 +1748,28 @@ The database keeps only the token's hash, so a link can be mailed exactly once: 
 - **No mailer is a refusal, not a silent skip.** A deployment without `OXSUM_SMTP_URL`, `OXSUM_MAIL_FROM` and `OXSUM_PUBLIC_URL` answers 400 when an address is asked for: minting a link the operator believes was mailed is worse than refusing.
 - **A send failure keeps the link.** The token is in the response either way, so the operator can pass it on by hand; turning the mint into an error would invite a retry and a second link.
 - **The mail is as sensitive as the bill.** It goes to the address the operator named, carries the `/bill/{token}` capability and the completeness caveat, and is not a generic notification.
+
+
+## 2026-10-22 — The payment layer is the full Hyperswitch switch, not prism (issue #317)
+
+oxsum's deposit rail has to end in one normalized, signed event that credits the wallet. Hyperswitch comes in two forms: the switch (a self-hosted service with connectors, routing, refunds, outgoing webhooks and the Control Center) and [`hyperswitch-prism`](https://github.com/juspay/hyperswitch-prism) (a stateless connector library).
+
+**Decision: build on the full switch, developed against the hosted sandbox first ([app.hyperswitch.io](https://app.hyperswitch.io)) and self-hosted with Docker Compose for deployment.**
+
+- **One inbound path.** The switch receives each processor's callback, verifies it, and sends one outgoing webhook per event — `payment_succeeded`, `refund_succeeded`, `dispute_opened`, and 30 others — signed with HMAC-SHA512 in `X-Webhook-Signature-512` from the business profile's `payment_response_hash_key`, carrying an `event_id` for idempotency, retried 16 times over about 24 hours, and delivered out of order (compare `content.object.updated`). Our server parses one schema. With prism, each processor's webhooks, signatures and event vocabulary would land in oxsum — the per-processor surface this layer exists to delete.
+- **prism has no Windows SDK.** Its native libraries are published for macOS arm64 and Linux x86_64 only; this project is developed on Windows. The switch runs under Docker Desktop. The gRPC server image would run, but then the deployment has gained a service and kept every per-processor concern.
+- **The switch brings the operator surface.** The Control Center configures connectors and shows payments — the operator story the product is built around. prism deliberately has no vault, no routing and no back office.
+
+Costs accepted:
+
+- Production runs the switch's app server beside its PostgreSQL and Redis, next to oxsum's own database. The deployment guide must say so rather than pretend the stack stayed two containers.
+- Checkout is the Unified Checkout SDK (HyperLoader) on the top-up page, not a hosted redirect like the direct Stripe rail; the bill page stays script-free.
+- The direct Stripe rail stays as a row of the rail honesty matrix; the switch is the primary rail, and the existing Stripe webhook code is the reference for the idempotency the new rail must match.
+
+Consequences:
+
+- W2-2: `POST /api/v1/topups/hyperswitch` creates a payment on the switch (Stripe connector in test mode, automatic capture, metadata carrying the organization and the top-up), the dashboard mounts HyperLoader, and `/api/v1/webhooks/hyperswitch` verifies the HMAC and credits the wallet idempotently by `event_id`.
+- W2-3: an `event_id` table and the duplicate/replay rules, plus the out-of-order rule for `payment_*`.
+- W2-5: refunds ride `POST /refunds` and `refund_succeeded` on the same webhook.
+
+Sources: [Hyperswitch webhooks](https://docs.hyperswitch.io/integration-guide/webhooks), [prism product overview](https://docs.hyperswitch.io/integrations/prism/prism), [prism README](https://github.com/juspay/hyperswitch-prism), [local Docker setup](https://docs.hyperswitch.io/self-hosting/want-to-explore/readme-1/unified-local-setup-using-docker).
