@@ -533,6 +533,14 @@ impl Db {
             .execute(&mut *tx)
             .await?;
         }
+        // The per-customer day leaf (issue #337): a settled turn carrying an
+        // `endUser` is in a usage report's scope, so its day's log is rewritten
+        // inside the same transaction as the row it comes from.
+        if row.status == "settled"
+            && let Some(end_user) = row.usage.end_user.as_deref()
+        {
+            record_usage_day(&mut tx, &ledger, &row.tenant_id, end_user, row.entry_id).await?;
+        }
         // A settled turn feeds its key's token window in the same transaction —
         // the durable rolling-minute allowance `tokensPerMinute` checks (issue
         // #203). The accrual keys on the settle's own instant (`now()`), because
@@ -1318,6 +1326,95 @@ pub struct Margin {
     /// Settled turns with no upstream cost recorded — an untracked price, a
     /// swept hold, or history.
     pub untracked_turns: i64,
+}
+
+/// Rewrites one customer's leaf for the UTC day `entry_id` booked on (issue
+/// #337): reads that day's settled rows in log order, folds their content
+/// hashes with the ledger's own Merkle accumulator, and upserts the day row
+/// with the count, root and domain-tagged leaf.
+///
+/// The fold is recomputed rather than extended: the root is a pure function of
+/// the ledger rows, so a replayed or concurrent write converges on the same
+/// answer and the row can never disagree with the rows it claims. The cost is
+/// the day's settled-row count per settle; a day is bounded by one customer's
+/// turns, and a later stage can keep the accumulator state if that ever shows.
+async fn record_usage_day(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ledger: &str,
+    tenant_id: &str,
+    end_user: &str,
+    entry_id: Uuid,
+) -> Result<(), WalletError> {
+    let Some(day) = sqlx::query_scalar::<_, time::Date>(&format!(
+        "SELECT booking_date FROM \"{ledger}\".entries WHERE entry_id = $1"
+    ))
+    .bind(entry_id)
+    .fetch_optional(&mut **tx)
+    .await?
+    else {
+        return Ok(());
+    };
+    // Two settles for the same customer and day can run concurrently, and each
+    // recomputes the day's rows inside its own transaction: without
+    // serialization the last commit's root would miss the other's row. The
+    // advisory lock is per (tenant, endUser, day) — different customers and days
+    // still proceed in parallel — and it is taken before the read that decides
+    // the root.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2 || ':' || $3, 0))")
+        .bind(tenant_id)
+        .bind(end_user)
+        .bind(day.to_string())
+        .execute(&mut **tx)
+        .await?;
+    let hashes: Vec<Vec<u8>> = sqlx::query_scalar(&format!(
+        "SELECT e.content_hash FROM oxsum.usage_records u \
+         JOIN \"{ledger}\".entries e ON e.entry_id = u.entry_id \
+         WHERE u.tenant_id = $1 AND u.end_user = $2 AND u.status = 'settled' \
+           AND e.booking_date = $3 \
+         ORDER BY e.log_index"
+    ))
+    .bind(tenant_id)
+    .bind(end_user)
+    .bind(day)
+    .fetch_all(&mut **tx)
+    .await?;
+    if hashes.is_empty() {
+        return Ok(());
+    }
+    let mut accumulator = doubleentry::MerkleAccumulator::new();
+    for hash in &hashes {
+        let array: [u8; 32] = hash.as_slice().try_into().map_err(|_| {
+            WalletError::InvalidInput("a settled row's content hash is not 32 bytes".into())
+        })?;
+        accumulator.push(doubleentry::Hash::from_bytes(array));
+    }
+    let rows_root = accumulator.root();
+    let count = i64::try_from(hashes.len()).unwrap_or(i64::MAX);
+    // `day || count || rows_root`, the same order the verifier will rebuild.
+    let mut payload = Vec::with_capacity(10 + 8 + 32);
+    payload.extend_from_slice(day.to_string().as_bytes());
+    payload.extend_from_slice(&count.to_le_bytes());
+    payload.extend_from_slice(rows_root.as_bytes());
+    let leaf = doubleentry::Hash::digest(crate::heads::USAGE_DAY_DOMAIN, &payload);
+    sqlx::query(
+        "INSERT INTO oxsum.usage_day_log \
+             (tenant_id, end_user, day, entry_count, rows_root, leaf_hash) \
+         VALUES ($1, $2, $3, $4, $5, $6) \
+         ON CONFLICT (tenant_id, end_user, day) DO UPDATE SET \
+             entry_count = EXCLUDED.entry_count, \
+             rows_root = EXCLUDED.rows_root, \
+             leaf_hash = EXCLUDED.leaf_hash, \
+             updated_at = now()",
+    )
+    .bind(tenant_id)
+    .bind(end_user)
+    .bind(day)
+    .bind(count)
+    .bind(rows_root.as_bytes().to_vec())
+    .bind(leaf.as_bytes().to_vec())
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 #[cfg(test)]
