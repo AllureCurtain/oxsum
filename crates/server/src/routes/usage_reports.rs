@@ -73,6 +73,35 @@ pub(crate) struct UsageReportRes {
     key_name: Option<String>,
     public_key: Option<String>,
     key_hash: Option<String>,
+    /// The tenant log's origin, so a reader's witness check knows which log the
+    /// cosignatures must name (issue #328).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    witness_origin: Option<String>,
+    /// The deployment's pinned witness keys — public by design, empty when the
+    /// deployment pins none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    witness_keys: Vec<WitnessPinRes>,
+    /// The cosigned notes stored for this bundle's head, if any.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    witness_notes: Vec<WitnessNoteRes>,
+}
+
+/// One pinned witness key, as `GET /api/v1/log/checkpoint` already spells it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WitnessPinRes {
+    witness_url: String,
+    key_name: String,
+    public_key: String,
+    key_hash: String,
+}
+
+/// One witness's cosigned note for the bundle's head.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WitnessNoteRes {
+    witness_url: String,
+    note: String,
 }
 
 /// One row of the `GET /api/v1/org/usage-reports` list — the descriptor alone.
@@ -128,6 +157,36 @@ async fn report_res(
         ),
         None => (None, None, None, None),
     };
+    // The witness half (issue #328): the public pinset and the cosignatures
+    // stored for this bundle's head. A head the witness pass has not anchored
+    // yet answers an empty note list — the reader says so.
+    let witness_origin = oxsum_core::origin_for(&organization.tenant_id)
+        .ok()
+        .map(|origin| origin.as_str().to_owned());
+    let witness_keys: Vec<WitnessPinRes> = state
+        .config
+        .witness_keys()
+        .iter()
+        .map(|key| WitnessPinRes {
+            witness_url: key.witness_url.clone(),
+            key_name: key.key_name.clone(),
+            public_key: key.public_key.clone(),
+            key_hash: key.key_hash.clone(),
+        })
+        .collect();
+    let witness_notes: Vec<WitnessNoteRes> = state
+        .db
+        .witness_cosignatures(
+            organization.id,
+            i64::try_from(head.size).unwrap_or(i64::MAX),
+        )
+        .await?
+        .into_iter()
+        .map(|cosign| WitnessNoteRes {
+            witness_url: cosign.witness_url,
+            note: cosign.note,
+        })
+        .collect();
     Ok(UsageReportRes {
         report_id: report.report_id,
         end_user: report.end_user,
@@ -143,6 +202,9 @@ async fn report_res(
         key_name,
         public_key,
         key_hash,
+        witness_origin,
+        witness_keys,
+        witness_notes,
     })
 }
 

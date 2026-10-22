@@ -24,6 +24,20 @@ use crate::AppState;
 pub fn mount(router: Router<AppState>, state: &AppState) -> Router<AppState> {
     let config = oxsum_web::WebConfig {
         head_seed: state.config.head_signing_seed(),
+        // The pinned witness keys are public by design (the same set
+        // `/api/v1/log/checkpoint` serves); the bill page embeds them so the
+        // customer's browser can check cosignatures without a session.
+        witness_keys: state
+            .config
+            .witness_keys()
+            .iter()
+            .map(|key| oxsum_web::WitnessPin {
+                witness_url: key.witness_url.clone(),
+                key_name: key.key_name.clone(),
+                public_key: key.public_key.clone(),
+                key_hash: key.key_hash.clone(),
+            })
+            .collect(),
     };
     let dashboard = oxsum_web::router(state.db.clone(), state.tenants.clone(), config);
     let pages = ServiceBuilder::new()

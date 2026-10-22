@@ -84,6 +84,27 @@ struct BundleWire {
     key_name: Option<String>,
     public_key: Option<String>,
     key_hash: Option<String>,
+    /// The tenant log's origin, so the browser's witness check knows which log
+    /// the cosignatures must name (issue #328).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    witness_origin: Option<String>,
+    /// The deployment's pinned witness keys — public by design, empty when the
+    /// deployment pins none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    witness_keys: Vec<crate::WitnessPin>,
+    /// The cosigned notes stored for this bundle's head, if any. A head the
+    /// witness pass has not anchored yet answers empty, and the page says so
+    /// instead of implying a cosignature.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    witness_notes: Vec<WitnessNoteWire>,
+}
+
+/// One witness's cosigned note, as the browser's `verifyWitnesses` reads it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WitnessNoteWire {
+    witness_url: String,
+    note: String,
 }
 
 /// One entry with its recorded hash and inclusion proof.
@@ -168,6 +189,14 @@ async fn bill_page(cx: &Cx) -> Result<impl View> {
             .collect(),
     };
 
+    // The pinned witness set is public by design; the origin names the log the
+    // cosignatures must cover. A deployment that pins nothing embeds an empty
+    // set, and the page says so.
+    let witness_keys = crate::web_config(cx)?.witness_keys.clone();
+    let witness_origin = oxsum_core::origin_for(&link.tenant_id)
+        .ok()
+        .map(|origin| origin.as_str().to_owned());
+
     let mut bills = Vec::new();
     for report in reports {
         let (marker, entries, head, signed) = wallet
@@ -217,6 +246,21 @@ async fn bill_page(cx: &Cx) -> Result<impl View> {
             ),
             None => (None, None, None, None),
         };
+        // A head the witness pass has not anchored yet has no cosignature; the
+        // page names that state rather than leaving the line blank.
+        let witness_notes = db
+            .witness_cosignatures(
+                link.organization_id,
+                i64::try_from(head.size).unwrap_or(i64::MAX),
+            )
+            .await
+            .map_err(internal)?
+            .into_iter()
+            .map(|cosign| WitnessNoteWire {
+                witness_url: cosign.witness_url,
+                note: cosign.note,
+            })
+            .collect();
         let bundle = BundleWire {
             report_id: report.report_id.to_string(),
             end_user: report.end_user.clone(),
@@ -235,6 +279,9 @@ async fn bill_page(cx: &Cx) -> Result<impl View> {
             key_name,
             public_key,
             key_hash,
+            witness_origin: witness_origin.clone(),
+            witness_keys: witness_keys.clone(),
+            witness_notes,
         };
         let bundle_json = serde_json::to_string(&bundle).map_err(|error| {
             internal_server_error(topcoat::Error::msg(format!(

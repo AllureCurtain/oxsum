@@ -74,6 +74,51 @@ function render(status, result, hash, signed) {
   }
 }
 
+// The witness half (issue #328): the bundle carries the deployment's pinned
+// witness keys, the head's cosigned notes and the log's origin. One honest
+// sentence, and never a check that silently passes: no pins, no notes, a
+// failed cosignature and an unreadable answer each read differently.
+function witnessLine(bundle, verify) {
+  const notes = Array.isArray(bundle.witnessNotes) ? bundle.witnessNotes : [];
+  const pins = Array.isArray(bundle.witnessKeys) ? bundle.witnessKeys : [];
+  if (!pins.length) {
+    return "No witness keys are pinned on this deployment, so no third party cosigned this head.";
+  }
+  if (!bundle.witnessOrigin) {
+    return "The log origin is missing, so the witness cosignatures were not checked.";
+  }
+  if (!notes.length) {
+    return "Witnesses are configured, but no cosignature covers this head yet.";
+  }
+  try {
+    const verdicts = JSON.parse(
+      verify.verifyWitnesses(
+        JSON.stringify(notes),
+        JSON.stringify(pins),
+        bundle.witnessOrigin,
+        JSON.stringify(bundle.head),
+      ),
+    );
+    const failed = verdicts.filter((verdict) => !verdict.ok);
+    if (failed.length) {
+      return (
+        "A witness cosignature does not verify: " +
+        failed.map((verdict) => verdict.witnessUrl).join(", ") +
+        "."
+      );
+    }
+    return (
+      `Witnessed by ${verdicts.length} independent cosigner` +
+      (verdicts.length === 1 ? "" : "s") +
+      ": " +
+      verdicts.map((verdict) => verdict.witnessUrl).join(", ") +
+      "."
+    );
+  } catch (error) {
+    return "The witness cosignatures could not be checked: " + String(error) + ".";
+  }
+}
+
 export async function attach() {
   const buttons = document.querySelectorAll("button.verify-bill");
   if (!buttons.length || typeof WebAssembly !== "object") {
@@ -93,7 +138,11 @@ export async function attach() {
           button.dataset.endUser,
           key,
         );
-        render(status, JSON.parse(outcome), loaded.hash, key !== null);
+        const result = JSON.parse(outcome);
+        render(status, result, loaded.hash, key !== null);
+        if (result.ok) {
+          status.textContent += " " + witnessLine(bundle, loaded.verify);
+        }
       } catch (error) {
         status.className = "verdict error";
         status.textContent =
