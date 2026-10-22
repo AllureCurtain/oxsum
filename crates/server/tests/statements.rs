@@ -1058,3 +1058,143 @@ async fn a_signed_anchor_verifies_the_head_that_follows_it() {
     oxsum_verify::verify_statement_anchor(&body["data"].to_string(), &check)
         .expect("the signed anchor verifies");
 }
+
+/// One organization as the operator list answers it — the surface that shows
+/// the suspension flag.
+async fn admin_organization(app: &Router, org: &str) -> Value {
+    let (status, body) = call(app, "GET", "/api/v1/admin/organizations?limit=200", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["data"]["organizations"]
+        .as_array()
+        .expect("the organizations page")
+        .iter()
+        .find(|o| o["id"] == org)
+        .cloned()
+        .expect("the organization is on the page")
+}
+
+/// The full dunning walk (issue #258; W3-3): a finalized statement goes
+/// overdue, the sweep suspends the organization, a top-up pays it, and the
+/// next sweep reinstates — each step asserted through the operator and
+/// organization surfaces, not the database alone.
+#[tokio::test]
+async fn the_statement_lifecycle_suspends_and_reinstates() {
+    let (app, pool) = app_or_skip!();
+    let (org, key) = register(&app, "dunning").await;
+    let tenant = tenant_of(&pool, &org).await;
+    let db = Db::from_pool(pool.clone());
+
+    grant_credit(&app, &org, 20_000_000, "dunning").await;
+    turn(
+        &db,
+        &tenant,
+        "d1",
+        ("openai", "gpt-4o"),
+        5 * ONE,
+        2 * ONE,
+        SEPT,
+    )
+    .await;
+
+    // Terms of zero days and a dunning grace of zero: the statement is due the
+    // day it is finalized, and the sweep may act the day after.
+    let (status, body) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/admin/organizations/{org}"),
+        Some(json!({
+            "paymentTermsDays": 0,
+            "dunningGraceDays": 0,
+            "idempotencyKey": "dunning-terms",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/admin/statements",
+        Some(json!({"period": "2026-09", "organizationId": org})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let statement_id = body["data"][0]["id"]
+        .as_str()
+        .expect("a generated statement")
+        .to_owned();
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/statements/{statement_id}/finalize"),
+        Some(json!({"idempotencyKey": "dunning-fin"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["status"], "finalized");
+    let total = body["data"]["totalMinor"]
+        .as_i64()
+        .expect("a statement total");
+
+    // 1. Overdue: the day after the due date flips a pending statement.
+    let tomorrow = time::OffsetDateTime::now_utc().date() + time::Duration::days(1);
+    let flipped = db.flip_overdue(tomorrow).await.expect("the overdue flip");
+    assert!(flipped >= 1, "this statement was flipped");
+    let (status, body) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/admin/statements/{statement_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["statement"]["paymentStatus"], "overdue");
+
+    // 2. Suspended: the sweep places the flag and moves the statement with it.
+    let (suspended, _) = db.sweep_dunning(tomorrow).await.expect("the dunning sweep");
+    assert!(suspended >= 1, "this organization was suspended");
+    let organization = admin_organization(&app, &org).await;
+    assert!(
+        organization["suspendedAt"].is_string(),
+        "the organization carries the suspension: {organization}"
+    );
+    let (_, body) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/admin/statements/{statement_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(body["data"]["statement"]["paymentStatus"], "suspended");
+
+    // 3. Paid: a manual top-up repays the drawn line, and the reconcile that
+    // follows every money-in walks the statement to `paid`.
+    let (status, body) = call_with(
+        &app,
+        "POST",
+        "/api/v1/topups",
+        Some(json!({"idempotencyKey": "dunning-topup", "amountMinor": total})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, body) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/admin/statements/{statement_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(body["data"]["statement"]["paymentStatus"], "paid", "{body}");
+    assert_eq!(body["data"]["statement"]["paidMinor"].as_i64(), Some(total));
+
+    // 4. Reinstated: the sweep lifts only the suspension it placed, once
+    // nothing unpaid stands past its grace.
+    let (_, reinstated) = db.sweep_dunning(tomorrow).await.expect("the dunning sweep");
+    assert!(reinstated >= 1, "this organization was reinstated");
+    let organization = admin_organization(&app, &org).await;
+    assert!(
+        organization["suspendedAt"].is_null(),
+        "the suspension was lifted: {organization}"
+    );
+}
