@@ -43,9 +43,14 @@ send the page URL and the verifier hash to the operator.
 The check proves that **these rows are in this ledger, and the figures shown are the ones the
 organization committed to**. It does not prove:
 
-- **Completeness.** The entry count and total are the organization's signed claim, not a fact the
-  bundle can demonstrate. If you kept your own request log, compare the count and the total against
-  what you sent.
+- **Completeness.** Without the anchored proof below, the entry count and total are the
+  organization's signed claim, not a fact the bundle can demonstrate: if you kept your own request
+  log, compare the count and the total against what you sent. When the report carries a
+  `completeness` proof — the deployment anchors each closed day's customer log into the ledger —
+  the bundle lists every day leaf of your log and the check rebuilds each day's leaf from the rows
+  it assigns to that day. A dropped day leaves a gap in the anchored head; a row moved to another
+  day changes the leaf. What even the anchored proof cannot show: that the organization counted
+  the tokens the model really returned (the next bullet).
 - **Charge arithmetic.** The check binds each entry's bytes to its hash; it does not recompute each
   row's price × usage. The operator's `/verify` page runs that per-bill check when you paste a
   single settlement's bundle.
