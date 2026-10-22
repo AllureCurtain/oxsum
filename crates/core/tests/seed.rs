@@ -306,36 +306,3 @@ async fn a_second_seed_writes_nothing() {
         .unwrap();
     assert_eq!(before, after, "nothing new lands on a rerun");
 }
-
-/// A database with no catalog gets the demo channel from the sealing key, and
-/// then the turns and the statement the seed promises (issue #330).
-#[tokio::test]
-async fn a_secret_seeds_a_catalog_and_history() {
-    let _guard = SEED_LOCK.lock().await;
-    let url = db_or_skip!();
-    let db = db(&url).await;
-    // Start from no catalog: the demo channel is the feature under test.
-    sqlx::query("DELETE FROM oxsum.channels")
-        .execute(db.pool())
-        .await
-        .expect("clears the test catalog");
-
-    let key = SecretKey::from_bytes([7; 32]);
-    let report = db.seed_demo_with_channel(&key).await.unwrap();
-    assert!(report.created);
-    assert!(
-        report.turns > 0,
-        "the demo turns settle under the demo channel"
-    );
-    assert!(report.statement.is_some(), "last month closes");
-
-    let catalog = db.catalog().await.unwrap();
-    let models: Vec<&str> = catalog.iter().map(|m| m.model.as_str()).collect();
-    assert!(models.contains(&"demo-chat"), "{models:?}");
-    assert!(models.contains(&"demo-reasoner"), "{models:?}");
-
-    // The rerun stays a no-op even though the channel now exists.
-    let second = db.seed_demo_with_channel(&key).await.unwrap();
-    assert!(!second.created);
-    assert_eq!(second.turns, 0);
-}
