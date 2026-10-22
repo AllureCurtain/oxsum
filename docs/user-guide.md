@@ -298,6 +298,13 @@ works the same shape: `POST /api/v1/topups/airwallex` answers `{"checkoutUrl",
 "intentId", "clientSecret", "depositId"}` — open the URL, pay on Airwallex's hosted
 page, and the signed webhook credits the pool when the intent succeeds.
 
+The Hyperswitch rail (`OXSUM_HYPERSWITCH_*`; issue #319) is the switch the payment
+layer runs on: `POST /api/v1/topups/hyperswitch` answers `{"paymentId",
+"clientSecret", "publishableKey", "depositId"}`. The browser confirms the payment
+with the switch's own SDK using those handles, and the signed webhook credits the
+pool when the payment succeeds. The dashboard's checkout widget for this rail is
+the next step; until it lands, the handles are the integration point.
+
 On a deployment running the real rail (`OXSUM_X402_FACILITATOR_*` — an x402-rs
 facilitator sidecar verifies the authorization on-chain, settles it, and the
 chain transaction hash lands on the deposit row) or pinning a stand-in payer key
