@@ -7279,6 +7279,59 @@ export interface components {
                 /** @description the cosigned C2SP note text */
                 note: string;
             }[];
+            /**
+             * @description The anchored-day completeness proof (issue #339), present when a
+             *     daily anchor covers the span: the anchor entry that fixed the
+             *     customer's day-log head, the head itself, its inclusion in the
+             *     anchor's sorted map, and every day leaf the head was folded from.
+             *     The verifier rebuilds each day leaf from the rows the proof assigns
+             *     to that day, so a dropped day or a misattributed row fails. Absent,
+             *     completeness remains the organization's claim.
+             */
+            completeness?: {
+                v: number;
+                /** @description the ledger entry the daily pass appended, its recorded hash and its inclusion proof into `head` */
+                anchor: {
+                    entry: {
+                        /** @description doubleentry's serde encoding of the anchor entry */
+                        entry: Record<string, never>;
+                        contentHash: string;
+                        proof: Record<string, never>;
+                    };
+                    /**
+                     * Format: date
+                     * @description the anchored UTC day
+                     */
+                    day: string;
+                    /** @description the sorted-map root over every customer's day-log head at that day */
+                    mapRoot: string;
+                    /**
+                     * Format: int64
+                     * @description customers the map covered
+                     */
+                    enduserCount: number;
+                };
+                /** @description the customer's day-log head at the anchor day */
+                head: {
+                    root: string;
+                    /** Format: int64 */
+                    size: number;
+                };
+                /** @description the customer's head-pair inclusion in `anchor.mapRoot` (the proof carries the position) */
+                mapProof: Record<string, never>;
+                /** @description every day leaf the head covers, in index order */
+                days: {
+                    /** Format: date */
+                    day: string;
+                    /** Format: int64 */
+                    index: number;
+                    leaf: string;
+                    /** @description the leaf's inclusion proof into `head` */
+                    proof: Record<string, never>;
+                    /** @description positions in `entries` this day's leaf was rebuilt from (span days only) */
+                    rows?: number[];
+                }[];
+            };
         };
         /**
          * @description A minted usage report's descriptor — what `GET .../usage-reports` lists.

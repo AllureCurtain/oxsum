@@ -439,6 +439,144 @@ async fn a_minted_usage_report_verifies_and_replays() {
     );
 }
 
+/// The anchored-day completeness proof (issue #339): a report over an anchored
+/// span carries the customer's day-log head, its anchor-map inclusion and every
+/// day leaf; the verifier rebuilds each day's leaf from the shown rows, so a
+/// dropped day or a row assigned to the wrong day fails as `Completeness` —
+/// not as an empty day.
+#[tokio::test]
+async fn an_anchored_report_proves_its_completeness() {
+    let (app, db) = app_or_skip!();
+    let account = account(&app, "complete").await;
+    top_up(&app, &account.cookie, 1_000_000_000).await;
+    let tenants = Tenants::new(db.pool().clone());
+    let end_user = "complete-customer";
+    let to = today() - time::Duration::days(1);
+    let from = to - time::Duration::days(2);
+
+    // One turn on `from`, two on `to` — two day leaves in the customer's log.
+    seed_request(
+        &db,
+        &tenants,
+        &account.tenant_id,
+        "c1",
+        end_user,
+        100,
+        200,
+        from,
+    )
+    .await;
+    seed_request(
+        &db,
+        &tenants,
+        &account.tenant_id,
+        "c2",
+        end_user,
+        300,
+        400,
+        to,
+    )
+    .await;
+    seed_request(
+        &db,
+        &tenants,
+        &account.tenant_id,
+        "c3",
+        end_user,
+        300,
+        400,
+        to,
+    )
+    .await;
+
+    // The daily anchor closes `to`.
+    let anchored = db.anchor_usage_days(to).await.expect("the pass anchors");
+    assert!(
+        anchored.anchors >= 1,
+        "the test organization is anchored (the pass also sees other suites' orgs)"
+    );
+
+    let span = (from.to_string(), to.to_string());
+    let res = mint(&app, &account.cookie, end_user, &span.0, &span.1).await;
+    assert_eq!(
+        res.status,
+        StatusCode::OK,
+        "the mint failed: {}",
+        res.json()
+    );
+    let report = res.json()["data"].clone();
+
+    let completeness = report
+        .get("completeness")
+        .expect("the bundle carries the completeness proof");
+    assert_eq!(completeness["v"].as_i64(), Some(1));
+    assert_eq!(
+        completeness["anchor"]["day"].as_str(),
+        Some(to.to_string().as_str()),
+        "the anchor is the day the span ends on"
+    );
+    assert_eq!(
+        completeness["head"]["size"].as_i64(),
+        Some(2),
+        "two day leaves"
+    );
+    let days = completeness["days"]
+        .as_array()
+        .expect("the proof lists the leaves");
+    assert_eq!(days.len(), 2);
+    assert_eq!(days[0]["day"].as_str(), Some(from.to_string().as_str()));
+    assert_eq!(days[0]["rows"].as_array().map(Vec::len), Some(1));
+    assert_eq!(days[1]["rows"].as_array().map(Vec::len), Some(2));
+
+    let json = serde_json::to_string(&report).unwrap();
+    oxsum_verify::verify_usage_report(
+        &json,
+        &origin_of(&account),
+        end_user,
+        Some(&published_key(&report)),
+    )
+    .expect("the anchored report verifies");
+
+    // A dropped day: the head's indices no longer cover 0..size.
+    let mut dropped: Value = serde_json::from_str(&json).unwrap();
+    dropped["completeness"]["days"]
+        .as_array_mut()
+        .unwrap()
+        .pop();
+    let err = oxsum_verify::verify_usage_report(
+        &serde_json::to_string(&dropped).unwrap(),
+        &origin_of(&account),
+        end_user,
+        None,
+    )
+    .expect_err("a dropped day must fail");
+    assert!(
+        matches!(err, oxsum_verify::UsageReportError::Completeness(_)),
+        "{err:?}"
+    );
+
+    // A row moved to the wrong day: the entries (and the subset digest) are
+    // unchanged, but the day's leaf no longer rebuilds from its rows.
+    let mut moved: Value = serde_json::from_str(&json).unwrap();
+    let first = moved["completeness"]["days"][0]["rows"][0].clone();
+    moved["completeness"]["days"][1]["rows"]
+        .as_array_mut()
+        .unwrap()
+        .push(first);
+    moved["completeness"]["days"][0]["rows"] = json!([]);
+    let err = oxsum_verify::verify_usage_report(
+        &serde_json::to_string(&moved).unwrap(),
+        &origin_of(&account),
+        end_user,
+        None,
+    )
+    .expect_err("a misattributed row must fail");
+    assert!(
+        matches!(err, oxsum_verify::UsageReportError::Completeness(_)),
+        "{err:?}"
+    );
+}
+
 /// A span whose `to` has not fully ended is refused — the marker attests a
 /// complete subset, and an open day can still book usage the report would omit.
 #[tokio::test]

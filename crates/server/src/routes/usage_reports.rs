@@ -84,6 +84,11 @@ pub(crate) struct UsageReportRes {
     /// The cosigned notes stored for this bundle's head, if any.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     witness_notes: Vec<WitnessNoteRes>,
+    /// The anchored-day completeness proof (issue #339): absent when no anchor
+    /// covers the span — the report then carries completeness as the
+    /// organization's claim, not a proof.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completeness: Option<oxsum_core::CompletenessBundle>,
 }
 
 /// One pinned witness key, as `GET /api/v1/log/checkpoint` already spells it.
@@ -187,6 +192,21 @@ async fn report_res(
             note: cosign.note,
         })
         .collect();
+    // The completeness proof (issue #339): the anchor fixes the customer's day
+    // log; the proof shows the head was folded from every leaf. An unanchored
+    // span answers `None`, and the verifier reads completeness as the org's
+    // claim, exactly as before.
+    let completeness = state
+        .db
+        .usage_completeness(
+            organization.id,
+            &organization.tenant_id,
+            &report.end_user,
+            report.to_date,
+            &report.rows,
+            head,
+        )
+        .await?;
     Ok(UsageReportRes {
         report_id: report.report_id,
         end_user: report.end_user,
@@ -205,6 +225,7 @@ async fn report_res(
         witness_origin,
         witness_keys,
         witness_notes,
+        completeness,
     })
 }
 

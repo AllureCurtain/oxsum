@@ -142,6 +142,10 @@ export async function attach() {
         render(status, result, loaded.hash, key !== null);
         if (result.ok) {
           status.textContent += " " + witnessLine(bundle, loaded.verify);
+          if (bundle && bundle.completeness) {
+            status.textContent +=
+              " The anchored day log proves no settlement in this span is missing.";
+          }
         }
       } catch (error) {
         status.className = "verdict error";
