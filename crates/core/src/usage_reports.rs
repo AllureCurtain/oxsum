@@ -38,7 +38,8 @@ use doubleentry::{Balanced, Entry, InclusionProof};
 /// One entry in a usage report's bundle — the entry itself, its recorded
 /// content hash, and its inclusion proof into the bundle's head. The route
 /// serializes this verbatim into the report's `marker`/`entries` wire shape.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ReportEntryBundle {
     /// The entry, balanced — serialized as doubleentry's wire encoding.
     pub entry: Entry<Balanced, SCALE>,

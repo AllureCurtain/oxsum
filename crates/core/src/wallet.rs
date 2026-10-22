@@ -2437,6 +2437,30 @@ impl Wallet {
         Ok((marker, entries, head, signed))
     }
 
+    /// One entry's bundle part — the entry, its recorded hash and its inclusion
+    /// proof against `head` — for callers that need a marker-like entry outside
+    /// a report's row list (the daily usage anchor, issue #339).
+    pub(crate) async fn entry_bundle(
+        &self,
+        entry_id: EntryId,
+        head: doubleentry::TreeHead,
+    ) -> Result<crate::usage_reports::ReportEntryBundle, WalletError> {
+        let Some(stored) = self.store.get(entry_id).await? else {
+            return Err(WalletError::InvalidInput(
+                "the anchored entry is gone from the ledger".into(),
+            ));
+        };
+        Ok(crate::usage_reports::ReportEntryBundle {
+            proof: self
+                .store
+                .prove_inclusion_at(stored.require_index().map_err(invalid)?, head.size)
+                .await
+                .map_err(invalid)?,
+            content_hash: stored.content_hash.to_hex(),
+            entry: stored.entry,
+        })
+    }
+
     /// A refused gateway request's billing record: one marker entry appended
     /// under `req-<request>:refused`, so a request admission turned away still
     /// lands on the billing page with its terminal status and reason (issue

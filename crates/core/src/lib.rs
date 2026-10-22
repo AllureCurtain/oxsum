@@ -44,6 +44,7 @@ mod upstream_bills;
 mod upstream_sync;
 mod usage;
 mod usage_anchors;
+mod usage_completeness;
 mod usage_reports;
 mod users;
 mod wallet;
@@ -128,6 +129,9 @@ pub use usage::{
     UsageDay, UsageRecord, UsageRow, validate_attribution,
 };
 pub use usage_anchors::UsageAnchorReport;
+pub use usage_completeness::{
+    CompletenessAnchor, CompletenessBundle, CompletenessDay, CompletenessHead,
+};
 pub use usage_reports::{ReportEntryBundle, UsageReport, UsageReportRow};
 pub use users::{AccountDeletion, NewUser, Registration, User};
 pub use wallet::{

@@ -125,9 +125,14 @@ The dashboard is the React app under `web/` (issue #234): overview, top-up, bill
   re-request for the same span replays the first report, so the organization can
   never commit one subset and show another. What the report proves is membership
   and commitment — that the shown rows are in the ledger and bound to the digest
-  the marker committed; completeness is the organization's signed claim, which a
-  customer's own request log spot-checks by comparing the report's `entryCount` and
-  `chargedTotalMinor` against what it sent.
+  the marker committed. Over a span the daily anchor covers (the `usage-anchors`
+  job commits each customer's day-log head into the ledger), the bundle also
+  carries the completeness proof: every day leaf of the customer's log, with the
+  anchor entry that fixed the head, and the verifier rebuilds each leaf from its
+  rows — a dropped day or a row moved to another day fails the check. Without an
+  anchor the report still verifies, and completeness stays the organization's
+  signed claim, which a customer's own request log spot-checks by comparing the
+  report's `entryCount` and `chargedTotalMinor` against what it sent.
 - **Share a bill as a link**: handing a customer a JSON file is not a bill. The
   dashboard's **Reports** page (`/app/reports`) mints a report and either link
   scope, shows the token once and lists what you shared. Enter an address in the

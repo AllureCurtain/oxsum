@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.75.0
+  version: 0.76.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -497,6 +497,14 @@ info:
     the cosigned notes stored for the bundle's head — the three pieces a reader runs
     `verify_witnesses` over. All three are optional: an absent `witnessKeys` means no witnesses
     are pinned, and an absent `witnessNotes` means no cosignature covers that head yet.
+
+    0.76.0 turns the usage report's completeness from a claim into a proof when the span is
+    anchored (issue #339): `completeness` carries the anchor entry that fixed the customer's
+    day-log head, the head, its inclusion in the anchor's sorted map, and every day leaf the head
+    was folded from. The verifier rebuilds each day leaf from the rows the proof assigns to that
+    day, so a dropped day or a row assigned to the wrong day fails. It is optional: without it
+    (an unanchored span, or history from before the day log) the report still verifies, with
+    completeness as the organization's claim.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -5299,6 +5307,62 @@ components:
             properties:
               witnessUrl: { type: string, format: uri }
               note: { type: string, description: "the cosigned C2SP note text" }
+        completeness:
+          type: object
+          description: |
+            The anchored-day completeness proof (issue #339), present when a
+            daily anchor covers the span: the anchor entry that fixed the
+            customer's day-log head, the head itself, its inclusion in the
+            anchor's sorted map, and every day leaf the head was folded from.
+            The verifier rebuilds each day leaf from the rows the proof assigns
+            to that day, so a dropped day or a misattributed row fails. Absent,
+            completeness remains the organization's claim.
+          required: [v, anchor, head, mapProof, days]
+          properties:
+            v: { type: integer, minimum: 1 }
+            anchor:
+              type: object
+              description: the ledger entry the daily pass appended, its recorded hash and its inclusion proof into `head`
+              required: [entry, day, mapRoot, enduserCount]
+              properties:
+                entry:
+                  type: object
+                  required: [entry, contentHash, proof]
+                  properties:
+                    entry: { type: object, description: "doubleentry's serde encoding of the anchor entry" }
+                    contentHash: { type: string, pattern: "^[0-9a-f]{64}$" }
+                    proof: { type: object }
+                day: { type: string, format: date, description: "the anchored UTC day" }
+                mapRoot:
+                  type: string
+                  pattern: "^[0-9a-f]{64}$"
+                  description: the sorted-map root over every customer's day-log head at that day
+                enduserCount: { type: integer, format: int64, description: "customers the map covered" }
+            head:
+              type: object
+              description: the customer's day-log head at the anchor day
+              required: [root, size]
+              properties:
+                root: { type: string, pattern: "^[0-9a-f]{64}$" }
+                size: { type: integer, format: int64 }
+            mapProof:
+              type: object
+              description: the customer's head-pair inclusion in `anchor.mapRoot` (the proof carries the position)
+            days:
+              type: array
+              description: every day leaf the head covers, in index order
+              items:
+                type: object
+                required: [day, index, leaf, proof]
+                properties:
+                  day: { type: string, format: date }
+                  index: { type: integer, format: int64, minimum: 0 }
+                  leaf: { type: string, pattern: "^[0-9a-f]{64}$" }
+                  proof: { type: object, description: the leaf's inclusion proof into `head` }
+                  rows:
+                    type: array
+                    description: positions in `entries` this day's leaf was rebuilt from (span days only)
+                    items: { type: integer, minimum: 0 }
     UsageReportSummary:
       type: object
       description: |
