@@ -46,7 +46,17 @@ async fn online_app(url: &str) -> (Router, Db) {
     (
         oxsum_server::app(
             db.clone(),
-            Config::new(Signup::Open, None).with_head_signing_seed(HEAD_SEED),
+            Config::new(Signup::Open, None)
+                .with_head_signing_seed(HEAD_SEED)
+                // The bill page embeds the pinned set and the notes for the
+                // head (issue #328); one pin is enough for the tests, and its
+                // public half is never used to verify here.
+                .with_witness_keys(vec![oxsum_server::WitnessKey {
+                    witness_url: "https://witness.test/".to_owned(),
+                    key_name: "test-witness".to_owned(),
+                    public_key: "11".repeat(32),
+                    key_hash: "22222222".to_owned(),
+                }]),
         ),
         db,
     )
@@ -118,6 +128,7 @@ async fn call(
 /// A registered organization: the session that calls and the tenant the ledger
 /// is under.
 struct Account {
+    organization_id: String,
     tenant_id: String,
     cookie: String,
 }
@@ -144,6 +155,10 @@ async fn account(app: &Router, name: &str) -> Account {
     );
     let registered = res.json();
     Account {
+        organization_id: registered["data"]["organization"]["id"]
+            .as_str()
+            .expect("registration names an organization")
+            .to_owned(),
         tenant_id: registered["data"]["organization"]["tenantId"]
             .as_str()
             .expect("registration names a tenant")
@@ -927,6 +942,20 @@ async fn a_bill_link_renders_the_frozen_report_with_its_headers() {
         .expect("a token")
         .to_owned();
 
+    // A cosignature for exactly this head, as the witness pass would have
+    // stored it; the page embeds it for the browser's check (issue #328).
+    sqlx::query(
+        "INSERT INTO oxsum.witness_cosignatures (organization_id, witness_url, head_size, note) \
+         VALUES ($1::uuid, $2, $3, $4)",
+    )
+    .bind(&account.organization_id)
+    .bind("https://witness.test/")
+    .bind(report["head"]["size"].as_i64().expect("a head size"))
+    .bind("the cosigned note")
+    .execute(db.pool())
+    .await
+    .expect("the cosignature row lands");
+
     let page = call(&app, "GET", &format!("/bill/{token}"), None, None).await;
     assert_eq!(page.status, StatusCode::OK, "the page did not render");
     let body = String::from_utf8(page.body.clone()).expect("the page is UTF-8");
@@ -963,6 +992,26 @@ async fn a_bill_link_renders_the_frozen_report_with_its_headers() {
         Some(&published_key(&bundle)),
     )
     .expect("the embedded bundle verifies offline");
+
+    // The bundle names the pinned witness set, the log the cosignatures must
+    // cover and the note stored for this head — the three pieces bill.js feeds
+    // to verifyWitnesses.
+    assert_eq!(
+        bundle["witnessOrigin"].as_str().expect("a witness origin"),
+        origin_of(&account)
+    );
+    assert_eq!(
+        bundle["witnessKeys"][0]["witnessUrl"]
+            .as_str()
+            .expect("the pinned witness"),
+        "https://witness.test/"
+    );
+    assert_eq!(
+        bundle["witnessNotes"][0]["note"]
+            .as_str()
+            .expect("the stored cosignature"),
+        "the cosigned note"
+    );
 
     // Unknown, revoked and expired tokens are the same 404.
     let unknown = call(&app, "GET", "/bill/oxb-unknown", None, None).await;
@@ -1289,5 +1338,84 @@ async fn email_without_a_mailer_is_refused() {
     assert_eq!(
         links.json()["data"]["rows"].as_array().map(Vec::len),
         Some(0)
+    );
+}
+
+/// A report names the pinned witnesses and the log origin, and — once a
+/// cosignature for its head is stored — carries that note too (issue #328).
+#[tokio::test]
+async fn a_report_carries_the_pinned_witnesses_and_its_cosignature() {
+    let (app, db) = app_or_skip!();
+    let account = account(&app, "witness-report").await;
+    top_up(&app, &account.cookie, 1_000_000_000).await;
+    let tenants = Tenants::new(db.pool().clone());
+    let end_user = "customer-1";
+    let to = today() - time::Duration::days(1);
+    seed_request(
+        &db,
+        &tenants,
+        &account.tenant_id,
+        "req-w1",
+        end_user,
+        300,
+        400,
+        to,
+    )
+    .await;
+    let to = to.to_string();
+    let report = mint(&app, &account.cookie, end_user, &to, &to).await.json()["data"].clone();
+
+    assert_eq!(
+        report["witnessOrigin"]
+            .as_str()
+            .expect("the log origin is named"),
+        origin_of(&account)
+    );
+    assert_eq!(
+        report["witnessKeys"][0]["witnessUrl"]
+            .as_str()
+            .expect("the pinned witness is named"),
+        "https://witness.test/"
+    );
+    assert!(
+        report.get("witnessNotes").is_none(),
+        "no cosignature is stored yet, so the field is absent rather than empty"
+    );
+
+    // A cosignature for exactly this head, as the witness pass stores one.
+    sqlx::query(
+        "INSERT INTO oxsum.witness_cosignatures (organization_id, witness_url, head_size, note) \
+         VALUES ($1::uuid, $2, $3, $4)",
+    )
+    .bind(&account.organization_id)
+    .bind("https://witness.test/")
+    .bind(report["head"]["size"].as_i64().expect("a head size"))
+    .bind("the cosigned note")
+    .execute(db.pool())
+    .await
+    .expect("the cosignature row lands");
+
+    let report_id = report["reportId"].as_str().expect("a report id");
+    let fetched = call(
+        &app,
+        "GET",
+        &format!("/api/v1/org/usage-reports/{report_id}"),
+        None,
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(fetched.status, StatusCode::OK, "{}", fetched.json());
+    let body = fetched.json();
+    assert_eq!(
+        body["data"]["witnessNotes"][0]["note"]
+            .as_str()
+            .expect("the stored cosignature"),
+        "the cosigned note"
+    );
+    assert_eq!(
+        body["data"]["witnessNotes"][0]["witnessUrl"]
+            .as_str()
+            .expect("the witness url"),
+        "https://witness.test/"
     );
 }

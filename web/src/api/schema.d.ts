@@ -7251,6 +7251,34 @@ export interface components {
             publicKey: string | null;
             /** @description the signature-line selector */
             keyHash: string | null;
+            /**
+             * @description the tenant log's origin (`oxsum/ledgers/<tenant>`), so a reader's
+             *     witness check knows which log the cosignatures must name (issue #328)
+             */
+            witnessOrigin?: string | null;
+            /**
+             * @description the deployment's pinned witness keys — public by design, and absent
+             *     (or empty) when the deployment pins none
+             */
+            witnessKeys?: {
+                /** Format: uri */
+                witnessUrl: string;
+                keyName: string;
+                /** @description the Ed25519 verifying key, hex */
+                publicKey: string;
+                /** @description the C2SP key hash, hex */
+                keyHash: string;
+            }[];
+            /**
+             * @description the cosigned notes stored for this bundle's head, absent when none
+             *     are; a reader checks them with `verify_witnesses`
+             */
+            witnessNotes?: {
+                /** Format: uri */
+                witnessUrl: string;
+                /** @description the cosigned C2SP note text */
+                note: string;
+            }[];
         };
         /**
          * @description A minted usage report's descriptor — what `GET .../usage-reports` lists.

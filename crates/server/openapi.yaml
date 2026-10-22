@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.74.0
+  version: 0.75.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -491,6 +491,12 @@ info:
     its `event_id` before acting, and credits `payment_succeeded` under
     `hyperswitch:<payment_id>`. An unconfigured rail answers 503 at the intent and 404 at the
     webhook.
+
+    0.75.0 carries the witness half of a usage report (issue #328): `witnessOrigin` names the
+    tenant log, `witnessKeys` the deployment's pinned witness keys (public), and `witnessNotes`
+    the cosigned notes stored for the bundle's head — the three pieces a reader runs
+    `verify_witnesses` over. All three are optional: an absent `witnessKeys` means no witnesses
+    are pinned, and an absent `witnessNotes` means no cosignature covers that head yet.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -5263,6 +5269,36 @@ components:
         keyName: { type: string, nullable: true }
         publicKey: { type: string, nullable: true, description: the operator's Ed25519 verifying key, hex }
         keyHash: { type: string, nullable: true, description: the signature-line selector, hex }
+        witnessOrigin:
+          type: string
+          nullable: true
+          description: |
+            the tenant log's origin (`oxsum/ledgers/<tenant>`), so a reader's
+            witness check knows which log the cosignatures must name (issue #328)
+        witnessKeys:
+          type: array
+          description: |
+            the deployment's pinned witness keys — public by design, and absent
+            (or empty) when the deployment pins none
+          items:
+            type: object
+            required: [witnessUrl, keyName, publicKey, keyHash]
+            properties:
+              witnessUrl: { type: string, format: uri }
+              keyName: { type: string }
+              publicKey: { type: string, description: "the Ed25519 verifying key, hex" }
+              keyHash: { type: string, description: "the C2SP key hash, hex" }
+        witnessNotes:
+          type: array
+          description: |
+            the cosigned notes stored for this bundle's head, absent when none
+            are; a reader checks them with `verify_witnesses`
+          items:
+            type: object
+            required: [witnessUrl, note]
+            properties:
+              witnessUrl: { type: string, format: uri }
+              note: { type: string, description: "the cosigned C2SP note text" }
     UsageReportSummary:
       type: object
       description: |

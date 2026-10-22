@@ -33,13 +33,27 @@ use topcoat::router::Router;
 
 /// What the surviving page needs beyond the database: the deployment's
 /// head-signing seed, which `/verify` uses to publish the operator's key when it
-/// checks a usage report against a signed head.
+/// checks a usage report against a signed head, and the pinned witness keys the
+/// bill page embeds so a customer can check the cosignatures (issue #328).
 ///
-/// The dashboard-era fields (mail, cookie `Secure`, OAuth, the witness pinset)
-/// went with the pages that read them.
+/// The rest of the dashboard-era fields (mail, cookie `Secure`, OAuth) went with
+/// the pages that read them.
 #[derive(Debug, Clone)]
 pub struct WebConfig {
     pub head_seed: Option<[u8; 32]>,
+    pub witness_keys: Vec<WitnessPin>,
+}
+
+/// One pinned witness key, as the bill page embeds it for the browser's
+/// `verifyWitnesses` — the same four fields `OXSUM_WITNESS_KEYS` pins and the
+/// `/api/v1/log/checkpoint` answer names.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WitnessPin {
+    pub witness_url: String,
+    pub key_name: String,
+    pub public_key: String,
+    pub key_hash: String,
 }
 
 /// Builds the router for the server-rendered pages that remain.

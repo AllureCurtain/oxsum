@@ -576,7 +576,30 @@ impl crate::Db {
             return Ok(None);
         };
         let head_size: i64 = row.try_get("head_size")?;
-        let cosignatures = sqlx::query(
+        let cosignatures = self.witness_cosignatures(organization, head_size).await?;
+        Ok(Some(WitnessCheckpoint {
+            head_size,
+            note: row.try_get("note")?,
+            cosignatures,
+            updated_at: row.try_get("updated_at")?,
+        }))
+    }
+
+    /// Every cosigned note stored for one organization at one head size,
+    /// oldest first — what a bill reader checks a head against when that head
+    /// is older than the pass's current anchor (issue #328). An empty answer
+    /// means no witness vouched for this head yet; the caller says so.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn witness_cosignatures(
+        &self,
+        organization: uuid::Uuid,
+        head_size: i64,
+    ) -> Result<Vec<WitnessCosign>, WalletError> {
+        use sqlx::Row;
+        sqlx::query(
             "SELECT witness_url, note, first_seen FROM oxsum.witness_cosignatures \
              WHERE organization_id = $1 AND head_size = $2 \
              ORDER BY first_seen, witness_url",
@@ -593,13 +616,7 @@ impl crate::Db {
                 first_seen: row.try_get("first_seen")?,
             })
         })
-        .collect::<Result<Vec<_>, WalletError>>()?;
-        Ok(Some(WitnessCheckpoint {
-            head_size,
-            note: row.try_get("note")?,
-            cosignatures,
-            updated_at: row.try_get("updated_at")?,
-        }))
+        .collect()
     }
 
     /// Records the anchored checkpoint and one witness's cosigned note,
