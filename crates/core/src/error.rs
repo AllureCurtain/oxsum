@@ -69,6 +69,13 @@ pub enum WalletError {
     )]
     TokensPerMinute { limit: i64, retry_after_secs: u64 },
 
+    /// The settlement would book into a day the daily usage anchor has already
+    /// sealed: the day log's leaf for that day is committed, and a settlement
+    /// booking into it would rewrite a leaf the anchor fixed (issue #340). The
+    /// HTTP layer answers 409 `DAY_SEALED`.
+    #[error("the day is sealed; a settlement cannot book into it")]
+    DaySealed,
+
     /// A hold would push the acting API key past its outstanding-holds cap. The
     /// HTTP layer answers 429; the numbers are the key's own, so they are safe to
     /// show.

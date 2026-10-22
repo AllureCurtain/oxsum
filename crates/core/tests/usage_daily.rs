@@ -23,6 +23,10 @@ const ONE: i64 = 1_000_000;
 /// own dial, so the rollup's day key is checked rather than assumed.
 const MONDAY: Date = date!(2026 - 10 - 05);
 const FRIDAY: Date = date!(2026 - 10 - 09);
+/// A day no other test settles on: the anchor tests seal their day process-wide
+/// (the anchor pass visits every organization), so sharing a day with the
+/// settling tests would race the seal against them.
+const ANCHOR_DAY: Date = date!(2026 - 09 - 17);
 const PASSWORD: &str = "correct horse battery staple";
 
 fn url() -> Option<String> {
@@ -460,16 +464,16 @@ async fn the_anchor_pass_commits_the_map_root_once() {
     let url = db_or_skip!();
     let f = fixture(&url, "anchor").await;
     f.wallet
-        .top_up(&fresh("seed"), 20 * ONE, MONDAY)
+        .top_up(&fresh("seed"), 20 * ONE, ANCHOR_DAY)
         .await
         .expect("the wallet funds");
 
-    customer_turn(&f, "a1", "customer-a", 2 * ONE, MONDAY).await;
-    customer_turn(&f, "a2", "customer-a", 3 * ONE, MONDAY).await;
-    customer_turn(&f, "b1", "customer-b", 2 * ONE, MONDAY).await;
+    customer_turn(&f, "a1", "customer-a", 2 * ONE, ANCHOR_DAY).await;
+    customer_turn(&f, "a2", "customer-a", 3 * ONE, ANCHOR_DAY).await;
+    customer_turn(&f, "b1", "customer-b", 2 * ONE, ANCHOR_DAY).await;
 
     let report =
-        f.db.anchor_usage_days(MONDAY)
+        f.db.anchor_usage_days(ANCHOR_DAY)
             .await
             .expect("the pass anchors");
     assert_eq!(report.anchors, 1, "one organization anchored");
@@ -480,7 +484,7 @@ async fn the_anchor_pass_commits_the_map_root_once() {
          WHERE organization_id = $1 AND day = $2",
     )
     .bind(f.org.id)
-    .bind(MONDAY)
+    .bind(ANCHOR_DAY)
     .fetch_one(f.db.pool())
     .await
     .expect("the anchor row");
@@ -489,8 +493,8 @@ async fn the_anchor_pass_commits_the_map_root_once() {
     assert_eq!(row.get::<i64, _>("enduser_count"), 2, "two customers");
 
     // The root is the map over each customer's single-day head, in endUser order.
-    let leaf_a = day_row(&f, "customer-a", MONDAY).await.expect("a's leaf").2;
-    let leaf_b = day_row(&f, "customer-b", MONDAY).await.expect("b's leaf").2;
+    let leaf_a = day_row(&f, "customer-a", ANCHOR_DAY).await.expect("a's leaf").2;
+    let leaf_b = day_row(&f, "customer-b", ANCHOR_DAY).await.expect("b's leaf").2;
     let expected = oxsum_verify::usage_anchor_map_root(&[
         ("customer-a", single_leaf_root(&leaf_a), 1),
         ("customer-b", single_leaf_root(&leaf_b), 1),
@@ -510,7 +514,7 @@ async fn the_anchor_pass_commits_the_map_root_once() {
 
     // A rerun is a no-op and answers the standing entry.
     let again =
-        f.db.anchor_usage_days(MONDAY)
+        f.db.anchor_usage_days(ANCHOR_DAY)
             .await
             .expect("the pass reruns");
     assert_eq!(again.anchors, 0);
@@ -520,9 +524,95 @@ async fn the_anchor_pass_commits_the_map_root_once() {
          WHERE organization_id = $1 AND day = $2",
     )
     .bind(f.org.id)
-    .bind(MONDAY)
+    .bind(ANCHOR_DAY)
     .fetch_one(f.db.pool())
     .await
     .expect("the standing anchor");
     assert_eq!(standing, entry_id);
+}
+
+/// The daily anchor seals its day (issue #340): a settlement booking into an
+/// anchored day is refused as `DaySealed`, while a later day still settles.
+#[tokio::test]
+async fn a_settlement_cannot_book_into_an_anchored_day() {
+    let url = db_or_skip!();
+    let f = fixture(&url, "sealed").await;
+    f.wallet
+        .top_up(&fresh("seed"), 20 * ONE, ANCHOR_DAY)
+        .await
+        .expect("the wallet funds");
+    customer_turn(&f, "s1", "sealed-customer", 2 * ONE, ANCHOR_DAY).await;
+
+    let report =
+        f.db.anchor_usage_days(ANCHOR_DAY)
+            .await
+            .expect("the pass anchors");
+    assert!(report.anchors >= 1);
+
+    // The hold still succeeds; the settle is refused.
+    let hold_key = "hold-sealed-1";
+    f.wallet
+        .hold(hold_key, "", 2 * ONE, ANCHOR_DAY)
+        .await
+        .expect("the hold reserves");
+    let err = f
+        .wallet
+        .settle(hold_key, "", ONE, ANCHOR_DAY)
+        .await
+        .expect_err("the settle is refused");
+    assert!(matches!(err, oxsum_core::WalletError::DaySealed), "{err:?}");
+
+    // Another day is not sealed.
+    let hold_key = "hold-sealed-2";
+    f.wallet
+        .hold(hold_key, "", 2 * ONE, FRIDAY)
+        .await
+        .expect("the hold reserves");
+    f.wallet
+        .settle(hold_key, "", ONE, FRIDAY)
+        .await
+        .expect("the later day settles");
+}
+
+/// A day leaf altered after its anchor is reconciliation drift (issue #340).
+#[tokio::test]
+async fn an_altered_day_leaf_is_reconciliation_drift() {
+    let url = db_or_skip!();
+    let f = fixture(&url, "anchordrift").await;
+    f.wallet
+        .top_up(&fresh("seed"), 20 * ONE, ANCHOR_DAY)
+        .await
+        .expect("the wallet funds");
+    customer_turn(&f, "a1", "drift-customer", 2 * ONE, ANCHOR_DAY).await;
+    f.db.anchor_usage_days(ANCHOR_DAY)
+        .await
+        .expect("the pass anchors");
+
+    // A hand edit — the shape a bypassed seal leaves behind — rewrites the leaf.
+    sqlx::query(
+        "UPDATE oxsum.usage_day_log SET leaf_hash = decode(repeat('00', 32), 'hex') \
+         WHERE tenant_id = $1 AND end_user = $2 AND day = $3",
+    )
+    .bind(&f.org.tenant_id)
+    .bind("drift-customer")
+    .bind(ANCHOR_DAY)
+    .execute(f.db.pool())
+    .await
+    .expect("the leaf is altered");
+
+    let report = f.db.reconcile().await.expect("the scan runs");
+    let class = report
+        .classes
+        .iter()
+        .find(|class| class.class == oxsum_core::DriftKind::AnchoredDayAltered)
+        .expect("the class is reported");
+    assert!(class.count >= 1, "the altered leaf is drift");
+    assert!(
+        class
+            .samples
+            .iter()
+            .any(|sample| sample.detail == ANCHOR_DAY.to_string()),
+        "{:?}",
+        class.samples
+    );
 }

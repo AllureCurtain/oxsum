@@ -202,6 +202,12 @@ impl From<WalletError> for GatewayError {
             WalletError::InvalidCredentials => Self::Unauthorized,
             WalletError::Forbidden(message) => Self::Forbidden(message),
             WalletError::Conflict(message) => Self::Conflict(message),
+            // The gateway books on the current day, which the anchor never
+            // seals; a sealed-day settle here would be an internal defect, but
+            // it is answered as a conflict in the client's native shape (#340).
+            WalletError::DaySealed => {
+                Self::Conflict("the settlement's billing day is sealed".to_owned())
+            }
             WalletError::InsufficientFunds => {
                 Self::InsufficientFunds("the wallet cannot cover this request".to_owned())
             }

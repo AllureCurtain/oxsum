@@ -451,7 +451,10 @@ async fn an_anchored_report_proves_its_completeness() {
     top_up(&app, &account.cookie, 1_000_000_000).await;
     let tenants = Tenants::new(db.pool().clone());
     let end_user = "complete-customer";
-    let to = today() - time::Duration::days(1);
+    // A fixed past span no other test settles on: the anchor pass visits every
+    // organization, so sharing a day with the tests running beside this one
+    // would seal their settlements.
+    let to = time::macros::date!(2026 - 09 - 17);
     let from = to - time::Duration::days(2);
 
     // One turn on `from`, two on `to` — two day leaves in the customer's log.
