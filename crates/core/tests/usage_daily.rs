@@ -493,8 +493,14 @@ async fn the_anchor_pass_commits_the_map_root_once() {
     assert_eq!(row.get::<i64, _>("enduser_count"), 2, "two customers");
 
     // The root is the map over each customer's single-day head, in endUser order.
-    let leaf_a = day_row(&f, "customer-a", ANCHOR_DAY).await.expect("a's leaf").2;
-    let leaf_b = day_row(&f, "customer-b", ANCHOR_DAY).await.expect("b's leaf").2;
+    let leaf_a = day_row(&f, "customer-a", ANCHOR_DAY)
+        .await
+        .expect("a's leaf")
+        .2;
+    let leaf_b = day_row(&f, "customer-b", ANCHOR_DAY)
+        .await
+        .expect("b's leaf")
+        .2;
     let expected = oxsum_verify::usage_anchor_map_root(&[
         ("customer-a", single_leaf_root(&leaf_a), 1),
         ("customer-b", single_leaf_root(&leaf_b), 1),
