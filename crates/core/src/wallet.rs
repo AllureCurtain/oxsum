@@ -16,8 +16,8 @@ use uuid::Uuid;
 use crate::billing::{Settlement, SettlementKind, SettlementRecord};
 use crate::error::{WalletError, invalid};
 use crate::heads::{
-    Consistency, HeadSigningKey, STATEMENT_ANCHOR_DOCUMENT, SignedHead, USAGE_REPORT_DOCUMENT,
-    canonical_price_row, origin_for, sign_head, sign_price_head,
+    Consistency, HeadSigningKey, STATEMENT_ANCHOR_DOCUMENT, SignedHead, USAGE_ANCHOR_DOCUMENT,
+    USAGE_REPORT_DOCUMENT, canonical_price_row, origin_for, sign_head, sign_price_head,
 };
 use crate::keys::{ActingKey, BudgetDuration};
 use crate::proof::ProofBundle;
@@ -2294,6 +2294,54 @@ impl Wallet {
         let index = receipt.log_index.ok_or_else(|| {
             WalletError::InvalidInput("the usage-report marker did not sequence".into())
         })?;
+        Ok((receipt.entry_id, index))
+    }
+
+    /// Appends a usage day anchor — the marker entry committing `day`'s
+    /// sorted-map root into the tenant ledger (issue #338). `pub(crate)`: only
+    /// [`crate::Db::anchor_usage_days`] calls it.
+    ///
+    /// One entry per `(organization, day)`: a 1-minor balanced
+    /// `Equity:Adjustments` debit/credit (the marker is metadata, not money),
+    /// idempotency-keyed `usage-anchor/<day>` so a retried pass replays the
+    /// standing entry instead of committing a second root for the same day. The
+    /// [`DocumentRef`] binds the anchor to the map root, and the description
+    /// carries the day, root and customer count.
+    ///
+    /// # Errors
+    ///
+    /// Storage and ledger failures surface as [`WalletError`].
+    pub(crate) async fn anchor_usage_day(
+        &self,
+        day: time::Date,
+        description_json: &str,
+        map_root: Hash,
+    ) -> Result<(EntryId, u64), WalletError> {
+        let key = format!("usage-anchor/{day}");
+        let minor = Credits::from_minor(1);
+        let entry = Entry::<Draft, SCALE>::new(
+            entry_id_for(&key),
+            idem(&key)?,
+            OffsetDateTime::now_utc().date(),
+        )
+        .with_document(DocumentRef::new(USAGE_ANCHOR_DOCUMENT, map_root).map_err(invalid)?)
+        .with_description(description_of(description_json)?)
+        .debit(self.adjustments, minor, currency())
+        .credit(self.adjustments, minor, currency());
+        let receipt = match self.append(entry).await {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                // A raced pass lands on the same idempotency key; the standing
+                // entry is the same anchor either way, so read it back.
+                let Some(stored) = self.store.get(entry_id_for(&key)).await? else {
+                    return Err(error);
+                };
+                stored_receipt(&stored)
+            }
+        };
+        let index = receipt
+            .log_index
+            .ok_or_else(|| WalletError::InvalidInput("the usage anchor did not sequence".into()))?;
         Ok((receipt.entry_id, index))
     }
 

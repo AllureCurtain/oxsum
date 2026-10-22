@@ -11,7 +11,7 @@
 //! content hash — depends on it. The writer (`oxsum-core`) and every verifier
 //! must agree on it, and one definition leaves no room for drift.
 
-use doubleentry::{Balanced, Draft, Entry, InclusionProof};
+use doubleentry::{Balanced, Draft, Entry, InclusionProof, MerkleAccumulator};
 
 mod charge;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
@@ -1290,11 +1290,51 @@ fn hex_bytes<const N: usize>(hex: &str) -> Result<[u8; N], ()> {
     Ok(out)
 }
 
+/// The domain of one anchor-map leaf: `H(domain, endUser || head_root || size)`.
+///
+/// The daily anchor commits a sorted map from `endUser` to that customer's
+/// day-log head (root and day count), so a report can prove its customer's head
+/// is the one the anchor fixed without the verifier holding every other
+/// customer's head (issue #338, docs/decisions.md 2026-10-22).
+pub const USAGE_ANCHOR_MAP_DOMAIN: &[u8] = b"oxsum/usage-anchor-map/v1";
+
+/// Folds the anchor map's pairs — sorted by `endUser`, unique per customer —
+/// into the root the anchor entry's `DocumentRef` binds.
+///
+/// The verifier never rebuilds this from the whole map: a completeness proof
+/// carries one pair's sibling path (stage 3). This function is the writer's and
+/// the test's reference for what that path must fold to.
+#[must_use]
+pub fn usage_anchor_map_root(pairs: &[(&str, Hash, u64)]) -> Hash {
+    let mut accumulator = MerkleAccumulator::new();
+    for (end_user, head_root, size) in pairs {
+        let mut payload = Vec::with_capacity(end_user.len() + 32 + 8);
+        payload.extend_from_slice(end_user.as_bytes());
+        payload.extend_from_slice(head_root.as_bytes());
+        payload.extend_from_slice(&size.to_le_bytes());
+        accumulator.push(Hash::digest(USAGE_ANCHOR_MAP_DOMAIN, &payload));
+    }
+    accumulator.root()
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+
+    /// The anchor map binds every pair: dropping one, changing a head, or
+    /// changing a day count each yields a different root.
+    #[test]
+    fn the_anchor_map_root_binds_every_pair() {
+        let a = Hash::from_bytes([1; 32]);
+        let b = Hash::from_bytes([2; 32]);
+        let both = usage_anchor_map_root(&[("a", a, 1), ("b", b, 2)]);
+        assert_eq!(both, usage_anchor_map_root(&[("a", a, 1), ("b", b, 2)]));
+        assert_ne!(both, usage_anchor_map_root(&[("a", a, 1)]));
+        assert_ne!(both, usage_anchor_map_root(&[("a", a, 2), ("b", b, 2)]));
+        assert_ne!(both, usage_anchor_map_root(&[("a", b, 1), ("b", b, 2)]));
+    }
 
     /// A real bundle captured from a wallet ledger (one top-up of 10 credits),
     /// with the content hash the ledger recorded for it. Verification is pure

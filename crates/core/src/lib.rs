@@ -43,6 +43,7 @@ mod tiers;
 mod upstream_bills;
 mod upstream_sync;
 mod usage;
+mod usage_anchors;
 mod usage_reports;
 mod users;
 mod wallet;
@@ -75,11 +76,11 @@ pub use email_tokens::{EmailPurpose, MintedEmailToken};
 pub use error::WalletError;
 pub use heads::{
     Consistency, Cosigner, HeadSigningKey, KeyPublication, MemoryWitnessStore, Origin,
-    PRICE_ROW_DOMAIN, SignedHead, SignedPriceHead, USAGE_DAY_DOMAIN, USAGE_REPORT_DOCUMENT,
-    USAGE_REPORT_DOMAIN, UsageReportV1, VerifyingKey, Witness, WitnessCheckpoint, WitnessCosign,
-    WitnessError, WitnessKeyName, WitnessStore, canonical_price_row, canonical_usage_report,
-    origin_for, price_origin_for, price_row_hash, seed_from_base64, sign_head, sign_price_head,
-    signing_key, usage_report_subset_hash,
+    PRICE_ROW_DOMAIN, SignedHead, SignedPriceHead, USAGE_ANCHOR_DOCUMENT, USAGE_DAY_DOMAIN,
+    USAGE_REPORT_DOCUMENT, USAGE_REPORT_DOMAIN, UsageReportV1, VerifyingKey, Witness,
+    WitnessCheckpoint, WitnessCosign, WitnessError, WitnessKeyName, WitnessStore,
+    canonical_price_row, canonical_usage_report, origin_for, price_origin_for, price_row_hash,
+    seed_from_base64, sign_head, sign_price_head, signing_key, usage_report_subset_hash,
 };
 pub use holds::{
     DEAD_AFTER_SWEEP_ATTEMPTS, DEFAULT_HOLD_TIMEOUT, InFlightHold, OpenHold, SWEEP_INTERVAL,
@@ -126,6 +127,7 @@ pub use usage::{
     Attribution, CountsProvenance, MAX_CONTEXT_NAME, MAX_END_USER, MAX_TAG, MAX_TAGS, Margin,
     UsageDay, UsageRecord, UsageRow, validate_attribution,
 };
+pub use usage_anchors::UsageAnchorReport;
 pub use usage_reports::{ReportEntryBundle, UsageReport, UsageReportRow};
 pub use users::{AccountDeletion, NewUser, Registration, User};
 pub use wallet::{

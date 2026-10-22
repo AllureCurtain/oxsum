@@ -72,6 +72,7 @@ pub fn spawn_worker(db: Db, ctx: JobContext) -> tokio::task::JoinHandle<()> {
             kinds::RECONCILE,
             kinds::STATEMENTS,
             kinds::RETENTION,
+            kinds::USAGE_ANCHORS,
         ];
         if ctx.webhook.is_some() {
             periodic.push(kinds::DELIVER_WEBHOOKS);
@@ -323,6 +324,20 @@ async fn run_one(
                 dunning_suspended = report.suspended,
                 dunning_reinstated = report.reinstated,
                 "the statements pass closed the ended month"
+            );
+        }
+        kinds::USAGE_ANCHORS => {
+            // Yesterday, not today: an open day's map can still change as the
+            // day's settles land, and an anchor is immutable once written.
+            let day = OffsetDateTime::now_utc().date() - time::Duration::days(1);
+            let report = db.anchor_usage_days(day).await?;
+            info!(
+                day = %day,
+                organizations = report.organizations,
+                anchors = report.anchors,
+                skipped = report.skipped,
+                without_usage = report.without_usage,
+                "the usage-anchor pass closed the previous day"
             );
         }
         kinds::RETENTION => {
