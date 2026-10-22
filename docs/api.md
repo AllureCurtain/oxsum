@@ -214,6 +214,7 @@ Every failure on the envelope's surface is this shape, including a request body 
 | `POOL_BUSY` | 429 | the shared database pool could not hand out a connection in time — momentary backpressure, not a caller quota; `Retry-After` without the `X-RateLimit-*` headers a caller-owned limit carries (issue #235) |
 | `NOT_FOUND` | 404 | resource does not exist, or belongs to another organization; a settlement naming a hold that is not outstanding |
 | `CONFLICT` | 409 | the value is already taken, or a key was reused for a different request; registering an email that exists; settling a hold that is already discharged |
+| `DAY_SEALED` | 409 | the settlement's booking day is already anchored by the daily usage-anchor pass: the day log's leaf for that day is committed and must not change (issue #340) |
 | `INTERNAL_ERROR` | 500 | server error; details only in logs |
 | `SERVICE_UNAVAILABLE` | 503 | a feature the deployment did not configure: the wallet works, this surface does not — the tree-head endpoints without `OXSUM_HEAD_SIGNING_KEY`, the Stripe top-up intent without `OXSUM_STRIPE_*` |
 

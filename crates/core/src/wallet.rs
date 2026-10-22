@@ -1415,6 +1415,32 @@ impl Wallet {
         Ok(committed)
     }
 
+    /// Whether the daily usage anchor has sealed `day` for this ledger's
+    /// organization (issue #340).
+    ///
+    /// A wallet opened over a bare ledger schema — the generative tests'
+    /// model-only world — has no `oxsum` tables at all: the seal cannot exist
+    /// there, so the check answers "not sealed" instead of failing the write.
+    async fn day_is_anchored(&self, day: Date) -> Result<bool, WalletError> {
+        let table: Option<String> =
+            sqlx::query_scalar("SELECT to_regclass('oxsum.usage_anchors')::text")
+                .fetch_one(self.store.pool())
+                .await?;
+        if table.is_none() {
+            return Ok(false);
+        }
+        let anchored: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM oxsum.usage_anchors a \
+             JOIN oxsum.organizations o ON o.organization_id = a.organization_id \
+             WHERE o.tenant_id = $1 AND a.day = $2)",
+        )
+        .bind(&self.tenant_id)
+        .bind(day)
+        .fetch_one(self.store.pool())
+        .await?;
+        Ok(anchored)
+    }
+
     /// Settle: one entry does two things — releases the hold (a reversal in the pending layer)
     /// and charges the actual usage (recorded in the settled layer).
     ///
@@ -1452,6 +1478,11 @@ impl Wallet {
     ) -> Result<Receipt, WalletError> {
         // A call's own argument is bounded before the ledger is consulted.
         idem(hold_key)?;
+        // A day the daily anchor sealed is closed to settlements (issue #340):
+        // booking into it would rewrite a day leaf the anchor already fixed.
+        if self.day_is_anchored(on).await? {
+            return Err(WalletError::DaySealed);
+        }
         if actual_minor < 0 {
             return Err(WalletError::InvalidInput(
                 "actual must be within 0..=held".into(),

@@ -23,6 +23,9 @@ pub enum ApiError {
     /// which, because the caller was authorized to ask (docs/api.md, membership management).
     NotFound(String),
     Conflict(String),
+    /// The settlement would book into a day the daily usage anchor sealed:
+    /// 409 `DAY_SEALED` (issue #340).
+    DaySealed,
     InsufficientFunds,
     /// The acting API key's spend limit is exhausted: settled charges plus outstanding
     /// holds attributed to the key would exceed it. A quota refusal, not a balance one.
@@ -91,6 +94,7 @@ impl From<WalletError> for ApiError {
             WalletError::InvalidCredentials => Self::InvalidCredentials,
             WalletError::Forbidden(m) => Self::Forbidden(m),
             WalletError::Conflict(m) => Self::Conflict(m),
+            WalletError::DaySealed => Self::DaySealed,
             WalletError::HoldNotFound(_) => Self::NotFound("not found".into()),
             // A resource the caller named and does not have (an unknown account, a user who
             // is not a member): the message is about their own organization, so it is shown.
@@ -182,6 +186,11 @@ impl IntoResponse for ApiError {
             Self::Forbidden(m) => (StatusCode::FORBIDDEN, "FORBIDDEN", m),
             Self::NotFound(m) => (StatusCode::NOT_FOUND, "NOT_FOUND", m),
             Self::Conflict(m) => (StatusCode::CONFLICT, "CONFLICT", m),
+            Self::DaySealed => (
+                StatusCode::CONFLICT,
+                "DAY_SEALED",
+                "the day is sealed; a settlement cannot book into it".into(),
+            ),
             Self::InsufficientFunds => (
                 StatusCode::PAYMENT_REQUIRED,
                 "INSUFFICIENT_FUNDS",

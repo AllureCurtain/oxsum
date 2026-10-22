@@ -41,6 +41,9 @@
 //!   kind it carried has a broken link, and the row is the evidence of why
 //! - `UpstreamPriceDrift` — a stored `upstream` rate that no longer matches the
 //!   live catalog the channel serves: platform drift the price-sync job opened
+//! - `AnchoredDayAltered` — an anchored day's day log no longer folds to the map
+//!   root its anchor committed: a late settlement or a hand edit rewrote a leaf
+//!   the ledger had already fixed (issue #340)
 
 use serde::Serialize;
 use sqlx::Row;
@@ -70,10 +73,14 @@ pub enum DriftKind {
     LogGaps,
     JobsDead,
     UpstreamPriceDrift,
+    /// An anchored day's day log no longer folds to the map root its anchor
+    /// committed: a late settlement or a hand edit rewrote a leaf the ledger
+    /// had already fixed (issue #340).
+    AnchoredDayAltered,
 }
 
 /// The classes, in the fixed order the report answers them.
-const DRIFT_KINDS: [DriftKind; 11] = [
+const DRIFT_KINDS: [DriftKind; 12] = [
     DriftKind::UsageOrphans,
     DriftKind::SettlementsUnrecorded,
     DriftKind::DepositsUnbooked,
@@ -85,6 +92,7 @@ const DRIFT_KINDS: [DriftKind; 11] = [
     DriftKind::LogGaps,
     DriftKind::JobsDead,
     DriftKind::UpstreamPriceDrift,
+    DriftKind::AnchoredDayAltered,
 ];
 
 /// One offending identifier an operator follows — the request id, the hold key,
@@ -250,6 +258,69 @@ impl Db {
         .fetch_all(self.pool())
         .await?;
         classes.fold(DriftKind::UpstreamPriceDrift, "platform", &upstream_drift);
+
+        // An anchored day's day log must still fold to the map root its anchor
+        // committed (issue #340): a late settlement that rewrote a leaf, or a
+        // hand edit, shows up here rather than only on the next verification.
+        // The anchor is per organization, so this rides the anchor table rather
+        // than the per-tenant ledger scan.
+        let anchors = sqlx::query(
+            "SELECT a.day, a.map_root, o.name, o.tenant_id \
+             FROM oxsum.usage_anchors a \
+             JOIN oxsum.organizations o ON o.organization_id = a.organization_id \
+             ORDER BY a.day DESC",
+        )
+        .fetch_all(self.pool())
+        .await?;
+        for anchor in &anchors {
+            let tenant_id: String = anchor.get("tenant_id");
+            let day: time::Date = anchor.get("day");
+            let stored: Vec<u8> = anchor.get("map_root");
+            let leaves: Vec<(String, Vec<u8>)> = sqlx::query_as(
+                "SELECT end_user, leaf_hash FROM oxsum.usage_day_log \
+                 WHERE tenant_id = $1 AND day <= $2 ORDER BY end_user, day",
+            )
+            .bind(&tenant_id)
+            .bind(day)
+            .fetch_all(self.pool())
+            .await?;
+            let mut by_customer: std::collections::BTreeMap<String, Vec<Vec<u8>>> =
+                std::collections::BTreeMap::new();
+            for (end_user, leaf) in leaves {
+                by_customer.entry(end_user).or_default().push(leaf);
+            }
+            let mut pairs: Vec<(String, crate::Hash, u64)> = Vec::new();
+            for (end_user, leaves) in by_customer {
+                let mut hashes = Vec::with_capacity(leaves.len());
+                for leaf in leaves {
+                    let array: [u8; 32] = leaf.as_slice().try_into().map_err(|_| {
+                        WalletError::InvalidInput("a stored day leaf is not 32 bytes".into())
+                    })?;
+                    hashes.push(crate::Hash::from_bytes(array));
+                }
+                let head = doubleentry::MerkleLog::from_leaves(hashes).head();
+                pairs.push((end_user, head.root, head.size));
+            }
+            let refs: Vec<(&str, crate::Hash, u64)> = pairs
+                .iter()
+                .map(|(end_user, root, size)| (end_user.as_str(), *root, *size))
+                .collect();
+            let rebuilt = oxsum_verify::usage_anchor_map_root(&refs);
+            let stored_hash: [u8; 32] = stored.as_slice().try_into().map_err(|_| {
+                WalletError::InvalidInput("an anchor's map root is not 32 bytes".into())
+            })?;
+            if rebuilt != crate::Hash::from_bytes(stored_hash) {
+                let organization: String = anchor.get("name");
+                let class = classes.class(DriftKind::AnchoredDayAltered);
+                class.count += 1;
+                if class.samples.len() < SAMPLE_LIMIT as usize {
+                    class.samples.push(DriftSample {
+                        organization,
+                        detail: day.to_string(),
+                    });
+                }
+            }
+        }
 
         for tenant in &tenants {
             let schema = format!("ledger_{}", tenant.tenant_id.replace('"', "\"\""));

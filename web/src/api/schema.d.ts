@@ -5038,7 +5038,10 @@ export interface paths {
          *     periodic job run that exhausted its attempts — platform drift, not
          *     any organization's) and `upstream_price_drift` (a stored upstream
          *     rate that no longer matches the live catalog the channel serves —
-         *     platform drift, not any organization's). Each class carries a
+         *     platform drift, not any organization's) and `anchored_day_altered`
+         *     (a day leaf that no longer folds to the map root its daily anchor
+         *     committed — a late settlement or a hand edit rewrote a leaf the
+         *     ledger had already fixed). Each class carries a
          *     count and a bounded sample of the offending identifiers. The report
          *     is read-only: drift is for an operator to read, never for the
          *     reconciler to patch.
@@ -8537,7 +8540,7 @@ export interface components {
         Error: {
             error: {
                 /** @enum {string} */
-                code: "VALIDATION_ERROR" | "UNAUTHORIZED" | "FORBIDDEN" | "INSUFFICIENT_FUNDS" | "KEY_LIMIT_EXCEEDED" | "RATE_LIMITED" | "TOO_MANY_HOLDS" | "TOKENS_PER_MINUTE" | "POOL_BUSY" | "NOT_FOUND" | "CONFLICT" | "INTERNAL_ERROR" | "SERVICE_UNAVAILABLE";
+                code: "VALIDATION_ERROR" | "UNAUTHORIZED" | "FORBIDDEN" | "INSUFFICIENT_FUNDS" | "KEY_LIMIT_EXCEEDED" | "RATE_LIMITED" | "TOO_MANY_HOLDS" | "TOKENS_PER_MINUTE" | "POOL_BUSY" | "NOT_FOUND" | "CONFLICT" | "DAY_SEALED" | "INTERNAL_ERROR" | "SERVICE_UNAVAILABLE";
                 message: string;
                 details: unknown[];
             };

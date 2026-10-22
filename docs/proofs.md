@@ -33,7 +33,10 @@ anchored proof (issues #337-#339, design in [decisions.md](decisions.md) 2026-10
 the daily anchor fixes each customer's day-log head in the ledger, the report carries every day
 leaf, and the verifier rebuilds each leaf from its rows — a dropped day or a misattributed row
 fails. What even it cannot prove is write-time honesty: whether the organization counted the
-tokens the model returned. Unanchored history keeps the older, weaker statement.
+tokens the model returned. A day the anchor fixed is sealed — a settle that would book into it is
+refused with `409 DAY_SEALED` — so the day log is append-only by rule, and `anchored_day_altered`
+in the reconciliation report catches any leaf that changed anyway. Unanchored history keeps the
+older, weaker statement.
 
 The customer-facing version of this page is [Verifying an oxsum bill](verify-your-bill.md); the
 operator-facing surfaces are described in [product.md](product.md).
