@@ -85,6 +85,7 @@ Under active development. The multi-tenant wallet core (top-up, hold/settle, inc
 - API conventions: docs/api.md
 - User guide: docs/user-guide.md
 - Verifying a bill (for the customer): docs/verify-your-bill.md
+- What each proof covers (the surface map): docs/proofs.md
 - Development guide: docs/development.md
 - Architecture: docs/architecture.md
 - Technical decisions: docs/decisions.md

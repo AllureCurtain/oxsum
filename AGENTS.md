@@ -110,6 +110,7 @@ All project documentation, code comments, and commit messages are written in Eng
 | Changing the technical approach | docs/decisions.md |
 | User-visible feature changes | docs/user-guide.md |
 | Verifying a bill as its customer | docs/verify-your-bill.md |
+| What each proof covers, and what it does not | docs/proofs.md |
 
 ## Doc update rules
 
