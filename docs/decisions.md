@@ -1821,3 +1821,9 @@ A report proves the shown rows are in the ledger and fold to the committed subse
 
 
 **Shipped note (stage 4, issue #340).** A day the anchor committed is sealed: Wallet::settle refuses a booking date that falls in an anchored day with 409 DAY_SEALED, so the leaf the anchor fixed cannot be rewritten after the fact. The reconciliation gains nchored_day_altered — the check that the seal held (a bypassed write or a hand edit shows there). History anchored before the rule keeps its claim; there is no backfill that re-anchors a mutable source, and the seal is a write rule, not a repair.
+
+## 2026-10-22 — Credit notes ship first; refunds and chargebacks stay PSP-dependent (issue #352)
+
+D12 splits money-back into three concepts, and only the first can ship honestly without a payment provider: a **credit note** is a reasoned ledger credit that moves no money. It posts one entry — Revenue debited, Wallet credited, the reason as the description — and an `oxsum.credit_notes` row names it, so the charge it answers stays in history beside the credit. The operator issues it from the admin surface with an idempotency key; a retried key answers the standing note, and zero or negative amounts are refused.
+
+A refund needs the PSP to return money and the deposit to move to `reversed`, and a chargeback arrives as a dispute webhook — both depend on the Hyperswitch sandbox and are separate issues. Calling the credit note a refund would be the one thing this table exists to prevent: the page and the docs say plainly that no money moved.

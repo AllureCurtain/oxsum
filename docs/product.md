@@ -243,6 +243,10 @@ The transaction log page is still what it was (`/app/log`, `web/src/pages/Log.ts
 
 Verification proves: this record was not altered after being written, history was not rewritten, for a versioned settlement the recorded charge agrees with the usage and rates inside the entry, and — when the bundle carries `price` — the price it names is the catalog row the operator attested; a usage report over an anchored span additionally proves it carries every settlement of that customer in the span. It does not prove: upstream really returned that many tokens. The page states this plainly, without inflating it. The surface-by-surface map — including what the anchored proof covers and what stays a claim — is [proofs.md](proofs.md). (Shipped.)
 
+### Credit notes (shipped)
+
+A credit note (issue #352, decision D12) is the operator giving value back with a reason: `POST /api/v1/admin/organizations/{organizationId}/credit-notes` posts one ledger entry — Revenue debited, Wallet credited, the reason as its description — and records the note beside it; `GET` on the same path lists what was issued, newest first. A retried key answers the standing note, so a flaky connection cannot credit twice. It moves no money: no PSP is called, no deposit is reversed, and the admin card says "Credit notes" beside the adjustment form rather than merging the two. A refund (money back through the rail) and a chargeback (the bank clawing back) remain separate, PSP-dependent work.
+
 ### Monthly statements (shipped)
 
 An organization on a credit limit settles monthly (issue #124, the second half of roadmap P3-2). The platform issues one statement per organization and UTC `YYYY-MM` period — the month's settled usage itemized by channel and model, with how much of it the credit line carried — and a statement exists only for a month with usage. A daily `statements` job (issue #166) closes the month that just ended on every billable organization's ledger and generates its draft — doubling as the late-usage pickup, since both calls are idempotent — while issuing the document stays the operator's call.
