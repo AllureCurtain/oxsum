@@ -873,29 +873,117 @@ function Anomalies({ token }: { token: string }) {
 
 function Margin({ token }: { token: string }) {
   const margin = useAdmin<
-    { channel: string; model: string; turns: number; chargedMinor: number; upstreamCostMinor: number; marginMinor: number; untrackedTurns: number }[]
+    {
+      channel: string;
+      model: string;
+      turns: number;
+      chargedMinor: number;
+      upstreamCostMinor: number;
+      providerBilledMinor: number | null;
+      marginMinor: number;
+      untrackedTurns: number;
+    }[]
   >(token, "/margin");
+  const rows = margin.data ?? [];
+  const totals = rows.reduce(
+    (sum, row) => ({
+      turns: sum.turns + row.turns,
+      charged: sum.charged + row.chargedMinor,
+      upstream: sum.upstream + row.upstreamCostMinor,
+      margin: sum.margin + row.marginMinor,
+      untracked: sum.untracked + row.untrackedTurns,
+    }),
+    { turns: 0, charged: 0, upstream: 0, margin: 0, untracked: 0 },
+  );
+  // A channel's provider bill repeats on every one of its model rows (the
+  // figure is channel-scoped), so the total counts each channel once.
+  const billedByChannel = new Map<string, number>();
+  for (const row of rows) {
+    if (row.providerBilledMinor !== null) {
+      billedByChannel.set(row.channel, row.providerBilledMinor);
+    }
+  }
+  const providerTotal = [...billedByChannel.values()].reduce((a, b) => a + b, 0);
   return (
-    <div>
+    <div className="flex flex-col gap-3">
       {margin.loading ? (
         <PageState>Loading…</PageState>
       ) : (
-        <TableShell head={["Channel", "Model", "Turns", "Charged", "Upstream cost", "Margin", "Untracked"]}>
-          {(margin.data ?? []).map((m) => (
-            <tr key={`${m.channel}-${m.model}`}>
-              <td>{m.channel}</td>
-              <td>{m.model}</td>
-              <td className="mono">{m.turns}</td>
-              <td className="mono">{credits(m.chargedMinor)} cr</td>
-              <td className="mono">{credits(m.upstreamCostMinor)} cr</td>
-              <td className={`mono ${m.marginMinor < 0 ? "text-danger" : "text-success"}`}>
-                {credits(m.marginMinor)} cr
-              </td>
-              <td className="mono">{m.untrackedTurns}</td>
-            </tr>
-          ))}
-          {(margin.data?.length ?? 0) === 0 ? <EmptyRows colSpan={7}>No settled turns yet.</EmptyRows> : null}
-        </TableShell>
+        <>
+          <TableShell
+            head={[
+              "Channel",
+              "Model",
+              "Turns",
+              "Charged",
+              "Upstream cost",
+              "Provider bill",
+              "Margin",
+              "Untracked",
+            ]}
+          >
+            {rows.map((m) => (
+              <tr key={`${m.channel}-${m.model}`}>
+                <td>{m.channel}</td>
+                <td>{m.model}</td>
+                <td className="mono">{m.turns}</td>
+                <td className="mono">{credits(m.chargedMinor)} cr</td>
+                <td className="mono">{credits(m.upstreamCostMinor)} cr</td>
+                <td className="mono text-xs">
+                  {m.providerBilledMinor === null ? (
+                    <span className="text-muted">not reconciled</span>
+                  ) : (
+                    `${credits(m.providerBilledMinor)} cr`
+                  )}
+                </td>
+                <td className={`mono ${m.marginMinor < 0 ? "text-danger" : "text-success"}`}>
+                  {credits(m.marginMinor)} cr
+                </td>
+                <td className="mono">{m.untrackedTurns}</td>
+              </tr>
+            ))}
+            {rows.length > 0 ? (
+              <tr className="font-semibold">
+                <td>Total</td>
+                <td>
+                  {rows.length} row{rows.length === 1 ? "" : "s"}
+                </td>
+                <td className="mono">{totals.turns}</td>
+                <td className="mono">{credits(totals.charged)} cr</td>
+                <td className="mono">{credits(totals.upstream)} cr</td>
+                <td className="mono text-xs">
+                  {billedByChannel.size === 0 ? (
+                    <span className="text-muted">no channel reconciled</span>
+                  ) : (
+                    <>
+                      {credits(providerTotal)} cr{" "}
+                      <span className="text-muted">
+                        ({billedByChannel.size} channel{billedByChannel.size === 1 ? "" : "s"})
+                      </span>
+                    </>
+                  )}
+                </td>
+                <td className={`mono ${totals.margin < 0 ? "text-danger" : "text-success"}`}>
+                  {credits(totals.margin)} cr
+                </td>
+                <td className="mono">{totals.untracked}</td>
+              </tr>
+            ) : (
+              <EmptyRows colSpan={8}>
+                No settled turns yet — a row appears once a gateway turn settles and its upstream
+                cost is recorded.
+              </EmptyRows>
+            )}
+          </TableShell>
+          <p className="text-xs text-muted">
+            The provider bill is what the upstream billed the channel, summed per day by the
+            upstream-bill-sync pass; “not reconciled” means that pass has not billed the channel
+            yet, not that it billed nothing. The total counts each channel once — the API repeats
+            the channel-scoped figure on every model row. Untracked turns are settled turns with no
+            upstream cost recorded (an untracked price, a swept hold, or history), so a growing gap
+            there is where missing upstream pricing shows up first.
+          </p>
+        </>
       )}
     </div>
   );
