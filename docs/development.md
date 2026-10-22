@@ -35,6 +35,35 @@ nothing else — with `OXSUM_SECRET_KEY` set it also runs the startup bootstrap 
 channel is there for the turns to bill under; without one it seeds against whatever catalog the
 deployment already serves, or writes the world with no turns when the catalog is empty.
 
+### The statement lifecycle, end to end
+
+A delinquent organization walks four states, and one test asserts all four
+(`the_statement_lifecycle_suspends_and_reinstates` in
+`crates/server/tests/statements.rs`). Against a running deployment the same walk
+is four operator steps:
+
+1. **Finalize** — `POST /api/v1/admin/statements` with `{"period": "2026-09"}`
+   builds the draft for every organization with usage that month; `POST
+   /api/v1/admin/statements/{id}/finalize` (`{"idempotencyKey": …}`) freezes the
+   terms snapshot, the due date and the proof window. `paymentStatus` is
+   `pending`.
+2. **Overdue** — the `statements` job flips a pending finalized statement whose
+   due date passed to `overdue` (`overdue_at` first-set). Until the job runs, a
+   read does the same flip lazily.
+3. **Suspended** — the same job's dunning sweep suspends an organization whose
+   statement stands past `due_date + dunningGraceDays` (`dunningGraceDays` must
+   be set on the organization; the admin PATCH turns it on). `suspendedAt` shows
+   on `GET /api/v1/admin/organizations`, the statement moves to `suspended`, and
+   `organization.suspended` goes out on the outbound webhooks. A manual
+   suspension is never the sweep's to lift.
+4. **Reinstated** — a top-up repays the drawn credit line; the reconcile that
+   follows every money-in walks the statement to `paid`, and the next sweep
+   lifts the suspension it placed.
+
+The test uses zero-day terms and zero-day grace so the four steps fit one run; a
+deployment normally leaves days between them. `cargo nextest run -p
+oxsum-server --test statements` is the check.
+
 ### Test database isolation
 
 Each integration-test suite (`crates/server/tests/*.rs`, `crates/core/tests/*.rs`)
