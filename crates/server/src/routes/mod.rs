@@ -98,6 +98,7 @@ pub fn router(state: AppState) -> Router {
         .route("/topups", post(billing::top_up))
         .route("/topups/stripe", post(billing::stripe_topup))
         .route("/topups/airwallex", post(billing::airwallex_topup))
+        .route("/topups/hyperswitch", post(billing::hyperswitch_topup))
         .route("/topups/x402", post(billing::x402_topup))
         .route("/redemptions", post(billing::redeem))
         .route("/holds", get(billing::list_holds).post(billing::hold))
@@ -181,7 +182,10 @@ pub fn router(state: AppState) -> Router {
         .route("/webhooks/stripe", post(billing::stripe_webhook))
         // Airwallex's webhook (issue #285): same open-surface rule — the
         // `x-timestamp` + `x-signature` pair is the credential.
-        .route("/webhooks/airwallex", post(billing::airwallex_webhook));
+        .route("/webhooks/airwallex", post(billing::airwallex_webhook))
+        // The Hyperswitch switch's webhook (issue #319): the HMAC over the
+        // raw body (`X-Webhook-Signature-512`) is the credential.
+        .route("/webhooks/hyperswitch", post(billing::hyperswitch_webhook));
 
     // The platform admin: an operator token, not an organization key, and its own middleware.
     let admin = crate::admin::router(state.clone());

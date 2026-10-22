@@ -38,6 +38,8 @@ pub const RAIL_REDEMPTION: &str = "redemption";
 pub const RAIL_STRIPE: &str = "stripe";
 /// The rail Airwallex's hosted payment page writes under (issue #285).
 pub const RAIL_AIRWALLEX: &str = "airwallex";
+/// The rail the Hyperswitch switch writes under (issue #319).
+pub const RAIL_HYPERSWITCH: &str = "hyperswitch";
 
 /// A freshly minted batch: the only time the codes are visible.
 #[derive(Debug, Clone, Serialize)]
@@ -648,6 +650,272 @@ impl Db {
         .execute(self.pool())
         .await?;
         Ok(())
+    }
+
+    /// Opens a Hyperswitch-rail deposit before the payment exists: `pending`,
+    /// keyed by `payment_ref = <idempotency_key>`, which stays the row's anchor
+    /// for its whole life — the switch's payment id lands in `meta` when it
+    /// answers. Same shape [`Db::open_stripe_deposit`] proves: the caller's key
+    /// makes the intent row itself replay-safe.
+    ///
+    /// Returns `true` when the row was inserted — a `false` answer means the
+    /// idempotency key already opened this deposit, and the caller should look
+    /// up the existing row rather than create a second payment.
+    ///
+    /// A non-positive amount is refused the way every credit write is.
+    pub async fn open_hyperswitch_deposit(
+        &self,
+        organization_id: Uuid,
+        deposit_id: Uuid,
+        idempotency_key: &str,
+        amount_minor: i64,
+    ) -> Result<bool, WalletError> {
+        if amount_minor <= 0 {
+            return Err(WalletError::InvalidInput(
+                "a deposit's amount must be positive".into(),
+            ));
+        }
+        let inserted = sqlx::query(
+            "INSERT INTO oxsum.deposits \
+                 (deposit_id, organization_id, rail, payment_ref, amount_minor, status) \
+             VALUES ($1, $2, $3, $4, $5, 'pending') \
+             ON CONFLICT (rail, organization_id, payment_ref) DO NOTHING",
+        )
+        .bind(deposit_id)
+        .bind(organization_id)
+        .bind(RAIL_HYPERSWITCH)
+        .bind(idempotency_key)
+        .bind(amount_minor)
+        .execute(self.pool())
+        .await?
+        .rows_affected();
+        Ok(inserted > 0)
+    }
+
+    /// Finds the pending deposit an idempotency key already opened — the
+    /// lookup `POST /topups/hyperswitch` runs on a replayed intent, to answer
+    /// the same payment id and client secret instead of creating a second
+    /// switch payment. Both handles live in `meta`.
+    pub async fn find_hyperswitch_deposit(
+        &self,
+        organization_id: Uuid,
+        idempotency_key: &str,
+    ) -> Result<Option<(Uuid, Option<String>, Option<String>)>, WalletError> {
+        let row = sqlx::query(
+            "SELECT deposit_id, \
+                    meta->>'hyperswitchPaymentId' AS payment_id, \
+                    meta->>'hyperswitchClientSecret' AS client_secret \
+             FROM oxsum.deposits \
+             WHERE rail = $1 AND organization_id = $2 AND payment_ref = $3",
+        )
+        .bind(RAIL_HYPERSWITCH)
+        .bind(organization_id)
+        .bind(idempotency_key)
+        .fetch_optional(self.pool())
+        .await?;
+        match row {
+            Some(row) => Ok(Some((
+                row.try_get("deposit_id")?,
+                row.try_get("payment_id")?,
+                row.try_get("client_secret")?,
+            ))),
+            None => Ok(None),
+        }
+    }
+
+    /// Records the switch's payment id and client secret in the deposit's
+    /// metadata. `payment_ref` stays the caller's idempotency key — the UNIQUE
+    /// constraint is what makes a replayed intent idempotent — while
+    /// `meta.hyperswitchPaymentId` is the handle the webhook names when it
+    /// comes back.
+    pub async fn hyperswitch_payment(
+        &self,
+        deposit_id: Uuid,
+        payment_id: &str,
+        client_secret: &str,
+    ) -> Result<(), WalletError> {
+        sqlx::query(
+            "UPDATE oxsum.deposits \
+             SET meta = meta || jsonb_build_object(\
+                     'hyperswitchPaymentId', $1::text, \
+                     'hyperswitchClientSecret', $2::text\
+                 ), \
+                 updated_at = now() \
+             WHERE deposit_id = $3 AND rail = $4 AND status = 'pending'",
+        )
+        .bind(payment_id)
+        .bind(client_secret)
+        .bind(deposit_id)
+        .bind(RAIL_HYPERSWITCH)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
+    /// Finds the Hyperswitch deposit a webhook names: `meta.hyperswitchPaymentId`
+    /// matches the payment the switch calls back for.
+    pub async fn find_hyperswitch_by_payment(
+        &self,
+        payment_id: &str,
+    ) -> Result<Option<(Uuid, Uuid, String)>, WalletError> {
+        let row = sqlx::query(
+            "SELECT d.deposit_id, d.organization_id, o.tenant_id \
+             FROM oxsum.deposits d \
+             JOIN oxsum.organizations o ON o.organization_id = d.organization_id \
+             WHERE d.rail = $1 AND d.meta->>'hyperswitchPaymentId' = $2 \
+             ORDER BY d.created_at DESC LIMIT 1",
+        )
+        .bind(RAIL_HYPERSWITCH)
+        .bind(payment_id)
+        .fetch_optional(self.pool())
+        .await?;
+        match row {
+            Some(row) => Ok(Some((
+                row.try_get("deposit_id")?,
+                row.try_get("organization_id")?,
+                row.try_get("tenant_id")?,
+            ))),
+            None => Ok(None),
+        }
+    }
+
+    /// Moves a Hyperswitch deposit to `confirmed` — the webhook's first act on
+    /// `payment_succeeded`, before the ledger credit runs.
+    ///
+    /// Returns `true` when the row moved, `false` when it was already past
+    /// `pending` — a replayed or raced webhook answers `false` and credits
+    /// nothing twice.
+    pub async fn confirm_hyperswitch_deposit(&self, deposit_id: Uuid) -> Result<bool, WalletError> {
+        let flipped = sqlx::query(
+            "UPDATE oxsum.deposits \
+             SET status = 'confirmed', updated_at = now() \
+             WHERE deposit_id = $1 AND rail = $2 AND status = 'pending'",
+        )
+        .bind(deposit_id)
+        .bind(RAIL_HYPERSWITCH)
+        .execute(self.pool())
+        .await?
+        .rows_affected();
+        Ok(flipped > 0)
+    }
+
+    /// Credits the wallet for a confirmed Hyperswitch deposit and flips the
+    /// row to `credited` — the same `deposit.credited` event and `balance.low`
+    /// latch-clear as every other rail, in the deposit-update transaction.
+    ///
+    /// The credit runs under the fixed key `hyperswitch:<payment_id>`: a
+    /// replayed webhook finds its own credited deposit and writes nothing
+    /// twice, and a crash between the ledger append and the row flip leaves a
+    /// confirmed deposit the retry resumes.
+    ///
+    /// `received_minor` is what the switch reports paid: a number that
+    /// disagrees with `amount_minor` is recorded for a human, never
+    /// auto-patched (decision D2).
+    pub async fn credit_hyperswitch_deposit(
+        &self,
+        wallet: &Wallet,
+        deposit_id: Uuid,
+        payment_id: &str,
+        received_minor: Option<i64>,
+        on: time::Date,
+    ) -> Result<Option<(Receipt, Uuid)>, WalletError> {
+        let mut tx = self.pool().begin().await?;
+        let row = sqlx::query(
+            "SELECT organization_id, amount_minor, status, payment_ref \
+             FROM oxsum.deposits \
+             WHERE deposit_id = $1 AND rail = $2 \
+             FOR UPDATE",
+        )
+        .bind(deposit_id)
+        .bind(RAIL_HYPERSWITCH)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let organization_id: Uuid = row.try_get("organization_id")?;
+        let amount_minor: i64 = row.try_get("amount_minor")?;
+        let status: String = row.try_get("status")?;
+        let payment_ref: String = row.try_get("payment_ref")?;
+        if status != "confirmed" {
+            tx.commit().await?;
+            return Ok(None);
+        }
+        let receipt = wallet
+            .top_up(&format!("hyperswitch:{payment_id}"), amount_minor, on)
+            .await?;
+        let flipped = sqlx::query(
+            "UPDATE oxsum.deposits \
+             SET status = 'credited', entry_id = $1, received_minor = $2, \
+                 updated_at = now() \
+             WHERE deposit_id = $3 AND status = 'confirmed'",
+        )
+        .bind(*receipt.entry_id.as_uuid())
+        .bind(received_minor)
+        .bind(deposit_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if flipped > 0 {
+            Self::enqueue_event(
+                &mut tx,
+                organization_id,
+                crate::webhooks::DEPOSIT_CREDITED,
+                serde_json::json!({
+                    "rail": RAIL_HYPERSWITCH,
+                    "paymentRef": payment_ref,
+                    "amountMinor": amount_minor,
+                    "entryId": receipt.entry_id.as_uuid(),
+                }),
+            )
+            .await?;
+            if let Ok(available) = wallet.available().await {
+                Self::clear_balance_low(&mut tx, organization_id, available).await?;
+            }
+        }
+        tx.commit().await?;
+        Ok(Some((receipt, organization_id)))
+    }
+
+    /// Moves a Hyperswitch deposit to `expired` — a terminal-state webhook's
+    /// outcome (`payment_cancelled`, `payment_expired`), a no-op on a row that
+    /// already ended its walk.
+    pub async fn expire_hyperswitch_deposit(&self, deposit_id: Uuid) -> Result<(), WalletError> {
+        sqlx::query(
+            "UPDATE oxsum.deposits SET status = 'expired', updated_at = now() \
+             WHERE deposit_id = $1 AND rail = $2 AND status IN ('pending', 'confirmed')",
+        )
+        .bind(deposit_id)
+        .bind(RAIL_HYPERSWITCH)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
+    /// Records one provider webhook event — the idempotency anchor the
+    /// Hyperswitch handler inserts before it acts (issue #319). Returns `true`
+    /// when the row was new; `false` means this `event_id` was already
+    /// processed and the caller must acknowledge without acting again.
+    pub async fn record_payment_event(
+        &self,
+        event_id: &str,
+        rail: &str,
+        event_type: &str,
+        payload: &serde_json::Value,
+    ) -> Result<bool, WalletError> {
+        let inserted = sqlx::query(
+            "INSERT INTO oxsum.payment_events (event_id, rail, event_type, payload) \
+             VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (event_id) DO NOTHING",
+        )
+        .bind(event_id)
+        .bind(rail)
+        .bind(event_type)
+        .bind(payload)
+        .execute(self.pool())
+        .await?
+        .rows_affected();
+        Ok(inserted > 0)
     }
 
     /// Mints `count` redemption codes worth `amount_minor` each: `oxr-` plus 32 random

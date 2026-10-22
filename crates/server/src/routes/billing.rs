@@ -555,6 +555,161 @@ pub(crate) async fn airwallex_webhook(
     Ok(StatusCode::OK)
 }
 
+/// The body of `POST /api/v1/topups/hyperswitch`: the amount and the
+/// idempotency key that anchors the deposit.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HyperswitchTopupReq {
+    idempotency_key: String,
+    amount_minor: i64,
+}
+
+/// The Hyperswitch top-up intent (issue #319): opens a deposit, creates a
+/// switch payment and answers the payment id, the `clientSecret` the browser
+/// SDK confirms against, and the publishable key it initializes with.
+///
+/// A replayed intent (same `idempotencyKey`) answers the same handles — the
+/// deposit's `payment_ref` is the idempotency anchor.
+///
+/// A deployment without `OXSUM_HYPERSWITCH_*` answers 503 — the rail is
+/// configured or it is not, never silently manual.
+pub(crate) async fn hyperswitch_topup(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    ApiJson(r): ApiJson<HyperswitchTopupReq>,
+) -> ApiResult<serde_json::Value> {
+    let switch = state
+        .config
+        .hyperswitch()
+        .ok_or_else(|| ApiError::ServiceUnavailable("hyperswitch is not configured".into()))?;
+    let deposit_id = Uuid::new_v4();
+    let inserted = state
+        .db
+        .open_hyperswitch_deposit(
+            principal.organization().id,
+            deposit_id,
+            &r.idempotency_key,
+            r.amount_minor,
+        )
+        .await?;
+    if !inserted {
+        // A replayed intent: the deposit the key opened already carries its
+        // payment id and client secret in `meta` — answer them again rather
+        // than create a second switch payment.
+        let existing = state
+            .db
+            .find_hyperswitch_deposit(principal.organization().id, &r.idempotency_key)
+            .await?
+            .ok_or_else(|| ApiError::Validation("deposit already resolved".into()))?;
+        return ok(json!({
+            "depositId": existing.0,
+            "paymentId": existing.1.unwrap_or_default(),
+            "clientSecret": existing.2.unwrap_or_default(),
+            "publishableKey": switch.publishable_key(),
+        }));
+    }
+    let payment = switch
+        .create_payment(&state.http, deposit_id, r.amount_minor, "USD")
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e.0, "hyperswitch payment failed");
+            ApiError::Internal
+        })?;
+    state
+        .db
+        .hyperswitch_payment(deposit_id, &payment.payment_id, &payment.client_secret)
+        .await?;
+    ok(json!({
+        "depositId": deposit_id,
+        "paymentId": payment.payment_id,
+        "clientSecret": payment.client_secret,
+        "publishableKey": switch.publishable_key(),
+    }))
+}
+
+/// The switch's outgoing webhook (issue #319): verifies
+/// `X-Webhook-Signature-512`, records the event under its `event_id`, then
+/// walks the deposit it names. Org-agnostic — the HMAC is the credential, so
+/// this route sits on the `open` surface.
+///
+/// `payment_succeeded` confirms the deposit and credits the wallet under
+/// `hyperswitch:<payment_id>`; `payment_cancelled` and `payment_expired` close
+/// it. Every other event type is recorded and acknowledged: the switch retries
+/// until it hears a 2xx, and refunds and disputes belong to a later issue.
+pub(crate) async fn hyperswitch_webhook(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, ApiError> {
+    let switch = state.config.hyperswitch().ok_or_else(ApiError::not_found)?;
+    let signature = headers
+        .get("x-webhook-signature-512")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !switch.verify_signature(signature, &body) {
+        return Err(ApiError::Unauthorized);
+    }
+    let event: crate::hyperswitch::WebhookEvent = serde_json::from_slice(&body)
+        .map_err(|e| ApiError::Validation(format!("unreadable event: {e}")))?;
+    let payload: serde_json::Value = serde_json::from_slice(&body)
+        .map_err(|e| ApiError::Validation(format!("unreadable event: {e}")))?;
+    // The event id is the idempotency anchor: a delivery that was already
+    // processed is acknowledged without acting again.
+    if !state
+        .db
+        .record_payment_event(
+            &event.event_id,
+            oxsum_core::RAIL_HYPERSWITCH,
+            &event.event_type,
+            &payload,
+        )
+        .await?
+    {
+        return Ok(StatusCode::OK);
+    }
+    let payment_id = event.content.object["payment_id"].as_str();
+    match event.event_type.as_str() {
+        "payment_succeeded" => {
+            let payment_id =
+                payment_id.ok_or_else(|| ApiError::Validation("no payment id".into()))?;
+            // The switch reports the amount in minor units, like the deposit.
+            let received = event.content.object["amount"].as_i64();
+            // Find the deposit this payment opened, then confirm + credit it.
+            // Only a `pending` deposit moves, so a replayed or raced webhook
+            // does nothing twice.
+            if let Some((deposit_id, organization_id, tenant_id)) =
+                state.db.find_hyperswitch_by_payment(payment_id).await?
+                && state.db.confirm_hyperswitch_deposit(deposit_id).await?
+            {
+                let w = state
+                    .tenants
+                    .get(&tenant_id)
+                    .await
+                    .map_err(ApiError::from)?;
+                state
+                    .db
+                    .credit_hyperswitch_deposit(&w, deposit_id, payment_id, received, today())
+                    .await?;
+                // Whatever the deposit repaid counts against the statement book.
+                state
+                    .db
+                    .reconcile_statements(organization_id, &w, today())
+                    .await?;
+            }
+        }
+        "payment_cancelled" | "payment_expired" => {
+            if let Some(payment_id) = payment_id
+                && let Some((deposit_id, _, _)) =
+                    state.db.find_hyperswitch_by_payment(payment_id).await?
+            {
+                state.db.expire_hyperswitch_deposit(deposit_id).await?;
+            }
+        }
+        _ => {}
+    }
+    Ok(StatusCode::OK)
+}
+
 pub(crate) async fn redeem(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,

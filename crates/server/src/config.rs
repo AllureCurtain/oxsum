@@ -217,6 +217,11 @@ pub struct Config {
     /// webhook secret when the `OXSUM_AIRWALLEX_*` set is complete, `None` —
     /// the default — when the deployment takes no Airwallex payments.
     airwallex: Option<crate::airwallex::Airwallex>,
+    /// The Hyperswitch deposit rail (issue #319): the API key, the business
+    /// profile's webhook hash key and the browser publishable key when the
+    /// `OXSUM_HYPERSWITCH_*` set is complete, `None` — the default — when the
+    /// deployment takes no switch payments.
+    hyperswitch: Option<crate::hyperswitch::Hyperswitch>,
     /// The deployment's public origin, `OXSUM_PUBLIC_URL` — required by the
     /// mailer and the OAuth client, optional on its own: the device grant
     /// builds `verificationUri` from it when set (issue #156).
@@ -281,6 +286,7 @@ impl Config {
             turnstile: None,
             stripe: None,
             airwallex: None,
+            hyperswitch: None,
             public_url: None,
             retention: oxsum_core::Retention::default(),
             upstream_price_sync: false,
@@ -396,6 +402,7 @@ impl Config {
         let turnstile = turnstile_of()?;
         let stripe = stripe_of()?;
         let airwallex = airwallex_of()?;
+        let hyperswitch = hyperswitch_of()?;
         // Optional on its own: the mailer and the OAuth client each require it,
         // and the device grant only prefers it for a stable `verificationUri`.
         let public_url = var("OXSUM_PUBLIC_URL");
@@ -432,6 +439,7 @@ impl Config {
             turnstile,
             stripe,
             airwallex,
+            hyperswitch,
             public_url,
             retention,
             upstream_price_sync,
@@ -521,6 +529,25 @@ impl Config {
     #[must_use]
     pub fn with_airwallex(mut self, airwallex: crate::airwallex::Airwallex) -> Self {
         self.airwallex = Some(airwallex);
+        self
+    }
+
+    /// The Hyperswitch rail, or `None` when `OXSUM_HYPERSWITCH_API_KEY`,
+    /// `OXSUM_HYPERSWITCH_WEBHOOK_SECRET`, `OXSUM_HYPERSWITCH_PUBLISHABLE_KEY`
+    /// and `OXSUM_PUBLIC_URL` are not all set — in which case
+    /// `POST /api/v1/topups/hyperswitch` answers 503 and
+    /// `POST /api/v1/webhooks/hyperswitch` answers 404.
+    #[must_use]
+    pub fn hyperswitch(&self) -> Option<&crate::hyperswitch::Hyperswitch> {
+        self.hyperswitch.as_ref()
+    }
+
+    /// Sets the Hyperswitch rail. Tests use this; the server reads the
+    /// `OXSUM_HYPERSWITCH_*` set plus `OXSUM_PUBLIC_URL` together — a subset is
+    /// a startup error.
+    #[must_use]
+    pub fn with_hyperswitch(mut self, hyperswitch: crate::hyperswitch::Hyperswitch) -> Self {
+        self.hyperswitch = Some(hyperswitch);
         self
     }
 
@@ -1236,6 +1263,43 @@ fn airwallex_of() -> Result<Option<crate::airwallex::Airwallex>, String> {
         webhook_secret,
         api_url,
         checkout_url,
+        public_url,
+    )))
+}
+
+/// Parses the Hyperswitch rail (issue #319): `OXSUM_HYPERSWITCH_API_KEY`,
+/// `OXSUM_HYPERSWITCH_WEBHOOK_SECRET` and `OXSUM_HYPERSWITCH_PUBLISHABLE_KEY`
+/// together or not at all — a subset is a startup error, because a
+/// half-configured rail only fails inside a request. `OXSUM_PUBLIC_URL` is
+/// required alongside: the payment's `return_url` is built on it.
+/// `OXSUM_HYPERSWITCH_BASE_URL` overrides the switch origin (the hosted
+/// sandbox by default); only a self-hosted deployment, or a test standing in a
+/// stub, points it elsewhere.
+fn hyperswitch_of() -> Result<Option<crate::hyperswitch::Hyperswitch>, String> {
+    let api_key = var("OXSUM_HYPERSWITCH_API_KEY");
+    let webhook_secret = var("OXSUM_HYPERSWITCH_WEBHOOK_SECRET");
+    let publishable_key = var("OXSUM_HYPERSWITCH_PUBLISHABLE_KEY");
+    if api_key.is_none() && webhook_secret.is_none() && publishable_key.is_none() {
+        return Ok(None);
+    }
+    let public_url = var("OXSUM_PUBLIC_URL");
+    let (Some(api_key), Some(webhook_secret), Some(publishable_key), Some(public_url)) =
+        (api_key, webhook_secret, publishable_key, public_url)
+    else {
+        return Err(
+            "OXSUM_HYPERSWITCH_API_KEY, OXSUM_HYPERSWITCH_WEBHOOK_SECRET, \
+             OXSUM_HYPERSWITCH_PUBLISHABLE_KEY and OXSUM_PUBLIC_URL are set together, \
+             or none of them"
+                .into(),
+        );
+    };
+    let base_url = var("OXSUM_HYPERSWITCH_BASE_URL")
+        .unwrap_or_else(|| "https://sandbox.hyperswitch.io".to_owned());
+    Ok(Some(crate::hyperswitch::Hyperswitch::new(
+        api_key,
+        webhook_secret,
+        base_url,
+        publishable_key,
         public_url,
     )))
 }
