@@ -6015,7 +6015,7 @@ components:
       properties:
         class:
           type: string
-          enum: [usage_orphans, settlements_unrecorded, deposits_unbooked, deposits_mismatched, deposits_stuck, watches_orphaned, holds_unwatched, holds_dead_lettered, log_gaps, jobs_dead, upstream_price_drift]
+          enum: [usage_orphans, settlements_unrecorded, deposits_unbooked, deposits_mismatched, deposits_stuck, watches_orphaned, holds_unwatched, holds_dead_lettered, log_gaps, jobs_dead, upstream_price_drift, anchored_day_altered]
         count: { type: integer, format: int64, minimum: 0, description: how much drift the class holds }
         samples:
           type: array
