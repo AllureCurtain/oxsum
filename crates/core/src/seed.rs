@@ -26,7 +26,8 @@ use crate::usage::{UsageRecord, UsageRow};
 use crate::wallet::{entry_id_for, settlement_key_for};
 use crate::{
     ActingKey, ApiKey, CatalogModel, Db, KeyConstraints, Member, MembershipActor, NewDiscount,
-    NewUser, Organization, Role, SettlementKind, Tenants, Wallet, statement_period,
+    NewUser, Organization, PriceBook, Role, SecretKey, SettlementKind, Tenants, Wallet,
+    statement_period,
 };
 
 /// The account the seed creates — the login the report prints.
@@ -54,6 +55,25 @@ const DISCOUNT_DAYS_AGO: i64 = 10;
 const TOP_UPS: &[(i64, i64)] = &[(28, 400 * ONE), (14, 250 * ONE), (3, 150 * ONE)];
 /// How far back the settled history reaches.
 const HISTORY_DAYS: i64 = 30;
+/// The demo channel the seed creates when the deployment has no catalog: two
+/// models with prices, so the seeded turns bill under a real price book. The
+/// upstream URL is deliberately unreachable — the demo serves seeded history,
+/// not live traffic.
+const DEMO_CHANNEL: &str = "demo";
+const DEMO_BASE_URL: &str = "http://127.0.0.1:9/v1";
+const DEMO_API_KEY: &str = "demo-seed-key";
+const DEMO_MODELS: &str = r#"{
+    "demo-chat": {
+        "inputPricePerMillion": 500000,
+        "outputPricePerMillion": 1500000,
+        "maxOutputTokens": 8192
+    },
+    "demo-reasoner": {
+        "inputPricePerMillion": 800000,
+        "outputPricePerMillion": 3200000,
+        "maxOutputTokens": 16384
+    }
+}"#;
 
 /// What a run reports: the credentials to print once, and what was written —
 /// `created: false` means the demo world was already there and nothing changed.
@@ -85,6 +105,24 @@ impl Db {
     /// Any write's [`WalletError`] aborts the run; what landed stays (the ledger
     /// is append-only anyway) and the next run reports the world seeded.
     pub async fn seed_demo(&self) -> Result<SeedReport, WalletError> {
+        self.seed_demo_with(None).await
+    }
+
+    /// Seeds the demo world and, when the deployment has no catalog, creates
+    /// the demo channel first — the one place a channel needs the deployment's
+    /// sealing key, so the caller must hold it. `main` passes the configured
+    /// key; a deployment without one keeps the history-less world
+    /// [`Db::seed_demo`] writes.
+    ///
+    /// # Errors
+    ///
+    /// As [`Db::seed_demo`], plus whatever sealing the demo credential fails
+    /// with.
+    pub async fn seed_demo_with_channel(&self, key: &SecretKey) -> Result<SeedReport, WalletError> {
+        self.seed_demo_with(Some(key)).await
+    }
+
+    async fn seed_demo_with(&self, key: Option<&SecretKey>) -> Result<SeedReport, WalletError> {
         if self.demo_known().await? {
             return Ok(SeedReport {
                 created: false,
@@ -130,10 +168,19 @@ impl Db {
         )
         .await?;
 
-        // The catalog the seeded turns bill under: whatever channels the
-        // deployment serves, picked up round-robin. An empty catalog writes no
-        // history — there is no price a seeded turn could claim it settled under.
-        let catalog = self.catalog().await?;
+        // A deployment with no catalog cannot bill a seeded turn: the turns need
+        // a price book. With the sealing key in hand the seed creates the demo
+        // channel, so a fresh `oxsum seed` shows the product working; without
+        // one, the world is written without history, as before.
+        let mut catalog = self.catalog().await?;
+        if catalog.is_empty()
+            && let Some(key) = key
+        {
+            let book = PriceBook::from_json(DEMO_CHANNEL, DEMO_MODELS).map_err(invalid)?;
+            self.seed_channel(&book, DEMO_BASE_URL, DEMO_API_KEY, key)
+                .await?;
+            catalog = self.catalog().await?;
+        }
         let staging = self
             .create_key(
                 organization.id,
