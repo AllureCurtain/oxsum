@@ -553,6 +553,11 @@ function Channels({ token }: { token: string }) {
           {(channels.data?.length ?? 0) === 0 ? <EmptyRows colSpan={5}>No channels.</EmptyRows> : null}
         </TableShell>
       )}
+      <p className="text-xs text-muted">
+        Price drift is probed from each channel's <code className="mono">GET /api/v1/pricing</code>{" "}
+        catalog — an oxsum-compatible endpoint. A channel pointing at a real provider serves no such
+        catalog, so its cost signal is the upstream bill sync, not this probe.
+      </p>
       {priceChannel ? <ChannelPrices token={token} channel={priceChannel} /> : null}
     </div>
   );
@@ -936,6 +941,11 @@ function Reconciliation({ token }: { token: string }) {
           ))}
         </TableShell>
       ) : null}
+      <p className="text-xs text-muted">
+        <code className="mono">upstream_price_drift</code> only appears for channels whose base URL
+        serves the oxsum-compatible <code className="mono">GET /api/v1/pricing</code>. A real
+        provider's cost is compared by the upstream bill sync instead.
+      </p>
     </div>
   );
 }
