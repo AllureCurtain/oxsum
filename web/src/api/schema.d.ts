@@ -4774,6 +4774,99 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/organizations/{organizationId}/credit-notes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * An organization's credit notes, newest first
+         * @description Every credit note issued into this organization's wallet (issue #352,
+         *     decision D12), newest first: the amount, the reason, the ledger entry
+         *     that carries it, and when it was issued. A credit note moves no money
+         *     and reverses no deposit — it is a reasoned credit beside the charges,
+         *     not a refund.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    organizationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The notes, newest first */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: {
+                                rows: components["schemas"]["AdminCreditNote"][];
+                            };
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Issue a credit note into an organization's wallet
+         * @description Credits the wallet with a reasoned, positive amount, posting one ledger
+         *     entry — Revenue debited, Wallet credited, the reason as the entry's
+         *     description — so the charge it answers stays in history beside the
+         *     credit. No money moves: this is not a refund, and no deposit is
+         *     reversed. A retried `idempotencyKey` answers the standing note instead
+         *     of crediting twice; zero or negative amounts are `400`, and an
+         *     organization that does not exist is `404`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    organizationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["IssueCreditNoteRequest"];
+                };
+            };
+            responses: {
+                /** @description The note as issued, with the balance after it */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["AdminCreditNote"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/organizations/{organizationId}": {
         parameters: {
             query?: never;
@@ -7699,6 +7792,38 @@ export interface components {
              * @description the organization's available balance after the adjustment
              */
             availableMinor: number;
+        };
+        /**
+         * @description One credit note (issue #352, decision D12): a reasoned ledger credit the
+         *     operator issued. The entry is the fact; this is the lookup.
+         */
+        AdminCreditNote: {
+            /** Format: uuid */
+            creditNoteId: string;
+            /**
+             * Format: uuid
+             * @description the ledger entry that carries the credit (Revenue debit / Wallet credit)
+             */
+            entryId: string;
+            /** Format: uuid */
+            organizationId: string;
+            /** Format: int64 */
+            amountMinor: number;
+            /** @description the note's reason — also the entry's description */
+            reason: string;
+            /** Format: date-time */
+            createdAt: string;
+            /**
+             * Format: int64
+             * @description the organization's available balance after the write; present on the issuance answer only
+             */
+            availableMinor?: number;
+        };
+        IssueCreditNoteRequest: {
+            /** Format: int64 */
+            amountMinor: number;
+            reason: string;
+            idempotencyKey: string;
         };
         AdminCreditLimit: {
             /** @description the ledger entry's id, derived from the idempotency key — absent when the limit did not move */

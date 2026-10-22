@@ -12,6 +12,7 @@ mod anomaly;
 mod audit;
 mod billing;
 mod channels;
+mod credit_notes;
 mod db;
 mod deposits;
 mod device;
@@ -63,6 +64,7 @@ pub use channels::{
     CatalogModel, Channel, MAX_WEIGHT, ModelAlias, ModelPrice, ProbeChannel, SecretKey, Serving,
     event_price, price_row, route_order,
 };
+pub use credit_notes::CreditNote;
 pub use db::{Db, SCHEMA};
 pub use deposits::{CodeBatch, MAX_BATCH, RAIL_HYPERSWITCH, Redemption};
 pub use device::{DeviceGrant, DevicePoll, DeviceRequest, POLL_INTERVAL, PollError};
