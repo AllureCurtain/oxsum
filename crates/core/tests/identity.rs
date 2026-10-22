@@ -522,6 +522,7 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "upstream_bills".to_owned(),
             "upstream_price_drift".to_owned(),
             "upstream_price_probes".to_owned(),
+            "usage_anchors".to_owned(),
             "usage_daily".to_owned(),
             "usage_day_log".to_owned(),
             "usage_records".to_owned(),

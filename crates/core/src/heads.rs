@@ -346,6 +346,11 @@ pub const USAGE_REPORT_DOMAIN: &[u8] = b"oxsum/usage-report/v1";
 /// settlement content hashes in log order.
 pub const USAGE_DAY_DOMAIN: &[u8] = b"oxsum/usage-day/v1";
 
+/// The document id a usage day anchor's [`doubleentry::DocumentRef`] carries:
+/// the anchor's identity, bound to the day's sorted-map root over every
+/// customer's day-log head (issue #338).
+pub const USAGE_ANCHOR_DOCUMENT: &str = "oxsum/usage-anchor/v1";
+
 /// The document id the report marker's [`doubleentry::DocumentRef`] carries:
 /// the report's identity, bound to the subset digest.
 pub const USAGE_REPORT_DOCUMENT: &str = "oxsum/usage-report/v1";

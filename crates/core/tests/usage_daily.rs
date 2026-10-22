@@ -441,3 +441,88 @@ async fn a_settled_turn_writes_its_customers_day_leaf() {
         Some(1)
     );
 }
+
+/// A customer's head over a single day leaf.
+fn single_leaf_root(leaf: &[u8]) -> oxsum_core::Hash {
+    let mut accumulator = oxsum_core::MerkleAccumulator::new();
+    accumulator.push(oxsum_core::Hash::from_bytes(
+        leaf.try_into().expect("32 bytes"),
+    ));
+    accumulator.root()
+}
+
+/// The anchor pass (issue #338): one ledger entry per organization and day
+/// commits the sorted-map root over every customer's day-log head, the entry
+/// sequences in the organization's log, and the second run is a no-op.
+#[tokio::test]
+async fn the_anchor_pass_commits_the_map_root_once() {
+    use sqlx::Row;
+    let url = db_or_skip!();
+    let f = fixture(&url, "anchor").await;
+    f.wallet
+        .top_up(&fresh("seed"), 20 * ONE, MONDAY)
+        .await
+        .expect("the wallet funds");
+
+    customer_turn(&f, "a1", "customer-a", 2 * ONE, MONDAY).await;
+    customer_turn(&f, "a2", "customer-a", 3 * ONE, MONDAY).await;
+    customer_turn(&f, "b1", "customer-b", 2 * ONE, MONDAY).await;
+
+    let report =
+        f.db.anchor_usage_days(MONDAY)
+            .await
+            .expect("the pass anchors");
+    assert_eq!(report.anchors, 1, "one organization anchored");
+    assert_eq!(report.skipped, 0);
+
+    let row = sqlx::query(
+        "SELECT entry_id, map_root, enduser_count FROM oxsum.usage_anchors \
+         WHERE organization_id = $1 AND day = $2",
+    )
+    .bind(f.org.id)
+    .bind(MONDAY)
+    .fetch_one(f.db.pool())
+    .await
+    .expect("the anchor row");
+    let entry_id: Uuid = row.get("entry_id");
+    let map_root: Vec<u8> = row.get("map_root");
+    assert_eq!(row.get::<i64, _>("enduser_count"), 2, "two customers");
+
+    // The root is the map over each customer's single-day head, in endUser order.
+    let leaf_a = day_row(&f, "customer-a", MONDAY).await.expect("a's leaf").2;
+    let leaf_b = day_row(&f, "customer-b", MONDAY).await.expect("b's leaf").2;
+    let expected = oxsum_verify::usage_anchor_map_root(&[
+        ("customer-a", single_leaf_root(&leaf_a), 1),
+        ("customer-b", single_leaf_root(&leaf_b), 1),
+    ]);
+    assert_eq!(map_root, expected.as_bytes().to_vec());
+
+    // The anchor entry sequenced in the organization's log.
+    let log_index: Option<i64> = sqlx::query_scalar(&format!(
+        "SELECT log_index FROM ledger_{}.entries WHERE entry_id = $1",
+        f.org.tenant_id
+    ))
+    .bind(entry_id)
+    .fetch_one(f.db.pool())
+    .await
+    .expect("the anchor entry");
+    assert!(log_index.is_some(), "the anchor sequenced");
+
+    // A rerun is a no-op and answers the standing entry.
+    let again =
+        f.db.anchor_usage_days(MONDAY)
+            .await
+            .expect("the pass reruns");
+    assert_eq!(again.anchors, 0);
+    assert_eq!(again.skipped, 1);
+    let standing: Uuid = sqlx::query_scalar(
+        "SELECT entry_id FROM oxsum.usage_anchors \
+         WHERE organization_id = $1 AND day = $2",
+    )
+    .bind(f.org.id)
+    .bind(MONDAY)
+    .fetch_one(f.db.pool())
+    .await
+    .expect("the standing anchor");
+    assert_eq!(standing, entry_id);
+}
