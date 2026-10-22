@@ -31,6 +31,9 @@ The check passes when all of the following hold:
    count and total shown on the page.
 4. The marker and every shown row are in the ledger the head covers (inclusion proofs).
 5. The head is signed by the operator key the bundle names — when the deployment signs heads.
+6. If the deployment pins witnesses, the notes stored for this head verify as cosignatures under
+   the pinned keys. The page says "witnessed by N", "witnesses are configured, but no cosignature
+   covers this head yet", or "no witness keys are pinned" — three different facts.
 
 If any of those fail, the verdict names the step that failed. Do not pay a bill whose check fails;
 send the page URL and the verifier hash to the operator.
@@ -49,6 +52,9 @@ organization committed to**. It does not prove:
 - **Write-time honesty.** A ledger can only prove it was not rewritten; it cannot prove the person
   writing it counted the tokens the model really returned. Your own copy of the upstream response
   is the counter-check.
+- **That anyone vouched for the head.** A passing cosignature means an independent witness saw the
+  head; it does not mean the witness audited every row, and witnesses can collude. The page says
+  which case you are in rather than implying all three are the same.
 
 ## Trust anchors
 

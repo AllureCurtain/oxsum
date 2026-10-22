@@ -1773,3 +1773,15 @@ Consequences:
 - W2-5: refunds ride `POST /refunds` and `refund_succeeded` on the same webhook.
 
 Sources: [Hyperswitch webhooks](https://docs.hyperswitch.io/integration-guide/webhooks), [prism product overview](https://docs.hyperswitch.io/integrations/prism/prism), [prism README](https://github.com/juspay/hyperswitch-prism), [local Docker setup](https://docs.hyperswitch.io/self-hosting/want-to-explore/readme-1/unified-local-setup-using-docker).
+
+
+## 2026-10-22 — The bill page checks the witnesses itself, from the bundle (issue #328)
+
+The customer's page already proves inclusion and the operator's signature. A witness is the third party that makes a fork detectable, and until now only the dashboard's log page checked it — the party the witnesses exist for could not see them.
+
+- **The bundle carries the evidence, not a URL.** The bill page is public and sessionless, while `/api/v1/log/checkpoint` is organization-scoped. So the report bundle embeds the deployment's pinned keys (public by design), the log origin, and the cosigned notes stored for exactly the head the bundle carries. A reader needs no second call and no credential.
+- **The head size is the selector; honesty is the fallback.** `witness_cosignatures(organization, head_size)` returns only that head's notes. A report whose head the pass has not anchored yet carries none, and the page says "witnesses are configured, but no cosignature covers this head yet" — it does not borrow a later anchor's cosignature, because that would attest a different head.
+- **Three states read differently.** No pins → "no witness keys are pinned"; pins but no notes → the sentence above; notes → the wasm `verifyWitnesses` verdict per witness, naming the failing URL. A failed cosignature is shown while the report's own verdict stays what it is; the two claims are separate.
+- **Still no third-party script.** The check runs in the same wasm module the page already loads, and `bill.js` remains the page's only script.
+
+Pinned by `crates/server/tests/usage_reports.rs` (the report names the pinset and the origin, carries the stored note, and the bill page embeds all three) plus the verify crate's `verify_witnesses` tests for the cryptography. Contract `openapi.yaml` 0.75.0.
