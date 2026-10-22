@@ -340,6 +340,12 @@ pub const STATEMENT_ANCHOR_DOCUMENT: &str = "oxsum/statement-anchor/v1";
 /// evolve without reinterpreting minted reports.
 pub const USAGE_REPORT_DOMAIN: &[u8] = b"oxsum/usage-report/v1";
 
+/// The day leaf's domain (issue #337): `H(domain, day || count || rows_root)`
+/// over one customer's settled rows for one UTC day. The completeness proof
+/// commits these leaves; `rows_root` is the Merkle root over the day's
+/// settlement content hashes in log order.
+pub const USAGE_DAY_DOMAIN: &[u8] = b"oxsum/usage-day/v1";
+
 /// The document id the report marker's [`doubleentry::DocumentRef`] carries:
 /// the report's identity, bound to the subset digest.
 pub const USAGE_REPORT_DOCUMENT: &str = "oxsum/usage-report/v1";

@@ -289,3 +289,155 @@ async fn an_empty_window_reads_empty() {
             .expect("the rollup reads");
     assert!(rows.is_empty());
 }
+
+/// One settled turn attributed to `end_user` — the row a usage report reads and
+/// the day log folds.
+async fn customer_turn(
+    f: &Fixture,
+    request: &str,
+    end_user: &str,
+    charged: i64,
+    on: Date,
+) -> UsageRow {
+    let hold_key = format!("hold-{request}");
+    f.wallet
+        .hold(&hold_key, "", 10 * ONE, on)
+        .await
+        .expect("the hold reserves");
+    let receipt = f
+        .wallet
+        .settle(&hold_key, "", charged, on)
+        .await
+        .expect("the turn settles");
+    let usage = UsageRecord {
+        input_tokens: 100,
+        output_tokens: 50,
+        end_user: Some(end_user.to_owned()),
+        ..Default::default()
+    };
+    let row = UsageRow {
+        request_id: format!("{request}-{}", Uuid::new_v4().simple()),
+        tenant_id: f.org.tenant_id.clone(),
+        key_id: None,
+        mandate_id: None,
+        model: "m-a".to_owned(),
+        channel: "chan".to_owned(),
+        price_version: 1,
+        kind: SettlementKind::Usage,
+        entry_id: *receipt.entry_id.as_uuid(),
+        status: "settled".to_owned(),
+        failure_reason: None,
+        usage,
+        counts: oxsum_core::CountsProvenance::Provider {
+            input: 100,
+            output: 50,
+        },
+        charged_minor: charged,
+        freeze_minor: 10 * ONE,
+        upstream_cost_minor: None,
+        upstream_attempts: 1,
+    };
+    f.db.record_usage(&row)
+        .await
+        .expect("the usage row is written");
+    row
+}
+
+/// The stored day row as `(count, root, leaf)`.
+async fn day_row(f: &Fixture, end_user: &str, day: Date) -> Option<(i64, Vec<u8>, Vec<u8>)> {
+    use sqlx::Row;
+    sqlx::query(
+        "SELECT entry_count, rows_root, leaf_hash FROM oxsum.usage_day_log \
+         WHERE tenant_id = $1 AND end_user = $2 AND day = $3",
+    )
+    .bind(&f.org.tenant_id)
+    .bind(end_user)
+    .bind(day)
+    .fetch_optional(f.db.pool())
+    .await
+    .expect("reads the day row")
+    .map(|row| {
+        (
+            row.get("entry_count"),
+            row.get("rows_root"),
+            row.get("leaf_hash"),
+        )
+    })
+}
+
+/// The root recomputed the way the writer does: the entries' content hashes in
+/// log order folded by the ledger's own accumulator.
+async fn expected_root(f: &Fixture, entry_ids: &[Uuid]) -> Vec<u8> {
+    let mut accumulator = oxsum_core::MerkleAccumulator::new();
+    for entry_id in entry_ids {
+        let hash: Vec<u8> = sqlx::query_scalar(&format!(
+            "SELECT content_hash FROM ledger_{}.entries WHERE entry_id = $1",
+            f.org.tenant_id
+        ))
+        .bind(entry_id)
+        .fetch_one(f.db.pool())
+        .await
+        .expect("reads the entry's hash");
+        let array: [u8; 32] = hash.as_slice().try_into().expect("32 bytes");
+        accumulator.push(oxsum_core::Hash::from_bytes(array));
+    }
+    accumulator.root().as_bytes().to_vec()
+}
+
+/// `H(domain, day || count || root)` — the leaf the verifier will rebuild.
+fn expected_leaf(day: Date, count: i64, root: &[u8]) -> Vec<u8> {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(day.to_string().as_bytes());
+    payload.extend_from_slice(&count.to_le_bytes());
+    payload.extend_from_slice(root);
+    oxsum_core::Hash::digest(oxsum_core::USAGE_DAY_DOMAIN, &payload)
+        .as_bytes()
+        .to_vec()
+}
+
+/// The day log (issue #337): a settled turn with an `endUser` writes its day's
+/// leaf, a second turn rewrites the root and count, a replay changes nothing,
+/// and another day is its own row.
+#[tokio::test]
+async fn a_settled_turn_writes_its_customers_day_leaf() {
+    let url = db_or_skip!();
+    let f = fixture(&url, "daylog").await;
+    f.wallet
+        .top_up(&fresh("seed"), 20 * ONE, MONDAY)
+        .await
+        .expect("the wallet funds");
+    let end_user = "customer-day-1";
+
+    let first = customer_turn(&f, "d1", end_user, 2 * ONE, MONDAY).await;
+    let (count, root, leaf) = day_row(&f, end_user, MONDAY)
+        .await
+        .expect("a day row is written");
+    assert_eq!(count, 1);
+    assert_eq!(root, expected_root(&f, &[first.entry_id]).await);
+    assert_eq!(leaf, expected_leaf(MONDAY, count, &root));
+
+    // A second turn the same day rewrites the day's root and count.
+    customer_turn(&f, "d2", end_user, 3 * ONE, MONDAY).await;
+    let (count, root_after, _) = day_row(&f, end_user, MONDAY)
+        .await
+        .expect("the day row is rewritten");
+    assert_eq!(count, 2);
+    assert_ne!(root_after, root, "a new row changes the day's root");
+
+    // A replayed write changes nothing: the usage insert dedupes on request_id
+    // and the day log is only reached for a fresh row.
+    f.db.record_usage(&first)
+        .await
+        .expect("the replay is a no-op");
+    let (count, root_replayed, _) = day_row(&f, end_user, MONDAY)
+        .await
+        .expect("the day row stands");
+    assert_eq!((count, root_replayed), (2, root_after));
+
+    // Another day is its own leaf.
+    customer_turn(&f, "d3", end_user, ONE, FRIDAY).await;
+    assert_eq!(
+        day_row(&f, end_user, FRIDAY).await.map(|row| row.0),
+        Some(1)
+    );
+}
