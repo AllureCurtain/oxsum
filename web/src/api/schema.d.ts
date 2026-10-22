@@ -7990,7 +7990,7 @@ export interface components {
         };
         ReconciliationClass: {
             /** @enum {string} */
-            class: "usage_orphans" | "settlements_unrecorded" | "deposits_unbooked" | "deposits_mismatched" | "deposits_stuck" | "watches_orphaned" | "holds_unwatched" | "holds_dead_lettered" | "log_gaps" | "jobs_dead" | "upstream_price_drift";
+            class: "usage_orphans" | "settlements_unrecorded" | "deposits_unbooked" | "deposits_mismatched" | "deposits_stuck" | "watches_orphaned" | "holds_unwatched" | "holds_dead_lettered" | "log_gaps" | "jobs_dead" | "upstream_price_drift" | "anchored_day_altered";
             /**
              * Format: int64
              * @description how much drift the class holds
