@@ -2,12 +2,21 @@
 services:
   postgres:
     image: postgres:17-alpine
+    # A database with thousands of ledger schemas needs a lock per table during
+    # a dump; the stock 64 per transaction answers "out of shared memory"
+    # (docs/development.md, "Backup").
+    command: ["postgres", "-c", "max_locks_per_transaction=1024"]
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: oxsum
     ports:
       - "127.0.0.1:5432:5432"
+    # A large restore (thousands of ledger schemas) needs more than Docker's
+    # 64 MB /dev/shm: parallel index builds otherwise fail with "could not
+    # resize shared memory segment" (docs/development.md, "Backup and restore
+    # drill").
+    shm_size: 1gb
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
