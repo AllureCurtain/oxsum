@@ -560,10 +560,12 @@ Steps:
    `anomaly.detected` fires on the odd settlements — capped, estimated,
    client-cancelled, swept, unpriced, released, dead-lettered holds — and on
    upstream price drift: when the price-sync job finds a stored `upstream`
-   rate disagreeing with the channel's live catalog, `data` is `{kind:
-   "upstream_price_drift", channel, model, field, storedMinor, liveMinor}`,
-   broadcast to every subscribed endpoint across all organizations (the rates
-   are the public catalog's, never organization data).
+   rate disagreeing with the channel's live catalog — the oxsum-compatible
+   `GET {baseUrl}/api/v1/pricing`, since a real provider exposes no such
+   catalog; its cost is compared by the upstream bill sync instead — `data` is
+   `{kind: "upstream_price_drift", channel, model, field, storedMinor,
+   liveMinor}`, broadcast to every subscribed endpoint across all organizations
+   (the rates are the public catalog's, never organization data).
    `budget.exhaustion_forecast` carries `{keyId, spendLimitMinor,
    budgetDuration, windowStart, committedMinor, projectedExhaustionDate,
    daysRemaining}` — an early warning that a key with a `budgetDuration` window
