@@ -28,8 +28,9 @@ where that discipline is auditable.
 
 What remains a claim rather than a proof is completeness: a report attests "these are all the
 settlements for this customer over this span", and the bundle cannot enumerate rows the
-organization chose never to show. Closing that gap is the MMR work tracked in TODO.md; until then
-the page says so.
+organization chose never to show. The design that closes it — a per-customer day log anchored in
+the organization's ledger at day close — is recorded in [decisions.md](decisions.md)
+(2026-10-22, issue #336); until its stages ship, the page says so.
 
 The customer-facing version of this page is [Verifying an oxsum bill](verify-your-bill.md); the
 operator-facing surfaces are described in [product.md](product.md).
