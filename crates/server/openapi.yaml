@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.73.0
+  version: 0.74.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -483,15 +483,25 @@ info:
     `VALIDATION_ERROR`; a send failure still answers the token and `delivery:
     failed`, because the link exists and can be passed on by hand.
 
+    0.74.0 adds the Hyperswitch deposit rail (issue #319): `POST /api/v1/topups/hyperswitch`
+    opens a deposit and creates a payment on the switch, answering the payment id, the
+    `clientSecret` the browser SDK confirms against and the `publishableKey` it initializes
+    with. The switch's webhook at `POST /api/v1/webhooks/hyperswitch` verifies
+    `X-Webhook-Signature-512` (hex HMAC-SHA512 over the raw body), records every event under
+    its `event_id` before acting, and credits `payment_succeeded` under
+    `hyperswitch:<payment_id>`. An unconfigured rail answers 503 at the intent and 404 at the
+    webhook.
+
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
     whose job precedes authentication: `/api/v1/auth/login`, `/api/v1/auth/logout`,
     `/api/v1/auth/register`, `/api/v1/auth/oauth/github`, `/api/v1/auth/oauth/github/callback`,
     `/api/v1/auth/methods`, `/api/v1/auth/verify`, `/api/v1/auth/password/forgot`,
     `/api/v1/auth/password/reset`, `/api/v1/invitations/redeem`, `/api/v1/device/code`,
-    `/api/v1/device/token`, `/api/v1/log/key`, `/api/v1/webhooks/stripe` and
-    `/api/v1/webhooks/airwallex`. The cookie is never accepted on `/v1`: the
-    gateway takes an API key only — `Authorization: Bearer` or `x-api-key`.
+    `/api/v1/device/token`, `/api/v1/log/key`, `/api/v1/webhooks/stripe`,
+    `/api/v1/webhooks/airwallex` and `/api/v1/webhooks/hyperswitch`. The cookie is never
+    accepted on `/v1`: the gateway takes an API key only — `Authorization: Bearer` or
+    `x-api-key`.
 servers:
   - url: http://localhost:3000
 security:
@@ -1875,6 +1885,73 @@ paths:
             schema:
               type: object
               description: the raw Airwallex event envelope; `data.object.id` is the intent
+      responses:
+        "200":
+          description: acknowledged — every verified event is answered 200 whether the deposit moved or not
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /api/v1/topups/hyperswitch:
+    post:
+      summary: Create a Hyperswitch payment to top up
+      description: |
+        The `hyperswitch` deposit rail (issue #319): opens a `pending` deposit
+        (`payment_ref` = the `idempotencyKey`), creates a payment on the switch
+        (`POST /payments`, automatic capture, `confirm: false`) and answers the
+        payment id, the `clientSecret` the browser SDK confirms against, and the
+        `publishableKey` the SDK initializes with. A replayed intent (same
+        `idempotencyKey`) answers the same handles — the deposit's unique
+        constraint is the idempotency anchor, not a lookup. A deployment without
+        `OXSUM_HYPERSWITCH_*` answers 503: the rail is configured or it is not.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AmountRequest" }
+      responses:
+        "200":
+          description: The payment identity, the browser secret and the deposit it credits
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [paymentId, clientSecret, publishableKey, depositId]
+                    properties:
+                      paymentId: { type: string, description: "the switch's payment id the webhook names" }
+                      clientSecret: { type: string, description: "the secret the browser SDK confirms against" }
+                      publishableKey: { type: string, description: "the key the browser SDK initializes with" }
+                      depositId: { type: string, format: uuid, description: "the pending deposit this payment confirms" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/webhooks/hyperswitch:
+    post:
+      summary: Hyperswitch's deposit-rail callback
+      description: |
+        The switch's unauthenticated webhook (issue #319):
+        `X-Webhook-Signature-512` verifies the raw body as hex HMAC-SHA512 under
+        the business profile's `payment_response_hash_key`
+        (`OXSUM_HYPERSWITCH_WEBHOOK_SECRET`), compared in constant time.
+        Every verified event is recorded under its `event_id` before it acts — a
+        replayed delivery is acknowledged and credits nothing. `payment_succeeded`
+        confirms and credits the deposit the payment names — the credit replays
+        under `hyperswitch:<payment_id>` so a retried or raced delivery writes
+        nothing twice — and `payment_cancelled`/`payment_expired` close it.
+        `content.object.amount` is recorded as `received_minor`; a number that
+        disagrees with `amount_minor` is for a human, never auto-patched. A
+        deployment without `OXSUM_HYPERSWITCH_*` answers 404.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: the raw switch envelope; `event_id`, `event_type` and `content.object.payment_id` are what the handler reads
       responses:
         "200":
           description: acknowledged — every verified event is answered 200 whether the deposit moved or not
