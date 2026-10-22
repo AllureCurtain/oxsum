@@ -1785,3 +1785,15 @@ The customer's page already proves inclusion and the operator's signature. A wit
 - **Still no third-party script.** The check runs in the same wasm module the page already loads, and `bill.js` remains the page's only script.
 
 Pinned by `crates/server/tests/usage_reports.rs` (the report names the pinset and the origin, carries the stored note, and the bill page embeds all three) plus the verify crate's `verify_witnesses` tests for the cryptography. Contract `openapi.yaml` 0.75.0.
+
+
+## 2026-10-22 — The seed creates its own demo channel when the catalog is empty (issue #330)
+
+The demo world is the product's first impression — `docker compose up`, `oxsum seed`, a login — and on a database with no catalog it was writing top-ups and no history: the seeded turns need a price book to bill under, so an empty catalog meant zero turns and no statement.
+
+- **The seed owns the demo catalog.** With `OXSUM_SECRET_KEY` set, an empty catalog gets one channel first: `demo`, two priced models (`demo-chat`, `demo-reasoner`), and an upstream URL that is deliberately unreachable (`http://127.0.0.1:9/v1`). The demo serves seeded history, not live traffic; a reachable URL would invite a request the demo cannot answer.
+- **The key is the precondition, not an afterthought.** A channel row stores a sealed credential, and `prepare` refuses to start when a stored credential cannot be opened — so a channel can only be created with the deployment's key. Without it the seed keeps the old behavior: whatever catalog exists, or a world with no history. The docs say which case you are in.
+- **The channel is ordinary state.** It is written through `Db::seed_channel`, appears in the admin channels page and `GET /api/v1/pricing`, and a deployment that later configures real channels can leave it or delete it. The seed does not special-case it afterwards.
+- **The rerun stays a no-op.** The demo email is still the idempotency anchor; the second run reports "already seeded" and writes nothing, even though the channel now exists.
+
+Pinned by `crates/core/tests/seed.rs` (a database with no catalog, seeded with the key, has turns, a statement and both demo models; the rerun writes nothing).

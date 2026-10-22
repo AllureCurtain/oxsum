@@ -31,9 +31,12 @@ Seeded request ids are deterministic (`seed-<day>-<n>`) so the demo reads the sa
 and the seeded posting dates spread across the trailing thirty days, which is what fills the
 usage page's rollup and last month's statement. The command is idempotent: a second run finds the
 demo account and prints "already seeded" without writing anything. It needs `DATABASE_URL` and
-nothing else — with `OXSUM_SECRET_KEY` set it also runs the startup bootstrap so an environment
-channel is there for the turns to bill under; without one it seeds against whatever catalog the
-deployment already serves, or writes the world with no turns when the catalog is empty.
+nothing else. With `OXSUM_SECRET_KEY` set and no catalog at all, the seed creates the demo channel
+first — `demo`, two priced models (`demo-chat`, `demo-reasoner`) and a deliberately unreachable
+upstream URL, because the demo serves seeded history rather than live traffic — so the turns and
+the statement are written (issue #330). Without the key it seeds against whatever catalog the
+deployment already serves, or writes the world with no turns when the catalog is empty: a channel
+row cannot be created without a key to seal its credential.
 
 ### The statement lifecycle, end to end
 
