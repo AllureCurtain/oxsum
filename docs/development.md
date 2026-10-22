@@ -400,6 +400,23 @@ comes back empty:
 pg_dump --format=custom --file=oxsum.dump "$DATABASE_URL"
 ```
 
+Two cluster settings matter once a deployment carries many organizations (one
+`ledger_*` schema each):
+
+- **`max_locks_per_transaction`.** `pg_dump` takes a lock per table, and the
+  stock 64 per transaction fails with `out of shared memory` once a database has
+  grown past a few hundred organizations. Set it to at least 1024 in the cluster
+  (`ALTER SYSTEM SET max_locks_per_transaction = 1024`, then restart); the
+  Compose database ships that value.
+- **Docker's `/dev/shm`.** A restore builds indexes in parallel and needs more
+  than the default 64 MB — without it `pg_restore` fails with `could not resize
+  shared memory segment … No space left on device`. The Compose service sets
+  `shm_size: 1gb`; a self-hosted PostgreSQL wants the host's usual
+  `shared_buffers`-sized `/dev/shm`.
+
+`scripts/backup-restore-drill.sh` proves the dump both restores and serves; it
+is the next section.
+
 The ledgers are append-only, so a dump is a consistent snapshot by construction:
 nothing it captured is ever rewritten underneath the backup. Take the dump
 against a quiet hour if the database is busy — `pg_dump` holds its snapshot
@@ -436,6 +453,56 @@ After a restore, in-flight state is what the dump held: open holds older than
 `OXSUM_HOLD_TIMEOUT` sweep to zero on the next pass, which is the designed answer
 to a gateway that went away mid-turn — the client's reservation releases, nothing
 is charged for a turn nobody can settle.
+
+### The restore drill
+
+`scripts/backup-restore-drill.sh` dumps the source, restores it into a second
+database on the same cluster, and compares the counts that prove the move —
+organizations, statements, deposits, usage records and the `ledger_*` schemas —
+exiting non-zero on a mismatch. It never restores over its source, and after the
+counts match it prints the command that starts a server against the restored
+copy.
+
+A recorded run (2026-10-22, local Compose, the development database reset to the
+demo world):
+
+```text
+$ CONTAINER=oxsum-postgres-1 bash scripts/backup-restore-drill.sh
+dumping oxsum to /tmp/oxsum-backup.dump
+dump size: 135111 bytes
+restoring into oxsum_drill_restore
+check                  source     restored
+organizations               2            2
+statements                  0            0
+deposits                    3            3
+usage records               0            0
+ledger schemas              1            1
+the restored copy matches the source.
+```
+
+Then the three checks that say the restore serves:
+
+```text
+start the server against the restored copy
+  DATABASE_URL=postgres://postgres@127.0.0.1:5432/oxsum_drill_restore \
+  OXSUM_ADDR=127.0.0.1:3012 cargo run -p oxsum-server
+
+GET  /healthz                                 200
+POST /api/v1/auth/login (demo@oxsum.local)    200
+GET  /api/v1/bills?limit=1                    the seeded top-ups
+GET  /api/v1/entries/{entryId}/proof          the bundle
+POST /verify  bundle=… expected_hash=…        "The bill verifies."
+```
+
+The same run also produced the two settings above the hard way. The first
+attempt ran against a development database that had accumulated 4,192 test
+organizations from before the per-suite isolation (about 46,000 tables): the dump
+failed at the stock lock limit, the restore failed at Docker's stock `/dev/shm`,
+and the container needed minutes to fsync after a restart. After the reset to the
+demo world — 2 organizations, 11 ledger tables, 10 MB — the whole drill runs in
+seconds. The lesson is the reset, not the drill: a development database left
+unreset is what turns a five-second check into an hour, and the reset path is
+`scripts/reset-dev-database.sql` (see "Test residue in the development database").
 
 ### Migration ordering
 
