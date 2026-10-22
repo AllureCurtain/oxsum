@@ -42,13 +42,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match std::env::args().nth(1).as_deref() {
         Some("seed") => {
             // Seeding reads only the catalog — channels and prices, never the
-            // credentials — so it does not need OXSUM_SECRET_KEY the way serving
-            // does. With one configured, `prepare` still runs so the bootstrap
-            // channel lands before the demo turns pick models from it.
+            // credentials — except when the database has no catalog at all: then
+            // the seed creates the demo channel, which needs the sealing key
+            // (issue #330). With a key configured, `prepare` still runs so the
+            // bootstrap channel lands before the demo turns pick models from it.
             if config.secret().is_some() {
                 oxsum_server::prepare(&db, &config).await?;
             }
-            return seed(&db).await;
+            return seed(&db, config.secret()).await;
         }
         Some(other) => {
             return Err(
@@ -139,8 +140,18 @@ async fn drain_deadline() {
 
 /// `oxsum seed` (roadmap P7-4): populates the demo world and prints the logins
 /// and the first key's secret — the only place the secret is ever visible.
-async fn seed(db: &Db) -> Result<(), Box<dyn std::error::Error>> {
-    let report = db.seed_demo().await?;
+///
+/// With the sealing key, a database that has no catalog first gets the demo
+/// channel, so the seeded turns have prices to bill under (issue #330); without
+/// one, the world is written without history, exactly as before.
+async fn seed(
+    db: &Db,
+    key: Option<&oxsum_core::SecretKey>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let report = match key {
+        Some(key) => db.seed_demo_with_channel(key).await?,
+        None => db.seed_demo().await?,
+    };
     if !report.created {
         println!(
             "already seeded — log in as {} / {} (the API key secret was printed on the first run)",
