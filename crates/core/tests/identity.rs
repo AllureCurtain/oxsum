@@ -509,6 +509,7 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "oauth_states".to_owned(),
             "open_holds".to_owned(),
             "organizations".to_owned(),
+            "payment_events".to_owned(),
             "pricing_discounts".to_owned(),
             "redemption_codes".to_owned(),
             "report_links".to_owned(),

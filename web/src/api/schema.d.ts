@@ -2429,6 +2429,128 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/topups/hyperswitch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a Hyperswitch payment to top up
+         * @description The `hyperswitch` deposit rail (issue #319): opens a `pending` deposit
+         *     (`payment_ref` = the `idempotencyKey`), creates a payment on the switch
+         *     (`POST /payments`, automatic capture, `confirm: false`) and answers the
+         *     payment id, the `clientSecret` the browser SDK confirms against, and the
+         *     `publishableKey` the SDK initializes with. A replayed intent (same
+         *     `idempotencyKey`) answers the same handles — the deposit's unique
+         *     constraint is the idempotency anchor, not a lookup. A deployment without
+         *     `OXSUM_HYPERSWITCH_*` answers 503: the rail is configured or it is not.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["AmountRequest"];
+                };
+            };
+            responses: {
+                /** @description The payment identity, the browser secret and the deposit it credits */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: {
+                                /** @description the switch's payment id the webhook names */
+                                paymentId: string;
+                                /** @description the secret the browser SDK confirms against */
+                                clientSecret: string;
+                                /** @description the key the browser SDK initializes with */
+                                publishableKey: string;
+                                /**
+                                 * Format: uuid
+                                 * @description the pending deposit this payment confirms
+                                 */
+                                depositId: string;
+                            };
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/webhooks/hyperswitch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Hyperswitch's deposit-rail callback
+         * @description The switch's unauthenticated webhook (issue #319):
+         *     `X-Webhook-Signature-512` verifies the raw body as hex HMAC-SHA512 under
+         *     the business profile's `payment_response_hash_key`
+         *     (`OXSUM_HYPERSWITCH_WEBHOOK_SECRET`), compared in constant time.
+         *     Every verified event is recorded under its `event_id` before it acts — a
+         *     replayed delivery is acknowledged and credits nothing. `payment_succeeded`
+         *     confirms and credits the deposit the payment names — the credit replays
+         *     under `hyperswitch:<payment_id>` so a retried or raced delivery writes
+         *     nothing twice — and `payment_cancelled`/`payment_expired` close it.
+         *     `content.object.amount` is recorded as `received_minor`; a number that
+         *     disagrees with `amount_minor` is for a human, never auto-patched. A
+         *     deployment without `OXSUM_HYPERSWITCH_*` answers 404.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            responses: {
+                /** @description acknowledged — every verified event is answered 200 whether the deposit moved or not */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/redemptions": {
         parameters: {
             query?: never;

@@ -219,6 +219,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0052_report_links",
         include_str!("../migrations/0052_report_links.sql"),
     ),
+    (
+        "0053_payment_events",
+        include_str!("../migrations/0053_payment_events.sql"),
+    ),
+    (
+        "0054_hyperswitch_rail",
+        include_str!("../migrations/0054_hyperswitch_rail.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.
