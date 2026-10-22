@@ -314,7 +314,21 @@ async fn a_secret_seeds_a_catalog_and_history() {
     let _guard = SEED_LOCK.lock().await;
     let url = db_or_skip!();
     let db = db(&url).await;
-    // Start from no catalog: the demo channel is the feature under test.
+    // Start from no catalog: the demo channel is the feature under test. The
+    // demo tests share this database and run in whatever order nextest picks,
+    // so a channel a previous test priced is still here; its dependents go
+    // first (`channel_prices` RESTRICTs the delete, the other two do not
+    // cascade). No schema change: cleaning the test's own debris belongs here.
+    for table in [
+        "oxsum.channel_prices",
+        "oxsum.upstream_bills",
+        "oxsum.model_aliases",
+    ] {
+        sqlx::query(&format!("DELETE FROM {table}"))
+            .execute(db.pool())
+            .await
+            .expect("clears the catalog's dependents");
+    }
     sqlx::query("DELETE FROM oxsum.channels")
         .execute(db.pool())
         .await
