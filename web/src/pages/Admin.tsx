@@ -63,6 +63,7 @@ async function adminApi<T>(token: string, path: string, init?: { method?: string
 const SECTIONS = [
   "channels",
   "organizations",
+  "deposits",
   "in-flight",
   "anomalies",
   "margin",
@@ -170,6 +171,8 @@ function Section({ token, name }: { token: string; name: (typeof SECTIONS)[numbe
       return <Channels token={token} />;
     case "organizations":
       return <Organizations token={token} />;
+    case "deposits":
+      return <Deposits token={token} />;
     case "in-flight":
       return <InFlight token={token} />;
     case "anomalies":
@@ -891,6 +894,120 @@ function CreditNotes({ token, id }: { token: string; id: string }) {
       ) : (
         <p className="mt-2 text-xs text-muted">No credit notes issued to this organization yet.</p>
       )}
+    </div>
+  );
+}
+
+/// One money-in row the deposits view lists (issue #354).
+type AdminDeposit = {
+  depositId: string;
+  organizationId: string;
+  organization: string;
+  rail: string;
+  paymentRef: string;
+  amountMinor: number;
+  receivedMinor: number | null;
+  status: string;
+  entryId: string | null;
+  createdAt: string;
+};
+
+/// The deposits view: the money-in record, newest first, filterable by one
+/// organization. Read-only — confirming or reversing a deposit is a webhook's
+/// or an operator action's own call.
+function Deposits({ token }: { token: string }) {
+  const [organization, setOrganization] = useState("");
+  const orgs = useAdmin<
+    { organizations?: AdminOrg[]; orgs?: AdminOrg[]; nextCursor?: string } | AdminOrg[]
+  >(token, "/organizations", []);
+  const orgRows = Array.isArray(orgs.data)
+    ? orgs.data
+    : (orgs.data?.organizations ?? orgs.data?.orgs ?? []);
+  const deposits = useAdmin<AdminDeposit[]>(
+    token,
+    `/deposits?limit=100${organization ? `&organizationId=${organization}` : ""}`,
+    [organization],
+  );
+  const rows = deposits.data ?? [];
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <label className="text-xs text-muted" htmlFor="deposit-org">
+          Organization
+        </label>
+        <select
+          id="deposit-org"
+          className="rounded-md border border-line bg-surface px-2 py-1 text-sm"
+          value={organization}
+          onChange={(e) => setOrganization(e.target.value)}
+        >
+          <option value="">All organizations</option>
+          {orgRows.map((o) => (
+            <option key={o.id} value={o.id}>
+              {o.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      {deposits.loading ? (
+        <PageState>Loading…</PageState>
+      ) : deposits.error ? (
+        <Banner tone="error">{deposits.error}</Banner>
+      ) : (
+        <TableShell
+          head={[
+            "When",
+            "Organization",
+            "Rail",
+            "Status",
+            "Amount",
+            "Received",
+            "Reference",
+            "Entry",
+          ]}
+        >
+          {rows.map((d) => (
+            <tr key={d.depositId}>
+              <td className="mono text-xs">{d.createdAt.slice(0, 19).replace("T", " ")}</td>
+              <td>{d.organization}</td>
+              <td>{d.rail}</td>
+              <td className="text-xs">
+                <span
+                  className={
+                    d.status === "credited"
+                      ? "text-success"
+                      : d.status === "reversed"
+                        ? "text-danger"
+                        : "text-muted"
+                  }
+                >
+                  {d.status}
+                </span>
+              </td>
+              <td className="mono">{credits(d.amountMinor)} cr</td>
+              <td className="mono">
+                {d.receivedMinor === null ? "—" : `${credits(d.receivedMinor)} cr`}
+              </td>
+              <td className="mono text-xs text-muted">{d.paymentRef}</td>
+              <td className="mono text-xs text-muted">
+                {d.entryId ? `${d.entryId.slice(0, 8)}…` : "—"}
+              </td>
+            </tr>
+          ))}
+          {rows.length === 0 ? (
+            <EmptyRows colSpan={8}>
+              No deposits yet — a top-up, a code redemption or a rail payment appears here.
+            </EmptyRows>
+          ) : null}
+        </TableShell>
+      )}
+      <p className="text-xs text-muted">
+        Statuses are the rails' facts: pending (opened, not paid), confirmed (the rail
+        says paid, the ledger has not credited yet), credited (the entry named on the
+        row moved the wallet), reversed (a refund or chargeback) or expired. A received
+        amount appears only when the rail reported a different figure than the deposit
+        was opened for.
+      </p>
     </div>
   );
 }

@@ -1331,6 +1331,77 @@ async fn an_adjustment_grants_and_deducts_with_a_reason() {
     assert_eq!(body["data"]["availableMinor"], 3_000_000);
 }
 
+/// `GET /api/v1/admin/deposits` lists money-in newest first, filters by one
+/// organization, and 404s an organization that does not exist (issue #354).
+#[tokio::test]
+async fn the_deposits_view_lists_money_in() {
+    let (app, _pool) = app_or_skip!();
+    let (org, key) = register(&app, "deposits").await;
+
+    // A top-up through the manual rail: one deposit row, credited.
+    let (status, body) = call_with(
+        &app,
+        "POST",
+        "/api/v1/topups",
+        Some(json!({
+            "idempotencyKey": "dep-1",
+            "amountMinor": 5_000_000,
+        })),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = call(&app, "GET", "/api/v1/admin/deposits", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let rows = body["data"].as_array().expect("rows");
+    let row = rows
+        .iter()
+        .find(|row| row["organizationId"].as_str() == Some(org.as_str()))
+        .expect("the deposit is listed");
+    assert_eq!(row["rail"], "manual");
+    assert_eq!(row["status"], "credited");
+    assert_eq!(row["amountMinor"], 5_000_000);
+    assert!(
+        row["entryId"].as_str().is_some(),
+        "the crediting entry is named"
+    );
+
+    // The organization filter answers it; another organization sees none.
+    let (status, body) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/admin/deposits?organizationId={org}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"].as_array().unwrap().len(), 1);
+    let (other, _) = register(&app, "deposits-other").await;
+    let (status, body) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/admin/deposits?organizationId={other}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["data"].as_array().unwrap().is_empty());
+
+    // An unknown organization is 404, not an empty list.
+    let (status, _) = call(
+        &app,
+        "GET",
+        &format!(
+            "/api/v1/admin/deposits?organizationId={}",
+            uuid::Uuid::new_v4()
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
 /// `POST …/credit-notes` credits the wallet with a reasoned, positive amount
 /// and moves no money (issue #352, D12): the balance rises by exactly the
 /// amount, a retried key answers the standing note, the list reads newest
