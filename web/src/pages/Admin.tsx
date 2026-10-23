@@ -801,7 +801,97 @@ function AdjustOrg({ token, id, onDone }: { token: string; id: string; onDone: (
           {msg ? <span className="text-xs text-muted">{msg}</span> : null}
         </div>
       </form>
+      <CreditNotes token={token} id={id} />
     </Card>
+  );
+}
+
+/// One credit note the admin surface lists (issue #352).
+type CreditNote = {
+  creditNoteId: string;
+  entryId: string;
+  organizationId: string;
+  amountMinor: number;
+  reason: string;
+  createdAt: string;
+};
+
+/// The credit-note half of the per-organization card: issue a reasoned credit
+/// (a new ledger entry, Revenue → Wallet, no money moved) and read back what
+/// was issued. Deliberately beside the adjustment form, not merged into it.
+function CreditNotes({ token, id }: { token: string; id: string }) {
+  const [amount, setAmount] = useState("");
+  const [reason, setReason] = useState("");
+  const [notes, setNotes] = useState<CreditNote[]>([]);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [version, setVersion] = useState(0);
+
+  useEffect(() => {
+    adminApi<{ rows: CreditNote[] }>(token, `/organizations/${id}/credit-notes`)
+      .then((data) => setNotes(data.rows))
+      .catch(() => setNotes([]));
+  }, [token, id, version]);
+
+  return (
+    <div className="mt-4 border-t border-line pt-3">
+      <h3 className="text-sm font-semibold">Credit notes</h3>
+      <p className="text-xs text-muted">
+        A reasoned credit for this organization: it posts a new ledger entry (Revenue debited,
+        Wallet credited) and moves no money. It is not a refund.
+      </p>
+      <form
+        className="mt-2 flex flex-wrap items-end gap-2"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          try {
+            await adminApi(token, `/organizations/${id}/credit-notes`, {
+              method: "POST",
+              body: {
+                amountMinor: Math.round(Number(amount) * 1_000_000),
+                reason,
+                idempotencyKey: `cn-${crypto.randomUUID()}`,
+              },
+            });
+            setMsg("issued");
+            setAmount("");
+            setReason("");
+            setVersion((v) => v + 1);
+          } catch (err) {
+            setMsg(err instanceof ApiError ? err.message : "failed");
+          }
+        }}
+      >
+        <Field label="Amount (credits)">
+          <NumberInput
+            required
+            min={0}
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+          />
+        </Field>
+        <Field label="Reason" hint="required — it becomes the entry's description">
+          <TextInput value={reason} maxLength={200} onChange={(e) => setReason(e.target.value)} />
+        </Field>
+        <Button type="submit">Issue note</Button>
+        {msg ? <span className="text-xs text-muted">{msg}</span> : null}
+      </form>
+      {notes.length > 0 ? (
+        <div className="mt-2">
+          <TableShell head={["Issued", "Amount", "Reason", "Entry"]}>
+            {notes.map((note) => (
+              <tr key={note.creditNoteId}>
+                <td className="mono text-xs">{note.createdAt.slice(0, 19).replace("T", " ")}</td>
+                <td className="mono">{credits(note.amountMinor)} cr</td>
+                <td className="text-xs">{note.reason}</td>
+                <td className="mono text-xs text-muted">{note.entryId.slice(0, 8)}…</td>
+              </tr>
+            ))}
+          </TableShell>
+        </div>
+      ) : (
+        <p className="mt-2 text-xs text-muted">No credit notes issued to this organization yet.</p>
+      )}
+    </div>
   );
 }
 

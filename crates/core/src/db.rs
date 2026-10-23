@@ -235,6 +235,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0056_usage_anchors",
         include_str!("../migrations/0056_usage_anchors.sql"),
     ),
+    (
+        "0057_credit_notes",
+        include_str!("../migrations/0057_credit_notes.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.

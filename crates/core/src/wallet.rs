@@ -656,6 +656,47 @@ impl Wallet {
         Err(last_err.unwrap_or(WalletError::InsufficientFunds))
     }
 
+    /// Issues a credit note: one ledger entry that gives back credit the
+    /// customer already paid for, without moving money (issue #352, decision
+    /// D12). The posting is the mirror of a settlement's charge — debit
+    /// Revenue, credit Wallet — and the reason is the entry's description, so
+    /// the note is a new fact beside the charge, never a rewrite of it.
+    ///
+    /// `pub(crate)`: only [`crate::Db::issue_credit_note`] calls it. A retried
+    /// key replays the standing entry rather than crediting twice.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::InvalidInput`] for a non-positive amount, an empty
+    /// reason, or a malformed key.
+    pub(crate) async fn credit_note(
+        &self,
+        idempotency_key: &str,
+        reason: &str,
+        minor: i64,
+        on: Date,
+    ) -> Result<Receipt, WalletError> {
+        if reason.trim().is_empty() {
+            return Err(WalletError::InvalidInput(
+                "a credit note needs a reason".into(),
+            ));
+        }
+        if minor <= 0 {
+            return Err(WalletError::InvalidInput(
+                "a credit note is a positive amount".into(),
+            ));
+        }
+        let key = format!("credit-note/{idempotency_key}");
+        let amt = Credits::from_minor(minor);
+        self.append(
+            Entry::<Draft, SCALE>::new(entry_id_for(&key), idem(&key)?, on)
+                .with_description(description_of(reason)?)
+                .debit(self.revenue, amt, currency())
+                .credit(self.wallet, amt, currency()),
+        )
+        .await
+    }
+
     /// Answers for a key that already has a committed deduction entry: the
     /// stored entry's receipt when it drew the amount asked for, under the
     /// same reason — whatever its pool split (balances move after a

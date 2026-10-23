@@ -174,6 +174,103 @@ pub(crate) async fn adjust_organization(
     })
 }
 
+/// The body of `POST …/credit-notes`: a positive amount, the reason, and the
+/// idempotency key that makes a retry the same note.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct CreditNoteReq {
+    amount_minor: i64,
+    reason: String,
+    idempotency_key: String,
+}
+
+/// One credit note as the admin surface answers it. `availableMinor` rides the
+/// issuance answer only — a list row has no single balance behind it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CreditNoteRes {
+    credit_note_id: Uuid,
+    entry_id: Uuid,
+    organization_id: Uuid,
+    amount_minor: i64,
+    reason: String,
+    #[serde(with = "time::serde::rfc3339")]
+    created_at: OffsetDateTime,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    available_minor: Option<i64>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CreditNoteListRes {
+    rows: Vec<CreditNoteRes>,
+}
+
+impl From<oxsum_core::CreditNote> for CreditNoteRes {
+    fn from(note: oxsum_core::CreditNote) -> Self {
+        Self {
+            credit_note_id: note.credit_note_id,
+            entry_id: note.entry_id,
+            organization_id: note.organization_id,
+            amount_minor: note.amount_minor,
+            reason: note.reason,
+            created_at: note.created_at,
+            available_minor: None,
+        }
+    }
+}
+
+/// Issues a credit note into the named organization's wallet (issue #352,
+/// decision D12): a reasoned ledger credit that moves no money, posting
+/// Revenue debit / Wallet credit. A retried key answers the standing note.
+pub(crate) async fn issue_credit_note(
+    State(state): State<AppState>,
+    Path(organization_id): Path<Uuid>,
+    ApiJson(request): ApiJson<CreditNoteReq>,
+) -> ApiResult<CreditNoteRes> {
+    let organization = state.db.organization_by_id(organization_id).await?;
+    let wallet = state.tenants.get(&organization.tenant_id).await?;
+    let note = state
+        .db
+        .issue_credit_note(
+            &wallet,
+            organization_id,
+            request.amount_minor,
+            &request.reason,
+            &request.idempotency_key,
+        )
+        .await?;
+    record(
+        &state,
+        audit_action::CREDIT_NOTE_ISSUE,
+        Some(organization_id.to_string()),
+        serde_json::json!({
+            "amountMinor": note.amount_minor,
+            "reason": note.reason,
+            "entryId": note.entry_id,
+        }),
+        Some(&request.idempotency_key),
+    )
+    .await?;
+    let mut answer = CreditNoteRes::from(note);
+    answer.available_minor = Some(wallet.available().await?);
+    ok(answer)
+}
+
+/// One organization's credit notes, newest first.
+pub(crate) async fn credit_notes(
+    State(state): State<AppState>,
+    Path(organization_id): Path<Uuid>,
+) -> ApiResult<CreditNoteListRes> {
+    // The lookup answers 404 for an organization that does not exist, rather
+    // than an empty list that reads like "never credited".
+    state.db.organization_by_id(organization_id).await?;
+    let rows = state.db.credit_notes(organization_id).await?;
+    ok(CreditNoteListRes {
+        rows: rows.into_iter().map(CreditNoteRes::from).collect(),
+    })
+}
+
 /// The body of `PATCH …/organizations/{id}`: the billing terms to set — the credit
 /// line absolute, the payment-terms day count, the tier assignment, the dunning
 /// grace, the display unit — and the idempotency key that makes a retried

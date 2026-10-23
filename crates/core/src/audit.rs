@@ -48,6 +48,7 @@ pub mod action {
     pub const CHANNEL_ALIAS_SET: &str = "channel.alias.set";
     pub const CHANNEL_ALIAS_DELETE: &str = "channel.alias.delete";
     pub const ORGANIZATION_ADJUST: &str = "organization.adjust";
+    pub const CREDIT_NOTE_ISSUE: &str = "credit_note.issue";
     pub const ORGANIZATION_UPDATE: &str = "organization.update";
     pub const TIER_SET: &str = "tier.set";
     pub const TIER_DELETE: &str = "tier.delete";

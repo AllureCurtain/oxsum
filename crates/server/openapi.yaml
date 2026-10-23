@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.77.0
+  version: 0.78.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -513,6 +513,13 @@ info:
     no longer folds to its anchor's map root (a bypassed seal, a hand edit) is drift for the
     operator. The seal is a write rule, not a repaired fact: a late settlement is refused, and
     history anchored before this rule stays as it was.
+
+    0.78.0 adds credit notes (issue #352, decision D12): `POST
+    /api/v1/admin/organizations/{organizationId}/credit-notes` credits an organization's wallet
+    with a reasoned, positive amount, posting one ledger entry — Revenue debited, Wallet credited,
+    the reason as its description — and `GET` on the same path lists what was issued, newest
+    first. A retried `idempotencyKey` answers the standing note. A credit note moves no money: it
+    is not a refund, and the refund and chargeback halves of D12 stay separate.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -3369,6 +3376,77 @@ paths:
         "402": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/organizations/{organizationId}/credit-notes:
+    get:
+      summary: An organization's credit notes, newest first
+      description: |
+        Every credit note issued into this organization's wallet (issue #352,
+        decision D12), newest first: the amount, the reason, the ledger entry
+        that carries it, and when it was issued. A credit note moves no money
+        and reverses no deposit — it is a reasoned credit beside the charges,
+        not a refund.
+      security:
+        - adminToken: []
+      parameters:
+        - name: organizationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The notes, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [rows]
+                    properties:
+                      rows:
+                        type: array
+                        items: { $ref: "#/components/schemas/AdminCreditNote" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Issue a credit note into an organization's wallet
+      description: |
+        Credits the wallet with a reasoned, positive amount, posting one ledger
+        entry — Revenue debited, Wallet credited, the reason as the entry's
+        description — so the charge it answers stays in history beside the
+        credit. No money moves: this is not a refund, and no deposit is
+        reversed. A retried `idempotencyKey` answers the standing note instead
+        of crediting twice; zero or negative amounts are `400`, and an
+        organization that does not exist is `404`.
+      security:
+        - adminToken: []
+      parameters:
+        - name: organizationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IssueCreditNoteRequest" }
+      responses:
+        "200":
+          description: The note as issued, with the balance after it
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/AdminCreditNote" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/admin/organizations/{organizationId}:
     patch:
       summary: Set an organization's billing terms — credit limit, payment terms
@@ -5758,6 +5836,34 @@ components:
           type: integer
           format: int64
           description: the organization's available balance after the adjustment
+    AdminCreditNote:
+      type: object
+      description: |
+        One credit note (issue #352, decision D12): a reasoned ledger credit the
+        operator issued. The entry is the fact; this is the lookup.
+      required: [creditNoteId, entryId, organizationId, amountMinor, reason, createdAt]
+      properties:
+        creditNoteId: { type: string, format: uuid }
+        entryId:
+          type: string
+          format: uuid
+          description: the ledger entry that carries the credit (Revenue debit / Wallet credit)
+        organizationId: { type: string, format: uuid }
+        amountMinor: { type: integer, format: int64, minimum: 1 }
+        reason: { type: string, description: the note's reason — also the entry's description }
+        createdAt: { type: string, format: date-time }
+        availableMinor:
+          type: integer
+          format: int64
+          description: the organization's available balance after the write; present on the issuance answer only
+    IssueCreditNoteRequest:
+      type: object
+      required: [amountMinor, reason, idempotencyKey]
+      additionalProperties: false
+      properties:
+        amountMinor: { type: integer, format: int64, minimum: 1 }
+        reason: { type: string, minLength: 1 }
+        idempotencyKey: { type: string, minLength: 1 }
     AdminCreditLimit:
       type: object
       required: [organizationId, creditLimitMinor, creditUsedMinor, availableMinor, paymentTermsDays, tier, suspended, dunningGraceDays, dunningSuspendedAt, displayCurrency]

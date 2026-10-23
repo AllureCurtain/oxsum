@@ -62,6 +62,10 @@ pub fn router(state: AppState) -> Router<AppState> {
             post(organizations::adjust_organization),
         )
         .route(
+            "/organizations/{organization_id}/credit-notes",
+            get(organizations::credit_notes).post(organizations::issue_credit_note),
+        )
+        .route(
             "/users/{user_id}/password-reset",
             post(credentials::reset_password),
         )

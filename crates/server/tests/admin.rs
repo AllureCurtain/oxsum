@@ -1331,6 +1331,139 @@ async fn an_adjustment_grants_and_deducts_with_a_reason() {
     assert_eq!(body["data"]["availableMinor"], 3_000_000);
 }
 
+/// `POST …/credit-notes` credits the wallet with a reasoned, positive amount
+/// and moves no money (issue #352, D12): the balance rises by exactly the
+/// amount, a retried key answers the standing note, the list reads newest
+/// first, and neither a zero nor a negative amount is a credit.
+#[tokio::test]
+async fn a_credit_note_credits_with_a_reason_once() {
+    let (app, _pool) = app_or_skip!();
+    let (org, key) = register(&app, "credit-note").await;
+    let path = format!("/api/v1/admin/organizations/{org}/credit-notes");
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        &path,
+        Some(json!({
+            "amountMinor": 2_500_000,
+            "reason": "service credit for the 2026-10 outage",
+            "idempotencyKey": "cn-1",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["amountMinor"], 2_500_000);
+    assert_eq!(
+        body["data"]["reason"],
+        "service credit for the 2026-10 outage"
+    );
+    assert_eq!(body["data"]["availableMinor"], 2_500_000);
+    let note_id = body["data"]["creditNoteId"]
+        .as_str()
+        .expect("the note's id")
+        .to_owned();
+    let entry_id = body["data"]["entryId"]
+        .as_str()
+        .expect("the ledger entry")
+        .to_owned();
+
+    // The organization's own balance agrees.
+    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["availableMinor"], 2_500_000);
+
+    // A retried key is the same note, not a second credit.
+    let (status, body) = call(
+        &app,
+        "POST",
+        &path,
+        Some(json!({
+            "amountMinor": 2_500_000,
+            "reason": "service credit for the 2026-10 outage",
+            "idempotencyKey": "cn-1",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["data"]["creditNoteId"].as_str(),
+        Some(note_id.as_str())
+    );
+    let (_, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    assert_eq!(
+        body["data"]["availableMinor"], 2_500_000,
+        "not credited twice"
+    );
+
+    // The list answers it, newest first.
+    let (status, body) = call(&app, "GET", &path, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let rows = body["data"]["rows"].as_array().expect("rows");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["creditNoteId"].as_str(), Some(note_id.as_str()));
+    assert_eq!(rows[0]["entryId"].as_str(), Some(entry_id.as_str()));
+
+    // A second note lands on top.
+    let (status, body) = call(
+        &app,
+        "POST",
+        &path,
+        Some(json!({
+            "amountMinor": 1_000_000,
+            "reason": "second correction",
+            "idempotencyKey": "cn-2",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = call(&app, "GET", &path, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let rows = body["data"]["rows"].as_array().expect("rows");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["reason"], "second correction");
+
+    // Zero and negative amounts are refused.
+    for bad in [0, -1] {
+        let (status, body) = call(
+            &app,
+            "POST",
+            &path,
+            Some(json!({
+                "amountMinor": bad,
+                "reason": "not a credit",
+                "idempotencyKey": format!("cn-bad-{bad}"),
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    }
+
+    // An organization that does not exist is 404, and another organization's
+    // list does not name this note.
+    let (status, _) = call(
+        &app,
+        "GET",
+        &format!(
+            "/api/v1/admin/organizations/{}/credit-notes",
+            uuid::Uuid::new_v4()
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (other, _) = register(&app, "credit-note-other").await;
+    let (status, body) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/admin/organizations/{other}/credit-notes"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["data"]["rows"].as_array().unwrap().is_empty());
+}
+
 /// A grant lands in the bonus pool and purchased credit in the wallet, but the
 /// org-facing surface stays one balance: a hold spanning the pools reserves,
 /// a settlement charges, and every total on the way through agrees — the pools
