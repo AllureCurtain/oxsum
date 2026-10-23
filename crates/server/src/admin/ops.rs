@@ -8,6 +8,8 @@ use oxsum_core::{
     audit_action,
 };
 use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
+use uuid::Uuid;
 
 use crate::error::{ApiError, ApiQuery};
 use crate::routes::{ApiResult, ok};
@@ -71,6 +73,69 @@ pub(crate) async fn audit(
 /// hold already settled is deleted rather than listed.
 pub(crate) async fn holds(State(state): State<AppState>) -> ApiResult<Vec<InFlightHold>> {
     ok(state.db.open_holds().await?)
+}
+
+/// The deposits query string: an optional organization, and how many rows.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct DepositsQuery {
+    organization_id: Option<Uuid>,
+    limit: Option<i64>,
+}
+
+/// One deposit row as the console lists it (issue #354).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DepositRes {
+    deposit_id: Uuid,
+    organization_id: Uuid,
+    organization: String,
+    rail: String,
+    payment_ref: String,
+    amount_minor: i64,
+    received_minor: Option<i64>,
+    status: String,
+    entry_id: Option<Uuid>,
+    #[serde(with = "time::serde::rfc3339")]
+    created_at: OffsetDateTime,
+}
+
+impl From<oxsum_core::AdminDeposit> for DepositRes {
+    fn from(deposit: oxsum_core::AdminDeposit) -> Self {
+        Self {
+            deposit_id: deposit.deposit_id,
+            organization_id: deposit.organization_id,
+            organization: deposit.organization,
+            rail: deposit.rail,
+            payment_ref: deposit.payment_ref,
+            amount_minor: deposit.amount_minor,
+            received_minor: deposit.received_minor,
+            status: deposit.status,
+            entry_id: deposit.entry_id,
+            created_at: deposit.created_at,
+        }
+    }
+}
+
+/// Every deposit, newest first, optionally narrowed to one organization
+/// (issue #354). Read-only: the rails write these rows; the console only reads
+/// them, because confirming or reversing money is a webhook's or an operator
+/// action with its own audit, never a list view's side effect.
+pub(crate) async fn deposits(
+    State(state): State<AppState>,
+    ApiQuery(query): ApiQuery<DepositsQuery>,
+) -> ApiResult<Vec<DepositRes>> {
+    if let Some(organization) = query.organization_id {
+        // An unknown organization is 404, not an empty list that reads like
+        // "never paid".
+        state.db.organization_by_id(organization).await?;
+    }
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let rows = state
+        .db
+        .admin_deposits(query.organization_id, limit)
+        .await?;
+    ok(rows.into_iter().map(DepositRes::from).collect())
 }
 
 /// The settlement kinds an admin reviews: the turns where usage was never reported, the

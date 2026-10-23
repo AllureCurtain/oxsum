@@ -1139,3 +1139,77 @@ fn generate_code() -> String {
 fn hash_code(code: &str) -> Vec<u8> {
     Sha256::digest(code.as_bytes()).to_vec()
 }
+
+/// One deposit as the operator console lists it (issue #354): the money-in
+/// record, never the ledger entry itself — the entry id names that.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminDeposit {
+    /// The deposit's own id.
+    pub deposit_id: Uuid,
+    /// The organization the money arrived for.
+    pub organization_id: Uuid,
+    /// Its display name, so a row reads without a second lookup.
+    pub organization: String,
+    /// The rail that carried it (`manual`, `redemption`, `stripe`, `hyperswitch`, …).
+    pub rail: String,
+    /// The rail's reference — an idempotency key, a charge id, a code id.
+    pub payment_ref: String,
+    /// What the deposit was opened for.
+    pub amount_minor: i64,
+    /// What the rail reported paying, when it reported a different figure.
+    pub received_minor: Option<i64>,
+    /// `pending`, `confirmed`, `credited`, `reversed` or `expired`.
+    pub status: String,
+    /// The ledger entry that credited the wallet, once `credited`.
+    pub entry_id: Option<Uuid>,
+    /// When the deposit row opened.
+    pub created_at: OffsetDateTime,
+}
+
+impl Db {
+    /// The newest deposits, platform-wide or for one organization (issue #354).
+    ///
+    /// Read-only: the console lists what the rails recorded; nothing here
+    /// confirms, credits or reverses a deposit.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn admin_deposits(
+        &self,
+        organization: Option<Uuid>,
+        limit: i64,
+    ) -> Result<Vec<AdminDeposit>, WalletError> {
+        let rows = sqlx::query(
+            "SELECT d.deposit_id, d.organization_id, o.name AS organization, d.rail, \
+                    d.payment_ref, d.amount_minor, d.received_minor, d.status, \
+                    d.entry_id, d.created_at \
+             FROM oxsum.deposits d \
+             JOIN oxsum.organizations o ON o.organization_id = d.organization_id \
+             WHERE ($1::uuid IS NULL OR d.organization_id = $1) \
+             ORDER BY d.created_at DESC, d.deposit_id DESC \
+             LIMIT $2",
+        )
+        .bind(organization)
+        .bind(limit)
+        .fetch_all(self.pool())
+        .await?;
+        rows.iter()
+            .map(|row| {
+                Ok(AdminDeposit {
+                    deposit_id: row.try_get("deposit_id")?,
+                    organization_id: row.try_get("organization_id")?,
+                    organization: row.try_get("organization")?,
+                    rail: row.try_get("rail")?,
+                    payment_ref: row.try_get("payment_ref")?,
+                    amount_minor: row.try_get("amount_minor")?,
+                    received_minor: row.try_get("received_minor")?,
+                    status: row.try_get("status")?,
+                    entry_id: row.try_get("entry_id")?,
+                    created_at: row.try_get("created_at")?,
+                })
+            })
+            .collect()
+    }
+}

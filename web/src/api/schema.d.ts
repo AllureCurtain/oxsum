@@ -5051,6 +5051,61 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/deposits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The newest deposits, platform-wide or for one organization
+         * @description The money-in record (issue #354): one row per rail payment — a manual
+         *     top-up, a redemption code, a Stripe, Airwallex or Hyperswitch charge, an
+         *     x402 settlement — newest first, with its rail, status, the amount
+         *     opened for, what the rail reported paid (`receivedMinor`, when it
+         *     differs), the rail's `paymentRef`, and the ledger entry once credited.
+         *     Read-only: nothing here confirms, credits or reverses a deposit; those
+         *     are a webhook's or an operator action's own calls.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description narrow to one organization; an unknown id is 404 */
+                    organizationId?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The deposits, newest first */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["AdminDeposit"][];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/margin": {
         parameters: {
             query?: never;
@@ -8096,6 +8151,50 @@ export interface components {
              * @description settled turns with no upstream cost recorded — an untracked price
              */
             untrackedTurns: number;
+        };
+        /**
+         * @description One money-in row (issue #354): the deposit record the rail wrote, never
+         *     the ledger entry itself — `entryId` names that once credited.
+         */
+        AdminDeposit: {
+            /** Format: uuid */
+            depositId: string;
+            /** Format: uuid */
+            organizationId: string;
+            /** @description the organization's display name */
+            organization: string;
+            /**
+             * @description the rail that carried the payment
+             * @enum {string}
+             */
+            rail: "manual" | "redemption" | "stripe" | "crypto-evm" | "x402" | "airwallex" | "hyperswitch";
+            /** @description the rail's reference — an idempotency key, a charge id, a code id */
+            paymentRef: string;
+            /**
+             * Format: int64
+             * @description the amount the deposit was opened for
+             */
+            amountMinor: number;
+            /**
+             * Format: int64
+             * @description what the rail reported paid, when it differs from `amountMinor`
+             */
+            receivedMinor?: number | null;
+            /**
+             * @description `pending` (opened, not paid), `confirmed` (the rail says paid, the
+             *     ledger has not credited yet), `credited` (the wallet moved, `entryId`
+             *     names the entry), `reversed` (a refund/chargeback outcome) or
+             *     `expired` (never paid in time)
+             * @enum {string}
+             */
+            status: "pending" | "confirmed" | "credited" | "reversed" | "expired";
+            /**
+             * Format: uuid
+             * @description the ledger entry that credited the wallet
+             */
+            entryId?: string | null;
+            /** Format: date-time */
+            createdAt: string;
         };
         ReconciliationReport: {
             /**

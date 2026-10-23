@@ -66,7 +66,7 @@ pub use channels::{
 };
 pub use credit_notes::CreditNote;
 pub use db::{Db, SCHEMA};
-pub use deposits::{CodeBatch, MAX_BATCH, RAIL_HYPERSWITCH, Redemption};
+pub use deposits::{AdminDeposit, CodeBatch, MAX_BATCH, RAIL_HYPERSWITCH, Redemption};
 pub use device::{DeviceGrant, DevicePoll, DeviceRequest, POLL_INTERVAL, PollError};
 pub use discounts::{Discount, NewDiscount};
 pub use display::{Display, DisplayCurrency, display_currency};

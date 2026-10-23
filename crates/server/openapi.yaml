@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.78.0
+  version: 0.79.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -520,6 +520,8 @@ info:
     the reason as its description — and `GET` on the same path lists what was issued, newest
     first. A retried `idempotencyKey` answers the standing note. A credit note moves no money: it
     is not a refund, and the refund and chargeback halves of D12 stay separate.
+
+    0.79.0 adds the operator's money-in view (issue #354): GET /api/v1/admin/deposits lists the newest deposits platform-wide or for one organization — rail, status, the amount opened for, what the rail reported paid, the rail's reference and the ledger entry once credited. It is read-only: nothing on this path confirms, credits or reverses a deposit.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -3571,6 +3573,45 @@ paths:
                     items: { $ref: "#/components/schemas/AdminAnomaly" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/deposits:
+    get:
+      summary: The newest deposits, platform-wide or for one organization
+      description: |
+        The money-in record (issue #354): one row per rail payment — a manual
+        top-up, a redemption code, a Stripe, Airwallex or Hyperswitch charge, an
+        x402 settlement — newest first, with its rail, status, the amount
+        opened for, what the rail reported paid (`receivedMinor`, when it
+        differs), the rail's `paymentRef`, and the ledger entry once credited.
+        Read-only: nothing here confirms, credits or reverses a deposit; those
+        are a webhook's or an operator action's own calls.
+      security:
+        - adminToken: []
+      parameters:
+        - name: organizationId
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+          description: narrow to one organization; an unknown id is 404
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        "200":
+          description: The deposits, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/AdminDeposit" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/admin/margin:
     get:
       summary: What the platform charged versus what upstream cost it, per channel and model
@@ -6104,6 +6145,37 @@ components:
         providerBilledMinor: { type: integer, format: int64, nullable: true, description: what the provider actually billed the channel, summed across every (channel, day) bill row the upstream-bill-sync pass has written — channel-scoped, so the same value repeats on each of that channel's model rows; null when the pass has never reconciled the channel }
         marginMinor: { type: integer, format: int64, description: chargedMinor minus upstreamCostMinor }
         untrackedTurns: { type: integer, format: int64, minimum: 0, description: settled turns with no upstream cost recorded — an untracked price, a swept hold, or history }
+    AdminDeposit:
+      type: object
+      description: |
+        One money-in row (issue #354): the deposit record the rail wrote, never
+        the ledger entry itself — `entryId` names that once credited.
+      required: [depositId, organizationId, organization, rail, paymentRef, amountMinor, status, createdAt]
+      properties:
+        depositId: { type: string, format: uuid }
+        organizationId: { type: string, format: uuid }
+        organization: { type: string, description: the organization's display name }
+        rail:
+          type: string
+          enum: [manual, redemption, stripe, crypto-evm, x402, airwallex, hyperswitch]
+          description: the rail that carried the payment
+        paymentRef: { type: string, description: "the rail's reference — an idempotency key, a charge id, a code id" }
+        amountMinor: { type: integer, format: int64, minimum: 1, description: the amount the deposit was opened for }
+        receivedMinor:
+          type: integer
+          format: int64
+          nullable: true
+          description: what the rail reported paid, when it differs from `amountMinor`
+        status:
+          type: string
+          enum: [pending, confirmed, credited, reversed, expired]
+          description: |
+            `pending` (opened, not paid), `confirmed` (the rail says paid, the
+            ledger has not credited yet), `credited` (the wallet moved, `entryId`
+            names the entry), `reversed` (a refund/chargeback outcome) or
+            `expired` (never paid in time)
+        entryId: { type: string, format: uuid, nullable: true, description: the ledger entry that credited the wallet, once credited }
+        createdAt: { type: string, format: date-time }
     ReconciliationReport:
       type: object
       required: [checkedAt, organizations, clean, classes]

@@ -70,6 +70,7 @@ pub fn router(state: AppState) -> Router<AppState> {
             post(credentials::reset_password),
         )
         .route("/holds", get(ops::holds))
+        .route("/deposits", get(ops::deposits))
         .route("/anomalies", get(ops::anomalies))
         .route("/margin", get(ops::margin))
         .route("/reconciliation", get(ops::reconciliation))
