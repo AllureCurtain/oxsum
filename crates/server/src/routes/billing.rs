@@ -606,6 +606,7 @@ pub(crate) async fn hyperswitch_topup(
             "paymentId": existing.1.unwrap_or_default(),
             "clientSecret": existing.2.unwrap_or_default(),
             "publishableKey": switch.publishable_key(),
+            "sdkUrl": switch.sdk_url(),
         }));
     }
     let payment = switch
@@ -624,6 +625,7 @@ pub(crate) async fn hyperswitch_topup(
         "paymentId": payment.payment_id,
         "clientSecret": payment.client_secret,
         "publishableKey": switch.publishable_key(),
+        "sdkUrl": switch.sdk_url(),
     }))
 }
 

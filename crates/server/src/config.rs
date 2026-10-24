@@ -1295,12 +1295,18 @@ fn hyperswitch_of() -> Result<Option<crate::hyperswitch::Hyperswitch>, String> {
     };
     let base_url = var("OXSUM_HYPERSWITCH_BASE_URL")
         .unwrap_or_else(|| "https://sandbox.hyperswitch.io".to_owned());
+    // The SDK bundle origin is a different service from the API origin: the
+    // hosted sandbox serves it on beta.hyperswitch.io; a self-hosted sidecar
+    // on its hyperswitch-web port (issue #320).
+    let sdk_url = var("OXSUM_HYPERSWITCH_SDK_URL")
+        .unwrap_or_else(|| "https://beta.hyperswitch.io/v1".to_owned());
     Ok(Some(crate::hyperswitch::Hyperswitch::new(
         api_key,
         webhook_secret,
         base_url,
         publishable_key,
         public_url,
+        sdk_url,
     )))
 }
 
