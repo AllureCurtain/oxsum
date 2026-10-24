@@ -1402,6 +1402,240 @@ async fn the_deposits_view_lists_money_in() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+/// `POST /api/v1/admin/deposits/{depositId}/reverse` is the ledger half of a
+/// refund (issue #356, D12): a credited manual deposit reverses exactly once —
+/// the balance drops by the credited amount, the row flips to `reversed`
+/// naming its entry — a retried call answers the standing reversal, a
+/// non-credited deposit is 409, an unknown one 404, and a reversal the wallet
+/// cannot cover is the ledger's own 402. Another deposit is untouched.
+#[tokio::test]
+async fn a_credited_deposit_reverses_once() {
+    let (app, pool) = app_or_skip!();
+    let (org, key) = register(&app, "deposit-reverse").await;
+
+    // Two top-ups through the manual rail: one to reverse, one to prove it
+    // stands untouched.
+    let (status, body) = call_with(
+        &app,
+        "POST",
+        "/api/v1/topups",
+        Some(json!({"idempotencyKey": "rev-dep-1", "amountMinor": 5_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = call_with(
+        &app,
+        "POST",
+        "/api/v1/topups",
+        Some(json!({"idempotencyKey": "rev-dep-2", "amountMinor": 2_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let org_id = uuid::Uuid::parse_str(&org).unwrap();
+    let deposit_id: uuid::Uuid = sqlx::query_scalar(
+        "SELECT deposit_id FROM oxsum.deposits \
+         WHERE organization_id = $1 AND payment_ref = 'rev-dep-1'",
+    )
+    .bind(org_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let path = format!("/api/v1/admin/deposits/{deposit_id}/reverse");
+
+    // A deposit that does not exist is 404 before anything else.
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/deposits/{}/reverse", uuid::Uuid::new_v4()),
+        Some(json!({"reason": "not there"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // An empty reason is a validation refusal, not a reversal.
+    let (status, _) = call(&app, "POST", &path, Some(json!({"reason": "  "}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        &path,
+        Some(json!({"reason": "bank transfer refunded"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["status"], "reversed");
+    assert_eq!(body["data"]["amountMinor"], 5_000_000);
+    let reversal_entry = body["data"]["reversalEntryId"]
+        .as_str()
+        .expect("the reversal names its entry")
+        .to_owned();
+    assert_ne!(
+        reversal_entry,
+        body["data"]["entryId"].as_str().unwrap_or_default(),
+        "the reversal is its own entry, not the credit"
+    );
+    assert!(
+        body["data"]["reversedAt"].as_str().is_some(),
+        "the row records when it reversed"
+    );
+
+    // The balance dropped by the credited amount: 7M less the 5M reversed.
+    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["availableMinor"], 2_000_000);
+
+    // The entry carries the operator's reason as its description — part of
+    // what the bill's proof covers.
+    let tenant_id: String =
+        sqlx::query_scalar("SELECT tenant_id FROM oxsum.organizations WHERE organization_id = $1")
+            .bind(org_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let description: String = sqlx::query_scalar(&format!(
+        "SELECT description FROM ledger_{tenant_id}.entries WHERE entry_id = $1"
+    ))
+    .bind(uuid::Uuid::parse_str(&reversal_entry).unwrap())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(description, "bank transfer refunded");
+
+    // A retried call replays the standing reversal: no second debit, the same
+    // entry named, the other deposit untouched.
+    let (status, body) = call(
+        &app,
+        "POST",
+        &path,
+        Some(json!({"reason": "bank transfer refunded"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["status"], "reversed");
+    assert_eq!(
+        body["data"]["reversalEntryId"].as_str(),
+        Some(reversal_entry.as_str())
+    );
+    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["availableMinor"], 2_000_000, "no second debit");
+    let other: (String,) = sqlx::query_as(
+        "SELECT status FROM oxsum.deposits \
+         WHERE organization_id = $1 AND payment_ref = 'rev-dep-2'",
+    )
+    .bind(org_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(other.0, "credited", "the other deposit is untouched");
+
+    // The audit log names the reversal once — the replay is the same logical
+    // event, absorbed by the keyed unique index.
+    let (status, body) = call(
+        &app,
+        "GET",
+        "/api/v1/admin/audit?action=deposit.reverse",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let entries = body["data"]["entries"].as_array().expect("audit rows");
+    assert_eq!(entries.len(), 1, "one reversal, one audit row");
+}
+
+/// A reversal the purchased pool cannot cover is refused by the ledger's own
+/// no-overdraft rule — `402 INSUFFICIENT_FUNDS`, never a silent negative.
+#[tokio::test]
+async fn a_deposit_reversal_the_wallet_cannot_cover_is_refused() {
+    let (app, pool) = app_or_skip!();
+    let (org, key) = register(&app, "deposit-reverse-short").await;
+
+    let (status, body) = call_with(
+        &app,
+        "POST",
+        "/api/v1/topups",
+        Some(json!({"idempotencyKey": "rev-short-1", "amountMinor": 5_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let deposit_id: uuid::Uuid = sqlx::query_scalar(
+        "SELECT deposit_id FROM oxsum.deposits \
+         WHERE organization_id = $1 AND payment_ref = 'rev-short-1'",
+    )
+    .bind(uuid::Uuid::parse_str(&org).unwrap())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    // The customer spends part of the credit: a 3M deduction leaves 2M of
+    // purchased balance against the 5M the reversal would take back.
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/organizations/{org}/adjustments"),
+        Some(json!({
+            "amountMinor": -3_000_000,
+            "reason": "clawback",
+            "idempotencyKey": "rev-short-adj",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/deposits/{deposit_id}/reverse"),
+        Some(json!({"reason": "refund after the customer spent"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "{body}");
+    assert_eq!(body["error"]["code"], "INSUFFICIENT_FUNDS");
+
+    // Nothing moved: the deposit stays credited and the balance holds.
+    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["availableMinor"], 2_000_000);
+}
+
+/// A deposit that never credited — `pending`, `confirmed`, `expired` — has
+/// nothing to take back: `409 CONFLICT`.
+#[tokio::test]
+async fn a_non_credited_deposit_cannot_reverse() {
+    let (app, pool) = app_or_skip!();
+    let (org, _key) = register(&app, "deposit-reverse-pending").await;
+
+    // A pending deposit, the state every rail opens in before its webhook
+    // confirms payment — planted directly because the manual rail lands
+    // credited.
+    let deposit_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO oxsum.deposits \
+             (deposit_id, organization_id, rail, payment_ref, amount_minor, status) \
+         VALUES ($1, $2, 'stripe', 'pending-1', 4_000_000, 'pending')",
+    )
+    .bind(deposit_id)
+    .bind(uuid::Uuid::parse_str(&org).unwrap())
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/deposits/{deposit_id}/reverse"),
+        Some(json!({"reason": "never credited"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "CONFLICT");
+}
+
 /// `POST …/credit-notes` credits the wallet with a reasoned, positive amount
 /// and moves no money (issue #352, D12): the balance rises by exactly the
 /// amount, a retried key answers the standing note, the list reads newest

@@ -898,7 +898,8 @@ function CreditNotes({ token, id }: { token: string; id: string }) {
   );
 }
 
-/// One money-in row the deposits view lists (issue #354).
+/// One money-in row the deposits view lists (issue #354); the reversal fields
+/// land once `reversed` (issue #356).
 type AdminDeposit = {
   depositId: string;
   organizationId: string;
@@ -909,14 +910,19 @@ type AdminDeposit = {
   receivedMinor: number | null;
   status: string;
   entryId: string | null;
+  reversalEntryId: string | null;
+  reversedAt: string | null;
   createdAt: string;
 };
 
 /// The deposits view: the money-in record, newest first, filterable by one
-/// organization. Read-only — confirming or reversing a deposit is a webhook's
-/// or an operator action's own call.
+/// organization. A `credited` row carries a **Reverse** action — the ledger
+/// half of a refund (issue #356): it posts one entry taking the purchased
+/// credit back and flips the row to `reversed`. No payment provider is called;
+/// returning the customer's money through the rail is a separate step.
 function Deposits({ token }: { token: string }) {
   const [organization, setOrganization] = useState("");
+  const [reversing, setReversing] = useState<string | null>(null);
   const orgs = useAdmin<
     { organizations?: AdminOrg[]; orgs?: AdminOrg[]; nextCursor?: string } | AdminOrg[]
   >(token, "/organizations", []);
@@ -964,38 +970,71 @@ function Deposits({ token }: { token: string }) {
             "Received",
             "Reference",
             "Entry",
+            "",
           ]}
         >
           {rows.map((d) => (
-            <tr key={d.depositId}>
-              <td className="mono text-xs">{d.createdAt.slice(0, 19).replace("T", " ")}</td>
-              <td>{d.organization}</td>
-              <td>{d.rail}</td>
-              <td className="text-xs">
-                <span
-                  className={
-                    d.status === "credited"
-                      ? "text-success"
-                      : d.status === "reversed"
-                        ? "text-danger"
-                        : "text-muted"
-                  }
-                >
-                  {d.status}
-                </span>
-              </td>
-              <td className="mono">{credits(d.amountMinor)} cr</td>
-              <td className="mono">
-                {d.receivedMinor === null ? "—" : `${credits(d.receivedMinor)} cr`}
-              </td>
-              <td className="mono text-xs text-muted">{d.paymentRef}</td>
-              <td className="mono text-xs text-muted">
-                {d.entryId ? `${d.entryId.slice(0, 8)}…` : "—"}
-              </td>
-            </tr>
+            <Fragment key={d.depositId}>
+              <tr>
+                <td className="mono text-xs">{d.createdAt.slice(0, 19).replace("T", " ")}</td>
+                <td>{d.organization}</td>
+                <td>{d.rail}</td>
+                <td className="text-xs">
+                  <span
+                    className={
+                      d.status === "credited"
+                        ? "text-success"
+                        : d.status === "reversed"
+                          ? "text-danger"
+                          : "text-muted"
+                    }
+                  >
+                    {d.status}
+                  </span>
+                </td>
+                <td className="mono">{credits(d.amountMinor)} cr</td>
+                <td className="mono">
+                  {d.receivedMinor === null ? "—" : `${credits(d.receivedMinor)} cr`}
+                </td>
+                <td className="mono text-xs text-muted">{d.paymentRef}</td>
+                <td className="mono text-xs text-muted">
+                  {d.status === "reversed" && d.reversalEntryId
+                    ? `↩ ${d.reversalEntryId.slice(0, 8)}…`
+                    : d.entryId
+                      ? `${d.entryId.slice(0, 8)}…`
+                      : "—"}
+                </td>
+                <td>
+                  {d.status === "credited" ? (
+                    <Button
+                      tone="ghost"
+                      onClick={() =>
+                        setReversing(reversing === d.depositId ? null : d.depositId)
+                      }
+                    >
+                      Reverse
+                    </Button>
+                  ) : null}
+                </td>
+              </tr>
+              {reversing === d.depositId ? (
+                <tr>
+                  <td colSpan={9}>
+                    <ReverseDeposit
+                      token={token}
+                      deposit={d}
+                      onDone={() => {
+                        setReversing(null);
+                        deposits.refresh();
+                      }}
+                    />
+                  </td>
+                </tr>
+              ) : null}
+            </Fragment>
           ))}
           {rows.length === 0 ? (
-            <EmptyRows colSpan={8}>
+            <EmptyRows colSpan={9}>
               No deposits yet — a top-up, a code redemption or a rail payment appears here.
             </EmptyRows>
           ) : null}
@@ -1004,11 +1043,67 @@ function Deposits({ token }: { token: string }) {
       <p className="text-xs text-muted">
         Statuses are the rails' facts: pending (opened, not paid), confirmed (the rail
         says paid, the ledger has not credited yet), credited (the entry named on the
-        row moved the wallet), reversed (a refund or chargeback) or expired. A received
-        amount appears only when the rail reported a different figure than the deposit
-        was opened for.
+        row moved the wallet), reversed (a refund or chargeback — the Entry cell then
+        names the reversal's own entry) or expired. A received amount appears only
+        when the rail reported a different figure than the deposit was opened for.
+        Reversing posts one ledger entry taking the purchased credit back — it moves
+        no money off-platform; the PSP refund call is a separate step.
       </p>
     </div>
+  );
+}
+
+/// The inline reverse form under a credited deposit's row (issue #356): a
+/// required reason — it becomes the reversal entry's description — then one
+/// call that debits the wallet and credits cash. A refusal surfaces inline:
+/// `402` when the customer already spent the credit, `409` when the row moved
+/// on between listing and the click.
+function ReverseDeposit({
+  token,
+  deposit,
+  onDone,
+}: {
+  token: string;
+  deposit: AdminDeposit;
+  onDone: () => void;
+}) {
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  return (
+    <form
+      className="my-1 flex flex-wrap items-end gap-2"
+      onSubmit={async (e) => {
+        e.preventDefault();
+        setBusy(true);
+        setMsg(null);
+        try {
+          await adminApi(token, `/deposits/${deposit.depositId}/reverse`, {
+            method: "POST",
+            body: { reason },
+          });
+          onDone();
+        } catch (err) {
+          setMsg(err instanceof ApiError ? err.message : "failed");
+          setBusy(false);
+        }
+      }}
+    >
+      <Field
+        label={`Reverse ${credits(deposit.amountMinor)} cr — reason`}
+        hint="required — it becomes the reversal entry's description"
+      >
+        <TextInput
+          value={reason}
+          maxLength={200}
+          onChange={(e) => setReason(e.target.value)}
+        />
+      </Field>
+      <Button type="submit" disabled={busy || reason.trim() === ""}>
+        Reverse deposit
+      </Button>
+      {msg ? <span className="text-xs text-danger">{msg}</span> : null}
+    </form>
   );
 }
 
