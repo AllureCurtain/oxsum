@@ -3,3 +3,6 @@
 
 # git worktrees: one per PR, created under .worktrees/, never committed
 .worktrees/
+
+# infra/hyperswitch/.repo — the hyperswitch clone the migration_runner mounts.
+infra/hyperswitch/.repo/
