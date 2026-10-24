@@ -70,6 +70,18 @@ pub struct PaymentHandle {
     pub client_secret: String,
 }
 
+/// What issuing a refund returns: the switch's refund id (recorded on the
+/// deposit's metadata so the `refund_*` webhooks find it) and the status the
+/// switch answered — `pending` while the connector works it, `succeeded`
+/// when the money already moved, `failed` when it refused outright.
+pub struct RefundHandle {
+    /// The switch's `ref_…` id.
+    pub refund_id: String,
+    /// `pending`, `succeeded` or `failed` — the initial `refundStatus` the
+    /// deposit's `meta` carries.
+    pub status: String,
+}
+
 /// A leg of the Hyperswitch round-trip failed. The top-up endpoint maps it to
 /// 502 — the caller asked for a payment and the switch could not answer one.
 pub struct HyperswitchError(pub String);
@@ -203,6 +215,60 @@ impl Hyperswitch {
         Ok(PaymentHandle {
             payment_id: payment.payment_id,
             client_secret: payment.client_secret,
+        })
+    }
+
+    /// Issues a refund against `payment_id` for `amount_minor` — the
+    /// payment-provider half of reversing a credited deposit (issue #360).
+    ///
+    /// `reason` is the operator's reversal reason, carried to the switch, and
+    /// `metadata.deposit_id` names the deposit row so the `refund_*` webhooks
+    /// can walk back to it without relying on the payment id alone.
+    ///
+    /// # Errors
+    ///
+    /// `HyperswitchError` on a transport failure, a non-2xx answer, or a body
+    /// with no `refund_id`. A refusal (the switch will not refund the payment)
+    /// surfaces as an error carrying the switch's message — the caller records
+    /// it as `refundStatus: failed`, it is never silent.
+    pub async fn create_refund(
+        &self,
+        http: &reqwest::Client,
+        payment_id: &str,
+        deposit_id: uuid::Uuid,
+        amount_minor: i64,
+        reason: &str,
+    ) -> Result<RefundHandle, HyperswitchError> {
+        #[derive(Deserialize)]
+        struct Refund {
+            refund_id: String,
+            status: String,
+        }
+        let response = http
+            .post(format!("{}/refunds", self.base_url))
+            .header("api-key", &self.api_key)
+            .json(&serde_json::json!({
+                "payment_id": payment_id,
+                "amount": amount_minor,
+                "reason": reason,
+                "metadata": { "deposit_id": deposit_id.to_string() },
+            }))
+            .send()
+            .await
+            .map_err(|e| HyperswitchError(format!("refund request failed: {e}")))?;
+        if !response.status().is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(HyperswitchError(format!(
+                "the switch refused the refund: {body}"
+            )));
+        }
+        let refund: Refund = response
+            .json()
+            .await
+            .map_err(|e| HyperswitchError(format!("refund answer unreadable: {e}")))?;
+        Ok(RefundHandle {
+            refund_id: refund.refund_id,
+            status: refund.status,
         })
     }
 }
