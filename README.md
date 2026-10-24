@@ -1,8 +1,12 @@
 # oxsum
 
+[![CI](https://github.com/AllureCurtain/oxsum/actions/workflows/ci.yml/badge.svg)](https://github.com/AllureCurtain/oxsum/actions/workflows/ci.yml)
+
 A verifiable AI credit wallet, written in Rust. Users top up credits; before each streaming LLM call, oxsum freezes an upper-bound estimate, then settles against the actual token usage reported by the upstream provider and refunds whatever was not spent. Every transaction is recorded in an append-only Merkle log: users receive an inclusion proof for each bill and can verify in their own browser — without trusting the server — that their billing history has not been tampered with.
 
 What makes it different from existing gateways: each balance check and freeze is atomic on a double-entry ledger, settlement is idempotent, and every write carries a proof. Concurrent requests cannot overdraw, retries cannot double-charge, and every entry can be independently verified. The ledger core is [doubleentry](https://github.com/hupe1980/doubleentry) (MIT/Apache-2.0), vendored into `crates/doubleentry`.
+
+![The flagship flow — top up, billed turns on the Requests page, the ledger on Bills, and a verification on /verify](docs/assets/demo.gif)
 
 ## Quick start
 
@@ -59,7 +63,14 @@ Abridged transcript (ids and hashes differ per run):
    balance after the turn: 99999966 minor units (charged 34)
 ```
 
-Both proof bundles are checkable on the `/verify` page against their content hashes (the check runs on the server). The demo prefers its own `oxsum_demo` database (created when the `DATABASE_URL` role may create databases) and otherwise uses `DATABASE_URL` directly. Recording this flow as a GIF is a manual step: record the terminal running `python3 demo/demo.py`.
+Both proof bundles are checkable on the `/verify` page against their content hashes (the check runs on the server). The demo prefers its own `oxsum_demo` database (created when the `DATABASE_URL` role may create databases) and otherwise uses `DATABASE_URL` directly.
+
+The dashboard surfaces the same flow: a top-up on **Top up** (manual, Stripe, Airwallex, Hyperswitch or a redeem code — the Hyperswitch tab mounts the switch's Unified Checkout in place), billed turns on **Requests** and aggregated on **Usage**, the ledger entries with their proof bundles on **Bills**, and the verification itself on **`/verify`**:
+
+| | |
+| --- | --- |
+| ![Top up through the Hyperswitch checkout](docs/assets/topup-hyperswitch.png) | ![Bills — the ledger entries with verify/proof](docs/assets/bills.png) |
+| ![Usage — billed turns aggregated per key](docs/assets/usage.png) | ![Verifying a bill on /verify](docs/assets/verify.png) |
 
 ## Docker
 
