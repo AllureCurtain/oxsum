@@ -541,7 +541,8 @@ Steps:
 1. Register an endpoint: `POST /api/v1/webhooks` with
    `{"url": "https://your-server/hook", "events": ["request.settled"], "balanceLowMinor": 2000000}`
    — pick the events it should hear (`request.settled`, `org.suspended`,
-   `deposit.credited`, `deposit.failed`, `deposit.reversed`, `balance.low`,
+   `deposit.credited`, `deposit.failed`, `deposit.reversed`,
+   `deposit.disputed`, `balance.low`,
    `statement.finalized`, `statement.payment_overdue`,
    `statement.payment_status_updated`, `org.credit_limit_exceeded`,
    `anomaly.detected`, `budget.exhaustion_forecast`,
