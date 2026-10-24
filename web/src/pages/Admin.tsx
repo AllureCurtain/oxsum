@@ -912,14 +912,16 @@ type AdminDeposit = {
   entryId: string | null;
   reversalEntryId: string | null;
   reversedAt: string | null;
+  refundStatus: "pending" | "succeeded" | "failed" | null;
+  disputedAt: string | null;
   createdAt: string;
 };
 
 /// The deposits view: the money-in record, newest first, filterable by one
-/// organization. A `credited` row carries a **Reverse** action — the ledger
-/// half of a refund (issue #356): it posts one entry taking the purchased
-/// credit back and flips the row to `reversed`. No payment provider is called;
-/// returning the customer's money through the rail is a separate step.
+/// organization. A `credited` row carries a **Reverse** action — a refund
+/// (issues #356, #360): it posts one entry taking the purchased credit back,
+/// flips the row to `reversed`, and for a rail that moves money back it also
+/// issues the rail's refund, whose standing the row carries as `refundStatus`.
 function Deposits({ token }: { token: string }) {
   const [organization, setOrganization] = useState("");
   const [reversing, setReversing] = useState<string | null>(null);
@@ -991,6 +993,22 @@ function Deposits({ token }: { token: string }) {
                   >
                     {d.status}
                   </span>
+                  {d.refundStatus ? (
+                    <span
+                      className={`block ${
+                        d.refundStatus === "succeeded"
+                          ? "text-success"
+                          : d.refundStatus === "failed"
+                            ? "text-danger"
+                            : "text-muted"
+                      }`}
+                    >
+                      refund {d.refundStatus}
+                    </span>
+                  ) : null}
+                  {d.disputedAt ? (
+                    <span className="block text-danger">disputed</span>
+                  ) : null}
                 </td>
                 <td className="mono">{credits(d.amountMinor)} cr</td>
                 <td className="mono">
@@ -1046,8 +1064,11 @@ function Deposits({ token }: { token: string }) {
         row moved the wallet), reversed (a refund or chargeback — the Entry cell then
         names the reversal's own entry) or expired. A received amount appears only
         when the rail reported a different figure than the deposit was opened for.
-        Reversing posts one ledger entry taking the purchased credit back — it moves
-        no money off-platform; the PSP refund call is a separate step.
+        Reversing posts one ledger entry taking the purchased credit back — and
+        for a rail that moves money back (the Hyperswitch switch) it issues the
+        rail's refund too: the row then shows `refund pending`/`succeeded`/`failed`
+        under the status, `failed` meaning the rail refused the call so a retry
+        re-issues it. `disputed` marks a charge the rail reported contested.
       </p>
     </div>
   );
