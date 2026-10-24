@@ -680,6 +680,7 @@ async fn the_catalog_and_threshold_validate() {
                 "deposit.credited".to_owned(),
                 "deposit.failed".to_owned(),
                 "deposit.reversed".to_owned(),
+                "deposit.disputed".to_owned(),
                 "balance.low".to_owned(),
                 "statement.finalized".to_owned(),
                 "statement.payment_overdue".to_owned(),
@@ -693,7 +694,7 @@ async fn the_catalog_and_threshold_validate() {
         )
         .await
         .unwrap();
-    assert_eq!(endpoint.endpoint.events.len(), 13);
+    assert_eq!(endpoint.endpoint.events.len(), 14);
     // An unknown name is still refused.
     let error = db
         .create_webhook(

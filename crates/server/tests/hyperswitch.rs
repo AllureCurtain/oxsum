@@ -34,16 +34,29 @@ fn sealing_key() -> SecretKey {
 }
 
 /// The switch API stub: `POST /payments` records the deposit id it was told to
-/// carry in `metadata` and answers a fixed payment id + client secret.
+/// carry in `metadata` and answers a fixed payment id + client secret;
+/// `POST /refunds` records the payment it was asked to refund and answers a
+/// fixed refund id + status (or a refusal the test arms).
 #[derive(Clone, Default)]
 struct SwitchStub {
     deposits: Arc<Mutex<Vec<String>>>,
+    refunds: Arc<Mutex<Vec<Value>>>,
     answer_id: Arc<Mutex<String>>,
     answer_secret: Arc<Mutex<String>>,
+    /// The refund id/status `POST /refunds` answers, and an optional refusal
+    /// body that makes it answer a non-2xx instead.
+    answer_refund: Arc<Mutex<Value>>,
+    refund_refusal: Arc<Mutex<Option<(StatusCode, Value)>>>,
 }
 
 async fn stub_switch() -> (String, SwitchStub) {
-    let stub = SwitchStub::default();
+    let stub = SwitchStub {
+        answer_refund: Arc::new(Mutex::new(json!({
+            "refund_id": "ref_test_1",
+            "status": "succeeded",
+        }))),
+        ..SwitchStub::default()
+    };
     let app = Router::new()
         .route(
             "/payments",
@@ -59,6 +72,21 @@ async fn stub_switch() -> (String, SwitchStub) {
                         "client_secret": *stub.answer_secret.lock().unwrap(),
                         "status": "requires_payment_method",
                     }))
+                },
+            ),
+        )
+        .route(
+            "/refunds",
+            post(
+                |State(stub): State<SwitchStub>, body: axum::Json<Value>| async move {
+                    stub.refunds.lock().unwrap().push(body.0.clone());
+                    if let Some((status, refusal)) = stub.refund_refusal.lock().unwrap().clone() {
+                        return (status, axum::Json(refusal));
+                    }
+                    (
+                        StatusCode::OK,
+                        axum::Json(stub.answer_refund.lock().unwrap().clone()),
+                    )
                 },
             ),
         )
@@ -466,4 +494,296 @@ async fn an_amount_mismatch_credits_the_deposit_amount() {
     assert_eq!(post_webhook(&app, headers, body).await, StatusCode::OK);
     // The deposit's amount (3000) is what moved; 9999 is only recorded.
     assert_eq!(balance(&app, &key).await - before, 3000);
+}
+
+const ADMIN_TOKEN: &str = "operator-token-refund";
+
+/// A world with the admin surface configured too — the reversal path the
+/// refund tests exercise lives on `/api/v1/admin`.
+async fn admin_world() -> Option<(Router, Db, SwitchStub)> {
+    let u = url()?;
+    let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&u)
+        .await
+        .expect("connects to PostgreSQL");
+    let db = Db::from_pool(pool);
+    db.migrate().await.expect("migrates");
+    let (api_url, stub) = stub_switch().await;
+    *stub.answer_id.lock().unwrap() = "pay_test_123".to_owned();
+    *stub.answer_secret.lock().unwrap() = "pay_test_123_secret".to_owned();
+    let config = Config::new(Signup::Open, None)
+        .with_secret(sealing_key())
+        .with_admin_token(ADMIN_TOKEN)
+        .with_hyperswitch(oxsum_server::hyperswitch::Hyperswitch::new(
+            "snd_test_key".to_owned(),
+            WEBHOOK_SECRET.to_owned(),
+            api_url,
+            PUBLISHABLE_KEY.to_owned(),
+            "http://localhost:3000".to_owned(),
+            "https://sdk.example.test/v1".to_owned(),
+        ));
+    oxsum_server::prepare(&db, &config)
+        .await
+        .expect("the deployment is prepared");
+    let (app, _events, _metrics) = oxsum_server::app_with_billing(db.clone(), config);
+    Some((app, db, stub))
+}
+
+/// Reversing a credited hyperswitch deposit issues the switch's refund and the
+/// answer carries `refundStatus`.
+#[tokio::test]
+async fn a_reversal_issues_the_switch_refund() {
+    let Some((app, _db, stub)) = admin_world().await else {
+        return;
+    };
+    let key = register(&app).await;
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/hyperswitch",
+        Some(json!({"idempotencyKey": "ref-1", "amountMinor": 4000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let deposit_id = body["data"]["depositId"].as_str().unwrap().to_owned();
+    // Credit it.
+    let event = json!({
+        "event_id": "evt_credit_ref1",
+        "event_type": "payment_succeeded",
+        "content": {"type": "payment_details", "object": {"payment_id": "pay_test_123", "amount": 4000}}
+    });
+    let (headers, body) = signed_webhook(WEBHOOK_SECRET, &event.to_string());
+    assert_eq!(post_webhook(&app, headers, body).await, StatusCode::OK);
+
+    // Reverse it — the operator call.
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/deposits/{deposit_id}/reverse"),
+        Some(json!({"reason": "customer asked"})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["status"].as_str().unwrap(), "reversed");
+    // The stub answered succeeded, so the deposit reports the standing.
+    assert_eq!(body["data"]["refundStatus"].as_str().unwrap(), "succeeded");
+    // The refund call carried the payment id, the deposit's amount and the
+    // deposit id in metadata.
+    let refunds = stub.refunds.lock().unwrap().clone();
+    assert_eq!(refunds.len(), 1);
+    assert_eq!(refunds[0]["payment_id"].as_str().unwrap(), "pay_test_123");
+    assert_eq!(refunds[0]["amount"].as_i64().unwrap(), 4000);
+    assert_eq!(
+        refunds[0]["metadata"]["deposit_id"].as_str().unwrap(),
+        deposit_id
+    );
+
+    // A replayed reversal answers the standing reversal and does not refund
+    // again — refundStatus is not "failed", so no second call goes out.
+    let (status, _body) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/deposits/{deposit_id}/reverse"),
+        Some(json!({"reason": "customer asked"})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(stub.refunds.lock().unwrap().len(), 1);
+}
+
+/// A refund the switch refuses is recorded `failed` and the reversal stands;
+/// the retry re-issues the call.
+#[tokio::test]
+async fn a_refused_refund_is_recorded_and_retried() {
+    let Some((app, _db, stub)) = admin_world().await else {
+        return;
+    };
+    let key = register(&app).await;
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/hyperswitch",
+        Some(json!({"idempotencyKey": "ref-2", "amountMinor": 2000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let deposit_id = body["data"]["depositId"].as_str().unwrap().to_owned();
+    let event = json!({
+        "event_id": "evt_credit_ref2",
+        "event_type": "payment_succeeded",
+        "content": {"type": "payment_details", "object": {"payment_id": "pay_test_123", "amount": 2000}}
+    });
+    let (headers, body) = signed_webhook(WEBHOOK_SECRET, &event.to_string());
+    assert_eq!(post_webhook(&app, headers, body).await, StatusCode::OK);
+
+    // The switch refuses the refund — the reversal still commits.
+    *stub.refund_refusal.lock().unwrap() = Some((
+        StatusCode::UNPROCESSABLE_ENTITY,
+        json!({"error": {"type": "invalid_request", "message": "exceeds captured"}}),
+    ));
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/deposits/{deposit_id}/reverse"),
+        Some(json!({"reason": "chargeback"})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["status"].as_str().unwrap(), "reversed");
+    assert_eq!(body["data"]["refundStatus"].as_str().unwrap(), "failed");
+
+    // The refusal cleared — a retry on the `failed` standing re-issues the call.
+    *stub.refund_refusal.lock().unwrap() = None;
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/deposits/{deposit_id}/reverse"),
+        Some(json!({"reason": "chargeback"})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["refundStatus"].as_str().unwrap(), "succeeded");
+    // Two refund calls total: the refused one and the re-issued one.
+    assert_eq!(stub.refunds.lock().unwrap().len(), 2);
+}
+
+/// A `refund_succeeded` webhook settles the standing the reversal wrote.
+#[tokio::test]
+async fn a_refund_webhook_settles_the_standing() {
+    let Some((app, _db, stub)) = admin_world().await else {
+        return;
+    };
+    let key = register(&app).await;
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/hyperswitch",
+        Some(json!({"idempotencyKey": "ref-3", "amountMinor": 1500})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let deposit_id = body["data"]["depositId"].as_str().unwrap().to_owned();
+    let event = json!({
+        "event_id": "evt_credit_ref3",
+        "event_type": "payment_succeeded",
+        "content": {"type": "payment_details", "object": {"payment_id": "pay_test_123", "amount": 1500}}
+    });
+    let (headers, body) = signed_webhook(WEBHOOK_SECRET, &event.to_string());
+    assert_eq!(post_webhook(&app, headers, body).await, StatusCode::OK);
+
+    // The stub answers a pending refund.
+    *stub.answer_refund.lock().unwrap() = json!({"refund_id": "ref_test_9", "status": "pending"});
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/deposits/{deposit_id}/reverse"),
+        Some(json!({"reason": "manual"})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["refundStatus"].as_str().unwrap(), "pending");
+
+    // The rail's webhook walks the standing to succeeded — the deposit lists it.
+    let event = json!({
+        "event_id": "evt_refund_done",
+        "event_type": "refund_succeeded",
+        "content": {"type": "refund_details", "object": {
+            "refund_id": "ref_test_9",
+            "payment_id": "pay_test_123",
+            "status": "succeeded",
+            "amount": 1500
+        }}
+    });
+    let (headers, body) = signed_webhook(WEBHOOK_SECRET, &event.to_string());
+    assert_eq!(post_webhook(&app, headers, body).await, StatusCode::OK);
+
+    // Read the standing back through the admin list.
+    let (status, body) = call(
+        &app,
+        "GET",
+        "/api/v1/admin/deposits",
+        None,
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let row = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["depositId"].as_str().unwrap() == deposit_id)
+        .cloned()
+        .unwrap();
+    assert_eq!(row["refundStatus"].as_str().unwrap(), "succeeded");
+}
+
+/// A `dispute_opened` webhook records the dispute timestamp on the deposit.
+#[tokio::test]
+async fn a_dispute_opened_is_recorded() {
+    let Some((app, _db, _stub)) = admin_world().await else {
+        return;
+    };
+    let key = register(&app).await;
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/hyperswitch",
+        Some(json!({"idempotencyKey": "disp-1", "amountMinor": 5000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let deposit_id = body["data"]["depositId"].as_str().unwrap().to_owned();
+    let event = json!({
+        "event_id": "evt_credit_disp1",
+        "event_type": "payment_succeeded",
+        "content": {"type": "payment_details", "object": {"payment_id": "pay_test_123", "amount": 5000}}
+    });
+    let (headers, body) = signed_webhook(WEBHOOK_SECRET, &event.to_string());
+    assert_eq!(post_webhook(&app, headers, body).await, StatusCode::OK);
+
+    // A dispute opens on the payment.
+    let event = json!({
+        "event_id": "evt_dispute",
+        "event_type": "dispute_opened",
+        "content": {"type": "dispute_details", "object": {
+            "payment_id": "pay_test_123",
+            "dispute_id": "disp_abc",
+            "amount": 5000,
+            "currency": "USD"
+        }}
+    });
+    let (headers, body) = signed_webhook(WEBHOOK_SECRET, &event.to_string());
+    assert_eq!(post_webhook(&app, headers, body).await, StatusCode::OK);
+
+    let (status, body) = call(
+        &app,
+        "GET",
+        "/api/v1/admin/deposits",
+        None,
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let row = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["depositId"].as_str().unwrap() == deposit_id)
+        .cloned()
+        .unwrap();
+    assert!(row["disputedAt"].as_str().is_some(), "{row}");
 }
