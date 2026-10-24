@@ -2443,11 +2443,14 @@ export interface paths {
          * @description The `hyperswitch` deposit rail (issue #319): opens a `pending` deposit
          *     (`payment_ref` = the `idempotencyKey`), creates a payment on the switch
          *     (`POST /payments`, automatic capture, `confirm: false`) and answers the
-         *     payment id, the `clientSecret` the browser SDK confirms against, and the
-         *     `publishableKey` the SDK initializes with. A replayed intent (same
-         *     `idempotencyKey`) answers the same handles — the deposit's unique
-         *     constraint is the idempotency anchor, not a lookup. A deployment without
-         *     `OXSUM_HYPERSWITCH_*` answers 503: the rail is configured or it is not.
+         *     payment id, the `clientSecret` the browser SDK confirms against, the
+         *     `publishableKey` the SDK initializes with, and the `sdkUrl` origin the
+         *     dashboard loads `HyperLoader.js` from — the API and the SDK bundle are
+         *     different services, so the rail carries both origins (issue #320). A
+         *     replayed intent (same `idempotencyKey`) answers the same handles — the
+         *     deposit's unique constraint is the idempotency anchor, not a lookup. A
+         *     deployment without `OXSUM_HYPERSWITCH_*` answers 503: the rail is
+         *     configured or it is not.
          */
         post: {
             parameters: {
@@ -2481,6 +2484,8 @@ export interface paths {
                                  * @description the pending deposit this payment confirms
                                  */
                                 depositId: string;
+                                /** @description the origin serving HyperLoader.js — the dashboard prepends it to /HyperLoader.js */
+                                sdkUrl: string;
                             };
                         };
                     };
