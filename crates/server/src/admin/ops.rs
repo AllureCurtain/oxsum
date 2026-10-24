@@ -2,7 +2,7 @@
 //! anomalies, the margin and the reconciliation, plus the audit log every
 //! admin write lands in.
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use oxsum_core::{
     AnomalyFacts, AuditEntry, InFlightHold, Reconciliation, SettlementKind, anomaly_score,
     audit_action,
@@ -11,11 +11,12 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::error::{ApiError, ApiQuery};
+use crate::error::{ApiError, ApiJson, ApiQuery};
 use crate::routes::{ApiResult, ok};
 use crate::{
     AppState,
-    admin::{decode_organization_cursor, encode_organization_cursor},
+    admin::{decode_organization_cursor, encode_organization_cursor, record},
+    today,
 };
 
 /// The audit query string: the page size, where the walk resumes, and an
@@ -96,6 +97,9 @@ pub(crate) struct DepositRes {
     received_minor: Option<i64>,
     status: String,
     entry_id: Option<Uuid>,
+    reversal_entry_id: Option<Uuid>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    reversed_at: Option<OffsetDateTime>,
     #[serde(with = "time::serde::rfc3339")]
     created_at: OffsetDateTime,
 }
@@ -112,6 +116,8 @@ impl From<oxsum_core::AdminDeposit> for DepositRes {
             received_minor: deposit.received_minor,
             status: deposit.status,
             entry_id: deposit.entry_id,
+            reversal_entry_id: deposit.reversal_entry_id,
+            reversed_at: deposit.reversed_at,
             created_at: deposit.created_at,
         }
     }
@@ -136,6 +142,63 @@ pub(crate) async fn deposits(
         .admin_deposits(query.organization_id, limit)
         .await?;
     ok(rows.into_iter().map(DepositRes::from).collect())
+}
+
+/// The body of `POST …/deposits/{depositId}/reverse`: the reason the deposit is
+/// reversed — it becomes the reversal entry's description, so it is part of
+/// what the ledger proves.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ReverseDepositReq {
+    reason: String,
+}
+
+/// Reverses one credited deposit (issue #356, decision D12): the ledger half
+/// of a refund. One entry posts — Wallet debited, Cash credited, the reason
+/// as its description — and the row flips to `reversed` naming it.
+///
+/// One reversal per deposit ever: the ledger key is derived from the deposit
+/// id, so a retry or a double-click answers the standing reversal rather than
+/// posting twice. The wallet's own no-overdraft rule refuses what the
+/// purchased pool cannot carry — `402 INSUFFICIENT_FUNDS` — and a deposit
+/// that is not `credited` is `409`, an unknown one `404`. No payment provider
+/// is called: returning the money through the rail is a separate issue.
+pub(crate) async fn reverse_deposit(
+    State(state): State<AppState>,
+    Path(deposit_id): Path<Uuid>,
+    ApiJson(request): ApiJson<ReverseDepositReq>,
+) -> ApiResult<DepositRes> {
+    // The deposit names the organization whose wallet takes the debit; an
+    // unknown deposit is 404 before any ledger work — the domain's own
+    // refusal under the row lock is the same answer, this lookup only finds
+    // the tenant the wallet opens under.
+    let deposit = state
+        .db
+        .admin_deposit(deposit_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    let organization = state.db.organization_by_id(deposit.organization_id).await?;
+    let wallet = state.tenants.get(&organization.tenant_id).await?;
+    let reversed = state
+        .db
+        .reverse_deposit(&wallet, deposit_id, &request.reason, today())
+        .await?;
+    record(
+        &state,
+        audit_action::DEPOSIT_REVERSE,
+        Some(deposit_id.to_string()),
+        serde_json::json!({
+            "organizationId": deposit.organization_id,
+            "amountMinor": reversed.amount_minor,
+            "reason": request.reason,
+            "reversalEntryId": reversed.reversal_entry_id,
+        }),
+        // The reversal's own idempotency anchor is the deposit id: a retried
+        // call is the same logical event, which the audit unique index absorbs.
+        Some(&format!("deposit-reversal/{deposit_id}")),
+    )
+    .await?;
+    ok(DepositRes::from(reversed))
 }
 
 /// The settlement kinds an admin reviews: the turns where usage was never reported, the

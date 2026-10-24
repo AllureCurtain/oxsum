@@ -697,6 +697,52 @@ impl Wallet {
         .await
     }
 
+    /// Reverses a credited deposit: one ledger entry that takes back purchased
+    /// credit the deposit put in — the exact mirror of a top-up, Wallet debited
+    /// and Cash credited, the operator's reason as the entry's description
+    /// (issue #356, decision D12). The deposit's own credit stays in history
+    /// beside the reversal; nothing is rewritten.
+    ///
+    /// The draw is on the purchased pool alone — granted credit never stood
+    /// behind a rail payment, so the bonus and credit-line pools are never
+    /// touched. The pool's `FundedReservations` limit is what refuses a
+    /// reversal the wallet cannot carry (the customer already spent the
+    /// credit): [`WalletError::InsufficientFunds`], enforced inside the append
+    /// against the balance the entry would leave, so it holds under
+    /// concurrency rather than being a read-then-write check.
+    ///
+    /// `pub(crate)`: only [`crate::Db::reverse_deposit`] calls it, under a key
+    /// derived from the deposit id — a retried reversal replays the standing
+    /// entry rather than debiting twice.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::InvalidInput`] for a non-positive amount, an empty
+    /// reason, or a malformed key; [`WalletError::InsufficientFunds`] when the
+    /// purchased pool cannot cover the debit.
+    pub(crate) async fn reverse_deposit(
+        &self,
+        idempotency_key: &str,
+        reason: &str,
+        minor: i64,
+        on: Date,
+    ) -> Result<Receipt, WalletError> {
+        if reason.trim().is_empty() {
+            return Err(WalletError::InvalidInput(
+                "a deposit reversal needs a reason".into(),
+            ));
+        }
+        let amt = positive(minor)?;
+        let key = format!("deposit-reversal/{idempotency_key}");
+        self.append(
+            Entry::<Draft, SCALE>::new(entry_id_for(&key), idem(&key)?, on)
+                .with_description(description_of(reason)?)
+                .debit(self.wallet, amt, currency())
+                .credit(self.cash, amt, currency()),
+        )
+        .await
+    }
+
     /// Answers for a key that already has a committed deduction entry: the
     /// stored entry's receipt when it drew the amount asked for, under the
     /// same reason — whatever its pool split (balances move after a
