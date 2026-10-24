@@ -306,12 +306,15 @@ works the same shape: `POST /api/v1/topups/airwallex` answers `{"checkoutUrl",
 "intentId", "clientSecret", "depositId"}` — open the URL, pay on Airwallex's hosted
 page, and the signed webhook credits the pool when the intent succeeds.
 
-The Hyperswitch rail (`OXSUM_HYPERSWITCH_*`; issue #319) is the switch the payment
-layer runs on: `POST /api/v1/topups/hyperswitch` answers `{"paymentId",
-"clientSecret", "publishableKey", "depositId"}`. The browser confirms the payment
-with the switch's own SDK using those handles, and the signed webhook credits the
-pool when the payment succeeds. The dashboard's checkout widget for this rail is
-the next step; until it lands, the handles are the integration point.
+The Hyperswitch rail (`OXSUM_HYPERSWITCH_*`; issues #319/#320) is the switch the
+payment layer runs on: `POST /api/v1/topups/hyperswitch` answers `{"paymentId",
+"clientSecret", "publishableKey", "depositId", "sdkUrl"}`. In the dashboard the
+**Hyperswitch** tab mounts the switch's Unified Checkout in place — the page
+loads `HyperLoader.js` from `sdkUrl` and binds a payment element to the intent —
+so no card data ever touches oxsum. Confirming the payment redirects back to the
+top-up page, which watches the balance until the switch's webhook credits it;
+cancelling returns the same way and credits nothing. Programmatic callers use
+the same handles with the SDK of their choice.
 
 On a deployment running the real rail (`OXSUM_X402_FACILITATOR_*` — an x402-rs
 facilitator sidecar verifies the authorization on-chain, settles it, and the
