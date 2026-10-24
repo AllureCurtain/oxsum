@@ -5121,7 +5121,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Reverse a credited deposit — the ledger half of a refund
+         * Reverse a credited deposit — refund through the rail when it offers one
          * @description Reverses one `credited` deposit (issue #356, decision D12): posts one
          *     ledger entry — Wallet debited, Cash credited, the reason as the entry's
          *     description — and flips the deposit to `reversed`, recording
@@ -5138,9 +5138,18 @@ export interface paths {
          *     not `credited` (`pending`, `confirmed`, `expired`) is `409 CONFLICT`,
          *     and one that does not exist is `404`. An empty reason is `400`.
          *
-         *     This path moves no money off-platform: the PSP call that returns the
-         *     customer's payment (a Hyperswitch refund and its webhook) is a separate
-         *     issue — the books are right before it runs.
+         *     A `hyperswitch` deposit also returns the customer's money through the
+         *     switch (issue #360): after the reversal commits, `POST /refunds` goes
+         *     to the switch with the payment's id, the deposit's `received_minor`
+         *     (falling back to `amount_minor`), the operator's `reason`, and the
+         *     deposit id in `metadata`. The row's `meta` gains `hyperswitchRefundId`
+         *     and `refundStatus` (`pending` at issue, `succeeded`/`failed` as the
+         *     rail's webhooks land); the answer carries the same `refundStatus`. A
+         *     switch-side refusal records `failed` — the reversal stands, because
+         *     the books are right regardless — and a replayed reversal on a
+         *     `failed` refund re-issues the call, so an operator's retry reaches the
+         *     rail. Other rails answer `refundStatus: null`: their PSP calls are
+         *     separate issues.
          */
         post: {
             parameters: {
@@ -8279,6 +8288,21 @@ export interface components {
              * @description when the deposit reversed
              */
             reversedAt?: string | null;
+            /**
+             * @description the payment-provider refund's standing, when the rail issued one
+             *     (issue #360): `pending` while the rail works it, `succeeded` when the
+             *     money moved, `failed` when the call was refused (the reversal stands;
+             *     a retry re-issues it). `null` means the rail issued no refund — the
+             *     deposit was never reversed through a rail, or the rail carries no
+             *     refund path.
+             * @enum {string|null}
+             */
+            refundStatus?: "pending" | "succeeded" | "failed" | null;
+            /**
+             * Format: date-time
+             * @description when a dispute opened on the payment, when the rail reported one (issue #360)
+             */
+            disputedAt?: string | null;
             /** Format: date-time */
             createdAt: string;
         };
