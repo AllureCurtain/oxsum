@@ -92,6 +92,7 @@ Under active development. The multi-tenant wallet core (top-up, hold/settle, inc
 
 ## Documentation
 
+- The pitch — what it is, who it is for, and why a verifiable bill matters: docs/product-page.md
 - Product specification: docs/product.md
 - API conventions: docs/api.md
 - User guide: docs/user-guide.md
