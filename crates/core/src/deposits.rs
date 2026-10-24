@@ -1163,6 +1163,10 @@ pub struct AdminDeposit {
     pub status: String,
     /// The ledger entry that credited the wallet, once `credited`.
     pub entry_id: Option<Uuid>,
+    /// The ledger entry that reversed the credit, once `reversed` (issue #356).
+    pub reversal_entry_id: Option<Uuid>,
+    /// When the reversal committed.
+    pub reversed_at: Option<OffsetDateTime>,
     /// When the deposit row opened.
     pub created_at: OffsetDateTime,
 }
@@ -1184,7 +1188,7 @@ impl Db {
         let rows = sqlx::query(
             "SELECT d.deposit_id, d.organization_id, o.name AS organization, d.rail, \
                     d.payment_ref, d.amount_minor, d.received_minor, d.status, \
-                    d.entry_id, d.created_at \
+                    d.entry_id, d.reversal_entry_id, d.reversed_at, d.created_at \
              FROM oxsum.deposits d \
              JOIN oxsum.organizations o ON o.organization_id = d.organization_id \
              WHERE ($1::uuid IS NULL OR d.organization_id = $1) \
@@ -1207,9 +1211,165 @@ impl Db {
                     received_minor: row.try_get("received_minor")?,
                     status: row.try_get("status")?,
                     entry_id: row.try_get("entry_id")?,
+                    reversal_entry_id: row.try_get("reversal_entry_id")?,
+                    reversed_at: row.try_get("reversed_at")?,
                     created_at: row.try_get("created_at")?,
                 })
             })
             .collect()
+    }
+
+    /// Reverses one credited deposit (issue #356, decision D12): the ledger
+    /// half of a refund. [`Wallet::reverse_deposit`] posts the mirror entry —
+    /// Wallet debited, Cash credited, the reason as its description — under a
+    /// key derived from the deposit id, and the row flips to `reversed`
+    /// naming it. The PSP call that returns the money is a separate issue; no
+    /// rail is contacted here.
+    ///
+    /// The deposit's row is taken `FOR UPDATE`, so two reversals of one
+    /// deposit cannot both proceed to post. The ledger key is fixed by the
+    /// deposit id (`deposit-reversal/<id>`): a retried call or a double-click
+    /// replays the standing entry rather than posting a second debit, and a
+    /// crash between the append and the flip leaves a `credited` deposit the
+    /// retry resumes — the entry already exists and answers for itself.
+    ///
+    /// `credited` is the only state a reversal proceeds from: a `reversed`
+    /// deposit answers its own standing row (the replay a retry expects), and
+    /// anything earlier — `pending`, `confirmed`, `expired` — never moved the
+    /// wallet, so there is nothing to take back. The wallet's own
+    /// no-overdraft rule refuses a reversal the purchased pool cannot cover:
+    /// [`WalletError::InsufficientFunds`], the customer already spent the
+    /// credit.
+    ///
+    /// The `deposit.reversed` event enqueues in the same transaction as the
+    /// flip, so the row and its notification commit or roll back together —
+    /// and a replayed reversal, which flips no row, enqueues nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::NotFound`] for a deposit that does not exist,
+    /// [`WalletError::Conflict`] for one that is not `credited`,
+    /// [`WalletError::InvalidInput`] for an empty reason,
+    /// [`WalletError::InsufficientFunds`] when the wallet cannot carry the
+    /// debit; storage failures surface as [`WalletError`].
+    pub async fn reverse_deposit(
+        &self,
+        wallet: &Wallet,
+        deposit_id: Uuid,
+        reason: &str,
+        on: time::Date,
+    ) -> Result<AdminDeposit, WalletError> {
+        if reason.trim().is_empty() {
+            return Err(WalletError::InvalidInput(
+                "a deposit reversal needs a reason".into(),
+            ));
+        }
+        let mut tx = self.pool().begin().await?;
+        let row = sqlx::query(
+            "SELECT organization_id, amount_minor, status, payment_ref \
+             FROM oxsum.deposits \
+             WHERE deposit_id = $1 \
+             FOR UPDATE",
+        )
+        .bind(deposit_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(row) = row else {
+            return Err(WalletError::NotFound("the deposit is not known".into()));
+        };
+        let organization_id: Uuid = row.try_get("organization_id")?;
+        let amount_minor: i64 = row.try_get("amount_minor")?;
+        let status: String = row.try_get("status")?;
+        // `credited` is the only state a reversal proceeds from. `reversed`
+        // answers the standing row — the retry's own write — and everything
+        // else is a conflict: a deposit that never credited moved no money.
+        match status.as_str() {
+            "reversed" => {
+                tx.commit().await?;
+                return self
+                    .admin_deposit(deposit_id)
+                    .await?
+                    .ok_or_else(|| WalletError::NotFound("the deposit is not known".into()));
+            }
+            "credited" => {}
+            _ => {
+                return Err(WalletError::Conflict(format!(
+                    "a {status} deposit has nothing to reverse"
+                )));
+            }
+        }
+        // The append replays under the deposit id — a retry after a crash
+        // finds its own entry rather than posting a second debit.
+        let receipt = wallet
+            .reverse_deposit(&deposit_id.to_string(), reason, amount_minor, on)
+            .await?;
+        let flipped = sqlx::query(
+            "UPDATE oxsum.deposits \
+             SET status = 'reversed', reversal_entry_id = $1, reversed_at = now(), \
+                 updated_at = now() \
+             WHERE deposit_id = $2 AND status = 'credited'",
+        )
+        .bind(*receipt.entry_id.as_uuid())
+        .bind(deposit_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if flipped > 0 {
+            Self::enqueue_event(
+                &mut tx,
+                organization_id,
+                crate::webhooks::DEPOSIT_REVERSED,
+                serde_json::json!({
+                    "paymentRef": row.try_get::<String, _>("payment_ref")?,
+                    "amountMinor": amount_minor,
+                    "reversalEntryId": receipt.entry_id.as_uuid(),
+                }),
+            )
+            .await?;
+        }
+        tx.commit().await?;
+        self.admin_deposit(deposit_id)
+            .await?
+            .ok_or_else(|| WalletError::NotFound("the deposit is not known".into()))
+    }
+
+    /// One deposit row by id, in the [`AdminDeposit`] shape the console lists —
+    /// the lookup the reverse route runs to find the wallet the deposit credits.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn admin_deposit(
+        &self,
+        deposit_id: Uuid,
+    ) -> Result<Option<AdminDeposit>, WalletError> {
+        let row = sqlx::query(
+            "SELECT d.deposit_id, d.organization_id, o.name AS organization, d.rail, \
+                    d.payment_ref, d.amount_minor, d.received_minor, d.status, \
+                    d.entry_id, d.reversal_entry_id, d.reversed_at, d.created_at \
+             FROM oxsum.deposits d \
+             JOIN oxsum.organizations o ON o.organization_id = d.organization_id \
+             WHERE d.deposit_id = $1",
+        )
+        .bind(deposit_id)
+        .fetch_optional(self.pool())
+        .await?;
+        row.map(|row| {
+            Ok(AdminDeposit {
+                deposit_id: row.try_get("deposit_id")?,
+                organization_id: row.try_get("organization_id")?,
+                organization: row.try_get("organization")?,
+                rail: row.try_get("rail")?,
+                payment_ref: row.try_get("payment_ref")?,
+                amount_minor: row.try_get("amount_minor")?,
+                received_minor: row.try_get("received_minor")?,
+                status: row.try_get("status")?,
+                entry_id: row.try_get("entry_id")?,
+                reversal_entry_id: row.try_get("reversal_entry_id")?,
+                reversed_at: row.try_get("reversed_at")?,
+                created_at: row.try_get("created_at")?,
+            })
+        })
+        .transpose()
     }
 }

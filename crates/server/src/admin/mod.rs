@@ -71,6 +71,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         )
         .route("/holds", get(ops::holds))
         .route("/deposits", get(ops::deposits))
+        .route("/deposits/{deposit_id}/reverse", post(ops::reverse_deposit))
         .route("/anomalies", get(ops::anomalies))
         .route("/margin", get(ops::margin))
         .route("/reconciliation", get(ops::reconciliation))

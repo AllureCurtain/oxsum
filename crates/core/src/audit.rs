@@ -56,6 +56,7 @@ pub mod action {
     pub const DISCOUNT_END: &str = "discount.end";
     pub const USER_PASSWORD_RESET: &str = "user.password_reset";
     pub const CODES_MINT: &str = "codes.mint";
+    pub const DEPOSIT_REVERSE: &str = "deposit.reverse";
     pub const CLOSING_CLOSE: &str = "closing.close";
     pub const STATEMENT_GENERATE: &str = "statement.generate";
     pub const STATEMENT_FINALIZE: &str = "statement.finalize";
@@ -78,6 +79,7 @@ pub mod action {
         DISCOUNT_END,
         USER_PASSWORD_RESET,
         CODES_MINT,
+        DEPOSIT_REVERSE,
         CLOSING_CLOSE,
         STATEMENT_GENERATE,
         STATEMENT_FINALIZE,
