@@ -91,6 +91,7 @@ async fn world() -> Option<(Router, Db, SwitchStub)> {
             api_url,
             PUBLISHABLE_KEY.to_owned(),
             "http://localhost:3000".to_owned(),
+            "https://sdk.example.test/v1".to_owned(),
         ));
     let (app, _events, _metrics) = oxsum_server::app_with_billing(db.clone(), config);
     Some((app, db, stub))
@@ -202,6 +203,11 @@ async fn the_intent_creates_a_payment_and_answers_the_handles() {
         body["data"]["publishableKey"].as_str().unwrap(),
         PUBLISHABLE_KEY
     );
+    // The checkout widget mounts HyperLoader from this origin (issue #320).
+    assert_eq!(
+        body["data"]["sdkUrl"].as_str().unwrap(),
+        "https://sdk.example.test/v1"
+    );
     let deposit_id = body["data"]["depositId"].as_str().unwrap();
     assert_eq!(
         stub.deposits.lock().unwrap().clone(),
@@ -242,6 +248,11 @@ async fn a_replayed_intent_answers_the_same_handles() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["clientSecret"].as_str().unwrap(), first);
     assert_eq!(body["data"]["paymentId"].as_str().unwrap(), "pay_test_123");
+    // The replay answers the SDK origin too — the widget mounts from it.
+    assert_eq!(
+        body["data"]["sdkUrl"].as_str().unwrap(),
+        "https://sdk.example.test/v1"
+    );
     // Still exactly one upstream payment: the replay hit the deposit row.
     assert_eq!(stub.deposits.lock().unwrap().len(), 1);
 }

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.80.0
+  version: 0.81.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -532,6 +532,12 @@ info:
     `402 INSUFFICIENT_FUNDS` — the customer spent the credit — and one that is not
     `credited` is `409`. No payment provider is called: returning the money through
     the rail is a separate issue.
+
+    0.81.0 extends the Hyperswitch intent (issue #320): `POST
+    /api/v1/topups/hyperswitch` also answers `sdkUrl` — the origin the dashboard
+    loads `HyperLoader.js` from (`OXSUM_HYPERSWITCH_SDK_URL`, default the hosted
+    `https://beta.hyperswitch.io/v1`). The API origin and the SDK bundle are
+    different services, so the response carries both.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -1938,11 +1944,14 @@ paths:
         The `hyperswitch` deposit rail (issue #319): opens a `pending` deposit
         (`payment_ref` = the `idempotencyKey`), creates a payment on the switch
         (`POST /payments`, automatic capture, `confirm: false`) and answers the
-        payment id, the `clientSecret` the browser SDK confirms against, and the
-        `publishableKey` the SDK initializes with. A replayed intent (same
-        `idempotencyKey`) answers the same handles — the deposit's unique
-        constraint is the idempotency anchor, not a lookup. A deployment without
-        `OXSUM_HYPERSWITCH_*` answers 503: the rail is configured or it is not.
+        payment id, the `clientSecret` the browser SDK confirms against, the
+        `publishableKey` the SDK initializes with, and the `sdkUrl` origin the
+        dashboard loads `HyperLoader.js` from — the API and the SDK bundle are
+        different services, so the rail carries both origins (issue #320). A
+        replayed intent (same `idempotencyKey`) answers the same handles — the
+        deposit's unique constraint is the idempotency anchor, not a lookup. A
+        deployment without `OXSUM_HYPERSWITCH_*` answers 503: the rail is
+        configured or it is not.
       requestBody:
         required: true
         content:
@@ -1959,12 +1968,13 @@ paths:
                 properties:
                   data:
                     type: object
-                    required: [paymentId, clientSecret, publishableKey, depositId]
+                    required: [paymentId, clientSecret, publishableKey, depositId, sdkUrl]
                     properties:
                       paymentId: { type: string, description: "the switch's payment id the webhook names" }
                       clientSecret: { type: string, description: "the secret the browser SDK confirms against" }
                       publishableKey: { type: string, description: "the key the browser SDK initializes with" }
                       depositId: { type: string, format: uuid, description: "the pending deposit this payment confirms" }
+                      sdkUrl: { type: string, description: "the origin serving HyperLoader.js — the dashboard prepends it to /HyperLoader.js" }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }

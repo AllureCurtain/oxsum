@@ -39,6 +39,9 @@ pub struct Hyperswitch {
     /// The deployment's public origin (`OXSUM_PUBLIC_URL`) — the payment's
     /// `return_url` is built on it.
     public_url: String,
+    /// The origin the browser loads `HyperLoader.js` from — the hosted SDK
+    /// bundle, or a self-hosted `hyperswitch-web` service. No trailing slash.
+    sdk_url: String,
 }
 
 impl std::fmt::Debug for Hyperswitch {
@@ -52,6 +55,7 @@ impl std::fmt::Debug for Hyperswitch {
             .field("base_url", &self.base_url)
             .field("publishable_key", &self.publishable_key)
             .field("public_url", &self.public_url)
+            .field("sdk_url", &self.sdk_url)
             .finish()
     }
 }
@@ -101,6 +105,7 @@ impl Hyperswitch {
         base_url: String,
         publishable_key: String,
         public_url: String,
+        sdk_url: String,
     ) -> Self {
         Self {
             api_key,
@@ -108,6 +113,7 @@ impl Hyperswitch {
             base_url: base_url.trim_end_matches('/').to_owned(),
             publishable_key,
             public_url: public_url.trim_end_matches('/').to_owned(),
+            sdk_url: sdk_url.trim_end_matches('/').to_owned(),
         }
     }
 
@@ -115,6 +121,15 @@ impl Hyperswitch {
     #[must_use]
     pub fn publishable_key(&self) -> &str {
         &self.publishable_key
+    }
+
+    /// The origin the browser loads `HyperLoader.js` from (issue #320): the
+    /// dashboard prepends it to `/HyperLoader.js` when it mounts Unified
+    /// Checkout — the API origin and the SDK origin are different services,
+    /// so the rail carries both.
+    #[must_use]
+    pub fn sdk_url(&self) -> &str {
+        &self.sdk_url
     }
 
     /// Whether `X-Webhook-Signature-512` on `body` verifies under the business
