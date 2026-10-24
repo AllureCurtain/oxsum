@@ -1,9 +1,11 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   ApiError,
   useAirwallexTopup,
   useBalance,
   useDisplay,
+  useHyperswitchTopup,
   useRedeemCode,
   useStripeTopup,
   useTopup,
@@ -167,6 +169,168 @@ function AirwallexRail() {
   );
 }
 
+// The switch's browser SDK (issue #320): HyperLoader.js installs `window.Hyper`,
+// the factory the Unified Checkout is mounted through. The script lives on the
+// switch's own SDK origin — never on this dashboard's bundle — and only ever
+// loads on this page; the bill page stays third-party-script-free.
+interface HyperElement {
+  mount(selector: string): void;
+  unmount(): void;
+  on?(event: string, handler: (payload: unknown) => void): void;
+}
+interface HyperElements {
+  create(componentType: "payment", options?: Record<string, unknown>): HyperElement;
+}
+interface HyperInstance {
+  elements(options: { clientSecret: string }): HyperElements;
+}
+declare global {
+  interface Window {
+    Hyper?: (publishableKey: string, options?: Record<string, unknown>) => HyperInstance;
+  }
+}
+
+const hyperScriptByOrigin = new Map<string, Promise<void>>();
+
+function loadHyper(sdkUrl: string): Promise<void> {
+  const origin = sdkUrl.replace(/\/+$/, "");
+  const cached = hyperScriptByOrigin.get(origin);
+  if (cached) return cached;
+  const promise = new Promise<void>((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = `${origin}/HyperLoader.js`;
+    script.async = true;
+    script.onload = () => {
+      if (window.Hyper) resolve();
+      else reject(new Error("HyperLoader.js did not expose window.Hyper"));
+    };
+    script.onerror = () => reject(new Error(`could not load the switch SDK from ${origin}`));
+    document.head.appendChild(script);
+  });
+  hyperScriptByOrigin.set(origin, promise);
+  return promise;
+}
+
+function HyperswitchRail() {
+  const hyperswitch = useHyperswitchTopup();
+  const [amount, setAmount] = useState("");
+  const [stage, setStage] = useState<"idle" | "mounting" | "mounted" | "failed">("idle");
+  const [mountError, setMountError] = useState<string | null>(null);
+  const mountRef = useRef<HTMLDivElement>(null);
+  const elementRef = useRef<HyperElement | null>(null);
+
+  // Mount Unified Checkout as soon as the intent's handles land: the SDK
+  // script loads from the origin the server named, then the payment element
+  // binds to the div below. The element owns the redirect — confirm returns
+  // to this page on `?hyperswitch=return`.
+  useEffect(() => {
+    const intent = hyperswitch.data;
+    if (!intent || !mountRef.current) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        await loadHyper(intent.sdkUrl);
+        if (cancelled || !mountRef.current || !window.Hyper) return;
+        const hyper = window.Hyper(intent.publishableKey, {});
+        const elements = hyper.elements({ clientSecret: intent.clientSecret });
+        const element = elements.create("payment", {});
+        element.mount("#hyperswitch-checkout");
+        elementRef.current = element;
+        if (!cancelled) setStage("mounted");
+      } catch (error) {
+        if (!cancelled) {
+          setMountError(error instanceof Error ? error.message : "the checkout could not mount");
+          setStage("failed");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+      // A fresh intent replaces the element: unmount the old iframe so the
+      // div is empty for the new mount.
+      elementRef.current?.unmount();
+      elementRef.current = null;
+    };
+  }, [hyperswitch.data]);
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    const minor = amountToMinor(amount);
+    if (minor === null) return;
+    setMountError(null);
+    setStage("mounting");
+    hyperswitch.mutate(minor, {
+      onError: () => setStage("idle"),
+    });
+  };
+
+  const reset = () => {
+    elementRef.current?.unmount();
+    elementRef.current = null;
+    hyperswitch.reset();
+    setStage("idle");
+    setMountError(null);
+  };
+
+  return (
+    <div className="flex flex-col gap-3">
+      <form className="flex flex-col gap-3" onSubmit={submit}>
+        <p className="text-sm text-muted">
+          Mounts the switch's Unified Checkout in place; the deposit confirms through the
+          Hyperswitch webhook once the payment succeeds. A deployment without the rail configured
+          answers 503.
+        </p>
+        <Field label="Amount (credits)">
+          <HaloInput
+            type="number"
+            step="any"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            min="0.000001"
+            trailingSlot={<span className="text-xs text-muted-foreground">cr</span>}
+            required
+            disabled={stage === "mounting" || stage === "mounted"}
+          />
+        </Field>
+        {stage !== "mounted" ? (
+          <HaloButton
+            type="submit"
+            isLoading={hyperswitch.isPending || stage === "mounting"}
+            loadingText="Loading checkout…"
+          >
+            Pay with Hyperswitch
+          </HaloButton>
+        ) : null}
+        {hyperswitch.error instanceof ApiError ? (
+          <Banner tone="error">
+            {hyperswitch.error.status === 503
+              ? "This deployment has no Hyperswitch rail configured."
+              : hyperswitch.error.message}
+          </Banner>
+        ) : null}
+        {mountError ? <Banner tone="error">{mountError}</Banner> : null}
+      </form>
+      {/* The checkout owns everything under this node once mounted. */}
+      <div id="hyperswitch-checkout" ref={mountRef} />
+      {stage === "mounted" ? (
+        <div className="flex flex-col gap-2">
+          <p className="text-xs text-muted">
+            Finish the payment in the form above — the wallet credits when the switch's webhook
+            lands. Nothing is charged until you confirm.
+          </p>
+          <button
+            type="button"
+            className="self-start text-xs text-muted underline underline-offset-2"
+            onClick={reset}
+          >
+            Start over
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function RedeemRail() {
   const redeem = useRedeemCode();
   const display = useDisplay();
@@ -204,9 +368,55 @@ function RedeemRail() {
   );
 }
 
+// Where a returning payer lands (`?hyperswitch=return`, set as the payment's
+// return_url): the webhook may not have landed yet, so the balance is polled
+// until the credit shows — success, cancel and failure all redirect here, so
+// the poll is what tells them apart.
+function HyperswitchReturn({ baseline }: { baseline: number | null }) {
+  const balance = useBalance({ refetchInterval: 2_000 });
+  const [timedOut, setTimedOut] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setTimedOut(true), 60_000);
+    return () => clearTimeout(timer);
+  }, []);
+  if (baseline !== null && balance.data && balance.data.availableMinor > baseline) {
+    return (
+      <Banner tone="success">
+        Payment confirmed — {creditsWithDisplay(balance.data.availableMinor - baseline, null)}{" "}
+        landed on the balance.
+      </Banner>
+    );
+  }
+  if (timedOut) {
+    return (
+      <Banner tone="error">
+        No credit landed within a minute. If you completed the payment the webhook is still on its
+        way — the balance catches up on its own; if you cancelled, nothing was charged.
+      </Banner>
+    );
+  }
+  return (
+    <Banner tone="info">
+      Waiting for the payment to confirm… the switch's webhook credits the wallet; this updates as
+      soon as it lands.
+    </Banner>
+  );
+}
+
 export function Topup() {
   const balance = useBalance();
   const display = useDisplay();
+  const [params, setParams] = useSearchParams();
+  const returned = params.get("hyperswitch") === "return";
+  // Snapshot the balance the first time a return is seen: the credit showing
+  // above it is what "confirmed" means. A user who already had balance never
+  // sees a false success — only a real increase counts.
+  const baselineRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (returned && balance.data && baselineRef.current === null) {
+      baselineRef.current = balance.data.availableMinor;
+    }
+  }, [returned, balance.data]);
   return (
     <div className="flex flex-col gap-6">
       <h1 className="text-2xl font-bold">Top up</h1>
@@ -215,11 +425,24 @@ export function Topup() {
           {balance.data ? <Cr minor={balance.data.availableMinor} currency={display} /> : "…"}
         </p>
       </Card>
+      {returned ? (
+        <div className="flex flex-col gap-2">
+          <HyperswitchReturn baseline={baselineRef.current} />
+          <button
+            type="button"
+            className="self-start text-xs text-muted underline underline-offset-2"
+            onClick={() => setParams({})}
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
       <HaloTabs defaultValue="manual">
         <HaloTabsList variant="pill">
           <HaloTabsTrigger value="manual">Manual</HaloTabsTrigger>
           <HaloTabsTrigger value="stripe">Stripe</HaloTabsTrigger>
           <HaloTabsTrigger value="airwallex">Airwallex</HaloTabsTrigger>
+          <HaloTabsTrigger value="hyperswitch">Hyperswitch</HaloTabsTrigger>
           <HaloTabsTrigger value="redeem">Redeem code</HaloTabsTrigger>
           <HaloTabsIndicator variant="pill" />
         </HaloTabsList>
@@ -236,6 +459,11 @@ export function Topup() {
         <HaloTabsContent value="airwallex" className="mt-4">
           <Card title="Airwallex payment page">
             <AirwallexRail />
+          </Card>
+        </HaloTabsContent>
+        <HaloTabsContent value="hyperswitch" className="mt-4">
+          <Card title="Hyperswitch checkout">
+            <HyperswitchRail />
           </Card>
         </HaloTabsContent>
         <HaloTabsContent value="redeem" className="mt-4">

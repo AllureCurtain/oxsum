@@ -82,8 +82,10 @@ checkout.
       `/v1/embeddings` and `/v1/rerank` as billed one-shot probes
 - [x] Manual hold/settle/release bench on the overview (`POST /holds`,
       `POST /settlements`)
-- [x] Top up — manual rail, Stripe checkout redirect, redemption-code claim
-      (`POST /topups`, `/topups/stripe`, `/redemptions`)
+- [x] Top up — manual rail, Stripe checkout redirect, Airwallex hosted page,
+      in-page Hyperswitch Unified Checkout (issue #320), redemption-code claim
+      (`POST /topups`, `/topups/stripe`, `/topups/airwallex`,
+      `/topups/hyperswitch`, `/redemptions`)
 - [x] Pricing — the public catalog (`GET /pricing`), the estimate calculator
       (`POST /estimate-price`), signed price heads (`GET /log/price-head`)
 - [x] Settings — account card, resend verification, server health

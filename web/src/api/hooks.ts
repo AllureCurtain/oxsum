@@ -273,8 +273,12 @@ export function useAuthMethods() {
   });
 }
 
-export function useBalance() {
-  return useQuery({ queryKey: ["balance"], queryFn: () => api<Balance>("/balance") });
+export function useBalance(options?: { refetchInterval?: number | false }) {
+  return useQuery({
+    queryKey: ["balance"],
+    queryFn: () => api<Balance>("/balance"),
+    refetchInterval: options?.refetchInterval,
+  });
 }
 
 export function useBudget() {
@@ -555,6 +559,22 @@ export function useStripeTopup() {
   return useMutation({
     mutationFn: (amountMinor: number) =>
       api<{ checkoutUrl: string; depositId: string }>("/topups/stripe", {
+        method: "POST",
+        body: { amountMinor, idempotencyKey: crypto.randomUUID() },
+      }),
+  });
+}
+
+export function useHyperswitchTopup() {
+  return useMutation({
+    mutationFn: (amountMinor: number) =>
+      api<{
+        paymentId: string;
+        clientSecret: string;
+        publishableKey: string;
+        depositId: string;
+        sdkUrl: string;
+      }>("/topups/hyperswitch", {
         method: "POST",
         body: { amountMinor, idempotencyKey: crypto.randomUUID() },
       }),
