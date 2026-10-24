@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.79.0
+  version: 0.80.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -522,6 +522,16 @@ info:
     is not a refund, and the refund and chargeback halves of D12 stay separate.
 
     0.79.0 adds the operator's money-in view (issue #354): GET /api/v1/admin/deposits lists the newest deposits platform-wide or for one organization — rail, status, the amount opened for, what the rail reported paid, the rail's reference and the ledger entry once credited. It is read-only: nothing on this path confirms, credits or reverses a deposit.
+
+    0.80.0 adds the ledger half of a refund (issue #356, decision D12): `POST
+    /api/v1/admin/deposits/{depositId}/reverse` reverses a `credited` deposit — one
+    ledger entry (Wallet debited, Cash credited, the reason as its description) and
+    the deposit flips to `reversed`, naming `reversalEntryId` and `reversedAt`. The
+    ledger key derives from the deposit id, so a retry or double-click replays the
+    standing entry instead of posting twice. A deposit the wallet cannot cover is
+    `402 INSUFFICIENT_FUNDS` — the customer spent the credit — and one that is not
+    `credited` is `409`. No payment provider is called: returning the money through
+    the rail is a separate issue.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -3612,6 +3622,57 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/deposits/{depositId}/reverse:
+    post:
+      summary: Reverse a credited deposit — the ledger half of a refund
+      description: |
+        Reverses one `credited` deposit (issue #356, decision D12): posts one
+        ledger entry — Wallet debited, Cash credited, the reason as the entry's
+        description — and flips the deposit to `reversed`, recording
+        `reversalEntryId` and `reversedAt` on the row.
+
+        One reversal per deposit ever: the entry's idempotency key is derived
+        from the deposit id, so a retried call or a double-click answers the
+        standing reversal instead of posting a second one — the answer is the
+        already-`reversed` deposit, not a new write.
+
+        The ledger's own no-overdraft rule refuses a reversal the wallet cannot
+        cover — the customer already spent the credit — as `402
+        INSUFFICIENT_FUNDS`, never a silent negative balance. A deposit that is
+        not `credited` (`pending`, `confirmed`, `expired`) is `409 CONFLICT`,
+        and one that does not exist is `404`. An empty reason is `400`.
+
+        This path moves no money off-platform: the PSP call that returns the
+        customer's payment (a Hyperswitch refund and its webhook) is a separate
+        issue — the books are right before it runs.
+      security:
+        - adminToken: []
+      parameters:
+        - name: depositId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReverseDepositRequest" }
+      responses:
+        "200":
+          description: The deposit, now reversed, with the entry that reversed it
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/AdminDeposit" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "402": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/admin/margin:
     get:
       summary: What the platform charged versus what upstream cost it, per channel and model
@@ -6175,7 +6236,15 @@ components:
             names the entry), `reversed` (a refund/chargeback outcome) or
             `expired` (never paid in time)
         entryId: { type: string, format: uuid, nullable: true, description: the ledger entry that credited the wallet, once credited }
+        reversalEntryId: { type: string, format: uuid, nullable: true, description: the ledger entry that reversed the credit (Wallet debited, Cash credited), once reversed }
+        reversedAt: { type: string, format: date-time, nullable: true, description: when the deposit reversed }
         createdAt: { type: string, format: date-time }
+    ReverseDepositRequest:
+      type: object
+      required: [reason]
+      additionalProperties: false
+      properties:
+        reason: { type: string, minLength: 1, description: "why the deposit is reversed — becomes the reversal entry's description, so it is part of what a bill's proof covers" }
     ReconciliationReport:
       type: object
       required: [checkedAt, organizations, clean, classes]
