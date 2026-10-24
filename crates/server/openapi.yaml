@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.81.0
+  version: 0.82.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -538,6 +538,16 @@ info:
     loads `HyperLoader.js` from (`OXSUM_HYPERSWITCH_SDK_URL`, default the hosted
     `https://beta.hyperswitch.io/v1`). The API origin and the SDK bundle are
     different services, so the response carries both.
+
+    0.82.0 wires the payment-provider half of a refund and the dispute record
+    (issue #360): reversing a `credited` Hyperswitch deposit also calls the
+    switch's `POST /refunds`, and the deposit row's `meta` carries
+    `hyperswitchRefundId` plus a `refundStatus` the `refund_succeeded` /
+    `refund_failed` webhooks walk. `AdminDeposit` gains `refundStatus` and
+    `disputedAt`; a `dispute_opened` webhook records the dispute timestamp and
+    enqueues `deposit.disputed` — accepting it is the existing reversal path.
+    A rail that cannot refund answers `refundStatus: null`; a refund call the
+    switch refuses is recorded as `refundStatus: failed`, never silent.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -3634,7 +3644,7 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/admin/deposits/{depositId}/reverse:
     post:
-      summary: Reverse a credited deposit — the ledger half of a refund
+      summary: Reverse a credited deposit — refund through the rail when it offers one
       description: |
         Reverses one `credited` deposit (issue #356, decision D12): posts one
         ledger entry — Wallet debited, Cash credited, the reason as the entry's
@@ -3652,9 +3662,18 @@ paths:
         not `credited` (`pending`, `confirmed`, `expired`) is `409 CONFLICT`,
         and one that does not exist is `404`. An empty reason is `400`.
 
-        This path moves no money off-platform: the PSP call that returns the
-        customer's payment (a Hyperswitch refund and its webhook) is a separate
-        issue — the books are right before it runs.
+        A `hyperswitch` deposit also returns the customer's money through the
+        switch (issue #360): after the reversal commits, `POST /refunds` goes
+        to the switch with the payment's id, the deposit's `received_minor`
+        (falling back to `amount_minor`), the operator's `reason`, and the
+        deposit id in `metadata`. The row's `meta` gains `hyperswitchRefundId`
+        and `refundStatus` (`pending` at issue, `succeeded`/`failed` as the
+        rail's webhooks land); the answer carries the same `refundStatus`. A
+        switch-side refusal records `failed` — the reversal stands, because
+        the books are right regardless — and a replayed reversal on a
+        `failed` refund re-issues the call, so an operator's retry reaches the
+        rail. Other rails answer `refundStatus: null`: their PSP calls are
+        separate issues.
       security:
         - adminToken: []
       parameters:
@@ -6248,6 +6267,18 @@ components:
         entryId: { type: string, format: uuid, nullable: true, description: the ledger entry that credited the wallet, once credited }
         reversalEntryId: { type: string, format: uuid, nullable: true, description: the ledger entry that reversed the credit (Wallet debited, Cash credited), once reversed }
         reversedAt: { type: string, format: date-time, nullable: true, description: when the deposit reversed }
+        refundStatus:
+          type: string
+          enum: [pending, succeeded, failed]
+          nullable: true
+          description: |
+            the payment-provider refund's standing, when the rail issued one
+            (issue #360): `pending` while the rail works it, `succeeded` when the
+            money moved, `failed` when the call was refused (the reversal stands;
+            a retry re-issues it). `null` means the rail issued no refund — the
+            deposit was never reversed through a rail, or the rail carries no
+            refund path.
+        disputedAt: { type: string, format: date-time, nullable: true, description: "when a dispute opened on the payment, when the rail reported one (issue #360)" }
         createdAt: { type: string, format: date-time }
     ReverseDepositRequest:
       type: object
