@@ -157,6 +157,31 @@ The real x402 rail (issue #282) delegates verify/settle to an [x402-rs facilitat
 
 `OXSUM_X402_NETWORK` uses the V1 network name (`base-sepolia` for the CAIP-2 `eip155:84532` chain above); `OXSUM_X402_ASSET` is the USDC contract on that chain, `OXSUM_X402_PAY_TO` the deployment's receiving address. Base Sepolia USDC is free from the Circle faucet, so a full real-rail exercise costs nothing. Without any of this the stand-in verifier (`OXSUM_X402_VERIFYING_KEY`) still covers local development and every test suite.
 
+### Hyperswitch sidecar
+
+The Hyperswitch rail (issue #319) is a self-hosted [Hyperswitch](https://github.com/juspay/hyperswitch) switch running beside oxsum, not a Juspay-hosted dependency — the hosted sandbox's registration has been broken upstream for a while, and a local switch is what a production deploy would run anyway.
+
+The deployment assets live in `infra/hyperswitch/` — a slimmed `compose.yml`, its `config/` and `scripts/`, and `setup.sh`. First time only:
+
+```bash
+./infra/hyperswitch/setup.sh           # clones juspay/hyperswitch into .repo (gitignored)
+docker compose -f infra/hyperswitch/compose.yml up -d
+```
+
+The clone is a cache for the migration_runner's mount (the `migrations/` and `justfile` live upstream, not here); delete `.repo/` and re-run `setup.sh` to refresh it. `setup.sh` also normalizes line endings and comments out upstream's `drop_id.patch`, which does not apply to the schema its own branch generates.
+
+First boot runs several minutes of migrations, then the router, the SDK bundle server, the Control Center and `create-default-user`, which seeds `demo@hyperswitch.com` / `Hyperswitch@123`. Sign in at `http://localhost:9000` and read the three values the rail needs — the API key under Developers → API Keys (`snd_…`), `payment_response_hash_key` under Settings → Payment Settings, and the publishable key (`pk_snd_…`). Configure a Stripe connector with a `sk_test_…` key, then fill `.env`:
+
+```
+OXSUM_HYPERSWITCH_API_KEY=snd_…
+OXSUM_HYPERSWITCH_WEBHOOK_SECRET=<payment_response_hash_key>
+OXSUM_HYPERSWITCH_PUBLISHABLE_KEY=pk_snd_…
+OXSUM_HYPERSWITCH_BASE_URL=http://localhost:8080
+OXSUM_PUBLIC_URL=<the public origin the webhook reaches — a tunnel in local dev>
+```
+
+Ports avoid oxsum's own Postgres and any local Redis: pg `5433`, redis `6380`, superposition `8081`, router `8080`, SDK `9050`, Control Center `9000`. Webhooks need a public URL — `cloudflared tunnel --url http://localhost:3000` or `ngrok http 3000`, then register `<tunnel>/api/v1/webhooks/hyperswitch` in the Control Center and point `OXSUM_PUBLIC_URL` at the tunnel origin.
+
 ## Branch naming
 
 Each branch contains one issue or PR and uses lowercase ASCII in this form:

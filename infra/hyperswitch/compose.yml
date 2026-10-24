@@ -1,0 +1,226 @@
+# Local Hyperswitch sidecar for the oxsum deposit rail (issue #319).
+#
+# This is a slimmed copy of juspay/hyperswitch's docker-compose.yml — the
+# monitoring, scheduler, Kafka, ClickHouse and OpenSearch profiles are dropped;
+# what remains is the minimum the rail needs: the router, its Postgres and
+# Redis, the SDK bundle server and the Control Center. Files are copied, not
+# vendored: to upgrade, re-copy config/ and scripts/ from a fresh clone.
+#
+# Start:  docker compose -f infra/hyperswitch/compose.yml up -d
+# Stop:   docker compose -f infra/hyperswitch/compose.yml down
+# Reset:  docker compose -f infra/hyperswitch/compose.yml down -v
+#
+# After the first boot, the Control Center at http://localhost:9000 has the
+# merchant `demo@hyperswitch.com` / `Hyperswitch@123` (created by
+# create-default-user). The .env keys the rail needs come from it — see
+# docs/development.md, "Hyperswitch sidecar".
+
+volumes:
+  hyperswitch_pg_data:
+
+networks:
+  hyperswitch_net:
+
+services:
+  prestart-hook:
+    image: docker.io/curlimages/curl-base:latest
+    container_name: hyperswitch-prestart-hook
+    environment:
+      - ONE_CLICK_SETUP=${ONE_CLICK_SETUP:-false}
+    entrypoint:
+      [
+        "/bin/sh",
+        "-c",
+        "apk add --no-cache bash && /bin/bash /prestart_hook.sh",
+      ]
+    volumes:
+      - ./scripts/prestart_hook.sh:/prestart_hook.sh
+    networks:
+      - hyperswitch_net
+
+  pg:
+    # Pinned: schema output changes across major versions and the migration
+    # post-step applies a patch that must match what the branch generated.
+    image: docker.io/postgres:17
+    ports:
+      # oxsum's own Postgres already holds 5432 on this machine.
+      - "127.0.0.1:5433:5432"
+    networks:
+      - hyperswitch_net
+    volumes:
+      - hyperswitch_pg_data:/var/lib/postgresql
+    environment:
+      - POSTGRES_USER=db_user
+      - POSTGRES_PASSWORD=db_pass
+      - POSTGRES_DB=hyperswitch_db
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}"]
+      interval: 5s
+      retries: 3
+      start_period: 5s
+      timeout: 5s
+
+  redis-standalone:
+    image: docker.io/redis:7
+    networks:
+      - hyperswitch_net
+    ports:
+      - "127.0.0.1:6380:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep '^PONG$'"]
+      interval: 5s
+      retries: 3
+      start_period: 5s
+      timeout: 5s
+
+  migration_runner:
+    image: docker.io/debian:trixie-slim
+    command: >
+      bash -c "
+      apt-get update && apt-get install -y curl xz-utils &&
+      curl --proto '=https' --tlsv1.2 -LsSf https://github.com/diesel-rs/diesel/releases/download/v2.3.5/diesel_cli-installer.sh | bash &&
+      if ! command -v just >/dev/null 2>&1; then
+        curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
+      fi &&
+      export PATH="$${PATH}:$${HOME}/.cargo/bin" &&
+      just migrate"
+    working_dir: /app
+    networks:
+      - hyperswitch_net
+    volumes:
+      # The migrations and the justfile live in the hyperswitch repo, not here:
+      # `infra/hyperswitch/setup.sh` clones it into .repo (gitignored cache).
+      - ./.repo:/app
+    environment:
+      - DATABASE_URL=postgresql://db_user:db_pass@pg:5432/hyperswitch_db
+
+  superposition:
+    image: ghcr.io/juspay/superposition-demo:0.113.0
+    ports:
+      - "8081:8080"
+    networks:
+      - hyperswitch_net
+    environment:
+      - API_HOSTNAME=http://localhost:8081
+      - REDIS_URL=redis://redis-standalone:6379
+    depends_on:
+      redis-standalone:
+        condition: service_healthy
+
+  superposition-init:
+    image: alpine:latest
+    depends_on:
+      superposition:
+        condition: service_started
+    networks:
+      - hyperswitch_net
+    volumes:
+      - ./config/superposition_seed.toml:/seed.toml:ro
+      - ./scripts/seed_superposition.sh:/seed_superposition.sh:ro
+    environment:
+      - SUPERPOSITION_URL=http://superposition:8080
+      - SEED_FILE=/seed.toml
+      - WORKSPACE_ID=dev
+      - ORG_ID=localorg
+    # The script uses a C-style `for ((…))`; /bin/sh on alpine is dash.
+    command: sh -c "apk add --no-cache curl jq yq bash && bash /seed_superposition.sh"
+
+  hyperswitch-server:
+    image: docker.juspay.io/juspaydotin/hyperswitch-router:standalone
+    pull_policy: always
+    command: /local/bin/router -f /local/config/docker_compose.toml
+    ports:
+      - "8080:8080"
+    networks:
+      - hyperswitch_net
+    volumes:
+      - ./config:/local/config
+      - ./files:/local/bin/files
+    depends_on:
+      pg:
+        condition: service_healthy
+      redis-standalone:
+        condition: service_healthy
+      migration_runner:
+        condition: service_completed_successfully
+      superposition-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: curl --fail http://localhost:8080/health || exit 1
+      interval: 5s
+      retries: 3
+      start_period: 5s
+      timeout: 5s
+
+  hyperswitch-web:
+    image: docker.juspay.io/juspaydotin/hyperswitch-web:latest
+    pull_policy: always
+    ports:
+      - "9050:9050"
+    networks:
+      - hyperswitch_net
+    depends_on:
+      hyperswitch-server:
+        condition: service_healthy
+    environment:
+      - ENABLE_LOGGING=true
+      - SDK_ENV=local
+      - ENV_BACKEND_URL=http://localhost:8080
+
+  hyperswitch-control-center:
+    image: docker.juspay.io/juspaydotin/hyperswitch-control-center:latest
+    pull_policy: always
+    ports:
+      - "9000:9000"
+    environment:
+      - configPath=/tmp/dashboard-config.toml
+      - themeConfigPath=/tmp/dashboard-theme.json
+    volumes:
+      - ./config/dashboard.toml:/tmp/dashboard-config.toml
+      - ./config/dashboard_theme.json:/tmp/dashboard-theme.json
+    depends_on:
+      hyperswitch-server:
+        condition: service_healthy
+      hyperswitch-web:
+        condition: service_started
+
+  create-default-user:
+    image: docker.io/curlimages/curl-base:latest
+    container_name: hyperswitch-create-default-user
+    depends_on:
+      hyperswitch-server:
+        condition: service_healthy
+      hyperswitch-control-center:
+        condition: service_started
+    environment:
+      - HYPERSWITCH_SERVER_URL=http://hyperswitch-server:8080
+      - HYPERSWITCH_CONTROL_CENTER_URL=http://hyperswitch-control-center:9000
+    entrypoint:
+      [
+        "/bin/sh",
+        "-c",
+        "apk add --no-cache bash jq && /bin/bash /create_default_user.sh",
+      ]
+    volumes:
+      - ./scripts/create_default_user.sh:/create_default_user.sh
+    networks:
+      - hyperswitch_net
+
+  poststart-hook:
+    image: docker.io/curlimages/curl-base:latest
+    container_name: hyperswitch-poststart-hook
+    depends_on:
+      hyperswitch-server:
+        condition: service_healthy
+    environment:
+      - ONE_CLICK_SETUP=${ONE_CLICK_SETUP:-false}
+    entrypoint:
+      [
+        "/bin/sh",
+        "-c",
+        "apk add --no-cache bash jq && /bin/bash /poststart_hook.sh",
+      ]
+    volumes:
+      - ./scripts/poststart_hook.sh:/poststart_hook.sh
+    networks:
+      - hyperswitch_net
