@@ -5106,6 +5106,77 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/deposits/{depositId}/reverse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reverse a credited deposit — the ledger half of a refund
+         * @description Reverses one `credited` deposit (issue #356, decision D12): posts one
+         *     ledger entry — Wallet debited, Cash credited, the reason as the entry's
+         *     description — and flips the deposit to `reversed`, recording
+         *     `reversalEntryId` and `reversedAt` on the row.
+         *
+         *     One reversal per deposit ever: the entry's idempotency key is derived
+         *     from the deposit id, so a retried call or a double-click answers the
+         *     standing reversal instead of posting a second one — the answer is the
+         *     already-`reversed` deposit, not a new write.
+         *
+         *     The ledger's own no-overdraft rule refuses a reversal the wallet cannot
+         *     cover — the customer already spent the credit — as `402
+         *     INSUFFICIENT_FUNDS`, never a silent negative balance. A deposit that is
+         *     not `credited` (`pending`, `confirmed`, `expired`) is `409 CONFLICT`,
+         *     and one that does not exist is `404`. An empty reason is `400`.
+         *
+         *     This path moves no money off-platform: the PSP call that returns the
+         *     customer's payment (a Hyperswitch refund and its webhook) is a separate
+         *     issue — the books are right before it runs.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    depositId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ReverseDepositRequest"];
+                };
+            };
+            responses: {
+                /** @description The deposit, now reversed, with the entry that reversed it */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["AdminDeposit"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                402: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/margin": {
         parameters: {
             query?: never;
@@ -8193,8 +8264,22 @@ export interface components {
              * @description the ledger entry that credited the wallet
              */
             entryId?: string | null;
+            /**
+             * Format: uuid
+             * @description the ledger entry that reversed the credit (Wallet debited
+             */
+            reversalEntryId?: string | null;
+            /**
+             * Format: date-time
+             * @description when the deposit reversed
+             */
+            reversedAt?: string | null;
             /** Format: date-time */
             createdAt: string;
+        };
+        ReverseDepositRequest: {
+            /** @description why the deposit is reversed — becomes the reversal entry's description, so it is part of what a bill's proof covers */
+            reason: string;
         };
         ReconciliationReport: {
             /**
