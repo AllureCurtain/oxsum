@@ -36,6 +36,11 @@ pub const DEPOSIT_CREDITED: &str = "deposit.credited";
 pub const DEPOSIT_FAILED: &str = "deposit.failed";
 /// A deposit's rail reversed a credit it had already confirmed.
 pub const DEPOSIT_REVERSED: &str = "deposit.reversed";
+/// A deposit's rail opened a dispute on a credited charge (issue #360) — the
+/// payment's holder contested it, and the platform's response is the ordinary
+/// reversal path. Fires on `dispute_opened`; the dispute's outcome is the
+/// reversal that follows.
+pub const DEPOSIT_DISPUTED: &str = "deposit.disputed";
 /// A settlement took the organization's available balance below the endpoint's
 /// `balanceLowMinor` threshold. Fires on the crossing only; the latch resets
 /// when a deposit credits back above the line.
@@ -77,6 +82,7 @@ const KNOWN_EVENTS: &[&str] = &[
     DEPOSIT_CREDITED,
     DEPOSIT_FAILED,
     DEPOSIT_REVERSED,
+    DEPOSIT_DISPUTED,
     BALANCE_LOW,
     STATEMENT_FINALIZED,
     STATEMENT_OVERDUE,

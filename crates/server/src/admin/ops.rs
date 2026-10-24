@@ -100,6 +100,11 @@ pub(crate) struct DepositRes {
     reversal_entry_id: Option<Uuid>,
     #[serde(with = "time::serde::rfc3339::option")]
     reversed_at: Option<OffsetDateTime>,
+    /// The rail's refund standing, when it issued one (issue #360).
+    refund_status: Option<String>,
+    /// When a dispute opened on the payment, when the rail reported one.
+    #[serde(with = "time::serde::rfc3339::option")]
+    disputed_at: Option<OffsetDateTime>,
     #[serde(with = "time::serde::rfc3339")]
     created_at: OffsetDateTime,
 }
@@ -118,6 +123,8 @@ impl From<oxsum_core::AdminDeposit> for DepositRes {
             entry_id: deposit.entry_id,
             reversal_entry_id: deposit.reversal_entry_id,
             reversed_at: deposit.reversed_at,
+            refund_status: deposit.refund_status,
+            disputed_at: deposit.disputed_at,
             created_at: deposit.created_at,
         }
     }
@@ -183,22 +190,73 @@ pub(crate) async fn reverse_deposit(
         .db
         .reverse_deposit(&wallet, deposit_id, &request.reason, today())
         .await?;
+    // The payment-provider half (issue #360): a hyperswitch deposit also
+    // returns the customer's money through the switch. The reversal already
+    // committed — the books are right regardless — so a switch refusal is
+    // recorded on the row as `refundStatus: failed`, never propagated into the
+    // answer. A retry on a `failed` refund re-issues the call; anything else
+    // (pending, succeeded, or a rail with no refund path) is left alone.
+    let mut deposit = reversed;
+    if deposit.rail == oxsum_core::RAIL_HYPERSWITCH
+        && let Some(switch) = state.config.hyperswitch()
+        && let Ok(Some(target)) = state.db.hyperswitch_refund_target(deposit_id).await
+    {
+        let issue =
+            target.refund_status.is_none() || target.refund_status.as_deref() == Some("failed");
+        if issue {
+            match switch
+                .create_refund(
+                    &state.http,
+                    &target.payment_id,
+                    deposit_id,
+                    target.amount_minor,
+                    &request.reason,
+                )
+                .await
+            {
+                Ok(refund) => {
+                    let _ = state
+                        .db
+                        .record_hyperswitch_refund(
+                            deposit_id,
+                            Some(&refund.refund_id),
+                            &refund.status,
+                        )
+                        .await;
+                }
+                Err(error) => {
+                    tracing::error!(%deposit_id, error = %error.0,
+                        "the switch refused the refund");
+                    let _ = state
+                        .db
+                        .record_hyperswitch_refund(deposit_id, None, "failed")
+                        .await;
+                }
+            }
+            // Re-read the row so the answer carries the refund standing the
+            // call just wrote.
+            if let Ok(Some(fresh)) = state.db.admin_deposit(deposit_id).await {
+                deposit = fresh;
+            }
+        }
+    }
     record(
         &state,
         audit_action::DEPOSIT_REVERSE,
         Some(deposit_id.to_string()),
         serde_json::json!({
             "organizationId": deposit.organization_id,
-            "amountMinor": reversed.amount_minor,
+            "amountMinor": deposit.amount_minor,
             "reason": request.reason,
-            "reversalEntryId": reversed.reversal_entry_id,
+            "reversalEntryId": deposit.reversal_entry_id,
+            "refundStatus": deposit.refund_status,
         }),
         // The reversal's own idempotency anchor is the deposit id: a retried
         // call is the same logical event, which the audit unique index absorbs.
         Some(&format!("deposit-reversal/{deposit_id}")),
     )
     .await?;
-    ok(DepositRes::from(reversed))
+    ok(DepositRes::from(deposit))
 }
 
 /// The settlement kinds an admin reviews: the turns where usage was never reported, the

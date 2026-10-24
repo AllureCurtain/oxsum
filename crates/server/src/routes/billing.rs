@@ -636,8 +636,11 @@ pub(crate) async fn hyperswitch_topup(
 ///
 /// `payment_succeeded` confirms the deposit and credits the wallet under
 /// `hyperswitch:<payment_id>`; `payment_cancelled` and `payment_expired` close
-/// it. Every other event type is recorded and acknowledged: the switch retries
-/// until it hears a 2xx, and refunds and disputes belong to a later issue.
+/// it. The refund and dispute events (issue #360) walk the `meta` the reversal
+/// wrote: `refund_succeeded`/`refund_failed` settle the refund's standing, and
+/// `dispute_opened` records the dispute and enqueues `deposit.disputed`. Every
+/// other event type is recorded and acknowledged: the switch retries until it
+/// hears a 2xx.
 pub(crate) async fn hyperswitch_webhook(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -705,6 +708,59 @@ pub(crate) async fn hyperswitch_webhook(
                     state.db.find_hyperswitch_by_payment(payment_id).await?
             {
                 state.db.expire_hyperswitch_deposit(deposit_id).await?;
+            }
+        }
+        // Refund and dispute events (issue #360): the content object is the
+        // refund or dispute resource — the refund names its own id plus the
+        // payment it refunds, the dispute names only the payment. The deposit
+        // is found by the refund id the reversal recorded, or by the payment
+        // id as a fallback for an event that outran the record.
+        "refund_succeeded" | "refund_failed" => {
+            let object = &event.content.object;
+            let refund_id = object["refund_id"].as_str().unwrap_or_default();
+            let refund_status = object["status"].as_str().unwrap_or_default();
+            let status = if event.event_type == "refund_succeeded" {
+                "succeeded"
+            } else {
+                "failed"
+            };
+            // The webhook's own status wins when it names one; the event type
+            // is the fallback for a payload that leaves it ambiguous.
+            let status = if refund_status.is_empty() {
+                status
+            } else {
+                refund_status
+            };
+            if let Some(payment_id) = payment_id
+                && let Some((deposit_id, _, _)) = state
+                    .db
+                    .find_hyperswitch_by_refund_or_payment(
+                        if refund_id.is_empty() {
+                            None
+                        } else {
+                            Some(refund_id)
+                        },
+                        payment_id,
+                    )
+                    .await?
+            {
+                state
+                    .db
+                    .settle_hyperswitch_refund(deposit_id, refund_id, status)
+                    .await?;
+            }
+        }
+        "dispute_opened" => {
+            if let Some(payment_id) = payment_id
+                && let Some((deposit_id, organization_id, _)) = state
+                    .db
+                    .find_hyperswitch_by_refund_or_payment(None, payment_id)
+                    .await?
+            {
+                state
+                    .db
+                    .record_dispute(deposit_id, organization_id, &event.content.object)
+                    .await?;
             }
         }
         _ => {}
