@@ -1865,3 +1865,15 @@ The `UpstreamBillProvider` seam was cut so a second impl "drops in without touch
 - **The day-close gap is the provider's own, not ours.** Like the OpenAI impl, `daily_cost` returns `None` on an unreachable or refused call — the `upstream-bill-sync` job's "record a coverage gap" rule already handles it, so no new error channel is cut.
 
 **Rejected.** *A per-impl `bill_provider` slot on the job context*: the job holds one `Arc<dyn UpstreamBillProvider>` — adding a second slot would teach the job to route, which is the composite's whole point. *Deriving the endpoint from `base_url` minus `/v1`*: the admin API lives under the same `base_url` the relay uses (`https://api.anthropic.com/v1`), so no string surgery is needed — a deployment pointing the channel at a proxy gets the bill through the same proxy. *Sub-day or per-request grain*: Anthropic's cost report is `bucket_width=1d` only, matching the `(channel, day)` grain the issue-#283 decision already fixed.
+
+## 2026-10-25 — The local pre-push gate defers the full suite to CI (issue #370)
+
+AGENTS.md's "run the workspace suite once before pushing" rule predates the current CI shape — it was written when a green targeted suite let two regressions reach main (a hardcoded table list, a wasm-only compile error). Since then CI grew the full gate end to end: `test` covers lib and doctests fast (#237), `build-tests` + three `test-shard` jobs run every nextest binary off one archive (#276), and `test-extras` runs the process-shared suites plus the ledger-gated doubleentry Postgres conformance run (#277) — all on the required-check chain for a merge.
+
+**Decision: the local gate is `fmt --check` + `clippy --all-targets` + `nextest run -p` on the touched crates; the workspace suite runs in CI, not on the developer's machine.**
+
+- **The required checks are what protects main, not the local run.** A regression cannot merge through a red `test-shard`, so the local full run buys only a few minutes of earlier feedback — worth paying on a cross-crate change (a trait, shared config, a workspace dependency), not on every push.
+- **`--admin` merges are the exception that proves the rule.** They bypass every check, so the convention stands: never `--admin` a PR whose CI is not fully green. Docs-only PRs skip CI via `paths-ignore`, which is why they are the only ones that need it.
+- **CI keeps the whole gate.** Nothing leaves the workflow — this moves where the suite runs, not whether it runs.
+
+**Rejected.** *Keeping the local full run mandatory*: it duplicated CI coverage to guard against a failure mode branch protection now blocks. *Trimming CI to match the thinner local gate*: the shards and archive jobs exist precisely so the full suite answers in minutes on shared runners — weakening CI would re-open the hole this rule once guarded.
