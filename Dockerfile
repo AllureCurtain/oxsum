@@ -4,7 +4,7 @@
 # Build:  docker build -t oxsum .
 # Run:    docker run --rm -p 3000:3000 -e DATABASE_URL=postgresql://user:pass@host/oxsum oxsum
 #
-# The builder matches rust-toolchain.toml (Rust 1.98). The Topcoat dashboard
+# The builder rides the latest stable Rust image. The Topcoat dashboard
 # is server-side rendered; the React scaffold (issue #234) builds in the
 # `frontend` stage and is embedded via rust-embed — the runtime is still the
 # single binary, reqwest uses rustls, so the only system package it needs is
@@ -30,7 +30,7 @@ RUN npm run codegen && npm run build
 # The CLI is the prebuilt release binary whose version must equal the
 # wasm-bindgen crate's (Cargo.lock) — the generated module embeds a schema
 # version the CLI validates.
-FROM rust:1.98-bookworm AS wasm
+FROM rust:bookworm AS wasm
 
 ARG WASM_BINDGEN_VERSION=0.2.129
 # The CLI is a toolchain-independent binary, so its download keeps a layer of
@@ -46,13 +46,7 @@ WORKDIR /app
 # links, and the host-side proc-macro builds would fail without mold
 # installed — the wasm bundle links nothing. Its release profile only costs
 # the bundle a little size, so the stage builds stock.
-COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
-# The target is added here, after the manifest, and never before this COPY:
-# rust-toolchain.toml pins the channel, and rustup installs a target for the
-# toolchain it resolves at the moment it runs. Added before the COPY, wasm32
-# landed on the image's default toolchain while the build used the pinned one,
-# and the stage failed with "can't find crate for `core`" — the failure #49
-# fixed for the Leptos build, reintroduced by #284's rewrite.
+COPY Cargo.toml Cargo.lock ./
 RUN rustup target add wasm32-unknown-unknown
 # cargo resolves the workspace before building -p oxsum-verify, so every
 # member's manifest must exist; only doubleentry + verify carry real sources.
@@ -72,7 +66,7 @@ COPY scripts/build-verify-wasm.sh scripts/build-verify-wasm.sh
 RUN bash scripts/build-verify-wasm.sh
 
 # ---------- builder ----------
-FROM rust:1.98-bookworm AS builder
+FROM rust:bookworm AS builder
 
 # .cargo/config.toml forces mold as the linker on Linux; without it the
 # release link fails with "cannot find 'ld'".
@@ -85,7 +79,7 @@ WORKDIR /app
 # Dependency layer: manifests (and the cargo config that pins the toolchain and
 # the release profile) first, stub sources to satisfy cargo's workspace layout.
 # A later source edit only invalidates the layers below, not this one.
-COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY Cargo.toml Cargo.lock ./
 COPY .cargo/config.toml .cargo/config.toml
 COPY crates/doubleentry/Cargo.toml crates/doubleentry/Cargo.toml
 COPY crates/core/Cargo.toml crates/core/Cargo.toml
