@@ -13,9 +13,14 @@
 //! - [`facilitator`]: the x402-rs facilitator's verify/settle client (issue #282).
 //! - [`x402_facilitator`]: the facilitator-delegated `RailVerifier` (issue #282).
 //! - [`openai_costs`]: the OpenAI Costs admin-API bill provider (issue #283).
+//! - [`anthropic_costs`]: the Anthropic Usage & Cost admin-API bill provider (issue #367).
+//! - [`bill_providers`]: the composite that fans a channel out to the right
+//!   provider impl (issue #367).
 
 pub mod airwallex;
+pub mod anthropic_costs;
 pub mod antibot;
+pub mod bill_providers;
 pub mod facilitator;
 pub mod hyperswitch;
 pub mod mail;

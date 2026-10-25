@@ -1044,7 +1044,16 @@ fn bill_provider_of(
         );
     }
     Ok(Some(std::sync::Arc::new(
-        oxsum_integrations::openai_costs::OpenAiBillProvider::new(reqwest::Client::new()),
+        oxsum_integrations::bill_providers::CompositeBillProvider::new(vec![
+            std::sync::Arc::new(oxsum_integrations::openai_costs::OpenAiBillProvider::new(
+                reqwest::Client::new(),
+            )),
+            std::sync::Arc::new(
+                oxsum_integrations::anthropic_costs::AnthropicBillProvider::new(
+                    reqwest::Client::new(),
+                ),
+            ),
+        ]),
     )))
 }
 
