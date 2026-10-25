@@ -190,6 +190,49 @@ Two wire details the script exists to absorb, both of which cost a debugging rou
 - The USDC Base Sepolia contract's EIP-712 `name` is the string `"USDC"`, **not** `"USD Coin"` — Circle renamed between FiatToken v1 and v2, and the domain separator commits to whichever string the contract signed under. A signer using the wrong name produces a valid-looking signature that `ecrecover` rejects at settle time with `FiatTokenV2: invalid signature`.
 - `coincurve`'s recoverable signature carries the recovery id `v ∈ {0, 1}`; Ethereum's `ecrecover` and the x402 wire want `v ∈ {27, 28}`. The script shifts it — leaving it unshifted surfaces as `ECRecover: invalid signature 'v' value` from the facilitator.
 
+### Real Airwallex rail exercise
+
+The Airwallex rail (issue #285) is verified at the API and webhook layers against `api-demo.airwallex.com`. The hosted-page checkout is deliberately not mounted — see `docs/decisions.md` — so the exercise proves the deposit's `pending → confirmed → credited` walk, not the payer's browser leg.
+
+`.env` carries the rail's five vars:
+
+```
+OXSUM_AIRWALLEX_CLIENT_ID=…
+OXSUM_AIRWALLEX_API_KEY=…
+OXSUM_AIRWALLEX_API_URL=https://api-demo.airwallex.com       # demo, not prod
+OXSUM_AIRWALLEX_CHECKOUT_URL=https://checkout-demo.airwallex.com
+OXSUM_AIRWALLEX_WEBHOOK_SECRET=whsec_…
+```
+
+Then the walk:
+
+```bash
+cargo run -p oxsum-server &
+
+# 1) Open a real intent — the server logs in, calls
+#    /pa/payment_intents/create and answers a real clientSecret.
+curl -X POST http://127.0.0.1:3000/api/v1/topups/airwallex \
+  -H "Authorization: Bearer <org api key>" \
+  -H "content-type: application/json" \
+  -d '{"idempotencyKey":"awx-sandbox-1","amountMinor":500}'
+# → {"data":{"checkoutUrl":"…","clientSecret":"…","depositId":"…","intentId":"int_…"}}
+
+# 2) Simulate the webhook the hosted page would have triggered, signed
+#    under the deployment's webhook secret. scripts/airwallex_webhook.py
+#    carries the recipe; the deposit flips pending → credited.
+WEBHOOK_SECRET=$OXSUM_AIRWALLEX_WEBHOOK_SECRET \
+INTENT_ID=<the intent_id from step 1> \
+MERCHANT_ORDER_ID=<the depositId> \
+AMOUNT_MAJOR=5.00 \
+python3 scripts/airwallex_webhook.py
+# → 200, and the deposit row flips to credited.
+```
+
+Two wire details this exercise surfaced during bring-up (issue #374, fixed by #375/#376):
+
+- `api-demo.airwallex.com` produces TLS 1.3 records rustls cannot decrypt — the rail's HTTP client is capped at `max_tls_version(TLS_1_2)` for this endpoint only; the rest of the workspace stays on 1.3.
+- The demo login endpoint requires `Content-Length` even on a bodyless credential POST — without it the answer is `411 Length Required` with an HTML body that decodes as a "response unreadable" failure rather than the real status.
+
 ### Hyperswitch sidecar
 
 The Hyperswitch rail (issue #319) is a self-hosted [Hyperswitch](https://github.com/juspay/hyperswitch) switch running beside oxsum, not a Juspay-hosted dependency — the hosted sandbox's registration has been broken upstream for a while, and a local switch is what a production deploy would run anyway.
