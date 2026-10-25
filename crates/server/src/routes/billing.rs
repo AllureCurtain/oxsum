@@ -449,7 +449,7 @@ pub(crate) async fn airwallex_topup(
         }));
     }
     let intent = airwallex
-        .create_payment_intent(&state.http, deposit_id, r.amount_minor)
+        .create_payment_intent(deposit_id, r.amount_minor)
         .await
         .map_err(|e| {
             tracing::error!(error = %e.0, "airwallex payment intent failed");

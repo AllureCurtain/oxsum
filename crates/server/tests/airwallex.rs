@@ -101,6 +101,7 @@ async fn world() -> Option<(Router, Db, AirwallexStub)> {
             api_url,
             "https://checkout.airwallex.com".to_owned(),
             "http://localhost:3000".to_owned(),
+            reqwest::Client::new(),
         ));
     let (app, _events, _metrics) = oxsum_server::app_with_billing(db.clone(), config);
     Some((app, db, stub))

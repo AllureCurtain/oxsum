@@ -1266,6 +1266,15 @@ fn airwallex_of() -> Result<Option<crate::airwallex::Airwallex>, String> {
         var("OXSUM_AIRWALLEX_API_URL").unwrap_or_else(|| "https://api.airwallex.com".to_owned());
     let checkout_url = var("OXSUM_AIRWALLEX_CHECKOUT_URL")
         .unwrap_or_else(|| "https://checkout.airwallex.com".to_owned());
+    // The Airwallex demo endpoint's TLS 1.3 records do not decrypt under
+    // rustls (issue #374); the rail's HTTP client is capped at TLS 1.2, the
+    // same transport the test exercises. A TLS-1.3-capable caller can pass
+    // its own client through `Airwallex::new` if it needs one — the seam is
+    // already there.
+    let http = reqwest::Client::builder()
+        .max_tls_version(reqwest::tls::Version::TLS_1_2)
+        .build()
+        .map_err(|e| format!("airwallex http client: {e}"))?;
     Ok(Some(crate::airwallex::Airwallex::new(
         client_id,
         api_key,
@@ -1273,6 +1282,7 @@ fn airwallex_of() -> Result<Option<crate::airwallex::Airwallex>, String> {
         api_url,
         checkout_url,
         public_url,
+        http,
     )))
 }
 
