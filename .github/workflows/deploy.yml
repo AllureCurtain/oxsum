@@ -79,6 +79,7 @@ jobs:
       - name: Pull and restart
         run: |
           ssh -i ~/.ssh/deploy_key -o BatchMode=yes \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=10 \
             "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" << EOF
           set -e
           docker pull ghcr.io/allurecurtain/oxsum:latest
@@ -97,6 +98,7 @@ jobs:
         run: |
           for attempt in $(seq 1 30); do
             if ssh -i ~/.ssh/deploy_key -o BatchMode=yes \
+              -o ServerAliveInterval=15 -o ServerAliveCountMax=10 \
               "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
               "curl --fail --silent http://127.0.0.1:${{ inputs.port }}/healthz" >/dev/null 2>&1; then
               echo "oxsum answered /healthz after ${attempt} attempt(s)"
@@ -106,6 +108,7 @@ jobs:
           done
           echo "oxsum never answered /healthz"
           ssh -i ~/.ssh/deploy_key -o BatchMode=yes \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=10 \
             "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
             "docker logs oxsum 2>&1 | tail -30" || true
           exit 1
