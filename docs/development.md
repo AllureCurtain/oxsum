@@ -334,8 +334,8 @@ creates `ledger_<tenant_id>` on first use.
 | Start the database | `docker compose up -d` |
 | Start the server | `cargo run -p oxsum-server` |
 | Seed the demo world | `cargo run -p oxsum-server -- seed` (populates, prints the credentials, exits — see "Demo data") |
-| All tests | `cargo nextest run --workspace` — the pre-push gate (loads `DATABASE_URL` from `.env` or the shell; `cargo test --workspace` is the fallback and covers doctests) |
-| Focused while iterating | `cargo nextest run -p oxsum-<crate>` — only the crates the change touched; the workspace suite runs once before pushing, not per edit |
+| All tests | `cargo nextest run --workspace` — runs the full suite locally (loads `DATABASE_URL` from `.env` or the shell; `cargo test --workspace` is the fallback and covers doctests). Worth it for cross-crate changes; otherwise CI runs the same coverage on every PR — see "CI" below |
+| Focused while iterating | `cargo nextest run -p oxsum-<crate>` — only the crates the change touched; the local pre-push gate is fmt + clippy + these focused runs, with CI holding the full suite |
 | Run the end-to-end demo | `python3 demo/demo.py` (needs `pip install -r demo/requirements.txt`; starts its own mock upstream and server) |
 | Generative sequences, quick run | `PROPTEST_CASES=50 cargo test -p oxsum-core --test generative` |
 | Real-provider end-to-end check | `cargo test -p oxsum-server --test real_upstream` (needs env vars — see "Real-provider smoke check") |
@@ -600,9 +600,12 @@ table above names.
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on every push to `main` and every pull request that
-touches more than documentation (`paths-ignore` skips `docs/**` and `*.md`). The
-toolchain comes from `dtolnay/rust-toolchain@stable` with `toolchain: "1.98"` (matching
-`rust-toolchain.toml`) and the `rustfmt, clippy` components:
+touches more than documentation (`paths-ignore` skips `docs/**` and `*.md`). Together
+the jobs below are the full gate — a regression cannot reach main through a PR, so
+the local pre-push bar stays at fmt + clippy + the touched crates' tests (issue
+#370). The toolchain comes from `dtolnay/rust-toolchain@stable` with
+`toolchain: "1.98"` (matching `rust-toolchain.toml`) and the `rustfmt, clippy`
+components:
 
 - `fmt`: `cargo fmt --all --check`.
 - `clippy`: `cargo clippy --workspace --all-targets` with `-D warnings`. No database

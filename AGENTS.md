@@ -31,7 +31,7 @@ Full command list in docs/development.md.
 docker compose up -d                       # start the database
 cargo run -p oxsum-server                  # start the server (needs variables from .env)
 cargo nextest run -p oxsum-<crate>       # focused tests while iterating (loads .env when present)
-cargo nextest run --workspace            # the full suite — once, before pushing
+cargo nextest run --workspace            # the full suite — cross-crate changes, or just before a risky push
 cargo fmt --all && cargo clippy --workspace --all-targets
 ```
 
@@ -42,13 +42,15 @@ runner for doctests (`cargo test --doc`).
 
 ## Before pushing
 
-Never push after running only the tests the change touched — a green targeted suite has let regressions reach main twice (a hardcoded table list, a wasm-only compile error). Iterate with `cargo nextest run -p <crate>` on the crates you changed, then run the full gate once:
+CI runs the full gate — lib/doc tests, the three nextest shards, the process-shared suites and the doubleentry Postgres conformance run — and every job sits on the required-check chain, so a regression cannot reach main through a PR. The local gate is the fast half:
 
 ```bash
 cargo fmt --all --check
 cargo clippy --workspace --all-targets
-cargo nextest run --workspace
+cargo nextest run -p <crate>   # the crates the change touched
 ```
+
+Run `cargo nextest run --workspace` locally when the change crosses crates — a trait, shared config, a workspace dependency — or when CI being red would cost more than the seven minutes the suite takes. A `--admin` merge skips every check; never use it on a PR whose CI is not fully green.
 
 ## Development process
 
