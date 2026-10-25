@@ -1,8 +1,10 @@
 # TODO
 
-Updated: 2026-10-22
+Updated: 2026-10-25
 
 ## In progress
+
+- Dashboard visual refresh (#379, PR #380): cobalt palette on a tinted slate substrate, dark rail sidebar with grouped nav, redesigned card/table/KPI surfaces, vendored Cult UI's rainbow gradients recolored to cobalt.
 
 The next-phase gap plan is closed: #276's test-sharding shipped (PR #279); job leader election (#281) shipped (PR #288); the x402 facilitator rail (#282) shipped (PR #289); upstream bill reconciliation (#283) shipped (PR #290); /verify browser-side wasm (#284) shipped (PR #291); the Airwallex deposit rail (#285) shipped (PR #292); model aliases (#286) shipped (PR #294); the demo GIF automation (#287) is closed as not planned — a live demo supersedes the recording.
 
