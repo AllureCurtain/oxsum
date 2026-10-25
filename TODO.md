@@ -34,6 +34,8 @@ Post-roadmap validation: the local Docker daemon accumulated eight orphaned `pos
 
 Post-roadmap validation: `test-integration` was the merge-time bottleneck at ~13 minutes — disk prep, the workspace suite, the process-shared suites and the ledger gate all serialized onto one runner (#276, shipped: `build-tests` archives every test binary once, three `test-shard` jobs partition it under `cargo nextest run --archive-file … --partition count:i/3`, and `test-extras` runs the process-shared suites and the doubleentry gate off the same archives with no recompile).
 
+Post-roadmap validation: the x402 facilitator rail had only ever been exercised against stubs — issue #372 ran one real EIP-3009 authorization end-to-end against `facilitator.x402.rs` on Base Sepolia and the rail is now live-verified on testnet. `scripts/x402_sign.py` carries the recipe.
+
 ## Next
 
 The P1–P8 roadmap, the Q1–Q4 verifiability phase and the next-phase gap plan are all closed; there is no standing plan section left here. Work continues one issue at a time, opened as the direction is settled — the open issues are the queue, and each carries its own completion criteria.

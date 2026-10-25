@@ -157,6 +157,39 @@ The real x402 rail (issue #282) delegates verify/settle to an [x402-rs facilitat
 
 `OXSUM_X402_NETWORK` uses the V1 network name (`base-sepolia` for the CAIP-2 `eip155:84532` chain above); `OXSUM_X402_ASSET` is the USDC contract on that chain, `OXSUM_X402_PAY_TO` the deployment's receiving address. Base Sepolia USDC is free from the Circle faucet, so a full real-rail exercise costs nothing. Without any of this the stand-in verifier (`OXSUM_X402_VERIFYING_KEY`) still covers local development and every test suite.
 
+#### Real x402 rail exercise
+
+A full end-to-end run — a real signed authorization verified and settled on-chain — is a cheap recipe. `scripts/x402_sign.py` produces the wire `payment` string for `POST /api/v1/topups/x402`; the hosted facilitator `https://facilitator.x402.rs` already serves `base-sepolia` under the V1 `exact` scheme, so no local sidecar is needed:
+
+```bash
+# .env carries the rail's four vars:
+#   OXSUM_X402_FACILITATOR_URL=https://facilitator.x402.rs
+#   OXSUM_X402_NETWORK=base-sepolia
+#   OXSUM_X402_ASSET=0x036CbD53842c5426634e7929541eC2318f3dCF7e   # USDC on Base Sepolia
+#   OXSUM_X402_PAY_TO=<the deployment's receiving address>
+
+cargo run -p oxsum-server &
+
+WIRE=$(PAYER_KEY=<the payer's secp256k1 key> \
+       PAY_TO=$OXSUM_X402_PAY_TO \
+       AMOUNT_MINOR=5000000 \
+       python3 scripts/x402_sign.py)
+
+curl -X POST http://127.0.0.1:3000/api/v1/topups/x402 \
+  -H "Authorization: Bearer <org api key>" \
+  -H "content-type: application/json" \
+  -d "{\"payment\":\"$WIRE\",\"amountMinor\":5000000}"
+# → {"data":{"entryId":…,"logIndex":…,"isNew":true}} and the deposit row
+# carries the on-chain tx hash on `facilitator_tx_hash`.
+```
+
+A successful run was exercised against Base Sepolia on 2026-10-25 (issue #372) — transaction `0xe25f9c399dbb2f620d236246ac382b8d7cf9760bc6ec4d184442a7bff0cc4038` on `https://sepolia.basescan.org` — so the row sits at **live-verified** in `docs/rails.md`. The wallet needs only faucet USDC; the facilitator fronts the gas.
+
+Two wire details the script exists to absorb, both of which cost a debugging round-trip during bring-up:
+
+- The USDC Base Sepolia contract's EIP-712 `name` is the string `"USDC"`, **not** `"USD Coin"` — Circle renamed between FiatToken v1 and v2, and the domain separator commits to whichever string the contract signed under. A signer using the wrong name produces a valid-looking signature that `ecrecover` rejects at settle time with `FiatTokenV2: invalid signature`.
+- `coincurve`'s recoverable signature carries the recovery id `v ∈ {0, 1}`; Ethereum's `ecrecover` and the x402 wire want `v ∈ {27, 28}`. The script shifts it — leaving it unshifted surfaces as `ECRecover: invalid signature 'v' value` from the facilitator.
+
 ### Hyperswitch sidecar
 
 The Hyperswitch rail (issue #319) is a self-hosted [Hyperswitch](https://github.com/juspay/hyperswitch) switch running beside oxsum, not a Juspay-hosted dependency — the hosted sandbox's registration has been broken upstream for a while, and a local switch is what a production deploy would run anyway.

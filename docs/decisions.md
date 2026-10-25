@@ -1877,3 +1877,15 @@ AGENTS.md's "run the workspace suite once before pushing" rule predates the curr
 - **CI keeps the whole gate.** Nothing leaves the workflow — this moves where the suite runs, not whether it runs.
 
 **Rejected.** *Keeping the local full run mandatory*: it duplicated CI coverage to guard against a failure mode branch protection now blocks. *Trimming CI to match the thinner local gate*: the shards and archive jobs exist precisely so the full suite answers in minutes on shared runners — weakening CI would re-open the hole this rule once guarded.
+
+## 2026-10-25 — The x402 rail's first live run, and the two wire details it taught us (issue #372)
+
+The x402 rail's `X402FacilitatorVerifier` was already shipped and tested against stubs (#282). What had not happened was a real on-chain settlement — the hosted facilitator's `verify` was answering our shape, but the question "does an actual EIP-3009 signature pass" was still open. Issue #372 ran one end-to-end against `facilitator.x402.rs` on Base Sepolia and the rail is now live-verified: transaction `0xe25f9c399dbb2f620d236246ac382b8d7cf9760bc6ec4d184442a7bff0cc4038` landed the USDC transfer on-chain, the facilitator's relayer paid the gas, and `oxsum.deposits.facilitator_tx_hash` carries the proof.
+
+**Decision: keep the throwaway Python signer as `scripts/x402_sign.py`, and record the two wire details that bit during bring-up so a reader reproducing the exercise does not have to rediscover them.**
+
+- **The contract's EIP-712 domain `name` is `"USDC"`, not `"USD Coin"`.** Circle renamed the token when moving from FiatToken v1 to v2, and the domain separator commits to whichever string the contract actually signed under. Probing `DOMAIN_SEPARATOR()` on the live contract returns `0x71f17a3b…` — matching `"USDC"` — where `"USD Coin"` would produce `0x2f5ab5ee…`. A signer with the wrong name produces a valid-looking signature the contract rejects with `FiatTokenV2: invalid signature`, one level above the more common "wrong v" failure.
+- **`v` on the wire is `{27, 28}`, not the recovery id `{0, 1}`.** `coincurve` and most modern secp256k1 libraries return the raw recovery bit; Ethereum's `ecrecover` and the x402 wire convention both expect it shifted by 27. The script does the shift; a signature with `v` unshifted surfaces from the facilitator as `ECRecover: invalid signature 'v' value`.
+- **The facilitator fronts the gas.** Under `exact` on EVM, the facilitator's relayer submits the `transferWithAuthorization` transaction itself — the test wallet only needs the asset being transferred (faucet USDC), never the chain's native token. This is what makes the rail cheap to exercise on a testnet.
+
+**Rejected.** *A Rust signer instead of Python*: pulling `alloy` or `ethers` into the workspace to sign one authorization would drag a large dependency tree in for a once-per-deployment exercise. `coincurve` + `pycryptodome` are pip-installable and the script is short enough to audit by reading. *Hardcoding the token name*: it bit once already — the env var makes the next chain's bring-up one probe away instead of a debug session.
