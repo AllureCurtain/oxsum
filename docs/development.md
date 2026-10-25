@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Rust 1.98: `rust-toolchain.toml` selects it automatically; rustup installs it on demand
+- Rust stable: no toolchain pin — rustup uses whatever `stable` resolves to. The workspace MSRV is `rust-version = "1.98"` in the root manifest; cargo will refuse to build on anything older.
 - Docker: runs local PostgreSQL 17, also used by doubleentry's Postgres tests
 
 On Windows with Git Bash, Git's own `/usr/bin/link` shadows MSVC's `link.exe` and linking fails with `link: missing operand`. Either build inside a VS Developer shell, or export the `vcvars64.bat` environment into the current shell first.
@@ -679,9 +679,9 @@ table above names.
 touches more than documentation (`paths-ignore` skips `docs/**` and `*.md`). Together
 the jobs below are the full gate — a regression cannot reach main through a PR, so
 the local pre-push bar stays at fmt + clippy + the touched crates' tests (issue
-#370). The toolchain comes from `dtolnay/rust-toolchain@stable` with
-`toolchain: "1.98"` (matching `rust-toolchain.toml`) and the `rustfmt, clippy`
-components:
+#370). The toolchain comes from `dtolnay/rust-toolchain@stable` — the runner's
+stable, no version pin — with the `rustfmt, clippy` components where they are
+needed:
 
 - `fmt`: `cargo fmt --all --check`.
 - `clippy`: `cargo clippy --workspace --all-targets` with `-D warnings`. No database
@@ -689,7 +689,7 @@ components:
   touches a live database.
 - `wasm`: builds the image's `wasm` stage (`docker build --target wasm .`) before
   merge, but only when the change can affect it — `Dockerfile`, `.dockerignore`,
-  `rust-toolchain.toml`, the manifests and lockfile, `scripts/`,
+  the manifests and lockfile, `scripts/`,
   `crates/verify/` or a workflow file (issue #296). The job always runs and
   succeeds as a no-op otherwise, so it can be a required check; it is the only
   PR-time gate that compiles the verifier for wasm32.

@@ -4,7 +4,7 @@ A verifiable AI credit wallet: users top up credits, each streaming LLM call fre
 
 ## Tech stack
 
-- Language: Rust 1.98, full stack, see `rust-toolchain.toml`
+- Language: Rust stable, full stack; the workspace MSRV is `rust-version = "1.98"` in the root manifest
 - Ledger core: doubleentry, vendored in `crates/doubleentry`
 - Backend: axum 0.8 + sqlx + PostgreSQL 17
 - Frontend: React + Vite dashboard in `web/` (issue #234), embedded into the binary and served at `/app`; the Topcoat server-rendered pages retired to it (issue #256) — `crates/web` now holds only the deliberately server-rendered `/verify` page and the bills-export row types. Legacy `/dashboard/*`, auth and `/admin` paths `301` to `/app`. UI rules in DESIGN.md
