@@ -76,11 +76,13 @@ export function Cr(props: { minor: number; currency?: DisplayCurrency | null }) 
   );
 }
 
+/* ---------- KPI tiles ---------- */
+
 export function Kpi(props: { label: string; value: ReactNode; hint?: string }) {
   return (
-    <div className="rounded-md border border-line bg-surface p-4">
-      <p className="text-xs text-muted">{props.label}</p>
-      <p className="mt-1 text-2xl font-semibold tabular-nums">{props.value}</p>
+    <div className="rounded-xl border border-line bg-surface p-4 shadow-[0_1px_3px_rgba(20,34,64,.05)]">
+      <p className="text-xs font-medium text-muted">{props.label}</p>
+      <p className="mt-1.5 text-2xl font-bold tabular-nums tracking-tight text-ink">{props.value}</p>
       {props.hint ? <p className="mt-1 text-xs text-muted">{props.hint}</p> : null}
     </div>
   );
@@ -96,11 +98,19 @@ export function AnimatedKpi(props: {
   minor: number;
   hint?: string;
   currency?: DisplayCurrency | null;
+  icon?: ReactNode;
 }) {
   return (
-    <div className="rounded-md border border-line bg-surface p-4">
-      <p className="text-xs text-muted">{props.label}</p>
-      <p className="mt-1 text-2xl font-semibold tabular-nums">
+    <div className="rounded-xl border border-line bg-surface p-4 shadow-[0_1px_3px_rgba(20,34,64,.05)]">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-medium text-muted">{props.label}</p>
+        {props.icon ? (
+          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary-soft text-primary">
+            {props.icon}
+          </span>
+        ) : null}
+      </div>
+      <p className="mt-1 text-2xl font-bold tabular-nums tracking-tight text-ink">
         <RollingNumber
           value={props.minor / 1_000_000}
           precision={6}
@@ -118,48 +128,58 @@ export function AnimatedKpi(props: {
   );
 }
 
-export function Card(props: { title?: string; actions?: ReactNode; children: ReactNode }) {
+/* ---------- Card ---------- */
+
+export function Card(props: { title?: string; actions?: ReactNode; children: ReactNode; flush?: boolean }) {
   return (
-    <section className="rounded-md border border-line bg-surface">
+    <section className="rounded-xl border border-line bg-surface shadow-[0_1px_3px_rgba(20,34,64,.05)]">
       {props.title ? (
-        <div className="flex items-center justify-between border-b border-line px-4 py-3">
-          <h2 className="text-base font-semibold">{props.title}</h2>
+        <div className="flex items-center justify-between border-b border-line px-5 py-3.5">
+          <h2 className="text-[15px] font-semibold text-ink">{props.title}</h2>
           {props.actions}
         </div>
       ) : null}
-      <div className="p-4">{props.children}</div>
+      <div className={props.flush ? "" : "p-5"}>{props.children}</div>
     </section>
   );
 }
 
+/* ---------- States ---------- */
+
 export function PageState(props: { children: ReactNode }) {
-  return <p className="px-2 py-8 text-center text-muted">{props.children}</p>;
+  return (
+    <div className="flex flex-col items-center gap-2 px-4 py-10 text-center">
+      <p className="text-sm text-muted">{props.children}</p>
+    </div>
+  );
 }
 
 export function EmptyRows(props: { colSpan: number; children: ReactNode }) {
   return (
     <tr>
-      <td colSpan={props.colSpan} className="px-3 py-8 text-center text-muted">
+      <td colSpan={props.colSpan} className="px-4 py-10 text-center text-sm text-muted">
         {props.children}
       </td>
     </tr>
   );
 }
 
+/* ---------- Table ---------- */
+
 export function TableShell(props: { head: ReactNode[]; children: ReactNode }) {
   return (
-    <div className="overflow-x-auto rounded-md border border-line bg-surface">
-      <table className="w-full border-collapse text-sm">
+    <div className="overflow-x-auto">
+      <table className="w-full border-collapse text-[13px]">
         <thead>
-          <tr className="border-b border-line text-left text-xs text-muted">
+          <tr className="border-b border-line text-left text-[11.5px] font-semibold uppercase tracking-wider text-muted">
             {props.head.map((h, i) => (
-              <th key={i} className="px-3 py-2 font-medium">
+              <th key={i} className="px-4 py-2.5">
                 {h}
               </th>
             ))}
           </tr>
         </thead>
-        <tbody className="[&>tr]:border-b [&>tr]:border-line [&>tr:last-child]:border-0 [&>tr>td]:px-3 [&>tr>td]:py-2">
+        <tbody className="[&>tr]:border-b [&>tr]:border-line [&>tr:last-child]:border-0 [&>tr>td]:px-4 [&>tr>td]:py-2.5">
           {props.children}
         </tbody>
       </table>
@@ -167,16 +187,41 @@ export function TableShell(props: { head: ReactNode[]; children: ReactNode }) {
   );
 }
 
+/* ---------- Badges ---------- */
+
 /** A status word as the pages color it: settled green, refused red, the rest muted. */
 export function StatusBadge(props: { status: string }) {
-  const color =
+  const cls =
     props.status === "settled"
       ? "text-success"
       : props.status === "refused" || props.status === "errored"
         ? "text-danger"
-        : "text-muted";
-  return <span className={`text-xs font-medium ${color}`}>{props.status}</span>;
+        : props.status === "credited" || props.status === "confirmed"
+          ? "text-success"
+          : "text-muted";
+  return (
+    <span className={`inline-flex items-center gap-1.5 text-xs font-medium ${cls}`}>
+      <span className="inline-block h-1.5 w-1.5 rounded-full bg-current" />
+      {props.status}
+    </span>
+  );
 }
+
+export function Tag(props: { children: ReactNode; accent?: boolean }) {
+  return (
+    <span
+      className={`inline-block rounded-md px-1.5 py-0.5 text-[11px] font-medium ${
+        props.accent
+          ? "bg-primary-soft text-primary"
+          : "bg-secondary text-muted-foreground"
+      }`}
+    >
+      {props.children}
+    </span>
+  );
+}
+
+/* ---------- Banner ---------- */
 
 export function Banner(props: { tone?: "info" | "warn" | "error" | "success"; children: ReactNode }) {
   const tone = props.tone ?? "info";
@@ -188,12 +233,14 @@ export function Banner(props: { tone?: "info" | "warn" | "error" | "success"; ch
         : tone === "success"
           ? "border-success/40 bg-green-50 text-success"
           : "border-primary/40 bg-primary-soft text-primary";
-  return <p className={`rounded-md border px-3 py-2 text-sm ${cls}`}>{props.children}</p>;
+  return <p className={`rounded-lg border px-3.5 py-2.5 text-sm ${cls}`}>{props.children}</p>;
 }
+
+/* ---------- Form ---------- */
 
 export function Field(props: { label: string; hint?: string; children: ReactNode }) {
   return (
-    <label className="flex flex-col gap-1 text-sm">
+    <label className="flex flex-col gap-1.5 text-sm">
       <span className="text-xs font-medium text-muted">{props.label}</span>
       {props.children}
       {props.hint ? <span className="text-xs text-muted">{props.hint}</span> : null}
@@ -202,7 +249,7 @@ export function Field(props: { label: string; hint?: string; children: ReactNode
 }
 
 const INPUT =
-  "rounded-md border border-line bg-surface px-2.5 py-1.5 text-sm text-ink placeholder:text-muted focus:border-primary";
+  "rounded-lg border border-input bg-surface px-3 py-2 text-sm text-ink placeholder:text-muted focus:border-primary focus:outline-none focus:ring-2 focus:ring-ring/30";
 
 export function TextInput(props: React.InputHTMLAttributes<HTMLInputElement>) {
   return <input {...props} className={`${INPUT} ${props.className ?? ""}`} />;
@@ -223,11 +270,11 @@ export function Button(props: React.ButtonHTMLAttributes<HTMLButtonElement> & { 
       ? "border border-line bg-surface text-ink hover:bg-canvas"
       : tone === "danger"
         ? "border border-danger bg-danger text-white hover:bg-danger-hover"
-        : "bg-primary text-white hover:bg-primary-hover";
+        : "bg-primary text-white shadow-[0_2px_8px_rgba(45,91,216,.3)] hover:bg-primary-hover";
   return (
     <button
       {...props}
-      className={`rounded-md px-3 py-1.5 text-sm font-medium disabled:opacity-50 ${cls} ${props.className ?? ""}`}
+      className={`rounded-lg px-3.5 py-2 text-sm font-medium transition-colors disabled:opacity-50 ${cls} ${props.className ?? ""}`}
     />
   );
 }

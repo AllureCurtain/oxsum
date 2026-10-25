@@ -263,9 +263,9 @@ export function HaloButton({
     }
     return {
       opacityIdle: idleOpacity,
-      primaryBg: "linear-gradient(90deg, #ff0080, #7928ca, #00d4ff, #0070f3)",
-      secondaryBg: "linear-gradient(90deg, #ff4d4d, #f9cb28, #ff0080)",
-      tertiaryBg: "linear-gradient(90deg, #0070f3, #00d4ff, #7928ca)",
+      primaryBg: "linear-gradient(90deg, #2D5BD8, #4E7CF0, #7BA3F5)",
+      secondaryBg: "linear-gradient(90deg, #1e3fa0, #2D5BD8, #4E7CF0)",
+      tertiaryBg: "linear-gradient(90deg, #2D5BD8, #6a8ff0, #4E7CF0)",
       primaryLeft: ["-5%", "75%", "-5%"],
       secondaryLeft: ["65%", "10%", "65%"],
       tertiaryLeft: ["25%", "55%", "25%"],

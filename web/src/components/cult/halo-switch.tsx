@@ -159,14 +159,14 @@ export function HaloSwitch({
               className="absolute inset-0 blur-2xl"
               style={{
                 background:
-                  "radial-gradient(90% 70% at 50% 100%, rgba(255,0,128,0.28), rgba(121,40,202,0.12) 48%, transparent 62%)",
+                  "radial-gradient(90% 70% at 50% 100%, rgba(45,91,216,0.22), rgba(78,124,240,0.10) 48%, transparent 62%)",
               }}
             />
             <div
               className="absolute inset-0 opacity-70 blur-xl dark:opacity-50"
               style={{
                 background:
-                  "radial-gradient(70% 55% at 30% 0%, rgba(0,212,255,0.22), rgba(0,112,243,0.08) 45%, transparent 58%)",
+                  "radial-gradient(70% 55% at 30% 0%, rgba(94,140,255,0.18), rgba(45,91,216,0.07) 45%, transparent 58%)",
               }}
             />
           </div>
@@ -197,12 +197,12 @@ export function HaloSwitch({
             "after:-inset-x-3 after:pointer-events-auto after:absolute after:z-0 after:rounded-[9999px] after:bg-transparent after:content-['']",
             hitAfterY,
             "focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30",
-            "data-unchecked:bg-[color-mix(in_oklch,var(--muted)_36%,oklch(0.945_0.032_295))]",
-            /* Solid oklch ramp: same mix bases as unchecked/shell, stronger chroma (magenta → purple → cyan) — no alpha, no track blur */
-            "data-checked:bg-[linear-gradient(180deg,color-mix(in_oklch,var(--muted)_32%,oklch(0.9_0.045_325))_0%,color-mix(in_oklch,var(--muted)_30%,oklch(0.87_0.068_290))_38%,color-mix(in_oklch,var(--muted)_30%,oklch(0.87_0.065_250))_72%,color-mix(in_oklch,var(--muted)_32%,oklch(0.85_0.072_268))_100%)]",
-            "dark:data-checked:bg-[linear-gradient(180deg,color-mix(in_oklch,var(--input)_80%,oklch(0.52_0.11_318))_0%,color-mix(in_oklch,var(--input)_78%,oklch(0.5_0.13_282))_36%,color-mix(in_oklch,var(--input)_78%,oklch(0.5_0.12_248))_70%,color-mix(in_oklch,var(--input)_80%,oklch(0.48_0.13_268))_100%)]",
+            "data-unchecked:bg-[color-mix(in_oklch,var(--muted)_36%,oklch(0.94_0.02_265))]",
+            /* Solid cobalt ramp: checked = accent hue, unchecked = muted cool tint */
+            "data-checked:bg-[linear-gradient(180deg,color-mix(in_oklch,var(--muted)_32%,oklch(0.6_0.2_265))_0%,color-mix(in_oklch,var(--muted)_30%,oklch(0.55_0.22_268))_38%,color-mix(in_oklch,var(--muted)_30%,oklch(0.58_0.2_262))_72%,color-mix(in_oklch,var(--muted)_32%,oklch(0.52_0.21_265))_100%)]",
+            "dark:data-checked:bg-[linear-gradient(180deg,color-mix(in_oklch,var(--input)_80%,oklch(0.45_0.15_265))_0%,color-mix(in_oklch,var(--input)_78%,oklch(0.42_0.16_268))_36%,color-mix(in_oklch,var(--input)_78%,oklch(0.44_0.15_262))_70%,color-mix(in_oklch,var(--input)_80%,oklch(0.40_0.16_265))_100%)]",
             "data-disabled:cursor-not-allowed data-disabled:opacity-50",
-            "dark:data-unchecked:bg-[color-mix(in_oklch,var(--input)_86%,oklch(0.38_0.035_280))]",
+            "dark:data-unchecked:bg-[color-mix(in_oklch,var(--input)_86%,oklch(0.35_0.03_265))]",
             trackSize
           )}
           data-size={size}

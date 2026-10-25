@@ -1,44 +1,55 @@
 @import "tailwindcss";
 
-/* DESIGN.md tokens, mapped onto the Tailwind theme so utility classes name
- * the same palette the Topcoat dashboard uses (issue #234).
- * Type scale 12 / 14 / 16 / 20 / 24, body 14; spacing in multiples of 4.
+/* finesse · register=product · A=cobalt-on-cool-slate · B=700/400 ·
+ * C=sidebar-groups+topbar · D=none · E=paper-and-ink · SOUL=4 SPECTACLE=2 DENSITY=7
+ *
+ * Cobalt Trust palette (product-palettes.md Set 9) — the deliberate platform
+ * blue, substrate tinted so it doesn't read as the reflex #3B82F6 default.
+ * DESIGN.md tokens stay the source of truth: type scale 12/14/16/20/24,
+ * spacing multiples of 4, amounts mono right-aligned.
  */
 @theme {
-  --color-primary: #1d4ed8;
-  --color-primary-hover: #1e40af;
-  --color-primary-soft: #dbeafe;
-  --color-danger: #b91c1c;
-  --color-danger-hover: #991b1b;
-  --color-success: #15803d;
-  --color-pending: #a16207;
-  --color-ink: #111827;
-  --color-muted: #6b7280;
-  --color-canvas: #f9fafb;
+  /* substrate — cool slate tinted to cobalt's hue */
+  --color-primary: #2D5BD8;
+  --color-primary-hover: #2450be;
+  --color-primary-soft: #dbe4f8;
+  --color-danger: #C0453C;
+  --color-danger-hover: #a83a32;
+  --color-success: #2F7A55;
+  --color-pending: #B77A16;
+  --color-ink: #121a2b;
+  --color-muted: #69768c;
+  --color-canvas: #edf0f6;
   --color-surface: #ffffff;
-  --color-line: #e5e7eb;
-  --color-focus: #93c5fd;
+  --color-line: rgba(20, 32, 56, .07);
+  --color-focus: #a3bcff;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
-  /* shadcn/Cult UI token aliases onto the same palette — the vendored
-   * components under components/cult/ and components/ui/ speak these names. */
-  --color-background: #f9fafb;
-  --color-foreground: #111827;
+  /* rail (sidebar) — tinted dark to the same hue */
+  --color-rail: #141a26;
+  --color-rail-2: #1d2434;
+  --color-rail-ink: #7a8496;
+  --color-rail-ink-active: #ffffff;
+
+  /* shadcn/Cult UI token aliases — the vendored components under
+   * components/cult/ and components/ui/ speak these names. */
+  --color-background: #edf0f6;
+  --color-foreground: #121a2b;
   --color-card: #ffffff;
-  --color-card-foreground: #111827;
+  --color-card-foreground: #121a2b;
   --color-popover: #ffffff;
-  --color-popover-foreground: #111827;
+  --color-popover-foreground: #121a2b;
   --color-primary-foreground: #ffffff;
-  --color-secondary: #f3f4f6;
-  --color-secondary-foreground: #111827;
-  --color-muted-foreground: #6b7280;
-  --color-accent: #dbeafe;
-  --color-accent-foreground: #1d4ed8;
-  --color-destructive: #b91c1c;
+  --color-secondary: #f0f2f8;
+  --color-secondary-foreground: #121a2b;
+  --color-muted-foreground: #69768c;
+  --color-accent: #dbe4f8;
+  --color-accent-foreground: #2D5BD8;
+  --color-destructive: #C0453C;
   --color-destructive-foreground: #ffffff;
-  --color-border: #e5e7eb;
-  --color-input: #e5e7eb;
-  --color-ring: #93c5fd;
+  --color-border: rgba(20, 32, 56, .07);
+  --color-input: rgba(20, 32, 56, .12);
+  --color-ring: #a3bcff;
 }
 
 html {
