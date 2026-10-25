@@ -140,7 +140,10 @@ impl UpstreamBillProvider for OpenAiBillProvider {
 /// honored; more are truncated, never rounded — a provider's fractional cent
 /// under-reports rather than over-reports drift. `None` on a non-decimal or an
 /// amount too large for i64.
-fn parse_minor(value: &str) -> Option<i64> {
+///
+/// `pub(crate)` — the Anthropic provider's `cost_report` answer carries the
+/// same decimal-string shape, so the parser is shared rather than duplicated.
+pub(crate) fn parse_minor(value: &str) -> Option<i64> {
     let trimmed = value.trim();
     let (whole, frac) = match trimmed.split_once('.') {
         Some((whole, frac)) => (whole, frac),

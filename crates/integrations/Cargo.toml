@@ -22,3 +22,8 @@ sha2.workspace = true
 time.workspace = true
 tokio.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+# A stub HTTP server for the wire-level tests (the Anthropic cost_report
+# contract is proven against a live axum stub, not just type-level).
+axum.workspace = true

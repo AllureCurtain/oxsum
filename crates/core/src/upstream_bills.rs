@@ -17,8 +17,9 @@
 //!
 //! The seam is [`UpstreamBillProvider`]: the daily `upstream-bill-sync` job asks
 //! each channel's provider for a day's billed total through a trait rather than
-//! a concrete client, so a stubbed provider serves the whole test suite and a
-//! second implementation (Anthropic) drops in without touching the job.
+//! a concrete client, so a stubbed provider serves the whole test suite and the
+//! real impls (OpenAI's Costs, Anthropic's Usage & Cost — issue #367) fan out
+//! behind one composite without touching the job.
 
 use std::fmt::Debug;
 use std::future::Future;
