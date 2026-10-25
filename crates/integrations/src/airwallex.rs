@@ -158,7 +158,7 @@ impl Airwallex {
             id: String,
             client_secret: Option<String>,
         }
-        let intent: Intent = self
+        let intent_response = self
             .http
             .post(format!("{}/api/v1/pa/payment_intents/create", self.api_url))
             .bearer_auth(token)
@@ -180,7 +180,16 @@ impl Airwallex {
             }))
             .send()
             .await
-            .map_err(|e| AirwallexError(format!("payment intent request failed: {e}")))?
+            .map_err(|e| AirwallexError(format!("payment intent request failed: {e}")))?;
+        if !intent_response.status().is_success() {
+            let status = intent_response.status();
+            let body = intent_response.text().await.unwrap_or_default();
+            return Err(AirwallexError(format!(
+                "payment intent answered {status}: {}",
+                &body[..body.len().min(200)]
+            )));
+        }
+        let intent: Intent = intent_response
             .json()
             .await
             .map_err(|e| AirwallexError(format!("payment intent response unreadable: {e}")))?;
@@ -213,14 +222,26 @@ impl Airwallex {
             token: String,
             expires_at: Option<String>,
         }
-        let login: Login = self
+        let response = self
             .http
             .post(format!("{}/api/v1/authentication/login", self.api_url))
             .header("x-client-id", &self.client_id)
             .header("x-api-key", &self.api_key)
+            // The login endpoint wants a Content-Length even though the
+            // credential headers carry the payload — bodyless POSTs answer
+            // 411 with an HTML page, which is what the decode-error path
+            // would otherwise surface as "unreadable".
+            .header("Content-Length", "0")
             .send()
             .await
-            .map_err(|e| AirwallexError(format!("login request failed: {e}")))?
+            .map_err(|e| AirwallexError(format!("login request failed: {e}")))?;
+        if !response.status().is_success() {
+            return Err(AirwallexError(format!(
+                "login answered {}",
+                response.status()
+            )));
+        }
+        let login: Login = response
             .json()
             .await
             .map_err(|e| AirwallexError(format!("login response unreadable: {e}")))?;
