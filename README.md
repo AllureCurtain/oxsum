@@ -98,6 +98,7 @@ Under active development. The multi-tenant wallet core (top-up, hold/settle, inc
 - User guide: docs/user-guide.md
 - Verifying a bill (for the customer): docs/verify-your-bill.md
 - What each proof covers (the surface map): docs/proofs.md
+- What each payment rail has actually been exercised to: docs/rails.md
 - Development guide: docs/development.md
 - Architecture: docs/architecture.md
 - Technical decisions: docs/decisions.md
