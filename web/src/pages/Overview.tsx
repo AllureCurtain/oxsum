@@ -20,7 +20,6 @@ import {
   Card,
   EmptyRows,
   Field,
-  Kpi,
   PageState,
   TableShell,
   credits,
@@ -36,33 +35,32 @@ export function Overview() {
   const display = useDisplay();
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-5">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Overview</h1>
+        <h1 className="text-xl font-bold tracking-tight text-ink">Overview</h1>
         <Link
           to="/topup"
-          className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-primary-hover"
+          className="rounded-lg bg-primary px-3.5 py-2 text-sm font-medium text-white shadow-[0_2px_8px_rgba(45,91,216,.3)] transition-colors hover:bg-primary-hover"
         >
           Top up
         </Link>
       </div>
+
       {!session.data?.user.emailVerified ? (
-        <p className="rounded-md border border-pending/40 bg-amber-50 px-3 py-2 text-sm text-pending">
+        <Banner tone="warn">
           Your email is not verified. Check your inbox for the verification mail.
-        </p>
+        </Banner>
       ) : null}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+
+      {/* KPI row */}
+      <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-4">
         {balance.data ? (
           <>
-            <AnimatedKpi
-              label="Available"
-              minor={balance.data.availableMinor}
-              currency={display}
-            />
+            <AnimatedKpi label="Available" minor={balance.data.availableMinor} currency={display} />
             <AnimatedKpi
               label="Frozen"
               minor={balance.data.reservedMinor}
-              hint="what in-flight holds reserve"
+              hint="in-flight holds reserve"
               currency={display}
             />
             <AnimatedKpi
@@ -73,14 +71,14 @@ export function Overview() {
           </>
         ) : (
           <>
-            <Kpi label="Available" value="…" />
-            <Kpi label="Frozen" value="…" />
-            <Kpi label="Spent this month" value="…" />
+            <AnimatedKpi label="Available" minor={0} />
+            <AnimatedKpi label="Frozen" minor={0} />
+            <AnimatedKpi label="Spent this month" minor={0} />
           </>
         )}
-        <div className="rounded-md border border-line bg-surface p-4">
-          <p className="text-xs text-muted">Credit line</p>
-          <p className="mt-1 text-2xl font-semibold tabular-nums">
+        <div className="rounded-xl border border-line bg-surface p-4 shadow-[0_1px_3px_rgba(20,34,64,.05)]">
+          <p className="text-xs font-medium text-muted">Credit line</p>
+          <p className="mt-1.5 text-2xl font-bold tabular-nums tracking-tight text-ink">
             {balance.data
               ? `${credits(balance.data.creditUsedMinor)} / ${credits(balance.data.creditLimitMinor)}`
               : "…"}{" "}
@@ -92,28 +90,30 @@ export function Overview() {
             </p>
           ) : null}
           {budget.data?.organization.consumedPercent != null ? (
-            <div className="mt-2 flex flex-col gap-1">
+            <div className="mt-3 flex flex-col gap-1.5">
               <HaloProgress
                 value={Math.min(100, budget.data.organization.consumedPercent)}
                 className="w-full"
               />
-              <p className="text-xs text-muted">
+              <p className="text-[11px] text-muted">
                 {budget.data.organization.consumedPercent}% committed
               </p>
             </div>
           ) : (
-            <p className="mt-1 text-xs text-muted">no credit line</p>
+            <p className="mt-2 text-xs text-muted">no credit line</p>
           )}
         </div>
       </div>
 
       {budget.data?.member ? (
         <Card title="Your member budget">
-          <div className="flex flex-col gap-2">
-            <p className="text-sm">
+          <div className="flex flex-col gap-2.5">
+            <p className="text-sm text-ink">
               {budget.data.member.consumedPercent ?? 0}% of{" "}
-              <Cr minor={budget.data.member.budgetLimitMinor} currency={display} /> committed this
-              window.
+              <strong className="tabular-nums">
+                <Cr minor={budget.data.member.budgetLimitMinor} currency={display} />
+              </strong>{" "}
+              committed this window.
             </p>
             <HaloProgress
               value={Math.min(100, budget.data.member.consumedPercent ?? 0)}
@@ -130,11 +130,9 @@ export function Overview() {
               .filter((k) => k.spendLimitMinor != null)
               .map((k) => (
                 <tr key={k.keyId}>
-                  <td>
-                    {k.name ?? <code className="mono">{k.prefix}</code>}
-                  </td>
+                  <td>{k.name ?? <code className="mono">{k.prefix}</code>}</td>
                   <td>{k.budgetDuration ?? "cumulative"}</td>
-                  <td className="mono">
+                  <td className="num mono">
                     <Cr minor={k.committedMinor} currency={display} />
                   </td>
                   <td>{k.consumedPercent != null ? `${k.consumedPercent}%` : "—"}</td>
@@ -144,60 +142,65 @@ export function Overview() {
         </Card>
       ) : null}
 
-      <Card
-        title="In-flight holds"
-        actions={
-          <Link to="/requests" className="text-sm text-primary">
-            Requests →
-          </Link>
-        }
-      >
-        {holds.isLoading ? (
-          <PageState>Loading…</PageState>
-        ) : (
-          <TableShell head={["Request", "Model", "Key", "Frozen"]}>
-            {(holds.data?.holds ?? []).map((hold) => (
-              <tr key={hold.requestId}>
-                <td className="mono">{hold.requestId}</td>
-                <td>{hold.model}</td>
-                <td className="mono">{hold.keyPrefix ?? "—"}</td>
-                <td className="mono">
-                  <Cr minor={hold.freezeMinor} currency={display} />
-                </td>
-              </tr>
-            ))}
-            {(holds.data?.holds.length ?? 0) === 0 ? (
-              <EmptyRows colSpan={4}>Nothing in flight.</EmptyRows>
-            ) : null}
-          </TableShell>
-        )}
-        <HoldBench />
-      </Card>
+      <div className="grid grid-cols-1 gap-3.5 xl:grid-cols-2">
+        {/* In-flight holds */}
+        <Card
+          title="In-flight holds"
+          actions={
+            <Link to="/requests" className="text-[13px] font-medium text-primary hover:underline">
+              Requests →
+            </Link>
+          }
+        >
+          {holds.isLoading ? (
+            <PageState>Loading…</PageState>
+          ) : (
+            <TableShell head={["Request", "Model", "Key", "Frozen"]}>
+              {(holds.data?.holds ?? []).map((hold) => (
+                <tr key={hold.requestId}>
+                  <td className="mono">{hold.requestId}</td>
+                  <td>{hold.model}</td>
+                  <td className="mono">{hold.keyPrefix ?? "—"}</td>
+                  <td className="num mono">
+                    <Cr minor={hold.freezeMinor} currency={display} />
+                  </td>
+                </tr>
+              ))}
+              {(holds.data?.holds.length ?? 0) === 0 ? (
+                <EmptyRows colSpan={4}>Nothing in flight.</EmptyRows>
+              ) : null}
+            </TableShell>
+          )}
+          <HoldBench />
+        </Card>
 
-      <Card
-        title="Recent entries"
-        actions={
-          <Link to="/log" className="text-sm text-primary">
-            Full log →
-          </Link>
-        }
-      >
-        {entries.isLoading ? (
-          <PageState>Loading…</PageState>
-        ) : (
-          <TableShell head={["#", "Description"]}>
-            {(entries.data?.rows ?? []).map((entry) => (
-              <tr key={entry.id}>
-                <td className="mono">{entry.index}</td>
-                <td className="mono">{entry.description}</td>
-              </tr>
-            ))}
-            {(entries.data?.rows.length ?? 0) === 0 ? (
-              <EmptyRows colSpan={2}>No entries yet.</EmptyRows>
-            ) : null}
-          </TableShell>
-        )}
-      </Card>
+        {/* Recent entries */}
+        <Card
+          title="Recent entries"
+          actions={
+            <Link to="/log" className="text-[13px] font-medium text-primary hover:underline">
+              Full log →
+            </Link>
+          }
+        >
+          {entries.isLoading ? (
+            <PageState>Loading…</PageState>
+          ) : (
+            <TableShell head={["#", "Description", "Hash"]}>
+              {(entries.data?.rows ?? []).map((entry) => (
+                <tr key={entry.id}>
+                  <td className="mono">{entry.index}</td>
+                  <td className="mono text-muted">{entry.description}</td>
+                  <td className="mono text-muted">{entry.contentHash?.slice(0, 12)}…</td>
+                </tr>
+              ))}
+              {(entries.data?.rows.length ?? 0) === 0 ? (
+                <EmptyRows colSpan={3}>No entries yet.</EmptyRows>
+              ) : null}
+            </TableShell>
+          )}
+        </Card>
+      </div>
     </div>
   );
 }
@@ -213,7 +216,7 @@ function HoldBench() {
   const settle = useSettleHold();
 
   return (
-    <div className="mt-3 flex flex-col gap-2 border-t border-line pt-3">
+    <div className="mt-3 flex flex-col gap-2.5 border-t border-line pt-3.5">
       <p className="text-xs text-muted">
         Manual hold (<code className="mono">POST /holds</code>,{" "}
         <code className="mono">POST /settlements</code>) — useful to see the

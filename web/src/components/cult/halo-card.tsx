@@ -82,10 +82,10 @@ function HaloCardBorderTrail({ active }: { active: boolean }) {
 
   /** Feathered ends + same hue family as `borderGlowConfig` so it reads as one rim system. */
   const ambientGradient =
-    "linear-gradient(90deg, transparent 0%, rgba(255,0,128,0) 6%, rgba(255,0,128,0.38) 24%, rgba(121,40,202,0.5) 50%, rgba(0,212,255,0.42) 76%, rgba(0,212,255,0) 94%, transparent 100%)"
+    "linear-gradient(90deg, transparent 0%, rgba(45,91,216,0) 6%, rgba(45,91,216,0.38) 24%, rgba(78,124,240,0.5) 50%, rgba(123,163,245,0.42) 76%, rgba(123,163,245,0) 94%, transparent 100%)"
 
   const coreGradient =
-    "linear-gradient(90deg, transparent 0%, rgba(255,0,128,0.72) 20%, rgba(200,140,255,0.92) 50%, rgba(0,212,255,0.78) 80%, transparent 100%)"
+    "linear-gradient(90deg, transparent 0%, rgba(45,91,216,0.72) 20%, rgba(123,163,245,0.92) 50%, rgba(94,140,255,0.78) 80%, transparent 100%)"
 
   return (
     <div
@@ -108,7 +108,7 @@ function HaloCardBorderTrail({ active }: { active: boolean }) {
           style={{
             background: ambientGradient,
             boxShadow:
-              "0 0 22px rgba(121,40,202,0.28), 0 0 44px rgba(0,212,255,0.18), 0 0 2px rgba(255,255,255,0.12)",
+              "0 0 22px rgba(45,91,216,0.28), 0 0 44px rgba(0,212,255,0.18), 0 0 2px rgba(255,255,255,0.12)",
           }}
         />
       </motion.div>
@@ -126,7 +126,7 @@ function HaloCardBorderTrail({ active }: { active: boolean }) {
           style={{
             background: coreGradient,
             boxShadow:
-              "0 0 14px rgba(255,0,128,0.35), 0 0 28px rgba(0,212,255,0.32), inset 0 0 1px rgba(255,255,255,0.22)",
+              "0 0 14px rgba(45,91,216,0.35), 0 0 28px rgba(123,163,245,0.32), inset 0 0 1px rgba(255,255,255,0.22)",
           }}
         />
       </motion.div>
@@ -143,9 +143,9 @@ function borderGlowConfig(translucent: boolean, rimEmphasis: boolean) {
   }
   return {
     opacityIdle: idleOpacity,
-    primaryBg: "linear-gradient(90deg, #ff0080, #7928ca, #00d4ff, #0070f3)",
-    secondaryBg: "linear-gradient(90deg, #ff4d4d, #f9cb28, #ff0080)",
-    tertiaryBg: "linear-gradient(90deg, #0070f3, #00d4ff, #7928ca)",
+    primaryBg: "linear-gradient(90deg, #2D5BD8, #4E7CF0, #7BA3F5)",
+    secondaryBg: "linear-gradient(90deg, #1e3fa0, #2D5BD8, #4E7CF0)",
+    tertiaryBg: "linear-gradient(90deg, #2D5BD8, #6a8ff0, #4E7CF0)",
     primaryLeft: ["-5%", "75%", "-5%"],
     secondaryLeft: ["65%", "10%", "65%"],
     tertiaryLeft: ["25%", "55%", "25%"],

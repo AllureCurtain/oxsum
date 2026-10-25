@@ -267,14 +267,14 @@ function SelectGradientUnderlay({
             className="absolute inset-0 blur-2xl"
             style={{
               background:
-                "radial-gradient(90% 70% at 50% 100%, rgba(255,0,128,0.28), rgba(121,40,202,0.12) 48%, transparent 62%)",
+                "radial-gradient(90% 70% at 50% 100%, rgba(45,91,216,0.22), rgba(78,124,240,0.10) 48%, transparent 62%)",
             }}
           />
           <div
             className="absolute inset-0 opacity-70 blur-xl dark:opacity-50"
             style={{
               background:
-                "radial-gradient(70% 55% at 30% 0%, rgba(0,212,255,0.22), rgba(0,112,243,0.08) 45%, transparent 58%)",
+                "radial-gradient(70% 55% at 30% 0%, rgba(94,140,255,0.18), rgba(45,91,216,0.07) 45%, transparent 58%)",
             }}
           />
         </div>
@@ -402,9 +402,9 @@ export function HaloSelect({
     }
     return {
       opacityIdle: idleOpacity,
-      primaryBg: "linear-gradient(90deg, #ff0080, #7928ca, #00d4ff, #0070f3)",
-      secondaryBg: "linear-gradient(90deg, #ff4d4d, #f9cb28, #ff0080)",
-      tertiaryBg: "linear-gradient(90deg, #0070f3, #00d4ff, #7928ca)",
+      primaryBg: "linear-gradient(90deg, #2D5BD8, #4E7CF0, #7BA3F5)",
+      secondaryBg: "linear-gradient(90deg, #1e3fa0, #2D5BD8, #4E7CF0)",
+      tertiaryBg: "linear-gradient(90deg, #2D5BD8, #6a8ff0, #4E7CF0)",
       primaryLeft: ["-5%", "75%", "-5%"],
       secondaryLeft: ["65%", "10%", "65%"],
       tertiaryLeft: ["25%", "55%", "25%"],
