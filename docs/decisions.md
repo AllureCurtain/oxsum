@@ -1889,3 +1889,15 @@ The x402 rail's `X402FacilitatorVerifier` was already shipped and tested against
 - **The facilitator fronts the gas.** Under `exact` on EVM, the facilitator's relayer submits the `transferWithAuthorization` transaction itself — the test wallet only needs the asset being transferred (faucet USDC), never the chain's native token. This is what makes the rail cheap to exercise on a testnet.
 
 **Rejected.** *A Rust signer instead of Python*: pulling `alloy` or `ethers` into the workspace to sign one authorization would drag a large dependency tree in for a once-per-deployment exercise. `coincurve` + `pycryptodome` are pip-installable and the script is short enough to audit by reading. *Hardcoding the token name*: it bit once already — the env var makes the next chain's bring-up one probe away instead of a debug session.
+
+## 2026-10-25 — The Airwallex rail's HTTP client pins TLS 1.2 for this one endpoint (issue #374)
+
+`api-demo.airwallex.com` produces TLS 1.3 records rustls cannot decrypt — the handshake completes (`TLS13_AES_256_GCM_SHA384`, ALPN `http/1.1`, the three-certificate chain parses), then the first post-handshake record fails with `DecryptError`. Curl over schannel answers the same endpoint cleanly, so the credentials and IP allowlist were never the problem. The failure reproduces on direct connections, DNS-pinned IPs and explicit `CONNECT` proxies, which rules out DNS hijacking and the local TUN path — the bytes themselves are the issue, not the path. Forcing `max_tls_version(TLS_1_2)` on the client makes the same login succeed.
+
+**Decision: `Airwallex` carries its own `reqwest::Client`, built by `airwallex_of()` with `max_tls_version(TLS_1_2)`, instead of borrowing `state.http` like the other rails.**
+
+- **Rail-scoped, not workspace-scoped.** The rest of the workspace keeps TLS 1.3 — the gateway's upstream calls, the facilitator's outbound calls, the webhook deliveries all keep the modern floor. Only this one endpoint's record format is the problem.
+- **The borrowed `http: &reqwest::Client` parameter on `create_payment_intent` was the wrong seam anyway.** A rail that has a transport-specific requirement owns its own transport — the test stub's plain HTTP is unaffected, and a deployment whose Airwallex region's TLS 1.3 path is already known good could pass a different `reqwest::Client` through `Airwallex::new` without code changes.
+- **Stays inside the rustls-only deployment rule.** No `native-tls`, no OpenSSL in the image — the runtime's "no OpenSSL needed" property is preserved; TLS 1.2 over rustls is still rustls.
+
+**Rejected.** *Switching the workspace to `native-tls`*: that would put OpenSSL back in the deploy image, reversing the decision that landed the workspace on a single TLS stack. *Pinning only when `OXSUM_AIRWALLEX_API_URL` contains `demo`*: that ties a TLS workaround to a URL substring and gives prod a different code path — the demo-specific shape belongs in configuration, not branching. *Reporting the rail as broken*: the TLS layer answers over 1.2, so the rail is workable; calling it broken would undersell the integration coverage that already exists.

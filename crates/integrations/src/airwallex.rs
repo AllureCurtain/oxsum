@@ -46,6 +46,12 @@ pub struct Airwallex {
     /// The deployment's public origin (`OXSUM_PUBLIC_URL`) — the intent's
     /// `return_url` is built on it.
     public_url: String,
+    /// The HTTP client this rail uses. It is the only outbound call site in
+    /// the workspace that caps TLS at 1.2: the demo environment's TLS 1.3
+    /// implementation produces records rustls cannot decrypt (issue #374),
+    /// while TLS 1.2 answers cleanly. The cap is rail-scoped so the rest of
+    /// the workspace keeps TLS 1.3.
+    http: reqwest::Client,
     /// The minted bearer token and when it stops being accepted — cached on
     /// the client so a burst of intents costs one login, not one per intent.
     token: std::sync::Arc<tokio::sync::Mutex<Option<Token>>>,
@@ -99,7 +105,10 @@ pub struct AirwallexError(pub String);
 impl Airwallex {
     /// Builds the client from its pieces. `public_url` is the deployment's
     /// public origin; the intent's `return_url` is appended when an intent is
-    /// created.
+    /// created. `http` is the transport the rail uses — the caller passes one
+    /// capped at TLS 1.2 to match this endpoint's record format (issue #374);
+    /// an unconstrained client is the default for tests and deployments whose
+    /// TLS path is already known to work.
     #[must_use]
     pub fn new(
         client_id: String,
@@ -108,6 +117,7 @@ impl Airwallex {
         api_url: String,
         checkout_url: String,
         public_url: String,
+        http: reqwest::Client,
     ) -> Self {
         Self {
             client_id,
@@ -116,6 +126,7 @@ impl Airwallex {
             api_url: api_url.trim_end_matches('/').to_owned(),
             checkout_url: checkout_url.trim_end_matches('/').to_owned(),
             public_url: public_url.trim_end_matches('/').to_owned(),
+            http,
             token: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
@@ -138,17 +149,17 @@ impl Airwallex {
     /// answer, or a body with no `id`/`client_secret`.
     pub async fn create_payment_intent(
         &self,
-        http: &reqwest::Client,
         deposit_id: uuid::Uuid,
         amount_minor: i64,
     ) -> Result<PaymentIntent, AirwallexError> {
-        let token = self.bearer(http).await?;
+        let token = self.bearer().await?;
         #[derive(Deserialize)]
         struct Intent {
             id: String,
             client_secret: Option<String>,
         }
-        let intent: Intent = http
+        let intent: Intent = self
+            .http
             .post(format!("{}/api/v1/pa/payment_intents/create", self.api_url))
             .bearer_auth(token)
             .json(&serde_json::json!({
@@ -187,7 +198,7 @@ impl Airwallex {
     /// is still good, else a fresh `/api/v1/authentication/login`. The login
     /// answer carries `token` and `expires_at` (RFC 3339); when `expires_at`
     /// is absent the cache assumes the documented 30 minutes minus a margin.
-    async fn bearer(&self, http: &reqwest::Client) -> Result<String, AirwallexError> {
+    async fn bearer(&self) -> Result<String, AirwallexError> {
         let now = time::OffsetDateTime::now_utc();
         {
             let guard = self.token.lock().await;
@@ -202,7 +213,8 @@ impl Airwallex {
             token: String,
             expires_at: Option<String>,
         }
-        let login: Login = http
+        let login: Login = self
+            .http
             .post(format!("{}/api/v1/authentication/login", self.api_url))
             .header("x-client-id", &self.client_id)
             .header("x-api-key", &self.api_key)
