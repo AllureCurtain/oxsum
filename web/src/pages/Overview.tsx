@@ -118,7 +118,7 @@ export function Overview() {
         </div>
       </div>
 
-      {budget.data?.member ? (
+      {budget.data?.member?.budgetLimitMinor != null ? (
         <Card title="Your member budget">
           <div className="flex flex-col gap-2.5">
             <p className="text-sm text-ink">

@@ -211,7 +211,7 @@ function Deliveries({ endpointId }: { endpointId: string }) {
             (deliveries.data ?? []).map((d) => (
             <tr key={d.id}>
               <td>{String(d.createdAt).slice(0, 19).replace("T", " ")}</td>
-              <td>{d.event}</td>
+              <td>{d.eventType}</td>
               <td>{d.status}</td>
               <Td mono align="right">{d.attempts}</Td>
               <td className="text-xs text-danger">{d.lastError ?? ""}</td>

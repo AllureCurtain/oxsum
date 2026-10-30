@@ -341,19 +341,20 @@ export function TableShell(props: {
 // ---------------------------------------------------------------------------
 
 /** A status word as the pages color it: settled green, refused red, the rest muted. */
-export function StatusBadge(props: { status: string }) {
+export function StatusBadge(props: { status: string | undefined }) {
+  const status = props.status ?? "—";
   const cls =
-    props.status === "settled"
+    status === "settled"
       ? "text-success"
-      : props.status === "refused" || props.status === "errored"
+      : status === "refused" || status === "errored"
         ? "text-danger"
-        : props.status === "credited" || props.status === "confirmed"
+        : status === "credited" || status === "confirmed"
           ? "text-success"
           : "text-muted";
   return (
     <span className={`inline-flex items-center gap-1.5 text-xs font-medium ${cls}`}>
       <span className="inline-block h-1.5 w-1.5 rounded-full bg-current" />
-      {props.status}
+      {status}
     </span>
   );
 }
