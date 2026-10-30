@@ -77,10 +77,18 @@ NAV_INDEX["/device"] = { label: "Device" };
 NAV_INDEX["/admin"] = { label: "Admin" };
 NAV_INDEX["/statements/:id"] = { label: "Statement", parent: "/statements" };
 
-/** Pathname → breadcrumb trail, e.g. /statements/s_123 → [Statements, s_123]. */
-function breadcrumb(pathname: string): { label: string; to?: string }[] {
+/** Pathname (+hash) → breadcrumb trail, e.g. /statements/s_123 → [Statements, s_123]. */
+function breadcrumb(pathname: string, hash: string): { label: string; to?: string }[] {
   const path = pathname.replace(/^\/app\/?/, "/") || "/";
   const segments = path.split("/").filter(Boolean);
+
+  // The Admin console addresses its sections through the hash
+  // (#admin/<section>); the hash segment becomes the leaf crumb.
+  const adminSection = /^#?admin\/([a-z-]+)$/.exec(hash)?.[1];
+  if (path === "/admin" && adminSection) {
+    return [{ label: "Admin", to: "/admin" }, { label: adminSection }];
+  }
+
   if (segments.length > 1) {
     // Depth ≥2: link the parent list page, show the id segment verbatim.
     const parent = `/${segments[0]}`;
@@ -240,7 +248,7 @@ export function AppShell() {
     return null;
   }
   const { user, role } = session.data;
-  const crumbs = breadcrumb(location.pathname);
+  const crumbs = breadcrumb(location.pathname, location.hash);
 
   return (
     <div className="flex min-h-screen">
