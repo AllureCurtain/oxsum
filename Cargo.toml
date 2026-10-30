@@ -119,7 +119,7 @@ http-body-util = "0.1"
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 futures-util = "0.3"
-tokio-tungstenite = "0.29"
+tokio-tungstenite = "0.30"
 # Outbound mail for the verification and password-reset flows: async SMTP over TLS.
 # `smtps://` connects wrapped; `smtp://` upgrades with STARTTLS when the server offers it.
 # `tokio1-rustls-tls` (not `tokio1-native-tls`): rustls keeps the whole workspace on
