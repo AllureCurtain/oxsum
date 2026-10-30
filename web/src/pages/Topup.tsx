@@ -51,20 +51,35 @@ function ReceiptView({ receipt }: { receipt: { entryId: string; contentHash: str
   );
 }
 
-function ManualRail() {
-  const topup = useTopup();
+/**
+ * The shared amount→minor→submit rail every hosted/recorded payment rides.
+ * Each rail supplies its mutation hook, its consequence copy, and — for the
+ * hosted rails — the success handler that redirects to checkout. Hyperswitch
+ * is the exception: its SDK-mount lifecycle is genuinely distinct, so it
+ * keeps its own component below.
+ */
+function AmountRail<TData>(props: {
+  intro: string;
+  consequence: (amount: string) => ReactNode;
+  submitLabel: string;
+  loadingText: string;
+  mutation: { mutate: (minor: number, opts?: { onSuccess?: (data: TData) => void }) => void; isPending: boolean; error: Error | null; data: TData | undefined };
+  onSuccess?: (data: TData) => void;
+  renderSuccess?: (data: TData) => ReactNode;
+  renderError?: (error: ApiError) => ReactNode;
+}) {
+  const { mutation } = props;
   const [amount, setAmount] = useState("");
   const submit = (e: FormEvent) => {
     e.preventDefault();
     const minor = amountToMinor(amount);
-    if (minor !== null) topup.mutate(minor);
+    if (minor !== null) {
+      mutation.mutate(minor, props.onSuccess ? { onSuccess: props.onSuccess } : undefined);
+    }
   };
   return (
     <form className="flex flex-col gap-3" onSubmit={submit}>
-      <p className="text-sm text-muted">
-        Record a payment that arrived out of band; the credit lands immediately. For card payment use
-        Stripe; for an operator-minted code use the redemption rail.
-      </p>
+      <p className="text-sm text-muted">{props.intro}</p>
       <Field label="Amount (credits)">
         <TextInput
           type="number"
@@ -76,105 +91,71 @@ function ManualRail() {
           required
         />
       </Field>
-      <Consequence>This books {amountToMinor(amount) !== null ? `${amount} cr` : "the amount"} onto your balance immediately.</Consequence>
-      <Button type="submit" isLoading={topup.isPending} loadingText="Booking…">
-        Credit balance
+      <Consequence>{props.consequence(amount)}</Consequence>
+      <Button type="submit" isLoading={mutation.isPending} loadingText={props.loadingText}>
+        {props.submitLabel}
       </Button>
-      {topup.error instanceof ApiError ? <Banner tone="error">{topup.error.message}</Banner> : null}
-      {topup.data ? <ReceiptView receipt={topup.data} /> : null}
+      {mutation.error instanceof ApiError
+        ? (props.renderError?.(mutation.error) ?? <Banner tone="error">{mutation.error.message}</Banner>)
+        : null}
+      {mutation.data && props.renderSuccess ? props.renderSuccess(mutation.data) : null}
     </form>
+  );
+}
+
+function ManualRail() {
+  const topup = useTopup();
+  return (
+    <AmountRail
+      intro="Record a payment that arrived out of band; the credit lands immediately. For card payment use Stripe; for an operator-minted code use the redemption rail."
+      consequence={(amount) => <>This books {amountToMinor(amount) !== null ? `${amount} cr` : "the amount"} onto your balance immediately.</>}
+      submitLabel="Credit balance"
+      loadingText="Booking…"
+      mutation={topup}
+      renderSuccess={(receipt) => <ReceiptView receipt={receipt} />}
+    />
   );
 }
 
 function StripeRail() {
   const stripe = useStripeTopup();
-  const [amount, setAmount] = useState("");
-  const submit = (e: FormEvent) => {
-    e.preventDefault();
-    const minor = amountToMinor(amount);
-    if (minor !== null) {
-      stripe.mutate(minor, {
-        onSuccess: (res) => {
-          window.location.href = res.checkoutUrl;
-        },
-      });
-    }
-  };
   return (
-    <form className="flex flex-col gap-3" onSubmit={submit}>
-      <p className="text-sm text-muted">
-        Opens the hosted Stripe checkout; the deposit confirms through the Stripe webhook once the
-        session completes. A deployment without Stripe configured answers 503.
-      </p>
-      <Field label="Amount (credits)">
-        <TextInput
-          type="number"
-          step="any"
-          value={amount}
-          onChange={(e) => setAmount(e.target.value)}
-          min="0.000001"
-          trailingSlot={<span className="text-xs text-muted-foreground">cr</span>}
-          required
-        />
-      </Field>
-      <Consequence>This opens Stripe's hosted checkout — you aren't charged until you confirm there.</Consequence>
-      <Button type="submit" isLoading={stripe.isPending} loadingText="Opening checkout…">
-        Pay with Stripe
-      </Button>
-      {stripe.error instanceof ApiError ? (
+    <AmountRail
+      intro="Opens the hosted Stripe checkout; the deposit confirms through the Stripe webhook once the session completes. A deployment without Stripe configured answers 503."
+      consequence={() => <>This opens Stripe's hosted checkout — you aren't charged until you confirm there.</>}
+      submitLabel="Pay with Stripe"
+      loadingText="Opening checkout…"
+      mutation={stripe}
+      onSuccess={(res) => {
+        window.location.href = res.checkoutUrl;
+      }}
+      renderError={(error) => (
         <Banner tone="error">
-          {stripe.error.status === 503
-            ? "This deployment has no Stripe rail configured."
-            : stripe.error.message}
+          {error.status === 503 ? "This deployment has no Stripe rail configured." : error.message}
         </Banner>
-      ) : null}
-    </form>
+      )}
+    />
   );
 }
 
 function AirwallexRail() {
   const airwallex = useAirwallexTopup();
-  const [amount, setAmount] = useState("");
-  const submit = (e: FormEvent) => {
-    e.preventDefault();
-    const minor = amountToMinor(amount);
-    if (minor !== null) {
-      airwallex.mutate(minor, {
-        onSuccess: (res) => {
-          window.location.href = res.checkoutUrl;
-        },
-      });
-    }
-  };
   return (
-    <form className="flex flex-col gap-3" onSubmit={submit}>
-      <p className="text-sm text-muted">
-        Opens the hosted Airwallex payment page; the deposit confirms through the Airwallex webhook
-        once the intent succeeds. A deployment without Airwallex configured answers 503.
-      </p>
-      <Field label="Amount (credits)">
-        <TextInput
-          type="number"
-          step="any"
-          value={amount}
-          onChange={(e) => setAmount(e.target.value)}
-          min="0.000001"
-          trailingSlot={<span className="text-xs text-muted-foreground">cr</span>}
-          required
-        />
-      </Field>
-      <Consequence>This opens Airwallex's hosted payment page — you aren't charged until you confirm there.</Consequence>
-      <Button type="submit" isLoading={airwallex.isPending} loadingText="Opening payment page…">
-        Pay with Airwallex
-      </Button>
-      {airwallex.error instanceof ApiError ? (
+    <AmountRail
+      intro="Opens the hosted Airwallex payment page; the deposit confirms through the Airwallex webhook once the intent succeeds. A deployment without Airwallex configured answers 503."
+      consequence={() => <>This opens Airwallex's hosted payment page — you aren't charged until you confirm there.</>}
+      submitLabel="Pay with Airwallex"
+      loadingText="Opening payment page…"
+      mutation={airwallex}
+      onSuccess={(res) => {
+        window.location.href = res.checkoutUrl;
+      }}
+      renderError={(error) => (
         <Banner tone="error">
-          {airwallex.error.status === 503
-            ? "This deployment has no Airwallex rail configured."
-            : airwallex.error.message}
+          {error.status === 503 ? "This deployment has no Airwallex rail configured." : error.message}
         </Banner>
-      ) : null}
-    </form>
+      )}
+    />
   );
 }
 
