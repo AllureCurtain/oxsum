@@ -72,7 +72,7 @@ jobs:
           # keeps every push from thrashing the cache entry.
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Configure sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
+        uses: mozilla-actions/sccache-action@v0.0.11
       # No database is needed to compile: the tree uses no sqlx::query! macros,
       # so compilation never touches a live database.
       - run: cargo clippy --workspace --all-targets -- -D warnings
@@ -168,7 +168,7 @@ jobs:
           cache-workspace-crates: "true"
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Configure sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
+        uses: mozilla-actions/sccache-action@v0.0.11
       # `--lib` only builds the lib test binaries — the heavy integration
       # targets (testcontainers, sqlx test deps) never compile here, which is
       # where most of the job's wall time used to go.
@@ -211,7 +211,7 @@ jobs:
           cache-workspace-crates: "true"
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Configure sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
+        uses: mozilla-actions/sccache-action@v0.0.11
       - name: Install nextest
         uses: taiki-e/install-action@v2
         with:
