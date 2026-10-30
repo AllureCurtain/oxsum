@@ -3191,7 +3191,7 @@ name = "oxsum-core"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
- "base64 0.21.7",
+ "base64 0.23.1",
  "dotenvy",
  "doubleentry",
  "ed25519-dalek",
@@ -3222,7 +3222,7 @@ name = "oxsum-integrations"
 version = "0.1.0"
 dependencies = [
  "axum",
- "base64 0.21.7",
+ "base64 0.23.1",
  "hmac 0.13.0",
  "lettre",
  "oxsum-core",
@@ -3241,7 +3241,7 @@ version = "0.1.0"
 dependencies = [
  "async-stream",
  "axum",
- "base64 0.21.7",
+ "base64 0.23.1",
  "dotenvy",
  "doubleentry",
  "ed25519-dalek",
