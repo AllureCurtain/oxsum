@@ -15,6 +15,7 @@ import {
   Tabs,
   TabsList,
   TabsTrigger,
+  Td,
   TextInput,
   credits,
 } from "../components/ui";
@@ -563,19 +564,22 @@ function Channels({ token }: { token: string }) {
           </div>
         </form>
       </Card>
-      {channels.loading ? (
-        <PageState>Loading…</PageState>
-      ) : channels.error ? (
+      {channels.error ? (
         <Banner tone="error">{channels.error}</Banner>
       ) : (
-        <TableShell head={["Name", "Base URL", "Protocol", "Key", "Models", ""]}>
-          {(channels.data ?? []).map((c) => (
+        <TableShell
+          head={["Name", { label: "Base URL", truncate: true }, "Protocol", "Key", { label: "Models", align: "right" }, ""]}
+          density="compact"
+          loading={channels.loading ? 5 : 0}
+        >
+          {!channels.loading &&
+            (channels.data ?? []).map((c) => (
             <tr key={c.name}>
               <td className="mono">{c.name}</td>
-              <td className="mono">{c.baseUrl}</td>
+              <Td mono truncate>{c.baseUrl}</Td>
               <td>{c.protocol ?? "openai"}</td>
               <td className="mono">…{c.apiKeyLast4}</td>
-              <td className="mono">{c.models.length}</td>
+              <Td mono align="right">{c.models.length}</Td>
               <td>
                 <Button tone="ghost" onClick={() => setPriceChannel(priceChannel === c.name ? null : c.name)}>
                   Prices
@@ -583,7 +587,9 @@ function Channels({ token }: { token: string }) {
               </td>
             </tr>
           ))}
-          {(channels.data?.length ?? 0) === 0 ? <EmptyRows colSpan={5}>No channels.</EmptyRows> : null}
+          {!channels.loading && (channels.data?.length ?? 0) === 0 ? (
+            <EmptyRows colSpan={6}>No channels.</EmptyRows>
+          ) : null}
         </TableShell>
       )}
       <p className="text-xs text-muted">
@@ -685,23 +691,35 @@ function Organizations({ token }: { token: string }) {
 
   return (
     <div className="flex flex-col gap-4">
-      {orgs.loading ? (
-        <PageState>Loading…</PageState>
-      ) : orgs.error ? (
+      {orgs.error ? (
         <Banner tone="error">{orgs.error}</Banner>
       ) : (
         <>
-          <TableShell head={["Name", "Kind", "Members", "Available", "Reserved", "Credit", "State", ""]}>
-            {rows.map((o) => (
+          <TableShell
+            head={[
+              "Name",
+              "Kind",
+              { label: "Members", align: "right" },
+              { label: "Available", align: "right" },
+              { label: "Reserved", align: "right" },
+              { label: "Credit", align: "right" },
+              "State",
+              "",
+            ]}
+            density="compact"
+            loading={orgs.loading ? 6 : 0}
+          >
+            {!orgs.loading &&
+              rows.map((o) => (
               <tr key={o.id}>
                 <td>{o.name}</td>
                 <td>{o.kind}</td>
-                <td className="mono">{o.members}</td>
-                <td className="mono">{credits(o.availableMinor)} cr</td>
-                <td className="mono">{credits(o.reservedMinor)} cr</td>
-                <td className="mono">
+                <Td mono align="right">{o.members}</Td>
+                <Td mono align="right">{credits(o.availableMinor)} cr</Td>
+                <Td mono align="right">{credits(o.reservedMinor)} cr</Td>
+                <Td mono align="right">
                   {credits(o.creditUsedMinor)} / {credits(o.creditLimitMinor)} cr
-                </td>
+                </Td>
                 <td>{o.suspended ? <span className="text-danger">suspended</span> : "active"}</td>
                 <td>
                   <Button tone="ghost" onClick={() => setAdjustId(adjustId === o.id ? null : o.id)}>
@@ -710,7 +728,9 @@ function Organizations({ token }: { token: string }) {
                 </td>
               </tr>
             ))}
-            {rows.length === 0 ? <EmptyRows colSpan={8}>No organizations.</EmptyRows> : null}
+            {!orgs.loading && rows.length === 0 ? (
+              <EmptyRows colSpan={8}>No organizations.</EmptyRows>
+            ) : null}
           </TableShell>
           {nextCursor ? (
             <Button tone="ghost" onClick={() => setCursor(nextCursor)}>
@@ -910,13 +930,19 @@ function CreditNotes({ token, id }: { token: string; id: string }) {
       </form>
       {notes.length > 0 ? (
         <div className="mt-2">
-          <TableShell head={["Issued", "Amount", "Reason", "Entry"]}>
+          <TableShell
+            head={["Issued", { label: "Amount", align: "right" }, "Reason", { label: "Entry", truncate: true }]}
+            density="compact"
+            sticky={false}
+          >
             {notes.map((note) => (
               <tr key={note.creditNoteId}>
                 <td className="mono text-xs">{note.createdAt.slice(0, 19).replace("T", " ")}</td>
-                <td className="mono">{credits(note.amountMinor)} cr</td>
+                <Td mono align="right">{credits(note.amountMinor)} cr</Td>
                 <td className="text-xs">{note.reason}</td>
-                <td className="mono text-xs text-muted">{note.entryId.slice(0, 8)}…</td>
+                <Td mono truncate className="text-xs text-muted">
+                  {note.entryId}
+                </Td>
               </tr>
             ))}
           </TableShell>
@@ -987,9 +1013,7 @@ function Deposits({ token }: { token: string }) {
           ))}
         </select>
       </div>
-      {deposits.loading ? (
-        <PageState>Loading…</PageState>
-      ) : deposits.error ? (
+      {deposits.error ? (
         <Banner tone="error">{deposits.error}</Banner>
       ) : (
         <TableShell
@@ -998,14 +1022,17 @@ function Deposits({ token }: { token: string }) {
             "Organization",
             "Rail",
             "Status",
-            "Amount",
-            "Received",
-            "Reference",
+            { label: "Amount", align: "right" },
+            { label: "Received", align: "right" },
+            { label: "Reference", truncate: true },
             "Entry",
             "",
           ]}
+          density="compact"
+          loading={deposits.loading ? 6 : 0}
         >
-          {rows.map((d) => (
+          {!deposits.loading &&
+            rows.map((d) => (
             <Fragment key={d.depositId}>
               <tr>
                 <td className="mono text-xs">{d.createdAt.slice(0, 19).replace("T", " ")}</td>
@@ -1040,11 +1067,11 @@ function Deposits({ token }: { token: string }) {
                     <span className="block text-danger">disputed</span>
                   ) : null}
                 </td>
-                <td className="mono">{credits(d.amountMinor)} cr</td>
-                <td className="mono">
+                <Td mono align="right">{credits(d.amountMinor)} cr</Td>
+                <Td mono align="right">
                   {d.receivedMinor === null ? "—" : `${credits(d.receivedMinor)} cr`}
-                </td>
-                <td className="mono text-xs text-muted">{d.paymentRef}</td>
+                </Td>
+                <Td mono truncate className="text-xs text-muted">{d.paymentRef}</Td>
                 <td className="mono text-xs text-muted">
                   {d.status === "reversed" && d.reversalEntryId
                     ? `↩ ${d.reversalEntryId.slice(0, 8)}…`
@@ -1080,8 +1107,8 @@ function Deposits({ token }: { token: string }) {
                 </tr>
               ) : null}
             </Fragment>
-          ))}
-          {rows.length === 0 ? (
+            ))}
+          {!deposits.loading && rows.length === 0 ? (
             <EmptyRows colSpan={9}>
               No deposits yet — a top-up, a code redemption or a rail payment appears here.
             </EmptyRows>
@@ -1167,17 +1194,30 @@ function InFlight({ token }: { token: string }) {
       <Button tone="ghost" onClick={holds.refresh} className="self-start">
         Refresh
       </Button>
-      {holds.loading ? (
-        <PageState>Loading…</PageState>
+      {holds.error ? (
+        <Banner tone="error">{holds.error}</Banner>
       ) : (
-        <TableShell head={["Organization", "Request", "Model", "Channel", "Frozen", "Opened", "Sweeps"]}>
-          {(holds.data ?? []).map((h) => (
+        <TableShell
+          head={[
+            "Organization",
+            { label: "Request", truncate: true },
+            "Model",
+            "Channel",
+            { label: "Frozen", align: "right" },
+            "Opened",
+            "Sweeps",
+          ]}
+          density="compact"
+          loading={holds.loading ? 6 : 0}
+        >
+          {!holds.loading &&
+            (holds.data ?? []).map((h) => (
             <tr key={h.requestId}>
               <td>{h.organization}</td>
-              <td className="mono">{h.requestId}</td>
+              <Td mono truncate>{h.requestId}</Td>
               <td>{h.model}</td>
               <td>{h.channel}</td>
-              <td className="mono">{credits(h.freezeMinor)} cr</td>
+              <Td mono align="right">{credits(h.freezeMinor)} cr</Td>
               <td>{String(h.openedAt).slice(0, 19).replace("T", " ")}</td>
               <td className="text-xs">
                 {h.sweepAttempts ?? 0}
@@ -1185,7 +1225,9 @@ function InFlight({ token }: { token: string }) {
               </td>
             </tr>
           ))}
-          {(holds.data?.length ?? 0) === 0 ? <EmptyRows colSpan={7}>Nothing in flight.</EmptyRows> : null}
+          {!holds.loading && (holds.data?.length ?? 0) === 0 ? (
+            <EmptyRows colSpan={7}>Nothing in flight.</EmptyRows>
+          ) : null}
         </TableShell>
       )}
     </div>
@@ -1198,26 +1240,43 @@ function Anomalies({ token }: { token: string }) {
   >(token, "/anomalies");
   return (
     <div>
-      {anomalies.loading ? (
-        <PageState>Loading…</PageState>
+      {anomalies.error ? (
+        <Banner tone="error">{anomalies.error}</Banner>
       ) : (
-        <TableShell head={["Organization", "Request", "Model", "Channel", "Kind", "Frozen", "Charged", "Attempts", "Booked"]}>
-          {(anomalies.data ?? []).map((a) => (
+        <TableShell
+          head={[
+            "Organization",
+            { label: "Request", truncate: true },
+            "Model",
+            "Channel",
+            "Kind",
+            { label: "Frozen", align: "right" },
+            { label: "Charged", align: "right" },
+            { label: "Attempts", align: "right" },
+            "Booked",
+          ]}
+          density="compact"
+          loading={anomalies.loading ? 6 : 0}
+        >
+          {!anomalies.loading &&
+            (anomalies.data ?? []).map((a) => (
             <tr key={a.requestId}>
               <td>{a.organization}</td>
-              <td className="mono">{a.requestId}</td>
+              <Td mono truncate>{a.requestId}</Td>
               <td>{a.model}</td>
               <td>{a.channel}</td>
               <td title={settlementOutcome(a.kind).detail}>
                 {settlementOutcome(a.kind).label}
               </td>
-              <td className="mono">{credits(a.freezeMinor)} cr</td>
-              <td className="mono">{credits(a.chargedMinor)} cr</td>
-              <td className="mono">{a.upstreamAttempts}</td>
+              <Td mono align="right">{credits(a.freezeMinor)} cr</Td>
+              <Td mono align="right">{credits(a.chargedMinor)} cr</Td>
+              <Td mono align="right">{a.upstreamAttempts}</Td>
               <td>{a.bookedOn}</td>
             </tr>
           ))}
-          {(anomalies.data?.length ?? 0) === 0 ? <EmptyRows colSpan={9}>No anomalies.</EmptyRows> : null}
+          {!anomalies.loading && (anomalies.data?.length ?? 0) === 0 ? (
+            <EmptyRows colSpan={9}>No anomalies.</EmptyRows>
+          ) : null}
         </TableShell>
       )}
     </div>
@@ -1259,52 +1318,55 @@ function Margin({ token }: { token: string }) {
   const providerTotal = [...billedByChannel.values()].reduce((a, b) => a + b, 0);
   return (
     <div className="flex flex-col gap-3">
-      {margin.loading ? (
-        <PageState>Loading…</PageState>
+      {margin.error ? (
+        <Banner tone="error">{margin.error}</Banner>
       ) : (
         <>
           <TableShell
             head={[
               "Channel",
               "Model",
-              "Turns",
-              "Charged",
-              "Upstream cost",
-              "Provider bill",
-              "Margin",
-              "Untracked",
+              { label: "Turns", align: "right" },
+              { label: "Charged", align: "right" },
+              { label: "Upstream cost", align: "right" },
+              { label: "Provider bill", align: "right" },
+              { label: "Margin", align: "right" },
+              { label: "Untracked", align: "right" },
             ]}
+            density="compact"
+            loading={margin.loading ? 6 : 0}
           >
-            {rows.map((m) => (
+            {!margin.loading &&
+              rows.map((m) => (
               <tr key={`${m.channel}-${m.model}`}>
                 <td>{m.channel}</td>
                 <td>{m.model}</td>
-                <td className="mono">{m.turns}</td>
-                <td className="mono">{credits(m.chargedMinor)} cr</td>
-                <td className="mono">{credits(m.upstreamCostMinor)} cr</td>
-                <td className="mono text-xs">
+                <Td mono align="right">{m.turns}</Td>
+                <Td mono align="right">{credits(m.chargedMinor)} cr</Td>
+                <Td mono align="right">{credits(m.upstreamCostMinor)} cr</Td>
+                <Td mono align="right" className="text-xs">
                   {m.providerBilledMinor === null ? (
                     <span className="text-muted">not reconciled</span>
                   ) : (
                     `${credits(m.providerBilledMinor)} cr`
                   )}
-                </td>
-                <td className={`mono ${m.marginMinor < 0 ? "text-danger" : "text-success"}`}>
+                </Td>
+                <Td mono align="right" className={m.marginMinor < 0 ? "text-danger" : "text-success"}>
                   {credits(m.marginMinor)} cr
-                </td>
-                <td className="mono">{m.untrackedTurns}</td>
+                </Td>
+                <Td mono align="right">{m.untrackedTurns}</Td>
               </tr>
             ))}
-            {rows.length > 0 ? (
+            {!margin.loading && rows.length > 0 ? (
               <tr className="font-semibold">
                 <td>Total</td>
                 <td>
                   {rows.length} row{rows.length === 1 ? "" : "s"}
                 </td>
-                <td className="mono">{totals.turns}</td>
-                <td className="mono">{credits(totals.charged)} cr</td>
-                <td className="mono">{credits(totals.upstream)} cr</td>
-                <td className="mono text-xs">
+                <Td mono align="right">{totals.turns}</Td>
+                <Td mono align="right">{credits(totals.charged)} cr</Td>
+                <Td mono align="right">{credits(totals.upstream)} cr</Td>
+                <Td mono align="right" className="text-xs">
                   {billedByChannel.size === 0 ? (
                     <span className="text-muted">no channel reconciled</span>
                   ) : (
@@ -1315,18 +1377,18 @@ function Margin({ token }: { token: string }) {
                       </span>
                     </>
                   )}
-                </td>
-                <td className={`mono ${totals.margin < 0 ? "text-danger" : "text-success"}`}>
+                </Td>
+                <Td mono align="right" className={totals.margin < 0 ? "text-danger" : "text-success"}>
                   {credits(totals.margin)} cr
-                </td>
-                <td className="mono">{totals.untracked}</td>
+                </Td>
+                <Td mono align="right">{totals.untracked}</Td>
               </tr>
-            ) : (
+            ) : !margin.loading ? (
               <EmptyRows colSpan={8}>
                 No settled turns yet — a row appears once a gateway turn settles and its upstream
                 cost is recorded.
               </EmptyRows>
-            )}
+            ) : null}
           </TableShell>
           <p className="text-xs text-muted">
             The provider bill is what the upstream billed the channel, summed per day by the
@@ -1371,7 +1433,11 @@ function Reconciliation({ token }: { token: string }) {
         <PageState>Scanning…</PageState>
       ) : null}
       {report.data ? (
-        <TableShell head={["Class", "Count", "Sample"]}>
+        <TableShell
+          head={["Class", { label: "Count", align: "right" }, "Sample"]}
+          density="compact"
+          sticky={false}
+        >
           {report.data.classes.map((c) => {
             const open = openClass === c.class;
             const first = c.samples[0];
@@ -1388,7 +1454,9 @@ function Reconciliation({ token }: { token: string }) {
                       {c.class}
                     </button>
                   </td>
-                  <td className={`mono ${c.count > 0 ? "text-danger" : ""}`}>{c.count}</td>
+                  <Td mono align="right" className={c.count > 0 ? "text-danger" : ""}>
+                    {c.count}
+                  </Td>
                   <td className="text-xs text-muted">
                     {c.count === 0
                       ? "none detected"
@@ -1468,20 +1536,33 @@ function Closings({ token }: { token: string }) {
         </form>
         {msg ? <p className="mt-2 text-xs text-muted">{msg}</p> : null}
       </Card>
-      {closings.loading ? (
-        <PageState>Loading…</PageState>
+      {closings.error ? (
+        <Banner tone="error">{closings.error}</Banner>
       ) : (
-        <TableShell head={["Month", "Organization", "Entries", "Tree size", "Seal"]}>
-          {(closings.data ?? []).map((r) => (
+        <TableShell
+          head={[
+            "Month",
+            "Organization",
+            { label: "Entries", align: "right" },
+            { label: "Tree size", align: "right" },
+            { label: "Seal", truncate: true },
+          ]}
+          density="compact"
+          loading={closings.loading ? 5 : 0}
+        >
+          {!closings.loading &&
+            (closings.data ?? []).map((r) => (
             <tr key={`${r.organization}-${r.period}`}>
               <td className="mono">{r.period}</td>
               <td>{r.organization}</td>
-              <td className="mono">{r.entryCount}</td>
-              <td className="mono">{r.treeSize}</td>
-              <td className="mono">{r.sealHash.slice(0, 16)}…</td>
+              <Td mono align="right">{r.entryCount}</Td>
+              <Td mono align="right">{r.treeSize}</Td>
+              <Td mono truncate>{r.sealHash}</Td>
             </tr>
           ))}
-          {(closings.data?.length ?? 0) === 0 ? <EmptyRows colSpan={5}>No sealed months.</EmptyRows> : null}
+          {!closings.loading && (closings.data?.length ?? 0) === 0 ? (
+            <EmptyRows colSpan={5}>No sealed months.</EmptyRows>
+          ) : null}
         </TableShell>
       )}
     </div>
@@ -1503,14 +1584,27 @@ function AdminStatements({ token }: { token: string }) {
   >(token, "/statements");
   return (
     <div>
-      {statements.loading ? (
-        <PageState>Loading…</PageState>
+      {statements.error ? (
+        <Banner tone="error">{statements.error}</Banner>
       ) : (
-        <TableShell head={["Period", "Organization", "Status", "Payment", "Total", "Outstanding", ""]}>
-          {(statements.data ?? []).map((s) => (
+        <TableShell
+          head={[
+            "Period",
+            "Organization",
+            "Status",
+            "Payment",
+            { label: "Total", align: "right" },
+            { label: "Outstanding", align: "right" },
+            "",
+          ]}
+          density="compact"
+          loading={statements.loading ? 5 : 0}
+        >
+          {!statements.loading &&
+            (statements.data ?? []).map((s) => (
             <StatementRow key={s.id} token={token} s={s} onDone={statements.refresh} />
           ))}
-          {(statements.data?.length ?? 0) === 0 ? (
+          {!statements.loading && (statements.data?.length ?? 0) === 0 ? (
             <EmptyRows colSpan={7}>No statements.</EmptyRows>
           ) : null}
         </TableShell>
@@ -1749,13 +1843,17 @@ function Tiers({ token }: { token: string }) {
         {msg ? <p className="mt-2 text-xs text-muted">{msg}</p> : null}
       </Card>
       {rows.length ? (
-        <TableShell head={["Tier", "RPM", "Models", "Organizations", ""]}>
+        <TableShell
+          head={["Tier", { label: "RPM", align: "right" }, "Models", { label: "Organizations", align: "right" }, ""]}
+          density="compact"
+          sticky={false}
+        >
           {rows.map((t) => (
             <tr key={t.name}>
               <td className="mono">{t.name}</td>
-              <td className="mono">{t.requestsPerMinute ?? "∞"}</td>
+              <Td mono align="right">{t.requestsPerMinute ?? "∞"}</Td>
               <td>{t.modelAllowlist?.join(", ") ?? "all"}</td>
-              <td className="mono">{t.organizations}</td>
+              <Td mono align="right">{t.organizations}</Td>
               <td>
                 <Button
                   tone="danger"
@@ -1841,10 +1939,14 @@ function Discounts({ token }: { token: string }) {
         {msg ? <p className="mt-2 text-xs text-muted">{msg}</p> : null}
       </Card>
       {rows.length ? (
-        <TableShell head={["Percent", "Organization", "Model", "Label", "Until", ""]}>
+        <TableShell
+          head={[{ label: "Percent", align: "right" }, "Organization", "Model", "Label", "Until", ""]}
+          density="compact"
+          sticky={false}
+        >
           {rows.map((d) => (
             <tr key={d.discountId}>
-              <td className="mono">{d.percent}%</td>
+              <Td mono align="right">{d.percent}%</Td>
               <td>{d.organization ?? "all"}</td>
               <td>{d.model ?? "all"}</td>
               <td>{d.label ?? "—"}</td>
@@ -1880,20 +1982,29 @@ function Audit({ token }: { token: string }) {
   const rows = audit.data?.entries ?? [];
   return (
     <div>
-      {audit.loading ? (
-        <PageState>Loading…</PageState>
+      {audit.error ? (
+        <Banner tone="error">{audit.error}</Banner>
       ) : (
-        <TableShell head={["When", "Actor", "Action", "Target", "Detail"]}>
-          {rows.map((e) => (
+        <TableShell
+          head={["When", "Actor", "Action", "Target", { label: "Detail", truncate: true }]}
+          density="compact"
+          loading={audit.loading ? 8 : 0}
+        >
+          {!audit.loading &&
+            rows.map((e) => (
             <tr key={e.auditId}>
               <td>{String(e.recordedAt).slice(0, 19).replace("T", " ")}</td>
               <td>{e.actor}</td>
               <td>{e.action}</td>
               <td className="mono">{e.target ?? "—"}</td>
-              <td className="text-xs">{e.detail ? JSON.stringify(e.detail) : ""}</td>
+              <Td truncate className="text-xs">
+                {e.detail ? JSON.stringify(e.detail) : ""}
+              </Td>
             </tr>
           ))}
-          {rows.length === 0 ? <EmptyRows colSpan={5}>No audit entries.</EmptyRows> : null}
+          {!audit.loading && rows.length === 0 ? (
+            <EmptyRows colSpan={5}>No audit entries.</EmptyRows>
+          ) : null}
         </TableShell>
       )}
     </div>
@@ -1941,7 +2052,7 @@ function Credentials({ token }: { token: string }) {
         {msg ? <p className="mt-2 text-xs text-muted">{msg}</p> : null}
       </Card>
       {rows.length ? (
-        <TableShell head={["Name", "Prefix", "Created", ""]}>
+        <TableShell head={["Name", "Prefix", "Created", ""]} density="compact" sticky={false}>
           {rows.map((c) => (
             <tr key={c.credentialId}>
               <td>{c.name ?? "—"}</td>

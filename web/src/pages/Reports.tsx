@@ -10,7 +10,7 @@ import {
   type CreatedReportLink,
   type ReportLink,
 } from "../api/hooks";
-import { Banner, Button, Card, Cr, EmptyRows, Field, PageState, TableShell, TextInput } from "../components/ui";
+import { Banner, Button, Card, Cr, EmptyRows, Field, PageState, TableShell, Td, TextInput } from "../components/ui";
 
 // The reports page: the organization's side of an end-user bill (issues
 // #261/#300). Mint a signed report for one customer over an ended span, then
@@ -170,22 +170,30 @@ export function Reports() {
       </Card>
 
       <Card title="Minted reports">
-        {reports.isLoading ? (
-          <PageState>Loading…</PageState>
-        ) : reports.isError ? (
+        {reports.isError ? (
           <PageState>The reports could not be read.</PageState>
         ) : (
-          <TableShell head={["Period", "Customer", "Entries", "Total", "Share"]}>
-            {(reports.data?.rows ?? []).map((report) => (
+          <TableShell
+            head={[
+              "Period",
+              "Customer",
+              { label: "Entries", align: "right" },
+              { label: "Total", align: "right" },
+              "Share",
+            ]}
+            loading={reports.isLoading ? 4 : 0}
+          >
+            {!reports.isLoading &&
+              (reports.data?.rows ?? []).map((report) => (
               <tr key={report.reportId}>
                 <td className="mono text-xs">
                   {report.from} → {report.to}
                 </td>
                 <td>{report.endUser}</td>
-                <td>{report.entryCount}</td>
-                <td className="mono">
+                <Td align="right">{report.entryCount}</Td>
+                <Td mono align="right">
                   <Cr minor={report.chargedTotalMinor} currency={display} />
-                </td>
+                </Td>
                 <td>
                   <Button
                     tone="ghost"
@@ -199,7 +207,7 @@ export function Reports() {
                 </td>
               </tr>
             ))}
-            {(reports.data?.rows.length ?? 0) === 0 ? (
+            {!reports.isLoading && (reports.data?.rows.length ?? 0) === 0 ? (
               <EmptyRows colSpan={5}>No reports yet — issue one above.</EmptyRows>
             ) : null}
           </TableShell>
@@ -267,17 +275,21 @@ export function Reports() {
       ) : null}
 
       <Card title="Links">
-        {links.isLoading ? (
-          <PageState>Loading…</PageState>
-        ) : links.isError ? (
+        {links.isError ? (
           <PageState>The links could not be read.</PageState>
         ) : (
-          <TableShell head={["Scope", "Customer", "Report", "Expires", "Last used", "State", ""]}>
-            {(links.data?.rows ?? []).map((link) => (
+          <TableShell
+            head={["Scope", "Customer", { label: "Report", truncate: true }, "Expires", "Last used", "State", ""]}
+            loading={links.isLoading ? 4 : 0}
+          >
+            {!links.isLoading &&
+              (links.data?.rows ?? []).map((link) => (
               <tr key={link.linkId}>
                 <td>{link.scope === "report" ? "report" : "customer"}</td>
                 <td>{link.endUser}</td>
-                <td className="mono text-xs">{link.reportId ?? "—"}</td>
+                <Td mono truncate className="text-xs">
+                  {link.reportId ?? "—"}
+                </Td>
                 <td className="text-xs">{when(link.expiresAt)}</td>
                 <td className="text-xs">{when(link.lastUsedAt)}</td>
                 <td>{linkState(link)}</td>
@@ -298,7 +310,7 @@ export function Reports() {
                 </td>
               </tr>
             ))}
-            {(links.data?.rows.length ?? 0) === 0 ? (
+            {!links.isLoading && (links.data?.rows.length ?? 0) === 0 ? (
               <EmptyRows colSpan={7}>No links yet — share a report above.</EmptyRows>
             ) : null}
           </TableShell>

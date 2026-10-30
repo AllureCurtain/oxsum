@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useDisplay, useKeys, useUsage } from "../api/hooks";
-import { Cr, EmptyRows, PageState, Select, TableShell, creditsWithDisplay } from "../components/ui";
+import { Cr, EmptyRows, PageState, Select, TableShell, Td, creditsWithDisplay } from "../components/ui";
 
 // The usage page: the trailing 30 UTC days, summed per day for the chart and
 // listed per (day, channel, model) slice in the table — the same window and
@@ -73,27 +73,42 @@ export function Usage() {
         </div>
       </div>
 
-      {usage.isLoading ? (
-        <PageState>Loading…</PageState>
-      ) : usage.isError ? (
+      {usage.isError ? (
         <PageState>The usage could not be read.</PageState>
       ) : (
-        <TableShell head={["Day", "Channel", "Model", "Key", "Turns", "In", "Out", "Cached", "Reasoning", "Charged"]}>
-          {rows.map((row, i) => (
-            <tr key={`${row.day}-${row.channel}-${row.model}-${row.keyId ?? "shared"}-${i}`}>
-              <td>{row.day}</td>
-              <td>{row.channel}</td>
-              <td>{row.model}</td>
-              <td className="mono">{keyLabel(row.keyId, keys.data)}</td>
-              <td className="mono">{row.turns}</td>
-              <td className="mono">{row.inputTokens}</td>
-              <td className="mono">{row.outputTokens}</td>
-              <td className="mono">{row.cachedTokens}</td>
-              <td className="mono">{row.reasoningTokens}</td>
-              <td className="mono"><Cr minor={row.chargedMinor} currency={display} /></td>
-            </tr>
-          ))}
-          {rows.length === 0 ? <EmptyRows colSpan={10}>No usage in this window.</EmptyRows> : null}
+        <TableShell
+          head={[
+            "Day",
+            "Channel",
+            "Model",
+            "Key",
+            { label: "Turns", align: "right" },
+            { label: "In", align: "right" },
+            { label: "Out", align: "right" },
+            { label: "Cached", align: "right" },
+            { label: "Reasoning", align: "right" },
+            { label: "Charged", align: "right" },
+          ]}
+          loading={usage.isLoading ? 8 : 0}
+        >
+          {!usage.isLoading &&
+            rows.map((row, i) => (
+              <tr key={`${row.day}-${row.channel}-${row.model}-${row.keyId ?? "shared"}-${i}`}>
+                <td>{row.day}</td>
+                <td>{row.channel}</td>
+                <td>{row.model}</td>
+                <td className="mono">{keyLabel(row.keyId, keys.data)}</td>
+                <Td mono align="right">{row.turns}</Td>
+                <Td mono align="right">{row.inputTokens}</Td>
+                <Td mono align="right">{row.outputTokens}</Td>
+                <Td mono align="right">{row.cachedTokens}</Td>
+                <Td mono align="right">{row.reasoningTokens}</Td>
+                <Td mono align="right"><Cr minor={row.chargedMinor} currency={display} /></Td>
+              </tr>
+            ))}
+          {!usage.isLoading && rows.length === 0 ? (
+            <EmptyRows colSpan={10}>No usage in this window.</EmptyRows>
+          ) : null}
         </TableShell>
       )}
     </div>

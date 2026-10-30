@@ -1,6 +1,6 @@
 import { Link, useParams } from "react-router-dom";
 import { useDisplay, useStatement, useStatements } from "../api/hooks";
-import { Card, Cr, EmptyRows, PageState, StatusBadge, TableShell } from "../components/ui";
+import { Card, Cr, EmptyRows, PageState, StatusBadge, TableShell, Td } from "../components/ui";
 
 export function Statements() {
   const statements = useStatements();
@@ -8,33 +8,44 @@ export function Statements() {
   return (
     <div className="flex flex-col gap-4">
       <h1 className="text-2xl font-bold">Statements</h1>
-      {statements.isLoading ? (
-        <PageState>Loading…</PageState>
-      ) : statements.isError ? (
+      {statements.isError ? (
         <PageState>The statements could not be read.</PageState>
       ) : (
-        <TableShell head={["Period", "Status", "Payment", "Total", "Drawn", "Outstanding", "Due", ""]}>
-          {(statements.data ?? []).map((s) => (
-            <tr key={s.id}>
-              <td>{s.period}</td>
-              <td>
-                <StatusBadge status={s.status} />
-              </td>
-              <td>
-                <StatusBadge status={s.paymentStatus} />
-              </td>
-              <td className="mono"><Cr minor={s.totalMinor} currency={display} /></td>
-              <td className="mono"><Cr minor={s.creditDrawnMinor} currency={display} /></td>
-              <td className="mono"><Cr minor={s.outstandingMinor} currency={display} /></td>
-              <td>{s.dueDate ?? "—"}</td>
-              <td>
-                <Link to={`/statements/${s.id}`} className="text-primary">
-                  detail
-                </Link>
-              </td>
-            </tr>
-          ))}
-          {(statements.data?.length ?? 0) === 0 ? (
+        <TableShell
+          head={[
+            "Period",
+            "Status",
+            "Payment",
+            { label: "Total", align: "right" },
+            { label: "Drawn", align: "right" },
+            { label: "Outstanding", align: "right" },
+            "Due",
+            "",
+          ]}
+          loading={statements.isLoading ? 4 : 0}
+        >
+          {!statements.isLoading &&
+            (statements.data ?? []).map((s) => (
+              <tr key={s.id}>
+                <td>{s.period}</td>
+                <td>
+                  <StatusBadge status={s.status} />
+                </td>
+                <td>
+                  <StatusBadge status={s.paymentStatus} />
+                </td>
+                <Td mono align="right"><Cr minor={s.totalMinor} currency={display} /></Td>
+                <Td mono align="right"><Cr minor={s.creditDrawnMinor} currency={display} /></Td>
+                <Td mono align="right"><Cr minor={s.outstandingMinor} currency={display} /></Td>
+                <td>{s.dueDate ?? "—"}</td>
+                <td>
+                  <Link to={`/statements/${s.id}`} className="text-primary">
+                    detail
+                  </Link>
+                </td>
+              </tr>
+            ))}
+          {!statements.isLoading && (statements.data?.length ?? 0) === 0 ? (
             <EmptyRows colSpan={8}>No statements yet — statements appear once a period finalizes.</EmptyRows>
           ) : null}
         </TableShell>
@@ -64,10 +75,10 @@ export function StatementDetail() {
         ) : null}
       </div>
 
-      {detail.isLoading ? (
-        <PageState>Loading…</PageState>
-      ) : detail.isError ? (
+      {detail.isError ? (
         <PageState>The statement could not be read.</PageState>
+      ) : detail.isLoading ? (
+        <PageState>Loading…</PageState>
       ) : s ? (
         <>
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
@@ -103,17 +114,28 @@ export function StatementDetail() {
           </dl>
 
           <Card title="Lines">
-            <TableShell head={["Channel", "Model", "Turns", "In", "Out", "Cached", "Reasoning", "Amount"]}>
+            <TableShell
+              head={[
+                "Channel",
+                "Model",
+                { label: "Turns", align: "right" },
+                { label: "In", align: "right" },
+                { label: "Out", align: "right" },
+                { label: "Cached", align: "right" },
+                { label: "Reasoning", align: "right" },
+                { label: "Amount", align: "right" },
+              ]}
+            >
               {(detail.data?.lines ?? []).map((line, i) => (
                 <tr key={`${line.channel}-${line.model}-${i}`}>
                   <td>{line.channel}</td>
                   <td>{line.model}</td>
-                  <td className="mono">{line.turns}</td>
-                  <td className="mono">{line.inputTokens}</td>
-                  <td className="mono">{line.outputTokens}</td>
-                  <td className="mono">{line.cachedTokens}</td>
-                  <td className="mono">{line.reasoningTokens}</td>
-                  <td className="mono"><Cr minor={line.amountMinor} currency={display} /></td>
+                  <Td mono align="right">{line.turns}</Td>
+                  <Td mono align="right">{line.inputTokens}</Td>
+                  <Td mono align="right">{line.outputTokens}</Td>
+                  <Td mono align="right">{line.cachedTokens}</Td>
+                  <Td mono align="right">{line.reasoningTokens}</Td>
+                  <Td mono align="right"><Cr minor={line.amountMinor} currency={display} /></Td>
                 </tr>
               ))}
               {(detail.data?.lines.length ?? 0) === 0 ? (

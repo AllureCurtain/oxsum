@@ -17,6 +17,7 @@ import {
   NumberInput,
   PageState,
   TableShell,
+  Td,
   TextInput,
 } from "../components/ui";
 
@@ -131,15 +132,17 @@ export function Webhooks() {
         </form>
       </Card>
 
-      {webhooks.isLoading ? (
-        <PageState>Loading…</PageState>
-      ) : webhooks.isError ? (
+      {webhooks.isError ? (
         <PageState>The webhooks could not be read.</PageState>
       ) : (
-        <TableShell head={["URL", "Events", "Secret", "Enabled", ""]}>
-          {(webhooks.data ?? []).map((endpoint) => (
+        <TableShell
+          head={[{ label: "URL", truncate: true }, "Events", "Secret", "Enabled", ""]}
+          loading={webhooks.isLoading ? 4 : 0}
+        >
+          {!webhooks.isLoading &&
+            (webhooks.data ?? []).map((endpoint) => (
             <tr key={endpoint.id}>
-              <td className="mono max-w-60 truncate">{endpoint.url}</td>
+              <Td mono truncate>{endpoint.url}</Td>
               <td className="text-xs">{endpoint.events.join(", ")}</td>
               <td className="mono">…{endpoint.secretLast4 ?? "????"}</td>
               <td>{endpoint.enabled ? "yes" : "no"}</td>
@@ -159,8 +162,8 @@ export function Webhooks() {
                 </span>
               </td>
             </tr>
-          ))}
-          {(webhooks.data?.length ?? 0) === 0 ? (
+            ))}
+          {!webhooks.isLoading && (webhooks.data?.length ?? 0) === 0 ? (
             <EmptyRows colSpan={5}>No webhook endpoints yet.</EmptyRows>
           ) : null}
         </TableShell>
@@ -175,22 +178,24 @@ function Deliveries({ endpointId }: { endpointId: string }) {
   const deliveries = useWebhookDeliveries(endpointId);
   return (
     <Card title="Recent deliveries">
-      {deliveries.isLoading ? (
-        <PageState>Loading…</PageState>
-      ) : deliveries.isError ? (
+      {deliveries.isError ? (
         <PageState>The deliveries could not be read.</PageState>
       ) : (
-        <TableShell head={["When", "Event", "Status", "Attempts", "Error"]}>
-          {(deliveries.data ?? []).map((d) => (
+        <TableShell
+          head={["When", "Event", "Status", { label: "Attempts", align: "right" }, "Error"]}
+          loading={deliveries.isLoading ? 4 : 0}
+        >
+          {!deliveries.isLoading &&
+            (deliveries.data ?? []).map((d) => (
             <tr key={d.id}>
               <td>{String(d.createdAt).slice(0, 19).replace("T", " ")}</td>
               <td>{d.event}</td>
               <td>{d.status}</td>
-              <td className="mono">{d.attempts}</td>
+              <Td mono align="right">{d.attempts}</Td>
               <td className="text-xs text-danger">{d.lastError ?? ""}</td>
             </tr>
           ))}
-          {(deliveries.data?.length ?? 0) === 0 ? (
+          {!deliveries.isLoading && (deliveries.data?.length ?? 0) === 0 ? (
             <EmptyRows colSpan={5}>No deliveries yet.</EmptyRows>
           ) : null}
         </TableShell>

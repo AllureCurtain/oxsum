@@ -8,6 +8,7 @@ import {
   PageState,
   StatusBadge,
   TableShell,
+  Td,
   TextInput,
   Button,
   Cr,
@@ -91,15 +92,18 @@ export function Requests() {
       </div>
 
       {socket.turns.length > 0 ? (
-        <TableShell head={["Request", "Model", "State", "Live"]}>
+        <TableShell
+          head={[{ label: "Request", truncate: true }, "Model", "State", { label: "Live", align: "right" }]}
+          sticky={false}
+        >
           {socket.turns.map((turn) => (
             <tr key={turn.requestId}>
-              <td className="mono">{turn.requestId}</td>
+              <Td mono truncate>{turn.requestId}</Td>
               <td>{turn.model}</td>
               <td>
                 <StatusBadge status={turn.state} />
               </td>
-              <td className="mono">
+              <Td mono align="right">
                 {turn.state === "settled" ? (
                   <>
                     <Cr minor={turn.chargedMinor ?? 0} currency={display} /> ·{" "}
@@ -114,23 +118,35 @@ export function Requests() {
                     frozen <Cr minor={turn.freezeMinor ?? 0} currency={display} />
                   </>
                 )}
-              </td>
+              </Td>
             </tr>
           ))}
         </TableShell>
       ) : null}
 
-      {records.isLoading ? (
-        <PageState>Loading…</PageState>
-      ) : records.isError ? (
+      {records.isError ? (
         <PageState>The requests could not be read.</PageState>
       ) : (
         <>
-          <TableShell head={["Booked", "Request", "Model", "Key", "Status", "In", "Out", "Charged", ""]}>
-            {rows.map((row) => (
+          <TableShell
+            head={[
+              "Booked",
+              { label: "Request", truncate: true },
+              "Model",
+              "Key",
+              "Status",
+              { label: "In", align: "right" },
+              { label: "Out", align: "right" },
+              { label: "Charged", align: "right" },
+              "",
+            ]}
+            loading={records.isLoading ? 8 : 0}
+          >
+            {!records.isLoading &&
+              rows.map((row) => (
               <tr key={row.requestId}>
                 <td>{row.bookedOn}</td>
-                <td className="mono">{row.requestId}</td>
+                <Td mono truncate>{row.requestId}</Td>
                 <td>
                   <button
                     type="button"
@@ -178,17 +194,17 @@ export function Requests() {
                     <p className="text-xs text-danger">{row.failureReason}</p>
                   ) : null}
                 </td>
-                <td className="mono">{row.inputTokens}</td>
-                <td className="mono">{row.outputTokens}</td>
-                <td className="mono"><Cr minor={row.chargedMinor} currency={display} /></td>
+                <Td mono align="right">{row.inputTokens}</Td>
+                <Td mono align="right">{row.outputTokens}</Td>
+                <Td mono align="right"><Cr minor={row.chargedMinor} currency={display} /></Td>
                 <td>
                   <a href={`/verify?entry=${row.entryId}`} className="text-primary">
                     verify
                   </a>
                 </td>
               </tr>
-            ))}
-            {rows.length === 0 ? (
+              ))}
+            {!records.isLoading && rows.length === 0 ? (
               <EmptyRows colSpan={9}>
                 {keyFilter || modelFilter ? "No requests match the filters." : "No requests yet."}
               </EmptyRows>
