@@ -4658,6 +4658,162 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/channels/{channelName}/credentials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add one credential to a channel's pool
+         * @description One channel carries several upstream keys (issue #444): a single
+         *     account's 429 or quota wall fails over onto the pool's next credential
+         *     of the *same* channel — same model, same price — before the turn has to
+         *     leave for a differently-priced route. The key lands sealed at the pool's
+         *     end; reorder by re-posting `apiKeys` on `POST /api/v1/admin/channels`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description the channel's name, which is its identity */
+                    channelName: components["parameters"]["ChannelName"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @description the upstream credential to add; sealed with OXSUM_SECRET_KEY, only its last four readable afterwards */
+                        apiKey: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description The credential as stored */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ChannelCredential"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/channels/{channelName}/credentials/{credentialId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Drop one credential from a channel's pool
+         * @description Credentials are routing configuration, not ledger data: the delete is
+         *     hard. A credential that is not this channel's is a `404`; the pool's
+         *     last credential is a `400` — a channel with no key cannot serve, so it
+         *     stays until the operator disables it or retires the channel.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description the channel's name, which is its identity */
+                    channelName: components["parameters"]["ChannelName"];
+                    /** @description the credential to drop */
+                    credentialId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The credential is gone */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: Record<string, never>;
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        options?: never;
+        head?: never;
+        /**
+         * Switch one credential between active and disabled
+         * @description The operator's way of taking a key out of the pick without losing its
+         *     record (issue #444): `disabled` keeps the credential's health state and
+         *     can be re-enabled, which a drop does not survive. A credential that is
+         *     not this channel's is a `404`.
+         */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description the channel's name, which is its identity */
+                    channelName: components["parameters"]["ChannelName"];
+                    /** @description the credential to switch */
+                    credentialId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        status: "active" | "disabled";
+                    };
+                };
+            };
+            responses: {
+                /** @description The credential's new status */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: Record<string, never>;
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        trace?: never;
+    };
     "/api/v1/admin/organizations": {
         parameters: {
             query?: never;
@@ -7231,9 +7387,11 @@ export interface components {
              * @description where the upstream surface lives, http or https; the protocol's path (`/chat/completions`, `/messages`) is appended to it
              */
             baseUrl: string;
-            /** @description the upstream credential; sealed with OXSUM_SECRET_KEY, only its last four characters readable afterwards. Sent upstream as `Authorization: Bearer` on an `openai` channel and as `x-api-key` on an `anthropic` one */
-            apiKey: string;
-            /** @description the admin billing credential the upstream-bill-sync pass reads the provider's cost API under (issue #283) — sealed beside apiKey, deliberately separate so a metering credential never reads the org's bill. Omit to leave any stored billing key untouched; explicit null clears it. */
+            /** @description the upstream credential, single-key spelling — merged into `apiKeys` when both arrive. Sealed with OXSUM_SECRET_KEY, only its last four characters readable afterwards. Sent upstream as `Authorization: Bearer` on an `openai` channel and as `x-api-key` on an `anthropic` one */
+            apiKey?: string;
+            /** @description the channel's credential pool (issue #444): the whole ordered set of upstream keys — a `set` re-credentials the channel wholesale, so every key the pool should hold goes here. Absent leaves the stored pool untouched; a present empty array is VALIDATION_ERROR — a channel with no key cannot serve. One of `apiKey`/`apiKeys` is required when creating a channel. */
+            apiKeys?: string[];
+            /** @description the admin billing credential the upstream-bill-sync pass reads the provider's cost API under (issue #283) — sealed beside the metering keys, deliberately separate so a relay credential never reads the org's bill. Omit to leave any stored billing key untouched; explicit null clears it. */
             billKey?: string | null;
             /**
              * @description the upstream protocol the channel speaks, which selects the usage adapter its reports are normalized by and which `/v1` surface serves its models; defaults to `openai` — any other name is VALIDATION_ERROR
@@ -7241,13 +7399,40 @@ export interface components {
              */
             protocol?: "openai" | "anthropic";
         };
+        ChannelCredential: {
+            /** Format: uuid */
+            credentialId: string;
+            /** @description the last four characters of the upstream key, and nothing more of it */
+            apiKeyLast4: string;
+            /** @description the pick order inside the pool — lower tries first when nothing else ranks */
+            position: number;
+            /**
+             * @description `active` picks normally; `disabled` is kept on record, never picked
+             * @enum {string}
+             */
+            status: "active" | "disabled";
+            /**
+             * Format: date-time
+             * @description the health cool-down the pick honours until — a credential that kept refusing upstream rests out the window, then lets itself back in
+             */
+            cooldownUntil: string | null;
+            /** @description what cooled it, for the admin list; observability, never a pick input */
+            lastError: string | null;
+            /**
+             * Format: date-time
+             * @description when this credential last led an upstream call — the least-recently-used pick's input; null means never used
+             */
+            lastUsedAt: string | null;
+            /** Format: date-time */
+            createdAt: string;
+        };
         Channel: {
             name: string;
             baseUrl: string;
             /** @description the upstream protocol the channel speaks */
             protocol: string;
-            /** @description the last four characters of the stored credential, and nothing more of it */
-            apiKeyLast4: string;
+            /** @description the channel's credential pool (issue #444): one entry per upstream key, ordered by position, each showing only its last four plus the health state the pick reads */
+            credentials: components["schemas"]["ChannelCredential"][];
             /** @description the last four characters of the admin billing credential (issue #283), and nothing more of it; null when the channel carries none */
             billKeyLast4: string | null;
             /** Format: date-time */
