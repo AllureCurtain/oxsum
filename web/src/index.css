@@ -64,6 +64,11 @@ body {
   overflow-x: clip;
 }
 
+/* The topbar's height — sticky table headers offset below it, never under it. */
+:root {
+  --topbar-h: 56px;
+}
+
 body {
   color: var(--color-ink);
   background: var(--color-canvas);
