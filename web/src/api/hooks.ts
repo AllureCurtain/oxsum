@@ -2,18 +2,41 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "./client";
 import type { components } from "./schema";
 
-// The response bodies, typed by hand for the endpoints the scaffold serves —
-// `npm run codegen` keeps `api/schema.d.ts` as the authoritative full surface
-// (these stay deliberately small; the generated schema is what later pages
-// should consume).
+// The response types come from the generated schema — `npm run codegen`
+// keeps `api/schema.d.ts` authoritative over `openapi.yaml`, so a hook's
+// return type can never drift from the contract. The four types with no
+// named schema (Balance, SignedHead, WitnessCheckpoint, PriceEstimate)
+// stay hand-typed at the bottom of this block.
 
-export interface SessionInfo {
-  user: { id: string; email: string; emailVerified: boolean };
-  organization: { id: string; name: string; kind: string; tenantId: string };
-  role: "owner" | "admin" | "member";
-}
+export type SessionInfo = components["schemas"]["SessionInfo"];
+export type ApiKey = components["schemas"]["ApiKey"];
+export type UsageDay = components["schemas"]["UsageDay"];
+export type Member = components["schemas"]["Member"];
+export type WebhookEndpoint = components["schemas"]["WebhookEndpoint"];
+export type WebhookDelivery = components["schemas"]["WebhookDelivery"];
+export type BudgetSnapshot = components["schemas"]["BudgetSnapshot"];
+export type BillingRecord = components["schemas"]["BillingRecord"];
+export type Statement = components["schemas"]["Statement"];
+export type StatementLine = components["schemas"]["StatementLine"];
+export type UserOrganization = components["schemas"]["UserOrganization"];
+export type AuthMethods = components["schemas"]["AuthMethods"];
+export type Receipt = components["schemas"]["Receipt"];
+export type BillRow = components["schemas"]["BillRow"];
+export type VerifyingKey = components["schemas"]["VerifyingKey"];
+export type DisplayCurrencyType = components["schemas"]["DisplayCurrency"];
 
+/** Renamed to the schema's names — `OpenHold`/`LogEntryRow`/`PricedModel`
+ * were the scaffold's hand labels; the wire types are `OpenHoldView`,
+ * `LogEntryView` and `PricedModel` (which is `ModelPrice & {channel,protocol}`,
+ * the pricing page's row). */
+export type OpenHold = components["schemas"]["OpenHoldView"];
+export type LogEntryRow = components["schemas"]["LogEntryView"];
+export type PricedModel = components["schemas"]["PricedModel"];
+
+// No named schema — these endpoints return an inline `data` shape the
+// codegen doesn't lift into components["schemas"], so they stay hand-typed.
 export interface Balance {
+  // no schema counterpart — the `/balance` response is an inline object
   availableMinor: number;
   creditLimitMinor: number;
   creditUsedMinor: number;
@@ -21,158 +44,8 @@ export interface Balance {
   spentThisMonthMinor: number;
 }
 
-export interface BillingRecord {
-  bookedOn: string;
-  requestId: string;
-  entryId: string;
-  model: string;
-  kind: string;
-  status: string;
-  inputTokens: number;
-  outputTokens: number;
-  chargedMinor: number;
-  discountPercent?: number;
-  upstreamAttempts: number;
-  keyId?: string;
-  failureReason?: string;
-}
-
-export interface ApiKey {
-  id: string;
-  name?: string | null;
-  prefix: string;
-  createdBy?: string | null;
-  createdAt: string;
-  expiresAt?: string | null;
-  revokedAt?: string | null;
-  spendLimitMinor?: number | null;
-  budgetDuration?: "daily" | "weekly" | "monthly" | null;
-  modelAllowlist?: string[] | null;
-  requestsPerMinute?: number | null;
-  maxConcurrentHolds?: number | null;
-  tokensPerMinute?: number | null;
-  tokensPerMinuteScopes?: Record<string, unknown> | null;
-}
-
-export interface UsageDay {
-  day: string;
-  keyId?: string | null;
-  channel: string;
-  model: string;
-  turns: number;
-  inputTokens: number;
-  outputTokens: number;
-  cachedTokens: number;
-  reasoningTokens: number;
-  chargedMinor: number;
-}
-
-export interface Member {
-  userId: string;
-  email: string;
-  role: "owner" | "admin" | "member";
-  budgetLimitMinor?: number | null;
-  joinedAt: string;
-}
-
-export interface OpenHold {
-  requestId: string;
-  model: string;
-  freezeMinor: number;
-  keyPrefix?: string;
-}
-
-export interface LogEntryRow {
-  index: number;
-  id: string;
-  description: string;
-  contentHash: string;
-}
-
-export interface BillRow {
-  index: number;
-  entryId: string;
-  bookedOn: string;
-  kind: "topUp" | "adjustment" | "settlement";
-  amountMinor: number;
-  description: string;
-  contentHash: string;
-}
-
-export interface Statement {
-  id: string;
-  organizationId: string;
-  period: string;
-  status: "draft" | "finalized";
-  paymentStatus: "pending" | "paid" | "overdue" | "suspended";
-  totalMinor: number;
-  creditDrawnMinor: number;
-  paidMinor: number;
-  outstandingMinor: number;
-  paymentTermsDays: number;
-  dueDate?: string | null;
-  finalizedAt?: string | null;
-  createdAt: string;
-}
-
-export interface StatementLine {
-  channel: string;
-  model: string;
-  turns: number;
-  inputTokens: number;
-  outputTokens: number;
-  cachedTokens: number;
-  reasoningTokens: number;
-  amountMinor: number;
-}
-
-export interface WebhookEndpoint {
-  id: string;
-  url: string;
-  events: string[];
-  enabled: boolean;
-  balanceLowMinor?: number | null;
-  budgetThresholdsPercent?: number[];
-  secretLast4?: string;
-  createdAt: string;
-}
-
-export interface WebhookDelivery {
-  id: string;
-  endpointId: string;
-  event: string;
-  status: string;
-  attempts: number;
-  lastError?: string | null;
-  createdAt: string;
-}
-
-export interface BudgetSnapshot {
-  organization: {
-    availableMinor: number;
-    reservedMinor: number;
-    creditLimitMinor?: number | null;
-    creditUsedMinor?: number | null;
-    consumedPercent?: number | null;
-  };
-  member?: {
-    budgetLimitMinor: number;
-    committedMinor: number;
-    consumedPercent?: number | null;
-  } | null;
-  keys: {
-    keyId: string;
-    name?: string | null;
-    prefix: string;
-    spendLimitMinor?: number | null;
-    budgetDuration?: string | null;
-    windowStart?: string | null;
-    committedMinor: number;
-    consumedPercent?: number | null;
-  }[];
-}
-
 export interface SignedHead {
+  // no schema counterpart — `/log/head` and `/log/price-head` return inline shapes
   note: string;
   origin: string;
   size: number;
@@ -183,6 +56,7 @@ export interface SignedHead {
 }
 
 export interface WitnessCheckpoint {
+  // no schema counterpart — `/log/checkpoint` returns an inline shape
   headSize: number;
   note: string;
   cosignatures: { witnessUrl: string; note: string; firstSeen: string }[];
@@ -192,50 +66,11 @@ export interface WitnessCheckpoint {
   updatedAt: string;
 }
 
-export interface UserOrganization {
-  organization: { id: string; name: string; kind: string; tenantId: string };
-  role: "owner" | "admin" | "member";
-}
-
-export interface AuthMethods {
-  oauthGithub: boolean;
-  turnstileSiteKey?: string | null;
-}
-
-export interface Receipt {
-  entryId: string;
-  logIndex?: number | null;
-  contentHash: string;
-  isNew: boolean;
-}
-
-export interface PricedModel {
-  model: string;
-  channel: string;
-  protocol: string;
-  version: number;
-  weight: number;
-  createdAt: string;
-  inputPricePerMillion: number;
-  outputPricePerMillion?: number;
-  maxOutputTokens?: number;
-  cacheReadPricePerMillion?: number;
-  cacheWrite5mPricePerMillion?: number;
-  cacheWrite1hPricePerMillion?: number;
-  reasoningPricePerMillion?: number;
-  costPerRequest?: number;
-}
-
 export interface PriceEstimate {
+  // no schema counterpart — `/estimate-price` returns an inline shape
   estimateMinor: number;
   model: string;
   version: number;
-}
-
-export interface VerifyingKey {
-  keyName: string;
-  publicKey: string;
-  keyHash: string;
 }
 
 export function useSession() {
@@ -309,7 +144,7 @@ export function useCreateKey() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (body: Partial<ApiKey> & { name?: string }) =>
-      api<ApiKey & { secret: string }>("/org/keys", { method: "POST", body }),
+      api<components["schemas"]["CreatedApiKey"]>("/org/keys", { method: "POST", body }),
     onSuccess: () => client.invalidateQueries({ queryKey: ["keys"] }),
   });
 }
@@ -669,7 +504,7 @@ export function useOrg() {
         kind: string;
         createdAt: string;
         // The fiat unit this org renders in (issue #257); null = credits only.
-        displayCurrency: { code: string; ratePerCredit: string; decimals: number } | null;
+        displayCurrency: DisplayCurrencyType | null;
       }>("/org"),
   });
 }

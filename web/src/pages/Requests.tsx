@@ -188,7 +188,7 @@ export function Requests() {
                         })
                       }
                     >
-                      {prefixOf.get(row.keyId) ?? row.keyId.slice(0, 8)}
+                      {prefixOf.get(row.keyId!) ?? row.keyId!.slice(0, 8)}
                     </button>
                   ) : (
                     "—"
