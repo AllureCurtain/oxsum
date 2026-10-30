@@ -57,9 +57,20 @@ export function Requests() {
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Requests</h1>
-        <span className={`text-xs ${socket.live ? "text-success" : "text-muted"}`}>
-          {socket.live ? "live" : "offline"}
-        </span>
+        {socket.dead ? (
+          <button
+            type="button"
+            onClick={socket.reconnect}
+            title="Reconnect the billing socket"
+            className="text-xs font-medium text-danger hover:text-ink"
+          >
+            connection lost — retry
+          </button>
+        ) : (
+          <span className={`text-xs ${socket.live ? "text-success" : "text-muted"}`}>
+            {socket.live ? "live" : "offline"}
+          </span>
+        )}
       </div>
 
       <div className="flex flex-wrap gap-3">
