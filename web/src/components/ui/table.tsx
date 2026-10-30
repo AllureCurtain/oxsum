@@ -95,8 +95,14 @@ export function TableShell(props: {
   const sticky = props.sticky ?? true;
   const cols = props.head.map(colMeta);
   return (
-    <div className="overflow-x-auto">
+    <div className="overflow-x-clip">
       <table className="w-full border-collapse text-[13px]">
+        {/* `overflow-x-clip`, not `-auto`: a scroll container here would become
+            the sticky `<thead>`'s scroll ancestor and pin it inside the div,
+            so the header scrolled away with the body instead of holding under
+            the topbar. `clip` trims any overflow without forming a scroll
+            context, letting the thead stick against the viewport. Columns rely
+            on `truncate`/`max-w-40`, so nothing legitimately overflows. */}
         <thead
           className={sticky ? "sticky z-10 bg-surface" : undefined}
           style={sticky ? { top: "var(--topbar-h)" } : undefined}
