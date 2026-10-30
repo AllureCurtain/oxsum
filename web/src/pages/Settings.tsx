@@ -264,7 +264,7 @@ export function Settings() {
               isLoading={false}
               onClick={() =>
                 api("/auth/verify/request", { method: "POST" })
-                  .then(() => setVerifyMsg("Verification email sent — check your inbox."))
+                  .then(() => setVerifyMsg("Verification email sent; check your inbox."))
                   .catch((e) =>
                     setVerifyMsg(e instanceof ApiError ? e.message : "failed to send"),
                   )

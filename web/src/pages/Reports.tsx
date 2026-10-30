@@ -51,7 +51,7 @@ function delivered(link: CreatedReportLink): string {
     return "The link was created and emailed.";
   }
   if (link.delivery === "failed") {
-    return "The link was created, but the mail did not go out — copy it below and pass it on.";
+    return "The link was created, but the mail did not go out; copy it below and pass it on.";
   }
   return "The link was created.";
 }

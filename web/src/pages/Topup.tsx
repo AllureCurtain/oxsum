@@ -38,7 +38,7 @@ function ReceiptView({ receipt }: { receipt: { entryId: string; contentHash: str
   return (
     <div className="flex flex-col gap-2">
       <Banner tone="success">
-        {receipt.isNew ? "Credited." : "This request already landed — the receipt replays."}
+        {receipt.isNew ? "Credited." : "This request already landed; the receipt replays."}
       </Banner>
       <CodeBlock
         code={JSON.stringify(receipt, null, 2)}
@@ -122,7 +122,7 @@ function StripeRail() {
   return (
     <AmountRail
       intro="Opens the hosted Stripe checkout; the deposit confirms through the Stripe webhook once the session completes. A deployment without Stripe configured answers 503."
-      consequence={() => <>This opens Stripe's hosted checkout — you aren't charged until you confirm there.</>}
+      consequence={() => <>This opens Stripe's hosted checkout; you aren't charged until you confirm there.</>}
       submitLabel="Pay with Stripe"
       loadingText="Opening checkout…"
       mutation={stripe}
@@ -143,7 +143,7 @@ function AirwallexRail() {
   return (
     <AmountRail
       intro="Opens the hosted Airwallex payment page; the deposit confirms through the Airwallex webhook once the intent succeeds. A deployment without Airwallex configured answers 503."
-      consequence={() => <>This opens Airwallex's hosted payment page — you aren't charged until you confirm there.</>}
+      consequence={() => <>This opens Airwallex's hosted payment page; you aren't charged until you confirm there.</>}
       submitLabel="Pay with Airwallex"
       loadingText="Opening payment page…"
       mutation={airwallex}
@@ -299,7 +299,7 @@ function HyperswitchRail() {
               <p className="text-xs text-muted" role="status">Loading the secure checkout…</p>
             ) : null}
             {stage === "failed" ? (
-              <Banner tone="error">The checkout could not load — try again or pick another rail.</Banner>
+              <Banner tone="error">The checkout could not load; try again or pick another rail.</Banner>
             ) : null}
           </>
         ) : null}
@@ -356,7 +356,7 @@ function RedeemRail() {
           required
         />
       </Field>
-      <Consequence>This claims the code's value onto your balance immediately — a spent code can't be reused.</Consequence>
+      <Consequence>This claims the code's value onto your balance immediately; a spent code can't be reused.</Consequence>
       <Button type="submit" isLoading={redeem.isPending} loadingText="Claiming…">
         Redeem code
       </Button>

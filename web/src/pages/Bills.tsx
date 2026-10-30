@@ -94,7 +94,7 @@ function BillRow({ row, display }: { row: { index: number; entryId: string; book
               <CodeBlock language="json" code={JSON.stringify(proof, null, 2)} />
             )}
             <p className="mt-1 text-xs text-muted">
-              The bundle is the raw material <code className="mono">/verify</code> checks — signature,
+              The bundle is the raw material <code className="mono">/verify</code> checks: signature,
               path, and content hash.
             </p>
           </td>

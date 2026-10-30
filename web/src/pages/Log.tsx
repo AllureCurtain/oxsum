@@ -20,7 +20,7 @@ export function Log() {
           <p className="text-sm">
             Head #{checkpoint.data.headSize}, published {checkpoint.data.updatedAt}, cosigned
             by {checkpoint.data.cosignatures.length} witness
-            {checkpoint.data.cosignatures.length === 1 ? "" : "es"} — the "this log cannot be
+            {checkpoint.data.cosignatures.length === 1 ? "" : "es"}: the "this log cannot be
             rewritten" evidence.
           </p>
           {checkpoint.data.cosignatures.map((cosig) => {
@@ -33,7 +33,7 @@ export function Log() {
                 <p className="text-xs text-muted">
                   {pin
                     ? `pinned key ${pin.keyName} · keyHash ${pin.keyHash}`
-                    : "no pinned key — the deployment publishes no key for this witness"}
+                    : "no pinned key; the deployment publishes no key for this witness"}
                 </p>
               </div>
             );

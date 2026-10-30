@@ -228,7 +228,7 @@ function ReverseDeposit({
     >
       <Field
         label={`Reverse ${credits(deposit.amountMinor)} cr — reason`}
-        hint="required — it becomes the reversal entry's description"
+        hint="required, it becomes the reversal entry's description"
       >
         <TextInput
           value={reason}
