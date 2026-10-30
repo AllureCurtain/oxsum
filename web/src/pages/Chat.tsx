@@ -1,22 +1,22 @@
 import { useEffect, useRef, useState } from "react";
 import { useKeys, useCreateKey } from "../api/hooks";
 import { Banner, Card, Field, TextInput } from "../components/ui";
-import { HaloButton } from "../components/cult/halo-button";
+import { Button } from "../components/ui";
 import {
-  HaloSelect,
-  HaloSelectContent,
-  HaloSelectItem,
-  HaloSelectTrigger,
-  HaloSelectValue,
-} from "../components/cult/halo-select";
+  SelectRoot,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../components/ui";
 import {
-  HaloTabs,
-  HaloTabsContent,
-  HaloTabsList,
-  HaloTabsTrigger,
-} from "../components/cult/halo-tabs";
-import { CodeBlock } from "../components/cult/code-block";
-import { Typewriter } from "../components/cult/typewriter";
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "../components/ui";
+import { CodeBlock } from "../components/ui";
+import { Typewriter } from "../components/ui";
 import { api } from "../api/client";
 
 // The chat page, moved from the server-rendered `/dashboard/chat`: the browser
@@ -171,26 +171,26 @@ export function Chat() {
         <p className="text-sm text-muted">Minting the chat key…</p>
       ) : (
         <>
-          <HaloSelect value={model} onValueChange={(v) => setModel(String(v))} className="w-72">
-            <HaloSelectTrigger aria-label="model">
-              <HaloSelectValue />
-            </HaloSelectTrigger>
-            <HaloSelectContent>
+          <SelectRoot value={model} onValueChange={(v) => setModel(String(v))} className="w-72">
+            <SelectTrigger aria-label="model">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
               {models.map((m) => (
-                <HaloSelectItem key={m} value={m}>
+                <SelectItem key={m} value={m}>
                   {m}
-                </HaloSelectItem>
+                </SelectItem>
               ))}
-            </HaloSelectContent>
-          </HaloSelect>
-          <HaloTabs defaultValue="chat">
-            <HaloTabsList>
-              <HaloTabsTrigger value="chat">Chat</HaloTabsTrigger>
-              <HaloTabsTrigger value="messages">Messages</HaloTabsTrigger>
-              <HaloTabsTrigger value="embeddings">Embeddings</HaloTabsTrigger>
-              <HaloTabsTrigger value="rerank">Rerank</HaloTabsTrigger>
-            </HaloTabsList>
-            <HaloTabsContent value="chat">
+            </SelectContent>
+          </SelectRoot>
+          <Tabs defaultValue="chat">
+            <TabsList>
+              <TabsTrigger value="chat">Chat</TabsTrigger>
+              <TabsTrigger value="messages">Messages</TabsTrigger>
+              <TabsTrigger value="embeddings">Embeddings</TabsTrigger>
+              <TabsTrigger value="rerank">Rerank</TabsTrigger>
+            </TabsList>
+            <TabsContent value="chat">
           <Card>
             <div className="flex min-h-64 flex-col gap-3">
               {messages.map((m, i) => (
@@ -232,17 +232,17 @@ export function Chat() {
               placeholder="Say something…"
               disabled={streaming}
             />
-            <HaloButton
+            <Button
               type="submit"
               isLoading={streaming}
               loadingText="Streaming…"
               disabled={!input.trim()}
             >
               Send
-            </HaloButton>
+            </Button>
           </form>
-            </HaloTabsContent>
-            <HaloTabsContent value="messages">
+            </TabsContent>
+            <TabsContent value="messages">
               <Probe
                 path="/v1/messages"
                 secret={secret}
@@ -252,16 +252,16 @@ export function Chat() {
                 })}
                 fields={[{ name: "text", label: "User message", kind: "textarea" }]}
               />
-            </HaloTabsContent>
-            <HaloTabsContent value="embeddings">
+            </TabsContent>
+            <TabsContent value="embeddings">
               <Probe
                 path="/v1/embeddings"
                 secret={secret}
                 build={(fields) => ({ model, input: fields.text ?? "" })}
                 fields={[{ name: "text", label: "Input text", kind: "textarea" }]}
               />
-            </HaloTabsContent>
-            <HaloTabsContent value="rerank">
+            </TabsContent>
+            <TabsContent value="rerank">
               <Probe
                 path="/v1/rerank"
                 secret={secret}
@@ -278,8 +278,8 @@ export function Chat() {
                   { name: "documents", label: "Documents, one per line", kind: "textarea" },
                 ]}
               />
-            </HaloTabsContent>
-          </HaloTabs>
+            </TabsContent>
+          </Tabs>
         </>
       )}
     </div>
@@ -358,9 +358,9 @@ function Probe(props: {
           </Field>
         ))}
         <div className="flex items-center gap-3">
-          <HaloButton type="submit" isLoading={busy} loadingText="Sending…">
+          <Button type="submit" isLoading={busy} loadingText="Sending…">
             Send
-          </HaloButton>
+          </Button>
           {charge != null ? (
             <p className="text-xs text-muted">
               charged <code className="mono">{charge}</code> minor

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { ApiError } from "../api/client";
-import { HaloSwitch } from "../components/cult/halo-switch";
-import { CopyButton } from "../components/cult/copy-button";
+import { Switch } from "../components/ui";
+import { CopyButton } from "../components/ui";
 import {
   useCreateWebhook,
   useDeleteWebhook,
@@ -101,7 +101,7 @@ export function Webhooks() {
             <div className="grid grid-cols-2 gap-1 sm:grid-cols-3">
               {EVENT_TYPES.map((event) => (
                 <label key={event} className="flex items-center gap-2 text-sm">
-                  <HaloSwitch
+                  <Switch
                     size="sm"
                     checked={events.includes(event)}
                     onCheckedChange={(checked) =>

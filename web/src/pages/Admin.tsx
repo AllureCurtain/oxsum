@@ -9,18 +9,15 @@ import {
   NumberInput,
   PageState,
   Select,
+  Switch,
   TableShell,
+  Tabs,
+  TabsList,
+  TabsTrigger,
   TextInput,
   credits,
 } from "../components/ui";
 import { ApiError } from "../api/client";
-import { HaloSwitch } from "../components/cult/halo-switch";
-import { HaloButton } from "../components/cult/halo-button";
-import {
-  HaloTabs,
-  HaloTabsList,
-  HaloTabsTrigger,
-} from "../components/cult/halo-tabs";
 
 // The admin console: the operator surface, token-gated like the server-rendered
 // `/admin` — the token lives in this browser's localStorage and rides
@@ -143,21 +140,21 @@ export function Admin() {
         </div>
       </div>
       {verified === true && token ? (
-        <HaloTabs
+        <Tabs
           value={section}
           onValueChange={(v) => setSection(v as (typeof SECTIONS)[number])}
         >
-          <HaloTabsList variant="underline" className="flex-wrap">
+          <TabsList variant="underline" className="flex-wrap">
             {SECTIONS.map((s) => (
-              <HaloTabsTrigger key={s} value={s}>
+              <TabsTrigger key={s} value={s}>
                 {s}
-              </HaloTabsTrigger>
+              </TabsTrigger>
             ))}
-          </HaloTabsList>
+          </TabsList>
           <div className="mt-4">
             <Section token={token} name={section} />
           </div>
-        </HaloTabs>
+        </Tabs>
       ) : (
         <PageState>Checking token…</PageState>
       )}
@@ -325,7 +322,7 @@ function Metering() {
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <Card title="Hold then settle">
           <div className="flex flex-col gap-2">
-            <HaloButton
+            <Button
               type="button"
               isLoading={busy === "hold"}
               loadingText="Holding…"
@@ -334,11 +331,11 @@ function Metering() {
               }
             >
               POST /metering/holds
-            </HaloButton>
+            </Button>
             <Field label="Hold key" hint="the key a holds answer returned">
               <TextInput value={holdKey} onChange={(e) => setHoldKey(e.target.value)} className="mono" />
             </Field>
-            <HaloButton
+            <Button
               type="button"
               isLoading={busy === "settle"}
               loadingText="Settling…"
@@ -347,8 +344,8 @@ function Metering() {
               }
             >
               POST /metering/settle
-            </HaloButton>
-            <HaloButton
+            </Button>
+            <Button
               type="button"
               isLoading={busy === "release"}
               loadingText="Releasing…"
@@ -357,7 +354,7 @@ function Metering() {
               }
             >
               POST /metering/release
-            </HaloButton>
+            </Button>
           </div>
         </Card>
         <Card title="One-shot bill">
@@ -366,7 +363,7 @@ function Metering() {
               An event that already ran — declared usage bills at the code's latest
               <code className="mono"> mode: event</code> price, hold and settle in one answer.
             </p>
-            <HaloButton
+            <Button
               type="button"
               isLoading={busy === "bill"}
               loadingText="Billing…"
@@ -375,7 +372,7 @@ function Metering() {
               }
             >
               POST /metering/settlements
-            </HaloButton>
+            </Button>
           </div>
         </Card>
       </div>
@@ -436,9 +433,9 @@ function UserReset({ token }: { token: string }) {
           </Field>
         </div>
         <div className="flex items-center gap-3">
-          <HaloButton type="submit" isLoading={busy} loadingText="Resetting…">
+          <Button type="submit" isLoading={busy} loadingText="Resetting…">
             Reset password
-          </HaloButton>
+          </Button>
           {msg ? <span className="text-sm text-muted">{msg}</span> : null}
         </div>
       </form>
@@ -790,7 +787,7 @@ function AdjustOrg({ token, id, onDone }: { token: string; id: string; onDone: (
         </Field>
         <Field label="Suspend spend" hint="new holds refuse; in-flight still settles">
           <div className="flex items-center gap-2 pt-2">
-            <HaloSwitch
+            <Switch
               checked={suspend ?? false}
               onCheckedChange={(v) => setSuspend(v)}
             />
