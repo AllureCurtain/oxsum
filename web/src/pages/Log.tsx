@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { ScrollText } from "lucide-react";
 import { useEntries, useLogHead, useLogKey, useWitnessCheckpoint } from "../api/hooks";
 import { CopyButton } from "../components/ui";
 import { Button, Card, EmptyRows, PageState, TableShell, Td } from "../components/ui";
@@ -89,7 +90,7 @@ export function Log() {
               </tr>
             ))}
             {!entries.isLoading && (entries.data?.rows.length ?? 0) === 0 ? (
-              <EmptyRows colSpan={4}>The log is empty.</EmptyRows>
+              <EmptyRows colSpan={4} icon={<ScrollText />}>The log is empty.</EmptyRows>
             ) : null}
           </TableShell>
           {entries.data?.nextCursor != null ? (

@@ -1,4 +1,5 @@
 import { useMemo, useState, type FormEvent } from "react";
+import { Tags } from "lucide-react";
 import { ApiError, useEstimatePrice, useLogKey, usePriceHead, usePricing } from "../api/hooks";
 import { CopyButton } from "../components/ui";
 import { Button } from "../components/ui";
@@ -69,7 +70,7 @@ function Catalog() {
         </tr>
       ))}
       {!pricing.isLoading && models.length === 0 ? (
-        <EmptyRows colSpan={9}>No routes priced yet.</EmptyRows>
+        <EmptyRows colSpan={9} icon={<Tags />}>No routes priced yet.</EmptyRows>
       ) : null}
     </TableShell>
   );

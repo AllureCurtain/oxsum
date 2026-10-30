@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link2, Users } from "lucide-react";
 import { ApiError } from "../api/client";
 import {
   useAddMember,
@@ -101,55 +102,62 @@ export function Members() {
               </tr>
             ))}
           {!members.isLoading && (members.data?.members.length ?? 0) === 0 ? (
-            <EmptyRows colSpan={5}>No members.</EmptyRows>
+            <EmptyRows colSpan={5} icon={<Users />}>
+              No members yet — add one below.
+            </EmptyRows>
           ) : null}
         </TableShell>
       )}
 
       {canManage ? (
-        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
-          <Card title="Add member">
-            <form
-              className="flex gap-2"
-              onSubmit={(e) => {
-                e.preventDefault();
-                add.mutate(email, { onSuccess: () => setEmail("") });
-              }}
-            >
-              <Field label="Email">
-                <TextInput
-                  type="email"
-                  required
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                />
-              </Field>
-              <div className="flex items-end">
-                <Button type="submit" disabled={add.isPending}>
-                  Add
-                </Button>
-              </div>
-            </form>
-            <p className="mt-2 text-xs text-muted">
-              Adds an existing account by email. Someone without an account joins through an
-              invitation link instead.
-            </p>
-          </Card>
-          <Card title="Invitation link">
-            <Button
-              tone="ghost"
-              disabled={invite.isPending}
-              onClick={() =>
-                invite.mutate(undefined, { onSuccess: (created) => setInviteUrl(created.url) })
-              }
-            >
-              Create invitation link
-            </Button>
-            {invite.error instanceof ApiError ? (
-              <p className="mt-2 text-xs text-danger">{invite.error.message}</p>
-            ) : null}
-          </Card>
-        </div>
+        <Card title="Add member">
+          <form
+            className="flex max-w-md gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              add.mutate(email, { onSuccess: () => setEmail("") });
+            }}
+          >
+            <Field label="Email">
+              <TextInput
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </Field>
+            <div className="flex items-end">
+              <Button type="submit" disabled={add.isPending}>
+                Add
+              </Button>
+            </div>
+          </form>
+          <p className="mt-2 text-xs text-muted">
+            Adds an existing account by email.
+          </p>
+
+          {/* The alternative path — someone without an account — collapses
+              behind a details, so the common action stays primary. */}
+          <details className="mt-4 border-t border-line pt-3">
+            <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium text-muted hover:text-ink [&::-webkit-details-marker]:hidden">
+              <Link2 className="size-4" /> Invite someone without an account
+            </summary>
+            <div className="mt-3">
+              <Button
+                tone="ghost"
+                disabled={invite.isPending}
+                onClick={() =>
+                  invite.mutate(undefined, { onSuccess: (created) => setInviteUrl(created.url) })
+                }
+              >
+                Create invitation link
+              </Button>
+              {invite.error instanceof ApiError ? (
+                <p className="mt-2 text-xs text-danger">{invite.error.message}</p>
+              ) : null}
+            </div>
+          </details>
+        </Card>
       ) : null}
     </div>
   );

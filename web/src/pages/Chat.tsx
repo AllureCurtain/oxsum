@@ -184,19 +184,24 @@ export function Chat() {
             </SelectContent>
           </SelectRoot>
           <Tabs defaultValue="chat">
-            <TabsList>
-              <TabsTrigger value="chat">Chat</TabsTrigger>
-              <TabsTrigger value="messages">Messages</TabsTrigger>
-              <TabsTrigger value="embeddings">Embeddings</TabsTrigger>
-              <TabsTrigger value="rerank">Rerank</TabsTrigger>
-            </TabsList>
+            <div className="flex items-center justify-between gap-3">
+              <TabsList>
+                <TabsTrigger value="chat">Chat</TabsTrigger>
+                <TabsTrigger value="messages">Messages</TabsTrigger>
+                <TabsTrigger value="embeddings">Embeddings</TabsTrigger>
+                <TabsTrigger value="rerank">Rerank</TabsTrigger>
+              </TabsList>
+              <p className="hidden text-xs text-muted sm:block">
+                messages / embeddings / rerank are billed probes, not chat
+              </p>
+            </div>
             <TabsContent value="chat">
           <Card>
             <div className="flex min-h-64 flex-col gap-3">
               {messages.map((m, i) => (
                 <div
                   key={i}
-                  className={`rounded-md px-3 py-2 text-sm whitespace-pre-wrap ${
+                  className={`rounded-lg px-3 py-2 text-sm whitespace-pre-wrap ${
                     m.role === "user" ? "ml-8 bg-primary-soft" : "mr-8 bg-canvas"
                   }`}
                 >
@@ -342,7 +347,7 @@ function Probe(props: {
           <Field key={f.name} label={f.label}>
             {f.kind === "textarea" ? (
               <textarea
-                className="mono w-full rounded-md border border-line bg-surface px-2.5 py-1.5 text-sm"
+                className="mono w-full rounded-lg border border-line bg-surface px-2.5 py-1.5 text-sm"
                 rows={3}
                 value={values[f.name] ?? ""}
                 onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))}

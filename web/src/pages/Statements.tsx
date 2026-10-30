@@ -1,6 +1,7 @@
 import { Link, useParams } from "react-router-dom";
 import { useDisplay, useStatement, useStatements } from "../api/hooks";
-import { Card, Cr, EmptyRows, PageState, StatusBadge, TableShell, Td } from "../components/ui";
+import { AlertCircle, CheckCircle2, CreditCard, FileText } from "lucide-react";
+import { Card, Cr, EmptyRows, Kpi, PageState, StatusBadge, TableShell, Td } from "../components/ui";
 
 export function Statements() {
   const statements = useStatements();
@@ -46,7 +47,9 @@ export function Statements() {
               </tr>
             ))}
           {!statements.isLoading && (statements.data?.length ?? 0) === 0 ? (
-            <EmptyRows colSpan={8}>No statements yet — statements appear once a period finalizes.</EmptyRows>
+            <EmptyRows colSpan={8} icon={<FileText />}>
+              No statements yet — statements appear once a period finalizes.
+            </EmptyRows>
           ) : null}
         </TableShell>
       )}
@@ -82,22 +85,22 @@ export function StatementDetail() {
       ) : s ? (
         <>
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-            <div className="rounded-md border border-line bg-surface p-4">
-              <p className="text-xs text-muted">Total</p>
-              <p className="mt-1 text-xl font-semibold mono"><Cr minor={s.totalMinor} currency={display} /></p>
-            </div>
-            <div className="rounded-md border border-line bg-surface p-4">
-              <p className="text-xs text-muted">Credit drawn</p>
-              <p className="mt-1 text-xl font-semibold mono"><Cr minor={s.creditDrawnMinor} currency={display} /></p>
-            </div>
-            <div className="rounded-md border border-line bg-surface p-4">
-              <p className="text-xs text-muted">Paid</p>
-              <p className="mt-1 text-xl font-semibold mono"><Cr minor={s.paidMinor} currency={display} /></p>
-            </div>
-            <div className="rounded-md border border-line bg-surface p-4">
-              <p className="text-xs text-muted">Outstanding</p>
-              <p className="mt-1 text-xl font-semibold mono"><Cr minor={s.outstandingMinor} currency={display} /></p>
-            </div>
+            <Kpi label="Total" icon={<FileText />} value={<Cr minor={s.totalMinor} currency={display} />} />
+            <Kpi
+              label="Credit drawn"
+              icon={<CreditCard />}
+              value={<Cr minor={s.creditDrawnMinor} currency={display} />}
+            />
+            <Kpi
+              label="Paid"
+              icon={<CheckCircle2 />}
+              value={<Cr minor={s.paidMinor} currency={display} />}
+            />
+            <Kpi
+              label="Outstanding"
+              icon={<AlertCircle />}
+              value={<Cr minor={s.outstandingMinor} currency={display} />}
+            />
           </div>
 
           <dl className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
@@ -139,7 +142,7 @@ export function StatementDetail() {
                 </tr>
               ))}
               {(detail.data?.lines.length ?? 0) === 0 ? (
-                <EmptyRows colSpan={8}>No lines.</EmptyRows>
+                <EmptyRows colSpan={8} icon={<FileText />}>No lines.</EmptyRows>
               ) : null}
             </TableShell>
           </Card>

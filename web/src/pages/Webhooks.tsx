@@ -1,6 +1,6 @@
 import { useState } from "react";
+import { Webhook } from "lucide-react";
 import { ApiError } from "../api/client";
-import { Switch } from "../components/ui";
 import { CopyButton } from "../components/ui";
 import {
   useCreateWebhook,
@@ -21,21 +21,26 @@ import {
   TextInput,
 } from "../components/ui";
 
-const EVENT_TYPES = [
-  "request.settled",
-  "org.suspended",
-  "deposit.credited",
-  "deposit.failed",
-  "deposit.reversed",
-  "balance.low",
-  "statement.finalized",
-  "statement.payment_overdue",
-  "statement.payment_status_updated",
-  "org.credit_limit_exceeded",
-  "anomaly.detected",
-  "budget.exhaustion_forecast",
-  "budget.threshold_crossed",
-] as const;
+const EVENT_GROUPS: { label: string; events: string[] }[] = [
+  { label: "Requests", events: ["request.settled"] },
+  {
+    label: "Deposits",
+    events: ["deposit.credited", "deposit.failed", "deposit.reversed"],
+  },
+  {
+    label: "Statements",
+    events: ["statement.finalized", "statement.payment_overdue", "statement.payment_status_updated"],
+  },
+  {
+    label: "Organization",
+    events: ["org.suspended", "org.credit_limit_exceeded"],
+  },
+  { label: "Balance", events: ["balance.low"] },
+  {
+    label: "Budget & anomalies",
+    events: ["budget.exhaustion_forecast", "budget.threshold_crossed", "anomaly.detected"],
+  },
+];
 
 export function Webhooks() {
   const webhooks = useWebhooks();
@@ -98,21 +103,38 @@ export function Webhooks() {
               placeholder="https://example.com/hook"
             />
           </Field>
-          <Field label="Events">
-            <div className="grid grid-cols-2 gap-1 sm:grid-cols-3">
-              {EVENT_TYPES.map((event) => (
-                <label key={event} className="flex items-center gap-2 text-sm">
-                  <Switch
-                    size="sm"
-                    checked={events.includes(event)}
-                    onCheckedChange={(checked) =>
-                      setEvents((current) =>
-                        checked ? [...current, event] : current.filter((x) => x !== event),
-                      )
-                    }
-                  />
-                  {event}
-                </label>
+          <Field label="Events" hint={`${events.length} selected`}>
+            <div className="flex flex-col gap-2.5">
+              {EVENT_GROUPS.map((group) => (
+                <div key={group.label}>
+                  <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-muted">
+                    {group.label}
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {group.events.map((event) => {
+                      const on = events.includes(event);
+                      return (
+                        <button
+                          key={event}
+                          type="button"
+                          aria-pressed={on}
+                          onClick={() =>
+                            setEvents((current) =>
+                              on ? current.filter((x) => x !== event) : [...current, event],
+                            )
+                          }
+                          className={`mono rounded-full border px-2.5 py-1 text-[11px] transition-colors ${
+                            on
+                              ? "border-primary bg-primary-soft text-primary"
+                              : "border-line bg-surface text-muted hover:border-primary/40 hover:text-ink"
+                          }`}
+                        >
+                          {event}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
               ))}
             </div>
           </Field>
@@ -164,7 +186,7 @@ export function Webhooks() {
             </tr>
             ))}
           {!webhooks.isLoading && (webhooks.data?.length ?? 0) === 0 ? (
-            <EmptyRows colSpan={5}>No webhook endpoints yet.</EmptyRows>
+            <EmptyRows colSpan={5} icon={<Webhook />}>No webhook endpoints yet.</EmptyRows>
           ) : null}
         </TableShell>
       )}
@@ -196,7 +218,7 @@ function Deliveries({ endpointId }: { endpointId: string }) {
             </tr>
           ))}
           {!deliveries.isLoading && (deliveries.data?.length ?? 0) === 0 ? (
-            <EmptyRows colSpan={5}>No deliveries yet.</EmptyRows>
+            <EmptyRows colSpan={5} icon={<Webhook />}>No deliveries yet.</EmptyRows>
           ) : null}
         </TableShell>
       )}

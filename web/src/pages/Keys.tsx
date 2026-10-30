@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { KeyRound } from "lucide-react";
 import type { ApiKey } from "../api/hooks";
 import type { DisplayCurrency } from "../components/ui";
 import { useBudget, useCreateKey, useDisplay, useKeys, usePatchKey, useRevokeKey } from "../api/hooks";
@@ -92,44 +93,64 @@ export function Keys() {
 
       <Card title="Create a key">
         <form
-          className="grid grid-cols-1 gap-3 sm:grid-cols-2"
+          className="flex flex-col gap-5"
           onSubmit={(e) => {
             e.preventDefault();
             submit();
           }}
         >
-          <Field label="Name">
-            <TextInput value={name} onChange={(e) => setName(e.target.value)} maxLength={80} />
-          </Field>
-          <Field label="Spend limit (credits)" hint="empty: unlimited">
-            <NumberInput value={limit} min={0} onChange={(e) => setLimit(e.target.value)} />
-          </Field>
-          <Field label="Budget window" hint="makes the limit periodic (UTC)">
-            <Select value={duration} onChange={(e) => setDuration(e.target.value)}>
-              <option value="">cumulative</option>
-              {DURATIONS.map((d) => (
-                <option key={d} value={d}>
-                  {d}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Field label="Expires at">
-            <TextInput type="datetime-local" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} />
-          </Field>
-          <Field label="Requests per minute">
-            <NumberInput value={rpm} min={1} onChange={(e) => setRpm(e.target.value)} />
-          </Field>
-          <Field label="Tokens per minute">
-            <NumberInput value={tpm} min={1} onChange={(e) => setTpm(e.target.value)} />
-          </Field>
-          <Field label="Max concurrent holds">
-            <NumberInput value={maxHolds} min={1} onChange={(e) => setMaxHolds(e.target.value)} />
-          </Field>
-          <Field label="Model allowlist" hint="comma-separated gateway model names">
-            <TextInput value={models} onChange={(e) => setModels(e.target.value)} />
-          </Field>
-          <div className="flex items-end">
+          {/* Grouped, not a flat 8-field grid — identity, then the budget,
+              then the rate limits. */}
+          <section className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <p className="col-span-full text-xs font-semibold uppercase tracking-wider text-muted">
+              Identity
+            </p>
+            <Field label="Name">
+              <TextInput value={name} onChange={(e) => setName(e.target.value)} maxLength={80} />
+            </Field>
+            <Field label="Expires at">
+              <TextInput type="datetime-local" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} />
+            </Field>
+          </section>
+
+          <section className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <p className="col-span-full text-xs font-semibold uppercase tracking-wider text-muted">
+              Budget
+            </p>
+            <Field label="Spend limit (credits)" hint="empty: unlimited">
+              <NumberInput value={limit} min={0} onChange={(e) => setLimit(e.target.value)} />
+            </Field>
+            <Field label="Budget window" hint="makes the limit periodic (UTC)">
+              <Select value={duration} onChange={(e) => setDuration(e.target.value)}>
+                <option value="">cumulative</option>
+                {DURATIONS.map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          </section>
+
+          <section className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <p className="col-span-full text-xs font-semibold uppercase tracking-wider text-muted">
+              Rate limits
+            </p>
+            <Field label="Requests per minute">
+              <NumberInput value={rpm} min={1} onChange={(e) => setRpm(e.target.value)} />
+            </Field>
+            <Field label="Tokens per minute">
+              <NumberInput value={tpm} min={1} onChange={(e) => setTpm(e.target.value)} />
+            </Field>
+            <Field label="Max concurrent holds">
+              <NumberInput value={maxHolds} min={1} onChange={(e) => setMaxHolds(e.target.value)} />
+            </Field>
+            <Field label="Model allowlist" hint="comma-separated gateway model names">
+              <TextInput value={models} onChange={(e) => setModels(e.target.value)} />
+            </Field>
+          </section>
+
+          <div>
             <Button type="submit" disabled={create.isPending}>
               {create.isPending ? "Creating…" : "Create key"}
             </Button>
@@ -157,7 +178,9 @@ export function Keys() {
               />
             ))}
           {!keys.isLoading && (keys.data?.length ?? 0) === 0 ? (
-            <EmptyRows colSpan={6}>No keys yet.</EmptyRows>
+            <EmptyRows colSpan={6} icon={<KeyRound />}>
+              No keys yet — create one above to start calling the gateway.
+            </EmptyRows>
           ) : null}
         </TableShell>
       )}
@@ -233,7 +256,8 @@ function KeyRow(props: {
         <tr>
           <td colSpan={6} className="bg-canvas">
             <form
-              className="grid grid-cols-1 gap-3 p-2 sm:grid-cols-3"
+              className="grid grid-cols-1 gap-3 p-3 sm:grid-cols-3"
+              aria-label={`constraints for ${key.name ?? key.prefix}`}
               onSubmit={(e) => {
                 e.preventDefault();
                 patch.mutate({
@@ -247,6 +271,9 @@ function KeyRow(props: {
                 });
               }}
             >
+              <p className="col-span-full -mb-1 text-xs font-semibold uppercase tracking-wider text-muted">
+                Constraints · {key.name ?? key.prefix}
+              </p>
               <Field label="Spend limit (credits)">
                 <NumberInput value={limit} min={0} onChange={(e) => setLimit(e.target.value)} />
               </Field>

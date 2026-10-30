@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { ArrowLeftRight } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import { settlementOutcome } from "../lib/kinds";
 import { useBillingRecords, useDisplay, useKeys } from "../api/hooks";
@@ -205,7 +206,7 @@ export function Requests() {
               </tr>
               ))}
             {!records.isLoading && rows.length === 0 ? (
-              <EmptyRows colSpan={9}>
+              <EmptyRows colSpan={9} icon={<ArrowLeftRight />}>
                 {keyFilter || modelFilter ? "No requests match the filters." : "No requests yet."}
               </EmptyRows>
             ) : null}

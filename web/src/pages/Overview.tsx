@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { useState } from "react";
+import { CreditCard, FlaskConical, Snowflake, TrendingUp, Wallet } from "lucide-react";
 import {
   useBalance,
   useBudget,
@@ -56,28 +57,40 @@ export function Overview() {
       <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-4">
         {balance.data ? (
           <>
-            <AnimatedKpi label="Available" minor={balance.data.availableMinor} currency={display} />
+            <AnimatedKpi
+              label="Available"
+              minor={balance.data.availableMinor}
+              currency={display}
+              icon={<Wallet />}
+            />
             <AnimatedKpi
               label="Frozen"
               minor={balance.data.reservedMinor}
               hint="in-flight holds reserve"
               currency={display}
+              icon={<Snowflake />}
             />
             <AnimatedKpi
               label="Spent this month"
               minor={balance.data.spentThisMonthMinor}
               currency={display}
+              icon={<TrendingUp />}
             />
           </>
         ) : (
           <>
-            <AnimatedKpi label="Available" minor={0} />
-            <AnimatedKpi label="Frozen" minor={0} />
-            <AnimatedKpi label="Spent this month" minor={0} />
+            <AnimatedKpi label="Available" minor={0} icon={<Wallet />} />
+            <AnimatedKpi label="Frozen" minor={0} icon={<Snowflake />} />
+            <AnimatedKpi label="Spent this month" minor={0} icon={<TrendingUp />} />
           </>
         )}
         <div className="rounded-xl border border-line bg-surface p-4 shadow-[0_1px_3px_rgba(20,34,64,.05)]">
-          <p className="text-xs font-medium text-muted">Credit line</p>
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs font-medium text-muted">Credit line</p>
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary-soft text-primary [&>svg]:size-4">
+              <CreditCard />
+            </span>
+          </div>
           <p className="mt-1.5 text-2xl font-bold tabular-nums tracking-tight text-ink">
             {balance.data
               ? `${credits(balance.data.creditUsedMinor)} / ${credits(balance.data.creditLimitMinor)}`
@@ -182,7 +195,9 @@ export function Overview() {
                 </tr>
               ))}
             {!holds.isLoading && (holds.data?.holds.length ?? 0) === 0 ? (
-              <EmptyRows colSpan={4}>Nothing in flight.</EmptyRows>
+              <EmptyRows colSpan={4} icon={<Snowflake />}>
+                Nothing in flight — holds appear here while a request is reserving credits.
+              </EmptyRows>
             ) : null}
           </TableShell>
           <HoldBench />
@@ -215,7 +230,9 @@ export function Overview() {
                 </tr>
               ))}
             {!entries.isLoading && (entries.data?.rows.length ?? 0) === 0 ? (
-              <EmptyRows colSpan={3}>No entries yet.</EmptyRows>
+              <EmptyRows colSpan={3} icon={<TrendingUp />}>
+                No entries yet — settlements land in the ledger as they book.
+              </EmptyRows>
             ) : null}
           </TableShell>
         </Card>
@@ -225,7 +242,9 @@ export function Overview() {
 }
 
 /** A hold you take by hand — the key is the idempotencyKey you pick, so the
- *  settle form below already knows what to name. Settling at 0 is the release. */
+ *  settle form below already knows what to name. Settling at 0 is the release.
+ *  This is a dev bench (`POST /holds` / `POST /settlements`), not a product
+ *  action — it collapses behind a `<details>` so the read surface stays read. */
 function HoldBench() {
   const [amount, setAmount] = useState("");
   const [holdKey, setHoldKey] = useState("");
@@ -235,13 +254,12 @@ function HoldBench() {
   const settle = useSettleHold();
 
   return (
-    <div className="mt-3 flex flex-col gap-2.5 border-t border-line pt-3.5">
-      <p className="text-xs text-muted">
-        Manual hold (<code className="mono">POST /holds</code>,{" "}
-        <code className="mono">POST /settlements</code>) — useful to see the
-        freeze/settle pair land in the log.
-      </p>
-      <div className="flex flex-wrap items-end gap-2">
+    <details className="mt-3 border-t border-line pt-3.5">
+      <summary className="flex cursor-pointer list-none items-center gap-2 text-xs font-medium text-muted hover:text-ink [&::-webkit-details-marker]:hidden">
+        <FlaskConical className="size-3.5" />
+        Manual hold bench — dev tool, freezes real credits
+      </summary>
+      <div className="mt-2.5 flex flex-wrap items-end gap-2">
         <Field label="Hold (credits)">
           <TextInput
             type="number"
@@ -322,6 +340,6 @@ function HoldBench() {
         </Button>
       </div>
       {msg ? <Banner tone={msg.includes("failed") ? "error" : "info"}>{msg}</Banner> : null}
-    </div>
+    </details>
   );
 }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   ApiError,
@@ -26,6 +26,12 @@ function amountToMinor(raw: string): number | null {
   const value = Number(raw);
   if (!Number.isFinite(value) || value <= 0) return null;
   return Math.round(value * 1_000_000);
+}
+
+/** The consequence line a consequential form owes its submit button — what
+ *  pressing it actually does, stated plainly before the commit. */
+function Consequence({ children }: { children: ReactNode }) {
+  return <p className="text-xs text-muted">{children}</p>;
 }
 
 function ReceiptView({ receipt }: { receipt: { entryId: string; contentHash: string; isNew: boolean } }) {
@@ -70,6 +76,7 @@ function ManualRail() {
           required
         />
       </Field>
+      <Consequence>This books {amountToMinor(amount) !== null ? `${amount} cr` : "the amount"} onto your balance immediately.</Consequence>
       <Button type="submit" isLoading={topup.isPending} loadingText="Booking…">
         Credit balance
       </Button>
@@ -110,6 +117,7 @@ function StripeRail() {
           required
         />
       </Field>
+      <Consequence>This opens Stripe's hosted checkout — you aren't charged until you confirm there.</Consequence>
       <Button type="submit" isLoading={stripe.isPending} loadingText="Opening checkout…">
         Pay with Stripe
       </Button>
@@ -155,6 +163,7 @@ function AirwallexRail() {
           required
         />
       </Field>
+      <Consequence>This opens Airwallex's hosted payment page — you aren't charged until you confirm there.</Consequence>
       <Button type="submit" isLoading={airwallex.isPending} loadingText="Opening payment page…">
         Pay with Airwallex
       </Button>
@@ -293,13 +302,25 @@ function HyperswitchRail() {
           />
         </Field>
         {stage !== "mounted" ? (
-          <Button
-            type="submit"
-            isLoading={hyperswitch.isPending || stage === "mounting"}
-            loadingText="Loading checkout…"
-          >
-            Pay with Hyperswitch
-          </Button>
+          <>
+            <Consequence>
+              This creates a payment intent and mounts the switch's checkout below — nothing is
+              charged until you complete it.
+            </Consequence>
+            <Button
+              type="submit"
+              isLoading={hyperswitch.isPending || stage === "mounting"}
+              loadingText="Loading checkout…"
+            >
+              Pay with Hyperswitch
+            </Button>
+            {stage === "mounting" ? (
+              <p className="text-xs text-muted" role="status">Loading the secure checkout…</p>
+            ) : null}
+            {stage === "failed" ? (
+              <Banner tone="error">The checkout could not load — try again or pick another rail.</Banner>
+            ) : null}
+          </>
         ) : null}
         {hyperswitch.error instanceof ApiError ? (
           <Banner tone="error">
@@ -354,6 +375,7 @@ function RedeemRail() {
           required
         />
       </Field>
+      <Consequence>This claims the code's value onto your balance immediately — a spent code can't be reused.</Consequence>
       <Button type="submit" isLoading={redeem.isPending} loadingText="Claiming…">
         Redeem code
       </Button>

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Receipt } from "lucide-react";
 import { useBills, useConsistency, useDisplay, useLogHead } from "../api/hooks";
 import { entryKind } from "../lib/kinds";
 import {
@@ -163,7 +164,7 @@ export function Bills() {
                 <BillRow key={row.entryId} row={row} display={display} />
               ))}
             {!bills.isLoading && (bills.data?.rows.length ?? 0) === 0 ? (
-              <EmptyRows colSpan={7}>No transactions yet.</EmptyRows>
+              <EmptyRows colSpan={7} icon={<Receipt />}>No transactions yet.</EmptyRows>
             ) : null}
           </TableShell>
           {bills.data?.nextCursor != null ? (
