@@ -12,7 +12,6 @@ on:
     branches: [main]
     paths-ignore: ['docs/**', '**.md']
   pull_request:
-    paths-ignore: ['docs/**', '**.md']
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -35,23 +34,66 @@ env:
   SCCACHE_GHA_ENABLED: "true"
 
 jobs:
+  # Path routing (issue #437): a PR that touches no Rust-relevant path shouldn't
+  # pay for the fmt/clippy/test/build-tests/shard suite — that's minutes of
+  # runner time spent proving nothing changed. A single `paths-filter` job names
+  # the Rust surface once; the Rust jobs `needs:` it and early-exit green when
+  # `rust` is false, so required checks still report success instead of going
+  # absent (which is what deadlocked the docs-only PRs — a skipped job's check
+  # never posts). `web`-only and docs-only PRs route around the whole suite.
+  filter:
+    name: filter
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          # `rust` = anything the Rust toolchain builds, tests or lints against.
+          # A change that misses every one of these cannot alter a Rust result.
+          filters: |
+            rust:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'crates/**'
+              - 'scripts/**'
+              - 'rust-toolchain.toml'
+              - '.cargo/**'
+              - '.github/workflows/**'
+              - 'Dockerfile'
+              - '.dockerignore'
+
   fmt:
     name: fmt
+    needs: [filter]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # No Rust surface changed — report green without running (see `filter`).
+      - name: No Rust change
+        if: needs.filter.outputs.rust != 'true'
+        run: echo "no Rust-path change; fmt passes vacuously"
       # The runner's stable toolchain plus rustfmt and clippy.
       - uses: dtolnay/rust-toolchain@stable
+        if: needs.filter.outputs.rust == 'true'
         with:
           components: rustfmt, clippy
-      - run: cargo fmt --all --check
+      - if: needs.filter.outputs.rust == 'true'
+        run: cargo fmt --all --check
 
   clippy:
     name: clippy
+    needs: [filter]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: No Rust change
+        if: needs.filter.outputs.rust != 'true'
+        run: echo "no Rust-path change; clippy passes vacuously"
       - uses: dtolnay/rust-toolchain@stable
+        if: needs.filter.outputs.rust == 'true'
         with:
           components: rustfmt, clippy
       # The tracked .cargo/config.toml routes linking through mold
@@ -59,10 +101,12 @@ jobs:
       # ship it, so install it before anything links. Direct tarball download
       # is faster than apt-get update (issue #237).
       - name: Install mold
+        if: needs.filter.outputs.rust == 'true'
         run: |
           curl -sL https://github.com/rui314/mold/releases/download/v2.40.0/mold-2.40.0-x86_64-linux.tar.gz | sudo tar -xz -C /usr/local --strip-components=1
           mold --version
       - uses: Swatinem/rust-cache@v2
+        if: needs.filter.outputs.rust == 'true'
         with:
           # One shared cache entry for every compile job (helix pattern) instead
           # of one per job; workspace crates included (uv pattern).
@@ -72,10 +116,12 @@ jobs:
           # keeps every push from thrashing the cache entry.
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Configure sccache
+        if: needs.filter.outputs.rust == 'true'
         uses: mozilla-actions/sccache-action@v0.0.11
       # No database is needed to compile: the tree uses no sqlx::query! macros,
       # so compilation never touches a live database.
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - if: needs.filter.outputs.rust == 'true'
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
   # The image's language-boundary stages (issues #296/#309). The release-image gate
   # only runs after merge, which is how #284 shipped a wasm stage that could not
@@ -152,28 +198,37 @@ jobs:
     # integration binaries — so a unit break answers in minutes rather than
     # waiting for the DB-backed suites. `test-integration` below still runs
     # everything before merge.
-    needs: [fmt, clippy]
+    needs: [filter, fmt, clippy]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+      - name: No Rust change
+        if: needs.filter.outputs.rust != 'true'
+        run: echo "no Rust-path change; lib/doc tests pass vacuously"
       - uses: dtolnay/rust-toolchain@stable
+        if: needs.filter.outputs.rust == 'true'
       - name: Install mold
+        if: needs.filter.outputs.rust == 'true'
         run: |
           curl -sL https://github.com/rui314/mold/releases/download/v2.40.0/mold-2.40.0-x86_64-linux.tar.gz | sudo tar -xz -C /usr/local --strip-components=1
           mold --version
       - uses: Swatinem/rust-cache@v2
+        if: needs.filter.outputs.rust == 'true'
         with:
           shared-key: "ci"
           cache-workspace-crates: "true"
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Configure sccache
+        if: needs.filter.outputs.rust == 'true'
         uses: mozilla-actions/sccache-action@v0.0.11
       # `--lib` only builds the lib test binaries — the heavy integration
       # targets (testcontainers, sqlx test deps) never compile here, which is
       # where most of the job's wall time used to go.
-      - run: cargo test --workspace --lib
-      - run: cargo test --workspace --doc
+      - if: needs.filter.outputs.rust == 'true'
+        run: cargo test --workspace --lib
+      - if: needs.filter.outputs.rust == 'true'
+        run: cargo test --workspace --doc
 
   # Build every test binary once, then hand the binaries off to the shard jobs.
   # Compiling is the serial, uncacheable part of test-integration; archiving it
@@ -181,7 +236,12 @@ jobs:
   # compile cost (issue #276).
   build-tests:
     name: build-tests
-    needs: [fmt, clippy]
+    # Not a required check — skip the whole job (no runner at all) when the PR
+    # touches no Rust path. Required checks can't do this (a skipped job posts
+    # no check), but this one isn't required, so the suite simply doesn't exist
+    # for a web/docs-only change.
+    needs: [filter, fmt, clippy]
+    if: needs.filter.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -238,7 +298,8 @@ jobs:
   # interrupted runs can't bleed into this one's timing (issue #271).
   test-shard:
     name: test-shard (${{ matrix.shard }}/3)
-    needs: [build-tests]
+    needs: [filter, build-tests]
+    if: needs.filter.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -296,7 +357,8 @@ jobs:
   # waits for the archive rather than recompiling them itself.
   test-extras:
     name: test-extras
-    needs: [build-tests]
+    needs: [filter, build-tests]
+    if: needs.filter.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
