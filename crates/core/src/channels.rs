@@ -36,8 +36,8 @@ const MAX_MODEL: usize = 200;
 const KEY_BYTES: usize = 32;
 const NONCE_BYTES: usize = 12;
 /// How much of an upstream key stays readable, so a list can recognize one. product.md,
-/// "Channels and prices".
-const LAST4: usize = 4;
+/// "Channels and prices". `pub(crate)`: the pool's credential rows bound it the same.
+pub(crate) const LAST4: usize = 4;
 
 /// The largest routing weight a `(channel, model)` version may carry — a
 /// relative preference, so the bound keeps one route from drowning every other
@@ -140,7 +140,8 @@ impl std::fmt::Debug for SecretKey {
     }
 }
 
-/// A channel as the admin API presents it: the connection, no credential, and what it serves now.
+/// A channel as the admin API presents it: the connection, its credential pool
+/// with no key readable past the last four, and what it serves now.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Channel {
@@ -149,8 +150,11 @@ pub struct Channel {
     /// The upstream protocol the channel speaks: the name the usage-adapter registry
     /// resolves (issue #104).
     pub protocol: String,
-    /// The last four characters of the upstream key, and nothing more of it.
-    pub api_key_last4: String,
+    /// The channel's credential pool (issue #444): one entry per upstream key,
+    /// ordered by `position`, each showing only its last four plus the health
+    /// state the pick reads. An empty pool is a channel that cannot serve —
+    /// `set_channel` never leaves one, but a direct table edit could.
+    pub credentials: Vec<crate::pools::ChannelCredential>,
     /// The last four of the admin billing credential (issue #283), `None` when
     /// the channel carries none — the read-back an operator uses to confirm a
     /// billing key is attached without ever seeing it.
@@ -213,7 +217,7 @@ impl ModelPrice {
 }
 
 /// A channel's probe coordinates for `SYNC_UPSTREAM_PRICES` (issue #222): the
-/// catalog endpoint to call and the credential to send it, still sealed. The
+/// catalog endpoint to call and a credential to send it, still sealed. The
 /// job opens `api_key_sealed` only to build the `Authorization` header.
 #[derive(Debug, Clone)]
 pub struct ProbeChannel {
@@ -223,19 +227,27 @@ pub struct ProbeChannel {
     pub protocol: String,
     /// The base URL `{baseUrl}/api/v1/pricing` is appended to.
     pub base_url: String,
-    /// The upstream credential, still sealed under `OXSUM_SECRET_KEY`.
-    pub api_key_sealed: String,
+    /// The pool's first active credential, still sealed under
+    /// `OXSUM_SECRET_KEY` (issue #444); `None` when the pool has none to lend.
+    pub api_key_sealed: Option<String>,
 }
 
 /// What one request relays to and is charged by, resolved once when the request starts.
 #[derive(Debug, Clone)]
 pub struct Serving {
     pub channel: String,
+    /// The channel's id, the key the conversation-affinity map sticks under.
+    pub channel_id: Uuid,
     pub base_url: String,
     /// The upstream protocol, resolved into a usage adapter when the turn starts.
     pub protocol: String,
-    /// The upstream credential, opened. Held for this request only.
-    pub api_key: String,
+    /// The channel's healthy credentials — `active`, past any cool-down — held
+    /// opened for this request only, in the pool's stored order
+    /// (`position` asc). [`crate::pools::order`] re-ranks them for the actual
+    /// attempts: the conversation's sticky hit leads, then least-recently-used.
+    /// Empty when every credential sits out — a serving the gateway can still
+    /// route to but cannot call, which is an upstream failure like any other.
+    pub credentials: Vec<crate::pools::PoolCredential>,
     /// The price version this request is billed at, which the settlement records.
     pub version: i64,
     /// The route's relative preference for leading a request (issue #168).
@@ -277,31 +289,96 @@ impl Db {
         protocol: &str,
         key: &SecretKey,
     ) -> Result<(), WalletError> {
+        self.set_channel_pool(name, base_url, Some(&[api_key.to_owned()]), protocol, key)
+            .await
+    }
+
+    /// [`set_channel`](Self::set_channel)'s pool form (issue #444): `api_keys`
+    /// is the channel's credential pool — `Some` replaces it wholesale (a
+    /// connection change re-credentials the channel, and a key that is no
+    /// longer configured should not serve), `None` leaves the stored pool
+    /// alone so an admin updating only `baseUrl` does not have to resend keys
+    /// it cannot see.
+    ///
+    /// # Errors
+    ///
+    /// As [`set_channel`](Self::set_channel), plus a `Some` of an empty pool:
+    /// a channel with no key cannot serve.
+    pub async fn set_channel_pool(
+        &self,
+        name: &str,
+        base_url: &str,
+        api_keys: Option<&[String]>,
+        protocol: &str,
+        key: &SecretKey,
+    ) -> Result<(), WalletError> {
         let name = channel_name(name)?;
         let base_url = base_url_of(base_url)?;
-        let api_key = api_key_of(api_key)?;
+        if let Some(keys) = api_keys {
+            if keys.is_empty() {
+                return Err(WalletError::InvalidInput(
+                    "a channel needs at least one api key".into(),
+                ));
+            }
+            for api_key in keys {
+                credential_text(api_key)?;
+            }
+        }
         crate::adapters::known_protocol(protocol)?;
-        let sealed = key.seal(api_key)?;
-        let last4 = last_chars(api_key, LAST4);
-        sqlx::query(
+        let mut tx = self.pool().begin().await?;
+        let channel_id: Uuid = sqlx::query_scalar(
             "INSERT INTO oxsum.channels \
-             (channel_id, name, base_url, api_key_sealed, api_key_last4, protocol) \
-             VALUES ($1, $2, $3, $4, $5, $6) \
+             (channel_id, name, base_url, protocol) \
+             VALUES ($1, $2, $3, $4) \
              ON CONFLICT (name) DO UPDATE SET \
                  base_url = EXCLUDED.base_url, \
-                 api_key_sealed = EXCLUDED.api_key_sealed, \
-                 api_key_last4 = EXCLUDED.api_key_last4, \
                  protocol = EXCLUDED.protocol, \
-                 updated_at = now()",
+                 updated_at = now() \
+             RETURNING channel_id",
         )
         .bind(Uuid::new_v4())
         .bind(name)
         .bind(base_url)
-        .bind(sealed)
-        .bind(last4)
         .bind(protocol)
-        .execute(self.pool())
+        .fetch_one(&mut *tx)
         .await?;
+        if let Some(keys) = api_keys {
+            sqlx::query("DELETE FROM oxsum.channel_credentials WHERE channel_id = $1")
+                .bind(channel_id)
+                .execute(&mut *tx)
+                .await?;
+            for (index, api_key) in keys.iter().enumerate() {
+                sqlx::query(
+                    "INSERT INTO oxsum.channel_credentials \
+                         (credential_id, channel_id, api_key_sealed, api_key_last4, position) \
+                     VALUES ($1, $2, $3, $4, $5)",
+                )
+                .bind(Uuid::new_v4())
+                .bind(channel_id)
+                .bind(key.seal(api_key.trim())?)
+                .bind(last_chars(api_key.trim(), LAST4))
+                .bind(i32::try_from(index + 1).unwrap_or(i32::MAX))
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+        // A channel that ends this call with no credentials cannot serve: a
+        // `None` pool only keeps what was already there, so an empty remainder
+        // means a `set` promised a route it cannot honour. Refuse rather than
+        // leave the row — the transaction rolls the channel upsert back too.
+        let remaining: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM oxsum.channel_credentials WHERE channel_id = $1)",
+        )
+        .bind(channel_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !remaining {
+            tx.rollback().await?;
+            return Err(WalletError::InvalidInput(format!(
+                "channel {name:?} would have no credentials to serve with"
+            )));
+        }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -322,7 +399,7 @@ impl Db {
     ) -> Result<(), WalletError> {
         let (sealed, last4) = match bill_key {
             Some(bill_key) => {
-                let bill_key = api_key_of(bill_key)?;
+                let bill_key = credential_text(bill_key)?;
                 (Some(key.seal(bill_key)?), Some(last_chars(bill_key, LAST4)))
             }
             None => (None, None),
@@ -427,7 +504,7 @@ impl Db {
     /// Every channel with the current version of each of its models, oldest first.
     pub async fn channels(&self) -> Result<Vec<Channel>, WalletError> {
         let rows = sqlx::query(
-            "SELECT channel_id, name, base_url, api_key_last4, bill_key_last4, \
+            "SELECT channel_id, name, base_url, bill_key_last4, \
                     created_at, protocol \
              FROM oxsum.channels ORDER BY created_at, name",
         )
@@ -436,11 +513,12 @@ impl Db {
         let mut channels = Vec::with_capacity(rows.len());
         for row in &rows {
             let channel_id: Uuid = row.try_get("channel_id")?;
+            let name: String = row.try_get("name")?;
             channels.push(Channel {
-                name: row.try_get("name")?,
+                credentials: self.channel_credentials(&name).await?.unwrap_or_default(),
+                name,
                 base_url: row.try_get("base_url")?,
                 protocol: row.try_get("protocol")?,
-                api_key_last4: row.try_get("api_key_last4")?,
                 bill_key_last4: row.try_get("bill_key_last4")?,
                 created_at: row.try_get("created_at")?,
                 models: current_prices(self, channel_id).await?,
@@ -485,7 +563,7 @@ impl Db {
         key: &SecretKey,
     ) -> Result<Vec<Serving>, WalletError> {
         let rows = sqlx::query(
-            "SELECT c.name, c.base_url, c.api_key_sealed, c.protocol, p.version, p.weight, \
+            "SELECT c.channel_id, c.name, c.base_url, c.protocol, p.version, p.weight, \
                     p.input_price_per_million, p.output_price_per_million, p.max_output_tokens, \
                     p.cache_read_price_per_million, p.cache_write_5m_price_per_million, \
                     p.cache_write_1h_price_per_million, p.reasoning_price_per_million, \
@@ -502,12 +580,13 @@ impl Db {
         .await?;
         let mut servings = Vec::with_capacity(rows.len());
         for row in &rows {
-            let sealed: String = row.try_get("api_key_sealed")?;
+            let channel_id: Uuid = row.try_get("channel_id")?;
             servings.push(Serving {
                 channel: row.try_get("name")?,
+                channel_id,
                 base_url: row.try_get("base_url")?,
                 protocol: row.try_get("protocol")?,
-                api_key: key.open(&sealed)?,
+                credentials: self.open_pool(channel_id, key).await?,
                 version: i64::from(row.try_get::<i32, _>("version")?),
                 weight: i64::from(row.try_get::<i32, _>("weight")?),
                 price: price_from_row(row)?,
@@ -751,6 +830,28 @@ impl Db {
             .collect()
     }
 
+    /// The channel's healthy credentials opened for one request: `active` and
+    /// past any cool-down, each sealed record unsealed under `key` — the pool
+    /// the gateway's pick walks. Empty when every credential sits out.
+    async fn open_pool(
+        &self,
+        channel_id: Uuid,
+        key: &SecretKey,
+    ) -> Result<Vec<crate::pools::PoolCredential>, WalletError> {
+        self.healthy_credentials(channel_id)
+            .await?
+            .into_iter()
+            .map(|(credential_id, sealed, position, last_used_at)| {
+                Ok(crate::pools::PoolCredential {
+                    credential_id,
+                    api_key: key.open(&sealed)?,
+                    position,
+                    last_used_at,
+                })
+            })
+            .collect()
+    }
+
     /// The servings a request naming `model` may take, resolving an alias
     /// first: when `model` is an alias the answer is the one route on the
     /// alias's channel — priced by the alias's own price row if the channel
@@ -791,7 +892,7 @@ impl Db {
         key: &SecretKey,
     ) -> Result<Option<Serving>, WalletError> {
         let row = sqlx::query(
-            "SELECT c.name, c.base_url, c.api_key_sealed, c.protocol, p.version, p.weight, \
+            "SELECT c.channel_id, c.name, c.base_url, c.protocol, p.version, p.weight, \
                     p.input_price_per_million, p.output_price_per_million, p.max_output_tokens, \
                     p.cache_read_price_per_million, p.cache_write_5m_price_per_million, \
                     p.cache_write_1h_price_per_million, p.reasoning_price_per_million, \
@@ -807,19 +908,22 @@ impl Db {
         .bind(model)
         .fetch_optional(self.pool())
         .await?;
-        row.map(|row| {
-            let sealed: String = row.try_get("api_key_sealed")?;
-            Ok(Serving {
-                channel: row.try_get("name")?,
-                base_url: row.try_get("base_url")?,
-                protocol: row.try_get("protocol")?,
-                api_key: key.open(&sealed)?,
-                version: i64::from(row.try_get::<i32, _>("version")?),
-                weight: i64::from(row.try_get::<i32, _>("weight")?),
-                price: price_from_row(&row)?,
-            })
-        })
-        .transpose()
+        match row {
+            Some(row) => {
+                let channel_id: Uuid = row.try_get("channel_id")?;
+                Ok(Some(Serving {
+                    channel: row.try_get("name")?,
+                    channel_id,
+                    base_url: row.try_get("base_url")?,
+                    protocol: row.try_get("protocol")?,
+                    credentials: self.open_pool(channel_id, key).await?,
+                    version: i64::from(row.try_get::<i32, _>("version")?),
+                    weight: i64::from(row.try_get::<i32, _>("weight")?),
+                    price: price_from_row(&row)?,
+                }))
+            }
+            None => Ok(None),
+        }
     }
 
     /// Whether any channel is configured.
@@ -837,9 +941,12 @@ impl Db {
     ///
     /// [`WalletError::Misconfigured`], naming the channel whose credential would not open.
     pub async fn check_sealed_keys(&self, key: &SecretKey) -> Result<(), WalletError> {
-        let rows = sqlx::query("SELECT name, api_key_sealed FROM oxsum.channels")
-            .fetch_all(self.pool())
-            .await?;
+        let rows = sqlx::query(
+            "SELECT c.name, cr.api_key_sealed FROM oxsum.channel_credentials cr \
+             JOIN oxsum.channels c USING (channel_id) ORDER BY c.name, cr.position",
+        )
+        .fetch_all(self.pool())
+        .await?;
         for row in &rows {
             let name: String = row.try_get("name")?;
             let sealed: String = row.try_get("api_key_sealed")?;
@@ -850,13 +957,21 @@ impl Db {
         Ok(())
     }
 
-    /// Every channel's probe coordinates — name, protocol, base URL and its
+    /// Every channel's probe coordinates — name, protocol, base URL and a
     /// still-sealed credential — for the `SYNC_UPSTREAM_PRICES` job (issue
-    /// #222). The caller opens `api_key_sealed` under [`SecretKey`] only to
-    /// send it as the probe's `Authorization` header; it never leaves the job.
+    /// #222). The probe speaks for the channel, so it borrows the pool's
+    /// first-positioned active credential; the caller opens it under
+    /// [`SecretKey`] only to send it as the `Authorization` header, and it
+    /// never leaves the job. A channel with no active credential still lists
+    /// with `None` — the probe then records an `auth` outcome rather than
+    /// skipping the channel silently.
     pub async fn probe_channels(&self) -> Result<Vec<ProbeChannel>, WalletError> {
         let rows = sqlx::query(
-            "SELECT name, protocol, base_url, api_key_sealed FROM oxsum.channels ORDER BY name",
+            "SELECT c.name, c.protocol, c.base_url, \
+                    (SELECT cr.api_key_sealed FROM oxsum.channel_credentials cr \
+                     WHERE cr.channel_id = c.channel_id AND cr.status = 'active' \
+                     ORDER BY cr.position, cr.created_at LIMIT 1) AS api_key_sealed \
+             FROM oxsum.channels c ORDER BY c.name",
         )
         .fetch_all(self.pool())
         .await?;
@@ -903,18 +1018,30 @@ impl Db {
         let channel_id = Uuid::new_v4();
         let name = channel_name(book.channel())?;
         let base_url = base_url_of(base_url)?;
-        let api_key = api_key_of(api_key)?;
+        let api_key = credential_text(api_key)?;
         sqlx::query(
             "INSERT INTO oxsum.channels \
-             (channel_id, name, base_url, api_key_sealed, api_key_last4, protocol) \
-             VALUES ($1, $2, $3, $4, $5, $6)",
+             (channel_id, name, base_url, protocol) \
+             VALUES ($1, $2, $3, $4)",
         )
         .bind(channel_id)
         .bind(name)
         .bind(base_url)
+        .bind(crate::adapters::OPENAI)
+        .execute(&mut *tx)
+        .await?;
+        // The seed's one credential joins the pool like any other: the same
+        // sealed shape, position 1, so the channel serves from its first
+        // request rather than starting empty.
+        sqlx::query(
+            "INSERT INTO oxsum.channel_credentials \
+                 (credential_id, channel_id, api_key_sealed, api_key_last4, position) \
+             VALUES ($1, $2, $3, $4, 1)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(channel_id)
         .bind(key.seal(api_key)?)
         .bind(last_chars(api_key, LAST4))
-        .bind(crate::adapters::OPENAI)
         .execute(&mut *tx)
         .await?;
         let models: BTreeMap<&str, &Price> = book.models().collect();
@@ -1249,8 +1376,9 @@ fn base_url_of(base_url: &str) -> Result<String, WalletError> {
     Ok(url.as_str().trim_end_matches('/').to_owned())
 }
 
-/// The upstream credential: present, and worth sealing.
-fn api_key_of(api_key: &str) -> Result<&str, WalletError> {
+/// The upstream credential: present, and worth sealing. `pub(crate)` because
+/// the pool's credential writes validate by the same rule.
+pub(crate) fn credential_text(api_key: &str) -> Result<&str, WalletError> {
     let api_key = api_key.trim();
     if api_key.is_empty() {
         return Err(WalletError::InvalidInput("apiKey must not be empty".into()));
@@ -1259,7 +1387,8 @@ fn api_key_of(api_key: &str) -> Result<&str, WalletError> {
 }
 
 /// The last `count` characters of a secret, or all of it when it is shorter.
-fn last_chars(secret: &str, count: usize) -> String {
+/// `pub(crate)`: the pool's credential rows keep the same readable tail.
+pub(crate) fn last_chars(secret: &str, count: usize) -> String {
     let chars: Vec<char> = secret.chars().collect();
     let start = chars.len().saturating_sub(count);
     chars[start..].iter().collect()

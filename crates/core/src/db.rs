@@ -244,6 +244,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../migrations/0058_deposit_reversal.sql"),
     ),
     ("0059_teams", include_str!("../migrations/0059_teams.sql")),
+    (
+        "0060_channel_credentials",
+        include_str!("../migrations/0060_channel_credentials.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.
@@ -258,6 +262,9 @@ const MIGRATION_LOCK: i64 = i64::from_be_bytes(*b"oxsumidn");
 #[derive(Clone)]
 pub struct Db {
     pool: PgPool,
+    /// The process-local conversation→credential memory (issue #444): a cache
+    /// warmer for the pool's pick, `Arc`-shared across `Db`'s cheap clones.
+    pub(crate) affinity: crate::pools::SharedAffinity,
 }
 
 /// How long a checkout may wait for a free connection before failing. See
@@ -297,13 +304,19 @@ impl Db {
             .test_before_acquire(true)
             .connect_with(options)
             .await?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            affinity: Default::default(),
+        })
     }
 
     /// Wraps an already built pool. Tests use this; `connect` is the server's path.
     #[must_use]
     pub fn from_pool(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            affinity: Default::default(),
+        }
     }
 
     /// The shared pool.

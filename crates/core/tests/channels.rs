@@ -110,7 +110,8 @@ async fn a_price_change_appends_a_version_and_leaves_the_old_one_readable() {
     assert_eq!(serving.protocol, "openai");
     assert_eq!(serving.version, second);
     assert_eq!(serving.price, price(30, 40, 200));
-    assert_eq!(serving.api_key, "sk-secret-1234");
+    assert_eq!(serving.credentials.len(), 1);
+    assert_eq!(serving.credentials[0].api_key, "sk-secret-1234");
     assert_eq!(serving.base_url, "https://upstream.example/v1");
 
     // …and the first version is still there, which is what makes an old bill checkable.
@@ -131,7 +132,11 @@ async fn a_price_change_appends_a_version_and_leaves_the_old_one_readable() {
     assert_eq!(listed.models.len(), 1);
     assert_eq!(listed.models[0].version, second);
     assert_eq!(listed.protocol, "openai");
-    assert_eq!(listed.api_key_last4, "1234", "only the tail is readable");
+    assert_eq!(listed.credentials.len(), 1);
+    assert_eq!(
+        listed.credentials[0].api_key_last4, "1234",
+        "only the tail is readable"
+    );
     assert!(!format!("{listed:?}").contains("sk-secret-1234"));
 
     // Two models on one channel are two independent histories.
@@ -412,14 +417,18 @@ async fn a_credential_that_does_not_open_is_a_deployment_failure_not_a_caller_er
             .into_iter()
             .next()
             .unwrap()
+            .credentials[0]
             .api_key,
         "sk-secret"
     );
-    sqlx::query("UPDATE oxsum.channels SET api_key_sealed = 'AAAA' WHERE name = $1")
-        .bind(&channel)
-        .execute(db.pool())
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE oxsum.channel_credentials SET api_key_sealed = 'AAAA' \
+         WHERE channel_id = (SELECT channel_id FROM oxsum.channels WHERE name = $1)",
+    )
+    .bind(&channel)
+    .execute(db.pool())
+    .await
+    .unwrap();
     let error = db.servings(&model, &key()).await.unwrap_err();
     assert!(
         matches!(error, WalletError::Misconfigured(_)),
@@ -443,7 +452,7 @@ async fn a_credential_that_does_not_open_is_a_deployment_failure_not_a_caller_er
         .into_iter()
         .next()
         .unwrap();
-    assert_eq!(serving.api_key, "sk-rotated");
+    assert_eq!(serving.credentials[0].api_key, "sk-rotated");
     assert_eq!(serving.base_url, "https://other.example/v1");
 }
 
@@ -481,7 +490,7 @@ async fn the_environment_seeds_an_empty_database_and_leaves_a_populated_one_alon
             .unwrap();
         assert_eq!(serving.channel, channel);
         assert_eq!(
-            serving.api_key, "sk-seed",
+            serving.credentials[0].api_key, "sk-seed",
             "the bootstrap credential is the one in force"
         );
         assert_eq!(
@@ -709,4 +718,196 @@ async fn an_alias_resolves_to_its_channel_and_prices_by_its_own_row() {
     db.create_alias(&channel, &again, &upstream).await.unwrap();
     assert!(!db.delete_alias(&other, &again).await.unwrap());
     assert!(db.resolve_alias(&again).await.unwrap().is_some());
+}
+
+/// Credential pools (issue #444): a channel carries several upstream keys, the
+/// pick filters out the cooled and disabled, and `credential_order` ranks the
+/// rest — a conversation's sticky hit leads, then least-recently-used, then
+/// `position`.
+#[tokio::test]
+async fn a_channel_serves_from_its_credential_pool() {
+    let url = db_or_skip!();
+    let db = db(&url).await;
+    let channel = fresh("pooled");
+    let model = fresh("m");
+    db.set_channel(
+        &channel,
+        "https://pool.example/v1",
+        "sk-first",
+        "openai",
+        &key(),
+    )
+    .await
+    .unwrap();
+    db.append_price(&channel, &model, price(1, 2, 3), 100)
+        .await
+        .unwrap();
+
+    // The seeded credential is the pool's first; a second joins at the end.
+    let listed = db.channel_credentials(&channel).await.unwrap().unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].api_key_last4, "irst");
+    assert_eq!(listed[0].position, 1);
+    assert_eq!(listed[0].status, "active");
+    let second = db
+        .add_credential(&channel, "sk-second", &key())
+        .await
+        .unwrap();
+    assert_eq!(second.position, 2);
+    let third = db
+        .add_credential(&channel, "sk-third", &key())
+        .await
+        .unwrap();
+    assert_eq!(third.position, 3);
+    assert!(
+        db.channel_credentials(&fresh("absent"))
+            .await
+            .unwrap()
+            .is_none(),
+        "an unknown channel has no pool to list"
+    );
+
+    // The serving carries the whole healthy pool, opened — still one serving
+    // per channel, so `route_order` sees one route either way.
+    let servings = db.servings(&model, &key()).await.unwrap();
+    let serving = servings
+        .iter()
+        .find(|serving| serving.channel == channel)
+        .unwrap();
+    assert_eq!(serving.credentials.len(), 3);
+    let opened: Vec<&str> = serving
+        .credentials
+        .iter()
+        .map(|credential| credential.api_key.as_str())
+        .collect();
+    assert_eq!(opened, ["sk-first", "sk-second", "sk-third"]);
+
+    // The pick's health filter: cool the first credential and it drops out of
+    // the serving's pool — `add_credential` appends, `cool_credential` rests.
+    db.cool_credential(listed[0].credential_id, "upstream answered 429")
+        .await
+        .unwrap();
+    let servings = db.servings(&model, &key()).await.unwrap();
+    let serving = servings
+        .iter()
+        .find(|serving| serving.channel == channel)
+        .unwrap();
+    let opened: Vec<&str> = serving
+        .credentials
+        .iter()
+        .map(|credential| credential.api_key.as_str())
+        .collect();
+    assert_eq!(
+        opened,
+        ["sk-second", "sk-third"],
+        "a cooling credential is skipped, not retried"
+    );
+    // …and the admin list shows why it sits out.
+    let listed = db.channel_credentials(&channel).await.unwrap().unwrap();
+    assert!(listed[0].cooldown_until.is_some());
+    assert_eq!(
+        listed[0].last_error.as_deref(),
+        Some("upstream answered 429")
+    );
+
+    // Disabled is the operator's switch: kept on record, never picked.
+    db.set_credential_status(&channel, second.credential_id, "disabled")
+        .await
+        .unwrap();
+    let servings = db.servings(&model, &key()).await.unwrap();
+    let serving = servings
+        .iter()
+        .find(|serving| serving.channel == channel)
+        .unwrap();
+    assert_eq!(serving.credentials.len(), 1);
+    assert_eq!(serving.credentials[0].api_key, "sk-third");
+    db.set_credential_status(&channel, second.credential_id, "active")
+        .await
+        .unwrap();
+    assert!(
+        db.set_credential_status(&channel, second.credential_id, "paused")
+            .await
+            .is_err(),
+        "an unknown status is refused"
+    );
+
+    // The pool's last *pickable* credential cannot be dropped: a cooling
+    // `active` row still counts as pickable because its window ends on its
+    // own, so `third` — the only other active row — drops fine. What cannot
+    // drop is a credential whose loss leaves nothing `active`.
+    let dropped = db
+        .drop_credential(&channel, third.credential_id)
+        .await
+        .unwrap();
+    assert!(dropped);
+    assert!(
+        !db.drop_credential(&channel, third.credential_id)
+            .await
+            .unwrap(),
+        "the second drop is false, not an error"
+    );
+    // A credential is only its own channel's to drop: against an unknown
+    // channel the same id is false, not an error.
+    assert!(
+        !db.drop_credential(&fresh("absent"), listed[0].credential_id)
+            .await
+            .unwrap()
+    );
+
+    // `set_channel` with keys re-credentials wholesale; without keys the pool
+    // stands. One key in, the two old ones out.
+    db.set_channel(
+        &channel,
+        "https://pool.example/v1",
+        "sk-only",
+        "openai",
+        &key(),
+    )
+    .await
+    .unwrap();
+    let servings = db.servings(&model, &key()).await.unwrap();
+    let serving = servings
+        .iter()
+        .find(|serving| serving.channel == channel)
+        .unwrap();
+    assert_eq!(serving.credentials.len(), 1);
+    assert_eq!(serving.credentials[0].api_key, "sk-only");
+}
+
+/// The pick orders a pool's credentials: the conversation's sticky hit leads
+/// while it is still healthy, then least-recently-used, `position` as the
+/// operator's tiebreak.
+#[test]
+fn the_pool_pick_sticks_then_rotates_by_use() {
+    let one = oxsum_core::PoolCredential {
+        credential_id: uuid::Uuid::new_v4(),
+        api_key: "sk-one".to_owned(),
+        position: 1,
+        last_used_at: Some(time::OffsetDateTime::now_utc()),
+    };
+    let two = oxsum_core::PoolCredential {
+        credential_id: uuid::Uuid::new_v4(),
+        api_key: "sk-two".to_owned(),
+        position: 2,
+        last_used_at: None,
+    };
+    let three = oxsum_core::PoolCredential {
+        credential_id: uuid::Uuid::new_v4(),
+        api_key: "sk-three".to_owned(),
+        position: 3,
+        last_used_at: None,
+    };
+    let pool = vec![one.clone(), two.clone(), three.clone()];
+
+    // No sticky: never-used first (position order among them), the used one last.
+    let ordered = oxsum_core::credential_order(&pool, None);
+    let keys: Vec<&str> = ordered.iter().map(|c| c.api_key.as_str()).collect();
+    assert_eq!(keys, ["sk-two", "sk-three", "sk-one"]);
+
+    // A sticky hit leads whatever the use order says.
+    let ordered = oxsum_core::credential_order(&pool, Some(one.credential_id));
+    assert_eq!(ordered[0].api_key, "sk-one");
+    // The rest still order least-used first.
+    let rest: Vec<&str> = ordered[1..].iter().map(|c| c.api_key.as_str()).collect();
+    assert_eq!(rest, ["sk-two", "sk-three"]);
 }

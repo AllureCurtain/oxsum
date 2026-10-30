@@ -47,6 +47,9 @@ pub mod action {
     pub const CHANNEL_PRICE_APPEND: &str = "channel.price.append";
     pub const CHANNEL_ALIAS_SET: &str = "channel.alias.set";
     pub const CHANNEL_ALIAS_DELETE: &str = "channel.alias.delete";
+    pub const CHANNEL_CREDENTIAL_ADD: &str = "channel.credential.add";
+    pub const CHANNEL_CREDENTIAL_STATUS: &str = "channel.credential.status";
+    pub const CHANNEL_CREDENTIAL_DROP: &str = "channel.credential.drop";
     pub const ORGANIZATION_ADJUST: &str = "organization.adjust";
     pub const CREDIT_NOTE_ISSUE: &str = "credit_note.issue";
     pub const ORGANIZATION_UPDATE: &str = "organization.update";
@@ -71,6 +74,9 @@ pub mod action {
         CHANNEL_PRICE_APPEND,
         CHANNEL_ALIAS_SET,
         CHANNEL_ALIAS_DELETE,
+        CHANNEL_CREDENTIAL_ADD,
+        CHANNEL_CREDENTIAL_STATUS,
+        CHANNEL_CREDENTIAL_DROP,
         ORGANIZATION_ADJUST,
         ORGANIZATION_UPDATE,
         TIER_SET,
