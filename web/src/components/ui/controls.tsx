@@ -54,7 +54,10 @@ export function TabsTrigger({ className, ...props }: TabsPrimitive.Tab.Props) {
     <TabsPrimitive.Tab
       {...props}
       className={cn(
-        "relative inline-flex min-h-9 items-center justify-center whitespace-nowrap rounded-lg px-3 py-1.5 text-sm font-medium text-muted outline-none transition-colors duration-150",
+        /* `relative z-10`: the moving `TabsIndicator` pill is a same-layer
+           sibling painted after the tab — without this lift it covers the
+           active label with a bare white pill (the Topup dead-tab look). */
+        "relative z-10 inline-flex min-h-9 items-center justify-center whitespace-nowrap rounded-lg px-3 py-1.5 text-sm font-medium text-muted outline-none transition-colors duration-150",
         "hover:text-ink focus-visible:ring-2 focus-visible:ring-ring/30",
         "disabled:pointer-events-none disabled:opacity-50",
         "data-active:text-ink",
