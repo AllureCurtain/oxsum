@@ -605,10 +605,19 @@ async fn probe_channel(
     stored: &[oxsum_core::CatalogModel],
 ) -> Result<usize, oxsum_core::WalletError> {
     let url = format!("{}/api/v1/pricing", channel.base_url.trim_end_matches('/'));
-    let api_key = match secret.open(&channel.api_key_sealed) {
-        Ok(api_key) => api_key,
-        Err(error) => {
-            db.record_probe(&channel.name, ProbeOutcome::Auth, &error.to_string())
+    let api_key = match &channel.api_key_sealed {
+        Some(sealed) => match secret.open(sealed) {
+            Ok(api_key) => api_key,
+            Err(error) => {
+                db.record_probe(&channel.name, ProbeOutcome::Auth, &error.to_string())
+                    .await?;
+                return Ok(0);
+            }
+        },
+        // A pool with no active credential has no key to probe under — the
+        // outcome records it rather than skipping the channel silently.
+        None => {
+            db.record_probe(&channel.name, ProbeOutcome::Auth, "no active credential")
                 .await?;
             return Ok(0);
         }

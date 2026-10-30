@@ -4957,3 +4957,157 @@ async fn an_alias_prices_under_its_own_row() {
         oxsum_core::ChargeCheck::Recomputed
     );
 }
+
+/// Credential pools (issue #444): one channel carrying two upstream keys fails
+/// a single account's refusal over onto the pool's next credential — same
+/// channel, same price — before the turn has to leave it. The answering
+/// credential's `Authorization` is a *different* key from the refused one's,
+/// while the settlement still names `(channel, version)` alone.
+#[tokio::test]
+async fn a_refused_credential_fails_over_inside_the_pool() {
+    let world = world!(1_000_000);
+    let model = world.model("ok");
+    // A second key joins the world's channel at the pool's end. The pool reads
+    // `credential_order`: the first-positioned credential leads until it has
+    // refused, so the fresh key is the failover, not the lead.
+    let db = Db::from_pool(world.pool.clone());
+    let secret = oxsum_core::SecretKey::from_bytes([7; 32]);
+    let second = db
+        .add_credential(&world.channel, "upstream-secret-second", &secret)
+        .await
+        .expect("the second credential is added");
+    assert_eq!(second.position, 2, "the new key lands at the pool's end");
+    // One 429, then a clean answer: whichever credential leads eats the
+    // refusal and the other answers — the turn never leaves the channel.
+    world.answers(
+        "ok",
+        Answer::Flaky {
+            refuse: 1,
+            status: 429,
+            retry_after_secs: None,
+        },
+    );
+
+    let response = chat(&world.app, &world.key, simple(&model)).await;
+    let id = request_id(&response);
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Two upstream calls under the one hold, both to the same channel — the
+    // credentials differ, which is the whole point of the pool.
+    let seen = world.script.seen();
+    assert_eq!(seen.len(), 2, "the refusal and the retry both landed");
+    let first_key = seen[0].authorization.clone().unwrap_or_default();
+    let second_key = seen[1].authorization.clone().unwrap_or_default();
+    assert_ne!(
+        first_key, second_key,
+        "the second attempt carried a different credential"
+    );
+    assert!(
+        [first_key.as_str(), second_key.as_str()]
+            .iter()
+            .all(|key| key.contains("upstream-secret")),
+        "both attempts stayed on the world's channel"
+    );
+
+    // The settlement names the channel and version alone — the credential pick
+    // is routing detail, never ledger data.
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["kind"], "usage");
+    assert_eq!(record["channel"], world.channel);
+    assert_eq!(record["upstreamAttempts"], 2);
+    let description = world
+        .settlement_description(&id)
+        .await
+        .expect("the turn settled");
+    assert!(
+        !description.contains("upstream-secret-second") && !description.contains("credential"),
+        "no credential id or key enters the description: {description}"
+    );
+
+    // The refused credential cooled down: whichever of the pool's two keys
+    // ate the 429 carries the window the next pick honours, so a still-cooling
+    // credential is not asked again right away.
+    let cooled_any: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM oxsum.channel_credentials cr \
+         JOIN oxsum.channels c USING (channel_id) \
+         WHERE c.name = $1 AND cr.cooldown_until IS NOT NULL",
+    )
+    .bind(&world.channel)
+    .fetch_one(&world.pool)
+    .await
+    .expect("the credential rows read");
+    assert_eq!(
+        cooled_any, 1,
+        "exactly one credential cooled: the refused one"
+    );
+}
+
+/// A credential inside its cool-down is skipped rather than retried: the pick
+/// honours `cooldown_until` until the window passes, and the pool's next key
+/// answers instead.
+#[tokio::test]
+async fn a_cooling_credential_is_skipped_until_its_window_passes() {
+    let world = world!(1_000_000);
+    let model = world.model("ok");
+    let db = Db::from_pool(world.pool.clone());
+    let secret = oxsum_core::SecretKey::from_bytes([7; 32]);
+    db.add_credential(&world.channel, "upstream-secret-second", &secret)
+        .await
+        .expect("the second credential is added");
+    // Cool the first-positioned credential out of band, the way a refusal
+    // would: the next request should never be offered it.
+    sqlx::query(
+        "UPDATE oxsum.channel_credentials SET cooldown_until = now() + interval '5 minutes' \
+         WHERE channel_id = (SELECT channel_id FROM oxsum.channels WHERE name = $1) \
+           AND position = 1",
+    )
+    .bind(&world.channel)
+    .execute(&world.pool)
+    .await
+    .expect("the first credential cools");
+    world.answers(
+        "ok",
+        Answer::Completion {
+            usage: Some((10, 2)),
+        },
+    );
+
+    let response = chat(&world.app, &world.key, simple(&model)).await;
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let seen = world.script.seen();
+    assert_eq!(seen.len(), 1, "one attempt, straight to the healthy key");
+    assert!(
+        seen[0]
+            .authorization
+            .as_deref()
+            .unwrap_or_default()
+            .contains("second"),
+        "the second credential answered while the first cooled"
+    );
+}
+
+/// `check_sealed_keys` opens every credential in the pool — a deployment whose
+/// sealing key cannot open one says so at startup, naming its channel.
+#[tokio::test]
+async fn the_seal_check_covers_every_credential_in_the_pool() {
+    let world = world!(1_000_000);
+    let db = Db::from_pool(world.pool.clone());
+    let secret = oxsum_core::SecretKey::from_bytes([7; 32]);
+    db.add_credential(&world.channel, "upstream-secret-second", &secret)
+        .await
+        .expect("the second credential is added");
+    db.check_sealed_keys(&secret)
+        .await
+        .expect("every credential opens under its key");
+    let wrong = oxsum_core::SecretKey::from_bytes([9; 32]);
+    let error = db
+        .check_sealed_keys(&wrong)
+        .await
+        .expect_err("a wrong key refuses at startup");
+    assert!(
+        matches!(error, oxsum_core::WalletError::Misconfigured(_)),
+        "got {error:?}"
+    );
+}

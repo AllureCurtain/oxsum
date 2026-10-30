@@ -146,7 +146,8 @@ async fn a_channel_is_created_priced_and_listed() {
     assert_eq!(body["data"]["name"], channel.as_str());
     assert_eq!(body["data"]["baseUrl"], "https://upstream.example/v1");
     assert_eq!(body["data"]["protocol"], "openai");
-    assert_eq!(body["data"]["apiKeyLast4"], "1234");
+    assert_eq!(body["data"]["credentials"][0]["apiKeyLast4"], "1234");
+    assert_eq!(body["data"]["credentials"][0]["status"], "active");
     assert_eq!(body["data"]["models"].as_array().expect("models").len(), 0);
     assert!(!body.to_string().contains("sk-upstream-abcd1234"), "{body}");
 
@@ -374,7 +375,7 @@ async fn changing_the_connection_keeps_the_prices() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["baseUrl"], "https://second.example/v1");
-    assert_eq!(body["data"]["apiKeyLast4"], "cond");
+    assert_eq!(body["data"]["credentials"][0]["apiKeyLast4"], "cond");
     // The version it already had is still the version in force.
     assert_eq!(body["data"]["models"][0]["version"], 1);
     assert_eq!(body["data"]["models"][0]["model"], model.as_str());
