@@ -4,7 +4,7 @@ Updated: 2026-10-30
 
 ## In progress
 
-- Backend direction sweep (local-notes/2026-10-30 §3): the x402 facilitator leg's settle refusals now record *why* on `deposits.meta.settleRefusal` — the facilitator's `error_reason` or a local transport note — while the caller still sees a plain `FORBIDDEN` and the nonce anchor keeps the retry clean (#439, this PR).
+- Backend direction sweep (local-notes/2026-10-30 §3): the x402 facilitator leg's settle refusals now record *why* on `deposits.meta.settleRefusal` — the facilitator's `error_reason` or a local transport note — while the caller still sees a plain `FORBIDDEN` and the nonce anchor keeps the retry clean (#439, PR #443); team-level budgets ship — `oxsum.teams` (migration 0059) groups members under a `budgetLimitMinor` enforced inside `hold_for_key`'s locked window between the member budget and the organization credit line, `team_committed_in` summing the ledger's own postings across the roster's keys. `teamId` on `PATCH /api/v1/org/members/{userId}` assigns the member; `/api/v1/org/teams` manages the subgroups (#440, this PR).
 
 - Backend direction research (local-notes/2026-10-30) — landing item by item. #438 cost-aware route ordering (§3.B layer 1): equal-weight routes lead with the cheapest `inputPricePerMillion`; in a worktree. Then the credential routing pool (§3.F).
 

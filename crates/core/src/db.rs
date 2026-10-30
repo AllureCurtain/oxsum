@@ -243,6 +243,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0058_deposit_reversal",
         include_str!("../migrations/0058_deposit_reversal.sql"),
     ),
+    ("0059_teams", include_str!("../migrations/0059_teams.sql")),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.

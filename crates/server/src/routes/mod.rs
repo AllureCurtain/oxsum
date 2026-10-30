@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::http::StatusCode;
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router, middleware};
 use oxsum_core::{
     Organization, Principal, Role, SESSION_COOKIE, Session, SessionPrincipal, Tenants, User, Wallet,
@@ -72,6 +72,11 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/org/members/{user_id}",
             delete(org::remove_member).patch(org::update_member),
+        )
+        .route("/org/teams", get(org::list_teams).post(org::create_team))
+        .route(
+            "/org/teams/{team_id}",
+            patch(org::update_team).delete(org::delete_team),
         )
         .route("/org/ownership", post(org::transfer_ownership))
         .route(
@@ -368,4 +373,15 @@ where
     D: serde::Deserializer<'de>,
 {
     Option::<i64>::deserialize(deserializer).map(Some)
+}
+
+/// The [`double_option_i64`] peel for a uuid field — `null` means "clear the
+/// assignment", a value sets it (issue #440, `teamId` on a member PATCH).
+pub(crate) fn double_option_uuid<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<uuid::Uuid>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<uuid::Uuid>::deserialize(deserializer).map(Some)
 }

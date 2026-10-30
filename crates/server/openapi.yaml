@@ -1567,8 +1567,14 @@ paths:
         `budgetLimitMinor` caps what the member may commit — settled charges plus outstanding
         holds summed over every key they minted (`created_by`). A key whose creator is over its
         budget cannot take a new hold (`402 KEY_LIMIT_EXCEEDED`, the same refusal a key's own
-        spendLimitMinor raises); an explicit `null` clears the cap. At least one of `role` and
-        `budgetLimitMinor` is required.
+        spendLimitMinor raises); an explicit `null` clears the cap.
+
+        `teamId` assigns the member to a team of this organization (issue #440) — the budget
+        hierarchy's middle layer: key → member → team → organization credit line. Absent leaves
+        the assignment, an explicit `null` unassigns, a team id moves the member under that
+        team's cap for their *next* hold. Committed spend follows the roster — the money their
+        keys already spent moves with them — and a team outside the organization is `NOT_FOUND`.
+        At least one of `role`, `budgetLimitMinor` and `teamId` is required.
 
         An admin may not change an owner's role (403 `FORBIDDEN`) — an admin manages members, not
         the owner — and the last owner of an organization cannot be demoted (409 `CONFLICT`): an
@@ -1622,6 +1628,110 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/teams:
+    get:
+      summary: List the organization's teams
+      description: |
+        The teams the organization carries (issue #440), oldest first — the budget
+        hierarchy's middle layer between members and the organization credit line.
+        Reading the organization's own structure is any member's right; the writes
+        beside it are owner/admin-gated.
+      responses:
+        "200":
+          description: The teams
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [teams]
+                    properties:
+                      teams:
+                        type: array
+                        items: { $ref: "#/components/schemas/Team" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Create a team
+      description: |
+        Creates a named subgroup under the organization with an optional
+        `budgetLimitMinor`. Management is a person's action — an owner or an admin,
+        and only a session; an API key or a member is refused. The name is unique
+        per organization, so a retry of a create answers the standing team rather
+        than minting a second one.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateTeamRequest" }
+      responses:
+        "200":
+          description: The team as created — or as it already stood under the name
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/Team" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/teams/{teamId}:
+    parameters: [{ $ref: "#/components/parameters/TeamId" }]
+    patch:
+      summary: Change a team's name or budget cap
+      description: |
+        `name` renames the subgroup (unique per organization); `budgetLimitMinor`
+        caps what the team's members may commit in total — settled charges plus
+        outstanding holds summed over every key the team's members minted — absent
+        leaves it, an explicit `null` clears it. An owner or an admin, and only a
+        session: an API key or a member is refused. A team outside the
+        organization is `NOT_FOUND`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateTeamRequest" }
+      responses:
+        "200":
+          description: The team as it stands after the change
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/Team" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    delete:
+      summary: Dissolve a team
+      description: |
+        Removes the team; every membership it grouped keeps its seat with `teamId`
+        nulled — the member layer stays, the team cap simply stops applying. An
+        owner or an admin, and only a session.
+      responses:
+        "200":
+          description: The team that was dissolved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/Team" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/ownership:
     post:
@@ -4774,6 +4884,12 @@ components:
       required: true
       schema: { type: string, format: uuid }
       description: the id of the user whose membership this is, as a member's `userId`
+    TeamId:
+      name: teamId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+      description: the id of the team this endpoint addresses, as a team's `teamId`
     ChannelName:
       name: channelName
       in: path
@@ -5131,6 +5247,11 @@ components:
           nullable: true
           minimum: 0
           description: "the member's committed-spend cap across every key they minted; null carries none"
+        teamId:
+          type: string
+          format: uuid
+          nullable: true
+          description: "the team the member belongs to (issue #440); null means unassigned — no team cap applies to the member's keys"
         joinedAt: { type: string, format: date-time, description: when the membership was created }
     AddMemberRequest:
       type: object
@@ -5144,6 +5265,43 @@ components:
             email no account holds is `NOT_FOUND` — a person without an account is invited by link
             (`POST /api/v1/org/invitations`) — and one that is already a member of this organization
             is `CONFLICT`.
+    Team:
+      type: object
+      required: [teamId, name, members, createdAt]
+      properties:
+        teamId: { type: string, format: uuid, description: "the team's id, which the team endpoints address it by" }
+        name: { type: string, description: "the subgroup's name — unique per organization" }
+        budgetLimitMinor:
+          type: integer
+          format: int64
+          nullable: true
+          minimum: 0
+          description: "the team's committed-spend cap across every key its members minted; null carries none"
+        members: { type: integer, format: int64, description: "how many memberships the team groups today" }
+        createdAt: { type: string, format: date-time, description: when the team was created }
+    CreateTeamRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 80, description: "the subgroup's name — unique per organization" }
+        budgetLimitMinor:
+          type: integer
+          format: int64
+          nullable: true
+          minimum: 0
+          description: "the team's committed-spend cap across every key its members minted; absent or null carries none"
+    UpdateTeamRequest:
+      type: object
+      properties:
+        name: { type: string, minLength: 1, maxLength: 80, description: "the team's new name" }
+        budgetLimitMinor:
+          type: integer
+          format: int64
+          nullable: true
+          minimum: 0
+          description: |
+            the team's committed-spend cap across every key its members minted — absent leaves it,
+            an explicit null clears it. At least one of `name` and `budgetLimitMinor` is required.
     UpdateMemberRequest:
       type: object
       properties:
@@ -5160,7 +5318,17 @@ components:
           minimum: 0
           description: |
             the member's committed-spend cap across every key they minted — absent leaves it, an
-            explicit null clears it. At least one of `role` and `budgetLimitMinor` is required.
+            explicit null clears it.
+        teamId:
+          type: string
+          format: uuid
+          nullable: true
+          description: |
+            the team the member joins (issue #440) — absent leaves the assignment, an explicit
+            null unassigns, a team id moves the member under that team's `budgetLimitMinor` for
+            their *next* hold. Committed spend follows the roster: the money their keys already
+            spent moves with them. A team outside the organization is `NOT_FOUND`. At least one
+            of `role`, `budgetLimitMinor` and `teamId` is required.
     TransferOwnershipRequest:
       type: object
       required: [userId]

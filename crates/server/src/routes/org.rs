@@ -10,7 +10,7 @@ use oxsum_core::{
 use crate::AppState;
 use crate::error::{ApiError, ApiJson};
 use crate::routes::auth::{require_bot_check, send_verification};
-use crate::routes::{ApiResult, SessionInfo, double_option_i64, ok, person};
+use crate::routes::{ApiResult, SessionInfo, double_option_i64, double_option_uuid, ok, person};
 
 pub(crate) async fn session(Extension(principal): Extension<Principal>) -> ApiResult<SessionInfo> {
     match principal {
@@ -230,6 +230,11 @@ pub(crate) struct UpdateMemberReq {
     /// (issue #162).
     #[serde(default, deserialize_with = "double_option_i64")]
     budget_limit_minor: Option<Option<i64>>,
+    /// The team half (issue #440): absent leaves the assignment, an explicit
+    /// null unassigns, a team id reassigns the member — the team's own
+    /// budget then gates the member's *next* hold.
+    #[serde(default, deserialize_with = "double_option_uuid")]
+    team_id: Option<Option<Uuid>>,
 }
 
 /// The roles a membership may be changed to.
@@ -326,6 +331,7 @@ pub(crate) async fn update_member(
             user_id,
             r.role.map(Role::from),
             r.budget_limit_minor,
+            r.team_id,
         )
         .await?)
 }
@@ -339,5 +345,98 @@ pub(crate) async fn transfer_ownership(
     ok(state
         .db
         .transfer_ownership(principal.organization().id, actor, r.user_id)
+        .await?)
+}
+
+// ── Teams (issue #440): the budget subgroup layer between members and the
+// organization credit line. Management follows the membership rules — an
+// owner or an admin, never an API key — so the handlers borrow
+// `membership_actor` the same way the member writes do.
+
+/// `GET /api/v1/org/teams` answers `{teams: [...]}`.
+#[derive(serde::Serialize)]
+pub(crate) struct TeamsRes {
+    teams: Vec<oxsum_core::Team>,
+}
+
+/// The teams the organization carries, as the organization surface lists
+/// them. Reading is any member's right — the writes beside it are the
+/// owner/admin-gated ones.
+pub(crate) async fn list_teams(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+) -> ApiResult<TeamsRes> {
+    ok(TeamsRes {
+        teams: state.db.teams(principal.organization().id).await?,
+    })
+}
+
+/// The body of `POST /api/v1/org/teams`: the subgroup's name and its
+/// committed-spend cap — `null` or absent for an uncapped team.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct CreateTeamReq {
+    name: String,
+    budget_limit_minor: Option<i64>,
+}
+
+pub(crate) async fn create_team(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    ApiJson(r): ApiJson<CreateTeamReq>,
+) -> ApiResult<oxsum_core::Team> {
+    let actor = principal.membership_actor()?;
+    ok(state
+        .db
+        .create_team(
+            principal.organization().id,
+            actor,
+            &r.name,
+            r.budget_limit_minor,
+        )
+        .await?)
+}
+
+/// The body of `PATCH /api/v1/org/teams/{teamId}`: either half of the team's
+/// shape, both optional — `budgetLimitMinor` is a double option where `null`
+/// clears the cap.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct UpdateTeamReq {
+    name: Option<String>,
+    #[serde(default, deserialize_with = "double_option_i64")]
+    budget_limit_minor: Option<Option<i64>>,
+}
+
+pub(crate) async fn update_team(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(team_id): Path<Uuid>,
+    ApiJson(r): ApiJson<UpdateTeamReq>,
+) -> ApiResult<oxsum_core::Team> {
+    let actor = principal.membership_actor()?;
+    ok(state
+        .db
+        .update_team(
+            principal.organization().id,
+            actor,
+            team_id,
+            r.name.as_deref(),
+            r.budget_limit_minor,
+        )
+        .await?)
+}
+
+/// Dissolves a team: the members it grouped keep their seats with `team_id`
+/// nulled — the member layer stays, the team cap simply stops applying.
+pub(crate) async fn delete_team(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(team_id): Path<Uuid>,
+) -> ApiResult<oxsum_core::Team> {
+    let actor = principal.membership_actor()?;
+    ok(state
+        .db
+        .delete_team(principal.organization().id, actor, team_id)
         .await?)
 }

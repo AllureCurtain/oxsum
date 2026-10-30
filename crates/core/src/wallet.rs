@@ -1125,7 +1125,7 @@ impl Wallet {
                 "SELECT k.spend_limit_minor, k.budget_duration, k.model_allowlist, \
                         k.max_concurrent_holds, k.organization_id, \
                         o.suspended_at IS NOT NULL AS suspended, \
-                        m.user_id AS budget_member \
+                        m.user_id AS budget_member, m.team_id AS budget_team \
                  FROM oxsum.api_keys k \
                  JOIN oxsum.organizations o ON o.organization_id = k.organization_id \
                  LEFT JOIN oxsum.memberships m \
@@ -1147,7 +1147,9 @@ impl Wallet {
                 use sqlx::Row;
                 let member: Option<Uuid> = constraints.try_get("budget_member")?;
                 let organization: Uuid = constraints.try_get("organization_id")?;
+                let team: Option<Uuid> = constraints.try_get("budget_team")?;
                 let mut member_budget: Option<i64> = None;
+                let mut team_budget: Option<i64> = None;
                 if let Some(member) = member {
                     member_budget = sqlx::query_scalar(
                         "SELECT budget_limit_minor FROM oxsum.memberships \
@@ -1158,7 +1160,22 @@ impl Wallet {
                     .fetch_one(&mut *tx)
                     .await?;
                 }
-                (member, organization, member_budget)
+                if let Some(team) = team {
+                    // The team's row locks beside the membership's: the cap
+                    // read and the holds that check against it serialize, so
+                    // two racing holds of the team's members cannot both fit
+                    // (issue #440). LOCK the team row only when the member
+                    // sits in one — an unassigned member reads no cap here.
+                    team_budget = sqlx::query_scalar(
+                        "SELECT budget_limit_minor FROM oxsum.teams \
+                         WHERE organization_id = $1 AND team_id = $2 FOR UPDATE",
+                    )
+                    .bind(organization)
+                    .bind(team)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                }
+                (member, organization, member_budget, team, team_budget)
             };
             {
                 use sqlx::Row;
@@ -1208,10 +1225,27 @@ impl Wallet {
                 // The member budget caps what the key's creator may commit across
                 // every key they minted — the membership row is locked above, so
                 // the sum and the append agree (issue #162).
-                let (member, organization, member_budget) = member_budget;
+                let (member, organization, member_budget, team, team_budget) = member_budget;
                 if let (Some(member), Some(limit)) = (member, member_budget) {
                     let committed = self
                         .member_committed_in(&mut tx, &organization, &member)
+                        .await?;
+                    if committed + minor > limit {
+                        return Err(WalletError::KeyLimitExceeded {
+                            limit_minor: limit,
+                            committed_minor: committed,
+                        });
+                    }
+                }
+                // The team budget caps what the subgroup's members may commit
+                // across every key they minted — the team row is locked beside
+                // the membership's, so the sum and the append agree (issue
+                // #440). The layer sits between member and organization: a
+                // member outside any team, or a team without a cap, reads no
+                // bound here.
+                if let (Some(team), Some(limit)) = (team, team_budget) {
+                    let committed = self
+                        .team_committed_in(&mut tx, &organization, &team)
                         .await?;
                     if committed + minor > limit {
                         return Err(WalletError::KeyLimitExceeded {
@@ -1399,6 +1433,71 @@ impl Wallet {
         )
         .bind(organization_id)
         .bind(member)
+        .fetch_all(&mut *conn)
+        .await?;
+        let sql = format!(
+            "SELECT COALESCE(SUM(CASE WHEN p.direction = 'D' THEN p.amount_minor \
+                              ELSE -p.amount_minor END), 0)::bigint AS committed \
+             FROM ledger_{schema}.postings p \
+             JOIN ledger_{schema}.entries e ON e.entry_id = p.entry_id \
+             WHERE p.account_index = ANY($1) AND e.provenance_actor = ANY($2)",
+            schema = self.tenant_id,
+        );
+        let committed: i64 = sqlx::query_scalar(&sql)
+            .bind(vec![
+                self.wallet.index() as i32,
+                self.bonus.index() as i32,
+                self.credit_line.index() as i32,
+            ])
+            .bind(keys)
+            .fetch_one(&mut *conn)
+            .await?;
+        Ok(committed)
+    }
+
+    /// The [`team_committed_in`](Self::team_committed_in) read on its own
+    /// connection: the team's committed spend across every key its members
+    /// minted (issue #440).
+    pub async fn team_committed(
+        &self,
+        organization_id: &Uuid,
+        team_id: &Uuid,
+    ) -> Result<i64, WalletError> {
+        let mut conn = self.store.pool().acquire().await?;
+        self.team_committed_in(&mut conn, organization_id, team_id)
+            .await
+    }
+
+    /// What one team's members have committed in total: the sum of
+    /// [`key_committed_in`](Self::key_committed_in) over every key minted by
+    /// the team's members — the team budget's denominator (issue #440). The
+    /// ledger attributes each posting to the key's actor id, and
+    /// `memberships.team_id` + `api_keys.created_by` map keys to the team, so
+    /// the sum is the ledger's own figure for the subgroup's spend — the same
+    /// attribution [`member_committed_in`](Self::member_committed_in) gives
+    /// per member, aggregated.
+    ///
+    /// Run inside the transaction holding the team's locked row, so the sum
+    /// and the hold append that follows it agree on what is committed.
+    /// Committed spend follows the roster, not the team's history: a member
+    /// moved between teams carries their keys' spend into the new team's sum,
+    /// and keys minted by a since-removed member still count.
+    async fn team_committed_in(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        organization_id: &Uuid,
+        team_id: &Uuid,
+    ) -> Result<i64, WalletError> {
+        // The actor is the key id in uuid simple form, like
+        // `key_committed_in`; the roster is the members the team groups.
+        let keys: Vec<String> = sqlx::query_scalar(
+            "SELECT replace(k.key_id::text, '-', '') FROM oxsum.api_keys k \
+             JOIN oxsum.memberships m \
+               ON m.organization_id = k.organization_id AND m.user_id = k.created_by \
+             WHERE k.organization_id = $1 AND m.team_id = $2",
+        )
+        .bind(organization_id)
+        .bind(team_id)
         .fetch_all(&mut *conn)
         .await?;
         let sql = format!(

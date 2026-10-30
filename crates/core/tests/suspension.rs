@@ -260,6 +260,7 @@ async fn a_member_budget_spans_the_member_keys() {
             world.owner,
             None,
             Some(Some(10 * ONE)),
+            None,
         )
         .await
         .unwrap();
@@ -317,26 +318,26 @@ async fn member_budget_validates_and_clears() {
 
     let err = world
         .db
-        .update_member(org, owner(&world), world.owner, None, None)
+        .update_member(org, owner(&world), world.owner, None, None, None)
         .await
         .unwrap_err();
     assert!(matches!(err, WalletError::InvalidInput(_)), "{err:?}");
     let err = world
         .db
-        .update_member(org, owner(&world), world.owner, None, Some(Some(-5)))
+        .update_member(org, owner(&world), world.owner, None, Some(Some(-5)), None)
         .await
         .unwrap_err();
     assert!(matches!(err, WalletError::InvalidInput(_)), "{err:?}");
 
     let member = world
         .db
-        .update_member(org, owner(&world), world.owner, None, Some(Some(ONE)))
+        .update_member(org, owner(&world), world.owner, None, Some(Some(ONE)), None)
         .await
         .unwrap();
     assert_eq!(member.budget_limit_minor, Some(ONE));
     let member = world
         .db
-        .update_member(org, owner(&world), world.owner, None, Some(None))
+        .update_member(org, owner(&world), world.owner, None, Some(None), None)
         .await
         .unwrap();
     assert_eq!(member.budget_limit_minor, None);
@@ -368,6 +369,7 @@ async fn member_budget_validates_and_clears() {
             other.user_id,
             Some(Role::Admin),
             Some(Some(2 * ONE)),
+            None,
         )
         .await
         .unwrap();
@@ -396,6 +398,7 @@ async fn a_member_budget_counts_settled_spend() {
             world.owner,
             None,
             Some(Some(10 * ONE)),
+            None,
         )
         .await
         .unwrap();
