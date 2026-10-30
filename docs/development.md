@@ -28,8 +28,8 @@ and a finalized statement for the month that just ended. The run prints the logi
 the owner key's secret — the only place that secret is ever shown.
 
 Seeded request ids are deterministic (`seed-<day>-<n>`) so the demo reads the same everywhere,
-and the seeded posting dates spread across the trailing thirty days, which is what fills the
-usage page's rollup and last month's statement. The command is idempotent: a second run finds the
+and the seeded posting dates spread from today back through the whole previous month, which is
+what fills the usage page's rollup and last month's statement. The command is idempotent: a second run finds the
 demo account and prints "already seeded" without writing anything. It needs `DATABASE_URL` and
 nothing else. With `OXSUM_SECRET_KEY` set and no catalog at all, the seed creates the demo channel
 first — `demo`, two priced models (`demo-chat`, `demo-reasoner`) and a deliberately unreachable
