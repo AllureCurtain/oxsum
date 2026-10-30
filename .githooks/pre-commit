@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# oxsum scoped pre-commit hook (issue #387).
+#
+#   fmt:   cargo fmt --all --check              — always, it's seconds even workspace-wide
+#   clippy: scoped to the crates the staged files touched — one crate's lint is seconds,
+#           a workspace run is minutes and is why people reach for --no-verify
+#
+# Mapping (any staged path matching these prefixes triggers that crate's lint):
+#   crates/<name>/…           → oxsum-<name>  (server crate also lints its tests)
+#   Cargo.toml, Cargo.lock,   → whole workspace: a manifest change can re-resolve
+#   .cargo/config.toml            dependencies for every crate
+#   web/, docs/, .github/,    → skip clippy entirely (the frontend gate is the
+#   scripts/, demo/, local-notes/   Dockerfile's `frontend` stage and the CI `frontend` job)
+#
+# Install: git config core.hooksPath .githooks     (one-time, per clone)
+# Bypass:  git commit --no-verify                  (escape hatch for edge cases)
+
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+STAGED=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -z "$STAGED" ] && exit 0
+
+echo "pre-commit: fmt"
+if ! cargo fmt --all --check; then
+    echo "  fmt failed — run 'cargo fmt --all' to fix" >&2
+    exit 1
+fi
+
+# --- map staged paths to crates ---------------------------------------------
+crates=()
+workspace_wide=false
+while IFS= read -r file; do
+    case "$file" in
+        Cargo.toml|Cargo.lock|.cargo/config.toml)
+            workspace_wide=true
+            ;;
+        crates/server/*)
+            crates+=("oxsum-server")
+            ;;
+        crates/core/*)
+            crates+=("oxsum-core")
+            ;;
+        crates/doubleentry/*)
+            crates+=("doubleentry")
+            ;;
+        crates/verify/*)
+            crates+=("oxsum-verify")
+            ;;
+        crates/web/*)
+            crates+=("oxsum-web")
+            ;;
+        crates/integrations/*)
+            crates+=("oxsum-integrations")
+            ;;
+        crates/testkit/*)
+            crates+=("oxsum-testkit")
+            ;;
+        web/*|docs/*|.github/*|scripts/*|demo/*|local-notes/*|infra/*|.githooks/*|.env|.gitignore|.dockerignore|Dockerfile|compose.yaml|TODO.md|AGENTS.md|DESIGN.md|README*|LICENSE*)
+            : # no Rust lint — frontend/docs/infra/hooks/config have their own gates
+            ;;
+        *)
+            # Unknown top-level path: lint the workspace to be safe.
+            workspace_wide=true
+            ;;
+    esac
+done <<< "$STAGED"
+
+if $workspace_wide; then
+    echo "pre-commit: clippy --workspace --all-targets"
+    if ! cargo clippy --workspace --all-targets -- -D warnings; then
+        echo "  clippy failed" >&2
+        exit 1
+    fi
+elif [ ${#crates[@]} -gt 0 ]; then
+    # De-duplicate crate names so a staged change in both src/ and tests/
+    # doesn't lint the same crate twice.
+    crates=($(printf '%s\n' "${crates[@]}" | sort -u))
+    for crate in "${crates[@]}"; do
+        echo "pre-commit: clippy -p $crate --all-targets"
+        if ! cargo clippy -p "$crate" --all-targets -- -D warnings; then
+            echo "  clippy failed" >&2
+            exit 1
+        fi
+    done
+else
+    echo "pre-commit: no Rust changes, skipping clippy"
+fi
+
+exit 0
