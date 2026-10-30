@@ -271,7 +271,7 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: nextest
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: nextest-archive
       - name: Sweep stale test scratch databases
@@ -320,7 +320,7 @@ jobs:
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: nextest-archive
       - name: Extract the test binaries
