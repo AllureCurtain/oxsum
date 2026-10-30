@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { settlementOutcome } from "../lib/kinds";
 import {
   Banner,
@@ -76,9 +77,41 @@ const SECTIONS = [
   "metering",
 ] as const;
 
+// Sections address through the URL hash (#admin/<section>) so the
+// breadcrumb can show real depth — `Admin / margin` instead of a bare
+// "Admin".
+const HASH_RE = /^#?admin\/([a-z-]+)$/;
+
+function sectionFromHash(hash: string): (typeof SECTIONS)[number] | null {
+  const match = HASH_RE.exec(hash);
+  const s = match?.[1];
+  return SECTIONS.includes(s as (typeof SECTIONS)[number])
+    ? (s as (typeof SECTIONS)[number])
+    : null;
+}
+
 export function Admin() {
   const [token, setToken] = useAdminToken();
-  const [section, setSection] = useState<(typeof SECTIONS)[number]>("channels");
+  const [section, setSectionState] = useState<(typeof SECTIONS)[number]>(
+    () => sectionFromHash(location.hash) ?? "channels",
+  );
+  const navigate = useNavigate();
+
+  const setSection = (s: (typeof SECTIONS)[number]) => {
+    setSectionState(s);
+    navigate({ hash: `admin/${s}` }, { replace: true });
+  };
+
+  // The hash can change under us (the breadcrumb links, the back button);
+  // keep the tab in step.
+  useEffect(() => {
+    const onHash = () => {
+      const s = sectionFromHash(location.hash);
+      if (s) setSectionState(s);
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
   const [draft, setDraft] = useState("");
   const [verified, setVerified] = useState<boolean | null>(null);
 
