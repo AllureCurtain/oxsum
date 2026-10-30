@@ -57,6 +57,13 @@ html {
   font-size: 14px;
 }
 
+/* Mobile floor M1: horizontal overflow is clipped, never hidden — `hidden`
+ * would kill position:sticky on descendants. One sticky topbar only (M5). */
+html,
+body {
+  overflow-x: clip;
+}
+
 body {
   color: var(--color-ink);
   background: var(--color-canvas);
