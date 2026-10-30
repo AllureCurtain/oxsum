@@ -163,6 +163,7 @@ impl Db {
             member.user_id,
             None,
             Some(Some(MEMBER_BUDGET)),
+            None,
         )
         .await?;
 

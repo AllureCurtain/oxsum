@@ -518,6 +518,7 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "sessions".to_owned(),
             "statement_lines".to_owned(),
             "statements".to_owned(),
+            "teams".to_owned(),
             "tier_profiles".to_owned(),
             "tpm_windows".to_owned(),
             "upstream_bills".to_owned(),

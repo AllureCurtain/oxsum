@@ -39,6 +39,7 @@ mod service_credentials;
 mod sessions;
 mod statement_pdf;
 mod statements;
+mod teams;
 mod tenants;
 mod tiers;
 mod upstream_bills;
@@ -121,6 +122,7 @@ pub use statement_pdf::render_statement_pdf;
 pub use statements::{
     PaymentStatus, Statement, StatementLine, StatementPeriod, StatementStatus, statement_period,
 };
+pub use teams::Team;
 pub use tenants::Tenants;
 pub use tiers::TierProfile;
 pub use upstream_bills::{

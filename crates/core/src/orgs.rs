@@ -143,6 +143,9 @@ pub struct Member {
     /// The member's committed-spend cap across every key they minted
     /// (issue #162); `None` carries no cap.
     pub budget_limit_minor: Option<i64>,
+    /// The team the member belongs to (issue #440); `None` means unassigned —
+    /// no team cap applies to the member's keys.
+    pub team_id: Option<Uuid>,
     #[serde(with = "time::serde::rfc3339")]
     pub joined_at: OffsetDateTime,
 }
@@ -434,7 +437,7 @@ impl Db {
 
     pub async fn members(&self, organization_id: Uuid) -> Result<Vec<Member>, WalletError> {
         let rows = sqlx::query(
-            "SELECT m.user_id, u.email, m.role, m.budget_limit_minor, m.created_at \
+            "SELECT m.user_id, u.email, m.role, m.budget_limit_minor, m.team_id, m.created_at \
              FROM oxsum.memberships m JOIN oxsum.users u USING (user_id) \
              WHERE m.organization_id = $1 ORDER BY m.created_at",
         )
@@ -501,6 +504,7 @@ impl Db {
             email: stored_email,
             role: Role::Member,
             budget_limit_minor: None,
+            team_id: None,
             joined_at,
         })
     }
@@ -564,7 +568,7 @@ impl Db {
         user_id: Uuid,
         role: Role,
     ) -> Result<Member, WalletError> {
-        self.update_member(organization_id, acting, user_id, Some(role), None)
+        self.update_member(organization_id, acting, user_id, Some(role), None, None)
             .await
     }
 
@@ -589,11 +593,12 @@ impl Db {
         user_id: Uuid,
         role: Option<Role>,
         budget: Option<Option<i64>>,
+        team: Option<Option<Uuid>>,
     ) -> Result<Member, WalletError> {
         let acting = acting.authorized()?;
-        if role.is_none() && budget.is_none() {
+        if role.is_none() && budget.is_none() && team.is_none() {
             return Err(WalletError::InvalidInput(
-                "at least one of role and budgetLimitMinor must be present".into(),
+                "at least one of role, budgetLimitMinor and teamId must be present".into(),
             ));
         }
         let role = role.map(assignable).transpose()?;
@@ -653,6 +658,36 @@ impl Db {
             .execute(&mut *tx)
             .await?;
             target.budget_limit_minor = budget;
+        }
+        if let Some(team) = team
+            && target.team_id != team
+        {
+            // The team must belong to this organization — a FK violation on a
+            // cross-organization id surfaces as the same NotFound the member
+            // check answers, never a silent cross-tenant assignment.
+            if let Some(team_id) = team {
+                let exists: bool = sqlx::query_scalar(
+                    "SELECT EXISTS (SELECT 1 FROM oxsum.teams \
+                     WHERE organization_id = $1 AND team_id = $2)",
+                )
+                .bind(organization_id)
+                .bind(team_id)
+                .fetch_one(&mut *tx)
+                .await?;
+                if !exists {
+                    return Err(WalletError::NotFound("no team with that id".into()));
+                }
+            }
+            sqlx::query(
+                "UPDATE oxsum.memberships SET team_id = $3 \
+                 WHERE organization_id = $1 AND user_id = $2",
+            )
+            .bind(organization_id)
+            .bind(user_id)
+            .bind(team)
+            .execute(&mut *tx)
+            .await?;
+            target.team_id = team;
         }
         tx.commit().await?;
         Ok(target)
@@ -905,7 +940,7 @@ async fn locked_member(
     user_id: Uuid,
 ) -> Result<Option<Member>, WalletError> {
     let row = sqlx::query(
-        "SELECT m.user_id, u.email, m.role, m.budget_limit_minor, m.created_at \
+        "SELECT m.user_id, u.email, m.role, m.budget_limit_minor, m.team_id, m.created_at \
          FROM oxsum.memberships m JOIN oxsum.users u USING (user_id) \
          WHERE m.organization_id = $1 AND m.user_id = $2 FOR UPDATE OF m",
     )
@@ -923,6 +958,7 @@ fn member_from_row(row: &sqlx::postgres::PgRow) -> Result<Member, WalletError> {
         email: row.try_get("email")?,
         role: Role::parse(&row.try_get::<String, _>("role")?)?,
         budget_limit_minor: row.try_get("budget_limit_minor")?,
+        team_id: row.try_get("team_id")?,
         joined_at: row.try_get("created_at")?,
     })
 }

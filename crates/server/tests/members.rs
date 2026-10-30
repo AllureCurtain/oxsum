@@ -941,3 +941,125 @@ async fn any_member_may_read_the_member_list() {
     let list = members(&app, &f.owner_cookie).await;
     assert!(role_of(&list, &f.member.email).is_none());
 }
+
+// ── Teams (issue #440) ──────────────────────────────────────────────────────
+
+/// The team lifecycle over HTTP: an owner creates a subgroup with a budget
+/// cap, a member is assigned into it by `teamId`, the cap counts the roster's
+/// keys, and dissolving the team unassigns its members.
+#[tokio::test]
+async fn teams_group_members_under_a_budget() {
+    let (app, pool) = app_or_skip!();
+    let f = fixture(&app, &pool, "teams").await;
+
+    // Create the team: an owner or admin may — a member may not.
+    let res = call(
+        &app,
+        "POST",
+        "/api/v1/org/teams",
+        Some(json!({"name": "sales", "budgetLimitMinor": 5_000_000})),
+        None,
+        Some(&f.owner_cookie),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    let team_id = res.body["data"]["teamId"].as_str().unwrap().to_owned();
+    assert_eq!(res.body["data"]["name"], "sales");
+    assert_eq!(res.body["data"]["budgetLimitMinor"], 5_000_000);
+
+    // A member reaches no team endpoint on any write.
+    for (method, path, body) in [
+        (
+            "POST",
+            "/api/v1/org/teams".to_owned(),
+            Some(json!({"name": "x"})),
+        ),
+        (
+            "PATCH",
+            format!("/api/v1/org/teams/{team_id}"),
+            Some(json!({"budgetLimitMinor": null})),
+        ),
+        ("DELETE", format!("/api/v1/org/teams/{team_id}"), None),
+    ] {
+        let res = call(&app, method, &path, body, None, Some(&f.member_cookie)).await;
+        assert_eq!(
+            res.status,
+            StatusCode::FORBIDDEN,
+            "{method} {path} was not refused: {}",
+            res.body
+        );
+    }
+
+    // Assign the member to the team: the PATCH carries `teamId`, the member
+    // list answers it back.
+    let res = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/org/members/{}", f.member.user_id),
+        Some(json!({"teamId": team_id})),
+        None,
+        Some(&f.owner_cookie),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert_eq!(res.body["data"]["teamId"], team_id.as_str());
+
+    // The list names the roster.
+    let res = call(
+        &app,
+        "GET",
+        "/api/v1/org/teams",
+        None,
+        None,
+        Some(&f.owner_cookie),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    let teams = res.body["data"]["teams"].as_array().unwrap();
+    assert_eq!(teams.len(), 1);
+    assert_eq!(teams[0]["members"], 1);
+
+    // An explicit null unassigns; dissolving the team is the bulk version of
+    // the same — the member keeps their seat either way.
+    let res = call(
+        &app,
+        "DELETE",
+        &format!("/api/v1/org/teams/{team_id}"),
+        None,
+        None,
+        Some(&f.owner_cookie),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    let list = members(&app, &f.owner_cookie).await;
+    let member = list
+        .iter()
+        .find(|m| m["email"] == f.member.email)
+        .expect("the member is still seated");
+    assert!(
+        member["teamId"].is_null(),
+        "the dissolved team's assignment cleared: {member}"
+    );
+}
+
+/// Any member may read the team list — the same right the member list carries.
+#[tokio::test]
+async fn any_member_may_read_the_teams() {
+    let (app, pool) = app_or_skip!();
+    let f = fixture(&app, &pool, "tread").await;
+    let res = call(
+        &app,
+        "POST",
+        "/api/v1/org/teams",
+        Some(json!({"name": "growth"})),
+        None,
+        Some(&f.owner_cookie),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    for cookie in [&f.owner_cookie, &f.admin_cookie, &f.member_cookie] {
+        let res = call(&app, "GET", "/api/v1/org/teams", None, None, Some(cookie)).await;
+        assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+        assert_eq!(res.body["data"]["teams"].as_array().unwrap().len(), 1);
+    }
+}
