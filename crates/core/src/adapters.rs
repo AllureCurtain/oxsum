@@ -112,27 +112,71 @@ impl UsageAdapter for OpenAiChat {
     /// fail-closed check flags them `unpriced` until a set prices them
     /// (issue #110). The usage object itself is kept verbatim as `provider_raw`
     /// for the reconciliation window; it never reaches a ledger description.
+    ///
+    /// The OpenAI-compatible providers drift on the report's spelling (issue
+    /// #441). This adapter tolerates what `~/dev/projects/references/portkey`
+    /// shows across the shape:
+    ///
+    /// - **Top-level subsets.** sglang and vLLM report `reasoning_tokens` at the
+    ///   top level instead of inside `completion_tokens_details` (bifrost's
+    ///   `NormalizeReasoningTokens` exists for exactly this); DeepSeek spells
+    ///   the cached count `prompt_cache_hit_tokens` and some providers use
+    ///   `cached_tokens` directly on `usage` — the nested spelling wins, the
+    ///   alias fills only when the nested one is absent.
+    /// - **One side plus the total.** A streamed `usage` carrying only
+    ///   `total_tokens` and one side derives the missing side as `total −
+    ///   present`, clamped at 0 — the difference between a report that can
+    ///   price input against output and one that cannot. `total_tokens` alone
+    ///   with neither side stays no-report: it names a sum, not a split.
     fn usage(&self, body: &Value) -> Option<UsageRecord> {
         let usage = body.get("usage")?;
-        let input = usage.get("prompt_tokens").and_then(Value::as_i64);
-        let output = usage.get("completion_tokens").and_then(Value::as_i64);
-        if input.is_none() && output.is_none() {
-            return None;
-        }
+        let count = |field: &str| usage.get(field).and_then(Value::as_i64);
         let nested = |object: &str, field: &str| {
             usage
                 .get(object)
                 .and_then(|details| details.get(field))
                 .and_then(Value::as_i64)
-                .unwrap_or(0)
         };
+        // The sides: the canonical fields first, the derived half second — a
+        // report carrying `total_tokens` and one side has the other as the
+        // remainder. A report of `total_tokens` alone names a sum it cannot
+        // split and stays no-report, like a usage object with no counts at all.
+        let total = count("total_tokens");
+        let mut input = count("prompt_tokens");
+        let mut output = count("completion_tokens");
+        if input.is_none()
+            && output.is_some()
+            && let Some(total) = total
+        {
+            input = Some((total - output.unwrap_or(0)).max(0));
+        }
+        if output.is_none()
+            && input.is_some()
+            && let Some(total) = total
+        {
+            output = Some((total - input.unwrap_or(0)).max(0));
+        }
+        if input.is_none() && output.is_none() {
+            return None;
+        }
+        // A nested subset wins its column; the top-level spellings fill only
+        // when the nested object names nothing — sglang's `reasoning_tokens`,
+        // DeepSeek's `prompt_cache_hit_tokens`, and the bare `cached_tokens`
+        // some providers flatten upward.
+        let cached = nested("prompt_tokens_details", "cached_tokens")
+            .or_else(|| count("prompt_cache_hit_tokens"))
+            .or_else(|| count("cached_tokens"))
+            .unwrap_or(0);
+        let reasoning = nested("completion_tokens_details", "reasoning_tokens")
+            .or_else(|| count("reasoning_tokens"))
+            .unwrap_or(0);
         let record = UsageRecord {
             input_tokens: input.unwrap_or(0),
             output_tokens: output.unwrap_or(0),
-            cached_tokens: nested("prompt_tokens_details", "cached_tokens"),
-            audio_input_tokens: nested("prompt_tokens_details", "audio_tokens"),
-            reasoning_tokens: nested("completion_tokens_details", "reasoning_tokens"),
-            audio_output_tokens: nested("completion_tokens_details", "audio_tokens"),
+            cached_tokens: cached,
+            audio_input_tokens: nested("prompt_tokens_details", "audio_tokens").unwrap_or(0),
+            reasoning_tokens: reasoning,
+            audio_output_tokens: nested("completion_tokens_details", "audio_tokens").unwrap_or(0),
             usage_details: Some(serde_json::json!({"provider_raw": usage.clone()})),
             ..UsageRecord::default()
         }
@@ -448,6 +492,122 @@ mod tests {
         assert_eq!(
             usage.usage_details.as_ref().unwrap()["provider_raw"]["prompt_tokens"],
             100
+        );
+    }
+
+    /// The OpenAI-compatible providers drift on the usage object's spelling
+    /// (issue #441): sglang/vLLM report `reasoning_tokens` at the top level
+    /// instead of inside `completion_tokens_details` — bifrost's
+    /// `NormalizeReasoningTokens` exists for exactly this — and the nested
+    /// object wins when both spellings land.
+    #[test]
+    fn a_top_level_reasoning_count_fills_the_nested_spelling() {
+        // sglang's shape: flat `reasoning_tokens` on usage.
+        let usage = openai()
+            .usage(&json!({
+                "usage": {
+                    "prompt_tokens": 1200,
+                    "completion_tokens": 300,
+                    "total_tokens": 1500,
+                    "reasoning_tokens": 180,
+                },
+            }))
+            .expect("a flat reasoning report carries usage");
+        assert_eq!(usage.reasoning_tokens, 180);
+
+        // The nested detail still wins when both are present — the canonical
+        // spelling outranks the alias it tolerates.
+        let nested_wins = openai()
+            .usage(&json!({
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 40,
+                    "completion_tokens_details": {"reasoning_tokens": 30},
+                    "reasoning_tokens": 7,
+                },
+            }))
+            .expect("a doubly-spelled report carries usage");
+        assert_eq!(nested_wins.reasoning_tokens, 30);
+    }
+
+    /// DeepSeek reports the cached count as `prompt_cache_hit_tokens` (and some
+    /// providers flatten `cached_tokens` onto `usage` itself); the nested
+    /// `prompt_tokens_details.cached_tokens` wins when both spellings land.
+    #[test]
+    fn cache_hit_aliases_fill_the_cached_column() {
+        let deepseek = openai()
+            .usage(&json!({
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 20,
+                    "prompt_cache_hit_tokens": 64,
+                },
+            }))
+            .expect("a cache-hit report carries usage");
+        assert_eq!(deepseek.cached_tokens, 64);
+
+        let flattened = openai()
+            .usage(&json!({
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 20,
+                    "cached_tokens": 40,
+                },
+            }))
+            .expect("a flattened cached report carries usage");
+        assert_eq!(flattened.cached_tokens, 40);
+
+        // Nested wins over every alias — the detail object is the canonical home.
+        let nested_wins = openai()
+            .usage(&json!({
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 20,
+                    "prompt_tokens_details": {"cached_tokens": 80},
+                    "prompt_cache_hit_tokens": 5,
+                    "cached_tokens": 5,
+                },
+            }))
+            .expect("a doubly-spelled report carries usage");
+        assert_eq!(nested_wins.cached_tokens, 80);
+    }
+
+    /// A stream's last `usage` can carry only `total_tokens` and one side: the
+    /// missing side is the remainder, clamped at zero. `total_tokens` alone
+    /// names a sum it cannot split and stays no-report.
+    #[test]
+    fn one_side_plus_the_total_derives_the_missing_side() {
+        let completion_only = openai()
+            .usage(&json!({
+                "usage": {"completion_tokens": 30, "total_tokens": 130},
+            }))
+            .expect("a completion-and-total report carries usage");
+        assert_eq!(completion_only.input_tokens, 100);
+        assert_eq!(completion_only.output_tokens, 30);
+
+        let prompt_only = openai()
+            .usage(&json!({
+                "usage": {"prompt_tokens": 100, "total_tokens": 130},
+            }))
+            .expect("a prompt-and-total report carries usage");
+        assert_eq!(prompt_only.input_tokens, 100);
+        assert_eq!(prompt_only.output_tokens, 30);
+
+        // An inconsistent total — sides summing past it — clamps the derived
+        // side at zero rather than going negative.
+        let overshot = openai()
+            .usage(&json!({
+                "usage": {"prompt_tokens": 200, "total_tokens": 100},
+            }))
+            .expect("an over-summed report still carries usage");
+        assert_eq!(overshot.output_tokens, 0);
+
+        // `total_tokens` alone names no split: it stays no-report, never a
+        // guessed 100/0 division.
+        assert!(
+            openai()
+                .usage(&json!({"usage": {"total_tokens": 150}}))
+                .is_none()
         );
     }
 
