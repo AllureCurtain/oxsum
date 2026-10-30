@@ -15,6 +15,23 @@ docker compose up -d
 cargo build --workspace
 ```
 
+### Pre-commit hook (optional)
+
+`.githooks/pre-commit` runs `cargo fmt --all --check` plus a *scoped* `cargo clippy`
+— only the crates the staged files touched, never the whole workspace — so a
+docs-only commit costs seconds, not minutes. Manifest changes (`Cargo.toml`,
+`Cargo.lock`, `.cargo/config.toml`) still lint everything; `web/`, `docs/`,
+`.github/` and other non-Rust paths skip clippy entirely (the frontend gate is
+the Dockerfile's `frontend` stage and the CI `frontend` job). Install once per
+clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+`git commit --no-verify` bypasses it when needed. `scripts/test-pre-commit.sh`
+verifies the path-to-crate mapping with stubbed git output."
+
 ### Demo data
 
 `cargo run -p oxsum-server -- seed` fills a fresh deployment with a believable world and exits
