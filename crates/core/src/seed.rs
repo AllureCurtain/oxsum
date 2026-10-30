@@ -53,8 +53,6 @@ const DISCOUNT_DAYS_AGO: i64 = 10;
 /// Top-ups the organization made, `(days ago, minor units)` — the deposits rail
 /// shows three manual payments rather than one grant.
 const TOP_UPS: &[(i64, i64)] = &[(28, 400 * ONE), (14, 250 * ONE), (3, 150 * ONE)];
-/// How far back the settled history reaches.
-const HISTORY_DAYS: i64 = 30;
 /// The demo channel the seed creates when the deployment has no catalog: two
 /// models with prices, so the seeded turns bill under a real price book. The
 /// upstream URL is deliberately unreachable — the demo serves seeded history,
@@ -280,6 +278,13 @@ impl Db {
         // A month of settled turns: mostly plain usage, one capped and one
         // unpriced so the anomalies surface has something to say, each under the
         // settlement description and usage row the gateway would have written.
+        // The lookback must always reach into last month — a fixed 30-day window
+        // leaves last month empty on the last day or two of the current month,
+        // and the statement below would then have nothing to bill.
+        let last_month_start = (today.replace_day(1).map_err(invalid)? - Duration::days(1))
+            .replace_day(1)
+            .map_err(invalid)?;
+        let history_days = (today - last_month_start).whole_days().max(0) + 1;
         let mut spent = 0i64;
         let mut turns = 0i64;
         let world = SeedWorld {
@@ -289,7 +294,7 @@ impl Db {
             acting_keys: &acting_keys,
             capped_done: std::cell::Cell::new(false),
         };
-        for days_ago in (0..HISTORY_DAYS).rev() {
+        for days_ago in (0..history_days).rev() {
             let on = today - Duration::days(days_ago);
             let discounted = days_ago <= DISCOUNT_DAYS_AGO;
             for n in 0..(1 + days_ago % 3) {

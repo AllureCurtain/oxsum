@@ -252,7 +252,19 @@ async fn the_seed_populates_a_believable_world() {
     );
 
     // The requests page reads settled turns back — every seeded kind present.
-    let requests = wallet.recent_requests(200).await.unwrap();
+    // recent_requests is capped at one page (limit clamps to 100), and the seeded
+    // history now covers this month plus the whole previous one, so it can hold
+    // more turns than one page returns. Walk the pages to the end instead.
+    let mut requests = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = wallet.requests_page(cursor, 100).await.unwrap();
+        cursor = page.next_cursor;
+        requests.extend(page.rows);
+        if cursor.is_none() {
+            break;
+        }
+    }
     assert!(requests.len() as i64 >= report.turns);
     let kinds: Vec<SettlementKind> = requests.iter().map(|r| r.kind).collect();
     assert!(kinds.contains(&SettlementKind::Usage));
@@ -261,10 +273,12 @@ async fn the_seed_populates_a_believable_world() {
 
     // The usage rollup feeds the usage page over the seeded days.
     let today = time::OffsetDateTime::now_utc().date();
+    // The seeded history spans this month plus the whole previous one — wider
+    // than the 40-day window a fixed lookback would need, so take it explicitly.
     let days = db
         .usage_daily(
             &organization.tenant_id,
-            today - time::Duration::days(40),
+            today - time::Duration::days(62),
             today,
         )
         .await
