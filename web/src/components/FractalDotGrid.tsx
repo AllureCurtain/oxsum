@@ -230,6 +230,10 @@ const DotCanvas: React.FC<{
       const ctx = canvas.getContext("2d")
       if (!ctx) return
 
+      const reduceMotion = window.matchMedia(
+        "(prefers-reduced-motion: reduce)"
+      ).matches
+
       const resizeCanvas = () => {
         canvas.width = window.innerWidth
         canvas.height = window.innerHeight
@@ -237,6 +241,12 @@ const DotCanvas: React.FC<{
 
       resizeCanvas()
       window.addEventListener("resize", resizeCanvas)
+
+      // Reduced-motion terminal state: paint one static frame, never loop.
+      if (reduceMotion) {
+        drawDots(ctx, 0)
+        return () => window.removeEventListener("resize", resizeCanvas)
+      }
 
       let lastTime = 0
       const animate = (time: number) => {
@@ -353,6 +363,10 @@ export function FractalDotGrid({
     return dotSpacing
   }, [isMobile, isTablet, dotSpacing])
 
+  const reduceMotion =
+    typeof window !== "undefined" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches
+
   return (
     <AnimatePresence>
       <motion.div
@@ -361,7 +375,7 @@ export function FractalDotGrid({
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        transition={{ duration: 1.5, ease: "easeOut" }}
+        transition={{ duration: reduceMotion ? 0 : 1.5, ease: "easeOut" }}
         className="absolute inset-0 h-full w-full overflow-hidden"
       >
         <DotCanvas
@@ -376,7 +390,7 @@ export function FractalDotGrid({
           mousePos={mousePos}
         />
         {enableNoise && <NoiseOverlay opacity={noiseOpacity} />}
-        {enableMouseGlow && (
+        {enableMouseGlow && !reduceMotion && (
           <MouseGlow glowColor={glowColor} mousePos={mousePos} />
         )}
       </motion.div>

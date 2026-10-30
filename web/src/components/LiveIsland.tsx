@@ -1,58 +1,35 @@
-import { useEffect, useRef } from "react";
-import {
-  DynamicDescription,
-  DynamicIsland,
-  DynamicIslandProvider,
-  DynamicTitle,
-  useDynamicIslandSize,
-} from "./cult/dynamic-island";
 import { useBillingSocket } from "../api/ws";
 import { credits } from "./ui";
 
 /**
- * The live billing socket as a dynamic island in the shell's top bar: quiet and
- * narrow while the socket is up, swelling to show the last settlement when a
- * turn lands, dark when the socket drops.
+ * The live billing socket, shown in the topbar as a quiet status pill: a dot +
+ * "billing live/offline" while connected, swelling with the last settlement
+ * when a turn lands. Product chrome — no morphing island, no spring layout.
  */
-function IslandBody() {
+export function LiveIsland() {
   const { turns, live } = useBillingSocket();
-  const { setSize } = useDynamicIslandSize();
   const lastSettled = turns.find((t) => t.state === "settled" && t.chargedMinor !== undefined);
-  const seenRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    if (lastSettled && seenRef.current !== lastSettled.requestId) {
-      seenRef.current = lastSettled.requestId;
-      setSize("compactLong");
-      const timer = setTimeout(() => setSize(live ? "compact" : "default"), 4000);
-      return () => clearTimeout(timer);
-    }
-    setSize(live ? "compact" : "default");
-  }, [lastSettled, live, setSize]);
+  const inFlight = turns.filter((t) => t.state !== "settled").length;
 
   return (
-    <div className="flex w-full flex-col items-start justify-center px-4">
-      <DynamicTitle className="flex items-center gap-2 text-xs font-medium">
+    <div
+      className="flex h-9 w-48 flex-col items-start justify-center rounded-lg border border-line bg-canvas px-3"
+      role="status"
+      aria-live="polite"
+    >
+      <p className="flex items-center gap-1.5 text-xs font-medium text-ink">
         <span
-          className={`inline-block h-2 w-2 rounded-full ${live ? "bg-green-400" : "bg-zinc-500"}`}
+          className={`inline-block h-1.5 w-1.5 rounded-full ${live ? "bg-success" : "bg-muted"}`}
         />
         {live ? "billing live" : "billing offline"}
-      </DynamicTitle>
-      <DynamicDescription className="text-xs text-zinc-400">
+      </p>
+      <p className="mt-0.5 text-[11px] leading-none text-muted">
         {lastSettled
           ? `settled ${credits(lastSettled.chargedMinor!)} cr · ${lastSettled.kind ?? "usage"}`
-          : `${turns.filter((t) => t.state !== "settled").length} in flight`}
-      </DynamicDescription>
+          : inFlight > 0
+            ? `${inFlight} in flight`
+            : "idle"}
+      </p>
     </div>
-  );
-}
-
-export function LiveIsland() {
-  return (
-    <DynamicIslandProvider initialSize="compact">
-      <DynamicIsland id="billing-live">
-        <IslandBody />
-      </DynamicIsland>
-    </DynamicIslandProvider>
   );
 }
