@@ -35,7 +35,7 @@ export function Closings({ token }: { token: string }) {
             }
           }}
         >
-          <Field label="Month" hint="YYYY-MM — must have fully ended">
+          <Field label="Month" hint="YYYY-MM, must have fully ended">
             <TextInput required pattern="\d{4}-\d{2}" value={month} onChange={(e) => setMonth(e.target.value)} placeholder="2026-04" />
           </Field>
           <Button type="submit">Seal</Button>

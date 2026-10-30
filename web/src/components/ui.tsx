@@ -521,6 +521,9 @@ function Spinner({ className }: { className?: string }) {
   );
 }
 
+/** An icon-only control. `label` is required — it becomes both `aria-label`
+ *  and the tooltip, so the button is never a mystery glyph. The tap target is
+ *  ≥44px on touch sizes (the mobile floor), the 32px look above `sm`. */
 export function IconButton(props: React.ButtonHTMLAttributes<HTMLButtonElement> & { label: string; children: ReactNode }) {
   const { label, children, className, ...rest } = props;
   return (
@@ -529,7 +532,7 @@ export function IconButton(props: React.ButtonHTMLAttributes<HTMLButtonElement> 
       aria-label={label}
       title={label}
       className={cn(
-        "inline-flex h-8 w-8 items-center justify-center rounded-lg border border-line bg-surface text-muted transition-colors hover:bg-canvas hover:text-ink",
+        "inline-flex h-11 w-11 items-center justify-center rounded-lg border border-line bg-surface text-muted transition-colors hover:bg-canvas hover:text-ink sm:h-8 sm:w-8",
         className,
       )}
     >

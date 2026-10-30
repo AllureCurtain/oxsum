@@ -147,7 +147,7 @@ export function Admin() {
               setToken(draft);
             }}
           >
-            <Field label="Operator token" hint="OXSUM_ADMIN_TOKEN — checked against the admin surface">
+            <Field label="Operator token" hint="OXSUM_ADMIN_TOKEN, checked against the admin surface">
               <TextInput type="password" value={draft} onChange={(e) => setDraft(e.target.value)} required />
             </Field>
             <Button type="submit">Enter</Button>

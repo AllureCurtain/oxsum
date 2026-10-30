@@ -270,7 +270,7 @@ export function AppShell() {
               </p>
               <IconButton
                 label="Close navigation"
-                className="h-11 w-11 border-transparent bg-transparent text-rail-ink hover:bg-rail-2 hover:text-white"
+                className="border-transparent bg-transparent text-rail-ink hover:bg-rail-2 hover:text-white"
                 onClick={() => setDrawerOpen(false)}
               >
                 <X size={20} />
@@ -300,7 +300,7 @@ export function AppShell() {
           <div className="flex min-w-0 items-center gap-2">
             <IconButton
               label="Open navigation"
-              className="h-11 w-11 sm:hidden"
+              className="sm:hidden"
               onClick={() => setDrawerOpen(true)}
             >
               <Menu size={20} />
@@ -340,7 +340,7 @@ export function AppShell() {
             </span>
             <IconButton
               label="Log out"
-              className="h-11 w-11 sm:hidden"
+              className="sm:hidden"
               onClick={() =>
                 logout.mutate(undefined, {
                   onSettled: () => navigate("/login", { replace: true }),

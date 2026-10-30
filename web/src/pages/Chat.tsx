@@ -214,7 +214,7 @@ export function Chat() {
                   <Typewriter
                     delay={80}
                     texts={[
-                      "Ask anything — every turn is a billed request.",
+                      "Ask anything; every turn is a billed request.",
                       "The wallet freezes an upper bound before the stream starts…",
                       "…and settles against real usage after it ends.",
                     ]}
