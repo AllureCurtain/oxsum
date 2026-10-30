@@ -4,7 +4,7 @@ Updated: 2026-10-30
 
 ## In progress
 
-- Dashboard visual refresh, phase 2 — the post-#380 audit sweep (finesse-ui product register): six issues filed, strictly ordered. Shipped: #412 component vocabulary (PR #418 — single `ui.tsx` layer on Base UI, `cult/`/`ui/` retired), #413 AppShell (PR #419 — lucide icons, real breadcrumb, mobile drawer), #415 auth pages (PR #420 — cobalt static substrate, `FractalDotGrid` removed). In flight: #414 TableShell (PR #421 — skeleton loading, sticky header, density, alignment), #416 Admin IA restructure, #417 per-page polish.
+- Dashboard visual refresh, phase 2 — the post-#380 audit sweep (finesse-ui product register) is **closed**: all six issues shipped, one PR each. #412 component vocabulary (PR #418 — single `ui.tsx` layer on Base UI, `cult/`/`ui/` retired), #413 AppShell (PR #419 — lucide icons, real breadcrumb, mobile drawer), #414 TableShell (PR #421 — skeleton loading, sticky header, density, alignment), #415 auth pages (PR #420 — cobalt static substrate, `FractalDotGrid` removed), #416 Admin IA (PR #422 — 16 sections grouped into a side-nav under `pages/admin/`), #417 per-page polish (PR #423 — SVG usage chart, consequence lines, KPI anatomy, empty states).
 
 The next-phase gap plan is closed: #276's test-sharding shipped (PR #279); job leader election (#281) shipped (PR #288); the x402 facilitator rail (#282) shipped (PR #289); upstream bill reconciliation (#283) shipped (PR #290); /verify browser-side wasm (#284) shipped (PR #291); the Airwallex deposit rail (#285) shipped (PR #292); model aliases (#286) shipped (PR #294); the demo GIF automation (#287) is closed as not planned — a live demo supersedes the recording.
 
