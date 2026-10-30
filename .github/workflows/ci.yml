@@ -39,7 +39,7 @@ jobs:
     name: fmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The runner's stable toolchain plus rustfmt and clippy.
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -50,7 +50,7 @@ jobs:
     name: clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -72,7 +72,7 @@ jobs:
           # keeps every push from thrashing the cache entry.
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Configure sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
+        uses: mozilla-actions/sccache-action@v0.0.11
       # No database is needed to compile: the tree uses no sqlx::query! macros,
       # so compilation never touches a live database.
       - run: cargo clippy --workspace --all-targets -- -D warnings
@@ -86,7 +86,7 @@ jobs:
     name: wasm
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v3
         id: filter
         with:
@@ -121,7 +121,7 @@ jobs:
     name: frontend
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v3
         id: filter
         with:
@@ -156,7 +156,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Install mold
         run: |
@@ -168,7 +168,7 @@ jobs:
           cache-workspace-crates: "true"
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Configure sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
+        uses: mozilla-actions/sccache-action@v0.0.11
       # `--lib` only builds the lib test binaries — the heavy integration
       # targets (testcontainers, sqlx test deps) never compile here, which is
       # where most of the job's wall time used to go.
@@ -185,7 +185,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
@@ -211,7 +211,7 @@ jobs:
           cache-workspace-crates: "true"
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Configure sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
+        uses: mozilla-actions/sccache-action@v0.0.11
       - name: Install nextest
         uses: taiki-e/install-action@v2
         with:
@@ -226,7 +226,7 @@ jobs:
         run: |
           cargo nextest archive --workspace --archive-file nextest-archive.tar.zst
           cargo nextest archive -p doubleentry --features postgres --archive-file doubleentry-archive.tar.zst
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nextest-archive
           path: "*.tar.zst"
@@ -265,13 +265,13 @@ jobs:
       # The archive does not carry the workspace source — nextest requires the
       # same tree checked out at the same revision to locate fixtures and set
       # working directories.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Install nextest
         uses: taiki-e/install-action@v2
         with:
           tool: nextest
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: nextest-archive
       - name: Sweep stale test scratch databases
@@ -316,11 +316,11 @@ jobs:
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/oxsum
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: nextest-archive
       - name: Extract the test binaries

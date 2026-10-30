@@ -4,5 +4,10 @@
 # git worktrees: one per PR, created under .worktrees/, never committed
 .worktrees/
 
+# Local working notes (product-direction, references, e2e scripts, logs) —
+# kept out of the tree by .git/info/exclude already; this makes it durable
+# across clones so a stray `git add -A` can't sweep them in.
+local-notes/
+
 # infra/hyperswitch/.repo — the hyperswitch clone the migration_runner mounts.
 infra/hyperswitch/.repo/
