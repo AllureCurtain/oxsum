@@ -226,7 +226,7 @@ jobs:
         run: |
           cargo nextest archive --workspace --archive-file nextest-archive.tar.zst
           cargo nextest archive -p doubleentry --features postgres --archive-file doubleentry-archive.tar.zst
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nextest-archive
           path: "*.tar.zst"
