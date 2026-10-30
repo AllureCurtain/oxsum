@@ -1,10 +1,10 @@
 # TODO
 
-Updated: 2026-10-25
+Updated: 2026-10-30
 
 ## In progress
 
-- Dashboard visual refresh (#379, PR #380): cobalt palette on a tinted slate substrate, dark rail sidebar with grouped nav, redesigned card/table/KPI surfaces, vendored Cult UI's rainbow gradients recolored to cobalt.
+- Dashboard visual refresh, phase 2 — the post-#380 audit sweep (finesse-ui product register): six issues filed, strictly ordered. Shipped: #412 component vocabulary (PR #418 — single `ui.tsx` layer on Base UI, `cult/`/`ui/` retired), #413 AppShell (PR #419 — lucide icons, real breadcrumb, mobile drawer), #415 auth pages (PR #420 — cobalt static substrate, `FractalDotGrid` removed). In flight: #414 TableShell (PR #421 — skeleton loading, sticky header, density, alignment), #416 Admin IA restructure, #417 per-page polish.
 
 The next-phase gap plan is closed: #276's test-sharding shipped (PR #279); job leader election (#281) shipped (PR #288); the x402 facilitator rail (#282) shipped (PR #289); upstream bill reconciliation (#283) shipped (PR #290); /verify browser-side wasm (#284) shipped (PR #291); the Airwallex deposit rail (#285) shipped (PR #292); model aliases (#286) shipped (PR #294); the demo GIF automation (#287) is closed as not planned — a live demo supersedes the recording.
 
