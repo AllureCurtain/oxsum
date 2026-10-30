@@ -969,8 +969,13 @@ impl Db {
 /// attempt is a weighted pick — `roll` scaled into the summed weights walks
 /// the candidates in name order — and the remainder follow in descending
 /// weight, so a failed attempt falls over to the next-most-preferred route.
-/// `roll` is a parameter rather than drawn here so a test can walk the whole
-/// range; the gateway passes a uniform `0.0 <= roll < 1.0`.
+/// Cost-aware within an equivalent weight tier (issue #438): the pick chooses
+/// a *weight*, and the tier that weight lands in is represented by its cheapest
+/// route — two channels equally preferred never let the dearer one lead, so
+/// among the routes that could answer, the cheapest leads and the rest fall
+/// back to failover position ordered by weight then price. `roll` is a
+/// parameter rather than drawn here so a test can walk the whole range; the
+/// gateway passes a uniform `0.0 <= roll < 1.0`.
 #[must_use]
 pub fn route_order(servings: Vec<Serving>, roll: f64) -> Vec<Serving> {
     let mut ordered = servings;
@@ -978,17 +983,39 @@ pub fn route_order(servings: Vec<Serving>, roll: f64) -> Vec<Serving> {
     if ordered.len() > 1 {
         let total: i64 = ordered.iter().map(|s| s.weight).sum();
         let mut mark = (roll.clamp(0.0, 1.0 - f64::EPSILON) * total as f64) as i64;
-        let leader = ordered
+        let landed = ordered
             .iter()
             .position(|serving| {
                 mark -= serving.weight;
                 mark < 0
             })
             .unwrap_or(0);
+        // The roll picks a weight tier, not a channel: within the tier it
+        // landed on, the cheapest route leads — the others are the same pick
+        // as far as weight is concerned, and letting the dearer lead would
+        // spend more for an identical preference.
+        let tier_weight = ordered[landed].weight;
+        let leader = ordered
+            .iter()
+            .enumerate()
+            .filter(|(_, serving)| serving.weight == tier_weight)
+            .min_by(|(_, a), (_, b)| {
+                a.price
+                    .input_price_per_million
+                    .cmp(&b.price.input_price_per_million)
+                    .then_with(|| a.channel.cmp(&b.channel))
+            })
+            .map(|(index, _)| index)
+            .unwrap_or(landed);
         ordered.swap(0, leader);
         ordered[1..].sort_by(|a, b| {
             b.weight
                 .cmp(&a.weight)
+                .then_with(|| {
+                    a.price
+                        .input_price_per_million
+                        .cmp(&b.price.input_price_per_million)
+                })
                 .then_with(|| a.channel.cmp(&b.channel))
         });
     }
