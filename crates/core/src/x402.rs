@@ -75,6 +75,18 @@ pub struct RailSettlement {
     pub tx_hash: String,
 }
 
+/// Why a verified payment could not land — what the rail knows about a refused
+/// or unreachable settlement, for the deposit's own record. The caller still
+/// sees the refusal indistinguishably; the reason is reconciliation
+/// provenance, written into `deposits.meta` so an operator can read a refused
+/// settle without the sidecar's logs (issue #439).
+#[derive(Debug, Clone)]
+pub struct SettleRefusal {
+    /// The facilitator's `error_reason`, or a local description when the rail
+    /// could not reach settlement at all (sidecar down, unreadable answer).
+    pub reason: String,
+}
+
 /// The seam a real crypto rail drops into: given the authorization payload the
 /// caller presented, prove it is a payment the rail honors, then land it.
 ///
@@ -103,15 +115,22 @@ pub trait RailVerifier: std::fmt::Debug + Send + Sync {
         amount_minor: Option<i64>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<VerifiedPayment>> + Send + 'a>>;
 
-    /// Land a verified payment. `None` means the rail could not settle — a
+    /// Land a verified payment. `Err` means the rail could not settle — a
     /// refused or unreachable facilitator, a reverted transfer — which the
-    /// caller maps to the same refusal an unverified payload earns.
+    /// caller maps to the same refusal an unverified payload earns; the
+    /// [`SettleRefusal`] it carries is written into the deposit's `meta` for
+    /// reconciliation, never answered to the caller.
     fn settle<'a>(
         &'a self,
         _payment: &'a VerifiedPayment,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<RailSettlement>> + Send + 'a>>
-    {
-        Box::pin(async { None })
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<RailSettlement, SettleRefusal>> + Send + 'a>,
+    > {
+        Box::pin(async {
+            Err(SettleRefusal {
+                reason: "the rail settles nothing".to_owned(),
+            })
+        })
     }
 }
 
@@ -262,10 +281,11 @@ impl RailVerifier for Ed25519RailVerifier {
     fn settle<'a>(
         &'a self,
         _payment: &'a VerifiedPayment,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<RailSettlement>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<RailSettlement, SettleRefusal>> + Send + 'a>,
+    > {
         Box::pin(async {
-            Some(RailSettlement {
+            Ok(RailSettlement {
                 tx_hash: String::new(),
             })
         })
@@ -371,13 +391,35 @@ impl crate::Db {
             // declaration. A rail that cannot land the verified payment
             // refuses the top-up — an unsettled credit would be free money.
             // The lock is held across the call so a concurrent request with
-            // the same authorization serializes behind it. The returned Err
-            // drops `tx` uncommitted, but the deposit claim already committed
-            // above, so the row stays `confirmed` for a retry to land.
-            let settlement = verifier
-                .settle(&payment)
-                .await
-                .ok_or_else(|| WalletError::Forbidden("the payment could not settle".into()))?;
+            // the same authorization serializes behind it. A settle refusal
+            // commits only the reason write — the deposit claim already
+            // committed above, so the row stays `confirmed` for a retry to
+            // land (issue #439).
+            let settlement = match verifier.settle(&payment).await {
+                Ok(settlement) => settlement,
+                Err(refusal) => {
+                    // The refusal's reason is reconciliation provenance —
+                    // recorded on the standing `confirmed` row so an operator
+                    // reads *why* the rail would not land the payment without
+                    // the sidecar's logs — never answered to the caller.
+                    sqlx::query(
+                        "UPDATE oxsum.deposits \
+                         SET meta = meta || jsonb_build_object('settleRefusal', $1::text), \
+                             updated_at = now() \
+                         WHERE rail = $2 AND organization_id = $3 AND payment_ref = $4",
+                    )
+                    .bind(&refusal.reason)
+                    .bind(RAIL_X402)
+                    .bind(organization_id)
+                    .bind(&payment.payment_ref)
+                    .execute(&mut *tx)
+                    .await?;
+                    tx.commit().await?;
+                    return Err(WalletError::Forbidden(
+                        "the payment could not settle".into(),
+                    ));
+                }
+            };
             sqlx::query(
                 "UPDATE oxsum.deposits \
                  SET facilitator_tx_hash = NULLIF($1, ''), updated_at = now() \

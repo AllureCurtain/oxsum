@@ -174,6 +174,8 @@ The real x402 rail (issue #282) delegates verify/settle to an [x402-rs facilitat
 
 `OXSUM_X402_NETWORK` uses the V1 network name (`base-sepolia` for the CAIP-2 `eip155:84532` chain above); `OXSUM_X402_ASSET` is the USDC contract on that chain, `OXSUM_X402_PAY_TO` the deployment's receiving address. Base Sepolia USDC is free from the Circle faucet, so a full real-rail exercise costs nothing. Without any of this the stand-in verifier (`OXSUM_X402_VERIFYING_KEY`) still covers local development and every test suite.
 
+A settle the facilitator refuses — `success: false` on `/settle`, or an unreachable sidecar — leaves the deposit `confirmed` and records why on `deposits.meta.settleRefusal`: the facilitator's `error_reason` when it answered, a local transport note when it did not. The row's `payment_ref` (the signed `nonce`) keeps the claim, so a retry under the same authorization re-attempts the settle rather than double-crediting; the caller still sees a plain `FORBIDDEN`.
+
 #### Real x402 rail exercise
 
 A full end-to-end run — a real signed authorization verified and settled on-chain — is a cheap recipe. `scripts/x402_sign.py` produces the wire `payment` string for `POST /api/v1/topups/x402`; the hosted facilitator `https://facilitator.x402.rs` already serves `base-sepolia` under the V1 `exact` scheme, so no local sidecar is needed:

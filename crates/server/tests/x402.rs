@@ -543,13 +543,19 @@ async fn an_unsettled_payment_is_refused() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(balance(&app, &key).await, before);
-    // The refused settle leaves the deposit un-credited — a retry can land it.
-    let status_row: String =
-        sqlx::query_scalar("SELECT status FROM oxsum.deposits WHERE payment_ref = 'nonce-f4'")
-            .fetch_one(db.pool())
-            .await
-            .unwrap();
-    assert_eq!(status_row, "confirmed");
+    // The refused settle leaves the deposit un-credited — a retry can land it —
+    // with the facilitator's `error_reason` on `meta` for reconciliation
+    // (issue #439): an operator reads *why* the rail refused without the
+    // sidecar's logs.
+    let row: (String, Option<String>) = sqlx::query_as(
+        "SELECT status, meta->>'settleRefusal' FROM oxsum.deposits \
+         WHERE payment_ref = 'nonce-f4'",
+    )
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(row.0, "confirmed");
+    assert_eq!(row.1.as_deref(), Some("insufficient funds"));
 }
 
 /// A payload on a foreign network or scheme is refused before the facilitator
