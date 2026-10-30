@@ -31,8 +31,9 @@
   --color-rail-ink: #7a8496;
   --color-rail-ink-active: #ffffff;
 
-  /* shadcn/Cult UI token aliases — the vendored components under
-   * components/cult/ and components/ui/ speak these names. */
+  /* Token aliases — the design vocabulary's semantic names (background,
+   * foreground, card, popover, muted-foreground, input, ring, …) that the
+   * components in components/ui.tsx and Base UI primitives resolve against. */
   --color-background: #edf0f6;
   --color-foreground: #121a2b;
   --color-card: #ffffff;
