@@ -30,6 +30,7 @@ mod mandates;
 mod metering;
 mod oauth;
 mod orgs;
+mod pools;
 mod proof;
 mod ratelimit;
 mod reconcile;
@@ -107,6 +108,9 @@ pub use oauth::OAuthIdentity;
 pub use orgs::{
     AdminOrganization, Kind, Member, MembershipActor, Organization, Ownership, Role,
     UserOrganization,
+};
+pub use pools::{
+    Affinity, CREDENTIAL_COOLDOWN, ChannelCredential, PoolCredential, order as credential_order,
 };
 pub use proof::{ChargeCheck, ProofBundle, verify_bundle, verify_charge};
 pub use ratelimit::{RateAllowance, RateLimited, RateLimiter, SlidingWindow};
