@@ -1,0 +1,54 @@
+# cargo-audit configuration (issue #389, follow-up to #395).
+#
+# `cargo audit` scans Cargo.lock, which records every optional dependency of
+# every crate in the graph — including features this workspace never enables.
+# An advisory listed here is therefore not necessarily reachable; each entry
+# states why it is not, and how that was verified.
+#
+# Re-check on each dependency bump with:
+#   cargo tree --all-features -i <crate>
+# If it prints a path through doubleentry's `iceberg` feature (which this
+# workspace does not enable), the crate is still not in the build graph.
+
+[advisories]
+ignore = [
+    # rsa — Marvin attack, timing sidechannel key recovery. Medium (5.9), no
+    # fixed release available upstream.
+    #
+    # Reaches the lockfile through sqlx -> sqlx-mysql -> rsa. This workspace
+    # takes sqlx with `default-features = false` and only `runtime-tokio-rustls`,
+    # `postgres`, `time` and `uuid` — no `macros`, so the MySQL driver and its
+    # rsa dep never resolve. Verified: `cargo tree --all-features -i rsa`
+    # prints nothing in this workspace.
+    "RUSTSEC-2023-0071",
+
+    # paste — unmaintained, no advisory of an actual defect.
+    #
+    # A proc-macro reached through parquet -> iceberg, which is doubleentry's
+    # optional cold-tier feature and is not enabled by this workspace. Even
+    # where it is enabled, paste expands to tokens at compile time and
+    # contributes no runtime code.
+    "RUSTSEC-2024-0436",
+
+    # zstd / zstd-safe / zstd-sys — reached through iceberg -> apache-avro /
+    # parquet, which is doubleentry's optional `iceberg` feature and is not
+    # enabled by this workspace. `cargo tree --all-features -i zstd` shows the
+    # chain stops at the feature boundary; the advisories are unsound-memory
+    # issues in a crate that never compiles into the shipped binary.
+    #
+    # Revisit when parquet releases a version whose zstd dep resolves >= 0.14.3.
+    "RUSTSEC-2026-0391",  # zstd 0.13.3
+    "RUSTSEC-2026-0403",  # zstd-safe 7.3.0
+    "RUSTSEC-2026-0398",  # zstd-safe 7.3.0
+    "RUSTSEC-2026-0410",  # zstd-sys 2.1.1
+    "RUSTSEC-2026-0395",  # zstd-safe 7.3.0
+    "RUSTSEC-2026-0406",  # zstd-safe 7.3.0
+    "RUSTSEC-2026-0402",  # zstd-safe 7.3.0
+    "RUSTSEC-2026-0401",  # zstd-safe 7.3.0
+    "RUSTSEC-2026-0405",  # zstd-safe 7.3.0
+    "RUSTSEC-2026-0397",  # zstd-safe 7.3.0
+    "RUSTSEC-2026-0396",  # zstd-safe 7.3.0
+    "RUSTSEC-2026-0404",  # zstd-safe 7.3.0
+    "RUSTSEC-2026-0400",  # zstd-safe 7.3.0
+    "RUSTSEC-2026-0399",  # zstd-safe 7.3.0
+]

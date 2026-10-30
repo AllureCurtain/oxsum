@@ -45,7 +45,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Same disk pressure as the other compile jobs: the release build is big.
       - name: Free disk space
         run: |
