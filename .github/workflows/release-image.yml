@@ -50,7 +50,7 @@ jobs:
           --health-timeout 5s
           --health-retries 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The release build and its BuildKit cache are big; ci.yml frees the same
       # space for the same reason, "No space left on device" from a compiler.
       - name: Free disk space
