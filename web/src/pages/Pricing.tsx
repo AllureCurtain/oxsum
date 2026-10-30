@@ -1,16 +1,16 @@
 import { useMemo, useState, type FormEvent } from "react";
 import { ApiError, useEstimatePrice, useLogKey, usePriceHead, usePricing } from "../api/hooks";
-import { CopyButton } from "../components/cult/copy-button";
-import { HaloButton } from "../components/cult/halo-button";
-import { HaloBadge } from "../components/cult/halo-badge";
+import { CopyButton } from "../components/ui";
+import { Button } from "../components/ui";
+import { Badge } from "../components/ui";
 import {
-  HaloSelect,
-  HaloSelectContent,
-  HaloSelectItem,
-  HaloSelectTrigger,
-  HaloSelectValue,
-} from "../components/cult/halo-select";
-import { CodeBlock } from "../components/cult/code-block";
+  SelectRoot,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../components/ui";
+import { CodeBlock } from "../components/ui";
 import {
   Banner,
   Card,
@@ -44,7 +44,7 @@ function Catalog() {
           <td className="mono">{m.model}</td>
           <td>{m.channel}</td>
           <td>
-            <HaloBadge variant="secondary">{m.protocol}</HaloBadge>
+            <Badge variant="secondary">{m.protocol}</Badge>
           </td>
           <td className="mono">{m.version}</td>
           <td className="mono">{m.weight}</td>
@@ -86,36 +86,36 @@ function Estimator({ models }: { models: string[] }) {
       </p>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <Field label="Model">
-          <HaloSelect
+          <SelectRoot
             value={model}
             onValueChange={(v) => setModel(String(v))}
             placeholder="Pick a model"
           >
-            <HaloSelectTrigger>
-              <HaloSelectValue />
-            </HaloSelectTrigger>
-            <HaloSelectContent>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
               {models.map((m) => (
-                <HaloSelectItem key={m} value={m}>
+                <SelectItem key={m} value={m}>
                   {m}
-                </HaloSelectItem>
+                </SelectItem>
               ))}
-            </HaloSelectContent>
-          </HaloSelect>
+            </SelectContent>
+          </SelectRoot>
         </Field>
         <Field label="Billing mode">
-          <HaloSelect value={mode} onValueChange={(v) => setMode(String(v))}>
-            <HaloSelectTrigger>
-              <HaloSelectValue />
-            </HaloSelectTrigger>
-            <HaloSelectContent>
+          <SelectRoot value={mode} onValueChange={(v) => setMode(String(v))}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
               {MODES.map((m) => (
-                <HaloSelectItem key={m} value={m}>
+                <SelectItem key={m} value={m}>
                   {m}
-                </HaloSelectItem>
+                </SelectItem>
               ))}
-            </HaloSelectContent>
-          </HaloSelect>
+            </SelectContent>
+          </SelectRoot>
         </Field>
         <Field label="Input tokens" hint="empty estimates a prompt-free shape">
           <NumberInput value={inputTokens} onChange={(e) => setInputTokens(e.target.value)} min="0" />
@@ -133,14 +133,14 @@ function Estimator({ models }: { models: string[] }) {
         </Field>
       </div>
       <div className="flex items-center gap-3">
-        <HaloButton
+        <Button
           type="submit"
           isLoading={estimate.isPending}
           loadingText="Estimating…"
           disabled={model === ""}
         >
           Estimate
-        </HaloButton>
+        </Button>
         {estimate.data ? (
           <p className="text-lg font-semibold tabular-nums">
             ≤ {credits(estimate.data.estimateMinor)} cr
@@ -176,18 +176,18 @@ function PriceHeadViewer({ channels }: { channels: string[] }) {
       </p>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <Field label="Channel">
-          <HaloSelect value={channel} onValueChange={(v) => setChannel(String(v))} placeholder="Pick a channel">
-            <HaloSelectTrigger>
-              <HaloSelectValue />
-            </HaloSelectTrigger>
-            <HaloSelectContent>
+          <SelectRoot value={channel} onValueChange={(v) => setChannel(String(v))} placeholder="Pick a channel">
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
               {channels.map((c) => (
-                <HaloSelectItem key={c} value={c}>
+                <SelectItem key={c} value={c}>
                   {c}
-                </HaloSelectItem>
+                </SelectItem>
               ))}
-            </HaloSelectContent>
-          </HaloSelect>
+            </SelectContent>
+          </SelectRoot>
         </Field>
         <Field label="Model">
           <TextInput value={model} onChange={(e) => setModel(e.target.value)} placeholder="model id" />

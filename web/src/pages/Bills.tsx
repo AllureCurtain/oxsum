@@ -15,7 +15,7 @@ import {
   type DisplayCurrency,
 } from "../components/ui";
 import { ApiError, api } from "../api/client";
-import { CodeBlock } from "../components/cult/code-block";
+import { CodeBlock } from "../components/ui";
 
 // The archived head rides the browser's localStorage, like the Leptos
 // dashboard's archive: `decide` says what a served head means against it.

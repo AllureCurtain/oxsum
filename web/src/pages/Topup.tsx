@@ -10,16 +10,16 @@ import {
   useStripeTopup,
   useTopup,
 } from "../api/hooks";
-import { HaloButton } from "../components/cult/halo-button";
-import { HaloInput } from "../components/cult/halo-input";
+import { Button } from "../components/ui";
+import { TextInput } from "../components/ui";
 import {
-  HaloTabs,
-  HaloTabsContent,
-  HaloTabsIndicator,
-  HaloTabsList,
-  HaloTabsTrigger,
-} from "../components/cult/halo-tabs";
-import { CodeBlock } from "../components/cult/code-block";
+  Tabs,
+  TabsContent,
+  TabsIndicator,
+  TabsList,
+  TabsTrigger,
+} from "../components/ui";
+import { CodeBlock } from "../components/ui";
 import { Banner, Card, Cr, Field, creditsWithDisplay } from "../components/ui";
 
 function amountToMinor(raw: string): number | null {
@@ -60,7 +60,7 @@ function ManualRail() {
         Stripe; for an operator-minted code use the redemption rail.
       </p>
       <Field label="Amount (credits)">
-        <HaloInput
+        <TextInput
           type="number"
           step="any"
           value={amount}
@@ -70,9 +70,9 @@ function ManualRail() {
           required
         />
       </Field>
-      <HaloButton type="submit" isLoading={topup.isPending} loadingText="Booking…">
+      <Button type="submit" isLoading={topup.isPending} loadingText="Booking…">
         Credit balance
-      </HaloButton>
+      </Button>
       {topup.error instanceof ApiError ? <Banner tone="error">{topup.error.message}</Banner> : null}
       {topup.data ? <ReceiptView receipt={topup.data} /> : null}
     </form>
@@ -100,7 +100,7 @@ function StripeRail() {
         session completes. A deployment without Stripe configured answers 503.
       </p>
       <Field label="Amount (credits)">
-        <HaloInput
+        <TextInput
           type="number"
           step="any"
           value={amount}
@@ -110,9 +110,9 @@ function StripeRail() {
           required
         />
       </Field>
-      <HaloButton type="submit" isLoading={stripe.isPending} loadingText="Opening checkout…">
+      <Button type="submit" isLoading={stripe.isPending} loadingText="Opening checkout…">
         Pay with Stripe
-      </HaloButton>
+      </Button>
       {stripe.error instanceof ApiError ? (
         <Banner tone="error">
           {stripe.error.status === 503
@@ -145,7 +145,7 @@ function AirwallexRail() {
         once the intent succeeds. A deployment without Airwallex configured answers 503.
       </p>
       <Field label="Amount (credits)">
-        <HaloInput
+        <TextInput
           type="number"
           step="any"
           value={amount}
@@ -155,9 +155,9 @@ function AirwallexRail() {
           required
         />
       </Field>
-      <HaloButton type="submit" isLoading={airwallex.isPending} loadingText="Opening payment page…">
+      <Button type="submit" isLoading={airwallex.isPending} loadingText="Opening payment page…">
         Pay with Airwallex
-      </HaloButton>
+      </Button>
       {airwallex.error instanceof ApiError ? (
         <Banner tone="error">
           {airwallex.error.status === 503
@@ -281,7 +281,7 @@ function HyperswitchRail() {
           answers 503.
         </p>
         <Field label="Amount (credits)">
-          <HaloInput
+          <TextInput
             type="number"
             step="any"
             value={amount}
@@ -293,13 +293,13 @@ function HyperswitchRail() {
           />
         </Field>
         {stage !== "mounted" ? (
-          <HaloButton
+          <Button
             type="submit"
             isLoading={hyperswitch.isPending || stage === "mounting"}
             loadingText="Loading checkout…"
           >
             Pay with Hyperswitch
-          </HaloButton>
+          </Button>
         ) : null}
         {hyperswitch.error instanceof ApiError ? (
           <Banner tone="error">
@@ -346,7 +346,7 @@ function RedeemRail() {
         codes all answer 404 — which of the three it is stays the holder's business.
       </p>
       <Field label="Redemption code">
-        <HaloInput
+        <TextInput
           value={code}
           onChange={(e) => setCode(e.target.value)}
           placeholder="oxr-…"
@@ -354,9 +354,9 @@ function RedeemRail() {
           required
         />
       </Field>
-      <HaloButton type="submit" isLoading={redeem.isPending} loadingText="Claiming…">
+      <Button type="submit" isLoading={redeem.isPending} loadingText="Claiming…">
         Redeem code
-      </HaloButton>
+      </Button>
       {redeem.error instanceof ApiError ? <Banner tone="error">{redeem.error.message}</Banner> : null}
       {redeem.data ? (
         <div className="flex flex-col gap-2">
@@ -437,41 +437,41 @@ export function Topup() {
           </button>
         </div>
       ) : null}
-      <HaloTabs defaultValue="manual">
-        <HaloTabsList variant="pill">
-          <HaloTabsTrigger value="manual">Manual</HaloTabsTrigger>
-          <HaloTabsTrigger value="stripe">Stripe</HaloTabsTrigger>
-          <HaloTabsTrigger value="airwallex">Airwallex</HaloTabsTrigger>
-          <HaloTabsTrigger value="hyperswitch">Hyperswitch</HaloTabsTrigger>
-          <HaloTabsTrigger value="redeem">Redeem code</HaloTabsTrigger>
-          <HaloTabsIndicator variant="pill" />
-        </HaloTabsList>
-        <HaloTabsContent value="manual" className="mt-4">
+      <Tabs defaultValue="manual">
+        <TabsList variant="pill">
+          <TabsTrigger value="manual">Manual</TabsTrigger>
+          <TabsTrigger value="stripe">Stripe</TabsTrigger>
+          <TabsTrigger value="airwallex">Airwallex</TabsTrigger>
+          <TabsTrigger value="hyperswitch">Hyperswitch</TabsTrigger>
+          <TabsTrigger value="redeem">Redeem code</TabsTrigger>
+          <TabsIndicator variant="pill" />
+        </TabsList>
+        <TabsContent value="manual" className="mt-4">
           <Card title="Manual top-up">
             <ManualRail />
           </Card>
-        </HaloTabsContent>
-        <HaloTabsContent value="stripe" className="mt-4">
+        </TabsContent>
+        <TabsContent value="stripe" className="mt-4">
           <Card title="Stripe checkout">
             <StripeRail />
           </Card>
-        </HaloTabsContent>
-        <HaloTabsContent value="airwallex" className="mt-4">
+        </TabsContent>
+        <TabsContent value="airwallex" className="mt-4">
           <Card title="Airwallex payment page">
             <AirwallexRail />
           </Card>
-        </HaloTabsContent>
-        <HaloTabsContent value="hyperswitch" className="mt-4">
+        </TabsContent>
+        <TabsContent value="hyperswitch" className="mt-4">
           <Card title="Hyperswitch checkout">
             <HyperswitchRail />
           </Card>
-        </HaloTabsContent>
-        <HaloTabsContent value="redeem" className="mt-4">
+        </TabsContent>
+        <TabsContent value="redeem" className="mt-4">
           <Card title="Redeem a code">
             <RedeemRail />
           </Card>
-        </HaloTabsContent>
-      </HaloTabs>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

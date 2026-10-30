@@ -10,9 +10,9 @@ import {
   useSession,
   useSettleHold,
 } from "../api/hooks";
-import { HaloProgress } from "../components/cult/halo-progress";
-import { HaloButton } from "../components/cult/halo-button";
-import { HaloInput } from "../components/cult/halo-input";
+import { Progress } from "../components/ui";
+import { Button } from "../components/ui";
+import { TextInput } from "../components/ui";
 import {
   AnimatedKpi,
   Cr,
@@ -91,7 +91,7 @@ export function Overview() {
           ) : null}
           {budget.data?.organization.consumedPercent != null ? (
             <div className="mt-3 flex flex-col gap-1.5">
-              <HaloProgress
+              <Progress
                 value={Math.min(100, budget.data.organization.consumedPercent)}
                 className="w-full"
               />
@@ -115,7 +115,7 @@ export function Overview() {
               </strong>{" "}
               committed this window.
             </p>
-            <HaloProgress
+            <Progress
               value={Math.min(100, budget.data.member.consumedPercent ?? 0)}
               className="w-full"
             />
@@ -224,7 +224,7 @@ function HoldBench() {
       </p>
       <div className="flex flex-wrap items-end gap-2">
         <Field label="Hold (credits)">
-          <HaloInput
+          <TextInput
             type="number"
             min="0"
             step="any"
@@ -233,7 +233,7 @@ function HoldBench() {
             className="w-28"
           />
         </Field>
-        <HaloButton
+        <Button
           type="button"
           isLoading={hold.isPending}
           loadingText="Holding…"
@@ -253,9 +253,9 @@ function HoldBench() {
           }}
         >
           Hold
-        </HaloButton>
+        </Button>
         <Field label="Actual (credits)">
-          <HaloInput
+          <TextInput
             type="number"
             min="0"
             step="any"
@@ -264,7 +264,7 @@ function HoldBench() {
             className="w-28"
           />
         </Field>
-        <HaloButton
+        <Button
           type="button"
           disabled={!holdKey}
           isLoading={settle.isPending}
@@ -284,8 +284,8 @@ function HoldBench() {
           }}
         >
           Settle
-        </HaloButton>
-        <HaloButton
+        </Button>
+        <Button
           type="button"
           disabled={!holdKey}
           onClick={async () => {
@@ -300,7 +300,7 @@ function HoldBench() {
           }}
         >
           Release
-        </HaloButton>
+        </Button>
       </div>
       {msg ? <Banner tone={msg.includes("failed") ? "error" : "info"}>{msg}</Banner> : null}
     </div>

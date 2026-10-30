@@ -16,7 +16,7 @@ import {
   TextInput,
 } from "../components/ui";
 import { ApiError } from "../api/client";
-import { CopyButton } from "../components/cult/copy-button";
+import { CopyButton } from "../components/ui";
 
 const DURATIONS = ["daily", "weekly", "monthly"] as const;
 

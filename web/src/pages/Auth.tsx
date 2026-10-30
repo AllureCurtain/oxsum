@@ -3,7 +3,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { ApiError, api } from "../api/client";
 import { useAuthMethods, useLogin } from "../api/hooks";
-import { FractalDotGrid } from "../components/cult/bg-animated-fractal-dot-grid";
+import { FractalDotGrid } from "../components/FractalDotGrid";
 import { Banner, Button, Field, TextInput } from "../components/ui";
 
 /** The centered card every session page shares, over the animated dot grid. */

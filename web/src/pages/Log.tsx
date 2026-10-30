@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useEntries, useLogHead, useLogKey, useWitnessCheckpoint } from "../api/hooks";
-import { CopyButton } from "../components/cult/copy-button";
+import { CopyButton } from "../components/ui";
 import { Button, Card, EmptyRows, PageState, TableShell } from "../components/ui";
 
 export function Log() {

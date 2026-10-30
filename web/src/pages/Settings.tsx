@@ -2,8 +2,8 @@ import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, ApiError } from "../api/client";
 import { useDeleteAccount, useHealth, useOrg, useSession, useUpdateOrgDisplay } from "../api/hooks";
-import { HaloButton } from "../components/cult/halo-button";
-import { HaloBadge } from "../components/cult/halo-badge";
+import { Button } from "../components/ui";
+import { Badge } from "../components/ui";
 import { Banner, Card, Field, NumberInput, PageState, TextInput } from "../components/ui";
 
 function DeleteAccount() {
@@ -39,9 +39,9 @@ function DeleteAccount() {
                 autoComplete="current-password"
               />
             </Field>
-            <HaloButton type="submit" isLoading={del.isPending} loadingText="Deleting…">
+            <Button type="submit" isLoading={del.isPending} loadingText="Deleting…">
               Delete my account
-            </HaloButton>
+            </Button>
             <button
               type="button"
               className="rounded-md border border-line px-3 py-1.5 text-sm hover:bg-canvas"
@@ -146,9 +146,9 @@ function DisplayCurrencyCard({ role }: { role: "owner" | "admin" | "member" }) {
               />
             </Field>
             <div className="flex items-end gap-2">
-              <HaloButton type="submit" isLoading={update.isPending} loadingText="Saving…">
+              <Button type="submit" isLoading={update.isPending} loadingText="Saving…">
                 Save
-              </HaloButton>
+              </Button>
             </div>
           </div>
         ) : (
@@ -200,9 +200,9 @@ export function Settings() {
             <dt className="text-xs font-medium text-muted">Email status</dt>
             <dd>
               {user.emailVerified ? (
-                <HaloBadge variant="default">verified</HaloBadge>
+                <Badge variant="default">verified</Badge>
               ) : (
-                <HaloBadge variant="destructive">unverified</HaloBadge>
+                <Badge variant="destructive">unverified</Badge>
               )}
             </dd>
           </div>
@@ -215,7 +215,7 @@ export function Settings() {
           <div>
             <dt className="text-xs font-medium text-muted">Your role</dt>
             <dd>
-              <HaloBadge variant="secondary">{role}</HaloBadge>
+              <Badge variant="secondary">{role}</Badge>
             </dd>
           </div>
           <div>
@@ -230,16 +230,16 @@ export function Settings() {
             <dt className="text-xs font-medium text-muted">Server health</dt>
             <dd>
               {health.data === "ok" ? (
-                <HaloBadge variant="default">ok</HaloBadge>
+                <Badge variant="default">ok</Badge>
               ) : (
-                <HaloBadge variant="outline">{health.data ?? "checking…"}</HaloBadge>
+                <Badge variant="outline">{health.data ?? "checking…"}</Badge>
               )}
             </dd>
           </div>
         </dl>
         {!user.emailVerified ? (
           <div className="mt-3 flex items-center gap-3">
-            <HaloButton
+            <Button
               type="button"
               isLoading={false}
               onClick={() =>
@@ -251,7 +251,7 @@ export function Settings() {
               }
             >
               Resend verification email
-            </HaloButton>
+            </Button>
             {verifyMsg ? <span className="text-sm text-muted">{verifyMsg}</span> : null}
           </div>
         ) : null}
