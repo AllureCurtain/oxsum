@@ -44,7 +44,7 @@ Post-roadmap validation: the Airwallex rail's API/webhook contract is verified e
 
 The P1–P8 roadmap, the Q1–Q4 verifiability phase and the next-phase gap plan are all closed; there is no standing plan section left here. Work continues one issue at a time, opened as the direction is settled — the open issues are the queue, and each carries its own completion criteria.
 
-Deferred, still deferred: MMR completeness for usage reports (the one verifiability gap left), a cross-instance Redis rate limiter, and any further payment rails or protocols. The demo recording (#287) is closed as not planned; a live demo supersedes it.
+Deferred scope that stays out of the product boundary: a cross-instance Redis rate limiter and job backend (single-instance deployment today), crypto on-chain deposits and ledger anchoring, batch API, playground, embed dashboards, multimodal metering, first-deposit bonuses, semantic caching, affiliate attribution — see docs/decisions.md for the full list and the reasoning. The demo recording (#287) is closed as not planned; a live demo supersedes it.
 
 The original phases below are done — A, B and C closed, most recently C-11 (the chat page, issue #39).
 
