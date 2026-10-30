@@ -52,6 +52,14 @@ pub fn router(state: AppState) -> Router<AppState> {
             "/channels/{name}/aliases/{alias}",
             delete(channels::delete_alias),
         )
+        .route(
+            "/channels/{name}/credentials",
+            post(channels::add_credential),
+        )
+        .route(
+            "/channels/{name}/credentials/{credential_id}",
+            patch(channels::set_credential_status).delete(channels::drop_credential),
+        )
         .route("/organizations", get(organizations::organizations))
         .route(
             "/organizations/{organization_id}",

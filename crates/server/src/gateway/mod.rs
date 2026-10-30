@@ -811,6 +811,25 @@ async fn run(
     let Some(primary) = ordered.first() else {
         return Err(GatewayError::model_not_served(&request.model));
     };
+    // The credential pick inside each channel's pool (issue #444): one channel
+    // may carry several upstream keys, and a single account's 429 should
+    // rotate to the next credential of the *same* channel before the turn
+    // leaves it for a differently-priced route. `credential_order` leads with
+    // the conversation's sticky hit when it is still healthy — the upstream's
+    // prompt cache is warmest there — then least-recently-used. The
+    // conversation key is the caller's `end_user`: the closest thing a request
+    // has to a stable conversation, and absent it nothing sticks.
+    let conversation = request.attribution.end_user.as_deref();
+    let attempts_list: Vec<(usize, oxsum_core::PoolCredential)> = ordered
+        .iter()
+        .enumerate()
+        .flat_map(|(route_index, serving)| {
+            let sticky = state.db.affinity().sticky(serving.channel_id, conversation);
+            oxsum_core::credential_order(&serving.credentials, sticky)
+                .into_iter()
+                .map(move |credential| (route_index, credential))
+        })
+        .collect();
 
     let wallet = state.tenants.get(&organization.tenant_id).await?;
     let hold_key = format!("req-{request_id}:hold");
@@ -933,9 +952,12 @@ async fn run(
         });
     let forwarded = request.forwarded(output_bound);
     // The attempt loop: a retriable failure before any answer bytes —
-    // unreachable, 429, or 5xx — rotates to the next route under the same
-    // hold; a 4xx fails fast, since the same refusal would come back from
-    // everywhere. When the last route's refusal is a 429 naming a short
+    // unreachable, 429, or 5xx — rotates to the next attempt under the same
+    // hold. The attempts walk the route order, and inside one route its pool's
+    // credentials first (issue #444): a single account's wall fails over onto
+    // the channel's next key before the turn leaves for a differently-priced
+    // channel. A 4xx fails fast, since the same refusal would come back from
+    // everywhere. When the last attempt's refusal is a 429 naming a short
     // `Retry-After`, the wait is honored once rather than answered on the
     // spot: failover first, a bounded wait last (issue #168). A failure after
     // bytes started flowing is never retried — the client already holds a
@@ -944,10 +966,27 @@ async fn run(
     let mut retried_429 = false;
     let mut index = 0;
     let (served_at, upstream) = loop {
-        let candidate = &ordered[index];
+        if attempts_list.is_empty() {
+            // No healthy credential anywhere: every channel's pool sat out —
+            // the answer is an upstream failure like any other, charged
+            // `Nothing` under the route that would have led.
+            break (
+                0_usize,
+                Err((
+                    GatewayError::upstream(
+                        StatusCode::BAD_GATEWAY,
+                        "every upstream credential is cooling or disabled".to_owned(),
+                        None,
+                    ),
+                    SettlementKind::UpstreamError,
+                )),
+            );
+        }
+        let (route_index, credential) = &attempts_list[index];
+        let candidate = &ordered[*route_index];
         attempts += 1;
         let attempt_started = Instant::now();
-        // The channel credential goes upstream in the protocol's own spelling:
+        // The credential goes upstream in the protocol's own spelling:
         // `Authorization: Bearer` for OpenAI, `x-api-key` for Anthropic — which
         // also wants its version header, forwarded when the caller sent one.
         let mut call = state
@@ -960,11 +999,11 @@ async fn run(
             .json(&forwarded);
         call = match surface {
             Surface::OpenAi | Surface::Embeddings | Surface::Rerank => {
-                call.bearer_auth(&candidate.api_key)
+                call.bearer_auth(&credential.api_key)
             }
             Surface::Anthropic => {
                 let call = call
-                    .header("x-api-key", &candidate.api_key)
+                    .header("x-api-key", &credential.api_key)
                     .header("anthropic-version", anthropic_version(headers));
                 match headers.get("anthropic-beta").and_then(|v| v.to_str().ok()) {
                     Some(beta) => call.header("anthropic-beta", beta),
@@ -979,7 +1018,7 @@ async fn run(
                     "ok",
                     attempt_started.elapsed().as_secs_f64(),
                 );
-                break (index, Ok(response));
+                break (*route_index, Ok(response));
             }
             Ok(response) => {
                 let status = response.status();
@@ -989,13 +1028,28 @@ async fn run(
                     attempt_started.elapsed().as_secs_f64(),
                 );
                 let retriable = status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
-                if retriable && index + 1 < ordered.len() {
+                if retriable {
+                    // A refusal the credential produced — its own rate wall or
+                    // quota — cools it in the pool so the next request's pick
+                    // skips it for a bounded window (issue #444). Best-effort:
+                    // the write may race a concurrent pickup, and the worst
+                    // case is one more attempt on a rested key.
+                    let db = state.db.clone();
+                    let credential_id = credential.credential_id;
+                    let why = format!("upstream answered {status}");
+                    tokio::spawn(async move {
+                        if let Err(error) = db.cool_credential(credential_id, &why).await {
+                            tracing::warn!(%error, "cooling a refused credential failed");
+                        }
+                    });
+                }
+                if retriable && index + 1 < attempts_list.len() {
                     tracing::warn!(channel = %candidate.channel, %status,
                         "upstream refused before answering; failing over");
                     index += 1;
                     continue;
                 }
-                // The last route's bounded 429 wait: upstream named the delay
+                // The last attempt's bounded 429 wait: upstream named the delay
                 // and nothing else remains, so the wait is honored once.
                 let retry_after = retry_after(&response);
                 if status == StatusCode::TOO_MANY_REQUESTS
@@ -1011,12 +1065,12 @@ async fn run(
                 let text = match read_body_limited(response).await {
                     Ok(text) => text,
                     Err(error) => {
-                        break (index, Err((error, SettlementKind::UpstreamError)));
+                        break (*route_index, Err((error, SettlementKind::UpstreamError)));
                     }
                 };
                 let preview = error_body_preview(&text);
                 break (
-                    index,
+                    *route_index,
                     Err((
                         GatewayError::upstream(
                             StatusCode::BAD_GATEWAY,
@@ -1035,7 +1089,9 @@ async fn run(
                     "unreachable",
                     attempt_started.elapsed().as_secs_f64(),
                 );
-                if index + 1 < ordered.len() {
+                // An unreachable upstream is the channel's problem, not the
+                // credential's: the key never got to refuse, so nothing cools.
+                if index + 1 < attempts_list.len() {
                     tracing::warn!(channel = %candidate.channel, %error,
                         "upstream is unreachable; failing over");
                     index += 1;
@@ -1043,7 +1099,7 @@ async fn run(
                 }
                 tracing::warn!(%error, "upstream is unreachable");
                 break (
-                    index,
+                    *route_index,
                     Err((
                         GatewayError::upstream(
                             StatusCode::BAD_GATEWAY,
@@ -1057,6 +1113,26 @@ async fn run(
         }
     };
     turn.note_attempts(attempts);
+    // The credential that answered is the one this conversation sticks to
+    // (issue #444): its id lives on the attempt that succeeded, and the
+    // affinity note is process-local — a missed write only means the next turn
+    // picks fresh. `note_credential_used` feeds the least-recently-used rank
+    // either way; both writes are best-effort.
+    if upstream.is_ok() {
+        let (route_index, credential) = &attempts_list[index];
+        state.db.affinity().note(
+            ordered[*route_index].channel_id,
+            conversation,
+            credential.credential_id,
+        );
+        let db = state.db.clone();
+        let credential_id = credential.credential_id;
+        tokio::spawn(async move {
+            if let Err(error) = db.note_credential_used(credential_id).await {
+                tracing::warn!(%error, "noting a served credential failed");
+            }
+        });
+    }
     if served_at != 0 {
         // The settlement names the route that answered: a failover settles
         // under that channel's price and version, inside the same freeze.

@@ -15,8 +15,15 @@ use crate::{AppState, admin::record};
 pub(crate) struct ChannelReq {
     name: String,
     base_url: String,
-    /// The upstream credential. Stored sealed; only its last four characters are ever read back.
-    api_key: String,
+    /// The upstream credential, single-key spelling. Stored sealed; only its
+    /// last four characters are ever read back. Merged into `apiKeys` when both
+    /// arrive — one channel's pool, one field to carry it.
+    api_key: Option<String>,
+    /// The channel's credential pool (issue #444): the whole ordered set of
+    /// upstream keys, sent together because a `set` re-credentials the channel.
+    /// Absent leaves the stored pool untouched; an empty array is a 400 — a
+    /// channel with no key cannot serve.
+    api_keys: Option<Vec<String>>,
     /// The admin billing credential the `upstream-bill-sync` pass reads the
     /// provider's cost API under (issue #283): triple-state like the other
     /// optional constraint fields — absent leaves a stored billing key
@@ -79,12 +86,31 @@ pub(crate) async fn set(
         tracing::error!("a channel was configured without OXSUM_SECRET_KEY");
         return Err(ApiError::Internal);
     };
+    // The pool is one field's worth of keys however it was spelled: `apiKeys`
+    // carries the ordered set, `apiKey` is the single-key spelling of it. Both
+    // absent leaves a stored pool alone; a present-but-empty set is a 400 —
+    // a channel with no key cannot serve.
+    let api_keys: Option<Vec<String>> = match (request.api_key, request.api_keys) {
+        (single, Some(mut keys)) => {
+            if let Some(single) = single {
+                keys.push(single);
+            }
+            if keys.is_empty() {
+                return Err(ApiError::Validation(
+                    "apiKeys must carry at least one key".into(),
+                ));
+            }
+            Some(keys)
+        }
+        (Some(single), None) => Some(vec![single]),
+        (None, None) => None,
+    };
     state
         .db
-        .set_channel(
+        .set_channel_pool(
             &request.name,
             &request.base_url,
-            &request.api_key,
+            api_keys.as_deref(),
             request.protocol.as_deref().unwrap_or(oxsum_core::OPENAI),
             &secret,
         )
@@ -271,6 +297,116 @@ pub(crate) async fn delete_alias(
         audit_action::CHANNEL_ALIAS_DELETE,
         Some(name),
         serde_json::json!({ "alias": alias }),
+        None,
+    )
+    .await?;
+    ok(serde_json::json!({}))
+}
+
+/// A credential to add to a channel's pool, as the admin API takes it (issue
+/// #444): the upstream key, stored sealed, appended at the pool's end.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct CredentialReq {
+    api_key: String,
+}
+
+/// A credential status change, as the admin API takes it: `active` picks the
+/// credential again, `disabled` keeps it on record and never picks it.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct CredentialStatusReq {
+    status: String,
+}
+
+/// Adds one credential to a channel's pool (issue #444): one channel carries
+/// several upstream keys, so a single account's 429 can fail over onto the
+/// channel's next key before the turn leaves for a differently-priced route.
+/// The key lands sealed at the pool's end — take the ordering up with a
+/// `POST /channels` resend of `apiKeys` when it should lead.
+pub(crate) async fn add_credential(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    ApiJson(request): ApiJson<CredentialReq>,
+) -> ApiResult<oxsum_core::ChannelCredential> {
+    let Some(secret) = state.config.secret().cloned() else {
+        tracing::error!("a channel credential was added without OXSUM_SECRET_KEY");
+        return Err(ApiError::Internal);
+    };
+    let written = state
+        .db
+        .add_credential(&name, &request.api_key, &secret)
+        .await
+        .map_err(|error| match &error {
+            // An unknown channel is not found, like `append`'s: the request is
+            // well formed and names something that is not there.
+            oxsum_core::WalletError::InvalidInput(message)
+                if message.starts_with("no channel named") =>
+            {
+                ApiError::not_found()
+            }
+            _ => ApiError::from(error),
+        })?;
+    record(
+        &state,
+        audit_action::CHANNEL_CREDENTIAL_ADD,
+        Some(name),
+        serde_json::json!({
+            "credentialId": written.credential_id,
+            "position": written.position,
+        }),
+        None,
+    )
+    .await?;
+    ok(written)
+}
+
+/// Switches one credential between `active` and `disabled`: the operator's way
+/// of taking a key out of the pick without losing its record — a disabled
+/// credential keeps its health state and can be re-enabled, which a drop does
+/// not survive.
+pub(crate) async fn set_credential_status(
+    State(state): State<AppState>,
+    Path((name, credential_id)): Path<(String, uuid::Uuid)>,
+    ApiJson(request): ApiJson<CredentialStatusReq>,
+) -> ApiResult<serde_json::Value> {
+    if !state
+        .db
+        .set_credential_status(&name, credential_id, &request.status)
+        .await?
+    {
+        return Err(ApiError::not_found());
+    }
+    record(
+        &state,
+        audit_action::CHANNEL_CREDENTIAL_STATUS,
+        Some(name),
+        serde_json::json!({
+            "credentialId": credential_id,
+            "status": request.status,
+        }),
+        None,
+    )
+    .await?;
+    ok(serde_json::json!({}))
+}
+
+/// Drops one credential from a channel's pool. A credential that is not this
+/// channel's is a 404, like the alias delete. The pool's last credential is a
+/// 400 rather than a delete: a channel with no key cannot serve, so the row
+/// stays until the operator disables it or retires the channel itself.
+pub(crate) async fn drop_credential(
+    State(state): State<AppState>,
+    Path((name, credential_id)): Path<(String, uuid::Uuid)>,
+) -> ApiResult<serde_json::Value> {
+    if !state.db.drop_credential(&name, credential_id).await? {
+        return Err(ApiError::not_found());
+    }
+    record(
+        &state,
+        audit_action::CHANNEL_CREDENTIAL_DROP,
+        Some(name),
+        serde_json::json!({ "credentialId": credential_id }),
         None,
     )
     .await?;
