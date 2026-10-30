@@ -14,11 +14,22 @@ import {
 import { ApiError } from "../../api/client";
 import { adminApi, useAdmin } from "./api";
 
+interface ChannelCredential {
+  credentialId: string;
+  apiKeyLast4: string;
+  position: number;
+  status: "active" | "disabled";
+  cooldownUntil: string | null;
+  lastError: string | null;
+  lastUsedAt: string | null;
+  createdAt: string;
+}
+
 interface Channel {
   name: string;
   baseUrl: string;
   protocol: string;
-  apiKeyLast4: string;
+  credentials: ChannelCredential[];
   createdAt: string;
   models: { model: string; version: number; mode?: string }[];
 }
@@ -95,7 +106,18 @@ export function Channels({ token }: { token: string }) {
               <td className="mono">{c.name}</td>
               <Td mono truncate>{c.baseUrl}</Td>
               <td>{c.protocol ?? "openai"}</td>
-              <td className="mono">…{c.apiKeyLast4}</td>
+              <td className="mono">
+                {c.credentials.length === 0 ? (
+                  "—"
+                ) : (
+                  <>
+                    …{c.credentials[0].apiKeyLast4}
+                    {c.credentials.length > 1 ? (
+                      <span className="text-muted"> +{c.credentials.length - 1}</span>
+                    ) : null}
+                  </>
+                )}
+              </td>
               <Td align="right">{c.models.length}</Td>
               <td>
                 <Button tone="ghost" onClick={() => setPriceChannel(priceChannel === c.name ? null : c.name)}>
