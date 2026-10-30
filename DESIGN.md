@@ -1,6 +1,10 @@
 # Design rules
 
-The UI is the React dashboard under `web/` (issue #256 retired the Topcoat crate); its concrete token values are mapped into Tailwind's `@theme` in `web/src/index.css`, including the shadcn-style aliases (`background`, `foreground`, `muted-foreground`, `input`, `ring`, …) the vendored Cult UI components in `web/src/components/cult/` use — so the component layer wears this palette, not its own. This file only records usage rules. The one server-rendered page left, `/verify`, keeps the shared palette through `crates/web/style/main.css`, the same tokens in plain CSS.
+The UI is the React dashboard under `web/` (issue #256 retired the Topcoat crate); its concrete token values are mapped into Tailwind's `@theme` in `web/src/index.css`, including the semantic aliases (`background`, `foreground`, `muted-foreground`, `input`, `ring`, …) the component layer resolves against. This file only records usage rules. The one server-rendered page left, `/verify`, keeps the shared palette through `crates/web/style/main.css`, the same tokens in plain CSS.
+
+## Component vocabulary
+
+There is exactly one component layer: `web/src/components/ui.tsx`. Interactive primitives (select, tabs, switch, progress) are built on `@base-ui/react` for behavior and styled with this palette — no second component library, no copy-in theme sources. Pages never import from anything else: when a shared piece is missing, it is added to `ui.tsx` rather than vendored per page. Component names are the plain words (`Button`, `Badge`, `Card`, …); decorative or one-off effects do not become components. (Recorded for issue #412: the `cult/` vendor directory and the `ui/` shims were removed in favor of this single layer; the galaxy catalog is a reference, not a dependency.)
 
 ## Colors
 
