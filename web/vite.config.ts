@@ -10,7 +10,6 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   base: "/app/",
   resolve: {
-    // Vendored Cult UI components import via the shadcn-style `@/` alias.
     alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
   },
   build: {
@@ -22,15 +21,7 @@ export default defineConfig({
         manualChunks: {
           "react-vendor": ["react", "react-dom", "react-router-dom", "@tanstack/react-query"],
           motion: ["motion"],
-          "ui-vendor": [
-            "@base-ui/react",
-            "radix-ui",
-            "lucide-react",
-            "@hugeicons/react",
-            "@hugeicons/core-free-icons",
-            "class-variance-authority",
-            "react-use-measure",
-          ],
+          "ui-vendor": ["@base-ui/react", "lucide-react"],
         },
       },
     },
