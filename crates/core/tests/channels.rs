@@ -299,6 +299,77 @@ async fn one_model_may_be_served_by_several_channels() {
     assert_eq!(primary.weight, 500);
 }
 
+/// Cost-aware routing (issue #438): two routes the weight rule prefers equally
+/// are ordered by input price — the cheaper leads whatever the roll, and the
+/// dearer falls back to failover position. Weight stays the dominant term: a
+/// lower-weight route never outranks a higher one for being cheaper.
+#[tokio::test]
+async fn equally_weighted_routes_lead_with_the_cheapest() {
+    let url = db_or_skip!();
+    let db = db(&url).await;
+    let dear = fresh("dear");
+    let cheap = fresh("cheap");
+    let model = fresh("shared-cost");
+    db.set_channel(&dear, "https://dear.example/v1", "sk-d", "openai", &key())
+        .await
+        .unwrap();
+    db.set_channel(&cheap, "https://cheap.example/v1", "sk-c", "openai", &key())
+        .await
+        .unwrap();
+    // Identical weights, different input prices.
+    db.append_price(&dear, &model, price(40, 4, 100), 100)
+        .await
+        .unwrap();
+    db.append_price(&cheap, &model, price(10, 4, 100), 100)
+        .await
+        .unwrap();
+
+    let servings = db.servings(&model, &key()).await.unwrap();
+    assert_eq!(servings.len(), 2);
+    // Every roll in [0, 1) lands on the shared weight tier, and the tier is
+    // always represented by its cheapest route.
+    for roll in [0.0, 0.25, 0.5, 0.9, 0.999] {
+        let ordered = oxsum_core::route_order(servings.clone(), roll);
+        assert_eq!(
+            ordered[0].channel, cheap,
+            "roll {roll}: the cheaper route of an equal-weight tier leads"
+        );
+        assert_eq!(ordered[1].channel, dear);
+    }
+
+    // Weight still dominates: a third route that is *cheapest* of all but
+    // carries a tenth of the others' weight never leads — the roll that lands
+    // on its tier leads with it, but every roll in the two heavy tiers leads
+    // with the cheap one of those.
+    let third = fresh("mid");
+    db.set_channel(&third, "https://mid.example/v1", "sk-m", "openai", &key())
+        .await
+        .unwrap();
+    db.append_price(&third, &model, price(1, 4, 100), 10)
+        .await
+        .unwrap();
+    let servings = db.servings(&model, &key()).await.unwrap();
+    // Name order is cheap-, dear-, mid-: weights 100, 100, 10 out of 210, so a
+    // roll below 100/210 lands on the cheap route's tier, [100,200)/210 the
+    // dear one's — which the cheap route still represents — and only the last
+    // sliver lands on the light route.
+    for roll in [0.0, 0.4, 0.5, 0.9] {
+        let ordered = oxsum_core::route_order(servings.clone(), roll);
+        assert_eq!(
+            ordered[0].channel, cheap,
+            "roll {roll}: heavy tier, cheap leads"
+        );
+    }
+    let ordered = oxsum_core::route_order(servings, 0.98);
+    assert_eq!(
+        ordered[0].channel, third,
+        "the light tier's own roll leads with it"
+    );
+    // And within the tail, weight descends then price ascends.
+    assert_eq!(ordered[1].channel, cheap);
+    assert_eq!(ordered[2].channel, dear);
+}
+
 #[tokio::test]
 async fn a_credential_that_does_not_open_is_a_deployment_failure_not_a_caller_error() {
     let url = db_or_skip!();
