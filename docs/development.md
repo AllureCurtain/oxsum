@@ -652,6 +652,12 @@ constraint tightened the other way — may not round-trip. The safe procedure:
    made the schema or the books incompatible — a plain revert keeps the data a
    rollback would otherwise strand behind a constraint it predates.
 
+Every deploy workflow tags the image `sha-<git-sha>` beside `latest`, so the
+rollback is `docker pull ghcr.io/allurecurtain/oxsum:sha-<previous>` and restart
+— no rebuild. The `deploy.yml` `image_tag` input accepts `sha-<sha>` directly
+for exactly this; a manual SSH `docker run` of the same tag does it without
+going through CI.
+
 The CI gate builds and smoke-tests the image on every pull request, so a release
 that cannot boot never reaches the registry; what it cannot smoke-test is your
 traffic — the dump before the upgrade is the answer to that.
