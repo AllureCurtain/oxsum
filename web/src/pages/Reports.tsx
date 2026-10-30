@@ -10,6 +10,7 @@ import {
   type CreatedReportLink,
   type ReportLink,
 } from "../api/hooks";
+import { FileText, Link2 } from "lucide-react";
 import { Banner, Button, Card, Cr, EmptyRows, Field, PageState, TableShell, Td, TextInput } from "../components/ui";
 
 // The reports page: the organization's side of an end-user bill (issues
@@ -59,7 +60,7 @@ function TokenOnce({ created }: { created: CreatedReportLink }) {
   const [copied, setCopied] = useState(false);
   const url = `${window.location.origin}/bill/${created.token}`;
   return (
-    <div className="rounded-md border border-line bg-canvas p-4">
+    <div className="rounded-xl border border-line bg-canvas p-4">
       <p className="text-sm font-semibold">The link, shown once</p>
       <p className="text-xs text-muted">
         The database keeps only its hash. Copy it now — if it is lost, revoke it and mint another.
@@ -126,7 +127,26 @@ export function Reports() {
       {error ? <Banner tone="error">{error.message}</Banner> : null}
       {created ? <TokenOnce created={created} /> : null}
 
-      <Card title="Issue a report">
+      {/* The mint → share → record chain, as a rail: the cards below are the
+          three steps of one workflow, not four sibling panels. */}
+      <ol className="flex items-center gap-2 text-xs font-medium text-muted">
+        <li className="flex items-center gap-1.5">
+          <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary text-[11px] font-semibold text-white">1</span>
+          Mint the report
+        </li>
+        <li className="text-line">→</li>
+        <li className="flex items-center gap-1.5">
+          <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary-soft text-[11px] font-semibold text-primary">2</span>
+          Share a link
+        </li>
+        <li className="text-line">→</li>
+        <li className="flex items-center gap-1.5">
+          <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary-soft text-[11px] font-semibold text-primary">3</span>
+          Track in the links list
+        </li>
+      </ol>
+
+      <Card title="1 · Issue a report">
         <form
           className="grid gap-3 sm:grid-cols-4"
           onSubmit={(event) => {
@@ -162,6 +182,10 @@ export function Reports() {
               {mint.isPending ? "Minting…" : "Mint report"}
             </Button>
           </div>
+          <p className="col-span-full text-xs text-muted" aria-live="polite">
+            This mints a signed report for <strong>{endUser.trim() || "the customer"}</strong> over{" "}
+            {from} → {to}.
+          </p>
         </form>
         <p className="mt-2 text-xs text-muted">
           The span must be fully ended: a report over a day still open would commit a subset that can
@@ -208,14 +232,16 @@ export function Reports() {
               </tr>
             ))}
             {!reports.isLoading && (reports.data?.rows.length ?? 0) === 0 ? (
-              <EmptyRows colSpan={5}>No reports yet — issue one above.</EmptyRows>
+              <EmptyRows colSpan={5} icon={<FileText />}>
+                No reports yet — issue one above.
+              </EmptyRows>
             ) : null}
           </TableShell>
         )}
       </Card>
 
       {linkFor && selected ? (
-        <Card title={`Share ${selected.endUser} — ${selected.from} to ${selected.to}`}>
+        <Card title={`2 · Share ${selected.endUser} — ${selected.from} to ${selected.to}`}>
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Label (optional)">
               <TextInput
@@ -274,7 +300,7 @@ export function Reports() {
         </Card>
       ) : null}
 
-      <Card title="Links">
+      <Card title="3 · Links">
         {links.isError ? (
           <PageState>The links could not be read.</PageState>
         ) : (
@@ -311,7 +337,9 @@ export function Reports() {
               </tr>
             ))}
             {!links.isLoading && (links.data?.rows.length ?? 0) === 0 ? (
-              <EmptyRows colSpan={7}>No links yet — share a report above.</EmptyRows>
+              <EmptyRows colSpan={7} icon={<Link2 />}>
+                No links yet — share a report above.
+              </EmptyRows>
             ) : null}
           </TableShell>
         )}

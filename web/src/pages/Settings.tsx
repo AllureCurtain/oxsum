@@ -4,7 +4,7 @@ import { api, ApiError } from "../api/client";
 import { useDeleteAccount, useHealth, useOrg, useSession, useUpdateOrgDisplay } from "../api/hooks";
 import { Button } from "../components/ui";
 import { Badge } from "../components/ui";
-import { Banner, Card, Field, NumberInput, PageState, TextInput } from "../components/ui";
+import { Banner, Card, Field, NumberInput, PageState, TextInput, displayAmount } from "../components/ui";
 
 function DeleteAccount() {
   const del = useDeleteAccount();
@@ -29,32 +29,37 @@ function DeleteAccount() {
           (set one through the reset flow) to confirm this.
         </p>
         {confirming ? (
-          <form className="flex items-end gap-2" onSubmit={submit}>
-            <Field label="Your password confirms">
-              <TextInput
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                autoComplete="current-password"
-              />
-            </Field>
-            <Button type="submit" isLoading={del.isPending} loadingText="Deleting…">
-              Delete my account
-            </Button>
-            <button
-              type="button"
-              className="rounded-md border border-line px-3 py-1.5 text-sm hover:bg-canvas"
-              onClick={() => setConfirming(false)}
-            >
-              Cancel
-            </button>
-          </form>
+          <div className="flex flex-col gap-3 rounded-lg border border-danger/40 bg-danger/5 p-4">
+            <p className="text-sm font-medium text-ink">
+              This permanently deletes your account. It cannot be undone.
+            </p>
+            <form className="flex items-end gap-2" onSubmit={submit}>
+              <Field label="Your password confirms">
+                <TextInput
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  autoComplete="current-password"
+                />
+              </Field>
+              <Button type="submit" isLoading={del.isPending} loadingText="Deleting…">
+                Delete my account
+              </Button>
+              <button
+                type="button"
+                className="rounded-lg border border-line px-3 py-1.5 text-sm hover:bg-canvas"
+                onClick={() => setConfirming(false)}
+              >
+                Cancel
+              </button>
+            </form>
+          </div>
         ) : (
           <div>
             <button
               type="button"
-              className="rounded-md border border-danger bg-danger px-3 py-1.5 text-sm font-medium text-white hover:bg-danger-hover"
+              className="rounded-lg border border-danger bg-danger px-3 py-1.5 text-sm font-medium text-white hover:bg-danger-hover"
               onClick={() => setConfirming(true)}
             >
               Delete account…
@@ -150,6 +155,21 @@ function DisplayCurrencyCard({ role }: { role: "owner" | "admin" | "member" }) {
                 Save
               </Button>
             </div>
+            {/* Live preview — what the typed rate actually renders, before the
+                commit changes how every bill displays. */}
+            <p className="col-span-full text-sm text-muted" aria-live="polite">
+              {code.trim() && rate.trim() && Number.isFinite(Number(rate)) && Number(rate) > 0 ? (
+                <>
+                  Preview: <code className="mono">1.5 cr</code> renders as{" "}
+                  <code className="mono">
+                    ≈ {displayAmount(1_500_000, { code: code.trim().toUpperCase(), ratePerCredit: rate.trim(), decimals: Number(decimals) || 0 })}{" "}
+                    {code.trim().toUpperCase()}
+                  </code>
+                </>
+              ) : (
+                "Set a code and rate to preview the conversion."
+              )}
+            </p>
           </div>
         ) : (
           <p className="text-sm">
