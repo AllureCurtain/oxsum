@@ -14,17 +14,12 @@ retired to it (issues #234, #256), so this is now the only dashboard; the legacy
 - `src/api/hooks.ts` — TanStack Query hooks over the typed surface.
 - `src/api/ws.ts` — the `/ws/billing` socket: snapshot of in-flight holds,
   then `turnStarted`/`turnProgress`/`turnSettled`.
-- `src/components/` — app shell and primitives styled by `src/index.css`,
-  which maps the DESIGN.md tokens onto Tailwind's theme (`bg-primary`,
-  `text-muted`, `border-line`, `mono`, …).
-- `src/components/cult/` — vendored Cult UI components (the `halo-*` family,
-  `rolling-number`, `copy-button`, `code-block`, `typewriter`,
-  `dynamic-island`, `bg-animated-fractal-dot-grid`, …) — copy-in source, not a
-  package. They speak the shadcn token names (`bg-background`,
-  `text-muted-foreground`, `border-input`, `ring`), which `index.css` aliases
-  onto the DESIGN.md palette.
-- `src/components/ui/` — the shadcn `button`/`badge` sources the vendored
-  components import.
+- `src/components/` — the app shell and the design vocabulary. `ui.tsx` is the
+  single component layer (button, input, select, tabs, switch, badge, card,
+  table, progress, code block, …), built on `@base-ui/react` primitives and
+  styled by `src/index.css`, which maps the DESIGN.md tokens onto Tailwind's
+  theme (`bg-primary`, `text-muted`, `border-line`, `mono`, …). `LiveIsland.tsx`
+  and `FractalDotGrid.tsx` sit beside it.
 - `src/pages/` — one file per dashboard page; `Auth.tsx` holds the session
   pages, `Admin.tsx` the operator console.
 
