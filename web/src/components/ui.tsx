@@ -92,7 +92,8 @@ export function Cr(props: { minor: number; currency?: DisplayCurrency | null }) 
 // shadow, one locked radius scale (card xl / controls lg / pill full).
 // ---------------------------------------------------------------------------
 
-const SURFACE =
+/** The card surface — the unified `rounded-xl` panel every sheet shares. */
+export const SURFACE =
   "rounded-xl border border-line bg-surface shadow-[0_1px_3px_rgba(20,34,64,.05)]";
 
 export function Card(props: { title?: string; actions?: ReactNode; children: ReactNode; flush?: boolean }) {

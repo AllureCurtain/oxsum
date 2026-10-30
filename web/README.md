@@ -19,7 +19,7 @@ retired to it (issues #234, #256), so this is now the only dashboard; the legacy
   table, progress, code block, …), built on `@base-ui/react` primitives and
   styled by `src/index.css`, which maps the DESIGN.md tokens onto Tailwind's
   theme (`bg-primary`, `text-muted`, `border-line`, `mono`, …). `LiveIsland.tsx`
-  and `FractalDotGrid.tsx` sit beside it.
+  sits beside it.
 - `src/pages/` — one file per dashboard page; `Auth.tsx` holds the session
   pages, `Admin.tsx` the operator console.
 

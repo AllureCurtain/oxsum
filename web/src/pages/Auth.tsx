@@ -3,26 +3,31 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { ApiError, api } from "../api/client";
 import { useAuthMethods, useLogin } from "../api/hooks";
-import { FractalDotGrid } from "../components/FractalDotGrid";
-import { Banner, Button, Field, TextInput } from "../components/ui";
+import { Banner, Button, Field, SURFACE, TextInput } from "../components/ui";
 
-/** The centered card every session page shares, over the animated dot grid. */
+/**
+ * The centered card every session page shares, on a quiet cobalt substrate.
+ * The animated dot grid that used to run behind it is gone — a continuous
+ * canvas is brand-page grammar on a form (and a CPU/prefers-reduced-motion
+ * liability the audit flagged P0). What's left is a static radial tint: the
+ * brand cue without the motion or the reflex blue-600.
+ */
 function AuthCard(props: { title: string; children: ReactNode }) {
   return (
-    <main className="relative flex min-h-screen items-start justify-center overflow-hidden">
-      <div className="absolute inset-0 opacity-60">
-        <FractalDotGrid
-          dotColor="rgba(37, 99, 235, 1)"
-          glowColor="rgba(37, 99, 235, 1)"
-          dotOpacity={0.25}
-          waveIntensity={18}
-          enableMouseGlow={false}
-          initialPerformance="low"
-        />
-      </div>
+    <main className="relative flex min-h-screen items-start justify-center overflow-hidden bg-canvas">
+      {/* static substrate — one soft cobalt bloom, no canvas, no rAF loop */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0"
+        style={{
+          background:
+            "radial-gradient(720px 480px at 50% -8%, rgba(45, 91, 216, .12), transparent 70%)," +
+            "radial-gradient(520px 360px at 88% 108%, rgba(45, 91, 216, .07), transparent 70%)",
+        }}
+      />
       <div className="relative z-10 mt-24 w-full max-w-sm px-4">
-        <div className="rounded-md border border-line bg-surface p-6">
-          <h1 className="text-2xl font-bold">{props.title}</h1>
+        <div className={`${SURFACE} p-6`}>
+          <h1 className="text-xl font-semibold">{props.title}</h1>
           <div className="mt-4">{props.children}</div>
         </div>
       </div>
@@ -77,7 +82,7 @@ export function Login() {
       {methods.data?.oauthGithub ? (
         <a
           href="/api/v1/auth/oauth/github"
-          className="mt-3 block rounded-md border border-line px-3 py-2 text-center text-sm hover:bg-canvas"
+          className="mt-3 block rounded-lg border border-line px-3 py-2 text-center text-sm hover:bg-canvas"
         >
           Sign in with GitHub
         </a>
@@ -165,7 +170,7 @@ export function Register() {
       {methods.data?.oauthGithub ? (
         <a
           href="/api/v1/auth/oauth/github"
-          className="mt-3 block rounded-md border border-line px-3 py-2 text-center text-sm hover:bg-canvas"
+          className="mt-3 block rounded-lg border border-line px-3 py-2 text-center text-sm hover:bg-canvas"
         >
           Register with GitHub
         </a>
