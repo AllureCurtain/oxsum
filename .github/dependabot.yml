@@ -1,0 +1,43 @@
+# Dependabot: weekly dependency bumps, grouped so patch/minor batch and
+# major stays its own PR (issue #388).
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      # Patch and minor together: one PR per week, not one per crate.
+      cargo-minor-patch:
+        applies-to: version-updates
+        update-types: ["minor", "patch"]
+    # Cargo has no conventional commit prefix rule; keep the repo's type
+    # prefix so the PR title matches the branch naming policy.
+    commit-message:
+      prefix: build
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      npm-minor-patch:
+        applies-to: version-updates
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: build
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions-minor-patch:
+        applies-to: version-updates
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: ci
