@@ -137,24 +137,28 @@ export function Keys() {
         </form>
       </Card>
 
-      {keys.isLoading ? (
-        <PageState>Loading…</PageState>
-      ) : keys.isError ? (
+      {keys.isError ? (
         <PageState>The keys could not be read.</PageState>
       ) : (
-        <TableShell head={["Name", "Prefix", "Budget", "Limits", "Created", ""]}>
-          {(keys.data ?? []).map((key) => (
-            <KeyRow
-              key={key.id}
-              apiKey={key}
-              committed={committedByKey.get(key.id)}
-              display={display}
-              editing={editing === key.id}
-              onEdit={() => setEditing(editing === key.id ? null : key.id)}
-              onRevoke={() => revoke.mutate(key.id)}
-            />
-          ))}
-          {(keys.data?.length ?? 0) === 0 ? <EmptyRows colSpan={6}>No keys yet.</EmptyRows> : null}
+        <TableShell
+          head={["Name", "Prefix", "Budget", "Limits", "Created", ""]}
+          loading={keys.isLoading ? 4 : 0}
+        >
+          {!keys.isLoading &&
+            (keys.data ?? []).map((key) => (
+              <KeyRow
+                key={key.id}
+                apiKey={key}
+                committed={committedByKey.get(key.id)}
+                display={display}
+                editing={editing === key.id}
+                onEdit={() => setEditing(editing === key.id ? null : key.id)}
+                onRevoke={() => revoke.mutate(key.id)}
+              />
+            ))}
+          {!keys.isLoading && (keys.data?.length ?? 0) === 0 ? (
+            <EmptyRows colSpan={6}>No keys yet.</EmptyRows>
+          ) : null}
         </TableShell>
       )}
     </div>

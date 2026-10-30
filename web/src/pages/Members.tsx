@@ -19,6 +19,7 @@ import {
   PageState,
   Select,
   TableShell,
+  Td,
   TextInput,
   Cr,
 } from "../components/ui";
@@ -55,49 +56,51 @@ export function Members() {
       ) : null}
       {add.error instanceof ApiError ? <Banner tone="error">{add.error.message}</Banner> : null}
 
-      {members.isLoading ? (
-        <PageState>Loading…</PageState>
-      ) : members.isError ? (
+      {members.isError ? (
         <PageState>The members could not be read.</PageState>
       ) : (
-        <TableShell head={["Email", "Role", "Joined", "Budget cap", ""]}>
-          {(members.data?.members ?? []).map((member) => (
-            <tr key={member.userId}>
-              <td>{member.email}</td>
-              <td>{member.role}</td>
-              <td>{member.joinedAt.slice(0, 10)}</td>
-              <td className="mono">
-                {member.budgetLimitMinor != null ? <Cr minor={member.budgetLimitMinor} currency={display} /> : "—"}
-              </td>
-              <td className="text-right">
-                {canManage && member.userId !== ownId ? (
-                  <span className="inline-flex items-center gap-2">
-                    {member.role !== "owner" ? (
-                      <Select
-                        defaultValue={member.role}
-                        onChange={(e) =>
-                          update.mutate({ userId: member.userId, role: e.target.value })
-                        }
-                        aria-label={`role for ${member.email}`}
-                      >
-                        <option value="admin">admin</option>
-                        <option value="member">member</option>
-                      </Select>
-                    ) : null}
-                    <Button tone="danger" onClick={() => remove.mutate(member.userId)}>
-                      Remove
-                    </Button>
-                    {isOwner ? (
-                      <Button tone="ghost" onClick={() => transfer.mutate(member.userId)}>
-                        Make owner
+        <TableShell
+          head={["Email", "Role", "Joined", { label: "Budget cap", align: "right" }, ""]}
+          loading={members.isLoading ? 4 : 0}
+        >
+          {!members.isLoading &&
+            (members.data?.members ?? []).map((member) => (
+              <tr key={member.userId}>
+                <td>{member.email}</td>
+                <td>{member.role}</td>
+                <td>{member.joinedAt.slice(0, 10)}</td>
+                <Td mono align="right">
+                  {member.budgetLimitMinor != null ? <Cr minor={member.budgetLimitMinor} currency={display} /> : "—"}
+                </Td>
+                <td className="text-right">
+                  {canManage && member.userId !== ownId ? (
+                    <span className="inline-flex items-center gap-2">
+                      {member.role !== "owner" ? (
+                        <Select
+                          defaultValue={member.role}
+                          onChange={(e) =>
+                            update.mutate({ userId: member.userId, role: e.target.value })
+                          }
+                          aria-label={`role for ${member.email}`}
+                        >
+                          <option value="admin">admin</option>
+                          <option value="member">member</option>
+                        </Select>
+                      ) : null}
+                      <Button tone="danger" onClick={() => remove.mutate(member.userId)}>
+                        Remove
                       </Button>
-                    ) : null}
-                  </span>
-                ) : null}
-              </td>
-            </tr>
-          ))}
-          {(members.data?.members.length ?? 0) === 0 ? (
+                      {isOwner ? (
+                        <Button tone="ghost" onClick={() => transfer.mutate(member.userId)}>
+                          Make owner
+                        </Button>
+                      ) : null}
+                    </span>
+                  ) : null}
+                </td>
+              </tr>
+            ))}
+          {!members.isLoading && (members.data?.members.length ?? 0) === 0 ? (
             <EmptyRows colSpan={5}>No members.</EmptyRows>
           ) : null}
         </TableShell>

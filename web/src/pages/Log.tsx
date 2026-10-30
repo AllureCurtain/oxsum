@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useEntries, useLogHead, useLogKey, useWitnessCheckpoint } from "../api/hooks";
 import { CopyButton } from "../components/ui";
-import { Button, Card, EmptyRows, PageState, TableShell } from "../components/ui";
+import { Button, Card, EmptyRows, PageState, TableShell, Td } from "../components/ui";
 
 export function Log() {
   const [before, setBefore] = useState<number | undefined>(undefined);
@@ -67,18 +67,20 @@ export function Log() {
         </Card>
       ) : null}
 
-      {entries.isLoading ? (
-        <PageState>Loading…</PageState>
-      ) : entries.isError ? (
+      {entries.isError ? (
         <PageState>The log could not be read.</PageState>
       ) : (
         <>
-          <TableShell head={["#", "Description", "Content hash", ""]}>
-            {(entries.data?.rows ?? []).map((entry) => (
+          <TableShell
+            head={["#", { label: "Description", truncate: true }, { label: "Content hash", truncate: true }, ""]}
+            loading={entries.isLoading ? 8 : 0}
+          >
+            {!entries.isLoading &&
+              (entries.data?.rows ?? []).map((entry) => (
               <tr key={entry.id}>
                 <td className="mono">{entry.index}</td>
-                <td className="mono">{entry.description}</td>
-                <td className="mono">{entry.contentHash.slice(0, 16)}…</td>
+                <Td mono truncate>{entry.description}</Td>
+                <Td mono truncate>{entry.contentHash}</Td>
                 <td>
                   <a href={`/verify?entry=${entry.id}`} className="text-primary">
                     verify
@@ -86,7 +88,7 @@ export function Log() {
                 </td>
               </tr>
             ))}
-            {(entries.data?.rows.length ?? 0) === 0 ? (
+            {!entries.isLoading && (entries.data?.rows.length ?? 0) === 0 ? (
               <EmptyRows colSpan={4}>The log is empty.</EmptyRows>
             ) : null}
           </TableShell>

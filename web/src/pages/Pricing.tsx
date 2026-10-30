@@ -19,6 +19,7 @@ import {
   NumberInput,
   PageState,
   TableShell,
+  Td,
   TextInput,
   credits,
 } from "../components/ui";
@@ -32,29 +33,44 @@ function formatRate(minor: number | undefined): string {
 
 function Catalog() {
   const pricing = usePricing();
-  if (pricing.isLoading) return <PageState>Loading…</PageState>;
   if (pricing.error) {
     return <Banner tone="error">{(pricing.error as ApiError).message}</Banner>;
   }
   const models = pricing.data?.models ?? [];
   return (
-    <TableShell head={["Model", "Channel", "Protocol", "v", "Weight", "Input", "Output", "Max out", "Cached"]}>
-      {models.map((m) => (
+    <TableShell
+      head={[
+        { label: "Model", truncate: true },
+        "Channel",
+        "Protocol",
+        "v",
+        { label: "Weight", align: "right" },
+        { label: "Input", align: "right" },
+        { label: "Output", align: "right" },
+        { label: "Max out", align: "right" },
+        { label: "Cached", align: "right" },
+      ]}
+      loading={pricing.isLoading ? 8 : 0}
+    >
+      {!pricing.isLoading &&
+        models.map((m) => (
         <tr key={`${m.channel}/${m.model}`}>
-          <td className="mono">{m.model}</td>
+          <Td mono truncate>{m.model}</Td>
           <td>{m.channel}</td>
           <td>
             <Badge variant="secondary">{m.protocol}</Badge>
           </td>
           <td className="mono">{m.version}</td>
-          <td className="mono">{m.weight}</td>
-          <td className="mono">{formatRate(m.inputPricePerMillion)}</td>
-          <td className="mono">{formatRate(m.outputPricePerMillion)}</td>
-          <td className="mono">{m.maxOutputTokens?.toLocaleString() ?? "—"}</td>
-          <td className="mono">{formatRate(m.cacheReadPricePerMillion)}</td>
+          <Td mono align="right">{m.weight}</Td>
+          <Td mono align="right">{formatRate(m.inputPricePerMillion)}</Td>
+          <Td mono align="right">{formatRate(m.outputPricePerMillion)}</Td>
+          <Td mono align="right">{m.maxOutputTokens?.toLocaleString() ?? "—"}</Td>
+          <Td mono align="right">{formatRate(m.cacheReadPricePerMillion)}</Td>
         </tr>
       ))}
-      {models.length === 0 ? <EmptyRows colSpan={9}>No routes priced yet.</EmptyRows> : null}
+      {!pricing.isLoading && models.length === 0 ? (
+        <EmptyRows colSpan={9}>No routes priced yet.</EmptyRows>
+      ) : null}
     </TableShell>
   );
 }

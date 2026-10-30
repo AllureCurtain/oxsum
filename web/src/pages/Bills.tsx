@@ -9,6 +9,7 @@ import {
   Field,
   PageState,
   TableShell,
+  Td,
   NumberInput,
   signedCredits,
   displayAmount,
@@ -64,16 +65,16 @@ function BillRow({ row, display }: { row: { index: number; entryId: string; book
         <td className="mono">{row.index}</td>
         <td>{row.bookedOn}</td>
         <td>{entryKind(row.kind)}</td>
-        <td className="mono">
+        <Td mono align="right">
           {signedCredits(row.amountMinor)}
           {display ? (
             <span className="block text-xs text-muted">
               ≈ {displayAmount(row.amountMinor, display)} {display.code}
             </span>
           ) : null}
-        </td>
-        <td className="mono">{row.description}</td>
-        <td className="mono">{row.contentHash.slice(0, 12)}…</td>
+        </Td>
+        <Td mono truncate>{row.description}</Td>
+        <Td mono truncate>{row.contentHash}</Td>
         <td className="flex items-center gap-2">
           <a href={`/verify?entry=${row.entryId}`} className="text-primary">
             verify
@@ -141,17 +142,27 @@ export function Bills() {
         </span>
       </div>
 
-      {bills.isLoading ? (
-        <PageState>Loading…</PageState>
-      ) : bills.isError ? (
+      {bills.isError ? (
         <PageState>The bills could not be read.</PageState>
       ) : (
         <>
-          <TableShell head={["#", "Booked", "Kind", "Amount", "Description", "Hash", ""]}>
-            {(bills.data?.rows ?? []).map((row) => (
-              <BillRow key={row.entryId} row={row} display={display} />
-            ))}
-            {(bills.data?.rows.length ?? 0) === 0 ? (
+          <TableShell
+            head={[
+              "#",
+              "Booked",
+              "Kind",
+              { label: "Amount", align: "right" },
+              { label: "Description", truncate: true },
+              { label: "Hash", truncate: true },
+              "",
+            ]}
+            loading={bills.isLoading ? 8 : 0}
+          >
+            {!bills.isLoading &&
+              (bills.data?.rows ?? []).map((row) => (
+                <BillRow key={row.entryId} row={row} display={display} />
+              ))}
+            {!bills.isLoading && (bills.data?.rows.length ?? 0) === 0 ? (
               <EmptyRows colSpan={7}>No transactions yet.</EmptyRows>
             ) : null}
           </TableShell>

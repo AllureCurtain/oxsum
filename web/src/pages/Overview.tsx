@@ -20,8 +20,8 @@ import {
   Card,
   EmptyRows,
   Field,
-  PageState,
   TableShell,
+  Td,
   credits,
   displayAmount,
 } from "../components/ui";
@@ -125,17 +125,25 @@ export function Overview() {
 
       {budget.data && budget.data.keys.some((k) => k.spendLimitMinor != null) ? (
         <Card title="Key budgets">
-          <TableShell head={["Key", "Window", "Committed", "Consumed"]}>
+          <TableShell
+            head={[
+              "Key",
+              "Window",
+              { label: "Committed", align: "right" },
+              { label: "Consumed", align: "right" },
+            ]}
+            sticky={false}
+          >
             {budget.data.keys
               .filter((k) => k.spendLimitMinor != null)
               .map((k) => (
                 <tr key={k.keyId}>
                   <td>{k.name ?? <code className="mono">{k.prefix}</code>}</td>
                   <td>{k.budgetDuration ?? "cumulative"}</td>
-                  <td className="num mono">
+                  <Td mono align="right">
                     <Cr minor={k.committedMinor} currency={display} />
-                  </td>
-                  <td>{k.consumedPercent != null ? `${k.consumedPercent}%` : "—"}</td>
+                  </Td>
+                  <Td align="right">{k.consumedPercent != null ? `${k.consumedPercent}%` : "—"}</Td>
                 </tr>
               ))}
           </TableShell>
@@ -152,25 +160,31 @@ export function Overview() {
             </Link>
           }
         >
-          {holds.isLoading ? (
-            <PageState>Loading…</PageState>
-          ) : (
-            <TableShell head={["Request", "Model", "Key", "Frozen"]}>
-              {(holds.data?.holds ?? []).map((hold) => (
+          <TableShell
+            head={[
+              { label: "Request", truncate: true },
+              "Model",
+              "Key",
+              { label: "Frozen", align: "right" },
+            ]}
+            loading={holds.isLoading ? 4 : 0}
+            sticky={false}
+          >
+            {!holds.isLoading &&
+              (holds.data?.holds ?? []).map((hold) => (
                 <tr key={hold.requestId}>
-                  <td className="mono">{hold.requestId}</td>
+                  <Td mono truncate>{hold.requestId}</Td>
                   <td>{hold.model}</td>
                   <td className="mono">{hold.keyPrefix ?? "—"}</td>
-                  <td className="num mono">
+                  <Td mono align="right">
                     <Cr minor={hold.freezeMinor} currency={display} />
-                  </td>
+                  </Td>
                 </tr>
               ))}
-              {(holds.data?.holds.length ?? 0) === 0 ? (
-                <EmptyRows colSpan={4}>Nothing in flight.</EmptyRows>
-              ) : null}
-            </TableShell>
-          )}
+            {!holds.isLoading && (holds.data?.holds.length ?? 0) === 0 ? (
+              <EmptyRows colSpan={4}>Nothing in flight.</EmptyRows>
+            ) : null}
+          </TableShell>
           <HoldBench />
         </Card>
 
@@ -183,22 +197,27 @@ export function Overview() {
             </Link>
           }
         >
-          {entries.isLoading ? (
-            <PageState>Loading…</PageState>
-          ) : (
-            <TableShell head={["#", "Description", "Hash"]}>
-              {(entries.data?.rows ?? []).map((entry) => (
+          <TableShell
+            head={["#", { label: "Description", truncate: true }, { label: "Hash", truncate: true }]}
+            loading={entries.isLoading ? 4 : 0}
+            sticky={false}
+          >
+            {!entries.isLoading &&
+              (entries.data?.rows ?? []).map((entry) => (
                 <tr key={entry.id}>
                   <td className="mono">{entry.index}</td>
-                  <td className="mono text-muted">{entry.description}</td>
-                  <td className="mono text-muted">{entry.contentHash?.slice(0, 12)}…</td>
+                  <Td mono truncate className="text-muted">
+                    {entry.description}
+                  </Td>
+                  <Td mono truncate className="text-muted">
+                    {entry.contentHash ?? ""}
+                  </Td>
                 </tr>
               ))}
-              {(entries.data?.rows.length ?? 0) === 0 ? (
-                <EmptyRows colSpan={3}>No entries yet.</EmptyRows>
-              ) : null}
-            </TableShell>
-          )}
+            {!entries.isLoading && (entries.data?.rows.length ?? 0) === 0 ? (
+              <EmptyRows colSpan={3}>No entries yet.</EmptyRows>
+            ) : null}
+          </TableShell>
         </Card>
       </div>
     </div>
