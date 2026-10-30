@@ -103,7 +103,7 @@ sha2 = { version = "0.10", default-features = false, optional = true }
 
 # Cold tier. Arrow and Parquet must match what `iceberg` itself resolves.
 iceberg      = { version = "0.10", optional = true }
-arrow-array  = { version = "58", optional = true }
+arrow-array  = { version = "60", optional = true }
 arrow-schema = { version = "58", optional = true }
 parquet      = { version = "58", optional = true }
 
