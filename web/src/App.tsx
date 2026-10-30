@@ -9,7 +9,7 @@ import {
   Register,
   ResetPassword,
   VerifyEmail,
-} from "./pages/Auth";
+} from "./pages/auth";
 import { Bills } from "./pages/Bills";
 import { Chat } from "./pages/Chat";
 import { Keys } from "./pages/Keys";
