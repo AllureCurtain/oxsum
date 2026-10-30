@@ -176,15 +176,23 @@ impl RailVerifier for X402FacilitatorVerifier {
     }
 
     /// Lands the verified pair on-chain: `POST /settle` with the same
-    /// payload/requirements the verify leg answered on. `None` for a
+    /// payload/requirements the verify leg answered on. `Err` for a
     /// refused settlement or an unreachable sidecar — the deposit stays
     /// `confirmed`, the caller sees the refusal, and the nonce anchor keeps
-    /// the retry clean.
+    /// the retry clean. The facilitator's `error_reason` rides the
+    /// [`SettleRefusal`] into the deposit's `meta`; a transport failure
+    /// carries a local description instead, so the row names *why* the
+    /// rail could not land it either way.
     fn settle<'a>(
         &'a self,
         payment: &'a VerifiedPayment,
     ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Option<oxsum_core::RailSettlement>> + Send + 'a>,
+        Box<
+            dyn std::future::Future<
+                    Output = Result<oxsum_core::RailSettlement, oxsum_core::SettleRefusal>,
+                > + Send
+                + 'a,
+        >,
     > {
         Box::pin(async move {
             let response = self
@@ -195,11 +203,15 @@ impl RailVerifier for X402FacilitatorVerifier {
                     &payment.context["paymentRequirements"],
                 )
                 .await
-                .ok()?;
+                .map_err(|error| oxsum_core::SettleRefusal { reason: error.0 })?;
             if !response.success {
-                return None;
+                return Err(oxsum_core::SettleRefusal {
+                    reason: response
+                        .error_reason
+                        .unwrap_or_else(|| "the facilitator refused the settlement".to_owned()),
+                });
             }
-            Some(oxsum_core::RailSettlement {
+            Ok(oxsum_core::RailSettlement {
                 tx_hash: response.transaction.unwrap_or_default(),
             })
         })

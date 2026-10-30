@@ -151,5 +151,5 @@ pub use webhooks::{
 };
 pub use x402::{
     ASSET_CREDIT, Ed25519RailVerifier, NETWORK_ED25519, RAIL_X402, RailSettlement, RailVerifier,
-    SCHEME_EXACT, VerifiedPayment,
+    SCHEME_EXACT, SettleRefusal, VerifiedPayment,
 };
