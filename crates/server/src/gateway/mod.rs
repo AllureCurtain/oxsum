@@ -65,6 +65,7 @@ pub fn router(state: AppState) -> Router<AppState> {
     Router::new()
         .route("/models", get(models))
         .route("/chat/completions", post(chat))
+        .route("/responses", post(responses))
         .route("/messages", post(messages))
         .route("/embeddings", post(embeddings))
         .route("/rerank", post(rerank))
@@ -335,6 +336,28 @@ async fn chat(
     .await
 }
 
+/// One Responses turn: freeze, relay, settle — OpenAI's successor wire (issue
+/// #495). The same `openai` channels serve it; upstream is called at
+/// `responses` rather than `chat/completions`.
+async fn responses(
+    state: State<AppState>,
+    organization: Extension<Organization>,
+    key: Extension<ActingKey>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    gateway(
+        Surface::Responses,
+        state,
+        organization,
+        key,
+        headers,
+        body,
+        None,
+    )
+    .await
+}
+
 /// One messages turn: freeze, relay, settle — Anthropic's surface.
 async fn messages(
     state: State<AppState>,
@@ -591,9 +614,11 @@ async fn record_refusal(
 /// rather than getting a third one (issue #494).
 fn error_response(error: GatewayError, surface: Surface) -> Response {
     match surface {
-        Surface::OpenAi | Surface::Embeddings | Surface::Rerank | Surface::Gemini { .. } => {
-            error.into_response()
-        }
+        Surface::OpenAi
+        | Surface::Embeddings
+        | Surface::Rerank
+        | Surface::Gemini { .. }
+        | Surface::Responses => error.into_response(),
         Surface::Anthropic => error.into_anthropic_response(),
     }
 }
@@ -1136,7 +1161,7 @@ async fn run(
             ))
             .json(&forwarded);
         call = match surface {
-            Surface::OpenAi | Surface::Embeddings | Surface::Rerank => {
+            Surface::OpenAi | Surface::Embeddings | Surface::Rerank | Surface::Responses => {
                 call.bearer_auth(&credential.api_key)
             }
             Surface::Anthropic => {

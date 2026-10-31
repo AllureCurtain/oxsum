@@ -6879,6 +6879,96 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/responses": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Responses turn, billed by freezing credit first and settling against upstream usage
+         * @description The same freeze-then-settle contract as `/v1/chat/completions`, in OpenAI's
+         *     newer Responses wire (issue #495): `input` rather than `messages`,
+         *     `instructions` for the system prompt, `max_output_tokens` the only output
+         *     ceiling, and `store`/`previous_response_id` forwarded for the upstream's
+         *     stateful flow — the gateway keeps no response state, so the chain lives in
+         *     the upstream's store, not here. The surface serves the same `openai`
+         *     channels as `/v1/chat/completions`; upstream is called at
+         *     `{baseUrl}/responses` with the channel credential as `Authorization: Bearer`.
+         *
+         *     `input` is a string or the items list: a `message` item's `input_text`
+         *     parts contribute their text to the input bound, a structured item — a
+         *     `function_call`, `function_call_output`, `reasoning` record — contributes
+         *     its serialized JSON, and a media part (`input_image`, `input_file`,
+         *     `input_audio`) is refused 400 like every surface's media. The forwarded
+         *     body always carries `max_output_tokens` set to the freeze's bound, and a
+         *     stream carries `stream_options.include_usage = true`, because the terminal
+         *     `response.completed` event is where the usage report rides. Errors answer
+         *     in OpenAI's envelope, the same as `/v1/chat/completions`.
+         *
+         *     Usage normalization follows the Responses report: `usage.input_tokens` is
+         *     the billed input (already including `input_tokens_details.cached_tokens`)
+         *     and `usage.output_tokens` the billed output (already including
+         *     `output_tokens_details.reasoning_tokens`). A `stream: true` response
+         *     relays the event stream unchanged and ends on `response.completed`,
+         *     `response.failed` or `response.incomplete` — there is no `[DONE]` on this
+         *     wire. The cost headers and `Idempotency-Key` contract are
+         *     `/v1/chat/completions`'s.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: {
+                    /** @description makes a retried request the same turn: the same key under the same request body replays the first response, under a different body it is refused 422, and while the first turn is still running it is refused 409 */
+                    "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                    /** @description a signed spend mandate (issue #262): base64url of the canonical-JSON body plus its Ed25519 signature, minted by `POST /api/v1/org/keys/{keyId}/mandates`. Presented on `/v1/*` and `POST /api/v1/holds`, it binds the request inside the mandate's `capMinor`, `models` and validity window — a refusal reads `invalid_mandate`, `mandate_expired` or `mandate_exceeded`, distinct from the key's own limits */
+                    "X-Oxsum-Mandate"?: components["parameters"]["Mandate"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ResponsesRequest"];
+                };
+            };
+            responses: {
+                /** @description Upstream's response, passed through unchanged — or, for a replayed `Idempotency-Key`, the stored response or the settled receipt, marked `Idempotent-Replayed: true` */
+                200: {
+                    headers: {
+                        "x-oxsum-request-id": components["headers"]["RequestId"];
+                        "x-oxsum-freeze-minor": components["headers"]["FreezeMinor"];
+                        "x-oxsum-balance-minor": components["headers"]["BalanceMinor"];
+                        "x-oxsum-charged-minor": components["headers"]["ChargedMinor"];
+                        /** @description on a streamed answer, announces the settled charge arrives as a trailer */
+                        Trailer?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Response"];
+                        "text/event-stream": string;
+                    };
+                };
+                400: components["responses"]["GatewayError"];
+                401: components["responses"]["GatewayError"];
+                402: components["responses"]["GatewayError"];
+                403: components["responses"]["GatewayError"];
+                409: components["responses"]["GatewayError"];
+                422: components["responses"]["GatewayError"];
+                429: components["responses"]["GatewayError"];
+                500: components["responses"]["GatewayError"];
+                502: components["responses"]["GatewayError"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/messages": {
         parameters: {
             query?: never;
@@ -9620,6 +9710,103 @@ export interface components {
                 completion_tokens?: number;
                 /** Format: int64 */
                 total_tokens?: number;
+            };
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * @description The fields the gateway acts on (issue #495). Everything else is forwarded to
+         *     upstream unchanged — `tools`, `reasoning`, `text`, `truncation` and the
+         *     rest — which is what keeps an OpenAI SDK working here. `store` and
+         *     `previous_response_id` are pass-through: the response's state lives in the
+         *     upstream's store, not in oxsum.
+         */
+        ResponsesRequest: {
+            /** @description must be a model an openai channel serves with a configured `mode: chat` price */
+            model: string;
+            /** @description the system/developer prompt, counted toward the input bound */
+            instructions?: string | null;
+            /** @description a string, or the items list: message items carry `content` parts, structured items are read as their serialized JSON for the bound; a media part (`input_image`, `input_file`, `input_audio`) is 400 */
+            input: string | components["schemas"]["ResponsesInputItem"][];
+            /**
+             * @description absent or null counts as false; a stream ends on `response.completed`, `response.failed` or `response.incomplete`, never `[DONE]`
+             * @default false
+             */
+            stream: boolean | null;
+            /**
+             * Format: int64
+             * @description the output upper bound the freeze uses; absent or null means the model's configured maximum, and a value below 1 is 400
+             */
+            max_output_tokens?: number | null;
+            /** @description the caller's own end-user id, recorded on the turn's usage record for attribution */
+            user?: string | null;
+            /** @description the caller's own tags on the turn: at most 10 key/value pairs, keys and values at most 64 characters and strings only */
+            metadata?: {
+                [key: string]: string;
+            } | null;
+            /** @description the service tier the caller asks for, recorded and forwarded unchanged */
+            service_tier?: string | null;
+            /** @description forwarded unchanged — asks upstream to retain the response for a later `previous_response_id` chain */
+            store?: boolean | null;
+            /** @description forwarded unchanged — the earlier response this turn continues, in upstream's store */
+            previous_response_id?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * @description One input item, as the gateway reads it. What it does not read — `type`,
+         *     `role`, the call ids — is forwarded upstream unchanged. An item carrying
+         *     `content` is read as a message: a string contributes it, an array reads
+         *     each part (`input_text`/`output_text` contributes its `text`, a media part
+         *     is refused 400, any other shape contributes its serialized JSON). An item
+         *     with no `content` — a `function_call`, `function_call_output`, `reasoning`
+         *     record — contributes its serialized JSON as the computable bound.
+         */
+        ResponsesInputItem: {
+            /** @description sent upstream as written; `message` is the conversation item, the rest are structured inputs */
+            type?: string;
+            role?: string;
+            /** @description text or an array of content parts; a media part is 400 */
+            content?: string | {
+                type: string;
+                text?: string;
+            }[] | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * @description Upstream's response, passed through unchanged. The only field oxsum reads is
+         *     `usage` (on the body, or on `response` inside a terminal stream event);
+         *     without it the turn settles on local estimation.
+         */
+        Response: {
+            id?: string;
+            /** @constant */
+            object?: "response";
+            model?: string;
+            status?: string;
+            output?: Record<string, never>[];
+            usage?: {
+                /**
+                 * Format: int64
+                 * @description includes the cached share in `input_tokens_details`
+                 */
+                input_tokens?: number;
+                /**
+                 * Format: int64
+                 * @description includes the reasoning share in `output_tokens_details`
+                 */
+                output_tokens?: number;
+                /** Format: int64 */
+                total_tokens?: number;
+                input_tokens_details?: {
+                    /** Format: int64 */
+                    cached_tokens?: number;
+                };
+                output_tokens_details?: {
+                    /** Format: int64 */
+                    reasoning_tokens?: number;
+                };
             };
         } & {
             [key: string]: unknown;

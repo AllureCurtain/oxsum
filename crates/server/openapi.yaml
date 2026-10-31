@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.85.0
+  version: 0.86.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -579,6 +579,17 @@ info:
     so the billed output is `candidatesTokenCount + thoughtsTokenCount`, the billed
     input `promptTokenCount + toolUsePromptTokenCount`, and `cachedContentTokenCount`
     fills the cached dimension.
+
+    0.86.0 adds OpenAI's Responses API (issue #495): `POST /v1/responses` accepts the
+    successor wire — `input` items rather than `messages`, `max_output_tokens` the
+    only ceiling spelling — served by the same `openai` channels, called upstream at
+    `{baseUrl}/responses` with the Bearer credential. `store` and
+    `previous_response_id` are pass-through: the gateway keeps no response state of
+    its own, so a stateful chain lives or dies by the upstream's store. Usage
+    normalization follows the Responses report — `usage.input_tokens` /
+    `usage.output_tokens`, with `output_tokens_details.reasoning_tokens` the
+    reasoning subset — and a stream ends on `response.completed`, the event that
+    carries the final usage; there is no `[DONE]` sentinel on this wire.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -4824,6 +4835,73 @@ paths:
         "429": { $ref: "#/components/responses/GatewayError" }
         "500": { $ref: "#/components/responses/GatewayError" }
         "502": { $ref: "#/components/responses/GatewayError" }
+  /v1/responses:
+    post:
+      summary: Responses turn, billed by freezing credit first and settling against upstream usage
+      description: |
+        The same freeze-then-settle contract as `/v1/chat/completions`, in OpenAI's
+        newer Responses wire (issue #495): `input` rather than `messages`,
+        `instructions` for the system prompt, `max_output_tokens` the only output
+        ceiling, and `store`/`previous_response_id` forwarded for the upstream's
+        stateful flow — the gateway keeps no response state, so the chain lives in
+        the upstream's store, not here. The surface serves the same `openai`
+        channels as `/v1/chat/completions`; upstream is called at
+        `{baseUrl}/responses` with the channel credential as `Authorization: Bearer`.
+
+        `input` is a string or the items list: a `message` item's `input_text`
+        parts contribute their text to the input bound, a structured item — a
+        `function_call`, `function_call_output`, `reasoning` record — contributes
+        its serialized JSON, and a media part (`input_image`, `input_file`,
+        `input_audio`) is refused 400 like every surface's media. The forwarded
+        body always carries `max_output_tokens` set to the freeze's bound, and a
+        stream carries `stream_options.include_usage = true`, because the terminal
+        `response.completed` event is where the usage report rides. Errors answer
+        in OpenAI's envelope, the same as `/v1/chat/completions`.
+
+        Usage normalization follows the Responses report: `usage.input_tokens` is
+        the billed input (already including `input_tokens_details.cached_tokens`)
+        and `usage.output_tokens` the billed output (already including
+        `output_tokens_details.reasoning_tokens`). A `stream: true` response
+        relays the event stream unchanged and ends on `response.completed`,
+        `response.failed` or `response.incomplete` — there is no `[DONE]` on this
+        wire. The cost headers and `Idempotency-Key` contract are
+        `/v1/chat/completions`'s.
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/Mandate" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ResponsesRequest" }
+      responses:
+        "200":
+          description: >-
+            Upstream's response, passed through unchanged — or, for a replayed
+            `Idempotency-Key`, the stored response or the settled receipt, marked
+            `Idempotent-Replayed: true`
+          headers:
+            x-oxsum-request-id: { $ref: "#/components/headers/RequestId" }
+            x-oxsum-freeze-minor: { $ref: "#/components/headers/FreezeMinor" }
+            x-oxsum-balance-minor: { $ref: "#/components/headers/BalanceMinor" }
+            x-oxsum-charged-minor: { $ref: "#/components/headers/ChargedMinor" }
+            Trailer: { schema: { type: string, example: "x-oxsum-charged-minor" }, description: "on a streamed answer, announces the settled charge arrives as a trailer" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Response" }
+            text/event-stream:
+              schema:
+                type: string
+                description: "Responses SSE events, passed through unchanged, ending on `response.completed`"
+        "400": { $ref: "#/components/responses/GatewayError" }
+        "401": { $ref: "#/components/responses/GatewayError" }
+        "402": { $ref: "#/components/responses/GatewayError" }
+        "403": { $ref: "#/components/responses/GatewayError" }
+        "409": { $ref: "#/components/responses/GatewayError" }
+        "422": { $ref: "#/components/responses/GatewayError" }
+        "429": { $ref: "#/components/responses/GatewayError" }
+        "500": { $ref: "#/components/responses/GatewayError" }
+        "502": { $ref: "#/components/responses/GatewayError" }
   /v1/messages:
     post:
       summary: Anthropic Messages turn, billed by freezing credit first and settling against upstream usage
@@ -7240,6 +7318,86 @@ components:
             prompt_tokens: { type: integer, format: int64 }
             completion_tokens: { type: integer, format: int64 }
             total_tokens: { type: integer, format: int64 }
+      additionalProperties: true
+    ResponsesRequest:
+      type: object
+      required: [model, input]
+      description: |
+        The fields the gateway acts on (issue #495). Everything else is forwarded to
+        upstream unchanged — `tools`, `reasoning`, `text`, `truncation` and the
+        rest — which is what keeps an OpenAI SDK working here. `store` and
+        `previous_response_id` are pass-through: the response's state lives in the
+        upstream's store, not in oxsum.
+      properties:
+        model: { type: string, description: "must be a model an openai channel serves with a configured `mode: chat` price" }
+        instructions: { type: [string, "null"], description: "the system/developer prompt, counted toward the input bound" }
+        input:
+          description: "a string, or the items list: message items carry `content` parts, structured items are read as their serialized JSON for the bound; a media part (`input_image`, `input_file`, `input_audio`) is 400"
+          oneOf:
+            - { type: string }
+            - type: array
+              minItems: 1
+              items: { $ref: "#/components/schemas/ResponsesInputItem" }
+        stream: { type: [boolean, "null"], default: false, description: "absent or null counts as false; a stream ends on `response.completed`, `response.failed` or `response.incomplete`, never `[DONE]`" }
+        max_output_tokens: { type: [integer, "null"], format: int64, minimum: 1, description: "the output upper bound the freeze uses; absent or null means the model's configured maximum, and a value below 1 is 400" }
+        user: { type: [string, "null"], maxLength: 128, description: "the caller's own end-user id, recorded on the turn's usage record for attribution" }
+        metadata:
+          type: [object, "null"]
+          description: "the caller's own tags on the turn: at most 10 key/value pairs, keys and values at most 64 characters and strings only"
+          additionalProperties: { type: string, maxLength: 64 }
+        service_tier: { type: [string, "null"], maxLength: 64, description: "the service tier the caller asks for, recorded and forwarded unchanged" }
+        store: { type: [boolean, "null"], description: "forwarded unchanged — asks upstream to retain the response for a later `previous_response_id` chain" }
+        previous_response_id: { type: [string, "null"], description: "forwarded unchanged — the earlier response this turn continues, in upstream's store" }
+      additionalProperties: true
+    ResponsesInputItem:
+      type: object
+      description: |
+        One input item, as the gateway reads it. What it does not read — `type`,
+        `role`, the call ids — is forwarded upstream unchanged. An item carrying
+        `content` is read as a message: a string contributes it, an array reads
+        each part (`input_text`/`output_text` contributes its `text`, a media part
+        is refused 400, any other shape contributes its serialized JSON). An item
+        with no `content` — a `function_call`, `function_call_output`, `reasoning`
+        record — contributes its serialized JSON as the computable bound.
+      properties:
+        type: { type: string, description: "sent upstream as written; `message` is the conversation item, the rest are structured inputs" }
+        role: { type: string }
+        content:
+          type: [string, array, "null"]
+          description: "text or an array of content parts; a media part is 400"
+          items:
+            type: object
+            required: [type]
+            properties:
+              type: { type: string }
+              text: { type: string }
+      additionalProperties: true
+    Response:
+      type: object
+      description: |
+        Upstream's response, passed through unchanged. The only field oxsum reads is
+        `usage` (on the body, or on `response` inside a terminal stream event);
+        without it the turn settles on local estimation.
+      properties:
+        id: { type: string }
+        object: { type: string, const: response }
+        model: { type: string }
+        status: { type: string }
+        output: { type: array, items: { type: object } }
+        usage:
+          type: object
+          properties:
+            input_tokens: { type: integer, format: int64, description: "includes the cached share in `input_tokens_details`" }
+            output_tokens: { type: integer, format: int64, description: "includes the reasoning share in `output_tokens_details`" }
+            total_tokens: { type: integer, format: int64 }
+            input_tokens_details:
+              type: object
+              properties:
+                cached_tokens: { type: integer, format: int64 }
+            output_tokens_details:
+              type: object
+              properties:
+                reasoning_tokens: { type: integer, format: int64 }
       additionalProperties: true
     MessagesRequest:
       type: object

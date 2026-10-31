@@ -32,6 +32,9 @@ pub enum Surface {
     /// selects between the two actions because a Gemini client names the
     /// streaming form in the URL, not in a `stream` field.
     Gemini { streamed: bool },
+    /// `POST /v1/responses` — OpenAI's successor wire (issue #495): the same
+    /// `openai` channels, called at `responses` rather than `chat/completions`.
+    Responses,
 }
 
 impl Surface {
@@ -41,7 +44,7 @@ impl Surface {
     /// surfaces speak the OpenAI protocol — Bearer credential, OpenAI errors.
     pub fn protocol(self) -> &'static str {
         match self {
-            Self::OpenAi | Self::Embeddings | Self::Rerank => OPENAI,
+            Self::OpenAi | Self::Embeddings | Self::Rerank | Self::Responses => OPENAI,
             Self::Anthropic => ANTHROPIC,
             Self::Gemini { .. } => GEMINI,
         }
@@ -52,7 +55,9 @@ impl Surface {
     /// mismatch fails closed, never reinterprets a rate (issue #170).
     pub fn billing_mode(self) -> BillingMode {
         match self {
-            Self::OpenAi | Self::Anthropic | Self::Gemini { .. } => BillingMode::Chat,
+            Self::OpenAi | Self::Anthropic | Self::Gemini { .. } | Self::Responses => {
+                BillingMode::Chat
+            }
             Self::Embeddings => BillingMode::Embeddings,
             Self::Rerank => BillingMode::Rerank,
         }
@@ -66,6 +71,7 @@ impl Surface {
     pub fn upstream_path(self) -> &'static str {
         match self {
             Self::OpenAi => "chat/completions",
+            Self::Responses => "responses",
             Self::Anthropic => "messages",
             Self::Embeddings => "embeddings",
             Self::Rerank => "rerank",
@@ -92,7 +98,7 @@ impl Surface {
     /// is the extension value for the Jina/Cohere surface.
     pub fn gen_ai_operation(self) -> &'static str {
         match self {
-            Self::OpenAi | Self::Anthropic | Self::Gemini { .. } => "chat",
+            Self::OpenAi | Self::Anthropic | Self::Gemini { .. } | Self::Responses => "chat",
             Self::Embeddings => "embeddings",
             Self::Rerank => "rerank",
         }
@@ -186,6 +192,12 @@ impl GatewayRequest {
                 output_ceiling(&body)?,
                 attribution_of(&body)?,
             ),
+            Surface::Responses => (
+                responses_texts(&body)?,
+                None,
+                int_ceiling(&body, "max_output_tokens")?,
+                attribution_of(&body)?,
+            ),
             Surface::Anthropic => (
                 anthropic_texts(&body)?,
                 None,
@@ -274,7 +286,8 @@ impl GatewayRequest {
     ///
     /// The bound is written as `max_tokens` — the field both protocols name — and any
     /// `max_completion_tokens` is dropped, so upstream sees exactly one ceiling, the one the
-    /// freeze was computed for. An OpenAI stream asks for usage explicitly, because the last
+    /// freeze was computed for. The Responses surface spells it `max_output_tokens` instead
+    /// (issue #495). An OpenAI stream asks for usage explicitly, because the last
     /// chunk is where that protocol reports it; Anthropic reports usage on every stream
     /// already, so nothing is added there. On the Gemini surface the ceiling is
     /// `generationConfig.maxOutputTokens` and a `model` field is only written when the
@@ -294,6 +307,23 @@ impl GatewayRequest {
             body.insert("model".to_owned(), json!(upstream));
         }
         match self.surface {
+            Surface::Responses => {
+                // `max_output_tokens` is this wire's only ceiling spelling —
+                // `max_tokens`/`max_completion_tokens` do not exist on it.
+                body.insert("max_output_tokens".to_owned(), json!(output_bound));
+                // A stream asks for usage explicitly, like the chat surface's
+                // `stream_options.include_usage`; Responses reports it on the
+                // terminal event, and `include_obfuscation` stays untouched.
+                if self.stream {
+                    let mut options = body
+                        .get("stream_options")
+                        .and_then(Value::as_object)
+                        .cloned()
+                        .unwrap_or_default();
+                    options.insert("include_usage".to_owned(), Value::Bool(true));
+                    body.insert("stream_options".to_owned(), Value::Object(options));
+                }
+            }
             Surface::Gemini { .. } => {
                 let mut config = body
                     .get("generationConfig")
@@ -439,6 +469,105 @@ fn rerank_texts(body: &Map<String, Value>) -> Result<Vec<String>, GatewayError> 
         None => return Err(param("documents", "documents is required")),
     }
     Ok(texts)
+}
+
+/// The text of a Responses request (issue #495): `instructions` plus `input`,
+/// which is either a plain string or the items list the wire defines. A
+/// `message` item contributes the text of its `input_text` content parts (an
+/// `input_image`/`input_file` part is media and refused like every surface's
+/// media); a `function_call`/`function_call_output`/`reasoning`-style item
+/// contributes its serialized JSON — the computable bound for whatever it
+/// carries, the same rule the Anthropic and Gemini surfaces apply.
+fn responses_texts(body: &Map<String, Value>) -> Result<Vec<String>, GatewayError> {
+    let mut texts = Vec::new();
+    match body.get("instructions") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(text)) => texts.push(text.clone()),
+        Some(_) => return Err(param("instructions", "instructions must be a string")),
+    }
+    let Some(input) = body.get("input") else {
+        return Err(param("input", "input is required"));
+    };
+    match input {
+        Value::String(text) => texts.push(text.clone()),
+        Value::Array(items) => {
+            if items.is_empty() {
+                return Err(param("input", "input must not be empty"));
+            }
+            for item in items {
+                let Value::Object(item) = item else {
+                    return Err(param("input", "every input item must be an object"));
+                };
+                responses_item(item, &mut texts)?;
+            }
+        }
+        _ => {
+            return Err(param(
+                "input",
+                "input must be a string or an array of input items",
+            ));
+        }
+    }
+    Ok(texts)
+}
+
+/// One item of the `input` array. The wire spells messages two ways —
+/// `{type: "message", role, content}` and the shorthand `{role, content}` —
+/// so an object carrying `content` is read as a message; any other item is a
+/// structured input whose serialized JSON is the bound.
+fn responses_item(item: &Map<String, Value>, texts: &mut Vec<String>) -> Result<(), GatewayError> {
+    match item.get("content") {
+        Some(Value::String(text)) => texts.push(text.clone()),
+        Some(Value::Array(parts)) => {
+            for part in parts {
+                responses_part(part, texts)?;
+            }
+        }
+        Some(Value::Null) | None => {
+            // No `content` at all: a function call, a call output, a
+            // reasoning item — serialized JSON is the bound, as on the
+            // other structured-part surfaces.
+            texts.push(Value::Object(item.clone()).to_string());
+        }
+        Some(_) => {
+            return Err(param(
+                "input",
+                "a message item's content must be a string or an array of content parts",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// One content part of a Responses message: `input_text` (and the model's
+/// `output_text` on a played-back turn) counts its `text`; `input_image` /
+/// `input_file` / `input_audio` are media with no computable bound and are
+/// refused. Any other shape — a refusal record, say — counts its serialized
+/// JSON.
+fn responses_part(part: &Value, texts: &mut Vec<String>) -> Result<(), GatewayError> {
+    let Value::Object(part) = part else {
+        return Err(param("input", "a content part must be an object"));
+    };
+    match part.get("type").and_then(Value::as_str) {
+        Some("input_text" | "output_text" | "text") => match part.get("text") {
+            Some(Value::String(text)) => texts.push(text.clone()),
+            _ => {
+                return Err(param(
+                    "input",
+                    "a text content part must carry a text string",
+                ));
+            }
+        },
+        Some("input_image" | "input_file" | "input_audio" | "image" | "file" | "audio") => {
+            return Err(param(
+                "input",
+                "only text-computable content is supported: a media part has no \
+                 computable input bound, so it cannot be frozen",
+            ));
+        }
+        _ => texts.push(Value::Object(part.clone()).to_string()),
+    }
+    Ok(())
 }
 
 /// The text of every message, refusing content that is not text.
@@ -871,6 +1000,11 @@ mod tests {
         GatewayRequest::parse_for_model(body, Surface::Gemini { streamed }, "gemini-2.5-flash")
     }
 
+    /// A Responses turn: OpenAI's newer wire, `input` items rather than `messages`.
+    fn responses_request(body: Value) -> Result<GatewayRequest, GatewayError> {
+        GatewayRequest::parse(body, Surface::Responses)
+    }
+
     #[test]
     fn reads_a_gemini_request() {
         let parsed = gemini_request(
@@ -1023,6 +1157,113 @@ mod tests {
         .unwrap();
         assert!(parsed.stream);
         assert_eq!(parsed.max_tokens, None);
+    }
+
+    // ── the Responses surface (issue #495) ───────────────────────────────────
+
+    /// `input` accepts a plain string; `instructions` counts toward the bound;
+    /// the ceiling is `max_output_tokens` and attribution reuses the OpenAI
+    /// fields (`user`, `metadata`, `service_tier`) the wire keeps.
+    #[test]
+    fn reads_a_responses_request() {
+        let parsed = responses_request(json!({
+            "model": "gpt-5",
+            "instructions": "be brief",
+            "input": "hi",
+            "max_output_tokens": 64,
+            "user": "u_42",
+            "metadata": {"team": "search"},
+            "store": false,
+            "previous_response_id": "resp_prev",
+        }))
+        .unwrap();
+        assert_eq!(parsed.model, "gpt-5");
+        assert_eq!(parsed.texts, ["be brief", "hi"]);
+        assert_eq!(parsed.max_tokens, Some(64));
+        assert_eq!(parsed.attribution.end_user.as_deref(), Some("u_42"));
+        assert_eq!(
+            parsed.attribution.tags.get("team").map(String::as_str),
+            Some("search")
+        );
+        // `store`/`previous_response_id` are pass-through: the forwarded body
+        // carries them and the ceiling is `max_output_tokens`.
+        let forwarded = parsed.forwarded(64);
+        assert_eq!(forwarded["max_output_tokens"], 64);
+        assert_eq!(forwarded["store"], false);
+        assert_eq!(forwarded["previous_response_id"], "resp_prev");
+        assert!(forwarded.get("max_tokens").is_none());
+    }
+
+    /// The items list: a message item's `input_text` parts count their text, a
+    /// structured item — a function call, its output, a reasoning record —
+    /// counts its serialized JSON, like the other surfaces' structured parts.
+    #[test]
+    fn responses_items_contribute_text_and_serialized_structure() {
+        let parsed = responses_request(json!({
+            "model": "gpt-5",
+            "input": [
+                {"type": "message", "role": "user", "content": [
+                    {"type": "input_text", "text": "hi"},
+                ]},
+                // The shorthand a conversation plays back.
+                {"role": "assistant", "content": [
+                    {"type": "output_text", "text": "earlier"},
+                ]},
+                {"type": "function_call", "name": "lookup", "arguments": "{\"q\":\"x\"}"},
+                {"type": "function_call_output", "call_id": "c1", "output": "42"},
+            ],
+        }))
+        .unwrap();
+        let call = json!({"type": "function_call", "name": "lookup", "arguments": "{\"q\":\"x\"}"});
+        let output = json!({"type": "function_call_output", "call_id": "c1", "output": "42"});
+        assert_eq!(
+            parsed.texts,
+            ["hi", "earlier", &call.to_string(), &output.to_string()]
+        );
+    }
+
+    /// A media part has no computable input bound — the refusal every surface
+    /// shares. `stream: true` streams on this surface; `stream_options` still
+    /// gains `include_usage`.
+    #[test]
+    fn responses_refusals_and_the_stream_flags() {
+        let error = responses_request(json!({
+            "model": "gpt-5",
+            "input": [{"type": "message", "role": "user", "content": [
+                {"type": "input_image", "image_url": "https://example.test/x.png"},
+            ]}],
+        }))
+        .expect_err("an image part has no computable input bound");
+        let GatewayError::Invalid { message, param } = error else {
+            panic!("expected an invalid-request error");
+        };
+        assert_eq!(param, Some("input"));
+        assert!(message.contains("text-computable"), "{message}");
+
+        for body in [
+            json!("nonsense"),
+            json!({"model": "gpt-5"}),
+            json!({"model": "gpt-5", "input": []}),
+            json!({"model": "gpt-5", "input": 7}),
+            json!({"model": "gpt-5", "input": [7]}),
+            json!({"model": "gpt-5", "input": [{"content": {"x": 1}}]}),
+            json!({"model": "gpt-5", "input": "hi", "instructions": 7}),
+            json!({"model": "gpt-5", "input": "hi", "max_output_tokens": "a lot"}),
+            json!({"model": "gpt-5", "input": "hi", "stream": "yes"}),
+        ] {
+            assert!(responses_request(body.clone()).is_err(), "{body}");
+        }
+
+        let parsed = responses_request(json!({
+            "model": "gpt-5",
+            "input": "hi",
+            "stream": true,
+        }))
+        .unwrap();
+        assert!(parsed.stream);
+        let forwarded = parsed.forwarded(32);
+        assert_eq!(forwarded["stream_options"]["include_usage"], true);
+        assert_eq!(forwarded["max_output_tokens"], 32);
     }
 
     #[test]

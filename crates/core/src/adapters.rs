@@ -89,6 +89,7 @@ pub fn adapter_for(protocol: &str) -> Option<&'static dyn UsageAdapter> {
 pub fn adapter_for_endpoint(protocol: &str, endpoint: &str) -> Option<&'static dyn UsageAdapter> {
     match (protocol, endpoint) {
         (OPENAI, "chat/completions") => Some(&OpenAiChat),
+        (OPENAI, "responses") => Some(&OpenAiResponses),
         (OPENAI, "embeddings") => Some(&OpenAiEmbeddings),
         (OPENAI, "rerank") => Some(&OpenAiRerank),
         (ANTHROPIC, "messages") => Some(&AnthropicMessages),
@@ -217,6 +218,135 @@ impl UsageAdapter for OpenAiChat {
 
     fn closing_frame(&self) -> &'static [u8] {
         b"data: [DONE]\n\n"
+    }
+}
+
+/// The OpenAI Responses API (issue #495): `/v1/responses`, the successor wire the
+/// newer OpenAI SDKs default to. The surface serves the same `openai` channels —
+/// the Bearer credential and the error shape are the same protocol — but calls
+/// upstream at `responses` rather than `chat/completions`, so the usage dialect
+/// differs enough to want its own adapter:
+///
+/// - A whole answer reports `usage.input_tokens` / `usage.output_tokens` (the
+///   Responses spellings of `prompt_tokens`/`completion_tokens`), with
+///   `input_tokens_details.cached_tokens` and
+///   `output_tokens_details.reasoning_tokens` the subsets. The report carries
+///   both sides or is no report — there is no `total_tokens`-only derivation to
+///   mirror, because a Responses body always reports the split.
+/// - On a stream, `response.completed` (or `response.failed` /
+///   `response.incomplete`) carries the finished `response` object with the
+///   same usage block; the delta events (`response.output_text.delta`) carry
+///   their text under `delta`, and a `response.output_item.done` item carries
+///   structured output that counts toward the estimate.
+/// - There is no `[DONE]`: the terminal event is `response.completed`,
+///   `response.failed` or `response.incomplete`, so `ends_stream` reads the
+///   event type and `closing_frame` stays empty — like Gemini, upstream's own
+///   close is the close.
+struct OpenAiResponses;
+
+impl UsageAdapter for OpenAiResponses {
+    fn protocol(&self) -> &'static str {
+        OPENAI
+    }
+
+    fn upstream_path(&self) -> &'static str {
+        "responses"
+    }
+
+    /// Reads `usage` off a whole body or off the `response` object a terminal
+    /// stream event carries — the report sits at the same place either way.
+    /// `input_tokens` already includes the cached subset and `output_tokens`
+    /// the reasoning subset, matching the record's invariants.
+    fn usage(&self, body: &Value) -> Option<UsageRecord> {
+        let usage = body
+            .get("usage")
+            .or_else(|| body.get("response").and_then(|r| r.get("usage")))?;
+        let count = |field: &str| usage.get(field).and_then(Value::as_i64);
+        let nested = |object: &str, field: &str| {
+            usage
+                .get(object)
+                .and_then(|details| details.get(field))
+                .and_then(Value::as_i64)
+        };
+        let input = count("input_tokens");
+        let output = count("output_tokens");
+        // A Responses report always names both sides; one that names neither is
+        // no report, never a guessed split.
+        if input.is_none() && output.is_none() {
+            return None;
+        }
+        let record = UsageRecord {
+            input_tokens: input.unwrap_or(0),
+            output_tokens: output.unwrap_or(0),
+            cached_tokens: nested("input_tokens_details", "cached_tokens").unwrap_or(0),
+            reasoning_tokens: nested("output_tokens_details", "reasoning_tokens").unwrap_or(0),
+            audio_input_tokens: nested("input_tokens_details", "audio_tokens").unwrap_or(0),
+            audio_output_tokens: nested("output_tokens_details", "audio_tokens").unwrap_or(0),
+            usage_details: Some(serde_json::json!({"provider_raw": usage.clone()})),
+            ..UsageRecord::default()
+        }
+        .clamped();
+        record.validate().ok()?;
+        Some(record)
+    }
+
+    /// The text one payload carries: a delta event's `delta`, or a whole
+    /// body's — or a terminal event's `response.` — `output[]` items. An item
+    /// of type `message` contributes its `content[].text` (`output_text`
+    /// parts); a `function_call`/`reasoning` item contributes its serialized
+    /// JSON, the computable bound for whatever it carried.
+    fn answer_text(&self, body: &Value) -> String {
+        if let Some(delta) = body.get("delta").and_then(Value::as_str) {
+            return delta.to_owned();
+        }
+        let response = body.get("response").unwrap_or(body);
+        response
+            .get("output")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|item| {
+                        if item.get("type").and_then(Value::as_str) == Some("message") {
+                            item.get("content")
+                                .and_then(Value::as_array)
+                                .map(|parts| {
+                                    parts
+                                        .iter()
+                                        .filter(|part| {
+                                            part.get("type").and_then(Value::as_str)
+                                                == Some("output_text")
+                                        })
+                                        .filter_map(|part| part.get("text").and_then(Value::as_str))
+                                        .collect::<String>()
+                                })
+                                .unwrap_or_default()
+                        } else {
+                            String::new()
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// `response.completed` ends a finished stream; `response.failed` and
+    /// `response.incomplete` end one that stopped early. Either way upstream
+    /// has nothing more to say — and all three carry the final usage.
+    fn ends_stream(&self, payload: &str) -> bool {
+        let Ok(value) = serde_json::from_str::<Value>(payload) else {
+            return false;
+        };
+        matches!(
+            value.get("type").and_then(Value::as_str),
+            Some("response.completed" | "response.failed" | "response.incomplete")
+        )
+    }
+
+    /// Nothing to synthesize: the Responses stream's own terminal event is the
+    /// close, and there is no `[DONE]` sentinel to imitate.
+    fn closing_frame(&self) -> &'static [u8] {
+        b""
     }
 }
 
@@ -1015,6 +1145,137 @@ mod tests {
         assert_eq!(gemini().closing_frame(), b"");
     }
 
+    // ── the OpenAI Responses adapter (issue #495) ────────────────────────────
+
+    fn responses() -> &'static dyn UsageAdapter {
+        adapter_for_endpoint(OPENAI, "responses").expect("the responses adapter is registered")
+    }
+
+    /// A whole `response` body reports `input_tokens`/`output_tokens` — the
+    /// Responses spellings — with the cached and reasoning subsets already
+    /// inside their sides, exactly the record's invariants.
+    #[test]
+    fn the_responses_shape_reads_its_own_usage_spellings() {
+        let usage = responses()
+            .usage(&json!({
+                "id": "resp_1",
+                "object": "response",
+                "output": [],
+                "usage": {
+                    "input_tokens": 120,
+                    "output_tokens": 40,
+                    "total_tokens": 160,
+                    "input_tokens_details": {"cached_tokens": 80},
+                    "output_tokens_details": {"reasoning_tokens": 15},
+                },
+            }))
+            .expect("a responses report carries usage");
+        assert_eq!(usage.input_tokens, 120);
+        assert_eq!(usage.output_tokens, 40);
+        assert_eq!(usage.cached_tokens, 80);
+        assert_eq!(usage.reasoning_tokens, 15);
+        assert_eq!(
+            usage.usage_details.as_ref().unwrap()["provider_raw"]["input_tokens"],
+            120
+        );
+    }
+
+    /// A streamed turn's usage rides the terminal event's `response` object —
+    /// `response.completed` carries the same usage block a whole body does.
+    #[test]
+    fn a_terminal_stream_event_carries_the_usage_block() {
+        let usage = responses()
+            .usage(&json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_1",
+                    "usage": {"input_tokens": 10, "output_tokens": 5},
+                },
+            }))
+            .expect("a completed event carries usage");
+        assert_eq!(usage.input_tokens, 10);
+        assert_eq!(usage.output_tokens, 5);
+        // A delta event has no usage object and is no report.
+        assert!(
+            responses()
+                .usage(&json!({"type": "response.output_text.delta", "delta": "hi"}))
+                .is_none()
+        );
+        // Neither side named is no report, never a guessed split.
+        assert!(
+            responses()
+                .usage(&json!({"usage": {"total_tokens": 40}}))
+                .is_none()
+        );
+        assert!(responses().usage(&json!({"usage": {}})).is_none());
+    }
+
+    /// A negative count is refused by the record's own rules, like on every
+    /// other adapter.
+    #[test]
+    fn a_responses_report_with_a_negative_count_is_refused() {
+        assert!(
+            responses()
+                .usage(&json!({"usage": {"input_tokens": -4, "output_tokens": 2}}))
+                .is_none()
+        );
+    }
+
+    /// Answer text is a delta's `delta` string on the stream, and the
+    /// `output[]` items' `output_text` parts on a whole body or a
+    /// `response.completed` event.
+    #[test]
+    fn responses_text_comes_from_deltas_and_output_items() {
+        assert_eq!(
+            responses().answer_text(&json!({
+                "type": "response.output_text.delta",
+                "delta": "hel",
+            })),
+            "hel"
+        );
+        assert_eq!(
+            responses().answer_text(&json!({
+                "output": [
+                    {"type": "reasoning", "summary": []},
+                    {"type": "message", "content": [
+                        {"type": "output_text", "text": "one"},
+                        {"type": "refusal", "refusal": "no"},
+                        {"type": "output_text", "text": "two"},
+                    ]},
+                    {"type": "function_call", "name": "lookup", "arguments": "{}"},
+                ],
+            })),
+            "onetwo"
+        );
+        // A terminal event's response object reads the same way.
+        assert_eq!(
+            responses().answer_text(&json!({
+                "type": "response.completed",
+                "response": {"output": [
+                    {"type": "message", "content": [{"type": "output_text", "text": "done"}]},
+                ]},
+            })),
+            "done"
+        );
+        assert_eq!(
+            responses().answer_text(&json!({"type": "response.created"})),
+            ""
+        );
+    }
+
+    /// There is no `[DONE]` on this wire: the terminal events are
+    /// `response.completed`, `response.failed` and `response.incomplete`.
+    #[test]
+    fn responses_ends_on_the_terminal_events() {
+        assert!(responses().ends_stream("{\"type\":\"response.completed\"}"));
+        assert!(responses().ends_stream("{\"type\":\"response.failed\"}"));
+        assert!(responses().ends_stream("{\"type\":\"response.incomplete\"}"));
+        assert!(!responses().ends_stream("[DONE]"));
+        assert!(!responses().ends_stream("{\"type\":\"response.output_text.delta\"}"));
+        assert!(!responses().ends_stream("not json"));
+        assert_eq!(responses().closing_frame(), b"");
+    }
+
     // ── the input-only endpoints (issue #170) ────────────────────────────────
 
     #[test]
@@ -1024,6 +1285,12 @@ mod tests {
                 .unwrap()
                 .upstream_path(),
             "chat/completions"
+        );
+        assert_eq!(
+            adapter_for_endpoint(OPENAI, "responses")
+                .unwrap()
+                .upstream_path(),
+            "responses"
         );
         assert_eq!(
             adapter_for_endpoint(OPENAI, "embeddings")
