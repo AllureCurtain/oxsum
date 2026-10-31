@@ -243,6 +243,7 @@ fn usage_settlement(request_id: &str, charged: i64, freeze: i64) -> String {
         freeze,
         upstream_attempts: 1,
         mandate: None,
+        subscription: None,
         reason: None,
     }
     .description()
