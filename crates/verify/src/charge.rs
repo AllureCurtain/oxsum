@@ -19,7 +19,7 @@ use serde_json::Value;
 /// written before descriptions were versioned counts as older; every `v` above
 /// this is newer than this build. Versions it does know each get their own
 /// rule: an old bill stays recomputable after the writer has moved on.
-const KNOWN_VERSION: i64 = 10;
+const KNOWN_VERSION: i64 = 11;
 
 /// The line items the input side prices: their units must account for the
 /// whole `inputTokens`, between them and the usage record — cached reads and
@@ -100,7 +100,8 @@ pub fn verify_charge(description: &str) -> ChargeCheck {
             Some(7) => recompute_v7(&value),
             Some(8) => recompute_v8(&value),
             Some(9) => recompute_v9(&value),
-            Some(KNOWN_VERSION) => recompute_v10(&value),
+            Some(10) => recompute_v10(&value),
+            Some(KNOWN_VERSION) => recompute_v11(&value),
             Some(v) if v > KNOWN_VERSION => ChargeCheck::NewerSchema { version: v },
             Some(_) => ChargeCheck::OlderSchema,
             // A `v` that names no version is a broken record, not an old one.
@@ -375,6 +376,39 @@ fn recompute_v10(value: &Value) -> ChargeCheck {
         }
         _ => ChargeCheck::Mismatch,
     }
+}
+
+/// The v11 rule: the guardrail pipeline's verdicts (issue #502) — v10's
+/// arithmetic unchanged, plus the optional `guardrail` array naming each
+/// policy that acted on the turn and how. Each entry is
+/// `{policy, verdict, reason, streamed?}`: `policy` a configured name,
+/// `verdict` `flagged` or `blocked`, `reason` the rule's own bounded text, and
+/// `streamed` — present only when true — marks a post-call judgment a streamed
+/// answer could not act on. The verdicts never change the charge — a `flagged`
+/// turn settled normally, a `blocked` one's `charged: 0` is v10's own record
+/// of the refund — so the rule checks their *shape* and lets the arithmetic
+/// chain below them do the rest: a `guardrail` that is not that shape is not
+/// an honest write.
+fn recompute_v11(value: &Value) -> ChargeCheck {
+    if let Some(guardrail) = value.get("guardrail") {
+        let entries_ok = guardrail.as_array().is_some_and(|entries| {
+            entries.iter().all(|entry| {
+                entry.get("policy").and_then(Value::as_str).is_some()
+                    && entry
+                        .get("verdict")
+                        .and_then(Value::as_str)
+                        .is_some_and(|v| v == "flagged" || v == "blocked")
+                    && entry.get("reason").and_then(Value::as_str).is_some()
+                    && entry
+                        .get("streamed")
+                        .is_none_or(|s| s.as_bool() == Some(true))
+            })
+        });
+        if !entries_ok {
+            return ChargeCheck::Mismatch;
+        }
+    }
+    recompute_v10(value)
 }
 
 /// A UUID in its canonical `8-4-4-4-12` hex spelling — validated by hand so the

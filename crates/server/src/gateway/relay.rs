@@ -146,6 +146,20 @@ struct Plan {
     /// `Retry-After` on a lone channel's 429. Written into the settlement
     /// description and the usage row.
     upstream_attempts: i64,
+    /// The guardrail verdicts the turn's pipeline produced (issue #502):
+    /// pre_call flags collected before the hold, post_call flags and a
+    /// post_call block judged on the assembled answer — each lands in the v11
+    /// settlement description's `guardrail` field.
+    guardrails: Vec<oxsum_core::SettlementGuardrailOwned>,
+    /// The policies a streamed turn's post_call judges the accumulated answer
+    /// against at stream end (issue #502): the non-streamed path evaluates in
+    /// `run`, but bytes already flow while a stream runs, so the verdict can
+    /// only be recorded — the impls ride the plan to settle time. Empty on a
+    /// turn no policy watches.
+    response_guardrails: Vec<Arc<dyn oxsum_core::Guardrail>>,
+    /// The organization the response's `ResponseContext` names — carried for
+    /// the streamed post_call, which has no `run` scope left to read it from.
+    organization_id: uuid::Uuid,
     /// The subscription quota this turn's hold drew on (issue #496): what the
     /// settlement settles against `subscription_draws` before the wallet's
     /// entry, and the `{subscriptionId, periodId, drawnMinor, chargedMinor}`
@@ -264,6 +278,8 @@ impl Turn {
         span: tracing::Span,
         mandate: Option<PresentedMandate>,
         subscription: oxsum_core::SubscriptionAdmission,
+        organization_id: uuid::Uuid,
+        response_guardrails: Vec<Arc<dyn oxsum_core::Guardrail>>,
     ) -> Self {
         Self {
             plan: Some(Plan {
@@ -293,6 +309,9 @@ impl Turn {
                 finished: false,
                 progress_chars: 0,
                 upstream_attempts: 1,
+                guardrails: Vec::new(),
+                response_guardrails,
+                organization_id,
                 span,
             }),
         }
@@ -316,6 +335,70 @@ impl Turn {
     pub fn note_attempts(&mut self, attempts: i64) {
         if let Some(plan) = self.plan.as_mut() {
             plan.upstream_attempts = attempts;
+        }
+    }
+
+    /// Records a guardrail verdict the turn's pipeline produced (issue #502):
+    /// a pre_call flag collected before the hold, or a post_call flag/block
+    /// judged on the assembled answer. Each lands in the v11 settlement
+    /// description's `guardrail` field — the audit trail a flag exists to
+    /// leave, and the reason a blocked turn's refund reads on the bill.
+    pub fn note_guardrail(&mut self, verdict: oxsum_core::SettlementGuardrailOwned) {
+        if let Some(plan) = self.plan.as_mut() {
+            plan.guardrails.push(verdict);
+        }
+    }
+
+    /// The streamed post_call (issue #502): judges the accumulated answer
+    /// against this turn's response policies once upstream has ended. Called
+    /// at stream end, before `closing` — the bytes already reached the client,
+    /// so a `Block` cannot un-send them: every verdict here lands in the
+    /// settlement's `guardrail` field, a `blocked` one marked `streamed` so the
+    /// bill says the answer flew before the policy could hold it.
+    pub fn evaluate_response_guardrails(&mut self) {
+        let Some(plan) = self.plan.as_mut() else {
+            return;
+        };
+        if plan.response_guardrails.is_empty() {
+            return;
+        }
+        let output_text = plan.frames.output.clone();
+        let ctx = oxsum_core::ResponseContext {
+            organization_id: plan.organization_id,
+            key_id: plan.key_id,
+            model: &plan.model,
+            channel: &plan.channel,
+            output_text: &output_text,
+            request_texts: &plan.texts,
+            streamed: true,
+        };
+        let mut notes: Vec<oxsum_core::SettlementGuardrailOwned> = Vec::new();
+        for policy in &plan.response_guardrails {
+            match policy.evaluate_response(&ctx) {
+                oxsum_core::Verdict::Allow => {}
+                oxsum_core::Verdict::Flag { policy, reason } => {
+                    notes.push(oxsum_core::SettlementGuardrailOwned {
+                        policy,
+                        verdict: "flagged",
+                        reason,
+                        streamed: true,
+                    });
+                }
+                oxsum_core::Verdict::Block { policy, reason } => {
+                    // A streamed block settles as a flag — the bytes are out —
+                    // but the verdict's own word stays, marked `streamed` so
+                    // the record is honest that the answer could not be held.
+                    notes.push(oxsum_core::SettlementGuardrailOwned {
+                        policy,
+                        verdict: "blocked",
+                        reason,
+                        streamed: true,
+                    });
+                }
+            }
+        }
+        if let Some(plan) = self.plan.as_mut() {
+            plan.guardrails.extend(notes);
         }
     }
 
@@ -708,6 +791,10 @@ impl Plan {
         } else {
             None
         };
+        // The guardrail verdicts serialize through their borrowed view — the
+        // owned notes live on the plan, the description reads them as references.
+        let guardrail_notes: Vec<oxsum_core::SettlementGuardrail<'_>> =
+            self.guardrails.iter().map(|note| note.borrowed()).collect();
         let settlement = Settlement {
             request: &self.request,
             channel: &self.channel,
@@ -736,6 +823,7 @@ impl Plan {
                     // writes the real figure, never a threshold it borrowed.
                     similarity: 1.0,
                 }),
+            guardrail: guardrail_notes,
             reason: reason.as_deref(),
         };
         let description = settlement.description()?;
@@ -882,6 +970,11 @@ pub fn stream(
         }
         // Upstream is done, whatever the client does next: what ends here is a finished turn.
         turn.note_upstream_end();
+        // The streamed post_call (issue #502): the bytes are already out, so
+        // the policies' verdicts can only be recorded — flagged or blocked
+        // alike lands in the settlement's `guardrail` field, a blocked one
+        // marked `streamed`.
+        turn.evaluate_response_guardrails();
         // Read the closing frame before `settle` gives the plan up.
         let closing_frame = turn.closing_frame();
         let (kind, charge) = turn.closing();
