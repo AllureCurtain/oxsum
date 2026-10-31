@@ -48,6 +48,7 @@ mod tasks;
 mod teams;
 mod tenants;
 mod tiers;
+pub mod totp;
 mod upstream_bills;
 mod upstream_sync;
 mod usage;
@@ -123,7 +124,7 @@ pub use keys::{
 };
 pub use mandates::{CreatedMandate, Mandate, PresentedMandate, VerifiedMandate, parse_presented};
 pub use metering::{MeteredEvent, MeteredHold, MeteredOutcome};
-pub use oauth::OAuthIdentity;
+pub use oauth::{ConsumedState, OAuthIdentity};
 pub use orgs::{
     AdminOrganization, Kind, Member, MembershipActor, Organization, Ownership, Role,
     UserOrganization,
@@ -156,6 +157,7 @@ pub use tasks::{
 pub use teams::Team;
 pub use tenants::Tenants;
 pub use tiers::TierProfile;
+pub use totp::{LoginOutcome, UserTotp};
 pub use upstream_bills::{
     ChannelBilling, DRIFT_ALERT_FLOOR_MINOR, DRIFT_ALERT_PCT, DailyBill, UpstreamBill,
     UpstreamBillProvider,

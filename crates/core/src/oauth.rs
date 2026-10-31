@@ -45,6 +45,17 @@ pub struct OAuthIdentity {
     pub email: String,
 }
 
+/// What a consumed OAuth state carried: the PKCE verifier and nonce an OIDC
+/// callback must still hold to finish the exchange — `None`s on a non-PKCE
+/// (GitHub) flow (issue #504).
+#[derive(Debug, Default)]
+pub struct ConsumedState {
+    /// The server-held `code_verifier` the token exchange proves it kept.
+    pub pkce_verifier: Option<String>,
+    /// The `nonce` the `id_token` must echo.
+    pub nonce: Option<String>,
+}
+
 impl Db {
     /// Mints a CSRF state for an authorize redirect. The value goes to the
     /// provider and back in the query string; only its SHA-256 is stored.
@@ -66,6 +77,37 @@ impl Db {
         Ok(state)
     }
 
+    /// Mints a CSRF state plus the PKCE pair an OIDC `code+PKCE` flow needs
+    /// (issue #504): the server-held `code_verifier` and the `nonce` the
+    /// `id_token` must echo back. Only the challenge leaves the process — the
+    /// verifier is what the token exchange proves it still holds — and both
+    /// ride the state row because both are single-use exactly when the state is.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as `WalletError`.
+    pub async fn mint_oauth_state_pkce(
+        &self,
+        provider: &str,
+        pkce_verifier: &str,
+        nonce: &str,
+    ) -> Result<String, WalletError> {
+        let state = generate_state();
+        sqlx::query(
+            "INSERT INTO oxsum.oauth_states \
+                 (state_hash, provider, pkce_verifier, nonce, expires_at) \
+             VALUES ($1, $2, $3, $4, now() + $5)",
+        )
+        .bind(hash_state(&state).as_slice())
+        .bind(provider)
+        .bind(pkce_verifier)
+        .bind(nonce)
+        .bind(STATE_LIFETIME)
+        .execute(self.pool())
+        .await?;
+        Ok(state)
+    }
+
     /// Consumes a state: stamps `used_at` and answers whether it was live —
     /// unknown, spent, expired or wrong-provider all answer `false`,
     /// indistinguishably, in one statement.
@@ -78,17 +120,39 @@ impl Db {
         state: &str,
         provider: &str,
     ) -> Result<bool, WalletError> {
-        let n = sqlx::query(
+        Ok(self
+            .consume_oauth_state_full(state, provider)
+            .await?
+            .is_some())
+    }
+
+    /// Consumes a state like [`consume_oauth_state`](Self::consume_oauth_state),
+    /// returning the PKCE pair it minted with — `None` for an unknown, spent,
+    /// expired or wrong-provider state, the same indistinguishable answer.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as `WalletError`.
+    pub async fn consume_oauth_state_full(
+        &self,
+        state: &str,
+        provider: &str,
+    ) -> Result<Option<ConsumedState>, WalletError> {
+        let row = sqlx::query(
             "UPDATE oxsum.oauth_states SET used_at = now() \
              WHERE state_hash = $1 AND provider = $2 \
-             AND used_at IS NULL AND expires_at > now()",
+             AND used_at IS NULL AND expires_at > now() \
+             RETURNING pkce_verifier, nonce",
         )
         .bind(hash_state(state).as_slice())
         .bind(provider)
-        .execute(self.pool())
-        .await?
-        .rows_affected();
-        Ok(n == 1)
+        .fetch_optional(self.pool())
+        .await?;
+        use sqlx::Row;
+        Ok(row.map(|row| ConsumedState {
+            pkce_verifier: row.try_get("pkce_verifier").ok().flatten(),
+            nonce: row.try_get("nonce").ok().flatten(),
+        }))
     }
 
     /// Resolves an OAuth identity to a session. The order is deliberate: a link

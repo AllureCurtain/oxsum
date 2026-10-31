@@ -69,8 +69,11 @@ async fn login_mints_a_session_that_authenticates() {
     let db = db(&url).await;
     let registration = register(&db, "login").await;
 
-    let CreatedSession { principal, token } =
-        db.login(&registration.user.email, PASSWORD).await.unwrap();
+    let CreatedSession { principal, token } = db
+        .login(&registration.user.email, PASSWORD)
+        .await
+        .unwrap()
+        .into_session();
     assert!(token.starts_with("oxsess-"), "token is {token}");
     assert_eq!(principal.user.id, registration.user.id);
     assert_eq!(principal.organization.id, registration.organization.id);
@@ -144,7 +147,11 @@ async fn the_plaintext_token_is_nowhere_in_the_database() {
     let url = db_or_skip!();
     let db = db(&url).await;
     let registration = register(&db, "tokenhash").await;
-    let created = db.login(&registration.user.email, PASSWORD).await.unwrap();
+    let created = db
+        .login(&registration.user.email, PASSWORD)
+        .await
+        .unwrap()
+        .into_session();
     let token = &created.token;
 
     // Every column of the row, as text: a stored token would show up in one of them.
@@ -200,7 +207,11 @@ async fn logout_revokes_and_is_idempotent() {
     let url = db_or_skip!();
     let db = db(&url).await;
     let registration = register(&db, "logout").await;
-    let created = db.login(&registration.user.email, PASSWORD).await.unwrap();
+    let created = db
+        .login(&registration.user.email, PASSWORD)
+        .await
+        .unwrap()
+        .into_session();
 
     db.logout(&created.token).await.unwrap();
     assert!(
@@ -245,7 +256,11 @@ async fn an_expired_session_stops_authenticating() {
     let url = db_or_skip!();
     let db = db(&url).await;
     let registration = register(&db, "expiry").await;
-    let created = db.login(&registration.user.email, PASSWORD).await.unwrap();
+    let created = db
+        .login(&registration.user.email, PASSWORD)
+        .await
+        .unwrap()
+        .into_session();
 
     sqlx::query(
         "UPDATE oxsum.sessions SET expires_at = now() - interval '1 minute' \
@@ -269,7 +284,11 @@ async fn a_session_dies_with_its_membership() {
     let url = db_or_skip!();
     let db = db(&url).await;
     let registration = register(&db, "membership").await;
-    let created = db.login(&registration.user.email, PASSWORD).await.unwrap();
+    let created = db
+        .login(&registration.user.email, PASSWORD)
+        .await
+        .unwrap()
+        .into_session();
     assert!(
         db.authenticate_session(&created.token)
             .await
@@ -313,7 +332,11 @@ async fn login_acts_as_the_oldest_membership() {
     .await
     .unwrap();
 
-    let created = db.login(&second.user.email, PASSWORD).await.unwrap();
+    let created = db
+        .login(&second.user.email, PASSWORD)
+        .await
+        .unwrap()
+        .into_session();
     assert_eq!(created.principal.organization.id, first.organization.id);
     assert_eq!(created.principal.role, oxsum_core::Role::Member);
 }
@@ -340,6 +363,7 @@ async fn role_scopes_constrain_key_listing_and_revocation() {
         db.login(&member_user.user.email, PASSWORD)
             .await
             .unwrap()
+            .into_session()
             .principal,
     );
 
@@ -376,6 +400,7 @@ async fn role_scopes_constrain_key_listing_and_revocation() {
         db.login(&owner.user.email, PASSWORD)
             .await
             .unwrap()
+            .into_session()
             .principal,
     );
     assert!(matches!(owner_principal.key_scope(), KeyScope::All));

@@ -184,14 +184,23 @@ static DUMMY_HASH: LazyLock<String> =
     LazyLock::new(|| password_auth::generate_hash("oxsum has no such user"));
 
 impl Db {
-    /// Logs a user in: verifies the password, then mints a session for the organization the
-    /// user acts as.
+    /// Logs a user in: verifies the password, then either mints a session or —
+    /// for a TOTP-enabled account — withholds it behind a second-factor
+    /// challenge.
     ///
     /// An unknown email and a wrong password fail identically — same error, same message —
     /// and the unknown-email path still pays for one argon2 verification, so neither timing
     /// nor wording reveals whether an account exists. The hash runs before the session row
     /// is written, and outside any transaction, so a slow hash never holds a connection.
-    pub async fn login(&self, email: &str, password: &str) -> Result<CreatedSession, WalletError> {
+    ///
+    /// A confirmed `user_totp` row turns the answer into
+    /// [`crate::totp::LoginOutcome::TotpRequired`]: the session is not minted
+    /// here — `verify_totp` mints it once the second factor lands (issue #504).
+    pub async fn login(
+        &self,
+        email: &str,
+        password: &str,
+    ) -> Result<crate::totp::LoginOutcome, WalletError> {
         let normalized = email.trim().to_lowercase();
         let row = sqlx::query(
             "SELECT user_id, email, password_hash, \
@@ -216,7 +225,15 @@ impl Db {
         if verify_password(password, &password_hash).is_err() {
             return Err(WalletError::InvalidCredentials);
         }
-        self.session_for(user.id).await
+        // A confirmed second factor withholds the session behind a challenge
+        // rather than minting it off the password alone.
+        if self.totp_enabled(user.id).await? {
+            let challenge_token = self.mint_totp_challenge(user.id).await?;
+            return Ok(crate::totp::LoginOutcome::TotpRequired { challenge_token });
+        }
+        Ok(crate::totp::LoginOutcome::Session(Box::new(
+            self.session_for(user.id).await?,
+        )))
     }
 
     /// Mints a session for a user whose credential was already checked — the

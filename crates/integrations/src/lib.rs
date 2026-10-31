@@ -25,6 +25,7 @@ pub mod facilitator;
 pub mod hyperswitch;
 pub mod mail;
 pub mod oauth;
+pub mod oidc;
 pub mod openai_costs;
 pub mod stripe;
 pub mod x402_facilitator;

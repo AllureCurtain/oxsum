@@ -92,6 +92,9 @@ oxsum-verify.workspace = true
 base64.workspace = true
 # `x402.rs` signs test payment authorizations the way a payer would.
 ed25519-dalek.workspace = true
+# `oidc.rs` signs the stub IdP's id_token the way a provider would (RS256 over
+# a checked-in throwaway key).
+jsonwebtoken.workspace = true
 
 [lints]
 workspace = true
