@@ -23,6 +23,7 @@ use uuid::Uuid;
 use crate::channels::SecretKey;
 use crate::db::Db;
 use crate::error::WalletError;
+use crate::tasks::{TASK_FAILED, TASK_SUCCEEDED};
 
 /// A request's settlement landed — the `request.settled` of the event catalog
 /// in docs/decisions.md, opt-in per endpoint because per-request traffic is
@@ -91,6 +92,8 @@ const KNOWN_EVENTS: &[&str] = &[
     ANOMALY_DETECTED,
     BUDGET_EXHAUSTION_FORECAST,
     BUDGET_THRESHOLD_CROSSED,
+    TASK_SUCCEEDED,
+    TASK_FAILED,
 ];
 
 /// How many times a delivery is attempted before it is marked `failed` — the

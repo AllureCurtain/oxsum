@@ -417,6 +417,32 @@ impl Db {
         available: Option<i64>,
     ) -> Result<(), WalletError> {
         let mut tx = self.pool().begin().await?;
+        let wrote = self.record_usage_in(&mut tx, row, available).await?;
+        if wrote {
+            tx.commit().await?;
+        } else {
+            tx.rollback().await?;
+        }
+        Ok(())
+    }
+
+    /// [`record_usage_balanced`](Self::record_usage_balanced) on the caller's
+    /// transaction: the usage row, the day rollup, the end-user day leaf, the
+    /// token-window accrual, the idempotency-claim receipt, the webhook
+    /// enqueue and the anomaly check all land where the caller commits them —
+    /// the task relay's terminal settle needs its row update and these writes
+    /// atomic (issue #503). Answers `false` when the `request_id` already has
+    /// a row — a replay writes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn record_usage_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        row: &UsageRow,
+        available: Option<i64>,
+    ) -> Result<bool, WalletError> {
         let inserted = sqlx::query(
             "INSERT INTO oxsum.usage_records \
              (request_id, tenant_id, key_id, mandate_id, model, channel, price_version, kind, entry_id, \
@@ -484,12 +510,11 @@ impl Db {
         })
         .bind(&row.status)
         .bind(&row.failure_reason)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?
         .rows_affected();
         if inserted == 0 {
-            tx.rollback().await?;
-            return Ok(());
+            return Ok(false);
         }
         // The day comes from the settlement entry itself. A usage row can
         // name a tenant whose ledger does not exist — the margin suite seeds
@@ -501,7 +526,7 @@ impl Db {
         let ledger = format!("ledger_{}", row.tenant_id.replace('"', "\"\""));
         let has_ledger = sqlx::query_scalar::<_, Option<String>>("SELECT to_regclass($1)::text")
             .bind(format!("\"{ledger}\".entries"))
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut **tx)
             .await?
             .is_some();
         if has_ledger {
@@ -530,7 +555,7 @@ impl Db {
             .bind(row.usage.reasoning_tokens)
             .bind(row.charged_minor)
             .bind(row.entry_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
         }
         // The per-customer day leaf (issue #337): a settled turn carrying an
@@ -539,7 +564,7 @@ impl Db {
         if row.status == "settled"
             && let Some(end_user) = row.usage.end_user.as_deref()
         {
-            record_usage_day(&mut tx, &ledger, &row.tenant_id, end_user, row.entry_id).await?;
+            record_usage_day(tx, &ledger, &row.tenant_id, end_user, row.entry_id).await?;
         }
         // A settled turn feeds its key's token window in the same transaction —
         // the durable rolling-minute allowance `tokensPerMinute` checks (issue
@@ -561,7 +586,7 @@ impl Db {
                 )
                 .bind(key_id)
                 .bind(tokens)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await?;
                 // Tag-scoped buckets (issue #209): the turn accrues into each
                 // bucket its tags select, in the same transaction, so a scoped
@@ -576,7 +601,7 @@ impl Db {
                     "SELECT tokens_per_minute_scopes FROM oxsum.api_keys WHERE key_id = $1",
                 )
                 .bind(key_id)
-                .fetch_optional(&mut *tx)
+                .fetch_optional(&mut **tx)
                 .await?
                 .flatten();
                 let scopes: Option<crate::keys::TpmScopes> =
@@ -595,7 +620,7 @@ impl Db {
                             .bind(key_id)
                             .bind(name)
                             .bind(tokens)
-                            .execute(&mut *tx)
+                            .execute(&mut **tx)
                             .await?;
                         }
                     }
@@ -606,7 +631,7 @@ impl Db {
                        AND window_start <= now() - interval '60 seconds'",
                 )
                 .bind(key_id)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await?;
             }
         }
@@ -630,14 +655,14 @@ impl Db {
         )
         .bind(&row.request_id)
         .bind(&receipt)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
         // Webhook subscribers hear about the turn in the same transaction, so a
         // landed settlement and its notification can never diverge — and the
         // early return on a replayed row above keeps the queue free of
         // duplicates (issue #144).
         Self::enqueue_request_settled(
-            &mut tx,
+            tx,
             &row.tenant_id,
             serde_json::json!({
                 "requestId": row.request_id,
@@ -655,7 +680,7 @@ impl Db {
         // An anomalous close is its own event (issue #200): a `usage` row and a
         // zero-charge refusal carry no anomaly to report.
         Self::enqueue_anomaly(
-            &mut tx,
+            tx,
             &row.tenant_id,
             row.kind,
             serde_json::json!({
@@ -673,21 +698,20 @@ impl Db {
         // balance.low judges the post-settle balance the caller measured against
         // the endpoint's threshold, once per crossing (issue #200).
         if let (Some(available), Ok(organization)) = (available, Uuid::parse_str(&row.tenant_id)) {
-            Self::enqueue_balance_low(&mut tx, organization, available).await?;
+            Self::enqueue_balance_low(tx, organization, available).await?;
         }
         // The settling key's budget window is forecast off the same settled
         // figures this transaction just wrote (issue #220): a key carrying both
         // `spendLimitMinor` and `budgetDuration` is projected forward, and the
         // warning enqueues once per window when the projection crosses inside it.
-        Self::forecast_key_budget(&mut tx, &row.tenant_id, row.key_id).await?;
+        Self::forecast_key_budget(tx, &row.tenant_id, row.key_id).await?;
         // Armed budget thresholds re-evaluate off those same settled figures
         // (issue #232) — an organization the settle belongs to and the ledger
         // it posts to are both required for the read.
         if let Ok(organization) = Uuid::parse_str(&row.tenant_id) {
-            Self::budget_thresholds(&mut tx, organization, &row.tenant_id, row.key_id).await?;
+            Self::budget_thresholds(tx, organization, &row.tenant_id, row.key_id).await?;
         }
-        tx.commit().await?;
-        Ok(())
+        Ok(true)
     }
 
     /// `budget.exhaustion_forecast` (issue #220): project the settling key's

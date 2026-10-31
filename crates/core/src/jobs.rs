@@ -55,6 +55,11 @@ pub mod kinds {
     /// `expired`. Leader-required — a second runner would roll the same period
     /// twice inside one organization.
     pub const SUBSCRIPTION_ROLLOVERS: &str = "subscription-rollovers";
+    /// The task-relay's upstream status pass (issue #503): ask each open
+    /// task's channel for the job's state and settle the hold on the terminal
+    /// answer. Unleadered — the pass is per-task, and two workers polling the
+    /// same task race on the settlement's derived key, which only one can win.
+    pub const POLL_TASKS: &str = "poll-tasks";
 }
 
 /// How long a claimed run may take before another worker's claim assumes the
@@ -174,6 +179,7 @@ pub fn next_run(kind: &str) -> Option<Duration> {
     Some(match kind {
         SWEEP_HOLDS => Duration::seconds(60),
         DELIVER_WEBHOOKS => Duration::seconds(30),
+        POLL_TASKS => Duration::seconds(30),
         RECONCILE | STATEMENTS | RETENTION | SYNC_UPSTREAM_PRICES | UPSTREAM_BILL_SYNC
         | USAGE_ANCHORS => Duration::days(1),
         // Anchoring is hourly: often enough that a head ages at most an hour
