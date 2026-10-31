@@ -551,7 +551,7 @@ async fn names_addresses_and_prices_that_could_not_be_used_are_refused() {
             .is_err()
     );
     assert!(
-        db.set_channel("ok", "https://x.example", "sk", "gemini", &key())
+        db.set_channel("ok", "https://x.example", "sk", "grok", &key())
             .await
             .is_err(),
         "a protocol with no adapter is refused: the channel could never normalize usage"
