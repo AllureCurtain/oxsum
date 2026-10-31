@@ -157,6 +157,30 @@ async fn an_unknown_key_is_unauthorized() {
     assert!(!body["error"]["message"].as_str().unwrap().contains("oxs-"));
 }
 
+/// A storage failure resolving a credential is not a bad credential (issue
+/// #486): the auth middleware used to fold any lookup error into `None`, so a
+/// saturated pool answered `UNAUTHORIZED` — the probe's stray 401 — instead of
+/// the 429-class refusal the service itself is reporting. With every pooled
+/// connection held, a valid key must fail as `POOL_BUSY`, still saying nothing
+/// about the credential.
+#[tokio::test]
+async fn a_saturated_pool_is_busy_not_unauthorized() {
+    let (app, pool) = app_or_skip!(Signup::Open);
+    let (_registration, key) = register(&app, "busy-pool").await;
+
+    // Check out every connection and hold them: the credential lookup times
+    // out of the pool exactly like the issue's pile-up left it.
+    let mut held = Vec::new();
+    for _ in 0..pool.options().get_max_connections() {
+        held.push(pool.acquire().await.expect("a connection checks out"));
+    }
+    let (status, body) = call(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    drop(held);
+
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert_eq!(body["error"]["code"], "POOL_BUSY", "{body}");
+}
+
 #[tokio::test]
 async fn registering_rejects_bad_input() {
     let (app, _pool) = app_or_skip!(Signup::Open);
