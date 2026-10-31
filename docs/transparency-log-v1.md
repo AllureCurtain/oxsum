@@ -238,6 +238,8 @@ Verdict: `Ok` or `Malformed`/`WrongOrigin`/`BindingMismatch`/`HashMismatch`/`Uns
 
 Verdict: `Ok` or `Malformed`/`WrongOrigin`/`HeadMismatch`/`WindowMismatch`/`RollupMismatch`/`Unsigned`/`BadSignature`/`Absent`.
 
+Two consumers run this check off a single answer — `GET /api/v1/statements/{id}/proof` serves the `json` wire plus the `check` inputs in one body, and the `verify-oxsum-bill` package's `<verify-statement>` element splits that bundle and runs it in the page.
+
 ### 5.8 `verify_usage_report` — a signed end-user report
 
 Before any check runs, every entry in the bundle — the marker and each shown row — is `adopt_verified` against its recorded `contentHash`: a tampered entry fails adoption with `Malformed` before its proof is ever asked. The signature inputs are the bundle JSON, `expected_origin`, `expected_end_user`, and an optional `key` the caller fetched through a channel it trusts.

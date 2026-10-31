@@ -61,6 +61,30 @@ The wasm module instantiates on first verify, not on attach, so the element cost
 
 The `server`+`entry` mode fetches the proof endpoint cross-origin — embed it on the same origin the endpoint serves, or a deployment that answers `Access-Control-Allow-Origin` for the page. A page that cannot reach the endpoint can still use `bundle` or the paste form, which needs no fetch at all.
 
+## `<verify-statement>` — the statement check as an element
+
+`verify-oxsum-bill/verify-statement` registers a `<verify-statement>` custom element that runs `verifyStatementAnchor` inside a shadow root — the statement counterpart to `<verify-bill>`, fed by the self-contained bundle `GET /api/v1/statements/{id}/proof` answers:
+
+```html
+<script type="module" src="verify-oxsum-bill/verify-statement"></script>
+
+<!-- the element fetches the bundle itself -->
+<verify-statement server="https://oxsum.example.com"
+                  statement="a8f3…uuid"></verify-statement>
+
+<!-- or render its own paste-a-bundle form -->
+<verify-statement></verify-statement>
+```
+
+| Attribute | Meaning |
+| --- | --- |
+| `server` + `statement` | The element GETs `{server}/api/v1/statements/{id}/proof` itself |
+| `bundle` | The proof JSON verbatim — or left unset to render a paste form |
+
+The bundle is a superset of what the check consumes: the element splits it into the detail wire `{statement, lines, anchor}` and the check `{windowHashes, expectedHead, expectedOrigin}`, so a customer drops the endpoint's answer in and gets a verdict — no database read, no `/log/head` fetch, nothing to stitch. On a deployment that signs no heads the bundle's `anchor.note` and `expectedHead` are `null`, and the element says so: the window fold and the rollup digest are what was verified, not a signature that was never there.
+
+The wasm module instantiates on first verify, not on attach, and a browser without WebAssembly renders a readable fallback rather than failing blank — the same rules `<verify-bill>` keeps.
+
 ## License
 
 MIT OR Apache-2.0.

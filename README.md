@@ -33,7 +33,7 @@ The API reference is in [docs/api.md](docs/api.md).
 
 **[oxsum.785777.xyz](https://oxsum.785777.xyz)** is a running deployment against a real upstream (DeepSeek). Register an account — new signups get 5 demo credits — or log in as `admin@oxsum.local` / `admin-password` to see the seeded world: 800 credits of balance, 100+ settled turns in the ledger, and a signed head you can verify on `/verify`.
 
-Every tenant head is cosigned by an independent witness — a second oxsum process with its own key and database — so `/api/v1/log/checkpoint` serves a third-party `cosignature/v1` alongside the operator's signature, and the bill page reports "Witnessed by N." The same check is a product, not only a page: the [`verify-oxsum-bill`](web/verify-sdk) package verifies a bill in any browser, and its `<verify-bill>` element drops the whole proof card onto a host page with one `<script>` tag. The wire protocol both speak is [docs/transparency-log-v1.md](docs/transparency-log-v1.md).
+Every tenant head is cosigned by an independent witness — a second oxsum process with its own key and database — so `/api/v1/log/checkpoint` serves a third-party `cosignature/v1` alongside the operator's signature, and the bill page reports "Witnessed by N." The same check is a product, not only a page: the [`verify-oxsum-bill`](web/verify-sdk) package verifies a bill in any browser, and its `<verify-bill>` and `<verify-statement>` elements drop the whole proof card onto a host page with one `<script>` tag. The wire protocol both speak is [docs/transparency-log-v1.md](docs/transparency-log-v1.md).
 
 ## Demo
 
