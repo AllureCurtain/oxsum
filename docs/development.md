@@ -35,8 +35,8 @@ verifies the path-to-crate mapping with stubbed git output."
 ### Demo data
 
 `cargo run -p oxsum-server -- seed` fills a fresh deployment with a believable world and exits
-without serving: the `demo@oxsum.local` owner and a second member `dev@oxsum.local` (both under
-the password `demo-password-1234`), the member under a committed-spend budget, three API keys —
+without serving: the `admin@oxsum.local` owner and a second member `dev@oxsum.local` (both under
+the password `admin-password`), the member under a committed-spend budget, three API keys —
 the owner's full key, a `staging` key capped and allowlisted to the first catalog model, and the
 member's `experiments` key — three manual-rail top-ups, a month of settled gateway turns in every
 settlement kind (`usage`, `capped`, `unpriced`, all with real `Settlement` descriptions the
@@ -613,7 +613,7 @@ start the server against the restored copy
   OXSUM_ADDR=127.0.0.1:3012 cargo run -p oxsum-server
 
 GET  /healthz                                 200
-POST /api/v1/auth/login (demo@oxsum.local)    200
+POST /api/v1/auth/login (admin@oxsum.local)   200
 GET  /api/v1/bills?limit=1                    the seeded top-ups
 GET  /api/v1/entries/{entryId}/proof          the bundle
 POST /verify  bundle=… expected_hash=…        "The bill verifies."

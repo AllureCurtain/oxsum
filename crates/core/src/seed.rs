@@ -30,13 +30,14 @@ use crate::{
     statement_period,
 };
 
-/// The account the seed creates — the login the report prints.
-pub const DEMO_EMAIL: &str = "demo@oxsum.local";
+/// The account the seed creates — the login the report prints. `admin` keeps
+/// the dev loop honest: anyone reading the local stack already knows it.
+pub const DEMO_EMAIL: &str = "admin@oxsum.local";
 /// The second member on the demo organization, under a member budget.
 pub const MEMBER_EMAIL: &str = "dev@oxsum.local";
-/// Both demo accounts share one documented password; it is long enough for the
-/// signup rule and lives only in the seed output and the docs.
-pub const DEMO_PASSWORD: &str = "demo-password-1234";
+/// Both demo accounts share one documented password; it clears the 12-char
+/// minimum and lives only in the seed output and the docs.
+pub const DEMO_PASSWORD: &str = "admin-password";
 /// The demo organization's name.
 pub const DEMO_ORGANIZATION: &str = "Acme Demo";
 
