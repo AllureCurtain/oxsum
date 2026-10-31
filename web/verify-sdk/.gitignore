@@ -2,3 +2,8 @@ node_modules/
 dist/
 tsconfig.tsbuildinfo
 *.tsbuildinfo
+# The wasm-bindgen output is a build artifact — `scripts/build-verify-wasm.sh`
+# populates wasm/ before a package build. Only the loader's import path is
+# committed, never the binary.
+wasm/verify_wasm.js
+wasm/verify_wasm_bg.wasm
