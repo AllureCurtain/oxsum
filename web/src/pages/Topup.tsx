@@ -15,7 +15,6 @@ import { TextInput } from "../components/ui";
 import {
   Tabs,
   TabsContent,
-  TabsIndicator,
   TabsList,
   TabsTrigger,
 } from "../components/ui";
@@ -447,7 +446,6 @@ export function Topup() {
           <TabsTrigger value="airwallex">Airwallex</TabsTrigger>
           <TabsTrigger value="hyperswitch">Hyperswitch</TabsTrigger>
           <TabsTrigger value="redeem">Redeem code</TabsTrigger>
-          <TabsIndicator variant="pill" />
         </TabsList>
         <TabsContent value="manual" className="mt-4">
           <Card title="Manual top-up">

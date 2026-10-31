@@ -171,8 +171,8 @@ export function Chat() {
         <p className="text-sm text-muted">Minting the chat key…</p>
       ) : (
         <>
-          <SelectRoot value={model} onValueChange={(v) => setModel(String(v))} className="w-72">
-            <SelectTrigger aria-label="model">
+          <SelectRoot value={model} onValueChange={(v) => setModel(String(v))}>
+            <SelectTrigger aria-label="model" className="w-72">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
