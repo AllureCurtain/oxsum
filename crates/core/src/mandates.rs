@@ -80,6 +80,10 @@ pub struct Mandate {
     /// The model allowlist — a subset of the key's own; `None` means all the
     /// key serves.
     pub models: Option<Vec<String>>,
+    /// The guardrail policies the mandate's turns must run — a subset of the
+    /// key's own `requiredPolicies` (issue #502); `None` requires none beyond
+    /// the key's.
+    pub required_policies: Option<Vec<String>>,
     /// When the mandate starts being honored.
     #[serde(with = "time::serde::rfc3339")]
     pub not_before: OffsetDateTime,
@@ -117,6 +121,10 @@ pub struct VerifiedMandate {
     pub cap_minor: i64,
     /// The model allowlist, narrower than the key's or `None`.
     pub models: Option<Vec<String>>,
+    /// The guardrail policies the mandate's turns must run (issue #502): read
+    /// off the stored mandate row at admission — never the signed blob, whose
+    /// canonical bytes are the signature. A subset of the key's own.
+    pub required_policies: Option<Vec<String>>,
     /// The window the mandate is honored inside, unix seconds.
     pub not_before: i64,
     pub not_after: i64,
@@ -233,6 +241,10 @@ pub fn parse_presented(blob: &str, verifying: &VerifyingKey) -> Option<Presented
             organization_id: Uuid::parse_str(&wire.org_id).ok()?,
             cap_minor: wire.cap_minor,
             models: wire.models,
+            // The policies live on the stored row, not the signed blob —
+            // `parse_presented` verifies the bytes only, and admission reads
+            // the mandate row's `required_policies` by `mandate_id`.
+            required_policies: None,
             not_before: wire.not_before,
             not_after: wire.not_after,
             hash: mandate_hash(blob),
@@ -267,6 +279,7 @@ impl Db {
         scope: KeyScope,
         cap_minor: i64,
         models: Option<Vec<String>>,
+        required_policies: Option<Vec<String>>,
         not_before: Option<OffsetDateTime>,
         not_after: OffsetDateTime,
         secret: &crate::channels::SecretKey,
@@ -281,7 +294,8 @@ impl Db {
         let key = match scope {
             KeyScope::Own(user_id) => {
                 sqlx::query(
-                    "SELECT spend_limit_minor, model_allowlist, mandate_signing_seed \
+                    "SELECT spend_limit_minor, model_allowlist, mandate_signing_seed, \
+                            required_policies \
                      FROM oxsum.api_keys \
                      WHERE organization_id = $1 AND key_id = $2 AND created_by = $3 \
                      FOR UPDATE",
@@ -294,7 +308,8 @@ impl Db {
             }
             KeyScope::Organization | KeyScope::All => {
                 sqlx::query(
-                    "SELECT spend_limit_minor, model_allowlist, mandate_signing_seed \
+                    "SELECT spend_limit_minor, model_allowlist, mandate_signing_seed, \
+                            required_policies \
                      FROM oxsum.api_keys WHERE organization_id = $1 AND key_id = $2 \
                      FOR UPDATE",
                 )
@@ -327,6 +342,21 @@ impl Db {
             return Err(WalletError::InvalidInput(format!(
                 "mandate model {model:?} is outside the key's modelAllowlist"
             )));
+        }
+        // The mandate's policies narrow like its models: it may require a
+        // subset of the key's `requiredPolicies` — tighten the call it
+        // delegates — but never name a policy the key does not already run,
+        // which would be a rule the delegate invented, not a delegation.
+        let key_policies: Option<Vec<String>> = key.try_get("required_policies")?;
+        if let Some(policies) = &required_policies {
+            crate::guardrail::validate_policy_names(policies)?;
+            let key_required: Vec<&String> =
+                key_policies.as_deref().unwrap_or_default().iter().collect();
+            if let Some(policy) = policies.iter().find(|p| !key_required.contains(p)) {
+                return Err(WalletError::InvalidInput(format!(
+                    "mandate policy {policy:?} is outside the key's requiredPolicies"
+                )));
+            }
         }
         let not_before = not_before.unwrap_or_else(OffsetDateTime::now_utc);
         if not_after <= not_before {
@@ -377,6 +407,7 @@ impl Db {
             organization_id,
             cap_minor,
             models,
+            required_policies,
             not_before,
             not_after,
             nonce,
@@ -386,8 +417,9 @@ impl Db {
 
         sqlx::query(
             "INSERT INTO oxsum.mandates \
-             (mandate_id, key_id, organization_id, cap_minor, models, not_before, not_after, nonce) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+             (mandate_id, key_id, organization_id, cap_minor, models, required_policies, \
+              not_before, not_after, nonce) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(mandate.mandate_id)
         .bind(mandate.key_id)
@@ -396,6 +428,14 @@ impl Db {
         .bind(
             mandate
                 .models
+                .as_ref()
+                .map(serde_json::to_value)
+                .transpose()
+                .unwrap_or_default(),
+        )
+        .bind(
+            mandate
+                .required_policies
                 .as_ref()
                 .map(serde_json::to_value)
                 .transpose()
@@ -427,7 +467,8 @@ impl Db {
             KeyScope::Own(user_id) => {
                 sqlx::query(
                     "SELECT m.mandate_id, m.key_id, m.organization_id, m.cap_minor, \
-                            m.models, m.not_before, m.not_after, m.nonce, m.created_at \
+                            m.models, m.required_policies, m.not_before, m.not_after, \
+                            m.nonce, m.created_at \
                      FROM oxsum.mandates m \
                      JOIN oxsum.api_keys k ON k.key_id = m.key_id \
                      WHERE m.organization_id = $1 AND m.key_id = $2 AND k.created_by = $3 \
@@ -442,7 +483,7 @@ impl Db {
             KeyScope::Organization | KeyScope::All => {
                 sqlx::query(
                     "SELECT mandate_id, key_id, organization_id, cap_minor, models, \
-                            not_before, not_after, nonce, created_at \
+                            required_policies, not_before, not_after, nonce, created_at \
                      FROM oxsum.mandates \
                      WHERE organization_id = $1 AND key_id = $2 \
                      ORDER BY created_at DESC, mandate_id",
@@ -491,17 +532,41 @@ impl Db {
             })?;
         Ok(Some(SigningKey::from_bytes(&seed_bytes).verifying_key()))
     }
+
+    /// The policies a presented mandate was minted with (issue #502): read off
+    /// the stored row by `mandate_id` — the signed blob never carries them, so
+    /// a delegate cannot strip or widen the requirement by editing bytes the
+    /// signature does not cover. `None` means the mandate is unknown or
+    /// requires none; the caller treats either as no added requirement (the
+    /// blob's own verification already proved the mandate was minted here).
+    pub async fn mandate_required_policies(
+        &self,
+        mandate_id: Uuid,
+    ) -> Result<Vec<String>, WalletError> {
+        let policies: Option<serde_json::Value> = sqlx::query_scalar(
+            "SELECT required_policies FROM oxsum.mandates WHERE mandate_id = $1",
+        )
+        .bind(mandate_id)
+        .fetch_optional(self.pool())
+        .await?
+        .flatten();
+        Ok(policies
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default())
+    }
 }
 
 /// Maps one `oxsum.mandates` row to [`Mandate`].
 fn mandate_from_row(row: &sqlx::postgres::PgRow) -> Result<Mandate, WalletError> {
     let models: Option<serde_json::Value> = row.try_get("models")?;
+    let required_policies: Option<serde_json::Value> = row.try_get("required_policies")?;
     Ok(Mandate {
         mandate_id: row.try_get("mandate_id")?,
         key_id: row.try_get("key_id")?,
         organization_id: row.try_get("organization_id")?,
         cap_minor: row.try_get("cap_minor")?,
         models: models.and_then(|v| serde_json::from_value(v).ok()),
+        required_policies: required_policies.and_then(|v| serde_json::from_value(v).ok()),
         not_before: row.try_get("not_before")?,
         not_after: row.try_get("not_after")?,
         nonce: row.try_get("nonce")?,

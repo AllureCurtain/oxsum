@@ -102,6 +102,7 @@ async fn login_mints_a_session_that_authenticates() {
             requests_per_minute: None,
             tokens_per_minute: None,
             tokens_per_minute_scopes: None,
+            required_policies: None,
         },
     });
     assert_eq!(key_principal.user_id(), None);

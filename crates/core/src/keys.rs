@@ -34,7 +34,7 @@ pub(crate) const MAX_MODEL: usize = 128;
 const KEY_COLS: &str = "key_id, name, prefix, created_by, created_at, expires_at, \
                         revoked_at, spend_limit_minor, budget_duration, model_allowlist, \
                         requests_per_minute, max_concurrent_holds, tokens_per_minute, \
-                        tokens_per_minute_scopes";
+                        tokens_per_minute_scopes, required_policies";
 
 /// The rule every model allowlist follows — a key's own, or a tier's: null or a
 /// non-empty list of non-empty model names.
@@ -256,6 +256,10 @@ pub struct KeyConstraints {
     /// an additional cap alongside `tokens_per_minute`, not a replacement.
     /// `None` (or an empty map) scopes nothing.
     pub tokens_per_minute_scopes: Option<TpmScopes>,
+    /// The guardrail policies the key's turns must run (issue #502): a set of
+    /// `guardrail_policies` names evaluated on `pre_call`/`post_call`. `None`
+    /// requires none — a turn still runs whatever the channel binds.
+    pub required_policies: Option<Vec<String>>,
 }
 
 impl KeyConstraints {
@@ -286,6 +290,9 @@ impl KeyConstraints {
         }
         if let Some(scopes) = &self.tokens_per_minute_scopes {
             validate_tpm_scopes(scopes)?;
+        }
+        if let Some(policies) = &self.required_policies {
+            crate::guardrail::validate_policy_names(policies)?;
         }
         Ok(())
     }
@@ -352,6 +359,9 @@ pub struct ApiKey {
     pub tokens_per_minute: Option<i32>,
     /// The key's tag-scoped token allowances (issue #209); `None` scopes nothing.
     pub tokens_per_minute_scopes: Option<TpmScopes>,
+    /// The guardrail policies the key's turns must run (issue #502); `None`
+    /// requires none — a turn still runs whatever the channel binds.
+    pub required_policies: Option<Vec<String>>,
 }
 
 /// The credential behind a key-authenticated request: which key acted, and the
@@ -374,6 +384,10 @@ pub struct ActingKey {
     /// (issue #209), checked bucket-by-bucket against the same durable window.
     /// `None` scopes nothing.
     pub tokens_per_minute_scopes: Option<TpmScopes>,
+    /// The guardrail policies the key's turns must run (issue #502), carried
+    /// onto the principal so admission resolves the turn's set without a
+    /// second key read. `None` requires none.
+    pub required_policies: Option<Vec<String>>,
 }
 
 /// A key plus its secret, returned exactly once: at creation.
@@ -404,6 +418,10 @@ impl Db {
             ));
         }
         constraints.validate()?;
+        // A required policy must resolve before the key is written — see
+        // `update_key_constraints` for the rule.
+        self.require_guardrail_policies(&constraints.required_policies)
+            .await?;
         let mut tx = self.pool().begin().await?;
         let created = insert(
             &mut tx,
@@ -431,7 +449,7 @@ impl Db {
             "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, \
                     o.display_currency, o.display_rate_per_credit, \
                     k.key_id, k.spend_limit_minor, k.requests_per_minute, \
-                    k.tokens_per_minute, k.tokens_per_minute_scopes \
+                    k.tokens_per_minute, k.tokens_per_minute_scopes, k.required_policies \
              FROM oxsum.api_keys k JOIN oxsum.organizations o USING (organization_id) \
              WHERE k.secret_hash = $1 \
                AND k.revoked_at IS NULL \
@@ -451,6 +469,7 @@ impl Db {
                 tokens_per_minute_scopes: scopes_from_json(
                     row.try_get::<Option<serde_json::Value>, _>("tokens_per_minute_scopes")?,
                 ),
+                required_policies: row.try_get("required_policies")?,
             };
             Ok((organization, key))
         })
@@ -477,6 +496,11 @@ impl Db {
         constraints: KeyConstraints,
     ) -> Result<Option<ApiKey>, WalletError> {
         constraints.validate()?;
+        // A required policy must resolve: a name no `guardrail_policies` row
+        // holds would silently unguard the turn it claims to protect, so the
+        // write refuses before it lands rather than store a dangling name.
+        self.require_guardrail_policies(&constraints.required_policies)
+            .await?;
         // `model_allowlist` moves into its bind below, so the scopes JSON — a
         // borrow of the whole struct — is built before any field leaves.
         let scopes = scopes_json(&constraints);
@@ -489,6 +513,7 @@ impl Db {
                      SET spend_limit_minor = $4, budget_duration = $5, model_allowlist = $6, \
                          requests_per_minute = $7, max_concurrent_holds = $8, \
                          tokens_per_minute = $9, tokens_per_minute_scopes = $10, \
+                         required_policies = $11, \
                          budget_forecast_sent_for = NULL \
                      WHERE organization_id = $1 AND key_id = $2 AND created_by = $3 \
                      RETURNING {KEY_COLS}"
@@ -503,6 +528,7 @@ impl Db {
                 .bind(constraints.max_concurrent_holds)
                 .bind(constraints.tokens_per_minute)
                 .bind(scopes.clone())
+                .bind(constraints.required_policies.clone())
                 .fetch_optional(self.pool())
                 .await?
             }
@@ -512,6 +538,7 @@ impl Db {
                      SET spend_limit_minor = $3, budget_duration = $4, model_allowlist = $5, \
                          requests_per_minute = $6, max_concurrent_holds = $7, \
                          tokens_per_minute = $8, tokens_per_minute_scopes = $9, \
+                         required_policies = $10, \
                          budget_forecast_sent_for = NULL \
                      WHERE organization_id = $1 AND key_id = $2 \
                      RETURNING {KEY_COLS}"
@@ -525,6 +552,7 @@ impl Db {
                 .bind(constraints.max_concurrent_holds)
                 .bind(constraints.tokens_per_minute)
                 .bind(scopes)
+                .bind(constraints.required_policies.clone())
                 .fetch_optional(self.pool())
                 .await?
             }
@@ -758,8 +786,8 @@ pub(crate) async fn insert(
              (key_id, organization_id, name, prefix, secret_hash, created_by, expires_at, \
               spend_limit_minor, budget_duration, model_allowlist, \
               requests_per_minute, max_concurrent_holds, tokens_per_minute, \
-              tokens_per_minute_scopes) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
+              tokens_per_minute_scopes, required_policies) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) \
          RETURNING {KEY_COLS}"
     ))
     .bind(Uuid::new_v4())
@@ -776,6 +804,7 @@ pub(crate) async fn insert(
     .bind(constraints.max_concurrent_holds)
     .bind(constraints.tokens_per_minute)
     .bind(scopes)
+    .bind(constraints.required_policies.clone())
     .fetch_one(&mut **tx)
     .await
     .map_err(|e| conflict_or_storage(e, "api_keys_secret_hash_key", "key collision"))?;
@@ -847,6 +876,7 @@ fn key_from_row(row: &sqlx::postgres::PgRow) -> Result<ApiKey, WalletError> {
         tokens_per_minute_scopes: scopes_from_json(
             row.try_get::<Option<serde_json::Value>, _>("tokens_per_minute_scopes")?,
         ),
+        required_policies: row.try_get("required_policies")?,
     })
 }
 

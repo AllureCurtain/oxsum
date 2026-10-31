@@ -261,6 +261,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0064_semantic_cache",
         include_str!("../migrations/0064_semantic_cache.sql"),
     ),
+    (
+        "0065_guardrails",
+        include_str!("../migrations/0065_guardrails.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.

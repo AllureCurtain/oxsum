@@ -22,6 +22,7 @@ mod display;
 mod email_tokens;
 mod entitlement;
 mod error;
+mod guardrail;
 mod heads;
 mod holds;
 mod idempotency;
@@ -64,10 +65,11 @@ pub use adapters::{
 pub use anomaly::{AnomalyFacts, Severity, anomaly_score};
 pub use audit::{AuditEntry, AuditPage, action as audit_action};
 pub use billing::{
-    BillLine, BillingMode, CacheRef, ItemizedCharge, MandateRef, MeteredSettlement, MeteredUsage,
-    Price, PriceBook, PriceRule, PriceSet, RuleMatch, Settlement, SettlementCache, SettlementKind,
-    SettlementMandate, SettlementRecord, SettlementSubscription, SubscriptionRef, UpstreamPrices,
-    estimate_tokens, hold_description, input_upper_bound,
+    BillLine, BillingMode, CacheRef, GuardrailRef, ItemizedCharge, MandateRef, MeteredSettlement,
+    MeteredUsage, Price, PriceBook, PriceRule, PriceSet, RuleMatch, Settlement, SettlementCache,
+    SettlementGuardrail, SettlementGuardrailOwned, SettlementKind, SettlementMandate,
+    SettlementRecord, SettlementSubscription, SubscriptionRef, UpstreamPrices, estimate_tokens,
+    hold_description, input_upper_bound,
 };
 pub use cache::{CachePolicy, CacheStore, CachedAnswer, PromptPart, prompt_digest};
 pub use channels::{
@@ -93,6 +95,11 @@ pub use entitlement::{
     MandateVerdict, RpmVerdict, TpmVerdict,
 };
 pub use error::WalletError;
+pub use guardrail::{
+    Guardrail, GuardrailBinding, GuardrailPolicy, GuardrailSet, KeywordConfig, KeywordPattern,
+    KeywordPolicy, ModerationConfig, PiiScanner, RequestContext, ResponseContext, Verdict,
+    validate_policy_names,
+};
 pub use heads::{
     Consistency, Cosigner, HeadSigningKey, KeyPublication, MemoryWitnessStore, Origin,
     PRICE_ROW_DOMAIN, SignedHead, SignedPriceHead, USAGE_ANCHOR_DOCUMENT, USAGE_DAY_DOMAIN,

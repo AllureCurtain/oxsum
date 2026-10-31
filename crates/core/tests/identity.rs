@@ -502,6 +502,8 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "deposits".to_owned(),
             "device_codes".to_owned(),
             "email_tokens".to_owned(),
+            "guardrail_bindings".to_owned(),
+            "guardrail_policies".to_owned(),
             "idempotency_records".to_owned(),
             "invitations".to_owned(),
             "jobs".to_owned(),

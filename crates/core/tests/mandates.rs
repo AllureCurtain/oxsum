@@ -111,6 +111,7 @@ async fn mint(
         cap_minor,
         models,
         None,
+        None,
         not_after,
         &secret(),
     )
@@ -230,6 +231,7 @@ async fn a_mint_may_only_narrow_the_key() {
             20 * ONE,
             None,
             None,
+            None,
             OffsetDateTime::now_utc() + Duration::hours(1),
             &secret(),
         )
@@ -246,6 +248,7 @@ async fn a_mint_may_only_narrow_the_key() {
             5 * ONE,
             Some(vec!["mock-b".to_owned()]),
             None,
+            None,
             OffsetDateTime::now_utc() + Duration::hours(1),
             &secret(),
         )
@@ -261,6 +264,7 @@ async fn a_mint_may_only_narrow_the_key() {
             world.key.key_id,
             KeyScope::Organization,
             5 * ONE,
+            None,
             None,
             Some(now),
             now - Duration::hours(1),
@@ -310,6 +314,7 @@ async fn a_members_scope_limits_which_keys_mint() {
             // Any member id: the key's `created_by` is NULL, so `Own` never reaches it.
             KeyScope::Own(Uuid::new_v4()),
             5 * ONE,
+            None,
             None,
             None,
             OffsetDateTime::now_utc() + Duration::hours(1),
@@ -463,6 +468,7 @@ async fn a_mandate_for_another_key_or_out_of_window_is_refused() {
             KeyScope::Organization,
             5 * ONE,
             None,
+            None,
             Some(OffsetDateTime::now_utc() + Duration::hours(1)),
             OffsetDateTime::now_utc() + Duration::hours(3),
             &secret(),
@@ -488,6 +494,7 @@ async fn a_mandate_for_another_key_or_out_of_window_is_refused() {
             world.key.key_id,
             KeyScope::Organization,
             5 * ONE,
+            None,
             None,
             Some(OffsetDateTime::now_utc() - Duration::hours(2)),
             OffsetDateTime::now_utc() - Duration::hours(1),

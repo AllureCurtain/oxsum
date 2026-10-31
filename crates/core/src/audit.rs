@@ -70,6 +70,10 @@ pub mod action {
     pub const SUBSCRIPTION_PLAN_SET: &str = "subscription.plan.set";
     pub const SUBSCRIPTION_BIND: &str = "subscription.bind";
     pub const SUBSCRIPTION_CANCEL: &str = "subscription.cancel";
+    pub const GUARDRAIL_POLICY_SET: &str = "guardrail.policy.set";
+    pub const GUARDRAIL_POLICY_DELETE: &str = "guardrail.policy.delete";
+    pub const GUARDRAIL_BINDING_SET: &str = "guardrail.binding.set";
+    pub const GUARDRAIL_BINDING_DELETE: &str = "guardrail.binding.delete";
 
     /// Every action the surface writes — the `action` filter's vocabulary.
     pub const ALL: &[&str] = &[
@@ -99,6 +103,10 @@ pub mod action {
         SUBSCRIPTION_PLAN_SET,
         SUBSCRIPTION_BIND,
         SUBSCRIPTION_CANCEL,
+        GUARDRAIL_POLICY_SET,
+        GUARDRAIL_POLICY_DELETE,
+        GUARDRAIL_BINDING_SET,
+        GUARDRAIL_BINDING_DELETE,
     ];
 }
 
