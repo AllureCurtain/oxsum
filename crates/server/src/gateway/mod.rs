@@ -986,6 +986,61 @@ async fn run(
         })
         .collect();
 
+    // The semantic cache (issue #497): the primary route's channel is the one
+    // a miss would be written under, so its `settings.semanticCache` decides
+    // whether this request reads the store at all. A hit is served — and
+    // billed at the cache-read rate — before any fresh-turn freeze is taken:
+    // the answer is already paid for once, so the turn reserves only what the
+    // replay itself costs. The lookup is org-scoped and keyed by
+    // `(channel, model, digest)`, so one tenant's answer can never reach
+    // another's, and a hit on a channel that opted out is simply a miss.
+    // A streamed request never looks: the store holds whole bodies, and a
+    // client that asked for SSE cannot be handed one — re-chunking a finished
+    // answer is a feature, not this one's (whole-response hits only).
+    let cache_policy = if request.stream {
+        oxsum_core::CachePolicy::default()
+    } else {
+        oxsum_core::CachePolicy::of(Some(&primary.settings)).map_err(|error| {
+            GatewayError::upstream(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("the channel's semanticCache settings are unreadable: {error}"),
+                None,
+            )
+        })?
+    };
+    let cache_key = if cache_policy.enabled {
+        oxsum_core::prompt_digest(
+            surface.protocol(),
+            &request.model,
+            &request.prompt_parts,
+            cache_policy.exclude_system,
+        )
+        .map(|digest| (digest, cache_policy))
+    } else {
+        None
+    };
+    if let Some((digest, _policy)) = &cache_key
+        && let Some(hit) = state
+            .db
+            .cache_lookup(organization.id, primary.channel_id, &request.model, digest)
+            .await?
+    {
+        return serve_cache_hit(
+            state,
+            organization,
+            key,
+            &request,
+            request_id,
+            primary,
+            hit,
+            adapter,
+            discount_percent,
+            mandate,
+            turn_span,
+        )
+        .await;
+    }
+
     let wallet = state.tenants.get(&organization.tenant_id).await?;
     let hold_key = format!("req-{request_id}:hold");
     let description = hold_description(request_id, &request.model, freeze)?;
@@ -1386,7 +1441,48 @@ async fn run(
                         }
                         turn.note_text(&adapter.answer_text(&value));
                         let (kind, charge) = turn.closing();
+                        // The cache write needs the provider's own counts —
+                        // what a later hit reprices — so they are lifted out
+                        // of the charge before it moves into the settle. An
+                        // estimated charge has no trustworthy counts to store,
+                        // and a hit on one would bill an estimate at a real
+                        // price: it is simply not cached.
+                        let store_usage = match &charge {
+                            Charge::Usage(usage) => Some((**usage).clone()),
+                            _ => None,
+                        };
                         let charged = turn.settle(kind, charge, None).await;
+                        // The write is keyed under the primary route — the
+                        // channel a later lookup will resolve — so a failovered
+                        // answer is not stored: it was produced under another
+                        // channel's upstream, and filing it under this one's
+                        // key would serve it next time as this channel's own.
+                        if served_at == 0
+                            && let Some(((digest, policy), usage)) =
+                                cache_key.as_ref().zip(store_usage.as_ref())
+                            && charged.is_some()
+                        {
+                            // The source entry is the settlement the serving
+                            // turn just wrote — derived from the hold key like
+                            // the settlement derives it, so the store never
+                            // waits on the ledger to learn the link.
+                            cache_store_spawn(
+                                state.db.clone(),
+                                organization.id,
+                                oxsum_core::CacheStore {
+                                    channel_id: primary.channel_id,
+                                    model: request.model.clone(),
+                                    prompt_digest: digest.clone(),
+                                    body: value.clone(),
+                                    usage: usage.clone(),
+                                    source_entry_id: *oxsum_core::entry_id_for(
+                                        &oxsum_core::settlement_key_for(&hold_key),
+                                    )
+                                    .as_uuid(),
+                                    ttl_seconds: policy.ttl_seconds,
+                                },
+                            );
+                        }
                         let mut response = Json(value).into_response();
                         cost.stamp(&mut response);
                         stamp_charged(&mut response, charged);
@@ -1422,6 +1518,189 @@ async fn run(
         }
     };
     Ok(response)
+}
+
+/// Serves a semantic-cache hit (issue #497): the stored body answers the
+/// request, billed at the cache-read rate the original turn's usage prices
+/// to under the serving channel's current book.
+///
+/// The hit runs the same hold-then-settle pipeline a fresh turn does, with
+/// two differences an honest bill depends on. The freeze reserves only what
+/// the replay can cost — the stored usage priced under the current book —
+/// not the fresh bound a miss would have frozen against. And the settlement
+/// is `Charge::Cached`: every input token counts as a cached read, and the
+/// v10 description's `cache` block names the entry the answer was first
+/// produced under, so the bill proves reuse rather than claiming a fresh
+/// turn. The upstream call never happens — a hit is an answer the platform
+/// already paid for once.
+///
+/// Everything the fresh path checks at admission still ran upstream of this
+/// call: the rate windows, the mandate verification, the route pick. What a
+/// hit skips is only the reservation sized for a fresh answer.
+#[allow(clippy::too_many_arguments)]
+async fn serve_cache_hit(
+    state: &AppState,
+    organization: &Organization,
+    key: &ActingKey,
+    request: &GatewayRequest,
+    request_id: &str,
+    primary: &Serving,
+    hit: oxsum_core::CachedAnswer,
+    adapter: &'static dyn oxsum_core::UsageAdapter,
+    discount_percent: Option<i64>,
+    mandate: Option<oxsum_core::PresentedMandate>,
+    turn_span: tracing::Span,
+) -> Result<Response, GatewayError> {
+    let wallet = state.tenants.get(&organization.tenant_id).await?;
+    let hold_key = format!("req-{request_id}:hold");
+    // The reservation is the stored usage priced under the channel's live
+    // book — the most the hit can cost. `total_minor` ignores the discount:
+    // a discounted charge lands under it, which is what a bound is for.
+    let freeze = primary.price.itemize(&hit.usage, true)?.total_minor()?;
+    let description = hold_description(request_id, &request.model, freeze)?;
+    if let Err(error) = state
+        .db
+        .note_open_hold(&OpenHold {
+            hold_key: hold_key.clone(),
+            tenant_id: organization.tenant_id.clone(),
+            request_id: request_id.to_owned(),
+            model: request.model.clone(),
+            channel: primary.channel.clone(),
+            price_version: primary.version,
+            input_price: primary.price.input_price_per_million,
+            output_price: primary.price.output_price_per_million,
+            freeze_minor: freeze,
+            key_id: Some(key.key_id),
+            mandate_id: mandate.as_ref().map(|m| m.verified.mandate_id),
+            end_user: request.attribution.end_user.clone(),
+            service_tier: request.attribution.service_tier.clone(),
+            tags: request.attribution.tags.clone(),
+            sweep_attempts: 0,
+            last_error: None,
+            dead_at: None,
+        })
+        .await
+    {
+        tracing::error!(%error, "recording a cache hit's open hold failed");
+        return Err(error.into());
+    }
+    // A hit draws on the subscription like any other turn: the entitlement
+    // pays the replay's price the same way it would a fresh one's, and a plan
+    // that cannot cover it refuses before money moves (issue #496).
+    let subscription = match state
+        .db
+        .admit_subscription_draw(organization.id, &hold_key, freeze)
+        .await
+    {
+        Ok(admission) => admission,
+        Err(error) => {
+            if let Err(clear) = state.db.clear_open_hold(&hold_key).await {
+                tracing::error!(%clear, "clearing a refused cache hold's watch row failed");
+            }
+            return Err(match error {
+                oxsum_core::WalletError::InsufficientFunds => {
+                    let available = wallet.available().await.ok();
+                    GatewayError::freeze_refused(freeze, available, request.max_tokens)
+                }
+                other => other.into(),
+            });
+        }
+    };
+    let wallet_minor = freeze - subscription.drawn_minor;
+    if let Err(error) = wallet
+        .hold_for_key(
+            key,
+            Some(request.model.as_str()),
+            &hold_key,
+            &description,
+            wallet_minor.max(1),
+            today(),
+            mandate.as_ref(),
+        )
+        .await
+    {
+        if let Err(clear) = state.db.clear_open_hold(&hold_key).await {
+            tracing::error!(%clear, "clearing a refused cache hold's watch row failed");
+        }
+        if matches!(error, oxsum_core::WalletError::InsufficientFunds) {
+            state
+                .db
+                .notify_credit_limit_exceeded(organization.id, &wallet)
+                .await;
+        }
+        return Err(match error {
+            oxsum_core::WalletError::InsufficientFunds => {
+                let available = wallet.available().await.ok();
+                GatewayError::freeze_refused(freeze, available, request.max_tokens)
+            }
+            other => other.into(),
+        });
+    }
+    turn_span.in_scope(|| {
+        tracing::info!(oxsum.hold.freeze_minor = freeze, "cache hit hold taken");
+    });
+    let balance = wallet.available().await.ok();
+    let cost = CostHead { freeze, balance };
+    let mut turn = Turn::new(
+        state.db.clone(),
+        wallet,
+        request_id,
+        &request.model,
+        request.upstream_model.clone(),
+        primary,
+        freeze,
+        discount_percent,
+        request.texts.clone(),
+        &organization.tenant_id,
+        state.billing.clone(),
+        key.key_id,
+        request.attribution.clone(),
+        adapter,
+        state.metrics.clone(),
+        turn_span,
+        mandate,
+        subscription,
+    );
+    turn.note_attempts(0);
+    turn.note_upstream_end();
+    // The served row's counter moves best-effort — a missed increment is a
+    // wrong admin counter, never a wrong bill.
+    let db = state.db.clone();
+    let cache_id = hit.cache_id;
+    tokio::spawn(async move {
+        if let Err(error) = db.cache_hit(cache_id).await {
+            tracing::warn!(%error, "counting a served cache hit failed");
+        }
+    });
+    let charged = turn
+        .settle(
+            SettlementKind::Usage,
+            Charge::Cached {
+                usage: Box::new(hit.usage),
+                source_entry_id: hit.source_entry_id,
+            },
+            None,
+        )
+        .await;
+    let mut response = Json(hit.body).into_response();
+    response.headers_mut().insert(
+        crate::gateway::error::CACHE_STATUS,
+        HeaderValue::from_static("hit"),
+    );
+    cost.stamp(&mut response);
+    stamp_charged(&mut response, charged);
+    Ok(response)
+}
+
+/// Writes a miss's answer into the semantic cache (issue #497), best-effort
+/// after the turn has already settled: the store is a replay convenience, and
+/// a dropped write only means the next identical ask goes upstream again.
+fn cache_store_spawn(db: oxsum_core::Db, organization_id: Uuid, store: oxsum_core::CacheStore) {
+    tokio::spawn(async move {
+        if let Err(error) = db.cache_store(organization_id, &store).await {
+            tracing::warn!(%error, "writing a gateway answer into the semantic cache failed");
+        }
+    });
 }
 
 /// The `Retry-After` an upstream refusal named, as a wait. Only the seconds
