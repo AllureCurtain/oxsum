@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.83.0
+  version: 0.84.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -558,6 +558,13 @@ info:
     pool — `POST` a credential, `PATCH` one active/disabled, `DELETE` it. The
     settlement still names `(channel, priceVersion)` only: which credential
     answered is routing detail, never ledger data.
+
+    0.84.0 adds the statement proof bundle (issue #479): `GET
+    `/api/v1/statements/{statementId}/proof` answers a self-contained
+    `StatementProof` — the statement and its lines, the anchor, the covered
+    entries' `windowHashes` in log order, the `expectedHead` right after the
+    anchor and the `expectedOrigin` — so `verify_statement_anchor` runs off a
+    single response instead of stitching three endpoints together.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -2340,6 +2347,38 @@ paths:
                 required: [data]
                 properties:
                   data: { $ref: "#/components/schemas/StatementDetail" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/statements/{statementId}/proof:
+    get:
+      summary: The statement's self-contained proof bundle
+      description: |
+        Everything `verify_statement_anchor` needs in one GET (issue #479):
+        the statement and its itemized lines, the log anchor that commits its
+        two digests, the covered entries' content hashes in log order
+        (`windowHashes`), the signed tree head right after the anchor
+        (`expectedHead`) and the tenant origin (`expectedOrigin`) — the same
+        objects the detail endpoint serves, plus the two inputs a caller would
+        otherwise have to stitch together from `/api/v1/entries/{id}/proof`
+        and `/api/v1/log/head`. Only `finalized` statements answer; a draft,
+        another organization's statement and a missing id are all 404, the
+        same guard the detail endpoint keeps.
+      parameters:
+        - name: statementId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The statement and the pieces its anchor check folds
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/StatementProof" }
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
@@ -6718,6 +6757,38 @@ components:
         statement: { $ref: "#/components/schemas/Statement" }
         entryId: { type: string, description: "the repayment's ledger entry, derived from the idempotency key" }
         amountMinor: { type: integer, format: int64, description: the payment as booked }
+    StatementProof:
+      type: object
+      description: "the self-contained bundle `GET /api/v1/statements/{id}/proof` answers (issue #479): the statement detail plus the two inputs `verify_statement_anchor` cannot read out of the document itself — the covered entries' content hashes and the head that follows the anchor"
+      required: [statement, lines, windowHashes, expectedHead, expectedOrigin]
+      properties:
+        statement: { $ref: "#/components/schemas/Statement" }
+        lines:
+          type: array
+          items: { $ref: "#/components/schemas/StatementLine" }
+        anchor:
+          type: object
+          description: "the statement's log anchor, as the detail endpoint serves it — `note`, `keyName`, `publicKey` and `keyHash` only when the deployment configures OXSUM_HEAD_SIGNING_KEY"
+          required: [entryId, logIndex, windowHash, rollupHash, origin]
+          properties:
+            entryId: { type: string, format: uuid }
+            logIndex: { type: integer, format: int64 }
+            windowHash: { type: string, pattern: "^[0-9a-f]{64}$" }
+            rollupHash: { type: string, pattern: "^[0-9a-f]{64}$" }
+            origin: { type: string }
+            note: { type: [string, "null"] }
+            keyName: { type: [string, "null"] }
+            publicKey: { type: [string, "null"], pattern: "^[0-9a-f]{64}$" }
+            keyHash: { type: [string, "null"], pattern: "^[0-9a-f]{8}$" }
+        windowHashes:
+          type: array
+          items: { type: string, pattern: "^[0-9a-f]{64}$" }
+          description: "the covered entries' content hashes in log order — the verifier folds these under `oxsum/statement-window/v1` and checks the result against `anchor.windowHash` rather than trusting the served digest"
+        expectedHead:
+          nullable: true
+          allOf: [{ $ref: "#/components/schemas/TreeHead" }]
+          description: "the signed tree head at `anchor.logIndex + 1` — the head whose log already contains the anchor; null on a deployment that signs no heads, the same honesty `anchor.note` keeps"
+        expectedOrigin: { type: string, description: "the tenant ledger origin, `oxsum/ledgers/<tenant>` — the same string `anchor.origin` and `GET /api/v1/log/head` carry" }
     AmountRequest:
       type: object
       required: [idempotencyKey, amountMinor]
