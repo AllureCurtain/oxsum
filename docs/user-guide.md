@@ -355,6 +355,22 @@ Steps:
    )
    ```
 
+   The newer Responses API is the same key and the same host: `POST /v1/responses`
+   speaks the successor wire — `input` items, `instructions`, `max_output_tokens` —
+   and lands on the same channels, billed the same way:
+
+   ```python
+   answer = client.responses.create(
+       model="deepseek-chat",
+       input="Explain holds in one sentence.",
+       max_output_tokens=200,
+   )
+   ```
+
+   `store=True` and `previous_response_id` forward to upstream untouched: the
+   response's state lives in the provider's store, not in oxsum, so a stateful
+   chain works only where upstream keeps it.
+
    Or Anthropic's SDK — `POST /v1/messages` speaks Anthropic's Messages format,
    served by the channels whose protocol is `anthropic`:
 
