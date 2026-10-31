@@ -103,6 +103,12 @@ pub fn router(state: AppState) -> Router {
         // Requesting a verification mail is the session user's own action; the
         // handler refuses an API key, which names no user.
         .route("/auth/verify/request", post(auth::request_verification))
+        // The second factor's enrollment and removal are the session user's own
+        // actions — the handlers refuse an API key, which names no user (issue
+        // #504). The login's second leg is the open `/auth/totp` above.
+        .route("/auth/totp/enroll", post(auth::totp_enroll))
+        .route("/auth/totp/confirm", post(auth::totp_confirm))
+        .route("/auth/totp/disable", post(auth::totp_disable))
         // The device grant's user leg — a person's verdict, so the handlers
         // refuse an API key, which names no user (issue #156).
         .route("/device/request", get(device::device_request))
@@ -167,16 +173,18 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/register", post(auth::register))
         .route("/auth/login", post(auth::login))
         .route("/auth/logout", post(auth::logout))
+        // The login's second factor (issue #504): enrollment needs a session,
+        // and the second leg trades a challenge plus a code for one — the
+        // challenge is the credential, so it stays open.
+        .route("/auth/totp", post(auth::totp_login))
         // OAuth is a browser redirect, not a JSON endpoint: the provider sends
         // the browser here, so both answers are `Location` headers, and every
         // failure lands back on /login rather than on an error body.
-        .route("/auth/oauth/github", get(auth::oauth_github))
-        .route(
-            "/auth/oauth/github/callback",
-            get(auth::oauth_github_callback),
-        )
+        .route("/auth/oauth/{provider}", get(auth::oauth_start))
+        .route("/auth/oauth/{provider}/callback", get(auth::oauth_callback))
         // Which login methods the deployment offers: the login page's only
-        // unauthenticated read, so it knows whether to draw the GitHub button.
+        // unauthenticated read, so it knows whether to draw the GitHub button
+        // and which OIDC provider buttons to draw.
         .route("/auth/methods", get(auth::auth_methods))
         // The email flows: verification consumes a mailed token, and the reset
         // pair is open by design — the token is the credential.
