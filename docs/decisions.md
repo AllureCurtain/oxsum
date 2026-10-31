@@ -2,6 +2,24 @@
 
 New decisions go on top. Overturned decisions are never deleted; mark them "Superseded" and name the decision that replaces it.
 
+## 2026-11-01 The RPM window can count in Postgres: `OXSUM_RATE_LIMIT_BACKEND` picks the seam's second impl (issue #498)
+
+- Status: Adopted. Extends "Per-key rate limits consume at admission; the holds cap counts the ledger" (issue #130) — the seam that entry reserved ("a shared backend slots behind when the deployment goes multi-instance") now has its second implementation, and `memory` stays the default the deferred list already anticipated.
+- Background: a single binary gets the whole `requestsPerMinute` story from `SlidingWindow`, but a deployment behind a load balancer running several oxsum instances let each process keep its own window — `per_minute` was really `per_minute × instances`, and a busy key double-admitted in proportion to the replica count.
+- Decision:
+  - `PostgresRateLimiter` in `crates/core/src/ratelimit.rs` implements the existing `RateLimiter` trait against `oxsum.rate_windows` (migration 0063): one row per limited key holding a `timestamptz[]` of request hits, bounded by the cap and the 60s window. `admit` runs `INSERT ... ON CONFLICT DO NOTHING` → `SELECT ... FOR UPDATE` → a prune-and-count `UPDATE ... RETURNING` → a conditional `array_append(now())` in one transaction — the row lock is the serialization two instances cannot get from a mutex, and the database's `now()` is the one timeline every instance shares. `peek` is a lock-free `COUNT`/`MIN` over the still-fresh hits: it consumes nothing, matching `SlidingWindow::peek`'s snapshot contract.
+  - `OXSUM_RATE_LIMIT_BACKEND` (`memory` default, `postgres` shared) selects the impl at startup in `app_with_billing`; anything else refuses to boot. The env var is the whole contract change — no endpoint, field or error shape moves.
+  - The trait stays synchronous: `PostgresRateLimiter` runs its pool work through `block_in_place` + `Handle::block_on`, valid because every call site sits inside axum's runtime. Making `admit`/`peek` async was rejected — the change ripples through every caller to buy a signature the in-memory impl never needed.
+  - Fail-open on storage error, same doctrine `per_minute == 0` already encodes: a protection knob must never take the gateway down — the error is logged and the request admitted, because the wallet's `POOL_BUSY` is the real saturation refusal. This also means a misconfigured or missing table admits everything rather than refusing everything; the tests verify the window by reading the row back.
+- Rejected:
+  - One row per hit (`rate_windows (key_id, hit)`): unbounded growth under a busy key plus a `DELETE` sweep on every admit; the array keeps the row to the cap's own bound and the prune is one `UPDATE`.
+  - Redis: still the deferred-list answer for a *third* backend; Postgres is already the deployment's shared store, so the feature costs no new infrastructure.
+  - An async `RateLimiter` trait: see above.
+- Costs and knock-on effects:
+  - The `at: Instant` parameter is ignored by the Postgres impl — documented on it — because a process clock is exactly what a shared window cannot use; `SlidingWindow` keeps honouring it for tests.
+  - `block_in_place` panics on a current-thread runtime, so every `rate_windows`/`rate_limit_backend` test is `multi_thread`.
+  - Pinned by `crates/core/tests/rate_windows.rs` (two handles sharing one window, peek consuming nothing, a hit ageing out on the server clock, the row staying bounded) and `crates/server/tests/rate_limit_backend.rs` (the HTTP layer under `postgres` refusing the second request in the minute, and two backend handles over the app's pool admitting one window).
+
 ## 2026-10-31 Queued holds wait off the pool: an in-process per-key semaphore before `begin()` (issue #486)
 
 - Status: Adopted. Complements "All tenants share one connection pool" (2026-10-01) — the pool stays the deployment's whole connection budget; what changes is where one key's waiting happens.
