@@ -244,6 +244,7 @@ fn usage_settlement(request_id: &str, charged: i64, freeze: i64) -> String {
         upstream_attempts: 1,
         mandate: None,
         subscription: None,
+        cache: None,
         reason: None,
     }
     .description()

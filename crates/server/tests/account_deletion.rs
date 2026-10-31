@@ -245,6 +245,7 @@ async fn settle_request(
         upstream_attempts: 1,
         mandate: None,
         subscription: None,
+        cache: None,
         reason: None,
     };
     wallet
