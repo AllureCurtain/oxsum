@@ -7,6 +7,7 @@ import { useBillingSocket } from "../api/ws";
 import {
   EmptyRows,
   PageState,
+  StatChip,
   StatusBadge,
   TableShell,
   Td,
@@ -53,6 +54,24 @@ export function Requests() {
     [records.data, keyFilter, modelFilter, prefixOf],
   );
 
+  // The band over the filters: the table answers "which requests" and these
+  // answer "how much of today is that". Same loaded window, client-side sums.
+  const stats = useMemo(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    let todayTurns = 0;
+    let todayTokens = 0;
+    let todayCharged = 0;
+    for (const row of records.data?.rows ?? []) {
+      if (row.bookedOn === today) {
+        todayTurns += 1;
+        todayTokens += row.inputTokens + row.outputTokens;
+        todayCharged += row.chargedMinor;
+      }
+    }
+    const inFlight = socket.turns.filter((t) => t.state !== "settled").length;
+    return { todayTurns, todayTokens, todayCharged, inFlight };
+  }, [records.data, socket.turns]);
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
@@ -71,6 +90,30 @@ export function Requests() {
             {socket.live ? "live" : "offline"}
           </span>
         )}
+      </div>
+
+      <div className="flex flex-wrap gap-x-10 gap-y-4 rounded-xl border border-line bg-surface px-5 py-4 shadow-[0_1px_3px_rgba(20,34,64,.05)]">
+        <StatChip
+          label="In flight"
+          value={stats.inFlight}
+          hint={stats.inFlight > 0 ? "turns live" : "none"}
+        />
+        <StatChip label="Turns today" value={stats.todayTurns} />
+        <StatChip
+          label="Tokens today"
+          value={stats.todayTokens.toLocaleString("en-US")}
+          hint="in + out"
+        />
+        <StatChip
+          label="Charged today"
+          value={<Cr minor={stats.todayCharged} currency={display} />}
+        />
+        <StatChip
+          label="Avg tokens/turn"
+          value={
+            stats.todayTurns > 0 ? Math.round(stats.todayTokens / stats.todayTurns).toLocaleString("en-US") : "—"
+          }
+        />
       </div>
 
       <div className="flex flex-wrap gap-3">

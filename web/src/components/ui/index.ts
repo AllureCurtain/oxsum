@@ -30,6 +30,7 @@ export * from "./breadcrumb";
 export * from "./pagination";
 export * from "./avatar";
 export * from "./toggle";
+export * from "./sparkline";
 // `card.tsx` was dropped: our business `Card` (title/actions props) keeps the
 // name — shadcn's CardHeader/CardTitle/… triplet is more ceremony than the
 // dashboard's cards need.

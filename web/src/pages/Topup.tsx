@@ -19,7 +19,7 @@ import {
   TabsTrigger,
 } from "../components/ui";
 import { CodeBlock } from "../components/ui";
-import { Banner, Card, Cr, Field, creditsWithDisplay } from "../components/ui";
+import { Banner, Card, Cr, Field, StatChip, creditsWithDisplay } from "../components/ui";
 
 function amountToMinor(raw: string): number | null {
   const value = Number(raw);
@@ -423,9 +423,37 @@ export function Topup() {
     <div className="flex flex-col gap-6">
       <h1 className="text-2xl font-bold">Top up</h1>
       <Card title="Balance">
-        <p className="text-2xl font-semibold tabular-nums">
-          {balance.data ? <Cr minor={balance.data.availableMinor} currency={display} /> : "…"}
-        </p>
+        <div className="flex flex-wrap items-center gap-x-12 gap-y-4">
+          <div>
+            <p className="text-[11px] font-medium uppercase tracking-wider text-muted">Available</p>
+            <p className="mt-1 text-3xl font-bold tabular-nums tracking-tight text-ink">
+              {balance.data ? <Cr minor={balance.data.availableMinor} currency={display} /> : "…"}
+            </p>
+            {display && balance.data ? (
+              <p className="mt-0.5 text-xs text-muted">
+                ≈ {creditsWithDisplay(balance.data.availableMinor, display)}
+              </p>
+            ) : null}
+          </div>
+          <StatChip
+            label="In flight"
+            value={balance.data ? <Cr minor={balance.data.reservedMinor} currency={display} /> : "…"}
+            hint="frozen by open holds"
+          />
+          <StatChip
+            label="Spent this month"
+            value={balance.data ? <Cr minor={balance.data.spentThisMonthMinor} currency={display} /> : "…"}
+          />
+          <StatChip
+            label="Credit line"
+            value={
+              balance.data && balance.data.creditLimitMinor > 0
+                ? `${(balance.data.creditUsedMinor / 1_000_000).toFixed(0)} / ${(balance.data.creditLimitMinor / 1_000_000).toFixed(0)}`
+                : "—"
+            }
+            hint={balance.data && balance.data.creditLimitMinor > 0 ? "cr drawn" : "none"}
+          />
+        </div>
       </Card>
       {returned ? (
         <div className="flex flex-col gap-2">

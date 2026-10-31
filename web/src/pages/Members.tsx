@@ -3,6 +3,7 @@ import { Link2, Users } from "lucide-react";
 import { ApiError } from "../api/client";
 import {
   useAddMember,
+  useBudget,
   useCreateInvitation,
   useDisplay,
   useMembers,
@@ -18,6 +19,7 @@ import {
   EmptyRows,
   Field,
   PageState,
+  Progress,
   Select,
   TableShell,
   Td,
@@ -28,6 +30,7 @@ import {
 export function Members() {
   const session = useSession();
   const members = useMembers();
+  const budget = useBudget();
   const display = useDisplay();
   const add = useAddMember();
   const update = useUpdateMember();
@@ -56,6 +59,71 @@ export function Members() {
         </Banner>
       ) : null}
       {add.error instanceof ApiError ? <Banner tone="error">{add.error.message}</Banner> : null}
+
+      {budget.data ? (
+        <Card title="Budgets at a glance">
+          <div className="flex flex-wrap gap-x-10 gap-y-4">
+            {budget.data.organization.creditLimitMinor != null &&
+            budget.data.organization.creditLimitMinor > 0 ? (
+              <div className="min-w-60 flex-1">
+                <div className="flex items-baseline justify-between text-sm">
+                  <span className="text-xs font-medium uppercase tracking-wider text-muted">
+                    Organization credit line
+                  </span>
+                  <span className="text-muted">
+                    {budget.data.organization.consumedPercent ?? 0}% committed
+                  </span>
+                </div>
+                <div className="mt-1 flex items-baseline gap-1.5 text-lg font-semibold tabular-nums text-ink">
+                  <Cr minor={budget.data.organization.creditUsedMinor ?? 0} currency={display} />
+                  <span className="text-sm font-normal text-muted">
+                    / <Cr minor={budget.data.organization.creditLimitMinor} currency={display} />
+                  </span>
+                </div>
+                <Progress
+                  value={Math.min(100, budget.data.organization.consumedPercent ?? 0)}
+                  className="mt-1.5 w-full"
+                />
+              </div>
+            ) : (
+              <div>
+                <p className="text-[11px] font-medium uppercase tracking-wider text-muted">
+                  Organization balance
+                </p>
+                <p className="mt-1 text-lg font-semibold tabular-nums text-ink">
+                  <Cr minor={budget.data.organization.availableMinor} currency={display} />
+                </p>
+                <p className="mt-0.5 text-xs text-muted">no credit line</p>
+              </div>
+            )}
+            <div>
+              <p className="text-[11px] font-medium uppercase tracking-wider text-muted">
+                Members
+              </p>
+              <p className="mt-1 text-lg font-semibold tabular-nums text-ink">
+                {members.data?.members.length ?? "—"}
+              </p>
+              <p className="mt-0.5 text-xs text-muted">
+                {(members.data?.members ?? []).filter((m) => m.role === "owner").length} owner
+                {(members.data?.members ?? []).filter((m) => m.role === "admin").length
+                  ? ` · ${(members.data?.members ?? []).filter((m) => m.role === "admin").length} admin`
+                  : ""}
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] font-medium uppercase tracking-wider text-muted">
+                With budget cap
+              </p>
+              <p className="mt-1 text-lg font-semibold tabular-nums text-ink">
+                {(members.data?.members ?? []).filter((m) => m.budgetLimitMinor != null).length}
+              </p>
+              <p className="mt-0.5 text-xs text-muted">
+                {(members.data?.members ?? []).filter((m) => m.budgetLimitMinor == null).length} uncapped
+              </p>
+            </div>
+          </div>
+        </Card>
+      ) : null}
 
       {members.isError ? (
         <PageState>The members could not be read.</PageState>
