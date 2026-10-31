@@ -21,6 +21,7 @@ import {
   Card,
   EmptyRows,
   Field,
+  Skeleton,
   TableShell,
   Td,
   credits,
@@ -79,9 +80,18 @@ export function Overview() {
           </>
         ) : (
           <>
-            <AnimatedKpi label="Available" minor={0} icon={<Wallet />} />
-            <AnimatedKpi label="Frozen" minor={0} icon={<Snowflake />} />
-            <AnimatedKpi label="Spent this month" minor={0} icon={<TrendingUp />} />
+            {[Wallet, Snowflake, TrendingUp].map((Icon, i) => (
+              <div key={i} className="rounded-xl border border-line bg-surface p-4 shadow-[0_1px_3px_rgba(20,34,64,.05)]">
+                <div className="flex items-center justify-between gap-3">
+                  <Skeleton className="h-3 w-16" />
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary-soft text-primary [&>svg]:size-4">
+                    <Icon />
+                  </span>
+                </div>
+                <Skeleton className="mt-1.5 h-8 w-24" />
+                <Skeleton className="mt-1 h-3 w-20" />
+              </div>
+            ))}
           </>
         )}
         <div className="rounded-xl border border-line bg-surface p-4 shadow-[0_1px_3px_rgba(20,34,64,.05)]">
