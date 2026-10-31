@@ -33,7 +33,7 @@ pub async fn require_principal(
     next: Next,
 ) -> Result<Response, ApiError> {
     let principal = resolve(&state, request.headers())
-        .await
+        .await?
         .ok_or(ApiError::Unauthorized)?;
     request.extensions_mut().insert(principal);
     Ok(next.run(request).await)
@@ -51,6 +51,7 @@ pub async fn require_key_gateway(
 ) -> Result<Response, GatewayError> {
     let (organization, key) = resolve_key(&state, request.headers())
         .await
+        .map_err(GatewayError::from)?
         .ok_or(GatewayError::Unauthorized)?;
     request.extensions_mut().insert(organization);
     request.extensions_mut().insert(key);
@@ -68,7 +69,7 @@ pub async fn require_service(
     next: Next,
 ) -> Result<Response, ApiError> {
     let service = match bearer(request.headers()) {
-        Some(secret) => state.db.authenticate_service(secret).await.ok().flatten(),
+        Some(secret) => state.db.authenticate_service(secret).await?,
         None => None,
     }
     .ok_or(ApiError::Unauthorized)?;
@@ -80,29 +81,47 @@ pub async fn require_service(
 ///
 /// A bearer token wins over the cookie: the explicitly supplied credential beats the
 /// ambient one. With no bearer credential at all, the session cookie is tried.
-async fn resolve(state: &AppState, headers: &HeaderMap) -> Option<Principal> {
+///
+/// The credential lookups' errors propagate rather than folding into `None` —
+/// `Ok(None)` is "this credential authenticates nothing", while a storage
+/// failure is not a bad credential: answering `UNAUTHORIZED` for a saturated
+/// pool would misreport the service's own 429-class failure as the caller's
+/// 401 (the stray authentication refusal issue #486's probe saw). Only a lookup
+/// that ran says anything about the credential.
+async fn resolve(state: &AppState, headers: &HeaderMap) -> Result<Option<Principal>, ApiError> {
     if bearer(headers).is_some() {
-        let (organization, key) = resolve_key(state, headers).await?;
-        return Some(Principal::Key(KeyPrincipal { organization, key }));
+        let Some((organization, key)) =
+            resolve_key(state, headers).await.map_err(ApiError::from)?
+        else {
+            return Ok(None);
+        };
+        return Ok(Some(Principal::Key(KeyPrincipal { organization, key })));
     }
-    let token = session_cookie_value(headers)?;
-    state
+    let Some(token) = session_cookie_value(headers) else {
+        return Ok(None);
+    };
+    Ok(state
         .db
         .authenticate_session(&token)
-        .await
-        .ok()
-        .flatten()
-        .map(Principal::Session)
+        .await?
+        .map(Principal::Session))
 }
 
 /// The organization the presented API key spends for, and the key that acted, if the
 /// credential is a usable one.
 ///
 /// The credential arrives as `Authorization: Bearer`, or as `x-api-key` — the spelling an
-/// Anthropic SDK sends; both name the same organization key on `/v1`.
-async fn resolve_key(state: &AppState, headers: &HeaderMap) -> Option<(Organization, ActingKey)> {
-    let presented = bearer(headers).or_else(|| api_key_header(headers))?;
-    state.db.authenticate(presented).await.ok().flatten()
+/// Anthropic SDK sends; both name the same organization key on `/v1`. The error type is
+/// `WalletError` so each surface maps it into its own envelope — `/api/v1` and `/v1`
+/// refuse a saturated pool in their own shape.
+async fn resolve_key(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<Option<(Organization, ActingKey)>, oxsum_core::WalletError> {
+    let Some(presented) = bearer(headers).or_else(|| api_key_header(headers)) else {
+        return Ok(None);
+    };
+    state.db.authenticate(presented).await
 }
 
 /// The `Bearer` credential, if the header is there and readable.
