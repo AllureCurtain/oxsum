@@ -7,6 +7,12 @@
  * blue, substrate tinted so it doesn't read as the reflex #3B82F6 default.
  * DESIGN.md tokens stay the source of truth: type scale 12/14/16/20/24,
  * spacing multiples of 4, amounts mono right-aligned.
+ *
+ * Issue #448: the vocabulary widened to the shadcn semantic set so vendored
+ * components resolve against the same palette — surface ladder for overlays,
+ * three shadow levels, a finer type scale (13/11/18/28 join the original
+ * 12/14/16/20/24), tabular-figure and stylistic-set font features, radius
+ * scale, and a named z-index order.
  */
 @theme {
   /* substrate — cool slate tinted to cobalt's hue */
@@ -18,22 +24,28 @@
   --color-success: #2F7A55;
   --color-pending: #B77A16;
   --color-ink: #121a2b;
+  --color-ink-secondary: #3d4a63;
   --color-muted: #69768c;
+  --color-muted-2: #8a96ab;
   --color-canvas: #edf0f6;
+  --color-canvas-inset: #e4e8f1;
   --color-surface: #ffffff;
+  --color-surface-raised: #ffffff;
+  --color-surface-overlay: rgba(18, 26, 43, .42);
   --color-line: rgba(20, 32, 56, .07);
+  --color-line-strong: rgba(20, 32, 56, .14);
   --color-focus: #a3bcff;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
   /* rail (sidebar) — tinted dark to the same hue */
   --color-rail: #141a26;
   --color-rail-2: #1d2434;
+  --color-rail-3: #262f42;
   --color-rail-ink: #7a8496;
   --color-rail-ink-active: #ffffff;
 
-  /* Token aliases — the design vocabulary's semantic names (background,
-   * foreground, card, popover, muted-foreground, input, ring, …) that the
-   * components in components/ui.tsx and Base UI primitives resolve against. */
+  /* Semantic aliases — the vocabulary shadcn/vendored components resolve
+   * against: surfaces, text hierarchy, action colors, form borders, ring. */
   --color-background: #edf0f6;
   --color-foreground: #121a2b;
   --color-card: #ffffff;
@@ -43,14 +55,54 @@
   --color-primary-foreground: #ffffff;
   --color-secondary: #f0f2f8;
   --color-secondary-foreground: #121a2b;
+  --color-muted-background: #f0f2f8;
   --color-muted-foreground: #69768c;
   --color-accent: #dbe4f8;
   --color-accent-foreground: #2D5BD8;
   --color-destructive: #C0453C;
   --color-destructive-foreground: #ffffff;
+  --color-warning: #B77A16;
+  --color-warning-foreground: #ffffff;
+  --color-success-foreground: #ffffff;
   --color-border: rgba(20, 32, 56, .07);
   --color-input: rgba(20, 32, 56, .12);
   --color-ring: #a3bcff;
+
+  /* Type scale — the original 12/14/16/20/24 plus the caption/micro and
+   * middle tiers the gap analysis named. `text-*` utilities map onto these. */
+  --text-micro: 10px;
+  --text-caption: 11px;
+  --text-small: 13px;
+  --text-body: 14px;
+  --text-body-lg: 16px;
+  --text-subhead: 18px;
+  --text-heading: 20px;
+  --text-title: 24px;
+  --text-display: 28px;
+
+  /* Radius scale — one control vocabulary. `rounded-*` utilities resolve
+   * against these so an input, a card, and a dialog never disagree. */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+
+  /* Elevation — three literal levels plus the overlay dim. Level 0 is flat;
+   * the scale is intentionally restrained: borders carry most of the
+   * structure, shadow only lifts what genuinely floats (dropdowns, dialogs,
+   * hover-raise). Cool-tinted to the palette's blue (Stripe pattern). */
+  --shadow-1: 0 1px 3px rgba(18, 42, 92, .08);
+  --shadow-2: 0 8px 24px rgba(18, 42, 92, .10), 0 2px 6px rgba(18, 42, 92, .05);
+  --shadow-3: 0 16px 48px rgba(18, 42, 92, .14), 0 4px 12px rgba(18, 42, 92, .07);
+
+  /* Z-index order — one named scale, never ad-hoc numbers. Sticky chrome
+   * sits lowest, overlays highest; each layer owns its band. */
+  --z-sticky: 30;
+  --z-topbar: 40;
+  --z-dropdown: 50;
+  --z-modal: 60;
+  --z-toast: 70;
 }
 
 html {
@@ -64,7 +116,8 @@ body {
   overflow-x: clip;
 }
 
-/* The topbar's height — sticky table headers offset below it, never under it. */
+/* The topbar's height — sticky table headers offset below it, never under it.
+ * `--topbar-h` is the chrome contract; the z-order it sits at is `--z-topbar`. */
 :root {
   --topbar-h: 56px;
 }
@@ -74,11 +127,27 @@ body {
   background: var(--color-canvas);
 }
 
+/* Stylistic set + tabular figures are part of the type system, not per-use
+ * decoration: `ss01` on for every role (the grotesque's alternate `a`/`l`
+ * reads cleaner at body sizes), `tnum` wherever a number's width must not
+ * jitter — amounts, counts, table cells, KPIs (DESIGN.md). */
+body {
+  font-feature-settings: "ss01";
+}
+
 /* Amounts and hashes always monospace (DESIGN.md); amounts right-aligned. */
 .mono {
   font-family: var(--font-mono);
   font-size: 12px;
   overflow-wrap: anywhere;
+}
+
+/* A numeric figure that must align column-to-column without going full mono —
+ * tabular-figure digits at the surrounding size. Use on stat cells, counts,
+ * and KPI values where `.mono`'s 12px monospace would be wrong. */
+.tnum {
+  font-feature-settings: "tnum", "ss01";
+  font-variant-numeric: tabular-nums;
 }
 
 /* Keyboard-visible focus ring on every interactive element (DESIGN.md). */
