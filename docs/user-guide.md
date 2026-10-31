@@ -543,10 +543,20 @@ entry verifies the same way every other record does.
 Every settlement also records which channel served the turn and which price version priced it
 (`priceVersion` beside the prices and the token counts), plus `upstreamAttempts` — how many
 upstream calls the turn made under its one hold. Above 1 means the request failed over to another
-channel serving the model, or waited out a short `Retry-After` on the only route left; the channel
-named is always the one that actually answered. A version is never rewritten, so a price
+route, or waited out a short `Retry-After` on the only route left; the channel named is always the
+one that actually answered. A version is never rewritten, so a price
 change affects later calls only: a bill written today can still be checked against the configuration
 it was written under, however often the price changes afterwards.
+
+A request may also serve under a *different model* than it named: the platform configures an ordered
+fallback chain per model (issue #500), so when every route of the model you asked for fails, the
+request tries the next model in the chain — each fallback resolved through its own channels and
+priced by its own book, under the same one hold. A fallback your key's `modelAllowlist`, a presented
+mandate's `models` or your organization's tier does not cover is skipped rather than served: your
+permission to reach a model is re-judged per hop, never inherited. The settlement records
+`servedModel` — what answered and priced the turn — and `model` means the same served name for
+readers that predate the field; on a cross-model failover it also records `requestedModel`, the name
+you asked for.
 
 ### By hand
 
