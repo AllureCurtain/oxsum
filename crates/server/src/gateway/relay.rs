@@ -175,17 +175,18 @@ impl Frames {
             let line_end = consumed + relative;
             // The slice excludes the '\n' itself, matching the old
             // `line[..line.len() - 1]`; a '\r' survives for `trim` below.
-            let line = String::from_utf8_lossy(&self.buffer[consumed..line_end]);
+            let line = String::from_utf8_lossy(&self.buffer[consumed..line_end]).into_owned();
             consumed = line_end + 1;
             let Some(payload) = line.strip_prefix("data:") else {
                 continue;
             };
             let payload = payload.trim();
-            if adapter.ends_stream(payload) {
-                terminated = true;
-                continue;
-            }
             let Ok(value) = serde_json::from_str::<Value>(payload) else {
+                // A non-JSON payload can still be the terminator — OpenAI's
+                // `[DONE]` sentinel parses as nothing else.
+                if adapter.ends_stream(payload) {
+                    terminated = true;
+                }
                 continue;
             };
             if let Some(usage) = adapter.usage(&value) {
@@ -200,6 +201,13 @@ impl Frames {
             }
             let text = adapter.answer_text(&value);
             self.push_text(&text);
+            // The terminator check comes after the usage read on purpose: the
+            // Responses wire's terminal `response.completed` event carries the
+            // turn's usage (issue #495), and ending the stream must not drop
+            // the report it arrived on.
+            if adapter.ends_stream(payload) {
+                terminated = true;
+            }
         }
         // One shift for the whole consumed prefix, not one per line.
         self.buffer.drain(..consumed);
