@@ -41,3 +41,17 @@ mkdir -p crates/web/verify-wasm
     "$WASM"
 
 echo "verify wasm bundle written to crates/web/verify-wasm/"
+
+# The verify-oxsum-bill npm package ships the same module inside `wasm/` —
+# `files` in web/verify-sdk/package.json already declares it, so a package
+# build packs whatever this step last synced. The two consumers want the
+# identical artifact: one wasm-bindgen run, copied, not a second invocation
+# that could drift a wasm-bindgen version away from the page's.
+SDK_WASM=web/verify-sdk/wasm
+if [ -d "$(dirname "$SDK_WASM")" ]; then
+    mkdir -p "$SDK_WASM"
+    cp crates/web/verify-wasm/verify_wasm.js \
+       crates/web/verify-wasm/verify_wasm_bg.wasm \
+       "$SDK_WASM/"
+    echo "synced to $SDK_WASM/"
+fi
