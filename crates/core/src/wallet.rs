@@ -74,6 +74,22 @@ const RECLASS_KEY: &str = "pool-reclassification";
 /// cover fails every attempt anyway and surfaces the same refusal as before.
 const POOL_SPLIT_ATTEMPTS: usize = 3;
 
+/// How many of one key's holds may be inside the locked transaction at once —
+/// the width of the in-process queue [`Wallet::key_queue`] admits by (issue
+/// #486). One is the honest width: the per-key advisory lock serializes the
+/// holds anyway, so a second admitted hold can only wait inside the transaction
+/// — holding its pooled connection — for exactly the connection-pinning the
+/// queue exists to prevent. The width lives in the semaphore's permit count,
+/// never as a second copy.
+const KEY_QUEUE_WIDTH: usize = 1;
+
+/// How long a hold may wait in the in-process queue before refusing fast rather
+/// than queueing longer than the pool's own acquire timeout would have let it.
+/// The queued hold costs nothing — no connection — so the budget is the
+/// caller's patience, not the pool's; it matches `ACQUIRE_TIMEOUT` so a refused
+/// queue-wait surfaces on the same timescale a refused checkout did.
+const KEY_QUEUE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// How many times `open` re-reads the account table after a racing opener
 /// committed it mid-bootstrap. The winner's write is one statement batch, so a
 /// loser only loops while racers keep landing in between.
@@ -150,6 +166,16 @@ pub struct Wallet {
     /// The validated tenant id this ledger belongs to: the identity its signed tree heads
     /// are published under (`oxsum/ledgers/<tenant_id>`).
     tenant_id: String,
+    /// The in-process queue one key's holds wait in *before* a pooled connection is
+    /// checked out (issue #486): a hold waiting on the per-key advisory lock while
+    /// already holding a connection starves the shared pool — `N` queued holds pin
+    /// `N` connections and every tenant's unrelated reads time out behind them.
+    /// Keyed by the same [`limit_lock_key`] hash the advisory lock takes, so the
+    /// queue and the lock serialize the same set of callers; the semaphore's job is
+    /// only to keep the waiting off the pool — the lock remains the real arbiter.
+    key_queue: std::sync::Arc<
+        std::sync::Mutex<std::collections::HashMap<i64, std::sync::Arc<tokio::sync::Semaphore>>>,
+    >,
 }
 
 /// Receipt of one posting. `content_hash` is what the user keeps to verify the bill later.
@@ -434,6 +460,7 @@ impl Wallet {
 
             policy: LedgerPolicy::default(),
             tenant_id: tenant_id.to_owned(),
+            key_queue: std::sync::Arc::default(),
         };
         // Ledgers opened for the first time under the two-pool model move their
         // unspent historical grants into Bonus here — once per ledger, marked by
@@ -1089,6 +1116,15 @@ impl Wallet {
         if let Some(stored) = self.store.get(entry_id).await? {
             return self.hold_replay(&stored, &description, Some(&actor), minor, idem_key);
         }
+        // Queue the key's own holds before a connection is checked out (issue
+        // #486): the advisory lock below serializes them, and a hold that waits
+        // for it inside a transaction pins a pooled connection for the whole
+        // wait — enough queued holds on one key exhaust the shared pool and
+        // every tenant's reads fail behind them. Waiting here costs no
+        // connection: the semaphore admits only `KEY_QUEUE_WIDTH` into the
+        // transaction, and the rest of the queue sits on async permits until a
+        // slot frees or `KEY_QUEUE_WAIT` refuses the wait fast.
+        let _queue = self.key_queue_wait(&key.key_id).await?;
         let mut last_err = None;
         for _ in 0..POOL_SPLIT_ATTEMPTS {
             let mut tx = self.store.pool().begin().await?;
@@ -1338,6 +1374,59 @@ impl Wallet {
             }
         }
         Err(last_err.unwrap_or(WalletError::InsufficientFunds))
+    }
+
+    /// The in-process queue [`hold_for_key`](Self::hold_for_key) waits in before
+    /// checking out a connection (issue #486).
+    ///
+    /// The advisory lock inside the transaction serializes one key's holds
+    /// against each other; what it cannot do is keep a waiting hold from pinning
+    /// the pooled connection it already checked out. Under enough concurrency on
+    /// one key every pooled connection is checked-out-and-waiting on the lock,
+    /// and the shared pool times out behind them — a key with no constraints
+    /// could starve every tenant. The semaphore admits `KEY_QUEUE_WIDTH` into
+    /// the locked transaction and parks the rest of the queue on async permits:
+    /// a queued hold holds no connection, so the wait is free until it is
+    /// admitted or `KEY_QUEUE_WAIT` refuses it as [`WalletError::PoolBusy`], the
+    /// same fast-fail a saturated checkout answers.
+    ///
+    /// The guard lives until the caller's hold resolves, so the permit covers
+    /// every retry the pool-split loop runs — the lock's own serialization stays
+    /// exactly one waiter's depth inside the transaction, and a semaphore keyed
+    /// on the same [`limit_lock_key`] hash can never widen it. Multi-instance
+    /// deployments still serialize on the database lock; the queue only removes
+    /// the in-process part of the pile-up.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::PoolBusy`] when the queue stays full past `KEY_QUEUE_WAIT`.
+    async fn key_queue_wait(
+        &self,
+        key_id: &Uuid,
+    ) -> Result<tokio::sync::OwnedSemaphorePermit, WalletError> {
+        let lock_key = limit_lock_key(&self.tenant_id, key_id);
+        let semaphore = {
+            let mut queues = self.key_queue.lock().unwrap_or_else(|e| e.into_inner());
+            queues
+                .entry(lock_key)
+                .or_insert_with(|| {
+                    std::sync::Arc::new(tokio::sync::Semaphore::new(KEY_QUEUE_WIDTH))
+                })
+                .clone()
+        };
+        let permit = tokio::time::timeout(KEY_QUEUE_WAIT, semaphore.acquire_owned())
+            .await
+            .map_err(|_| {
+                // The queue drained nothing in the caller's patience window —
+                // refuse like a saturated checkout rather than queue deeper.
+                WalletError::PoolBusy
+            })?
+            .map_err(|_| WalletError::PoolBusy)?;
+        // A semaphore nobody queues behind is dead weight in the map; it stays
+        // (an idle entry costs a few bytes) because removing it races a waiter
+        // that already took the `Arc` — the map bounds itself by the keys that
+        // were ever busy, which `max_concurrent_holds`-less churn does not grow.
+        Ok(permit)
     }
 
     /// What one API key has committed: settled charges plus outstanding holds attributed
@@ -3494,7 +3583,11 @@ pub fn settlement_key_for(hold_key: &str) -> String {
 /// suspended flag that commits is the flag the next hold reads.
 pub(crate) const ORG_ADMISSION_LOCK: &str = "oxsum/org-admission/v1:";
 
-fn limit_lock_key(tenant_id: &str, key_id: &Uuid) -> i64 {
+/// The advisory-lock key `hold_for_key` serializes one key's holds on. Public so
+/// a test can hold the same lock the wallet waits on — issue #486's pool-fairness
+/// check pins a queued hold's connection use by blocking this lock first.
+#[must_use]
+pub fn limit_lock_key(tenant_id: &str, key_id: &Uuid) -> i64 {
     let mut hasher = Sha256::new();
     hasher.update(b"oxsum/key-spend-limit/v1\0");
     hasher.update(tenant_id.as_bytes());
