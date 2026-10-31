@@ -77,6 +77,9 @@ pub fn spawn_worker(db: Db, ctx: JobContext) -> tokio::task::JoinHandle<()> {
         ];
         if ctx.webhook.is_some() {
             periodic.push(kinds::DELIVER_WEBHOOKS);
+            // The task relay's poll pass reuses the same pair — the client to
+            // reach the channel, the secret to open its credential (issue #503).
+            periodic.push(kinds::POLL_TASKS);
         }
         if ctx.webhook.is_some() && ctx.upstream_price_sync {
             periodic.push(kinds::SYNC_UPSTREAM_PRICES);
@@ -247,6 +250,26 @@ async fn run_one(
                     dead_lettered = report.dead_lettered,
                     "the hold sweeper dead-lettered holds"
                 );
+            }
+        }
+        kinds::POLL_TASKS => {
+            let report =
+                poll_open_tasks(db, &tenants, &ctx.webhook, OffsetDateTime::now_utc().date()).await;
+            match report {
+                Ok(report) => {
+                    if report.settled > 0 || report.still_open > 0 {
+                        info!(
+                            polled = report.polled,
+                            settled = report.settled,
+                            still_open = report.still_open,
+                            "the task-poll pass ran"
+                        );
+                    }
+                }
+                Err(error) => {
+                    warn!(%error, "the task-poll pass failed");
+                    return Err(error);
+                }
             }
         }
         kinds::DELIVER_WEBHOOKS => {
@@ -741,6 +764,141 @@ async fn sync_upstream_bills(
             }
             Err(error) => {
                 error!(channel = %channel.name, %error, "the bill record failed");
+            }
+        }
+    }
+    Ok(report)
+}
+
+/// What one `poll-tasks` pass did.
+#[derive(Debug, Default)]
+struct TaskPollReport {
+    /// Open tasks the pass asked upstream about.
+    polled: usize,
+    /// Tasks the pass walked to a terminal state and settled.
+    settled: usize,
+    /// Tasks still open after the pass — `submitted` or `running`.
+    still_open: usize,
+}
+
+/// The `poll-tasks` pass: ask each open task's channel for the job's state and
+/// settle the hold on the terminal answer (issue #503).
+///
+/// The pass is deliberately unleadered: two workers polling the same task
+/// race on the settlement's derived key, which only one can win — a loser is
+/// a wasted upstream question, not a double charge. The batch is bounded per
+/// pass so a backlog drains over ticks rather than in one sweep; a task left
+/// open past the hold timeout is the sweeper's, the same as any orphaned
+/// hold.
+async fn poll_open_tasks(
+    db: &Db,
+    tenants: &Tenants,
+    webhook: &Option<(reqwest::Client, SecretKey)>,
+    on: time::Date,
+) -> Result<TaskPollReport, oxsum_core::WalletError> {
+    let Some((http, secret)) = webhook else {
+        return Err(oxsum_core::WalletError::Misconfigured(
+            "poll-tasks needs the webhook client and the sealing key".into(),
+        ));
+    };
+    let targets = db.open_task_poll_targets(64).await?;
+    let mut report = TaskPollReport {
+        polled: targets.len(),
+        ..TaskPollReport::default()
+    };
+    for target in targets {
+        let task = target.task;
+        let Some(sealed) = &target.api_key_sealed else {
+            // A channel whose pool is empty or fully cooled cannot be asked;
+            // the task stays open for the next tick — the credential's cool
+            // ends, or the hold timeout ends it.
+            report.still_open += 1;
+            continue;
+        };
+        let api_key = match secret.open(sealed) {
+            Ok(key) => key,
+            Err(error) => {
+                error!(%error, task = %task.task_id, "a task's credential would not open");
+                report.still_open += 1;
+                continue;
+            }
+        };
+        let upstream = match http
+            .get(format!(
+                "{}/tasks/{}",
+                target.base_url, task.external_task_id
+            ))
+            .bearer_auth(&api_key)
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                warn!(%error, task = %task.task_id, "the task poll's upstream was unreachable");
+                report.still_open += 1;
+                continue;
+            }
+        };
+        if !upstream.status().is_success() {
+            warn!(status = %upstream.status(), task = %task.task_id,
+                "the task poll's upstream refused");
+            report.still_open += 1;
+            continue;
+        }
+        let body: serde_json::Value = match upstream.json().await {
+            Ok(body) => body,
+            Err(error) => {
+                warn!(%error, task = %task.task_id, "the task poll's answer was not JSON");
+                report.still_open += 1;
+                continue;
+            }
+        };
+        // The reported state: `status` is the wire spelling new-api and its
+        // kin use; `state` covers the providers that name it theirs.
+        let raw_state = body
+            .get("status")
+            .or_else(|| body.get("state"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let state = match oxsum_core::TaskState::parse(raw_state) {
+            Ok(state) => state,
+            Err(_) => {
+                // An unrecognized state is mid-flight to us — upstream's own
+                // vocabulary for "still working" is `running` to the row.
+                oxsum_core::TaskState::Running
+            }
+        };
+        if !state.is_terminal() {
+            if state == oxsum_core::TaskState::Running
+                && let Err(error) = db.note_task_running(task.task_id).await
+            {
+                warn!(%error, task = %task.task_id, "marking a task running failed");
+            }
+            report.still_open += 1;
+            continue;
+        }
+        // The terminal answer's usage, normalized through the tasks adapter —
+        // the same seam a chat turn's report reads through.
+        let usage = oxsum_core::adapter_for(oxsum_core::TASKS).and_then(|a| a.usage(&body));
+        let outcome = oxsum_core::TaskOutcome {
+            state,
+            usage,
+            result_json: body.get("result").cloned(),
+            error_json: body.get("error").cloned(),
+            usage_json: body.get("usage").cloned(),
+        };
+        match oxsum_core::settle_task(db, tenants, &task, task.organization_id, &outcome, on).await
+        {
+            Ok(_) => report.settled += 1,
+            Err(oxsum_core::WalletError::Conflict(_)) => {
+                // A raced settle — the sweeper or another worker's pass —
+                // already wrote the terminal row; the conflict is the proof
+                // the work is done.
+                report.settled += 1;
+            }
+            Err(error) => {
+                error!(%error, task = %task.task_id, "the task settle failed");
+                report.still_open += 1;
             }
         }
     }

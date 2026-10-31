@@ -7342,6 +7342,193 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Submit a long-running upstream task, billed by a frozen bound that settles on terminal state
+         * @description The task relay (issue #503): a turn whose upstream work runs for
+         *     minutes — an image render, a video generation, a batch — where neither
+         *     side wants a socket held open. The surface serves only channels whose
+         *     `protocol` is `tasks`; upstream is called at `{baseUrl}/tasks` with the
+         *     channel credential as `Authorization: Bearer`.
+         *
+         *     Submission freezes the request's declared upper bound (`maxCostMinor`,
+         *     or the channel price's own bound when the request names none), relays
+         *     the body upstream, records the returned task id, and answers
+         *     `{taskId, state: "submitted"}`. The task then runs on a `poll-tasks`
+         *     periodic pass: each pass asks `{baseUrl}/tasks/{externalTaskId}` for
+         *     the still-open tasks, writes the reported state, and on a terminal
+         *     state settles the hold — `succeeded` against the result's usage report
+         *     (`usage` on the task body, itemized against the channel's price),
+         *     `failed`/`cancelled` at zero — and enqueues `task.succeeded` or
+         *     `task.failed` to the organization's subscribed webhook endpoints.
+         *
+         *     `GET /v1/tasks/{taskId}` reads the row back — the caller's poll is a
+         *     database read, not a second upstream call — and `POST
+         *     /v1/tasks/{taskId}/cancel` asks upstream to stop the job and releases
+         *     the hold either way (a refused upstream cancel still ends the billing
+         *     side, since the caller said they no longer want the work).
+         *
+         *     Usage normalization on the terminal report reads `usage.input_tokens`
+         *     / `usage.output_tokens` when upstream reports tokens, and the
+         *     task-shaped units — `usage.image_count`, `usage.seconds`,
+         *     `usage.unit_count` — ride in `usage_details` for the price book's
+         *     `event`-mode rules to itemize. A task result with no usage settles on
+         *     the local estimate of the submission's declared cost, the same as a
+         *     reportless chat turn. Errors answer in OpenAI's envelope, the same as
+         *     `/v1/chat/completions`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: {
+                    /** @description makes a retried request the same turn: the same key under the same request body replays the first response, under a different body it is refused 422, and while the first turn is still running it is refused 409 */
+                    "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                    /** @description a signed spend mandate (issue #262): base64url of the canonical-JSON body plus its Ed25519 signature, minted by `POST /api/v1/org/keys/{keyId}/mandates`. Presented on `/v1/*` and `POST /api/v1/holds`, it binds the request inside the mandate's `capMinor`, `models` and validity window — a refusal reads `invalid_mandate`, `mandate_expired` or `mandate_exceeded`, distinct from the key's own limits */
+                    "X-Oxsum-Mandate"?: components["parameters"]["Mandate"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["TaskSubmitRequest"];
+                };
+            };
+            responses: {
+                /** @description The submitted task; `Idempotent-Replayed: true` marks a replayed `Idempotency-Key` */
+                200: {
+                    headers: {
+                        "x-oxsum-request-id": components["headers"]["RequestId"];
+                        "x-oxsum-freeze-minor": components["headers"]["FreezeMinor"];
+                        "x-oxsum-balance-minor": components["headers"]["BalanceMinor"];
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Task"];
+                    };
+                };
+                400: components["responses"]["GatewayError"];
+                401: components["responses"]["GatewayError"];
+                402: components["responses"]["GatewayError"];
+                403: components["responses"]["GatewayError"];
+                409: components["responses"]["GatewayError"];
+                422: components["responses"]["GatewayError"];
+                429: components["responses"]["GatewayError"];
+                500: components["responses"]["GatewayError"];
+                502: components["responses"]["GatewayError"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/tasks/{taskId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read a task's state — the caller's poll is a database read, never a second upstream call
+         * @description The task row as the last `poll-tasks` pass (or the submit, or the
+         *     cancel) left it: `state` is `submitted` while upstream has not been
+         *     asked yet, `running` while the job is mid-flight, and `succeeded`,
+         *     `failed` or `cancelled` once terminal — the terminal transition is
+         *     also the settlement, so a terminal state means the bill is written.
+         *     `result` carries upstream's answer body on success, `error` the
+         *     reported failure. The caller's API key must belong to the
+         *     organization that submitted the task — a foreign key reads 404, not
+         *     403, so a task's existence is not an oracle.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The task row */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Task"];
+                    };
+                };
+                401: components["responses"]["GatewayError"];
+                404: components["responses"]["GatewayError"];
+                500: components["responses"]["GatewayError"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/tasks/{taskId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Best-effort cancel — releases the hold and asks upstream to stop the job
+         * @description Asks upstream to cancel the external task
+         *     (`POST {baseUrl}/tasks/{externalTaskId}/cancel`), then releases the
+         *     hold at zero whether upstream accepted or not: the billing side ends
+         *     because the caller said the work is no longer wanted. A task already
+         *     terminal answers it back unchanged — cancelling a settled task is a
+         *     no-op, not an error, since a racing poll may have finished it first.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The task row after the cancel */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Task"];
+                    };
+                };
+                401: components["responses"]["GatewayError"];
+                404: components["responses"]["GatewayError"];
+                500: components["responses"]["GatewayError"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/messages": {
         parameters: {
             query?: never;
@@ -10324,6 +10511,79 @@ export interface components {
             };
         } & {
             [key: string]: unknown;
+        };
+        /**
+         * @description What the task relay reads of a submission (issue #503). `input`
+         *     carries the upstream job's own request — the image prompt, the video
+         *     spec, the batch definition — forwarded to `{baseUrl}/tasks` verbatim
+         *     under `input`; `params` rides alongside it for the upstream's
+         *     optional knobs. Everything else the upstream needs lives inside
+         *     `input`/`params`, since oxsum forwards rather than interprets.
+         */
+        TaskSubmitRequest: {
+            /**
+             * @description the task's billing class — recorded on the row; `custom` covers every kind the enum does not name
+             * @enum {string}
+             */
+            kind: "image" | "video" | "batch" | "custom";
+            /** @description must be a model a `tasks`-protocol channel serves with a configured price */
+            model: string;
+            /** @description the upstream job's request, forwarded as `input` */
+            input?: {
+                [key: string]: unknown;
+            };
+            /** @description optional upstream knobs, forwarded as `params` */
+            params?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Format: int64
+             * @description the caller's declared upper bound the freeze reserves; absent or null means the channel price's own bound
+             */
+            maxCostMinor?: number | null;
+            /** @description the caller's own end-user id, recorded for attribution */
+            user?: string | null;
+            /** @description the caller's own tags: at most 10 key/value pairs, keys and values at most 64 characters and strings only */
+            metadata?: {
+                [key: string]: string;
+            } | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * @description One task row as the relay keeps it. `state` is `submitted` while the
+         *     poll pass has not asked upstream yet, `running` while the job is
+         *     mid-flight, `succeeded`/`failed`/`cancelled` once terminal — and a
+         *     terminal state means the hold already settled: `succeeded` against
+         *     the result's usage, `failed`/`cancelled` at zero.
+         */
+        Task: {
+            /**
+             * Format: uuid
+             * @description oxsum's own id — the one the client polls and cancels by
+             */
+            taskId?: string;
+            /** @enum {string} */
+            state?: "submitted" | "running" | "succeeded" | "failed" | "cancelled";
+            kind?: string;
+            model?: string;
+            /** @description the channel that accepted the submission */
+            channel?: string;
+            /** Format: date-time */
+            submittedAt?: string;
+            /** Format: date-time */
+            completedAt?: string | null;
+            /** @description upstream's answer body on success — URLs, ids, the produced artifacts' descriptors; `null` before `succeeded` */
+            result?: Record<string, never> | null;
+            /** @description the reported failure on `failed`/`cancelled`; `null` otherwise */
+            error?: Record<string, never> | null;
+            /** @description the settled usage report — `input_tokens`/`output_tokens` when upstream counts tokens, task-shaped units in the raw body otherwise */
+            usage?: Record<string, never> | null;
+            /**
+             * Format: int64
+             * @description what the settlement charged; `null` while the task is open
+             */
+            chargedMinor?: number | null;
         };
         /**
          * @description The fields the gateway acts on. Everything else is forwarded to upstream unchanged —

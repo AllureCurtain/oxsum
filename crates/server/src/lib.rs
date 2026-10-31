@@ -12,6 +12,7 @@ mod metering;
 mod metrics;
 mod routes;
 mod spa;
+mod tasks;
 pub mod telemetry;
 mod web;
 pub mod webhooks;
