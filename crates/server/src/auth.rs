@@ -110,15 +110,19 @@ async fn resolve(state: &AppState, headers: &HeaderMap) -> Result<Option<Princip
 /// The organization the presented API key spends for, and the key that acted, if the
 /// credential is a usable one.
 ///
-/// The credential arrives as `Authorization: Bearer`, or as `x-api-key` — the spelling an
-/// Anthropic SDK sends; both name the same organization key on `/v1`. The error type is
-/// `WalletError` so each surface maps it into its own envelope — `/api/v1` and `/v1`
-/// refuse a saturated pool in their own shape.
+/// The credential arrives as `Authorization: Bearer`, as `x-api-key` — the spelling an
+/// Anthropic SDK sends — or as `x-goog-api-key`, the spelling a Gemini SDK sends; all
+/// three name the same organization key on `/v1`. The error type is `WalletError` so
+/// each surface maps it into its own envelope — `/api/v1` and `/v1` refuse a
+/// saturated pool in their own shape.
 async fn resolve_key(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<Option<(Organization, ActingKey)>, oxsum_core::WalletError> {
-    let Some(presented) = bearer(headers).or_else(|| api_key_header(headers)) else {
+    let Some(presented) = bearer(headers)
+        .or_else(|| api_key_header(headers))
+        .or_else(|| goog_api_key_header(headers))
+    else {
         return Ok(None);
     };
     state.db.authenticate(presented).await
@@ -140,6 +144,17 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
 fn api_key_header(headers: &HeaderMap) -> Option<&str> {
     headers
         .get("x-api-key")?
+        .to_str()
+        .ok()
+        .map(str::trim)
+        .filter(|secret| !secret.is_empty())
+}
+
+/// The `x-goog-api-key` credential, if the header is there and readable — the Gemini
+/// SDKs' spelling of the same organization key (issue #494).
+fn goog_api_key_header(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get("x-goog-api-key")?
         .to_str()
         .ok()
         .map(str::trim)

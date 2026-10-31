@@ -253,6 +253,16 @@ pub fn router(state: AppState) -> Router {
                 StatusCode::REQUEST_TIMEOUT,
                 REQUEST_TIMEOUT,
             )),
+        )
+        // The Gemini surface (issue #494): the same gateway, under the
+        // versioned prefix a Gemini client spells. Its own router carries the
+        // same auth and timeout as `/v1`.
+        .nest(
+            "/v1beta",
+            crate::gateway::beta_router(state.clone()).layer(TimeoutLayer::with_status_code(
+                StatusCode::REQUEST_TIMEOUT,
+                REQUEST_TIMEOUT,
+            )),
         );
     // The React dashboard (issue #234): `web/dist` embedded into the
     // binary and served at `/app`, inside the router rather than the fallback

@@ -82,6 +82,7 @@ export function Channels({ token }: { token: string }) {
             <Select value={protocol} onChange={(e) => setProtocol(e.target.value)}>
               <option value="openai">openai</option>
               <option value="anthropic">anthropic</option>
+              <option value="gemini">gemini</option>
             </Select>
           </Field>
           <div className="flex items-end gap-2">

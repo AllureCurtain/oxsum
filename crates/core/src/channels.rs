@@ -174,7 +174,8 @@ pub struct Channel {
 pub struct CatalogModel {
     /// The channel the model is sold through.
     pub channel: String,
-    /// The upstream protocol the model answers on: `openai` or `anthropic`.
+    /// The upstream protocol the model answers on: `openai`, `anthropic` or
+    /// `gemini`.
     pub protocol: String,
     pub model: String,
     /// The current price version; a settlement names the version that priced it.
@@ -1003,20 +1004,45 @@ impl Db {
         api_key: &str,
         key: &SecretKey,
     ) -> Result<bool, WalletError> {
+        self.seed_channel_as(book, base_url, api_key, crate::adapters::OPENAI, key)
+            .await
+    }
+
+    /// [`seed_channel`](Self::seed_channel) under a named protocol (issue
+    /// #494): the demo world seeds a `gemini` channel the same way it seeds
+    /// the `openai` one, so a fresh deployment exercises the third adapter.
+    ///
+    /// # Errors
+    ///
+    /// As [`Db::seed_channel`], plus [`WalletError::InvalidInput`] for a
+    /// protocol name this build does not know.
+    pub async fn seed_channel_as(
+        &self,
+        book: &PriceBook,
+        base_url: &str,
+        api_key: &str,
+        protocol: &str,
+        key: &SecretKey,
+    ) -> Result<bool, WalletError> {
+        crate::adapters::known_protocol(protocol)?;
         let mut tx = self.pool().begin().await?;
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
             .bind(SEED_LOCK)
             .execute(&mut *tx)
             .await?;
-        let existing: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM oxsum.channels)")
-            .fetch_one(&mut *tx)
-            .await?;
+        // The idempotency check is per channel: the demo world now carries
+        // more than one, and each is seeded exactly once (issue #494).
+        let name = channel_name(book.channel())?;
+        let existing: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM oxsum.channels WHERE name = $1)")
+                .bind(name)
+                .fetch_one(&mut *tx)
+                .await?;
         if existing {
             tx.rollback().await?;
             return Ok(false);
         }
         let channel_id = Uuid::new_v4();
-        let name = channel_name(book.channel())?;
         let base_url = base_url_of(base_url)?;
         let api_key = credential_text(api_key)?;
         sqlx::query(
@@ -1027,7 +1053,7 @@ impl Db {
         .bind(channel_id)
         .bind(name)
         .bind(base_url)
-        .bind(crate::adapters::OPENAI)
+        .bind(protocol)
         .execute(&mut *tx)
         .await?;
         // The seed's one credential joins the pool like any other: the same

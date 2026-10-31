@@ -74,6 +74,19 @@ const DEMO_MODELS: &str = r#"{
     }
 }"#;
 
+/// The demo world's Gemini channel (issue #494): a second protocol beside the
+/// OpenAI one, so the seeded turns exercise the `gemini` adapter and the
+/// catalog shows both surfaces served. Its base URL is the same deliberately
+/// unreachable host — the demo serves seeded history, not live traffic.
+const DEMO_GEMINI_CHANNEL: &str = "demo-gemini";
+const DEMO_GEMINI_MODELS: &str = r#"{
+    "demo-gemini-flash": {
+        "inputPricePerMillion": 300000,
+        "outputPricePerMillion": 1200000,
+        "maxOutputTokens": 8192
+    }
+}"#;
+
 /// What a run reports: the credentials to print once, and what was written —
 /// `created: false` means the demo world was already there and nothing changed.
 #[derive(Debug, Clone)]
@@ -170,8 +183,9 @@ impl Db {
 
         // A deployment with no catalog cannot bill a seeded turn: the turns need
         // a price book. With the sealing key in hand the seed creates the demo
-        // channel, so a fresh `oxsum seed` shows the product working; without
-        // one, the world is written without history, as before.
+        // channels — the OpenAI pair plus the Gemini one (issue #494) — so a
+        // fresh `oxsum seed` shows the product working; without one, the world
+        // is written without history, as before.
         let mut catalog = self.catalog().await?;
         if catalog.is_empty()
             && let Some(key) = key
@@ -179,6 +193,16 @@ impl Db {
             let book = PriceBook::from_json(DEMO_CHANNEL, DEMO_MODELS).map_err(invalid)?;
             self.seed_channel(&book, DEMO_BASE_URL, DEMO_API_KEY, key)
                 .await?;
+            let gemini_book =
+                PriceBook::from_json(DEMO_GEMINI_CHANNEL, DEMO_GEMINI_MODELS).map_err(invalid)?;
+            self.seed_channel_as(
+                &gemini_book,
+                DEMO_BASE_URL,
+                DEMO_API_KEY,
+                crate::adapters::GEMINI,
+                key,
+            )
+            .await?;
             catalog = self.catalog().await?;
         }
         let staging = self
