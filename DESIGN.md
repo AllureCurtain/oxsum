@@ -6,7 +6,7 @@ Issue #448 widened the vocabulary to the shadcn semantic set so vendored compone
 
 ## Component vocabulary
 
-There is exactly one component layer: `web/src/components/ui/`. Interactive primitives are built on `@base-ui/react` for behavior and styled with this palette — no second component library, no copy-in theme sources. Pages never import from anything else: when a shared piece is missing, it is added to `ui/` rather than vendored per page. Component names are the plain words (`Button`, `Badge`, `Card`, …); decorative or one-off effects do not become components. (Recorded for issue #412: the `cult/` vendor directory and the `ui/` shims were removed in favor of this single layer; the galaxy catalog is a reference, not a dependency.)
+There is exactly one component layer: `web/src/components/ui/`. Its behavioral primitives are Radix (`@radix-ui/react-*`, one package per component — the `radix-ui` aggregate is not used); the overlay, form and navigation pieces are vendored shadcn/ui sources — copied into the repo through `npx shadcn add`, then rewritten onto this palette and token set, so they are owned code, not a theme dependency. Styling is Tailwind over the `@theme` tokens in `web/src/index.css`. Pages never import a second component library: when a shared piece is missing, it is added to `ui/` rather than vendored per page. Component names are the plain words (`Button`, `Badge`, `Card`, …); decorative or one-off effects do not become components. The shadcn conventions hold inside `ui/`: `forwardRef` + `displayName`, `data-slot` on the root node, `cva` for variant axes, one component per file. (Recorded for issue #412: the `cult/` vendor directory and the `ui/` shims were removed in favor of this single layer; the galaxy catalog is a reference, not a dependency. Issues #450–#458 moved the behavior layer from `@base-ui/react` to Radix and vendored the shadcn set — card, input and button are deliberate exceptions where an existing component's API already fits the pages: `Card` keeps its `title`/`actions` props, `TextInput` keeps `trailingSlot`, and `Button` keeps `tone`/`isLoading`.)
 
 ## Colors
 
@@ -96,9 +96,22 @@ Text-to-background contrast is at least 4.5:1. Verification results must never r
 
 Every interactive component has: default, hover, focus (a keyboard-visible focus ring), disabled, loading.
 
+## Motion
+
+- Motion lives in `ui/` (motion/react): the switch thumb's spring, the rolling-number counter, the animated KPI, the indeterminate progress sweep. Pages orchestrate, they don't animate — no ad-hoc `transition-*` choreography beyond the standard `duration-150` hover/state fade.
+- Durations: 150ms for state fades (hover, border, shadow), 200–300ms for overlay enter/exit, spring physics for moving parts (thumb, indicator). No bounces on money surfaces.
+- `useReducedMotion` is mandatory on every animated piece — reduced motion swaps springs/sweeps for instant states, never a slower version.
+- Overlays animate through Radix's `data-[state=open/closed]` + `animate-in`/`animate-out`, not hand-rolled keyframes.
+
+## Icons
+
+- lucide-react only — one icon set, no emoji, no hand-drawn SVG glyphs (data-viz charts like the usage bars are drawing, not icons).
+- Sizes: 12 / 14 / 16 / 20 (`.size-3`–`.size-5`); icons inside icon buttons and KPI tiles are sized by the `[&>svg]:size-*` pattern on the container.
+- An icon is never the only carrier of meaning: icon-only buttons go through `IconButton`, which wraps the trigger in a Radix tooltip and requires `label` for both `aria-label` and the tooltip body.
+
 ## Page states
 
-Every data page handles: loading, empty, error, and normal.
+Every data page handles: loading, empty, error, and normal. Loading uses `Skeleton` placeholders shaped like the content (KPI tiles, table rows), never fake zero data — a balance that reads `0` while loading is a lie the ledger would not print. Destructive actions confirm through `AlertDialog`, never `window.confirm` — the dialog names what is about to be lost (the endpoint's URL, the account's email).
 
 ## Z-index order
 

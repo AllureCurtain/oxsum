@@ -20,10 +20,13 @@ retired to it (issues #234, #256), so this is now the only dashboard; the legacy
 - `src/components/` — the app shell and the design vocabulary. `ui/` is the
   single component layer split per domain (`money`, `surface`, `state`,
   `table`, `badge`, `form`, `controls`: buttons, inputs, select, tabs, switch,
-  badge, card, table, progress, code block, …), built on `@base-ui/react`
-  primitives, styled by `src/index.css`, which maps the DESIGN.md tokens onto
-  Tailwind's theme (`bg-primary`, `text-muted`, `border-line`, `mono`, …), and
-  re-exported by `ui/index.ts`. `LiveIsland.tsx` sits beside it.
+  badge, card, table, progress, code block, …). Behavioral primitives are
+  Radix (`@radix-ui/react-*`); the overlay/form/navigation pieces are
+  vendored shadcn/ui sources (`components.json` is the registry config)
+  rewritten onto the product palette — owned code, not an npm theme. Styled
+  by `src/index.css`, which maps the DESIGN.md tokens onto Tailwind's theme
+  (`bg-primary`, `text-muted`, `border-line`, `mono`, …), and re-exported by
+  `ui/index.ts`. `LiveIsland.tsx` sits beside it.
 - `src/pages/` — one file per dashboard page; `auth/` holds the session pages
   (`shared.tsx` carries `AuthCard`/`ErrorText`, one file per flow), `Admin.tsx`
   the operator console.
@@ -104,7 +107,7 @@ checkout.
 - [x] Accessibility pass: global `:focus-visible` ring in `index.css`,
       disabled/loading states on the button primitives, `PageState`
       (loading/empty/error/normal) on every page, `useReducedMotion` /
-      `motion-reduce` in the animated Cult components
+      `motion-reduce` in the animated `ui/` components
 
 ## API reads added for the SPA (0.60.0)
 
