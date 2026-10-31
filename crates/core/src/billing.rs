@@ -1004,7 +1004,10 @@ impl SettlementKind {
 /// upstream name an alias resolved to, absent when the served name is the
 /// upstream's own (issue #286). v9 adds the optional `subscription` — which
 /// subscription period a subscription-covered turn drew on (issue #496).
-const DESCRIPTION_VERSION: i64 = 9;
+/// v10 adds the optional `cache` — which cached response the turn reused
+/// (issue #497): `{sourceEntryId, similarity}`, the proof link to the entry
+/// the answer was first produced under.
+const DESCRIPTION_VERSION: i64 = 10;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1059,6 +1062,11 @@ pub struct Settlement<'a> {
     /// The bill proves which entitlement window paid the same way it proves the
     /// figure. Absent on a turn the wallet alone paid for.
     pub subscription: Option<SettlementSubscription<'a>>,
+    /// The cached answer a cache-hit turn reused (issue #497): `{sourceEntryId,
+    /// similarity}` — the ledger entry the answer was first produced under and
+    /// the match's score (1.0 on an exact-digest hit, the only kind this build
+    /// serves). Absent on a turn upstream answered fresh.
+    pub cache: Option<SettlementCache<'a>>,
     /// Why the turn refused or errored, when it did (issue #233): the refusal
     /// or upstream error in the caller-facing words the answer already carried,
     /// truncated to fit the description — under the hash, so a bill proves the
@@ -1094,8 +1102,23 @@ pub struct SettlementSubscription<'a> {
 pub struct SettlementMandate<'a> {
     /// The mandate's own id.
     pub id: &'a uuid::Uuid,
-    /// sha256 of the signed mandate blob, hex.
+    /// sha256 of the presented mandate blob, hex.
     pub hash: &'a str,
+}
+
+/// The cached answer a cache-hit turn reused, as the v10 description's `cache`
+/// object (issue #497): `sourceEntryId` names the ledger entry the answer was
+/// first produced under — the link a verifier can follow to the turn that
+/// actually ran upstream — and `similarity` is the match's score. Exact-digest
+/// hits are the only kind this build serves, so the honest figure is 1.0; a
+/// later similarity-search version writes the real score, never a threshold.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettlementCache<'a> {
+    /// The ledger entry the served answer was produced under.
+    pub source_entry_id: &'a uuid::Uuid,
+    /// The match's score: `1.0` on an exact-digest hit.
+    pub similarity: f64,
 }
 
 /// Whether a metered count is zero: zero fields are not written, so the common
@@ -1256,6 +1279,10 @@ struct SettlementV9<'a> {
     /// when the turn drew nothing from a subscription.
     #[serde(skip_serializing_if = "Option::is_none")]
     subscription: Option<SettlementSubscription<'a>>,
+    /// The cached answer a cache-hit turn reused, v10's addition (issue #497):
+    /// `{sourceEntryId, similarity}` — absent when upstream answered fresh.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache: Option<SettlementCache<'a>>,
     /// Why the turn refused or errored, when it did (issue #233): the caller's
     /// own answer words, under the content hash — absent for a clean settle.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1289,6 +1316,7 @@ impl Settlement<'_> {
             freeze: self.freeze,
             mandate: self.mandate.clone(),
             subscription: self.subscription.clone(),
+            cache: self.cache.clone(),
             reason: self.reason,
         })
         .map_err(|error| WalletError::InvalidInput(format!("settlement record: {error}")))
@@ -1456,6 +1484,9 @@ pub struct SettlementRecord {
     /// The subscription the turn's hold drew on (v9, issue #496): `{subscriptionId,
     /// periodId, drawnMinor, chargedMinor}`; `None` when the wallet alone paid.
     pub subscription: Option<SubscriptionRef>,
+    /// The cached answer a cache-hit turn reused (v10, issue #497):
+    /// `{sourceEntryId, similarity}`; `None` on a fresh turn.
+    pub cache: Option<CacheRef>,
     /// Why the turn refused or errored, when the writer recorded one (issue
     /// #233); `None` on a clean settle and on records that predate it.
     pub reason: Option<String>,
@@ -1487,6 +1518,17 @@ pub struct SubscriptionRef {
     pub charged_minor: i64,
 }
 
+/// The cached answer a settled record names, read back (v10, issue #497):
+/// which entry the reused answer came from and the match's score.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheRef {
+    /// The ledger entry the served answer was produced under.
+    pub source_entry_id: Uuid,
+    /// The match's score: `1.0` on an exact-digest hit.
+    pub similarity: f64,
+}
+
 /// The wire [`SettlementRecord::parse`] reads: [`SettlementV9`] owned, tolerant
 /// of every version since v3 — the differences are fields the other writers
 /// never carried.
@@ -1512,6 +1554,8 @@ struct SettlementRecordWire {
     mandate: Option<MandateRef>,
     /// The subscription a v9 record carries; `None` on earlier versions.
     subscription: Option<SubscriptionRef>,
+    /// The cached-answer a v10 record carries; `None` on earlier versions.
+    cache: Option<CacheRef>,
     charged: i64,
     freeze: i64,
     reason: Option<String>,
@@ -1570,6 +1614,7 @@ impl SettlementRecord {
             service: wire.service,
             mandate: wire.mandate,
             subscription: wire.subscription,
+            cache: wire.cache,
             reason: wire.reason,
         })
     }
@@ -2164,12 +2209,13 @@ mod tests {
             upstream_attempts: 1,
             mandate: None,
             subscription: None,
+            cache: None,
             reason: None,
         };
         let json = settlement.description().unwrap();
         assert_eq!(
             json,
-            r#"{"v":9,"request":"abc","channel":"deepseek","model":"deepseek-chat","priceVersion":3,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100},"lines":[["input",116,1000000],["output",100,2000000]],"upstreamAttempts":1,"charged":316,"freeze":400}"#
+            r#"{"v":10,"request":"abc","channel":"deepseek","model":"deepseek-chat","priceVersion":3,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100},"lines":[["input",116,1000000],["output",100,2000000]],"upstreamAttempts":1,"charged":316,"freeze":400}"#
         );
         // Within the ledger's limit, whatever the model is called.
         assert!(json.len() < 512);
@@ -2292,6 +2338,7 @@ mod tests {
             upstream_attempts: 1,
             mandate: None,
             subscription: None,
+            cache: None,
             reason: None,
         }
         .description()
@@ -2344,6 +2391,7 @@ mod tests {
             upstream_attempts: 1,
             mandate: None,
             subscription: None,
+            cache: None,
             reason: None,
         }
         .description()
@@ -2378,6 +2426,7 @@ mod tests {
             upstream_attempts: 2,
             mandate: None,
             subscription: None,
+            cache: None,
             reason: None,
         };
         let record = SettlementRecord::parse(&settlement.description().unwrap()).unwrap();
@@ -2438,6 +2487,7 @@ mod tests {
             upstream_attempts: 1,
             mandate: None,
             subscription: None,
+            cache: None,
             reason: None,
         };
         let text = settlement.description().unwrap();
@@ -2474,7 +2524,7 @@ mod tests {
         // (v2), or one whose priced lines are missing. A v3 record parses — the
         // reader tolerates the shape v4 superseded — but one that lacks the
         // lines the prices are read out of still cannot.
-        assert!(SettlementRecord::parse(r#"{"v":10,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[["input",1,1],["output",0,1]],"charged":1,"freeze":1}"#).is_none());
+        assert!(SettlementRecord::parse(r#"{"v":11,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[["input",1,1],["output",0,1]],"charged":1,"freeze":1}"#).is_none());
         assert!(SettlementRecord::parse(r#"{"v":2,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[{"item":"input","units":1,"pricePerM":1},{"item":"output","units":1,"pricePerM":1}],"charged":1,"freeze":1}"#).is_none());
         assert!(SettlementRecord::parse(r#"{"v":3,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[],"charged":1,"freeze":1}"#).is_none());
         assert!(

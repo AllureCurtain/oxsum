@@ -11,6 +11,7 @@ mod adapters;
 mod anomaly;
 mod audit;
 mod billing;
+mod cache;
 mod channels;
 mod credit_notes;
 mod db;
@@ -63,11 +64,12 @@ pub use adapters::{
 pub use anomaly::{AnomalyFacts, Severity, anomaly_score};
 pub use audit::{AuditEntry, AuditPage, action as audit_action};
 pub use billing::{
-    BillLine, BillingMode, ItemizedCharge, MandateRef, MeteredSettlement, MeteredUsage, Price,
-    PriceBook, PriceRule, PriceSet, RuleMatch, Settlement, SettlementKind, SettlementMandate,
-    SettlementRecord, SettlementSubscription, SubscriptionRef, UpstreamPrices, estimate_tokens,
-    hold_description, input_upper_bound,
+    BillLine, BillingMode, CacheRef, ItemizedCharge, MandateRef, MeteredSettlement, MeteredUsage,
+    Price, PriceBook, PriceRule, PriceSet, RuleMatch, Settlement, SettlementCache, SettlementKind,
+    SettlementMandate, SettlementRecord, SettlementSubscription, SubscriptionRef, UpstreamPrices,
+    estimate_tokens, hold_description, input_upper_bound,
 };
+pub use cache::{CachePolicy, CacheStore, CachedAnswer, PromptPart, prompt_digest};
 pub use channels::{
     CatalogModel, Channel, MAX_WEIGHT, ModelAlias, ModelPrice, ProbeChannel, SecretKey, Serving,
     event_price, price_row, route_order,
