@@ -38,13 +38,15 @@ const Sparkline = React.forwardRef<
 
   const gradientId = React.useId();
 
+  /** The svg carries no intrinsic size — callers set it via `className`/`style`
+   *  (e.g. `h-7 w-28`), so the same component scales from an inline KPI strip
+   *  to a hero chart. Values are scaled to the viewBox whatever its aspect. */
   return (
     <svg
       ref={ref}
       data-slot="sparkline"
       viewBox={`0 0 ${width} ${height}`}
-      width={width}
-      height={height}
+      preserveAspectRatio="none"
       aria-hidden
       className={cn("block", className)}
       {...props}
