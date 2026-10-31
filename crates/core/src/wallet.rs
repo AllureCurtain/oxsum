@@ -3042,6 +3042,10 @@ impl Wallet {
             request: request_id,
             channel,
             model,
+            // A refused request served nothing: the asked-for name is what the
+            // record reports on both sides.
+            requested_model: model,
+            served_model: model,
             // A refused request never resolved its route — nothing upstream to name.
             upstream_model: None,
             price_version: 0,

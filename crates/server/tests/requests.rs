@@ -267,6 +267,8 @@ async fn seed_request(
         request,
         channel: "mock",
         model,
+        requested_model: model,
+        served_model: model,
         upstream_model: None,
         price_version: 1,
         kind: status,

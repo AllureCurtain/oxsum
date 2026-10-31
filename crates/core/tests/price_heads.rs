@@ -124,6 +124,8 @@ async fn settle_one(
         request: &hold_key,
         channel,
         model,
+        requested_model: model,
+        served_model: model,
         upstream_model: None,
         price_version,
         kind: SettlementKind::Usage,

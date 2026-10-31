@@ -435,10 +435,7 @@ async fn a_repeat_ask_is_served_from_the_cache_and_billed_as_a_hit() {
         .expect("the hit names its request")
         .to_owned();
     let hit = world.settlement_within(&hit_request).await;
-    assert_eq!(
-        hit["v"], 11,
-        "the hit settles under the cache-aware version"
-    );
+    assert_eq!(hit["v"], 12, "the hit settles under the current version");
     assert_eq!(hit["kind"], "usage");
     let cache = &hit["cache"];
     assert_eq!(

@@ -474,6 +474,10 @@ async fn sweep_one(
         request: &hold.request_id,
         channel: &hold.channel,
         model: &hold.model,
+        // A swept hold never failed over: the name the hold was taken under is
+        // both what was asked and what was to answer.
+        requested_model: &hold.model,
+        served_model: &hold.model,
         // The watch row knows the served name the hold was taken under; the
         // upstream resolution happened at admission and is lost with it — an
         // honest record leaves the field out rather than reconstructing it.
