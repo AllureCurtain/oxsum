@@ -46,6 +46,8 @@ Every hash is domain-separated — `BLAKE3(tag.len() as u64 little-endian ‖ ta
 | `oxsum/credit-limit/v1` | A credit-line grant predicate input |
 | `doubleentry/…` | Reserved for the engine's own domains — never used by application code |
 
+Two further constants are *document ids*, not hash domains — the `DocumentRef.id` string a marker or anchor entry carries so the verifier can tell what the entry commits. They happen to share a domain's spelling: the usage-report marker's document id is `oxsum/usage-report/v1`, the daily anchor's is `oxsum/usage-anchor/v1` (no map suffix — it names the anchor document, the map is what it commits).
+
 ## 4. Wire shapes
 
 All objects are JSON. Field names are camelCase on the wire; `optional` fields are absent (never `null`) unless noted.
