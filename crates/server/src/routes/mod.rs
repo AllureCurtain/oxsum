@@ -253,12 +253,17 @@ pub fn router(state: AppState) -> Router {
                 )),
         )
         // The OpenAI-compatible surface, which brings its own auth and its own error format.
+        // The task relay rides under the same `/v1` prefix and the same
+        // gateway auth (issue #503): `POST /v1/tasks` submits,
+        // `GET /v1/tasks/{id}` polls, `POST /v1/tasks/{id}/cancel` cancels.
         .nest(
             "/v1",
-            crate::gateway::router(state.clone()).layer(TimeoutLayer::with_status_code(
-                StatusCode::REQUEST_TIMEOUT,
-                REQUEST_TIMEOUT,
-            )),
+            crate::gateway::router(state.clone())
+                .merge(crate::tasks::router(state.clone()))
+                .layer(TimeoutLayer::with_status_code(
+                    StatusCode::REQUEST_TIMEOUT,
+                    REQUEST_TIMEOUT,
+                )),
         )
         // The Gemini surface (issue #494): the same gateway, under the
         // versioned prefix a Gemini client spells. Its own router carries the
