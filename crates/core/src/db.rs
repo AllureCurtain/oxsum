@@ -265,6 +265,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0065_guardrails",
         include_str!("../migrations/0065_guardrails.sql"),
     ),
+    (
+        "0066_oidc_totp",
+        include_str!("../migrations/0066_oidc_totp.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.

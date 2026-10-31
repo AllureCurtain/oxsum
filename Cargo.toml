@@ -48,6 +48,10 @@ rand = "0.10"
 # patterns, rather than a substring that a rename would keep satisfying.
 regex = "1"
 sha2 = "0.11"
+# TOTP is HMAC-SHA1 by spec (RFC 6238) — the second factor's `code` is built
+# from it, and the `hmac` crate drives the MAC the way the webhook signature
+# pairs sha2 with hmac 0.13.
+sha1 = "0.11"
 # HMAC-SHA256 over the delivered webhook body — the version pairs with sha2 0.11's digest.
 hmac = "0.13"
 # The operator token on the admin surface is compared in constant time, so a wrong guess learns
@@ -60,6 +64,10 @@ url = "2"
 # deployment needs no OpenSSL, `stream` for the passthrough. See docs/decisions.md,
 # "gateway HTTP client and token estimation".
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+# The OIDC `id_token` is a JWS the login verifies against the provider's JWKS —
+# the one place a JWT is a credential, and the crate that owns the RS256 verify
+# the codebase does not hand-roll.
+jsonwebtoken = "9"
 # Polling the relay by hand needs the `Stream` trait itself, nothing else from futures.
 futures-core = "0.3"
 # The relay is a generator: it forwards chunks, then awaits the settlement before it ends. A

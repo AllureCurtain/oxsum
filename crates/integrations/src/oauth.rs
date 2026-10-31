@@ -221,7 +221,7 @@ impl GitHub {
 /// Percent-encodes one query value — enough for the URLs this module builds
 /// (`client_id`s, states and callback URLs are all safely inside the
 /// unreserved-and-friends set, but a public URL needn't be).
-fn urlencoded(value: &str) -> String {
+pub(crate) fn urlencoded(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for byte in value.bytes() {
         match byte {
