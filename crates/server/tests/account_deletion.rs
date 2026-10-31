@@ -244,6 +244,7 @@ async fn settle_request(
         freeze,
         upstream_attempts: 1,
         mandate: None,
+        subscription: None,
         reason: None,
     };
     wallet

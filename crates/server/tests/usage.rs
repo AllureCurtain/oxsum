@@ -331,6 +331,7 @@ async fn seed_request(
         freeze: freeze_minor,
         upstream_attempts: 1,
         mandate: None,
+        subscription: None,
         reason: None,
     };
     wallet
