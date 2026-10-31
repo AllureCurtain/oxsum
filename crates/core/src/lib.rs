@@ -40,6 +40,7 @@ mod service_credentials;
 mod sessions;
 mod statement_pdf;
 mod statements;
+mod subscriptions;
 mod teams;
 mod tenants;
 mod tiers;
@@ -60,7 +61,8 @@ pub use audit::{AuditEntry, AuditPage, action as audit_action};
 pub use billing::{
     BillLine, BillingMode, ItemizedCharge, MandateRef, MeteredSettlement, MeteredUsage, Price,
     PriceBook, PriceRule, PriceSet, RuleMatch, Settlement, SettlementKind, SettlementMandate,
-    SettlementRecord, UpstreamPrices, estimate_tokens, hold_description, input_upper_bound,
+    SettlementRecord, SettlementSubscription, SubscriptionRef, UpstreamPrices, estimate_tokens,
+    hold_description, input_upper_bound,
 };
 pub use channels::{
     CatalogModel, Channel, MAX_WEIGHT, ModelAlias, ModelPrice, ProbeChannel, SecretKey, Serving,
@@ -125,6 +127,10 @@ pub use sessions::{
 pub use statement_pdf::render_statement_pdf;
 pub use statements::{
     PaymentStatus, Statement, StatementLine, StatementPeriod, StatementStatus, statement_period,
+};
+pub use subscriptions::{
+    OrgSubscription, ResetPeriod, RolloverReport, SubscriptionAdmission, SubscriptionPeriod,
+    SubscriptionPlan,
 };
 pub use teams::Team;
 pub use tenants::Tenants;

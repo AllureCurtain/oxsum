@@ -492,6 +492,7 @@ async fn sweep_one(
         // attempt that began it (issue #168).
         upstream_attempts: 1,
         mandate: None,
+        subscription: None,
         reason: None,
     }
     .description()?;
@@ -505,6 +506,20 @@ async fn sweep_one(
                 request_id = %hold.request_id,
                 "swept a timed-out hold: the freeze is released and the turn is recorded as an anomaly"
             );
+            // The subscription draw, when the turn took one, settles at 0 the
+            // same way: a swept turn owes nothing, so the whole draw returns
+            // to the period's counter instead of leaking against the quota.
+            // A replayed or missing draw is the race the turn's own
+            // settlement owns — `None` means there was never a draw, a stored
+            // `settled_minor` means the draw already settled (issue #496).
+            match db.settle_subscription_draw(&hold.hold_key, 0).await {
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::error!(%error, request_id = %hold.request_id,
+                        "settling the swept hold's subscription draw failed; the next pass retries it");
+                    return Err(error);
+                }
+            }
             // The usage row only when this sweep's settlement landed: on a conflict the
             // turn's own settlement wrote its record, and a hold that was never taken
             // billed nothing and records nothing.
@@ -516,6 +531,17 @@ async fn sweep_one(
             Ok(())
         }
         Err(WalletError::HoldNotFound(_)) | Err(WalletError::Conflict(_)) => {
+            // No ledger write landed — but a draw may still sit open if the
+            // hold was never taken, so the draw settles at 0 here too rather
+            // than leaking the quota it reserved (issue #496).
+            match db.settle_subscription_draw(&hold.hold_key, 0).await {
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::error!(%error, request_id = %hold.request_id,
+                        "settling the swept hold's subscription draw failed; the next pass retries it");
+                    return Err(error);
+                }
+            }
             db.clear_open_hold(&hold.hold_key).await?;
             Ok(())
         }

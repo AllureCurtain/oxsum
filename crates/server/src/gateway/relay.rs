@@ -135,6 +135,11 @@ struct Plan {
     /// `Retry-After` on a lone channel's 429. Written into the settlement
     /// description and the usage row.
     upstream_attempts: i64,
+    /// The subscription quota this turn's hold drew on (issue #496): what the
+    /// settlement settles against `subscription_draws` before the wallet's
+    /// entry, and the `{subscriptionId, periodId, drawnMinor, chargedMinor}`
+    /// the v9 description carries.
+    subscription: oxsum_core::SubscriptionAdmission,
     /// The turn's OTLP span (issue #224). Held, never entered: keeping the
     /// handle alive keeps the span open until the settlement task finishes,
     /// so its duration is the whole turn — relay plus ledger write — and
@@ -247,6 +252,7 @@ impl Turn {
         metrics: crate::metrics::Metrics,
         span: tracing::Span,
         mandate: Option<PresentedMandate>,
+        subscription: oxsum_core::SubscriptionAdmission,
     ) -> Self {
         Self {
             plan: Some(Plan {
@@ -267,6 +273,7 @@ impl Turn {
                 discount_percent,
                 key_id,
                 mandate,
+                subscription,
                 attribution,
                 adapter,
                 texts,
@@ -608,6 +615,47 @@ impl Plan {
         } else {
             (kind, cost)
         };
+        // The subscription's share of the charge is settled against its draw
+        // before the wallet's entry is written: the consumed part of the draw
+        // is `min(charged, drawn_minor)`, the released part returns to the
+        // period's counter. A settled draw's description carries which
+        // subscription period paid, so the bill proves the entitlement the
+        // same way it proves the figure (issue #496). A turn that drew
+        // nothing — no binding, or an exhausted quota — carries no
+        // `subscription` field at all, never a zero-draw marker.
+        let subscription_charge = self.subscription.drawn_minor.min(charged);
+        let subscription_ref = if self.subscription.drawn_minor > 0 {
+            let settled_draw = self
+                .db
+                .settle_subscription_draw(&self.hold_key, subscription_charge)
+                .await;
+            match settled_draw {
+                Ok(_) => Some(oxsum_core::SettlementSubscription {
+                    subscription_id: &self.subscription.subscription_id,
+                    period_id: &self.subscription.period_id,
+                    drawn_minor: self.subscription.drawn_minor,
+                    charged_minor: subscription_charge,
+                }),
+                // A settled-draw write that fails is a race the ledger's own
+                // idempotency decides — the settlement still writes the
+                // subscription field the draw admitted, so the bill stays
+                // honest about which entitlement window covered it. The draw
+                // row staying open is the leak the sweeper's own settle
+                // returns (issue #496).
+                Err(error) => {
+                    tracing::error!(%error, request = %self.request,
+                        "settling the turn's subscription draw failed; the draw stays open for the sweeper");
+                    Some(oxsum_core::SettlementSubscription {
+                        subscription_id: &self.subscription.subscription_id,
+                        period_id: &self.subscription.period_id,
+                        drawn_minor: self.subscription.drawn_minor,
+                        charged_minor: subscription_charge,
+                    })
+                }
+            }
+        } else {
+            None
+        };
         let settlement = Settlement {
             request: &self.request,
             channel: &self.channel,
@@ -626,12 +674,20 @@ impl Plan {
                 id: &m.verified.mandate_id,
                 hash: &m.verified.hash,
             }),
+            subscription: subscription_ref,
             reason: reason.as_deref(),
         };
         let description = settlement.description()?;
+        // The wallet settles only its own share: the hold took `freeze -
+        // drawn_minor`, so settling the full `charged` would exceed the
+        // reservation. The description still carries the full figure — the
+        // bill owes the caller the turn's whole price, and the
+        // `subscription` block names what the entitlement paid instead
+        // (issue #496).
+        let wallet_charge = charged - subscription_charge;
         let outcome = self
             .wallet
-            .settle(&self.hold_key, &description, charged, today())
+            .settle(&self.hold_key, &description, wallet_charge, today())
             .await;
         // The ledger write is the turn's last phase boundary: hold-taken → this
         // event is the relay, this → span end is the settlement write itself

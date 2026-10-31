@@ -2815,6 +2815,7 @@ impl Wallet {
             freeze: 0,
             upstream_attempts: 0,
             mandate: None,
+            subscription: None,
             reason: Some(reason),
         }
         .description()?;

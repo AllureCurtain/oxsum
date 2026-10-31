@@ -35,6 +35,7 @@ mod credentials;
 mod ops;
 mod organizations;
 mod statements;
+mod subscriptions;
 
 /// The `/api/v1/admin` surface. Nested by [`crate::routes`], which supplies the state.
 pub fn router(state: AppState) -> Router<AppState> {
@@ -127,6 +128,12 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route(
             "/statements/{statement_id}/suspend",
             post(statements::suspend_statement),
+        )
+        .route("/subscription-plans", get(subscriptions::plans))
+        .route("/subscription-plans/{name}", put(subscriptions::set_plan))
+        .route(
+            "/organizations/{organization_id}/subscription",
+            put(subscriptions::bind).delete(subscriptions::cancel),
         )
         .layer(middleware::from_fn_with_state(state, require_admin))
 }

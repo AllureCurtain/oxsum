@@ -1018,13 +1018,42 @@ async fn run(
         tracing::error!(%error, "recording the open hold failed");
         return Err(error.into());
     }
+    // The subscription's share of the freeze, drawn before the wallet's: a
+    // bound plan covers what its period still holds, and the wallet holds the
+    // overflow. A plan that disallows overflow and could not cover the whole
+    // freeze refuses the hold outright, before any money moves (issue #496).
+    let subscription = match state
+        .db
+        .admit_subscription_draw(organization.id, &hold_key, freeze)
+        .await
+    {
+        Ok(admission) => admission,
+        Err(error) => {
+            if let Err(clear) = state.db.clear_open_hold(&hold_key).await {
+                tracing::error!(%clear, "clearing a refused hold's watch row failed");
+            }
+            return Err(match error {
+                oxsum_core::WalletError::InsufficientFunds => {
+                    let available = wallet.available().await.ok();
+                    GatewayError::freeze_refused(freeze, available, request.max_tokens)
+                }
+                other => other.into(),
+            });
+        }
+    };
+    let wallet_minor = freeze - subscription.drawn_minor;
     if let Err(error) = wallet
         .hold_for_key(
             key,
             Some(request.model.as_str()),
             &hold_key,
             &description,
-            freeze,
+            // A hold of zero would be refused by the ledger — a fully
+            // subscription-covered turn takes a 1-minor wallet hold instead,
+            // so the turn still carries a ledger hold for the settlement to
+            // land on and the sweeper to watch. The difference is repaid in
+            // the settlement: the wallet is charged only `charged - drawn`.
+            wallet_minor.max(1),
             today(),
             mandate.as_ref(),
         )
@@ -1091,6 +1120,7 @@ async fn run(
         state.metrics.clone(),
         turn_span,
         mandate,
+        subscription,
     );
     turn.note_input_count(request.counted_input);
     // The dashboard's live section sees the turn from here: the hold is taken, upstream is

@@ -73,6 +73,7 @@ pub fn spawn_worker(db: Db, ctx: JobContext) -> tokio::task::JoinHandle<()> {
             kinds::STATEMENTS,
             kinds::RETENTION,
             kinds::USAGE_ANCHORS,
+            kinds::SUBSCRIPTION_ROLLOVERS,
         ];
         if ctx.webhook.is_some() {
             periodic.push(kinds::DELIVER_WEBHOOKS);
@@ -338,6 +339,14 @@ async fn run_one(
                 skipped = report.skipped,
                 without_usage = report.without_usage,
                 "the usage-anchor pass closed the previous day"
+            );
+        }
+        kinds::SUBSCRIPTION_ROLLOVERS => {
+            let report = db.rollover_due_subscriptions().await?;
+            info!(
+                rolled = report.rolled,
+                expired = report.expired,
+                "the subscription-rollover pass closed the ended periods"
             );
         }
         kinds::RETENTION => {
