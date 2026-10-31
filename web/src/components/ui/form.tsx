@@ -1,6 +1,7 @@
 import * as React from "react";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "../../lib/utils";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./tooltip";
 
 // ---------------------------------------------------------------------------
 // Form — one control vocabulary, aligned radius/height/states.
@@ -122,25 +123,31 @@ function Spinner({ className }: { className?: string }) {
 }
 
 /** An icon-only control. `label` is required — it becomes both `aria-label`
- *  and the tooltip, so the button is never a mystery glyph. The tap target is
- *  ≥44px on touch sizes (the mobile floor), the 32px look above `sm`. */
+ *  and the tooltip content, so the button is never a mystery glyph. The tap
+ *  target is ≥44px on touch sizes (the mobile floor), the 32px look above
+ *  `sm`. The native `title` attribute is gone — the tooltip is the Radix one,
+ *  positioned and animated, not the browser's delayed yellow box. */
 const IconButton = React.forwardRef<
   HTMLButtonElement,
   React.ComponentProps<"button"> & { label: string }
 >(({ className, label, children, ...props }, ref) => (
-  <button
-    ref={ref}
-    data-slot="icon-button"
-    aria-label={label}
-    title={label}
-    className={cn(
-      "inline-flex h-11 w-11 items-center justify-center rounded-lg border border-line bg-surface text-muted transition-colors hover:bg-canvas hover:text-ink sm:h-8 sm:w-8",
-      className,
-    )}
-    {...props}
-  >
-    {children}
-  </button>
+  <Tooltip>
+    <TooltipTrigger asChild>
+      <button
+        ref={ref}
+        data-slot="icon-button"
+        aria-label={label}
+        className={cn(
+          "inline-flex h-11 w-11 items-center justify-center rounded-lg border border-line bg-surface text-muted transition-colors hover:bg-canvas hover:text-ink sm:h-8 sm:w-8",
+          className,
+        )}
+        {...props}
+      >
+        {children}
+      </button>
+    </TooltipTrigger>
+    <TooltipContent>{label}</TooltipContent>
+  </Tooltip>
 ));
 IconButton.displayName = "IconButton";
 

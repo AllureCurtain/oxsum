@@ -5,12 +5,22 @@ import { useDeleteAccount, useHealth, useOrg, useSession, useUpdateOrgDisplay } 
 import { Button } from "../components/ui";
 import { Badge } from "../components/ui";
 import { Banner, Card, Field, NumberInput, PageState, TextInput, displayAmount } from "../components/ui";
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "../components/ui";
 
 function DeleteAccount() {
   const del = useDeleteAccount();
   const navigate = useNavigate();
   const [password, setPassword] = useState("");
-  const [confirming, setConfirming] = useState(false);
+  const [open, setOpen] = useState(false);
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -28,12 +38,20 @@ function DeleteAccount() {
           verifying; the ledger never carries identity. OAuth-created accounts need a real password
           (set one through the reset flow) to confirm this.
         </p>
-        {confirming ? (
-          <div className="flex flex-col gap-3 rounded-lg border border-danger/40 bg-danger/5 p-4">
-            <p className="text-sm font-medium text-ink">
-              This permanently deletes your account. It cannot be undone.
-            </p>
-            <form className="flex items-end gap-2" onSubmit={submit}>
+        <AlertDialog open={open} onOpenChange={setOpen}>
+          <AlertDialogTrigger asChild>
+            <div>
+              <Button tone="danger">Delete account…</Button>
+            </div>
+          </AlertDialogTrigger>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Permanently delete your account?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This cannot be undone. Your password confirms the deletion.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <form id="delete-account-form" className="flex flex-col gap-3" onSubmit={submit}>
               <Field label="Your password confirms">
                 <TextInput
                   type="password"
@@ -43,29 +61,21 @@ function DeleteAccount() {
                   autoComplete="current-password"
                 />
               </Field>
-              <Button type="submit" isLoading={del.isPending} loadingText="Deleting…">
+            </form>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <Button
+                type="submit"
+                form="delete-account-form"
+                tone="danger"
+                isLoading={del.isPending}
+                loadingText="Deleting…"
+              >
                 Delete my account
               </Button>
-              <button
-                type="button"
-                className="rounded-lg border border-line px-3 py-1.5 text-sm hover:bg-canvas"
-                onClick={() => setConfirming(false)}
-              >
-                Cancel
-              </button>
-            </form>
-          </div>
-        ) : (
-          <div>
-            <button
-              type="button"
-              className="rounded-lg border border-danger bg-danger px-3 py-1.5 text-sm font-medium text-white hover:bg-danger-hover"
-              onClick={() => setConfirming(true)}
-            >
-              Delete account…
-            </button>
-          </div>
-        )}
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
         {del.error instanceof ApiError ? (
           <Banner tone="error">{del.error.message}</Banner>
         ) : null}

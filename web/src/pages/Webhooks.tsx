@@ -9,6 +9,14 @@ import {
   useWebhooks,
 } from "../api/hooks";
 import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
   Banner,
   Button,
   Card,
@@ -178,9 +186,31 @@ export function Webhooks() {
                   >
                     Deliveries
                   </Button>
-                  <Button tone="danger" onClick={() => remove.mutate(endpoint.id)}>
-                    Delete
-                  </Button>
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button tone="danger">Delete</Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Delete this endpoint?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          {endpoint.url} will stop receiving events. The deliveries it already
+                          recorded stay on the books.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <Button
+                          tone="danger"
+                          isLoading={remove.isPending}
+                          loadingText="Deleting…"
+                          onClick={() => remove.mutate(endpoint.id)}
+                        >
+                          Delete
+                        </Button>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
                 </span>
               </td>
             </tr>
