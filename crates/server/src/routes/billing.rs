@@ -933,6 +933,25 @@ pub(crate) struct StatementDetailRes {
     anchor: Option<StatementAnchorRes>,
 }
 
+/// The statement's self-contained proof bundle (issue #479): the detail plus
+/// the two inputs `verify_statement_anchor` cannot read out of the document —
+/// the covered entries' content hashes and the head right after the anchor.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StatementProofRes {
+    statement: oxsum_core::Statement,
+    lines: Vec<oxsum_core::StatementLine>,
+    anchor: Option<StatementAnchorRes>,
+    /// The covered entries' content hashes in log order — refold under
+    /// `oxsum/statement-window/v1` rather than trusting `windowHash`.
+    window_hashes: Vec<String>,
+    /// The signed head at `anchor.logIndex + 1`, `None` on a no-anchor or a
+    /// deployment that signs no heads — the same honesty `anchor.note` keeps.
+    expected_head: Option<oxsum_core::TreeHead>,
+    /// The tenant ledger origin, `oxsum/ledgers/<tenant>`.
+    expected_origin: String,
+}
+
 /// The statement's log anchor as the detail endpoints answer it (issue #221):
 /// the marker's identity, the two digests it commits, and — when the deployment
 /// signs heads — the signed note over the head right after it, which is what
@@ -1050,6 +1069,69 @@ pub(crate) async fn statement_detail(
         lines: state.db.statement_lines(statement_id).await?,
         statement,
         anchor,
+    })
+}
+
+/// The statement's self-contained proof bundle (issue #479): the detail's
+/// `{statement, lines, anchor}` plus the two inputs `verify_statement_anchor`
+/// cannot read out of the document itself — the covered entries' content
+/// hashes in log order and the head right after the anchor. A finalized
+/// statement with no anchor answers `anchor: null`, the same honesty the
+/// detail endpoint keeps; a draft, a foreign or a missing id is 404.
+pub(crate) async fn statement_proof(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(statement_id): Path<Uuid>,
+) -> ApiResult<StatementProofRes> {
+    let w = wallet(&state.tenants, principal.organization()).await?;
+    state
+        .db
+        .reconcile_statements(principal.organization().id, &w, today())
+        .await?;
+    let statement = state
+        .db
+        .statement_by_id(statement_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    if statement.organization_id != principal.organization().id
+        || statement.status != oxsum_core::StatementStatus::Finalized
+    {
+        return Err(ApiError::not_found());
+    }
+    let anchor = statement_anchor(&state, &w, &statement).await?;
+    let lines = state.db.statement_lines(statement_id).await?;
+
+    // The covered entries' content hashes in log order — the same period join
+    // the draft folded when it anchored, re-run so the verifier can refold
+    // `oxsum/statement-window/v1` itself rather than trust `windowHash`.
+    let period = oxsum_core::statement_period(&statement.period).map_err(|_| ApiError::Internal)?;
+    let window_hashes: Vec<String> = state
+        .db
+        .statement_window_hashes(&principal.organization().tenant_id, &period)
+        .await?
+        .iter()
+        .map(oxsum_core::Hash::to_hex)
+        .collect();
+
+    // The head right after the anchor — the head whose log already contains
+    // it, as `verify_statement_anchor`'s `expected_head` names it. It is only
+    // meaningful where `anchor.note` can attest it, so a deployment that signs
+    // no heads serves none — matching the anchor's own `note`-absent honesty.
+    let expected_head = match (anchor.as_ref(), state.config.head_signing_seed()) {
+        (Some(a), Some(seed)) => {
+            let key = signing_key(seed).map_err(|_| ApiError::Internal)?;
+            Some(w.signed_head_at(&key, a.log_index as u64 + 1).await?.head)
+        }
+        _ => None,
+    };
+    let expected_origin = format!("oxsum/ledgers/{}", w.tenant_id());
+    ok(StatementProofRes {
+        statement,
+        lines,
+        anchor,
+        window_hashes,
+        expected_head,
+        expected_origin,
     })
 }
 

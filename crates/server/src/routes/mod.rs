@@ -113,6 +113,10 @@ pub fn router(state: AppState) -> Router {
         .route("/statements", get(billing::statements))
         .route("/statements/{statement_id}", get(billing::statement_detail))
         .route(
+            "/statements/{statement_id}/proof",
+            get(billing::statement_proof),
+        )
+        .route(
             "/statements/{statement_id}/export.pdf",
             get(billing::statement_pdf),
         )
