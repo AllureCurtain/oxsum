@@ -106,10 +106,9 @@ function Estimator({ models }: { models: string[] }) {
           <SelectRoot
             value={model}
             onValueChange={(v) => setModel(String(v))}
-            placeholder="Pick a model"
           >
             <SelectTrigger>
-              <SelectValue />
+              <SelectValue placeholder="Pick a model" />
             </SelectTrigger>
             <SelectContent>
               {models.map((m) => (
@@ -193,9 +192,9 @@ function PriceHeadViewer({ channels }: { channels: string[] }) {
       </p>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <Field label="Channel">
-          <SelectRoot value={channel} onValueChange={(v) => setChannel(String(v))} placeholder="Pick a channel">
+          <SelectRoot value={channel} onValueChange={(v) => setChannel(String(v))}>
             <SelectTrigger>
-              <SelectValue />
+              <SelectValue placeholder="Pick a channel" />
             </SelectTrigger>
             <SelectContent>
               {channels.map((c) => (

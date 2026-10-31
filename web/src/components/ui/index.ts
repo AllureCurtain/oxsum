@@ -8,3 +8,7 @@ export * from "./table";
 export * from "./badge";
 export * from "./form";
 export * from "./controls";
+export * from "./tabs";
+export * from "./select";
+export * from "./switch";
+export * from "./progress";

@@ -21,7 +21,14 @@ export default defineConfig({
         manualChunks: {
           "react-vendor": ["react", "react-dom", "react-router-dom", "@tanstack/react-query"],
           motion: ["motion"],
-          "ui-vendor": ["@base-ui/react", "lucide-react"],
+          "ui-vendor": [
+            "lucide-react",
+            "@radix-ui/react-tabs",
+            "@radix-ui/react-select",
+            "@radix-ui/react-switch",
+            "@radix-ui/react-progress",
+            "@radix-ui/react-slot",
+          ],
         },
       },
     },
