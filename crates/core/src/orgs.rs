@@ -325,6 +325,28 @@ impl Db {
         })
     }
 
+    /// The tenant id of the organization carrying `name`, or `None` when none does.
+    ///
+    /// Names are not unique — two organizations may share one — so the read
+    /// answers the *first* matching tenant id in creation order, which is all a
+    /// caller that only wants "the seeded demo organization" needs (issue #489:
+    /// `/verify?sample` draws its bundle from that one). Anything stronger
+    /// belongs on the id-keyed lookups above.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn tenant_id_named(&self, name: &str) -> Result<Option<String>, WalletError> {
+        sqlx::query_scalar(
+            "SELECT tenant_id FROM oxsum.organizations WHERE name = $1 \
+             ORDER BY created_at LIMIT 1",
+        )
+        .bind(name)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(Into::into)
+    }
+
     /// One organization by id, for the platform admin — `NOT_FOUND` whether the id
     /// never existed or was never an organization.
     ///
