@@ -897,3 +897,99 @@ async fn the_holds_cap_is_per_key() {
         .await
         .expect_err("the second key's own cap holds");
 }
+
+/// A hold queued behind another key's hold does not pin a pooled connection
+/// while it waits (issue #486). The per-key advisory lock serializes the holds;
+/// what it used to also do was hold the waiting hold's checked-out connection,
+/// so enough concurrency on one key checked out the whole shared pool and every
+/// tenant's reads timed out behind it. `hold_for_key` now queues in-process —
+/// on a semaphore keyed by the same lock — before `begin()` takes a
+/// connection, so a queued hold holds nothing. This pins the regression: the
+/// lock is held from a *side* connection outside the pool, five holds queue
+/// behind it on a 3-connection pool, and the pool must stay fully idle until
+/// the lock frees.
+#[tokio::test]
+async fn queued_holds_do_not_pin_the_pool() {
+    let url = db_or_skip!();
+    // Three connections — enough for the wallet's own work, small enough that a
+    // pinned waiter would starve it (the issue's fleet check ran the real
+    // default of 20 and still exhausted it).
+    let db = db(&url, 3).await;
+    let world = world(&db, "queued").await;
+    let pool = db.pool().clone();
+
+    // Hold the per-key advisory lock on a dedicated connection outside the
+    // wallet's pool — the way a second process's slow hold would present. The
+    // `pg_advisory_lock` (not xact) variant holds across statements, so the
+    // sleep's whole window is locked.
+    let locker = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .unwrap();
+    let mut lock_conn = locker.acquire().await.unwrap();
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(oxsum_core::limit_lock_key(
+            world.wallet.tenant_id(),
+            &world.key.key_id,
+        ))
+        .execute(&mut *lock_conn)
+        .await
+        .unwrap();
+
+    // Five holds race the locked key on the 3-connection pool. Each would have
+    // pinned a connection for the lock wait before the fix; now they queue on
+    // the in-process semaphore instead.
+    let mut tasks = Vec::new();
+    for i in 0..5 {
+        let wallet = world.wallet.clone();
+        let key = world.key.clone();
+        tasks.push(tokio::spawn(async move {
+            wallet
+                .hold_for_key(&key, None, &format!("q-{i}"), "", ONE, D, None)
+                .await
+        }));
+    }
+
+    // Give the queue a moment to form, then watch the pool across the wait
+    // window: a waiter pinning a connection would show as a sustained
+    // checked-out connection, while the semaphore keeps every queued hold
+    // conn-less — the only checkouts allowed are the instant `store.get`
+    // replay-probe each caller runs before queueing. Sample several times so a
+    // single probe's tail cannot pass or fail the whole wait.
+    let mut max_busy = 0u32;
+    for _ in 0..10 {
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        let busy = pool.size() - pool.num_idle() as u32;
+        max_busy = max_busy.max(busy);
+    }
+    // At most one checkout in flight at any instant — five pinning waiters
+    // would hold all three.
+    assert!(
+        max_busy <= 1,
+        "queued holds still pinned pooled connections (max busy {max_busy} of {})",
+        pool.size(),
+    );
+
+    // Release the lock: the queued holds now proceed, and the pool serves them
+    // in turn — all five land, none refused for a busy pool.
+    sqlx::query("SELECT pg_advisory_unlock($1)")
+        .bind(oxsum_core::limit_lock_key(
+            world.wallet.tenant_id(),
+            &world.key.key_id,
+        ))
+        .execute(&mut *lock_conn)
+        .await
+        .unwrap();
+    drop(lock_conn);
+
+    let mut ok = 0;
+    for task in tasks {
+        match task.await.unwrap() {
+            Ok(_) => ok += 1,
+            Err(WalletError::PoolBusy) => panic!("a queued hold answered PoolBusy"),
+            Err(other) => panic!("wrong error: {other:?}"),
+        }
+    }
+    assert_eq!(ok, 5, "every queued hold landed once the lock freed");
+}
