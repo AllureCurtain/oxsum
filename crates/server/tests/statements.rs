@@ -1059,6 +1059,185 @@ async fn a_signed_anchor_verifies_the_head_that_follows_it() {
         .expect("the signed anchor verifies");
 }
 
+// ── the proof bundle (issue #479) ────────────────────────────────────────────
+//
+// `GET /api/v1/statements/{id}/proof` is the self-contained form of the detail:
+// it serves `windowHashes`, `expectedHead` and `expectedOrigin`, the three
+// inputs `verify_statement_anchor` cannot read out of the document itself. The
+// point of the endpoint is that the verifier runs off the answer alone — the
+// tests below assert exactly that, reconstructing nothing from the database.
+
+/// The `expectedHead` the proof bundle carries, as a `TreeHead` — `None` when
+/// the deployment signs no heads, which the unsigned test asserts.
+fn proof_head(value: &Value) -> Option<doubleentry::TreeHead> {
+    if value.is_null() {
+        return None;
+    }
+    Some(doubleentry::TreeHead {
+        size: value["size"].as_u64().expect("a head size"),
+        root: doubleentry::Hash::parse_hex(value["root"].as_str().expect("a head root"))
+            .expect("the head root is hex"),
+    })
+}
+
+/// The signed deployment: the bundle carries the head and origin, and
+/// `verify_statement_anchor` passes on the answer alone — no database read, no
+/// `/log/head` fetch, the bundle is the whole input.
+#[tokio::test]
+async fn the_proof_bundle_verifies_off_its_own_answer() {
+    let (_app, _pool) = app_or_skip!();
+    let db_url = url().expect("DATABASE_URL is set (app_or_skip connected)");
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&db_url)
+        .await
+        .expect("connects to PostgreSQL");
+    let db = Db::from_pool(pool.clone());
+    db.migrate().await.expect("migrates");
+    let config = Config::new(Signup::Open, None)
+        .with_secret(secret())
+        .with_admin_token(TOKEN)
+        .with_head_signing_seed([42; 32]);
+    let app = oxsum_server::app(db, config);
+
+    let (statement_id, key) = a_finalized_statement(&app, &pool, "proof").await;
+
+    let (status, body) = call_with(
+        &app,
+        "GET",
+        &format!("/api/v1/statements/{statement_id}/proof"),
+        None,
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let data = &body["data"];
+    // The bundle carries what the detail carries — plus the three inputs.
+    assert!(data["statement"].is_object(), "{data}");
+    assert!(data["lines"].is_array(), "{data}");
+    assert!(data["anchor"].is_object(), "{data}");
+    let window = data["windowHashes"].as_array().expect("the window hashes");
+    assert_eq!(
+        window.len() as i64,
+        data["statement"]["entryCount"].as_i64().unwrap(),
+        "every covered entry supplies a hash"
+    );
+    let expected_head = proof_head(&data["expectedHead"]).expect("a signed head is served");
+    let origin = data["expectedOrigin"].as_str().expect("the origin");
+
+    // The whole point: reconstruct the check purely from the answer.
+    let window_hashes: Vec<&str> = window.iter().map(|h| h.as_str().unwrap()).collect();
+    let check = oxsum_verify::StatementAnchorCheck {
+        window_hashes: &window_hashes,
+        expected_head: &expected_head,
+        expected_origin: origin,
+    };
+    // The verifier wants the detail's `{statement, lines, anchor}` wire — the
+    // bundle is a superset, and the extra fields are ignored on parse.
+    oxsum_verify::verify_statement_anchor(&data.to_string(), &check)
+        .expect("the proof bundle verifies off its own answer");
+}
+
+/// The unsigned deployment serves `expectedHead` as null — the same honesty
+/// `anchor.note` keeps — and the anchor still verifies to its digests.
+#[tokio::test]
+async fn the_unsigned_proof_bundle_serves_no_head() {
+    let (app, pool) = app_or_skip!();
+    let (statement_id, key) = a_finalized_statement(&app, &pool, "proof-unsigned").await;
+
+    let (status, body) = call_with(
+        &app,
+        "GET",
+        &format!("/api/v1/statements/{statement_id}/proof"),
+        None,
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let data = &body["data"];
+    assert!(data["expectedHead"].is_null(), "{data}");
+    assert!(data["anchor"]["note"].is_null(), "{data}");
+
+    let window = data["windowHashes"].as_array().expect("the window hashes");
+    let window_hashes: Vec<&str> = window.iter().map(|h| h.as_str().unwrap()).collect();
+    let origin = data["expectedOrigin"].as_str().expect("the origin");
+    // Unsigned: verification returns before consulting the head — a dummy stands in.
+    let dummy_head = doubleentry::TreeHead {
+        size: 0,
+        root: doubleentry::Hash::from_bytes([0; 32]),
+    };
+    let check = oxsum_verify::StatementAnchorCheck {
+        window_hashes: &window_hashes,
+        expected_head: &dummy_head,
+        expected_origin: origin,
+    };
+    oxsum_verify::verify_statement_anchor(&data.to_string(), &check)
+        .expect("the unsigned bundle verifies to its digests");
+}
+
+/// The bundle is scoped like the detail: another organization's statement is
+/// 404, no credential is 401, a draft is 404 — a proof only exists for an
+/// issued document the caller owns.
+#[tokio::test]
+async fn the_proof_bundle_reads_only_the_callers_own_statements() {
+    let (app, pool) = app_or_skip!();
+    let (statement_id, _key) = a_finalized_statement(&app, &pool, "proof-scope").await;
+
+    let (_other, other_key) = register(&app, "proof-other").await;
+    let (status, _) = call_with(
+        &app,
+        "GET",
+        &format!("/api/v1/statements/{statement_id}/proof"),
+        None,
+        Some(&other_key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = call_with(
+        &app,
+        "GET",
+        &format!("/api/v1/statements/{statement_id}/proof"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // A draft never proofs.
+    let (org, key) = register(&app, "proof-draft").await;
+    let tenant = tenant_of(&pool, &org).await;
+    let db = Db::from_pool(pool.clone());
+    grant_credit(&app, &org, 20_000_000, &org).await;
+    turn(
+        &db,
+        &tenant,
+        "pd1",
+        ("openai", "gpt-4o"),
+        5 * ONE,
+        3 * ONE,
+        SEPT,
+    )
+    .await;
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/admin/statements",
+        Some(json!({"period": "2026-09", "organizationId": org})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let draft_id = body["data"][0]["id"].as_str().unwrap().to_owned();
+    let (status, _) = call_with(
+        &app,
+        "GET",
+        &format!("/api/v1/statements/{draft_id}/proof"),
+        None,
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
 /// One organization as the operator list answers it — the surface that shows
 /// the suspension flag.
 async fn admin_organization(app: &Router, org: &str) -> Value {
