@@ -1,7 +1,7 @@
 {
   "name": "verify-oxsum-bill",
   "version": "0.1.0",
-  "description": "Verify an oxsum bill entirely in the browser — recomputes the entry hash, links it to the ledger head, and checks the signed price binding, with no server round-trip.",
+  "description": "Verify an oxsum bill or statement entirely in the browser — recomputes the entry hash, links it to the ledger head, checks the signed price binding, and refolds a statement's committed window, with no server round-trip.",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -14,6 +14,10 @@
     "./verify-bill": {
       "types": "./dist/verify-bill.d.ts",
       "import": "./dist/verify-bill.js"
+    },
+    "./verify-statement": {
+      "types": "./dist/verify-statement.d.ts",
+      "import": "./dist/verify-statement.js"
     }
   },
   "files": [
