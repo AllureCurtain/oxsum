@@ -123,7 +123,7 @@ pub use pools::{
     Affinity, CREDENTIAL_COOLDOWN, ChannelCredential, PoolCredential, order as credential_order,
 };
 pub use proof::{ChargeCheck, ProofBundle, verify_bundle, verify_charge};
-pub use ratelimit::{RateAllowance, RateLimited, RateLimiter, SlidingWindow};
+pub use ratelimit::{PostgresRateLimiter, RateAllowance, RateLimited, RateLimiter, SlidingWindow};
 pub use reconcile::{DriftClass, DriftKind, DriftSample, Reconciliation};
 pub use report_links::{LinkScope, MintedReportLink, ReportLink, ResolvedReportLink};
 pub use seed::{DEMO_EMAIL, DEMO_ORGANIZATION, DEMO_PASSWORD, MEMBER_EMAIL, SeedReport};

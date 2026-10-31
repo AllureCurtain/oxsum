@@ -33,7 +33,9 @@ use time::OffsetDateTime;
 use tokio::sync::broadcast;
 
 pub use billing::BillingEvent;
-pub use config::{Config, Gateway, Signup, WitnessKey, WitnessServe, WitnessTrust};
+pub use config::{
+    Config, Gateway, RateLimitBackend, Signup, WitnessKey, WitnessServe, WitnessTrust,
+};
 pub use metrics::Metrics;
 pub use oxsum_integrations::mail::Mailer;
 
@@ -84,13 +86,22 @@ pub fn app_with_billing(
     // watch table stays the record of in-flight holds.
     let (billing, _) = broadcast::channel(128);
     let metrics = Metrics::new();
+    // The RPM backend is the config's pick (issue #498): `memory` is the
+    // in-process window a single binary needs, `postgres` the shared
+    // `oxsum.rate_windows` a multi-instance deployment counts the same window on.
+    let rate_limiter: Arc<dyn oxsum_core::RateLimiter> = match config.rate_limit_backend() {
+        crate::config::RateLimitBackend::Memory => Arc::new(oxsum_core::SlidingWindow::default()),
+        crate::config::RateLimitBackend::Postgres => {
+            Arc::new(oxsum_core::PostgresRateLimiter::new(db.pool().clone()))
+        }
+    };
     let state = AppState {
         tenants: Tenants::new(db.pool().clone()),
         db,
         config,
         http: gateway::client(),
         billing: billing.clone(),
-        rate_limiter: Arc::new(oxsum_core::SlidingWindow::default()),
+        rate_limiter,
         metrics: metrics.clone(),
     };
     (routes::router(state), billing, metrics)
