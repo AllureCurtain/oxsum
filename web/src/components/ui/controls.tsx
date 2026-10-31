@@ -1,3 +1,4 @@
+import * as React from "react";
 import { useEffect, useState } from "react";
 import { Check, Copy } from "lucide-react";
 import {
@@ -55,17 +56,17 @@ export async function copyToClipboard(value: string): Promise<boolean> {
   return ok;
 }
 
-export function CopyButton({
-  value,
-  className,
-  ...props
-}: React.ComponentProps<"button"> & { value: string }) {
+const CopyButton = React.forwardRef<
+  HTMLButtonElement,
+  React.ComponentProps<"button"> & { value: string }
+>(({ className, value, ...props }, ref) => {
   const [copied, setCopied] = useState(false);
   const reduceMotion = useReducedMotion() ?? false;
   const m = iconMotion(reduceMotion);
   return (
     <button
-      {...props}
+      ref={ref}
+      data-slot="copy-button"
       type="button"
       aria-label={copied ? "Copied" : "Copy"}
       data-copied={copied}
@@ -79,6 +80,7 @@ export function CopyButton({
           setTimeout(() => setCopied(false), 1800);
         }
       }}
+      {...props}
     >
       <AnimatePresence initial={false} mode="sync">
         {copied ? (
@@ -93,24 +95,25 @@ export function CopyButton({
       </AnimatePresence>
     </button>
   );
-}
+});
+CopyButton.displayName = "CopyButton";
 
 // ---------------------------------------------------------------------------
 // Code block — bordered <pre> + copy button, token-colored.
 // ---------------------------------------------------------------------------
 
-export function CodeBlock({
-  code,
-  language = "text",
-  className,
-}: {
-  code: string;
-  language?: string;
-  className?: string;
-}) {
+const CodeBlock = React.forwardRef<
+  HTMLDivElement,
+  React.ComponentProps<"div"> & { code: string; language?: string }
+>(({ className, code, language = "text", ...props }, ref) => {
   const [copied, setCopied] = useState(false);
   return (
-    <div className={cn("group relative overflow-hidden rounded-lg border border-line bg-canvas", className)}>
+    <div
+      ref={ref}
+      data-slot="code-block"
+      className={cn("group relative overflow-hidden rounded-lg border border-line bg-canvas", className)}
+      {...props}
+    >
       <button
         type="button"
         aria-label="Copy code"
@@ -133,27 +136,33 @@ export function CodeBlock({
       </pre>
     </div>
   );
-}
+});
+CodeBlock.displayName = "CodeBlock";
 
 // ---------------------------------------------------------------------------
 // Rolling number — KPI ticker, RM-gated.
 // ---------------------------------------------------------------------------
 
-export function RollingNumber({
+const RollingNumber = React.forwardRef<
+  HTMLSpanElement,
+  Omit<React.ComponentProps<"span">, "onDrag" | "onDragStart" | "onDragEnd" | "onAnimationStart" | "onAnimationEnd"> & {
+    value: number;
+    stiffness?: number;
+    damping?: number;
+    mass?: number;
+    precision?: number;
+    format?: (value: number) => string;
+  }
+>(({
+  className,
   value,
   stiffness = 75,
   damping = 15,
   mass = 0.8,
   precision = 0,
   format = (n: number) => n.toLocaleString(),
-}: {
-  value: number;
-  stiffness?: number;
-  damping?: number;
-  mass?: number;
-  precision?: number;
-  format?: (value: number) => string;
-}) {
+  ...props
+}, ref) => {
   const reduceMotion = useReducedMotion() ?? false;
   const spring = useSpring(value, { mass, stiffness, damping });
   const display = useTransform(spring, (c) => format(parseFloat(c.toFixed(precision))));
@@ -165,14 +174,21 @@ export function RollingNumber({
       spring.set(value);
     }
   }, [spring, value, reduceMotion]);
-  return <motion.span>{display}</motion.span>;
-}
+  return <motion.span ref={ref} data-slot="rolling-number" className={className} {...props}>{display}</motion.span>;
+});
+RollingNumber.displayName = "RollingNumber";
 
 // ---------------------------------------------------------------------------
 // Typewriter — empty-state text cycle, RM-gated.
 // ---------------------------------------------------------------------------
 
-export function Typewriter({ texts, className }: { texts: string[]; delay?: number; className?: string }) {
+const Typewriter = React.forwardRef<
+  HTMLSpanElement,
+  Omit<React.ComponentProps<"span">, "onDrag" | "onDragStart" | "onDragEnd" | "onAnimationStart" | "onAnimationEnd"> & {
+    texts: string[];
+    delay?: number;
+  }
+>(({ className, texts, delay, ...props }, ref) => {
   const reduceMotion = useReducedMotion() ?? false;
   const [idx, setIdx] = useState(0);
   const count = useMotionValue(0);
@@ -193,19 +209,22 @@ export function Typewriter({ texts, className }: { texts: string[]; delay?: numb
         window.setTimeout(() => {
           count.set(0);
           setIdx((i) => (i + 1) % texts.length);
-        }, 1600);
+        }, delay ?? 1600);
       },
     });
     return () => controls.stop();
-  }, [idx, texts, count, reduceMotion]);
+  }, [idx, texts, count, reduceMotion, delay]);
 
   if (reduceMotion) {
-    return <span className={className}>{texts[0]}</span>;
+    return <span ref={ref} className={className} {...props}>{texts[0]}</span>;
   }
   return (
-    <span className={className}>
+    <span ref={ref} data-slot="typewriter" className={className} {...props}>
       <motion.span>{shown}</motion.span>
       <span className="ml-0.5 inline-block h-[1em] w-px animate-pulse bg-current align-[-0.15em] motion-reduce:hidden" />
     </span>
   );
-}
+});
+Typewriter.displayName = "Typewriter";
+
+export { CopyButton, CodeBlock, RollingNumber, Typewriter };

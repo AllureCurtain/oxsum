@@ -1,92 +1,132 @@
-import type { ReactNode } from "react";
+import * as React from "react";
+import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "../../lib/utils";
 
 // ---------------------------------------------------------------------------
-// Badges & status
+// Badges & status — one semantic vocabulary: status dot, pill tag, banner.
 // ---------------------------------------------------------------------------
 
 /** A status word as the pages color it: settled green, refused red, the rest muted. */
-export function StatusBadge(props: { status: string | undefined }) {
-  const status = props.status ?? "—";
+const StatusBadge = React.forwardRef<
+  HTMLSpanElement,
+  React.ComponentProps<"span"> & { status?: string }
+>(({ className, status, ...props }, ref) => {
+  const s = status ?? "—";
   const cls =
-    status === "settled"
+    s === "settled"
       ? "text-success"
-      : status === "refused" || status === "errored"
+      : s === "refused" || s === "errored"
         ? "text-danger"
-        : status === "credited" || status === "confirmed"
+        : s === "credited" || s === "confirmed"
           ? "text-success"
           : "text-muted";
   return (
-    <span className={`inline-flex items-center gap-1.5 text-xs font-medium ${cls}`}>
+    <span
+      ref={ref}
+      data-slot="status-badge"
+      className={cn("inline-flex items-center gap-1.5 text-xs font-medium", cls, className)}
+      {...props}
+    >
       <span className="inline-block h-1.5 w-1.5 rounded-full bg-current" />
-      {status}
+      {s}
     </span>
   );
-}
+});
+StatusBadge.displayName = "StatusBadge";
 
-export function Tag(props: { children: ReactNode; accent?: boolean }) {
+const tagVariants = cva("inline-block rounded-md px-1.5 py-0.5 text-[11px] font-medium", {
+  variants: {
+    tone: {
+      default: "bg-secondary text-muted-foreground",
+      accent: "bg-primary-soft text-primary",
+    },
+  },
+  defaultVariants: { tone: "default" },
+});
+
+const Tag = React.forwardRef<
+  HTMLSpanElement,
+  React.ComponentProps<"span"> & VariantProps<typeof tagVariants> & { accent?: boolean }
+>(({ className, tone, accent, ...props }, ref) => (
+  <span
+    ref={ref}
+    data-slot="tag"
+    className={cn(tagVariants({ tone: accent ? "accent" : tone }), className)}
+    {...props}
+  />
+));
+Tag.displayName = "Tag";
+
+const badgeVariants = cva(
+  "inline-flex h-5 items-center gap-1.5 rounded-full px-2 text-[11px] font-medium leading-none",
+  {
+    variants: {
+      tone: {
+        default: "bg-primary-soft text-primary",
+        secondary: "bg-secondary text-muted-foreground",
+        success: "bg-success/10 text-success",
+        danger: "bg-danger/10 text-danger",
+        outline: "border border-line text-ink",
+      },
+    },
+    defaultVariants: { tone: "default" },
+  },
+);
+
+const Badge = React.forwardRef<
+  HTMLSpanElement,
+  React.ComponentProps<"span"> &
+    VariantProps<typeof badgeVariants> & {
+      /** `variant` kept as an alias of `tone` for the badge's semantic colors. */
+      variant?: "default" | "secondary" | "success" | "danger" | "destructive" | "outline";
+      live?: boolean;
+    }
+>(({ className, tone, variant, live, children, ...props }, ref) => {
+  const raw = variant ?? tone ?? "default";
+  const resolved = raw === "destructive" ? "danger" : raw;
   return (
     <span
-      className={`inline-block rounded-md px-1.5 py-0.5 text-[11px] font-medium ${
-        props.accent
-          ? "bg-primary-soft text-primary"
-          : "bg-secondary text-muted-foreground"
-      }`}
+      ref={ref}
+      data-slot="badge"
+      className={cn(badgeVariants({ tone: resolved }), className)}
+      {...props}
     >
-      {props.children}
-    </span>
-  );
-}
-
-export function Badge(props: {
-  children: ReactNode;
-  /** `variant` kept as an alias of `tone` for the badge's semantic colors. */
-  variant?: "default" | "secondary" | "success" | "danger" | "destructive" | "outline";
-  tone?: "default" | "secondary" | "success" | "danger" | "outline";
-  live?: boolean;
-  className?: string;
-}) {
-  const raw = props.tone ?? props.variant ?? "default";
-  const tone = raw === "destructive" ? "danger" : raw;
-  const cls =
-    tone === "secondary"
-      ? "bg-secondary text-muted-foreground"
-      : tone === "success"
-        ? "bg-success/10 text-success"
-        : tone === "danger"
-          ? "bg-danger/10 text-danger"
-          : tone === "outline"
-            ? "border border-line text-ink"
-            : "bg-primary-soft text-primary";
-  return (
-    <span
-      className={cn(
-        "inline-flex h-5 items-center gap-1.5 rounded-full px-2 text-[11px] font-medium leading-none",
-        cls,
-        props.className,
-      )}
-    >
-      {props.live ? (
+      {live ? (
         <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current motion-reduce:animate-none" />
       ) : null}
-      {props.children}
+      {children}
     </span>
   );
-}
+});
+Badge.displayName = "Badge";
 
 // ---------------------------------------------------------------------------
 // Banner — page/form level feedback.
 // ---------------------------------------------------------------------------
 
-export function Banner(props: { tone?: "info" | "warn" | "error" | "success"; children: ReactNode }) {
-  const tone = props.tone ?? "info";
-  const cls =
-    tone === "warn"
-      ? "border-pending/40 bg-pending/10 text-pending"
-      : tone === "error"
-        ? "border-danger/40 bg-danger/10 text-danger"
-        : tone === "success"
-          ? "border-success/40 bg-success/10 text-success"
-          : "border-primary/40 bg-primary-soft text-primary";
-  return <p className={`rounded-lg border px-3.5 py-2.5 text-sm ${cls}`}>{props.children}</p>;
-}
+const bannerVariants = cva("rounded-lg border px-3.5 py-2.5 text-sm", {
+  variants: {
+    tone: {
+      info: "border-primary/40 bg-primary-soft text-primary",
+      warn: "border-pending/40 bg-pending/10 text-pending",
+      error: "border-danger/40 bg-danger/10 text-danger",
+      success: "border-success/40 bg-success/10 text-success",
+    },
+  },
+  defaultVariants: { tone: "info" },
+});
+
+const Banner = React.forwardRef<
+  HTMLParagraphElement,
+  React.ComponentProps<"p"> & VariantProps<typeof bannerVariants>
+>(({ className, tone, ...props }, ref) => (
+  <p
+    ref={ref}
+    data-slot="banner"
+    className={cn(bannerVariants({ tone }), className)}
+    {...props}
+  />
+));
+Banner.displayName = "Banner";
+
+export { StatusBadge, Tag, Badge, Banner };
