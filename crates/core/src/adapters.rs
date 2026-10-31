@@ -27,6 +27,12 @@ pub const ANTHROPIC: &str = "anthropic";
 /// The third protocol: Google's Gemini `generateContent` API (issue #494).
 pub const GEMINI: &str = "gemini";
 
+/// The task-relay protocol (issue #503): a channel whose `POST {baseUrl}/tasks`
+/// submits a long-running job and `GET {baseUrl}/tasks/{id}` reports it. The
+/// surface is `/v1/tasks`, and the terminal answer's `usage` is read by
+/// [`TaskUsage`].
+pub const TASKS: &str = "tasks";
+
 /// What one protocol's usage report becomes: the normalized record.
 pub trait UsageAdapter: Send + Sync {
     /// The name a channel's `protocol` column carries.
@@ -73,6 +79,7 @@ pub fn adapter_for(protocol: &str) -> Option<&'static dyn UsageAdapter> {
         OPENAI => Some(&OpenAiChat),
         ANTHROPIC => Some(&AnthropicMessages),
         GEMINI => Some(&GeminiGenerate),
+        TASKS => Some(&TaskUsage),
         _ => None,
     }
 }
@@ -94,6 +101,7 @@ pub fn adapter_for_endpoint(protocol: &str, endpoint: &str) -> Option<&'static d
         (OPENAI, "rerank") => Some(&OpenAiRerank),
         (ANTHROPIC, "messages") => Some(&AnthropicMessages),
         (GEMINI, "generateContent") => Some(&GeminiGenerate),
+        (TASKS, "tasks") => Some(&TaskUsage),
         _ => None,
     }
 }
@@ -678,6 +686,79 @@ pub fn known_protocol(protocol: &str) -> Result<(), WalletError> {
         )));
     }
     Ok(())
+}
+
+/// The task-relay protocol's usage (issue #503): a terminal `GET
+/// {baseUrl}/tasks/{id}` answer's `usage` object. Token-shaped reports read
+/// `input_tokens`/`output_tokens`; task-shaped units — `image_count`,
+/// `seconds`, `unit_count` — carry no token columns and ride in
+/// `usage_details` under `provider_raw` for the price book's `event`-mode
+/// rules to itemize. The stream-side methods are unused: the task surface
+/// never opens an SSE stream, so `ends_stream`/`closing_frame`/`answer_text`
+/// exist only to satisfy the trait and are never reached.
+struct TaskUsage;
+
+impl UsageAdapter for TaskUsage {
+    fn protocol(&self) -> &'static str {
+        TASKS
+    }
+
+    fn upstream_path(&self) -> &'static str {
+        "tasks"
+    }
+
+    /// `usage.input_tokens`/`usage.output_tokens` when upstream counts tokens;
+    /// the whole `usage` object is kept verbatim as `provider_raw` for the
+    /// reconciliation window. A body with no `usage` is no report — the
+    /// settle falls back to a zero-count record, which still charges a
+    /// `cost_per_request` price its flat rate.
+    fn usage(&self, body: &Value) -> Option<UsageRecord> {
+        let usage = body.get("usage")?;
+        let record = UsageRecord {
+            input_tokens: usage
+                .get("input_tokens")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
+            output_tokens: usage
+                .get("output_tokens")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
+            cached_tokens: usage
+                .get("cached_tokens")
+                .or_else(|| {
+                    usage
+                        .get("input_tokens_details")
+                        .and_then(|d| d.get("cached_tokens"))
+                })
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
+            reasoning_tokens: usage
+                .get("reasoning_tokens")
+                .or_else(|| {
+                    usage
+                        .get("output_tokens_details")
+                        .and_then(|d| d.get("reasoning_tokens"))
+                })
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
+            usage_details: Some(serde_json::json!({ "provider_raw": usage })),
+            ..UsageRecord::default()
+        }
+        .clamped();
+        Some(record)
+    }
+
+    fn answer_text(&self, _body: &Value) -> String {
+        String::new()
+    }
+
+    fn ends_stream(&self, _payload: &str) -> bool {
+        false
+    }
+
+    fn closing_frame(&self) -> &'static [u8] {
+        b""
+    }
 }
 
 #[cfg(test)]
@@ -1274,6 +1355,127 @@ mod tests {
         assert!(!responses().ends_stream("{\"type\":\"response.output_text.delta\"}"));
         assert!(!responses().ends_stream("not json"));
         assert_eq!(responses().closing_frame(), b"");
+    }
+
+    // ── the task-relay adapter (issue #503) ──────────────────────────────────
+
+    fn tasks() -> &'static dyn UsageAdapter {
+        adapter_for(TASKS).expect("the tasks adapter is registered")
+    }
+
+    /// A terminal task answer's `usage` object reads like the Responses
+    /// spellings: the sides plus their cached/reasoning subsets, with the raw
+    /// report kept for the reconciliation window.
+    #[test]
+    fn the_tasks_shape_reads_its_usage_spellings() {
+        let usage = tasks()
+            .usage(&json!({
+                "id": "task_1",
+                "status": "succeeded",
+                "usage": {
+                    "input_tokens": 60,
+                    "output_tokens": 25,
+                    "input_tokens_details": {"cached_tokens": 40},
+                    "output_tokens_details": {"reasoning_tokens": 8},
+                },
+            }))
+            .expect("a task report carries usage");
+        assert_eq!(usage.input_tokens, 60);
+        assert_eq!(usage.output_tokens, 25);
+        assert_eq!(usage.cached_tokens, 40);
+        assert_eq!(usage.reasoning_tokens, 8);
+        assert_eq!(
+            usage.usage_details.as_ref().unwrap()["provider_raw"]["input_tokens"],
+            60
+        );
+
+        // The flat spellings stand in when upstream reports no detail objects.
+        let flat = tasks()
+            .usage(&json!({
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "cached_tokens": 3,
+                    "reasoning_tokens": 2,
+                },
+            }))
+            .expect("a flat task report carries usage");
+        assert_eq!(flat.cached_tokens, 3);
+        assert_eq!(flat.reasoning_tokens, 2);
+    }
+
+    /// A task-shaped report counts units, not tokens — `image_count`,
+    /// `seconds`, `unit_count`. No token column fills, the raw object still
+    /// rides `provider_raw`, and it is a report: a `cost_per_request` price
+    /// itemizes off it.
+    #[test]
+    fn a_task_report_without_token_columns_is_still_a_report() {
+        let usage = tasks()
+            .usage(&json!({
+                "status": "succeeded",
+                "usage": {"image_count": 2, "seconds": 6},
+            }))
+            .expect("a unit-shaped report carries usage");
+        assert_eq!(usage.input_tokens, 0);
+        assert_eq!(usage.output_tokens, 0);
+        assert_eq!(
+            usage.usage_details.unwrap()["provider_raw"]["image_count"],
+            2
+        );
+    }
+
+    /// No `usage` object is no report: the settle falls back to a zero-count
+    /// record, which still charges a flat `cost_per_request` price. A missing
+    /// side reports zero — the task surface never guesses a split, and a
+    /// negative count clamps away like on every other adapter.
+    #[test]
+    fn a_task_body_without_usage_is_no_report() {
+        assert!(tasks().usage(&json!({"status": "succeeded"})).is_none());
+        assert!(tasks().usage(&json!({"status": "failed"})).is_none());
+        // `usage: null` is still a report of zeros — the JSON null is a
+        // present-but-empty reading, the same shape an empty object gives.
+        // `usage: {}` is still a report — upstream answered, just counted
+        // nothing token-shaped; the flat rate still applies.
+        let empty = tasks()
+            .usage(&json!({"usage": {}}))
+            .expect("an empty usage object is upstream's own report");
+        assert_eq!(empty.input_tokens, 0);
+        assert_eq!(empty.output_tokens, 0);
+
+        let one_sided = tasks()
+            .usage(&json!({"usage": {"output_tokens": 9}}))
+            .expect("a one-sided report carries usage");
+        assert_eq!(one_sided.input_tokens, 0);
+        assert_eq!(one_sided.output_tokens, 9);
+
+        // A negative side is still a report: the subsets clamp into it and the
+        // price book's fail-closed check flags the impossible count.
+        let negative = tasks()
+            .usage(&json!({"usage": {"input_tokens": -5}}))
+            .expect("a negative count is still a report");
+        assert_eq!(negative.input_tokens, -5);
+        // A subset past its side clamps into it, like on every adapter.
+        let clamped = tasks()
+            .usage(&json!({"usage": {"input_tokens": 10, "cached_tokens": 40}}))
+            .expect("an over-subset report carries usage");
+        assert_eq!(clamped.cached_tokens, 10);
+    }
+
+    /// The task surface never opens a stream: the SSE-facing methods exist only
+    /// to satisfy the trait, and their fixed answers assert nothing routes
+    /// stream bytes through them.
+    #[test]
+    fn the_tasks_adapter_has_no_stream_side() {
+        assert_eq!(
+            adapter_for_endpoint(TASKS, "tasks")
+                .unwrap()
+                .upstream_path(),
+            "tasks"
+        );
+        assert!(!tasks().ends_stream("[DONE]"));
+        assert!(!tasks().ends_stream("{\"status\":\"succeeded\"}"));
+        assert_eq!(tasks().closing_frame(), b"");
+        assert_eq!(tasks().answer_text(&json!({"result": {"text": "hi"}})), "");
     }
 
     // ── the input-only endpoints (issue #170) ────────────────────────────────

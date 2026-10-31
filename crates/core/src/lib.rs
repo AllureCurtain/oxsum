@@ -41,6 +41,7 @@ mod sessions;
 mod statement_pdf;
 mod statements;
 mod subscriptions;
+mod tasks;
 mod teams;
 mod tenants;
 mod tiers;
@@ -55,7 +56,9 @@ mod wallet;
 mod webhooks;
 mod x402;
 
-pub use adapters::{ANTHROPIC, GEMINI, OPENAI, UsageAdapter, adapter_for, adapter_for_endpoint};
+pub use adapters::{
+    ANTHROPIC, GEMINI, OPENAI, TASKS, UsageAdapter, adapter_for, adapter_for_endpoint,
+};
 pub use anomaly::{AnomalyFacts, Severity, anomaly_score};
 pub use audit::{AuditEntry, AuditPage, action as audit_action};
 pub use billing::{
@@ -131,6 +134,10 @@ pub use statements::{
 pub use subscriptions::{
     OrgSubscription, ResetPeriod, RolloverReport, SubscriptionAdmission, SubscriptionPeriod,
     SubscriptionPlan,
+};
+pub use tasks::{
+    NewTask, TASK_FAILED, TASK_SUCCEEDED, Task, TaskKind, TaskOutcome, TaskPollTarget,
+    TaskSettlement, TaskState, settle_task,
 };
 pub use teams::Team;
 pub use tenants::Tenants;
