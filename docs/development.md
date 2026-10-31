@@ -513,6 +513,39 @@ markdown-only pushes are skipped) and smoke-tests it over HTTP against a real Po
 that is the only gate that runs the artifact. Pull requests are covered by CI's compile and
 test jobs; the image itself is not built on every PR.
 
+## Publishing `verify-oxsum-bill` to npm
+
+The `web/verify-sdk` package ships the same wasm-bindgen module the `/verify` page
+serves, packed so a downstream page imports `verify-oxsum-bill` rather than host the
+`.wasm` itself. Publishing is a maintainer step, not a CI job: it runs from a clean
+checkout, with the maintainer's npm login.
+
+```bash
+# 0. Install the toolchain the package builds against — `prepare` runs `tsc` here:
+cd web/verify-sdk && npm ci && cd -
+
+# 1. Build the wasm the loader imports. Needs the wasm32-unknown-unknown target and
+#    a wasm-bindgen CLI matching Cargo.lock (the generated glue embeds a schema
+#    version the CLI validates):
+scripts/build-verify-wasm.sh
+
+# 2. Sanity-check the tarball: it must carry dist/{index,verify-bill,
+#    verify-statement,verify-usage-report}.{js,d.ts}, wasm/verify_wasm{.js,_bg.wasm},
+#    README.md, and LICENSE-{MIT,APACHE}. `prepack` refuses a pack with an empty
+#    wasm/, so this step never ships a loader without its module.
+cd web/verify-sdk
+npm pack --dry-run
+
+# 3. Publish. `--access public` is required the first time — scoped or not, npm
+#    defaults to private on the first publish of a name.
+npm publish --access public
+```
+
+`wasm/` is a gitignored build artifact the script populates, so a fresh clone packs
+nothing usable — the order above is the only order. `npm publish` runs `prepack`,
+which rebuilds `dist/` and refuses when `wasm/` is empty; a `tsc` error or a missing
+wasm-bindgen run therefore stops the publish rather than ship a broken tarball.
+
 ## Deployment runbook
 
 The deployment is one binary plus one PostgreSQL database; every operational
