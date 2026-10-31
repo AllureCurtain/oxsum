@@ -523,6 +523,7 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "subscription_draws".to_owned(),
             "subscription_periods".to_owned(),
             "subscription_plans".to_owned(),
+            "tasks".to_owned(),
             "teams".to_owned(),
             "tier_profiles".to_owned(),
             "tpm_windows".to_owned(),
