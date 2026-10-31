@@ -1,3 +1,6 @@
+import * as React from "react";
+import { cn } from "../../lib/utils";
+
 // ---------------------------------------------------------------------------
 // Money helpers — integer minor units, 1 credit = 1_000_000, never float math.
 // ---------------------------------------------------------------------------
@@ -62,16 +65,20 @@ export function creditsWithDisplay(minor: number, currency: DisplayCurrency | nu
  * the fiat conversion as a quiet second line when the org displays in one.
  * `minor` is the ledger's integer; the conversion never feeds a charge.
  */
-export function Cr(props: { minor: number; currency?: DisplayCurrency | null }) {
-  return (
-    <span className="tabular-nums">
-      {credits(props.minor)} cr
-      {props.currency ? (
-        <span className="text-muted">
-          {" "}
-          ≈ {displayAmount(props.minor, props.currency)} {props.currency.code}
-        </span>
-      ) : null}
-    </span>
-  );
-}
+const Cr = React.forwardRef<
+  HTMLSpanElement,
+  React.ComponentProps<"span"> & { minor: number; currency?: DisplayCurrency | null }
+>(({ className, minor, currency, ...props }, ref) => (
+  <span ref={ref} data-slot="cr" className={cn("tabular-nums", className)} {...props}>
+    {credits(minor)} cr
+    {currency ? (
+      <span className="text-muted">
+        {" "}
+        ≈ {displayAmount(minor, currency)} {currency.code}
+      </span>
+    ) : null}
+  </span>
+));
+Cr.displayName = "Cr";
+
+export { Cr };

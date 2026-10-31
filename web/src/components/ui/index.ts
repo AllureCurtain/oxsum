@@ -30,6 +30,6 @@ export * from "./breadcrumb";
 export * from "./pagination";
 export * from "./avatar";
 export * from "./toggle";
-// `card.tsx` exports `Card` alongside CardHeader/CardTitle/… — it stays out of
-// the barrel while `surface.tsx`'s business `Card` (title/actions props)
-// holds the name. The page-adoption pass picks which `Card` wins.
+// `card.tsx` was dropped: our business `Card` (title/actions props) keeps the
+// name — shadcn's CardHeader/CardTitle/… triplet is more ceremony than the
+// dashboard's cards need.
