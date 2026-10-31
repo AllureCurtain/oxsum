@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../client";
 import type { components } from "../schema";
-import type { ApiKey, DisplayCurrencyType, Member, UserOrganization } from "./types";
+import type { ApiKey, DisplayCurrencyType, Entitlement, Member, UserOrganization } from "./types";
 
 export function useKeys() {
   return useQuery({
@@ -33,6 +33,19 @@ export function useRevokeKey() {
   return useMutation({
     mutationFn: (keyId: string) => api<ApiKey>(`/org/keys/${keyId}`, { method: "DELETE" }),
     onSuccess: () => client.invalidateQueries({ queryKey: ["keys"] }),
+  });
+}
+
+/**
+ * The "can this key call now" read (issue #501): admission's own checks, peeked
+ * — a revoked row skips the poll entirely, since the key can only ever refuse.
+ */
+export function useEntitlement(keyId: string, enabled = true) {
+  return useQuery({
+    queryKey: ["entitlement", keyId],
+    queryFn: () => api<Entitlement>(`/org/keys/${keyId}/entitlement`),
+    enabled,
+    refetchInterval: 30_000,
   });
 }
 

@@ -279,6 +279,31 @@ A mandate hands a bearer who does not hold the key a strictly narrower slice of 
 - A mandate is short-lived by design and is never revoked: to cut a delegate off, tighten the key's own constraint or revoke the key — the delegate's window just runs out.
 - A settled delegated turn names the mandate in its settlement description (`{id, hash}` over the blob), so `/verify` proves which delegation authorized the charge.
 
+### Asking whether a key can call now
+
+Purpose: know a request would be refused *before* spending it — a client
+checking headroom, or you debugging why a delegate's calls fail.
+
+`GET /api/v1/org/keys/{keyId}/entitlement` answers `{allowed, reason?, …}` —
+the same checks admission runs, read-only: it consumes no request slot, no
+window slot and no hold, and is never itself rate-limited. `?model=` names the
+model the request would call, `?estimate=` a hypothetical charge in minor
+units, and repeated `?tag=name:value` the `metadata` tags it would carry. When
+`allowed` is false, `reason` names the first check that refused —
+`key_inactive`, `org_suspended`, `model_not_allowed`, `rpm_exceeded`,
+`tpm_exceeded`, `budget_exhausted`, `concurrent_holds`, or the mandate's own
+`mandate_invalid`/`mandate_window`/`mandate_model`/`mandate_cap` — and the
+headroom fields (`remainingRpm`, `remainingTpm`, `remainingBudgetMinor`,
+`concurrentHolds`, `retryAfterSecs`) say how far each constraint stands. The
+`checks` object gives every constraint's verdict at once, so a debugging view
+shows everything failing, not just the first refusal. Presenting a delegate's
+`X-Oxsum-Mandate` blob asks the delegation's question too — including "why
+does this blob not verify", which is the `mandate_invalid` answer, not an
+error. The read is a snapshot, not a reservation: a racing request may spend
+the headroom it reports, so admission's own checks stay authoritative. The
+keys dashboard polls it per key — the Live column shows `ready`, the refusing
+reason, or `off` for a revoked key.
+
 ## Top up
 
 Purpose: add balance to the organization's wallet.
