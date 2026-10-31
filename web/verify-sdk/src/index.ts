@@ -35,7 +35,11 @@ interface VerifyWasmModule {
   verifyConsistency(json: string, checkJson: string): Promise<string>;
   verifyWitnesses(json: string, pinsJson: string): Promise<string>;
   verifyStatementAnchor(json: string, checkJson: string): Promise<string>;
-  verifyUsageReport(json: string): Promise<string>;
+  verifyUsageReport(
+    json: string,
+    expectedEndUser: string,
+    keyJson?: string | null,
+  ): Promise<string>;
   verifyPriceHead(json: string): Promise<string>;
 }
 
@@ -127,10 +131,22 @@ export async function verifyStatementAnchor(
   return parse(await m.verifyStatementAnchor(json, checkJson));
 }
 
-/** Verifies a usage-report rollup against the day/anchor leaves it commits. */
-export async function verifyUsageReport(json: string): Promise<CheckVerdict> {
+/**
+ * Verifies a usage-report bundle against the ledger subset its marker commits.
+ *
+ * @param json the report bundle `data` object.
+ * @param expectedEndUser who the report should be for — the caller-supplied
+ *   recipient name; a bundle committing a different `endUser` fails.
+ * @param keyJson the published operator key `{keyName, publicKey, keyHash}` —
+ *   or `null` to check membership to the committed digests without a signature.
+ */
+export async function verifyUsageReport(
+  json: string,
+  expectedEndUser: string,
+  keyJson?: string | null,
+): Promise<CheckVerdict> {
   const m = await load();
-  return parse(await m.verifyUsageReport(json));
+  return parse(await m.verifyUsageReport(json, expectedEndUser, keyJson));
 }
 
 /** Verifies a signed price-head checkpoint against the row it attests. */
