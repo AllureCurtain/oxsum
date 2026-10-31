@@ -1786,8 +1786,14 @@ export interface paths {
          *     `budgetLimitMinor` caps what the member may commit — settled charges plus outstanding
          *     holds summed over every key they minted (`created_by`). A key whose creator is over its
          *     budget cannot take a new hold (`402 KEY_LIMIT_EXCEEDED`, the same refusal a key's own
-         *     spendLimitMinor raises); an explicit `null` clears the cap. At least one of `role` and
-         *     `budgetLimitMinor` is required.
+         *     spendLimitMinor raises); an explicit `null` clears the cap.
+         *
+         *     `teamId` assigns the member to a team of this organization (issue #440) — the budget
+         *     hierarchy's middle layer: key → member → team → organization credit line. Absent leaves
+         *     the assignment, an explicit `null` unassigns, a team id moves the member under that
+         *     team's cap for their *next* hold. Committed spend follows the roster — the money their
+         *     keys already spent moves with them — and a team outside the organization is `NOT_FOUND`.
+         *     At least one of `role`, `budgetLimitMinor` and `teamId` is required.
          *
          *     An admin may not change an owner's role (403 `FORBIDDEN`) — an admin manages members, not
          *     the owner — and the last owner of an organization cannot be demoted (409 `CONFLICT`): an
@@ -1827,6 +1833,186 @@ export interface paths {
                 403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        trace?: never;
+    };
+    "/api/v1/org/teams": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the organization's teams
+         * @description The teams the organization carries (issue #440), oldest first — the budget
+         *     hierarchy's middle layer between members and the organization credit line.
+         *     Reading the organization's own structure is any member's right; the writes
+         *     beside it are owner/admin-gated.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The teams */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: {
+                                teams: components["schemas"]["Team"][];
+                            };
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Create a team
+         * @description Creates a named subgroup under the organization with an optional
+         *     `budgetLimitMinor`. Management is a person's action — an owner or an admin,
+         *     and only a session; an API key or a member is refused. The name is unique
+         *     per organization, so a retry of a create answers the standing team rather
+         *     than minting a second one.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CreateTeamRequest"];
+                };
+            };
+            responses: {
+                /** @description The team as created — or as it already stood under the name */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["Team"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/org/teams/{teamId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description the id of the team this endpoint addresses, as a team's `teamId` */
+                teamId: components["parameters"]["TeamId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Dissolve a team
+         * @description Removes the team; every membership it grouped keeps its seat with `teamId`
+         *     nulled — the member layer stays, the team cap simply stops applying. An
+         *     owner or an admin, and only a session.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description the id of the team this endpoint addresses, as a team's `teamId` */
+                    teamId: components["parameters"]["TeamId"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The team that was dissolved */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["Team"];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        options?: never;
+        head?: never;
+        /**
+         * Change a team's name or budget cap
+         * @description `name` renames the subgroup (unique per organization); `budgetLimitMinor`
+         *     caps what the team's members may commit in total — settled charges plus
+         *     outstanding holds summed over every key the team's members minted — absent
+         *     leaves it, an explicit `null` clears it. An owner or an admin, and only a
+         *     session: an API key or a member is refused. A team outside the
+         *     organization is `NOT_FOUND`.
+         */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description the id of the team this endpoint addresses, as a team's `teamId` */
+                    teamId: components["parameters"]["TeamId"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["UpdateTeamRequest"];
+                };
+            };
+            responses: {
+                /** @description The team as it stands after the change */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["Team"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -2884,6 +3070,61 @@ export interface paths {
                     content: {
                         "application/json": {
                             data: components["schemas"]["StatementDetail"];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/statements/{statementId}/proof": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The statement's self-contained proof bundle
+         * @description Everything `verify_statement_anchor` needs in one GET (issue #479):
+         *     the statement and its itemized lines, the log anchor that commits its
+         *     two digests, the covered entries' content hashes in log order
+         *     (`windowHashes`), the signed tree head right after the anchor
+         *     (`expectedHead`) and the tenant origin (`expectedOrigin`) — the same
+         *     objects the detail endpoint serves, plus the two inputs a caller would
+         *     otherwise have to stitch together from `/api/v1/entries/{id}/proof`
+         *     and `/api/v1/log/head`. Only `finalized` statements answer; a draft,
+         *     another organization's statement and a missing id are all 404, the
+         *     same guard the detail endpoint keeps.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    statementId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The statement and the pieces its anchor check folds */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["StatementProof"];
                         };
                     };
                 };
@@ -6865,6 +7106,161 @@ export interface paths {
                         "application/json": components["schemas"]["RerankResponse"];
                     };
                 };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1beta/models/{model}:generateContent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Gemini generateContent turn, billed by freezing credit first and settling against upstream usage
+         * @description The same freeze-then-settle contract as `/v1/chat/completions`, in Gemini's
+         *     request and response shapes (issue #494). Two details make the surface unlike
+         *     the other chat surfaces: the model is the path's `{model}` segment — a `model`
+         *     body field may only repeat it, never disagree — and streaming is a separate
+         *     action (`/v1beta/models/{model}:streamGenerateContent`), so there is no
+         *     `stream` field on this wire; sending one is 400.
+         *
+         *     The surface serves only channels whose `protocol` is `gemini`: a model that no
+         *     gemini channel serves is refused 400, exactly as an unserved model is on the
+         *     OpenAI surface — there is no cross-protocol translation. Errors answer in the
+         *     `{"error": {…}}` object a Gemini SDK reads, with oxsum's own code kept on
+         *     `error.code`.
+         *
+         *     Upstream is called at `{baseUrl}/models/{model}:generateContent` with the
+         *     channel credential sent as `x-goog-api-key`, the spelling both
+         *     `generativelanguage.googleapis.com` and `*-aiplatform.googleapis.com` accept.
+         *     The forwarded body's `generationConfig.maxOutputTokens` carries the freeze's
+         *     output bound, so upstream cannot return more than was priced.
+         *
+         *     Usage normalization follows `usageMetadata`: `promptTokenCount` already
+         *     includes `cachedContentTokenCount`, `candidatesTokenCount` excludes
+         *     `thoughtsTokenCount` (so the billed output adds it back), and
+         *     `toolUsePromptTokenCount` sits outside `promptTokenCount` (so the billed input
+         *     adds it in).
+         *
+         *     The cost headers are the same three: `x-oxsum-freeze-minor` and
+         *     `x-oxsum-balance-minor` on the head, `x-oxsum-charged-minor` on a non-streamed
+         *     head. `Idempotency-Key` behaves exactly as it does on `/v1/chat/completions`.
+         *     `labels` maps onto the turn's usage tags, like OpenAI's `metadata` — strings
+         *     only, ten entries, 64 characters a side.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: {
+                    /** @description makes a retried request the same turn: the same key under the same request body replays the first response, under a different body it is refused 422, and while the first turn is still running it is refused 409 */
+                    "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                    /** @description a signed spend mandate (issue #262): base64url of the canonical-JSON body plus its Ed25519 signature, minted by `POST /api/v1/org/keys/{keyId}/mandates`. Presented on `/v1/*` and `POST /api/v1/holds`, it binds the request inside the mandate's `capMinor`, `models` and validity window — a refusal reads `invalid_mandate`, `mandate_expired` or `mandate_exceeded`, distinct from the key's own limits */
+                    "X-Oxsum-Mandate"?: components["parameters"]["Mandate"];
+                };
+                path: {
+                    /** @description the model the turn bills under — `gemini-2.5-flash` or an alias a `gemini` channel claims; must be served with a configured price */
+                    model: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["GeminiGenerateRequest"];
+                };
+            };
+            responses: {
+                /** @description Upstream's answer, passed through unchanged — or, for a replayed `Idempotency-Key`, the stored response or the settled receipt, marked `Idempotent-Replayed: true` */
+                200: {
+                    headers: {
+                        "x-oxsum-request-id": components["headers"]["RequestId"];
+                        "x-oxsum-freeze-minor": components["headers"]["FreezeMinor"];
+                        "x-oxsum-balance-minor": components["headers"]["BalanceMinor"];
+                        "x-oxsum-charged-minor": components["headers"]["ChargedMinor"];
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["GeminiGenerateResponse"];
+                    };
+                };
+                400: components["responses"]["GatewayError"];
+                401: components["responses"]["GatewayError"];
+                402: components["responses"]["GatewayError"];
+                403: components["responses"]["GatewayError"];
+                409: components["responses"]["GatewayError"];
+                422: components["responses"]["GatewayError"];
+                429: components["responses"]["GatewayError"];
+                500: components["responses"]["GatewayError"];
+                502: components["responses"]["GatewayError"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1beta/models/{model}:streamGenerateContent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Gemini streamGenerateContent turn — the same contract, streamed over SSE
+         * @description The streaming action of the Gemini surface (issue #494): everything the
+         *     `generateContent` entry documents applies, and upstream is called at
+         *     `{baseUrl}/models/{model}:streamGenerateContent?alt=sse` instead. The
+         *     answer is Gemini's event stream passed through unchanged; the last event
+         *     carries a candidate `finishReason`, and the socket close is the close —
+         *     there is no `[DONE]` sentinel on this protocol. The settled charge still
+         *     arrives as the `x-oxsum-charged-minor` trailer the other surfaces use.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: {
+                    /** @description makes a retried request the same turn: the same key under the same request body replays the first response, under a different body it is refused 422, and while the first turn is still running it is refused 409 */
+                    "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                    /** @description a signed spend mandate (issue #262): base64url of the canonical-JSON body plus its Ed25519 signature, minted by `POST /api/v1/org/keys/{keyId}/mandates`. Presented on `/v1/*` and `POST /api/v1/holds`, it binds the request inside the mandate's `capMinor`, `models` and validity window — a refusal reads `invalid_mandate`, `mandate_expired` or `mandate_exceeded`, distinct from the key's own limits */
+                    "X-Oxsum-Mandate"?: components["parameters"]["Mandate"];
+                };
+                path: {
+                    /** @description the model the turn bills under, served by a `gemini` channel with a configured price */
+                    model: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["GeminiGenerateRequest"];
+                };
+            };
+            responses: {
+                /** @description Gemini's event stream, passed through unchanged, ending when upstream closes it */
+                200: {
+                    headers: {
+                        "x-oxsum-request-id": components["headers"]["RequestId"];
+                        "x-oxsum-freeze-minor": components["headers"]["FreezeMinor"];
+                        "x-oxsum-balance-minor": components["headers"]["BalanceMinor"];
+                        /** @description announces the settled charge arrives as a trailer */
+                        Trailer?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/event-stream": string;
+                    };
+                };
                 400: components["responses"]["GatewayError"];
                 401: components["responses"]["GatewayError"];
                 402: components["responses"]["GatewayError"];
@@ -7267,6 +7663,11 @@ export interface components {
              */
             budgetLimitMinor?: number | null;
             /**
+             * Format: uuid
+             * @description the team the member belongs to (issue #440); null means unassigned — no team cap applies to the member's keys
+             */
+            teamId?: string | null;
+            /**
              * Format: date-time
              * @description when the membership was created
              */
@@ -7281,6 +7682,49 @@ export interface components {
              */
             email: string;
         };
+        Team: {
+            /**
+             * Format: uuid
+             * @description the team's id, which the team endpoints address it by
+             */
+            teamId: string;
+            /** @description the subgroup's name — unique per organization */
+            name: string;
+            /**
+             * Format: int64
+             * @description the team's committed-spend cap across every key its members minted; null carries none
+             */
+            budgetLimitMinor?: number | null;
+            /**
+             * Format: int64
+             * @description how many memberships the team groups today
+             */
+            members: number;
+            /**
+             * Format: date-time
+             * @description when the team was created
+             */
+            createdAt: string;
+        };
+        CreateTeamRequest: {
+            /** @description the subgroup's name — unique per organization */
+            name: string;
+            /**
+             * Format: int64
+             * @description the team's committed-spend cap across every key its members minted; absent or null carries none
+             */
+            budgetLimitMinor?: number | null;
+        };
+        UpdateTeamRequest: {
+            /** @description the team's new name */
+            name?: string;
+            /**
+             * Format: int64
+             * @description the team's committed-spend cap across every key its members minted — absent leaves it,
+             *     an explicit null clears it. At least one of `name` and `budgetLimitMinor` is required.
+             */
+            budgetLimitMinor?: number | null;
+        };
         UpdateMemberRequest: {
             /**
              * @description the member's new role. `owner` is not a value here on purpose: ownership is a single
@@ -7291,9 +7735,18 @@ export interface components {
             /**
              * Format: int64
              * @description the member's committed-spend cap across every key they minted — absent leaves it, an
-             *     explicit null clears it. At least one of `role` and `budgetLimitMinor` is required.
+             *     explicit null clears it.
              */
             budgetLimitMinor?: number | null;
+            /**
+             * Format: uuid
+             * @description the team the member joins (issue #440) — absent leaves the assignment, an explicit
+             *     null unassigns, a team id moves the member under that team's `budgetLimitMinor` for
+             *     their *next* hold. Committed spend follows the roster: the money their keys already
+             *     spent moves with them. A team outside the organization is `NOT_FOUND`. At least one
+             *     of `role`, `budgetLimitMinor` and `teamId` is required.
+             */
+            teamId?: string | null;
         };
         TransferOwnershipRequest: {
             /**
@@ -7384,20 +7837,20 @@ export interface components {
             name: string;
             /**
              * Format: uri
-             * @description where the upstream surface lives, http or https; the protocol's path (`/chat/completions`, `/messages`) is appended to it
+             * @description where the upstream surface lives, http or https; the protocol's path (`/chat/completions`, `/messages`, `models/{model}:<action>`) is appended to it
              */
             baseUrl: string;
-            /** @description the upstream credential, single-key spelling — merged into `apiKeys` when both arrive. Sealed with OXSUM_SECRET_KEY, only its last four characters readable afterwards. Sent upstream as `Authorization: Bearer` on an `openai` channel and as `x-api-key` on an `anthropic` one */
+            /** @description the upstream credential, single-key spelling — merged into `apiKeys` when both arrive. Sealed with OXSUM_SECRET_KEY, only its last four characters readable afterwards. Sent upstream as `Authorization: Bearer` on an `openai` channel, as `x-api-key` on an `anthropic` one, and as `x-goog-api-key` on a `gemini` one */
             apiKey?: string;
             /** @description the channel's credential pool (issue #444): the whole ordered set of upstream keys — a `set` re-credentials the channel wholesale, so every key the pool should hold goes here. Absent leaves the stored pool untouched; a present empty array is VALIDATION_ERROR — a channel with no key cannot serve. One of `apiKey`/`apiKeys` is required when creating a channel. */
             apiKeys?: string[];
             /** @description the admin billing credential the upstream-bill-sync pass reads the provider's cost API under (issue #283) — sealed beside the metering keys, deliberately separate so a relay credential never reads the org's bill. Omit to leave any stored billing key untouched; explicit null clears it. */
             billKey?: string | null;
             /**
-             * @description the upstream protocol the channel speaks, which selects the usage adapter its reports are normalized by and which `/v1` surface serves its models; defaults to `openai` — any other name is VALIDATION_ERROR
+             * @description the upstream protocol the channel speaks, which selects the usage adapter its reports are normalized by and which surface serves its models: `/v1/*` for `openai` and `anthropic`, `/v1beta/*` for `gemini`; defaults to `openai` — any other name is VALIDATION_ERROR
              * @enum {string}
              */
-            protocol?: "openai" | "anthropic";
+            protocol?: "openai" | "anthropic" | "gemini";
         };
         ChannelCredential: {
             /** Format: uuid */
@@ -8026,7 +8479,7 @@ export interface components {
         PricedModel: components["schemas"]["ModelPrice"] & {
             /** @description the channel the model is sold through */
             channel: string;
-            /** @description the upstream protocol — the surface `model` answers on, `openai` or `anthropic` */
+            /** @description the upstream protocol — the surface `model` answers on, `openai`, `anthropic` or `gemini` */
             protocol: string;
         };
         AdjustOrganizationRequest: {
@@ -8729,6 +9182,31 @@ export interface components {
              */
             amountMinor: number;
         };
+        /** @description the self-contained bundle `GET /api/v1/statements/{id}/proof` answers (issue #479): the statement detail plus the two inputs `verify_statement_anchor` cannot read out of the document itself — the covered entries' content hashes and the head that follows the anchor */
+        StatementProof: {
+            statement: components["schemas"]["Statement"];
+            lines: components["schemas"]["StatementLine"][];
+            /** @description the statement's log anchor, as the detail endpoint serves it — `note`, `keyName`, `publicKey` and `keyHash` only when the deployment configures OXSUM_HEAD_SIGNING_KEY */
+            anchor?: {
+                /** Format: uuid */
+                entryId: string;
+                /** Format: int64 */
+                logIndex: number;
+                windowHash: string;
+                rollupHash: string;
+                origin: string;
+                note?: string | null;
+                keyName?: string | null;
+                publicKey?: string | null;
+                keyHash?: string | null;
+            };
+            /** @description the covered entries' content hashes in log order — the verifier folds these under `oxsum/statement-window/v1` and checks the result against `anchor.windowHash` rather than trusting the served digest */
+            windowHashes: string[];
+            /** @description the signed tree head at `anchor.logIndex + 1` — the head whose log already contains the anchor; null on a deployment that signs no heads, the same honesty `anchor.note` keeps */
+            expectedHead: components["schemas"]["TreeHead"] | null;
+            /** @description the tenant ledger origin, `oxsum/ledgers/<tenant>` — the same string `anchor.origin` and `GET /api/v1/log/head` carry */
+            expectedOrigin: string;
+        };
         AmountRequest: {
             /** @description UTF-8 idempotency key; the server accepts at most 128 bytes */
             idempotencyKey: string;
@@ -9229,6 +9707,79 @@ export interface components {
             [key: string]: unknown;
         };
         /**
+         * @description The fields the gateway acts on (issue #494). Everything else is forwarded to
+         *     upstream unchanged — `tools`, `safetySettings`, `generationConfig`'s other keys
+         *     and the rest — which is what keeps a Gemini SDK working here. The model is the
+         *     path's `{model}` segment; a `model` field may only repeat it, never disagree.
+         *     `stream` is refused: the action in the URL chooses streaming, not a field.
+         */
+        GeminiGenerateRequest: {
+            /** @description the conversation; each entry's `parts` are read for the input bound */
+            contents: components["schemas"]["GeminiContent"][];
+            systemInstruction?: components["schemas"]["GeminiContent"];
+            /** @description only `maxOutputTokens` is read — the output bound the freeze uses; everything else is forwarded unchanged */
+            generationConfig?: ({
+                /** Format: int64 */
+                maxOutputTokens?: number | null;
+            } & {
+                [key: string]: unknown;
+            }) | null;
+            /** @description the caller's tags on the turn, recorded on the usage record like OpenAI's `metadata` — strings only, at most 10 entries, keys and values 1-64 characters */
+            labels?: {
+                [key: string]: string;
+            } | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * @description One content object, as the gateway reads it. What it does not read — `role`
+         *     included — is forwarded upstream unchanged. `parts` is read to compute the
+         *     input bound: a `text` part contributes its text; a `functionCall`,
+         *     `functionResponse` or `executableCode`-style part contributes its serialized
+         *     JSON as the bound for whatever it carries; an `inlineData` or `fileData`
+         *     part is refused 400 because it has no computable bound. Absent or null
+         *     `parts` contributes nothing.
+         */
+        GeminiContent: {
+            /** @description sent upstream as written; the gateway accepts any role and validates none */
+            role?: string;
+            parts?: {
+                [key: string]: unknown;
+            }[] | null;
+        };
+        /**
+         * @description Upstream's response, passed through unchanged. The only field oxsum reads is
+         *     `usageMetadata`; without it the turn settles on local estimation.
+         */
+        GeminiGenerateResponse: {
+            candidates?: Record<string, never>[];
+            usageMetadata?: {
+                /**
+                 * Format: int64
+                 * @description includes the cached share
+                 */
+                promptTokenCount?: number;
+                /**
+                 * Format: int64
+                 * @description outside promptTokenCount; the billed input adds it
+                 */
+                toolUsePromptTokenCount?: number;
+                /**
+                 * Format: int64
+                 * @description excludes the thinking share; the billed output adds thoughtsTokenCount
+                 */
+                candidatesTokenCount?: number;
+                /** Format: int64 */
+                thoughtsTokenCount?: number;
+                /** Format: int64 */
+                cachedContentTokenCount?: number;
+                /** Format: int64 */
+                totalTokenCount?: number;
+            };
+        } & {
+            [key: string]: unknown;
+        };
+        /**
          * @description The fields the gateway acts on. Everything else is forwarded to upstream unchanged —
          *     `dimensions`, `encoding_format` and the rest. `input` may be a string, an array of
          *     strings, an array of token ids, or an array of token-id arrays: token arrays freeze at
@@ -9413,6 +9964,8 @@ export interface components {
         KeyId: string;
         /** @description the id of the user whose membership this is, as a member's `userId` */
         UserId: string;
+        /** @description the id of the team this endpoint addresses, as a team's `teamId` */
+        TeamId: string;
         /** @description the channel's name, which is its identity */
         ChannelName: string;
         /** @description the webhook endpoint's id */

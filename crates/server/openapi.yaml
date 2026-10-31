@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.84.0
+  version: 0.85.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -565,6 +565,20 @@ info:
     entries' `windowHashes` in log order, the `expectedHead` right after the
     anchor and the `expectedOrigin` — so `verify_statement_anchor` runs off a
     single response instead of stitching three endpoints together.
+
+    0.85.0 adds the third upstream protocol (issue #494): channels may now declare
+    `protocol: gemini`, served on `POST /v1beta/models/{model}:generateContent` and
+    `:streamGenerateContent`. A Gemini client names the model in the path and picks the
+    streaming action in the URL — there is no `stream` body field — and the surface
+    freezes, relays and settles the turn by the same contract as the other chat
+    surfaces. Upstream is called at `{baseUrl}/models/{model}:generateContent` (or
+    `:streamGenerateContent?alt=sse`) with the channel credential as `x-goog-api-key`,
+    which both `generativelanguage.googleapis.com` and `*-aiplatform.googleapis.com`
+    accept. Usage normalization follows `usageMetadata`: `promptTokenCount` already
+    includes the cached share and `candidatesTokenCount` excludes the thinking share,
+    so the billed output is `candidatesTokenCount + thoughtsTokenCount`, the billed
+    input `promptTokenCount + toolUsePromptTokenCount`, and `cachedContentTokenCount`
+    fills the cached dimension.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -4979,6 +4993,115 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/RerankResponse" }
+  /v1beta/models/{model}:generateContent:
+    post:
+      summary: Gemini generateContent turn, billed by freezing credit first and settling against upstream usage
+      description: |
+        The same freeze-then-settle contract as `/v1/chat/completions`, in Gemini's
+        request and response shapes (issue #494). Two details make the surface unlike
+        the other chat surfaces: the model is the path's `{model}` segment — a `model`
+        body field may only repeat it, never disagree — and streaming is a separate
+        action (`/v1beta/models/{model}:streamGenerateContent`), so there is no
+        `stream` field on this wire; sending one is 400.
+
+        The surface serves only channels whose `protocol` is `gemini`: a model that no
+        gemini channel serves is refused 400, exactly as an unserved model is on the
+        OpenAI surface — there is no cross-protocol translation. Errors answer in the
+        `{"error": {…}}` object a Gemini SDK reads, with oxsum's own code kept on
+        `error.code`.
+
+        Upstream is called at `{baseUrl}/models/{model}:generateContent` with the
+        channel credential sent as `x-goog-api-key`, the spelling both
+        `generativelanguage.googleapis.com` and `*-aiplatform.googleapis.com` accept.
+        The forwarded body's `generationConfig.maxOutputTokens` carries the freeze's
+        output bound, so upstream cannot return more than was priced.
+
+        Usage normalization follows `usageMetadata`: `promptTokenCount` already
+        includes `cachedContentTokenCount`, `candidatesTokenCount` excludes
+        `thoughtsTokenCount` (so the billed output adds it back), and
+        `toolUsePromptTokenCount` sits outside `promptTokenCount` (so the billed input
+        adds it in).
+
+        The cost headers are the same three: `x-oxsum-freeze-minor` and
+        `x-oxsum-balance-minor` on the head, `x-oxsum-charged-minor` on a non-streamed
+        head. `Idempotency-Key` behaves exactly as it does on `/v1/chat/completions`.
+        `labels` maps onto the turn's usage tags, like OpenAI's `metadata` — strings
+        only, ten entries, 64 characters a side.
+      security: [{ bearer: [] }, { apiKeyHeader: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/Mandate" }
+        - name: model
+          in: path
+          required: true
+          schema: { type: string }
+          description: "the model the turn bills under — `gemini-2.5-flash` or an alias a `gemini` channel claims; must be served with a configured price"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GeminiGenerateRequest" }
+      responses:
+        "200":
+          description: >-
+            Upstream's answer, passed through unchanged — or, for a replayed
+            `Idempotency-Key`, the stored response or the settled receipt, marked
+            `Idempotent-Replayed: true`
+          headers:
+            x-oxsum-request-id: { $ref: "#/components/headers/RequestId" }
+            x-oxsum-freeze-minor: { $ref: "#/components/headers/FreezeMinor" }
+            x-oxsum-balance-minor: { $ref: "#/components/headers/BalanceMinor" }
+            x-oxsum-charged-minor: { $ref: "#/components/headers/ChargedMinor" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GeminiGenerateResponse" }
+        "400": { $ref: "#/components/responses/GatewayError" }
+        "401": { $ref: "#/components/responses/GatewayError" }
+        "402": { $ref: "#/components/responses/GatewayError" }
+        "403": { $ref: "#/components/responses/GatewayError" }
+        "409": { $ref: "#/components/responses/GatewayError" }
+        "422": { $ref: "#/components/responses/GatewayError" }
+        "429": { $ref: "#/components/responses/GatewayError" }
+        "500": { $ref: "#/components/responses/GatewayError" }
+        "502": { $ref: "#/components/responses/GatewayError" }
+  /v1beta/models/{model}:streamGenerateContent:
+    post:
+      summary: Gemini streamGenerateContent turn — the same contract, streamed over SSE
+      description: |
+        The streaming action of the Gemini surface (issue #494): everything the
+        `generateContent` entry documents applies, and upstream is called at
+        `{baseUrl}/models/{model}:streamGenerateContent?alt=sse` instead. The
+        answer is Gemini's event stream passed through unchanged; the last event
+        carries a candidate `finishReason`, and the socket close is the close —
+        there is no `[DONE]` sentinel on this protocol. The settled charge still
+        arrives as the `x-oxsum-charged-minor` trailer the other surfaces use.
+      security: [{ bearer: [] }, { apiKeyHeader: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/Mandate" }
+        - name: model
+          in: path
+          required: true
+          schema: { type: string }
+          description: "the model the turn bills under, served by a `gemini` channel with a configured price"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GeminiGenerateRequest" }
+      responses:
+        "200":
+          description: Gemini's event stream, passed through unchanged, ending when upstream closes it
+          headers:
+            x-oxsum-request-id: { $ref: "#/components/headers/RequestId" }
+            x-oxsum-freeze-minor: { $ref: "#/components/headers/FreezeMinor" }
+            x-oxsum-balance-minor: { $ref: "#/components/headers/BalanceMinor" }
+            Trailer: { schema: { type: string, example: "x-oxsum-charged-minor" }, description: "announces the settled charge arrives as a trailer" }
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: "Gemini SSE events, passed through unchanged; the last event carries a candidate `finishReason` and the socket close ends the stream"
         "400": { $ref: "#/components/responses/GatewayError" }
         "401": { $ref: "#/components/responses/GatewayError" }
         "402": { $ref: "#/components/responses/GatewayError" }
@@ -5606,14 +5729,14 @@ components:
       required: [name, baseUrl]
       properties:
         name: { type: string, minLength: 1, maxLength: 40, pattern: "^[A-Za-z0-9._-]+$", description: the channel's identity; posting an existing name replaces its connection }
-        baseUrl: { type: string, format: uri, description: "where the upstream surface lives, http or https; the protocol's path (`/chat/completions`, `/messages`) is appended to it" }
-        apiKey: { type: string, minLength: 1, description: "the upstream credential, single-key spelling — merged into `apiKeys` when both arrive. Sealed with OXSUM_SECRET_KEY, only its last four characters readable afterwards. Sent upstream as `Authorization: Bearer` on an `openai` channel and as `x-api-key` on an `anthropic` one" }
+        baseUrl: { type: string, format: uri, description: "where the upstream surface lives, http or https; the protocol's path (`/chat/completions`, `/messages`, `models/{model}:<action>`) is appended to it" }
+        apiKey: { type: string, minLength: 1, description: "the upstream credential, single-key spelling — merged into `apiKeys` when both arrive. Sealed with OXSUM_SECRET_KEY, only its last four characters readable afterwards. Sent upstream as `Authorization: Bearer` on an `openai` channel, as `x-api-key` on an `anthropic` one, and as `x-goog-api-key` on a `gemini` one" }
         apiKeys:
           type: array
           items: { type: string, minLength: 1 }
           description: "the channel's credential pool (issue #444): the whole ordered set of upstream keys — a `set` re-credentials the channel wholesale, so every key the pool should hold goes here. Absent leaves the stored pool untouched; a present empty array is VALIDATION_ERROR — a channel with no key cannot serve. One of `apiKey`/`apiKeys` is required when creating a channel."
         billKey: { type: string, minLength: 1, nullable: true, description: "the admin billing credential the upstream-bill-sync pass reads the provider's cost API under (issue #283) — sealed beside the metering keys, deliberately separate so a relay credential never reads the org's bill. Omit to leave any stored billing key untouched; explicit null clears it." }
-        protocol: { type: string, enum: [openai, anthropic], description: "the upstream protocol the channel speaks, which selects the usage adapter its reports are normalized by and which `/v1` surface serves its models; defaults to `openai` — any other name is VALIDATION_ERROR" }
+        protocol: { type: string, enum: [openai, anthropic, gemini], description: "the upstream protocol the channel speaks, which selects the usage adapter its reports are normalized by and which surface serves its models: `/v1/*` for `openai` and `anthropic`, `/v1beta/*` for `gemini`; defaults to `openai` — any other name is VALIDATION_ERROR" }
     ChannelCredential:
       type: object
       required: [credentialId, apiKeyLast4, position, status, cooldownUntil, lastError, lastUsedAt, createdAt]
@@ -6198,7 +6321,7 @@ components:
             channel: { type: string, description: the channel the model is sold through }
             protocol:
               type: string
-              description: the upstream protocol — the surface `model` answers on, `openai` or `anthropic`
+              description: the upstream protocol — the surface `model` answers on, `openai`, `anthropic` or `gemini`
     AdjustOrganizationRequest:
       type: object
       required: [amountMinor, reason, idempotencyKey]
@@ -7187,6 +7310,69 @@ components:
               properties:
                 ephemeral_5m_input_tokens: { type: integer, format: int64 }
                 ephemeral_1h_input_tokens: { type: integer, format: int64 }
+      additionalProperties: true
+    GeminiGenerateRequest:
+      type: object
+      required: [contents]
+      description: |
+        The fields the gateway acts on (issue #494). Everything else is forwarded to
+        upstream unchanged — `tools`, `safetySettings`, `generationConfig`'s other keys
+        and the rest — which is what keeps a Gemini SDK working here. The model is the
+        path's `{model}` segment; a `model` field may only repeat it, never disagree.
+        `stream` is refused: the action in the URL chooses streaming, not a field.
+      properties:
+        contents:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/GeminiContent" }
+          description: "the conversation; each entry's `parts` are read for the input bound"
+        systemInstruction:
+          $ref: "#/components/schemas/GeminiContent"
+        generationConfig:
+          type: [object, "null"]
+          description: "only `maxOutputTokens` is read — the output bound the freeze uses; everything else is forwarded unchanged"
+          properties:
+            maxOutputTokens: { type: [integer, "null"], format: int64, minimum: 1 }
+          additionalProperties: true
+        labels:
+          type: [object, "null"]
+          description: "the caller's tags on the turn, recorded on the usage record like OpenAI's `metadata` — strings only, at most 10 entries, keys and values 1-64 characters"
+          additionalProperties: { type: string, maxLength: 64 }
+      additionalProperties: true
+    GeminiContent:
+      type: object
+      description: |
+        One content object, as the gateway reads it. What it does not read — `role`
+        included — is forwarded upstream unchanged. `parts` is read to compute the
+        input bound: a `text` part contributes its text; a `functionCall`,
+        `functionResponse` or `executableCode`-style part contributes its serialized
+        JSON as the bound for whatever it carries; an `inlineData` or `fileData`
+        part is refused 400 because it has no computable bound. Absent or null
+        `parts` contributes nothing.
+      properties:
+        role: { type: string, description: "sent upstream as written; the gateway accepts any role and validates none" }
+        parts:
+          type: [array, "null"]
+          items:
+            type: object
+            description: "a part object; `text` strings count, `inlineData`/`fileData` are refused, any other shape counts its serialized JSON"
+            additionalProperties: true
+    GeminiGenerateResponse:
+      type: object
+      description: |
+        Upstream's response, passed through unchanged. The only field oxsum reads is
+        `usageMetadata`; without it the turn settles on local estimation.
+      properties:
+        candidates: { type: array, items: { type: object } }
+        usageMetadata:
+          type: object
+          properties:
+            promptTokenCount: { type: integer, format: int64, description: "includes the cached share" }
+            toolUsePromptTokenCount: { type: integer, format: int64, description: "outside promptTokenCount; the billed input adds it" }
+            candidatesTokenCount: { type: integer, format: int64, description: "excludes the thinking share; the billed output adds thoughtsTokenCount" }
+            thoughtsTokenCount: { type: integer, format: int64 }
+            cachedContentTokenCount: { type: integer, format: int64 }
+            totalTokenCount: { type: integer, format: int64 }
       additionalProperties: true
     EmbeddingsRequest:
       type: object

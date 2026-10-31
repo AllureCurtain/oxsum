@@ -1,12 +1,14 @@
 //! The protocol-native gateway: `POST /v1/chat/completions`, `POST /v1/messages`,
-//! `POST /v1/embeddings`, `POST /v1/rerank` and `GET /v1/models`.
+//! `POST /v1/embeddings`, `POST /v1/rerank`, `GET /v1/models` — and, on the
+//! versioned path a Gemini client spells, `POST
+//! /v1beta/models/{model}:generateContent` and `:streamGenerateContent`.
 //!
 //! A request is frozen before upstream is contacted and settled after it answers, so the wallet
 //! never has to trust the network. The order is the promise: the hold is taken first, upstream
 //! second, the settlement third, and each step has one place where it happens. The POST
-//! surfaces run that same pipeline in their own wire dialect — OpenAI's, Anthropic's, or the
-//! input-only embeddings/rerank shapes — and each serves only the channels that declare its
-//! protocol, priced under the surface's own billing mode.
+//! surfaces run that same pipeline in their own wire dialect — OpenAI's, Anthropic's,
+//! Gemini's, or the input-only embeddings/rerank shapes — and each serves only the channels
+//! that declare its protocol, priced under the surface's own billing mode.
 
 pub(crate) mod error;
 mod relay;
@@ -15,7 +17,7 @@ mod request;
 use std::time::{Duration, Instant};
 
 use axum::body::{Body, Bytes};
-use axum::extract::{Extension, State};
+use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -66,6 +68,20 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/messages", post(messages))
         .route("/embeddings", post(embeddings))
         .route("/rerank", post(rerank))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_key_gateway,
+        ))
+}
+
+/// The Gemini surface (issue #494): `/v1beta/models/{model}:generateContent`
+/// and `:streamGenerateContent`, nested under `/v1beta` by [`crate::routes`].
+/// axum allows one capture per path segment, and a Gemini route spells the
+/// model and the colon-action in one segment, so the wildcard takes both and
+/// the handler splits them.
+pub fn beta_router(state: AppState) -> Router<AppState> {
+    Router::new()
+        .route("/models/{*target}", post(gemini_generate))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_key_gateway,
@@ -245,6 +261,60 @@ fn error_body_preview(text: &str) -> String {
 /// Marks a response answered from the idempotency record rather than run again.
 const IDEMPOTENT_REPLAYED: &str = "idempotent-replayed";
 
+/// One Gemini `generateContent` call: freeze, relay, settle (issue #494). The
+/// wildcard holds the model and the colon-action together — `gemini-2.5-flash`
+/// in `models/gemini-2.5-flash:generateContent` — and the first `:` is the
+/// split: a model name never carries one.
+async fn gemini_generate(
+    state: State<AppState>,
+    organization: Extension<Organization>,
+    key: Extension<ActingKey>,
+    Path(target): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let Some((model, action)) = target.split_once(':') else {
+        let error = GatewayError::Invalid {
+            message: "a Gemini turn is POST /v1beta/models/{model}:generateContent or \
+                 :streamGenerateContent"
+                .to_owned(),
+            param: None,
+        };
+        return error_response(error, Surface::Gemini { streamed: false });
+    };
+    let streamed = match action {
+        "generateContent" => false,
+        "streamGenerateContent" => true,
+        _ => {
+            let error = GatewayError::Invalid {
+                message: format!(
+                    "the action {action:?} is not served on this surface; \
+                     :generateContent and :streamGenerateContent are"
+                ),
+                param: None,
+            };
+            return error_response(error, Surface::Gemini { streamed: false });
+        }
+    };
+    if model.is_empty() {
+        let error = GatewayError::Invalid {
+            message: "the path must name a model".to_owned(),
+            param: Some("model"),
+        };
+        return error_response(error, Surface::Gemini { streamed: false });
+    }
+    gateway(
+        Surface::Gemini { streamed },
+        state,
+        organization,
+        key,
+        headers,
+        body,
+        Some(model),
+    )
+    .await
+}
+
 /// One chat completion: freeze, relay, settle — OpenAI's surface.
 async fn chat(
     state: State<AppState>,
@@ -253,7 +323,16 @@ async fn chat(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    gateway(Surface::OpenAi, state, organization, key, headers, body).await
+    gateway(
+        Surface::OpenAi,
+        state,
+        organization,
+        key,
+        headers,
+        body,
+        None,
+    )
+    .await
 }
 
 /// One messages turn: freeze, relay, settle — Anthropic's surface.
@@ -264,7 +343,16 @@ async fn messages(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    gateway(Surface::Anthropic, state, organization, key, headers, body).await
+    gateway(
+        Surface::Anthropic,
+        state,
+        organization,
+        key,
+        headers,
+        body,
+        None,
+    )
+    .await
 }
 
 /// One embeddings call: freeze the input bound, relay, settle — the first of
@@ -276,7 +364,16 @@ async fn embeddings(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    gateway(Surface::Embeddings, state, organization, key, headers, body).await
+    gateway(
+        Surface::Embeddings,
+        state,
+        organization,
+        key,
+        headers,
+        body,
+        None,
+    )
+    .await
 }
 
 /// One rerank call: freeze the input bound, relay, settle — the second
@@ -288,11 +385,21 @@ async fn rerank(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    gateway(Surface::Rerank, state, organization, key, headers, body).await
+    gateway(
+        Surface::Rerank,
+        state,
+        organization,
+        key,
+        headers,
+        body,
+        None,
+    )
+    .await
 }
 
 /// The shared turn handler: the same claim-freeze-settle pipeline under either surface's
-/// wire dialect.
+/// wire dialect. `path_model` is Some on the Gemini surface, whose route names the model —
+/// the parse inside `run` reads it from there rather than the body (issue #494).
 async fn gateway(
     surface: Surface,
     State(state): State<AppState>,
@@ -300,6 +407,7 @@ async fn gateway(
     Extension(key): Extension<ActingKey>,
     headers: HeaderMap,
     body: Bytes,
+    path_model: Option<&str>,
 ) -> Response {
     // The id exists before anything else does, so even a malformed body answers with the header a
     // caller can quote.
@@ -371,18 +479,36 @@ async fn gateway(
             );
         }
     };
-    // The model the refusal record names: the body's own `model` when it carries
-    // one, whatever the parse below makes of the rest.
-    let model = body
-        .get("model")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
+    // The model the refusal record names: the path's segment on a surface that
+    // carries it there, else the body's own `model` when it carries one.
+    let model = path_model.map(str::to_owned).unwrap_or_else(|| {
+        body.get("model")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    });
+    // The body parses into the surface's dialect here, before the turn starts:
+    // a malformed body is a refusal like any other admission failure, so it is
+    // recorded and answered the same way `run`'s own refusals are.
+    let request = match path_model {
+        Some(path_model) => GatewayRequest::parse_for_model(body, surface, path_model),
+        None => GatewayRequest::parse(body, surface),
+    };
+    let request = match request {
+        Ok(request) => request,
+        Err(error) => {
+            record_refusal(&state, &organization, &key, &request_id, &model, &error).await;
+            return with_request_id(
+                settle_claim(&state, &organization, claim, Err(error), surface).await,
+                &request_id,
+            );
+        }
+    };
     let outcome = run(
         &state,
         &organization,
         &key,
-        body,
+        request,
         &request_id,
         &headers,
         surface,
@@ -460,9 +586,14 @@ async fn record_refusal(
 
 /// The error envelope the surface's SDK parses: OpenAI's `{"error": {…}}` on
 /// `/v1/chat/completions`, Anthropic's `{"type": "error", "error": {…}}` on `/v1/messages`.
+/// Gemini answers `{"error": {…}}` too — its SDK reads Google's standard error
+/// object, which carries the same field — so it shares the OpenAI envelope
+/// rather than getting a third one (issue #494).
 fn error_response(error: GatewayError, surface: Surface) -> Response {
     match surface {
-        Surface::OpenAi | Surface::Embeddings | Surface::Rerank => error.into_response(),
+        Surface::OpenAi | Surface::Embeddings | Surface::Rerank | Surface::Gemini { .. } => {
+            error.into_response()
+        }
         Surface::Anthropic => error.into_anthropic_response(),
     }
 }
@@ -567,12 +698,11 @@ async fn run(
     state: &AppState,
     organization: &Organization,
     key: &ActingKey,
-    body: Value,
+    mut request: GatewayRequest,
     request_id: &str,
     headers: &HeaderMap,
     surface: Surface,
 ) -> Result<Response, GatewayError> {
-    let mut request = GatewayRequest::parse(body, surface)?;
     // The turn's OTLP span (issue #224): created once the model is known,
     // held by the settlement plan so it stays open until the charge is
     // written — a streamed turn's span outlives this function by exactly the
@@ -988,13 +1118,21 @@ async fn run(
         let attempt_started = Instant::now();
         // The credential goes upstream in the protocol's own spelling:
         // `Authorization: Bearer` for OpenAI, `x-api-key` for Anthropic — which
-        // also wants its version header, forwarded when the caller sent one.
+        // also wants its version header, forwarded when the caller sent one —
+        // and `x-goog-api-key` for Gemini, the spelling both AI Studio and
+        // Vertex accept (issue #494). Gemini also names its model in the path,
+        // so the upstream name rides `upstream_target` rather than the body's.
         let mut call = state
             .http
             .post(format!(
                 "{}/{}",
                 candidate.base_url,
-                surface.upstream_path()
+                surface.upstream_target(
+                    request
+                        .upstream_model
+                        .as_deref()
+                        .unwrap_or(request.model.as_str())
+                )
             ))
             .json(&forwarded);
         call = match surface {
@@ -1010,6 +1148,7 @@ async fn run(
                     None => call,
                 }
             }
+            Surface::Gemini { .. } => call.header("x-goog-api-key", &credential.api_key),
         };
         match call.send().await {
             Ok(response) if response.status().is_success() => {

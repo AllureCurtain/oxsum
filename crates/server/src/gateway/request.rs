@@ -7,7 +7,8 @@
 //! path never has to pick apart JSON.
 
 use oxsum_core::{
-    ANTHROPIC, Attribution, BillingMode, MAX_CONTEXT_NAME, MAX_END_USER, MAX_TAG, MAX_TAGS, OPENAI,
+    ANTHROPIC, Attribution, BillingMode, GEMINI, MAX_CONTEXT_NAME, MAX_END_USER, MAX_TAG, MAX_TAGS,
+    OPENAI,
 };
 use serde_json::{Map, Value, json};
 
@@ -26,6 +27,11 @@ pub enum Surface {
     Embeddings,
     /// `POST /v1/rerank` — the Jina/Cohere-shaped rerank call (issue #170).
     Rerank,
+    /// `POST /v1beta/models/{model}:generateContent` and
+    /// `:streamGenerateContent` — Gemini's shapes (issue #494). `streamed`
+    /// selects between the two actions because a Gemini client names the
+    /// streaming form in the URL, not in a `stream` field.
+    Gemini { streamed: bool },
 }
 
 impl Surface {
@@ -37,6 +43,7 @@ impl Surface {
         match self {
             Self::OpenAi | Self::Embeddings | Self::Rerank => OPENAI,
             Self::Anthropic => ANTHROPIC,
+            Self::Gemini { .. } => GEMINI,
         }
     }
 
@@ -45,7 +52,7 @@ impl Surface {
     /// mismatch fails closed, never reinterprets a rate (issue #170).
     pub fn billing_mode(self) -> BillingMode {
         match self {
-            Self::OpenAi | Self::Anthropic => BillingMode::Chat,
+            Self::OpenAi | Self::Anthropic | Self::Gemini { .. } => BillingMode::Chat,
             Self::Embeddings => BillingMode::Embeddings,
             Self::Rerank => BillingMode::Rerank,
         }
@@ -53,13 +60,29 @@ impl Surface {
 
     /// The path under the channel's `base_url` the surface POSTs to — also the
     /// key [`adapter_for_endpoint`](oxsum_core::adapter_for_endpoint) resolves
-    /// the usage dialect by.
+    /// the usage dialect by. On the Gemini surface it is only the fixed half:
+    /// `models/{model}:generateContent` carries the model and the streaming
+    /// action, and the relay appends those when it builds the call (issue #494).
     pub fn upstream_path(self) -> &'static str {
         match self {
             Self::OpenAi => "chat/completions",
             Self::Anthropic => "messages",
             Self::Embeddings => "embeddings",
             Self::Rerank => "rerank",
+            Self::Gemini { .. } => "generateContent",
+        }
+    }
+
+    /// The upstream path this exact request takes: a model-named protocol
+    /// spells the model — and, on Gemini, the action — into the path itself
+    /// (issue #494). Every other surface's path is fixed.
+    pub fn upstream_target(self, model: &str) -> String {
+        match self {
+            Self::Gemini { streamed: true } => {
+                format!("models/{model}:streamGenerateContent?alt=sse")
+            }
+            Self::Gemini { streamed: false } => format!("models/{model}:generateContent"),
+            _ => self.upstream_path().to_owned(),
         }
     }
 
@@ -69,10 +92,16 @@ impl Surface {
     /// is the extension value for the Jina/Cohere surface.
     pub fn gen_ai_operation(self) -> &'static str {
         match self {
-            Self::OpenAi | Self::Anthropic => "chat",
+            Self::OpenAi | Self::Anthropic | Self::Gemini { .. } => "chat",
             Self::Embeddings => "embeddings",
             Self::Rerank => "rerank",
         }
+    }
+
+    /// Whether the surface names its model in the request path rather than the
+    /// body — the parse reads it differently either way (issue #494).
+    pub fn is_model_in_path(self) -> bool {
+        matches!(self, Self::Gemini { .. })
     }
 }
 
@@ -123,13 +152,20 @@ impl GatewayRequest {
         let Value::Object(body) = body else {
             return Err(invalid("the request body must be a JSON object"));
         };
-        let model = match body.get("model") {
-            Some(Value::String(model)) if !model.trim().is_empty() => model.clone(),
-            _ => {
-                return Err(param(
-                    "model",
-                    "model is required and must be a non-empty string",
-                ));
+        // The Gemini surface names its model in the path, so its parse fills the
+        // field afterwards in `parse_for_model`; every other surface reads it
+        // from the body here.
+        let model = if surface.is_model_in_path() {
+            String::new()
+        } else {
+            match body.get("model") {
+                Some(Value::String(model)) if !model.trim().is_empty() => model.clone(),
+                _ => {
+                    return Err(param(
+                        "model",
+                        "model is required and must be a non-empty string",
+                    ));
+                }
             }
         };
         let stream = match body.get("stream") {
@@ -161,6 +197,12 @@ impl GatewayRequest {
                 (texts, counted, None, attribution_of(&body)?)
             }
             Surface::Rerank => (rerank_texts(&body)?, None, None, attribution_of(&body)?),
+            Surface::Gemini { .. } => (
+                gemini_texts(&body)?,
+                None,
+                gemini_ceiling(&body)?,
+                gemini_attribution(&body)?,
+            ),
         };
         Ok(Self {
             body,
@@ -177,6 +219,56 @@ impl GatewayRequest {
         })
     }
 
+    /// The Gemini shape of [`parse`](Self::parse): the model is the path's
+    /// `{model}` segment, not a body field (issue #494). A `stream` field is
+    /// refused with a pointer at the streaming action — a Gemini client picks
+    /// `streamGenerateContent` in the URL, and honoring a body flag would call
+    /// the wrong action.
+    ///
+    /// # Errors
+    ///
+    /// As [`parse`](Self::parse), plus a `model` mismatch: a body that names a
+    /// different model than the path is a contradictory request, refused
+    /// rather than silently resolved either way.
+    pub fn parse_for_model(
+        body: Value,
+        surface: Surface,
+        model: &str,
+    ) -> Result<Self, GatewayError> {
+        let Value::Object(body) = body else {
+            return Err(invalid("the request body must be a JSON object"));
+        };
+        match body.get("stream") {
+            None | Some(Value::Null) | Some(Value::Bool(false)) => {}
+            Some(Value::Bool(true)) => {
+                return Err(invalid(
+                    "stream is not a field on this surface: use :streamGenerateContent \
+                     for a streamed answer",
+                ));
+            }
+            Some(_) => return Err(param("stream", "stream must be a boolean")),
+        }
+        // The path names the model; a `model` field is tolerated only when it
+        // agrees — new-api's Gemini handler reads the path the same way.
+        if let Some(declared) = body.get("model").and_then(Value::as_str)
+            && declared != model
+        {
+            return Err(param(
+                "model",
+                "the request body names a different model than the path",
+            ));
+        }
+        let mut parsed = Self::parse(Value::Object(body), surface)?;
+        parsed.model = model.to_owned();
+        // The action in the URL is the stream flag: a Gemini client asked for
+        // the streaming endpoint, so the turn relays SSE whether or not a
+        // `stream` field arrived (there is none on this wire).
+        if let Surface::Gemini { streamed } = surface {
+            parsed.stream = streamed;
+        }
+        Ok(parsed)
+    }
+
     /// The body to send upstream: the caller's, with the output upper bound written in and usage
     /// reporting switched on for a stream.
     ///
@@ -184,8 +276,11 @@ impl GatewayRequest {
     /// `max_completion_tokens` is dropped, so upstream sees exactly one ceiling, the one the
     /// freeze was computed for. An OpenAI stream asks for usage explicitly, because the last
     /// chunk is where that protocol reports it; Anthropic reports usage on every stream
-    /// already, so nothing is added there. The input-only surfaces have no output
-    /// bound to write: their bodies forward untouched (issue #170).
+    /// already, so nothing is added there. On the Gemini surface the ceiling is
+    /// `generationConfig.maxOutputTokens` and a `model` field is only written when the
+    /// request resolved through an alias — the path already names the model (issue #494).
+    /// The input-only surfaces have no output bound to write: their bodies forward
+    /// untouched (issue #170).
     ///
     /// An aliased request also has its `model` rewritten to the upstream name
     /// (issue #286): the caller's name is the alias the gateway bills under,
@@ -198,18 +293,30 @@ impl GatewayRequest {
         {
             body.insert("model".to_owned(), json!(upstream));
         }
-        if self.surface.billing_mode().meters_output() {
-            body.insert("max_tokens".to_owned(), json!(output_bound));
-            body.remove("max_completion_tokens");
-            if self.stream && self.surface == Surface::OpenAi {
-                let mut options = body
-                    .get("stream_options")
+        match self.surface {
+            Surface::Gemini { .. } => {
+                let mut config = body
+                    .get("generationConfig")
                     .and_then(Value::as_object)
                     .cloned()
                     .unwrap_or_default();
-                options.insert("include_usage".to_owned(), Value::Bool(true));
-                body.insert("stream_options".to_owned(), Value::Object(options));
+                config.insert("maxOutputTokens".to_owned(), json!(output_bound));
+                body.insert("generationConfig".to_owned(), Value::Object(config));
             }
+            _ if self.surface.billing_mode().meters_output() => {
+                body.insert("max_tokens".to_owned(), json!(output_bound));
+                body.remove("max_completion_tokens");
+                if self.stream && self.surface == Surface::OpenAi {
+                    let mut options = body
+                        .get("stream_options")
+                        .and_then(Value::as_object)
+                        .cloned()
+                        .unwrap_or_default();
+                    options.insert("include_usage".to_owned(), Value::Bool(true));
+                    body.insert("stream_options".to_owned(), Value::Object(options));
+                }
+            }
+            _ => {}
         }
         Value::Object(body)
     }
@@ -470,6 +577,148 @@ fn anthropic_blocks(
     Ok(())
 }
 
+/// The text of a Gemini request (issue #494): `systemInstruction` plus every
+/// `contents` entry's parts. The part rule mirrors the Anthropic block rule: a
+/// `text` part contributes its text; a non-media part — a `functionCall`, a
+/// `functionResponse`, an `executableCode` block — contributes its serialized
+/// JSON as the computable bound for whatever it carries; a media part
+/// (`inlineData`, `fileData`) has no computable bound and is refused.
+fn gemini_texts(body: &Map<String, Value>) -> Result<Vec<String>, GatewayError> {
+    let mut texts = Vec::new();
+    if let Some(instruction) = body.get("systemInstruction") {
+        gemini_parts(instruction, "systemInstruction", &mut texts)?;
+    }
+    let Some(contents) = body.get("contents") else {
+        return Err(param("contents", "contents is required"));
+    };
+    let Value::Array(contents) = contents else {
+        return Err(param("contents", "contents must be an array"));
+    };
+    if contents.is_empty() {
+        return Err(param("contents", "contents must not be empty"));
+    }
+    for content in contents {
+        let Value::Object(content) = content else {
+            return Err(param("contents", "every content entry must be an object"));
+        };
+        match content.get("parts") {
+            None | Some(Value::Null) => {}
+            Some(Value::Array(parts)) => {
+                for part in parts {
+                    gemini_part(part, &mut texts)?;
+                }
+            }
+            Some(_) => {
+                return Err(param("contents", "a content's parts must be an array"));
+            }
+        }
+    }
+    Ok(texts)
+}
+
+/// `systemInstruction` is one Content-shaped object, not an array — its `parts`
+/// fold exactly like a contents entry's.
+fn gemini_parts(
+    content: &Value,
+    field: &'static str,
+    texts: &mut Vec<String>,
+) -> Result<(), GatewayError> {
+    let Value::Object(content) = content else {
+        return Err(param(field, "systemInstruction must be an object"));
+    };
+    match content.get("parts") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(parts)) => {
+            for part in parts {
+                gemini_part(part, texts)?;
+            }
+        }
+        Some(_) => return Err(param(field, "systemInstruction.parts must be an array")),
+    }
+    Ok(())
+}
+
+/// One part of a Gemini content: text counts its text, a structured part its
+/// serialized JSON, and a media part is refused like every surface's media.
+fn gemini_part(part: &Value, texts: &mut Vec<String>) -> Result<(), GatewayError> {
+    let Value::Object(part) = part else {
+        return Err(param("contents", "a content part must be an object"));
+    };
+    match part.get("text") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(text)) => {
+            texts.push(text.clone());
+            return Ok(());
+        }
+        Some(_) => {
+            return Err(param("contents", "a text part must carry a text string"));
+        }
+    }
+    if part.get("inlineData").is_some() || part.get("fileData").is_some() {
+        return Err(param(
+            "contents",
+            "only text-computable content is supported: an inlineData or fileData part \
+             has no computable input bound, so it cannot be frozen",
+        ));
+    }
+    // A `functionCall`/`functionResponse`/`executableCode`-style part: the
+    // serialized JSON is the bound, like the Anthropic block rule.
+    texts.push(Value::Object(part.clone()).to_string());
+    Ok(())
+}
+
+/// The Gemini output ceiling: `generationConfig.maxOutputTokens`, the only
+/// spelling this surface knows. `null` counts as absent.
+fn gemini_ceiling(body: &Map<String, Value>) -> Result<Option<i64>, GatewayError> {
+    match body
+        .get("generationConfig")
+        .and_then(|config| config.get("maxOutputTokens"))
+    {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => match value.as_i64() {
+            Some(asked) => Ok(Some(asked)),
+            None => Err(param(
+                "generationConfig",
+                "generationConfig.maxOutputTokens must be an integer number of tokens",
+            )),
+        },
+    }
+}
+
+/// Gemini's attribution (issue #494): `labels` maps onto the usage record's
+/// tags under the same bounds as OpenAI's `metadata` — strings only, ten
+/// entries, 64 characters a side. There is no end-user slot on this surface.
+fn gemini_attribution(body: &Map<String, Value>) -> Result<Attribution, GatewayError> {
+    let mut tags = std::collections::BTreeMap::new();
+    match body.get("labels") {
+        None | Some(Value::Null) => {}
+        Some(Value::Object(labels)) => {
+            if labels.len() > MAX_TAGS {
+                return Err(param("labels", "labels carries at most 10 entries"));
+            }
+            for (key, value) in labels {
+                if key.is_empty() || key.len() > MAX_TAG {
+                    return Err(param("labels", "a label key is 1-64 characters"));
+                }
+                match value {
+                    Value::String(value) if value.len() <= MAX_TAG => {
+                        tags.insert(key.clone(), value.clone());
+                    }
+                    Value::String(_) => {
+                        return Err(param("labels", "a label value is at most 64 characters"));
+                    }
+                    _ => return Err(param("labels", "label values must be strings")),
+                }
+            }
+        }
+        Some(_) => return Err(param("labels", "labels must be an object")),
+    }
+    Ok(Attribution {
+        tags,
+        ..Attribution::default()
+    })
+}
+
 /// Anthropic's attribution: `metadata.user_id` is the only field the surface reads,
 /// landing on the usage record's `end_user`; the rest of `metadata` is upstream's.
 fn anthropic_attribution(body: &Map<String, Value>) -> Result<Attribution, GatewayError> {
@@ -614,6 +863,166 @@ mod tests {
 
     fn messages_request(body: Value) -> Result<GatewayRequest, GatewayError> {
         GatewayRequest::parse(body, Surface::Anthropic)
+    }
+
+    /// A Gemini turn as `/v1beta/models/{model}:generateContent` carries it:
+    /// the model comes from the path, the streaming choice from the action.
+    fn gemini_request(body: Value, streamed: bool) -> Result<GatewayRequest, GatewayError> {
+        GatewayRequest::parse_for_model(body, Surface::Gemini { streamed }, "gemini-2.5-flash")
+    }
+
+    #[test]
+    fn reads_a_gemini_request() {
+        let parsed = gemini_request(
+            json!({
+                "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+                "systemInstruction": {"parts": [{"text": "be brief"}]},
+                "generationConfig": {"maxOutputTokens": 128, "temperature": 0.2},
+                "labels": {"team": "search"},
+            }),
+            false,
+        )
+        .unwrap();
+        assert_eq!(parsed.model, "gemini-2.5-flash");
+        // `systemInstruction` counts toward the input bound too.
+        assert_eq!(parsed.texts, ["be brief", "hi"]);
+        assert_eq!(parsed.max_tokens, Some(128));
+        assert!(!parsed.stream);
+        assert_eq!(
+            parsed.attribution.tags.get("team").map(String::as_str),
+            Some("search")
+        );
+        // The forwarded body writes the bound under generationConfig.
+        let forwarded = parsed.forwarded(128);
+        assert_eq!(forwarded["generationConfig"]["maxOutputTokens"], 128);
+        assert_eq!(forwarded["generationConfig"]["temperature"], 0.2);
+        assert!(forwarded.get("max_tokens").is_none());
+    }
+
+    /// The action decides streaming — the field does not exist on this wire.
+    #[test]
+    fn gemini_streams_on_the_action_not_a_field() {
+        let parsed = gemini_request(
+            json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}),
+            true,
+        )
+        .unwrap();
+        assert!(parsed.stream);
+        // A body `stream: true` is a refusal: it would call the wrong action.
+        let error = gemini_request(
+            json!({
+                "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+                "stream": true,
+            }),
+            false,
+        )
+        .expect_err("stream is not a Gemini field");
+        let GatewayError::Invalid { message, .. } = error else {
+            panic!("expected an invalid-request error");
+        };
+        assert!(message.contains("streamGenerateContent"), "{message}");
+    }
+
+    /// The model is the path's, and only the path's: a body that names a
+    /// different one is contradictory, one that agrees is tolerated.
+    #[test]
+    fn gemini_model_comes_from_the_path() {
+        // A matching body `model` is fine.
+        let parsed = gemini_request(
+            json!({
+                "model": "gemini-2.5-flash",
+                "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+            }),
+            false,
+        )
+        .unwrap();
+        assert_eq!(parsed.model, "gemini-2.5-flash");
+        // A mismatch is refused rather than resolved.
+        assert!(
+            gemini_request(
+                json!({
+                    "model": "gemini-2.5-pro",
+                    "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+                }),
+                false,
+            )
+            .is_err()
+        );
+        // An alias rewrites the forwarded body's model the same way any surface does.
+        let mut parsed = gemini_request(
+            json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}),
+            false,
+        )
+        .unwrap();
+        parsed.upstream_model = Some("gemini-2.5-pro".to_owned());
+        let forwarded = parsed.forwarded(64);
+        assert_eq!(forwarded["model"], "gemini-2.5-pro");
+    }
+
+    /// The parts rule mirrors the Anthropic block rule: text contributes its
+    /// text, a structured part its serialized JSON, a media part is refused.
+    #[test]
+    fn gemini_parts_contribute_their_computable_text() {
+        let parsed = gemini_request(
+            json!({
+                "contents": [
+                    {"role": "user", "parts": [
+                        {"text": "hi"},
+                        {"functionCall": {"name": "lookup", "args": {"q": "x"}}},
+                    ]},
+                    {"role": "model", "parts": null},
+                ],
+            }),
+            false,
+        )
+        .unwrap();
+        let call = json!({"functionCall": {"name": "lookup", "args": {"q": "x"}}});
+        assert_eq!(parsed.texts, ["hi", &call.to_string()]);
+        // A media part has no computable bound.
+        let error = gemini_request(
+            json!({
+                "contents": [{"role": "user", "parts": [
+                    {"inlineData": {"mimeType": "image/png", "data": "…"}},
+                ]}],
+            }),
+            false,
+        )
+        .expect_err("an inlineData part has no computable input bound");
+        let GatewayError::Invalid { message, param } = error else {
+            panic!("expected an invalid-request error");
+        };
+        assert_eq!(param, Some("contents"));
+        assert!(message.contains("text-computable"), "{message}");
+    }
+
+    #[test]
+    fn gemini_refusals_and_bounds() {
+        for body in [
+            json!("nonsense"),
+            json!({"contents": []}),
+            json!({"contents": "no"}),
+            json!({"contents": [7]}),
+            json!({"contents": [{"parts": "no"}]}),
+            json!({"contents": [{"parts": [{"text": 7}]}]}),
+            json!({"contents": [{"parts": [{"text": "hi"}]}], "generationConfig": {"maxOutputTokens": "a lot"}}),
+            json!({"contents": [{"parts": [{"text": "hi"}]}], "labels": {"k": 1}}),
+            json!({"contents": [{"parts": [{"text": "hi"}]}], "labels": "x"}),
+            json!({"contents": [{"parts": [{"text": "hi"}]}], "stream": "yes"}),
+        ] {
+            assert!(gemini_request(body, false).is_err());
+        }
+        // `stream: null` counts as absent.
+        let parsed = gemini_request(
+            json!({
+                "contents": [{"parts": [{"text": "hi"}]}],
+                "stream": null,
+                "generationConfig": {"maxOutputTokens": null},
+            }),
+            true,
+        )
+        .unwrap();
+        assert!(parsed.stream);
+        assert_eq!(parsed.max_tokens, None);
     }
 
     #[test]

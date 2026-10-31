@@ -24,6 +24,9 @@ pub const OPENAI: &str = "openai";
 /// The second protocol this build knows: Anthropic's Messages API.
 pub const ANTHROPIC: &str = "anthropic";
 
+/// The third protocol: Google's Gemini `generateContent` API (issue #494).
+pub const GEMINI: &str = "gemini";
+
 /// What one protocol's usage report becomes: the normalized record.
 pub trait UsageAdapter: Send + Sync {
     /// The name a channel's `protocol` column carries.
@@ -69,6 +72,7 @@ pub fn adapter_for(protocol: &str) -> Option<&'static dyn UsageAdapter> {
     match protocol {
         OPENAI => Some(&OpenAiChat),
         ANTHROPIC => Some(&AnthropicMessages),
+        GEMINI => Some(&GeminiGenerate),
         _ => None,
     }
 }
@@ -88,6 +92,7 @@ pub fn adapter_for_endpoint(protocol: &str, endpoint: &str) -> Option<&'static d
         (OPENAI, "embeddings") => Some(&OpenAiEmbeddings),
         (OPENAI, "rerank") => Some(&OpenAiRerank),
         (ANTHROPIC, "messages") => Some(&AnthropicMessages),
+        (GEMINI, "generateContent") => Some(&GeminiGenerate),
         _ => None,
     }
 }
@@ -412,6 +417,123 @@ impl UsageAdapter for AnthropicMessages {
     }
 }
 
+/// The Gemini `generateContent` protocol (issue #494): one usage object named
+/// `usageMetadata`, on the whole body and again on the last chunk of a stream.
+///
+/// Gemini reports like OpenAI does, with its own field names: `promptTokenCount`
+/// is the input side and *includes* `cachedContentTokenCount`;
+/// `candidatesTokenCount` is the generated side and *excludes* the thinking
+/// share, which `thoughtsTokenCount` reports separately — the record's own rule
+/// (`output_tokens` includes the reasoning subset) folds it back in.
+/// `toolUsePromptTokenCount` sits outside `promptTokenCount` on the API's own
+/// accounting, so it is added into the billed input rather than left to vanish
+/// into `provider_raw` — a turn that called a tool really spent those tokens.
+/// Modality detail arrays (`promptTokensDetails` and friends) name audio
+/// shares; they sit inside their side's total and land in the audio columns,
+/// which an unpriced set flags `unpriced` like any other detail (issue #110).
+///
+/// A Gemini stream has no sentinel: the last event carries a candidate
+/// `finishReason` and the socket close is the terminator, so `ends_stream`
+/// reads that field and `closing_frame` is empty — there is no protocol close
+/// to synthesize for the client.
+struct GeminiGenerate;
+
+impl UsageAdapter for GeminiGenerate {
+    fn protocol(&self) -> &'static str {
+        GEMINI
+    }
+
+    /// The fixed half of the upstream path: the model and the action sit in
+    /// the surface's own route (`:generateContent` vs
+    /// `:streamGenerateContent?alt=sse`), and the relay appends them when it
+    /// builds the call.
+    fn upstream_path(&self) -> &'static str {
+        "generateContent"
+    }
+
+    fn usage(&self, body: &Value) -> Option<UsageRecord> {
+        let usage = body.get("usageMetadata")?;
+        let count = |field: &str| usage.get(field).and_then(Value::as_i64);
+        let prompt = count("promptTokenCount");
+        let tool_prompt = count("toolUsePromptTokenCount").unwrap_or(0);
+        let candidates = count("candidatesTokenCount");
+        let thoughts = count("thoughtsTokenCount").unwrap_or(0);
+        if prompt.is_none() && candidates.is_none() && tool_prompt == 0 && thoughts == 0 {
+            return None;
+        }
+        // A modality detail row is `{modality, tokenCount}` under each side's
+        // `*TokensDetails`; audio is the dimension the price book can name.
+        let audio = |field: &str| {
+            usage
+                .get(field)
+                .and_then(Value::as_array)
+                .map(|rows| {
+                    rows.iter()
+                        .filter(|row| row.get("modality").and_then(Value::as_str) == Some("AUDIO"))
+                        .filter_map(|row| row.get("tokenCount").and_then(Value::as_i64))
+                        .sum()
+                })
+                .unwrap_or(0)
+        };
+        let record = UsageRecord {
+            input_tokens: prompt.unwrap_or(0) + tool_prompt,
+            output_tokens: candidates.unwrap_or(0) + thoughts,
+            cached_tokens: count("cachedContentTokenCount").unwrap_or(0),
+            audio_input_tokens: audio("promptTokensDetails"),
+            reasoning_tokens: thoughts,
+            audio_output_tokens: audio("candidatesTokensDetails"),
+            usage_details: Some(serde_json::json!({"provider_raw": usage.clone()})),
+            ..UsageRecord::default()
+        }
+        .clamped();
+        record.validate().ok()?;
+        Some(record)
+    }
+
+    /// Text lives under `candidates[].content.parts[].text` — every part's
+    /// text concatenated, same on a whole body and on a streamed chunk. A
+    /// part that is a `functionCall` or `inlineData` contributes nothing, so
+    /// an estimate of a tool-heavy answer prices only the text it could see.
+    fn answer_text(&self, body: &Value) -> String {
+        body.get("candidates")
+            .and_then(Value::as_array)
+            .map(|candidates| {
+                candidates
+                    .iter()
+                    .filter_map(|candidate| candidate.get("content"))
+                    .filter_map(|content| content.get("parts"))
+                    .filter_map(Value::as_array)
+                    .flat_map(|parts| parts.iter())
+                    .filter_map(|part| part.get("text").and_then(Value::as_str))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// A candidate carrying `finishReason` is the protocol's end-of-turn
+    /// marker — Gemini streams have no `[DONE]` to send, the socket close is
+    /// the close. An absent reason means more events follow.
+    fn ends_stream(&self, payload: &str) -> bool {
+        let Ok(value) = serde_json::from_str::<Value>(payload) else {
+            return false;
+        };
+        value
+            .get("candidates")
+            .and_then(Value::as_array)
+            .is_some_and(|candidates| {
+                candidates
+                    .iter()
+                    .any(|candidate| candidate.get("finishReason").is_some())
+            })
+    }
+
+    /// Nothing to synthesize: Gemini's close is upstream ending the body, not
+    /// a frame the client waits for.
+    fn closing_frame(&self) -> &'static [u8] {
+        b""
+    }
+}
+
 /// The adapter a write must name: a protocol this build does not know is refused
 /// before the row exists, because a channel that cannot normalize its own usage
 /// reports cannot serve.
@@ -445,14 +567,20 @@ mod tests {
         adapter_for(ANTHROPIC).expect("the Anthropic adapter is registered")
     }
 
+    fn gemini() -> &'static dyn UsageAdapter {
+        adapter_for(GEMINI).expect("the Gemini adapter is registered")
+    }
+
     #[test]
     fn the_registry_resolves_by_protocol_name() {
         assert_eq!(openai().protocol(), "openai");
         assert_eq!(anthropic().protocol(), "anthropic");
-        assert!(adapter_for("gemini").is_none());
+        assert_eq!(gemini().protocol(), "gemini");
+        assert!(adapter_for("grok").is_none());
         assert!(known_protocol("openai").is_ok());
         assert!(known_protocol("anthropic").is_ok());
-        assert!(known_protocol("gemini").is_err());
+        assert!(known_protocol("gemini").is_ok());
+        assert!(known_protocol("grok").is_err());
     }
 
     #[test]
@@ -781,6 +909,112 @@ mod tests {
         );
     }
 
+    // ── the Gemini adapter (issue #494) ──────────────────────────────────────
+
+    /// Gemini's report folds its own spellings into the record's invariants:
+    /// `candidatesTokenCount` excludes the thinking share, so `thoughtsTokenCount`
+    /// is added back into `output_tokens`, and `toolUsePromptTokenCount` sits
+    /// outside `promptTokenCount`, so it is added into `input_tokens`.
+    #[test]
+    fn the_gemini_shape_folds_tool_and_thoughts_into_the_side_totals() {
+        let usage = gemini()
+            .usage(&json!({
+                "usageMetadata": {
+                    "promptTokenCount": 100,
+                    "toolUsePromptTokenCount": 30,
+                    "candidatesTokenCount": 20,
+                    "thoughtsTokenCount": 7,
+                    "cachedContentTokenCount": 60,
+                    "totalTokenCount": 157,
+                },
+            }))
+            .expect("a gemini report carries usage");
+        assert_eq!(usage.input_tokens, 130);
+        assert_eq!(usage.output_tokens, 27);
+        assert_eq!(usage.cached_tokens, 60);
+        assert_eq!(usage.reasoning_tokens, 7);
+        assert_eq!(
+            usage.usage_details.as_ref().unwrap()["provider_raw"]["promptTokenCount"],
+            100
+        );
+    }
+
+    /// A report with no token counts at all is no report: the turn settles
+    /// estimated rather than pricing a zero reading.
+    #[test]
+    fn an_empty_usage_metadata_is_no_report() {
+        assert!(gemini().usage(&json!({"usageMetadata": {}})).is_none());
+        assert!(gemini().usage(&json!({"candidates": []})).is_none());
+        assert!(gemini().usage(&json!({"usageMetadata": null})).is_none());
+    }
+
+    /// Modality detail rows name an audio share per side; they land in the
+    /// audio columns, inside their side's total like every other detail.
+    #[test]
+    fn gemini_modality_details_name_the_audio_columns() {
+        let usage = gemini()
+            .usage(&json!({
+                "usageMetadata": {
+                    "promptTokenCount": 100,
+                    "candidatesTokenCount": 20,
+                    "promptTokensDetails": [
+                        {"modality": "AUDIO", "tokenCount": 40},
+                        {"modality": "TEXT", "tokenCount": 60},
+                    ],
+                    "candidatesTokensDetails": [
+                        {"modality": "AUDIO", "tokenCount": 5},
+                    ],
+                },
+            }))
+            .expect("a modality-detailed report carries usage");
+        assert_eq!(usage.audio_input_tokens, 40);
+        assert_eq!(usage.audio_output_tokens, 5);
+    }
+
+    /// A negative count is no usable report, the same as on every adapter.
+    #[test]
+    fn a_gemini_report_with_a_negative_count_is_refused() {
+        assert!(
+            gemini()
+                .usage(&json!({"usageMetadata": {"promptTokenCount": -3}}))
+                .is_none()
+        );
+    }
+
+    /// Answer text is every part's `text` across candidates — parts carrying
+    /// a `functionCall` or `inlineData` instead contribute nothing.
+    #[test]
+    fn gemini_text_comes_from_candidate_parts() {
+        assert_eq!(
+            gemini().answer_text(&json!({
+                "candidates": [{
+                    "content": {"role": "model", "parts": [
+                        {"text": "he"},
+                        {"functionCall": {"name": "lookup", "args": {}}},
+                        {"text": "llo"},
+                    ]},
+                }],
+            })),
+            "hello"
+        );
+        assert_eq!(gemini().answer_text(&json!({"candidates": []})), "");
+        assert_eq!(gemini().answer_text(&json!({"promptFeedback": {}})), "");
+    }
+
+    /// The stream's own end is a candidate's `finishReason`, not a sentinel:
+    /// a chunk without one means more events follow, and `[DONE]` is not
+    /// Gemini's spelling.
+    #[test]
+    fn gemini_ends_on_a_finish_reason() {
+        assert!(!gemini().ends_stream("[DONE]"));
+        assert!(!gemini().ends_stream("{\"candidates\": []}"));
+        assert!(!gemini().ends_stream("not json"));
+        assert!(gemini().ends_stream(
+            "{\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"role\":\"model\",\"parts\":[]}}]}"
+        ));
+        assert_eq!(gemini().closing_frame(), b"");
+    }
+
     // ── the input-only endpoints (issue #170) ────────────────────────────────
 
     #[test]
@@ -809,10 +1043,16 @@ mod tests {
                 .upstream_path(),
             "messages"
         );
+        assert_eq!(
+            adapter_for_endpoint(GEMINI, "generateContent")
+                .unwrap()
+                .upstream_path(),
+            "generateContent"
+        );
         // Crossed pairings name nothing this build meters.
         assert!(adapter_for_endpoint(ANTHROPIC, "embeddings").is_none());
         assert!(adapter_for_endpoint(OPENAI, "messages").is_none());
-        assert!(adapter_for_endpoint("gemini", "embeddings").is_none());
+        assert!(adapter_for_endpoint(GEMINI, "embeddings").is_none());
     }
 
     #[test]

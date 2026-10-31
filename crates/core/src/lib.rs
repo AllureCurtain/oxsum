@@ -54,7 +54,7 @@ mod wallet;
 mod webhooks;
 mod x402;
 
-pub use adapters::{ANTHROPIC, OPENAI, UsageAdapter, adapter_for, adapter_for_endpoint};
+pub use adapters::{ANTHROPIC, GEMINI, OPENAI, UsageAdapter, adapter_for, adapter_for_endpoint};
 pub use anomaly::{AnomalyFacts, Severity, anomaly_score};
 pub use audit::{AuditEntry, AuditPage, action as audit_action};
 pub use billing::{
