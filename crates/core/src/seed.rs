@@ -515,6 +515,7 @@ impl Db {
             // A seeded turn is a single scripted call: no failover ever ran.
             upstream_attempts: 1,
             mandate: None,
+            subscription: None,
             reason: None,
         }
         .description()?;

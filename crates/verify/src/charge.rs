@@ -19,7 +19,7 @@ use serde_json::Value;
 /// written before descriptions were versioned counts as older; every `v` above
 /// this is newer than this build. Versions it does know each get their own
 /// rule: an old bill stays recomputable after the writer has moved on.
-const KNOWN_VERSION: i64 = 8;
+const KNOWN_VERSION: i64 = 9;
 
 /// The line items the input side prices: their units must account for the
 /// whole `inputTokens`, between them and the usage record — cached reads and
@@ -98,7 +98,8 @@ pub fn verify_charge(description: &str) -> ChargeCheck {
             Some(5) => recompute_v5(&value),
             Some(6) => recompute_v6(&value),
             Some(7) => recompute_v7(&value),
-            Some(KNOWN_VERSION) => recompute_v8(&value),
+            Some(8) => recompute_v8(&value),
+            Some(KNOWN_VERSION) => recompute_v9(&value),
             Some(v) if v > KNOWN_VERSION => ChargeCheck::NewerSchema { version: v },
             Some(_) => ChargeCheck::OlderSchema,
             // A `v` that names no version is a broken record, not an old one.
@@ -285,6 +286,43 @@ fn recompute_v8(value: &Value) -> ChargeCheck {
         }
     }
     recompute_v7(value)
+}
+
+/// The v9 rule: a turn whose hold drew on a subscription's quota (issue #496)
+/// — v8's arithmetic unchanged, plus the optional `subscription` object naming
+/// which entitlement covered the charge: `{subscriptionId, periodId,
+/// drawnMinor, chargedMinor}`. Both ids are UUIDs and the amounts are
+/// non-negative integers — `chargedMinor` never above `drawnMinor`, and both
+/// zero only when the subscription covered a turn that settled for nothing.
+/// A `subscription` that is not that shape is not an honest write.
+fn recompute_v9(value: &Value) -> ChargeCheck {
+    if let Some(subscription) = value.get("subscription") {
+        let id_ok = subscription
+            .get("subscriptionId")
+            .and_then(Value::as_str)
+            .is_some_and(is_uuid);
+        let period_ok = subscription
+            .get("periodId")
+            .and_then(Value::as_str)
+            .is_some_and(is_uuid);
+        let drawn_ok = subscription
+            .get("drawnMinor")
+            .and_then(Value::as_i64)
+            .is_some_and(|d| d >= 0);
+        let charged_ok = subscription
+            .get("chargedMinor")
+            .and_then(Value::as_i64)
+            .is_some_and(|c| c >= 0);
+        let within = subscription
+            .get("drawnMinor")
+            .and_then(Value::as_i64)
+            .zip(subscription.get("chargedMinor").and_then(Value::as_i64))
+            .is_some_and(|(drawn, charged)| charged <= drawn);
+        if !(id_ok && period_ok && drawn_ok && charged_ok && within) {
+            return ChargeCheck::Mismatch;
+        }
+    }
+    recompute_v8(value)
 }
 
 /// A UUID in its canonical `8-4-4-4-12` hex spelling — validated by hand so the
@@ -593,6 +631,48 @@ mod tests {
         assert_eq!(verify_charge(&renamed), ChargeCheck::Recomputed);
     }
 
+    /// The v9 record: v8's arithmetic with a `subscription` block naming the
+    /// entitlement the hold drew on (issue #496).
+    const V9: &str = r#"{"v":9,"request":"req-abc","channel":"backup","model":"deepseek-chat","priceVersion":2,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100,"cachedTokens":96,"reasoningTokens":20},"lines":[["input",20,1000000],["cache_read",96,100000],["output",80,2000000],["reasoning",20,3000000]],"upstreamAttempts":1,"charged":250,"freeze":400,"subscription":{"subscriptionId":"1ec7a2c2-3a13-4a2f-9b74-0f9d2e6a1b3c","periodId":"2ec7a2c2-3a13-4a2f-9b74-0f9d2e6a1b3c","drawnMinor":400,"chargedMinor":250}}"#;
+
+    #[test]
+    fn a_genuine_v9_record_recomputes() {
+        assert_eq!(verify_charge(V9), ChargeCheck::Recomputed);
+        // A turn the wallet alone paid writes no `subscription` and is still
+        // an honest v9 write.
+        let plain = V9.replacen(
+            r#""subscription":{"subscriptionId":"1ec7a2c2-3a13-4a2f-9b74-0f9d2e6a1b3c","periodId":"2ec7a2c2-3a13-4a2f-9b74-0f9d2e6a1b3c","drawnMinor":400,"chargedMinor":250}}"#,
+            "}",
+            1,
+        );
+        let plain = plain.replacen(r#""freeze":400,"#, r#""freeze":400"#, 1);
+        assert_eq!(verify_charge(&plain), ChargeCheck::Recomputed);
+    }
+
+    #[test]
+    fn a_v9_record_binds_the_subscription_shape() {
+        // A `chargedMinor` above `drawnMinor` claims the subscription paid
+        // more than its hold drew — not an honest write.
+        let over = V9.replacen(r#""chargedMinor":250"#, r#""chargedMinor":401"#, 1);
+        assert_eq!(verify_charge(&over), ChargeCheck::Mismatch);
+        // An id that is not a UUID, or an amount that is negative, is not an
+        // honest write either.
+        let bad_id = V9.replacen(
+            r#""subscriptionId":"1ec7a2c2-3a13-4a2f-9b74-0f9d2e6a1b3c""#,
+            r#""subscriptionId":"nope""#,
+            1,
+        );
+        assert_eq!(verify_charge(&bad_id), ChargeCheck::Mismatch);
+        let bad_period = V9.replacen(
+            r#""periodId":"2ec7a2c2-3a13-4a2f-9b74-0f9d2e6a1b3c""#,
+            r#""periodId":7"#,
+            1,
+        );
+        assert_eq!(verify_charge(&bad_period), ChargeCheck::Mismatch);
+        let negative = V9.replacen(r#""drawnMinor":400"#, r#""drawnMinor":-1"#, 1);
+        assert_eq!(verify_charge(&negative), ChargeCheck::Mismatch);
+    }
+
     #[test]
     fn a_v3_record_must_account_for_the_whole_usage() {
         // The input lines split 116 into 20 + 96; claim only part of it and the
@@ -720,10 +800,10 @@ mod tests {
 
     #[test]
     fn a_newer_record_is_left_to_inclusion() {
-        let future = r#"{"v":9,"kind":"usage","charged":1,"freeze":1}"#;
+        let future = r#"{"v":10,"kind":"usage","charged":1,"freeze":1}"#;
         assert_eq!(
             verify_charge(future),
-            ChargeCheck::NewerSchema { version: 9 }
+            ChargeCheck::NewerSchema { version: 10 }
         );
     }
 

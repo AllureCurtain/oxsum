@@ -50,6 +50,11 @@ pub mod kinds {
     /// The daily usage-anchor pass (issue #338): commit yesterday's sorted-map
     /// root over every customer's day-log head into each organization's ledger.
     pub const USAGE_ANCHORS: &str = "usage-anchors";
+    /// The subscription rollover pass (issue #496): every active subscription
+    /// whose period ended is rolled forward, and a lapsed never-reset plan is
+    /// `expired`. Leader-required — a second runner would roll the same period
+    /// twice inside one organization.
+    pub const SUBSCRIPTION_ROLLOVERS: &str = "subscription-rollovers";
 }
 
 /// How long a claimed run may take before another worker's claim assumes the
@@ -102,6 +107,7 @@ pub fn requires_leader(kind: &str) -> bool {
             | SYNC_UPSTREAM_PRICES
             | UPSTREAM_BILL_SYNC
             | USAGE_ANCHORS
+            | SUBSCRIPTION_ROLLOVERS
             | RECONCILE
     )
 }
@@ -174,6 +180,9 @@ pub fn next_run(kind: &str) -> Option<Duration> {
         // before a witness vouches for it, rare enough that every pass is one
         // request per organization per witness.
         WITNESS_CHECKPOINTS => Duration::hours(1),
+        // Hourly: often enough that an ended period closes even when no
+        // request arrives, rare enough that every pass is one scan.
+        SUBSCRIPTION_ROLLOVERS => Duration::hours(1),
         _ => return None,
     })
 }
