@@ -664,6 +664,7 @@ async fn a_gateway_settlement_names_its_key_and_its_record() {
         freeze: 5 * ONE,
         upstream_attempts: 1,
         mandate: None,
+        subscription: None,
         reason: None,
     };
     w.settle("req-9:hold", &record.description().unwrap(), 77, D)
@@ -828,6 +829,7 @@ async fn request_pages_walk_only_settled_turns() {
             freeze: ONE,
             upstream_attempts: 1,
             mandate: None,
+            subscription: None,
             reason: None,
         };
         w.settle(

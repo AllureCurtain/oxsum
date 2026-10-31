@@ -146,6 +146,7 @@ async fn settle_one(
         freeze: 900_000,
         upstream_attempts: 1,
         mandate: None,
+        subscription: None,
         reason: None,
     }
     .description()
