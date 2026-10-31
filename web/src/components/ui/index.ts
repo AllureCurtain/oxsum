@@ -23,3 +23,13 @@ export * from "./sheet";
 export * from "./hover-card";
 export * from "./separator";
 export * from "./scroll-area";
+export * from "./label";
+export * from "./checkbox";
+export * from "./radio-group";
+export * from "./breadcrumb";
+export * from "./pagination";
+export * from "./avatar";
+export * from "./toggle";
+// `card.tsx` exports `Card` alongside CardHeader/CardTitle/… — it stays out of
+// the barrel while `surface.tsx`'s business `Card` (title/actions props)
+// holds the name. The page-adoption pass picks which `Card` wins.
