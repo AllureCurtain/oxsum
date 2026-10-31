@@ -32,6 +32,7 @@ use crate::error::ApiError;
 mod billing;
 mod channels;
 mod credentials;
+mod guardrails;
 mod ops;
 mod organizations;
 mod statements;
@@ -79,6 +80,16 @@ pub fn router(state: AppState) -> Router<AppState> {
             post(credentials::reset_password),
         )
         .route("/holds", get(ops::holds))
+        .route("/guardrail-policies", get(guardrails::list_policies))
+        .route(
+            "/guardrail-policies/{name}",
+            put(guardrails::set_policy).delete(guardrails::delete_policy),
+        )
+        .route("/guardrail-bindings", get(guardrails::list_bindings))
+        .route(
+            "/guardrail-bindings/{scope}/{target}",
+            put(guardrails::set_binding).delete(guardrails::delete_binding),
+        )
         .route("/deposits", get(ops::deposits))
         .route("/deposits/{deposit_id}/reverse", post(ops::reverse_deposit))
         .route("/anomalies", get(ops::anomalies))
