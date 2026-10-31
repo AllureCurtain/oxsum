@@ -338,7 +338,7 @@ settlement yourself. Both are billed the same way.
 
 ### Through the gateway (recommended)
 
-Purpose: point an OpenAI or Anthropic client at oxsum and have every turn frozen and charged for you.
+Purpose: point an OpenAI, Anthropic or Gemini client at oxsum and have every turn frozen and charged for you.
 
 Steps:
 
@@ -369,10 +369,30 @@ Steps:
    )
    ```
 
+   Or Google's SDK — `POST /v1beta/models/{model}:generateContent` and
+   `:streamGenerateContent` speak the Gemini wire, served by channels whose protocol
+   is `gemini`. Gemini puts the model in the path and streaming in the action, so the
+   body carries neither: `stream: true` inside it is refused, and a `model` field may
+   only repeat the path's. Attribution rides the request as `labels` — the same
+   bounded string-map `metadata` is on the other surfaces:
+
+   ```python
+   import google.generativeai as genai
+
+   genai.configure(api_key="oxs-…", transport="rest",
+                   client_options={"api_endpoint": "127.0.0.1:3000"})
+   model = genai.GenerativeModel("gemini-flash")
+   answer = model.generate_content("Explain holds in one sentence.")
+   ```
+
+   The call travels to upstream as `x-goog-api-key`, the one credential spelling AI
+   Studio and Vertex both accept.
+
    Each surface serves only the channels that speak its protocol: a model behind an
-   `openai` channel is not served on `/v1/messages`, and the reverse — there is no
-   translation between the two. Errors come back in the surface's own envelope, and
-   the oxsum key travels as `x-api-key`, exactly as the SDK sends it.
+   `openai` channel is not served on `/v1/messages` or `/v1beta`, and the reverse —
+   there is no translation between the three. Errors on `/v1` surfaces come back in
+   the surface's own envelope, and the oxsum key travels as `x-api-key`, exactly as
+   the Anthropic SDK sends it.
 
    The same key also opens the input-only surfaces. Embeddings go to
    `POST /v1/embeddings` in OpenAI's shape — `input` may be a string, an array of
