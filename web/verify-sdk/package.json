@@ -26,11 +26,14 @@
   },
   "files": [
     "dist",
-    "wasm"
+    "wasm",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "prepack": "npm run build && node -e \"const fs=require('node:fs');const w='wasm/verify_wasm.js';if(!fs.existsSync(w)||fs.statSync(w).size===0){console.error('wasm/ is empty — run scripts/build-verify-wasm.sh first so the tarball ships the module the loader imports');process.exit(1)}\""
   },
   "keywords": [
     "verification",
