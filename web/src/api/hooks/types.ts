@@ -8,6 +8,7 @@ import type { components } from "../schema";
 
 export type SessionInfo = components["schemas"]["SessionInfo"];
 export type ApiKey = components["schemas"]["ApiKey"];
+export type Entitlement = components["schemas"]["Entitlement"];
 export type UsageDay = components["schemas"]["UsageDay"];
 export type Member = components["schemas"]["Member"];
 export type WebhookEndpoint = components["schemas"]["WebhookEndpoint"];

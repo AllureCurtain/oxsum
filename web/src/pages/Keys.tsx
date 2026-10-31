@@ -2,8 +2,9 @@ import { useMemo, useState } from "react";
 import { KeyRound } from "lucide-react";
 import type { ApiKey } from "../api/hooks";
 import type { DisplayCurrency } from "../components/ui";
-import { useBudget, useCreateKey, useDisplay, useKeys, usePatchKey, useRevokeKey } from "../api/hooks";
+import { useBudget, useCreateKey, useDisplay, useEntitlement, useKeys, usePatchKey, useRevokeKey } from "../api/hooks";
 import {
+  Badge,
   Banner,
   Button,
   Card,
@@ -162,7 +163,7 @@ export function Keys() {
         <PageState>The keys could not be read.</PageState>
       ) : (
         <TableShell
-          head={["Name", "Prefix", "Budget", "Limits", "Created", ""]}
+          head={["Name", "Prefix", "Live", "Budget", "Limits", "Created", ""]}
           loading={keys.isLoading ? 4 : 0}
         >
           {!keys.isLoading &&
@@ -178,7 +179,7 @@ export function Keys() {
               />
             ))}
           {!keys.isLoading && (keys.data?.length ?? 0) === 0 ? (
-            <EmptyRows colSpan={6} icon={<KeyRound />}>
+            <EmptyRows colSpan={7} icon={<KeyRound />}>
               No keys yet — create one above to start calling the gateway.
             </EmptyRows>
           ) : null}
@@ -212,6 +213,9 @@ function KeyRow(props: {
       <tr>
         <td>{key.name ?? <span className="text-muted">unnamed</span>}</td>
         <td className="mono">{key.prefix}</td>
+        <td>
+          <LiveCell keyId={key.id} revoked={key.revokedAt != null} />
+        </td>
         <td className="text-sm">
           {key.spendLimitMinor == null ? (
             <span className="text-muted">unlimited</span>
@@ -254,7 +258,7 @@ function KeyRow(props: {
       </tr>
       {props.editing ? (
         <tr>
-          <td colSpan={6} className="bg-canvas">
+          <td colSpan={7} className="bg-canvas">
             <form
               className="grid grid-cols-1 gap-3 p-3 sm:grid-cols-3"
               aria-label={`constraints for ${key.name ?? key.prefix}`}
@@ -312,5 +316,31 @@ function KeyRow(props: {
         </tr>
       ) : null}
     </>
+  );
+}
+
+/** The live-availability cell (issue #501): the entitlement endpoint's own
+ * answer, refreshed on a slow poll — a revoked key's answer is fixed, so it
+ * never asks. */
+function LiveCell(props: { keyId: string; revoked: boolean }) {
+  const entitlement = useEntitlement(props.keyId, !props.revoked);
+  if (props.revoked) {
+    return <Badge tone="secondary">off</Badge>;
+  }
+  if (entitlement.isLoading) {
+    return <span className="text-xs text-muted">…</span>;
+  }
+  const answer = entitlement.data;
+  if (!answer) {
+    return <span className="text-xs text-muted">—</span>;
+  }
+  return answer.allowed ? (
+    <Badge tone="success" live>
+      ready
+    </Badge>
+  ) : (
+    <Badge tone="danger" title={answer.retryAfterSecs != null ? `frees in ~${answer.retryAfterSecs}s` : undefined}>
+      {answer.reason ?? "refused"}
+    </Badge>
   );
 }
