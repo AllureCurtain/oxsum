@@ -10,6 +10,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./verify-bill": {
+      "types": "./dist/verify-bill.d.ts",
+      "import": "./dist/verify-bill.js"
     }
   },
   "files": [
