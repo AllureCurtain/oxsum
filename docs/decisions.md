@@ -2,6 +2,24 @@
 
 New decisions go on top. Overturned decisions are never deleted; mark them "Superseded" and name the decision that replaces it.
 
+## 2026-10-31 Queued holds wait off the pool: an in-process per-key semaphore before `begin()` (issue #486)
+
+- Status: Adopted. Complements "All tenants share one connection pool" (2026-10-01) — the pool stays the deployment's whole connection budget; what changes is where one key's waiting happens.
+- Background: the 2026-10-31 load probe against the live demo saturated the shared pool from one unconstrained API key. `hold_for_key` serializes a key's holds on a `pg_advisory_xact_lock`, and every queued hold waited for that lock *inside a transaction it had already begun* — pinned a pooled connection for the whole wait. ~30 concurrent holds on one key checked out all 20 connections; every tenant's unrelated reads then timed out at the 5s `ACQUIRE_TIMEOUT` and answered `429 POOL_BUSY`. The blast radius was deployment-wide and the threshold to trip it was one busy key. The same probe surfaced a stray `401`: `resolve_key` folded a `PoolTimedOut` on the credential lookup into "no such credential", misreporting the service's own saturation as the caller's failure.
+- Decision:
+  - `hold_for_key` queues in-process *before* `pool().begin()` checks a connection out: `Wallet::key_queue` maps each key's `limit_lock_key` hash to a `tokio::sync::Semaphore` of width `KEY_QUEUE_WIDTH = 1`, and only the permit holder enters the transaction that waits on the advisory lock. The rest of the key's queue sits on async permits — waiting costs no connection, so a pile-up cannot check out the pool. The database lock stays the real arbiter (multi-instance correctness is unchanged); the semaphore only moves the in-process half of the queue off the shared resource.
+  - A queue wait that outlasts `KEY_QUEUE_WAIT` (5s, matching `ACQUIRE_TIMEOUT`) refuses `WalletError::PoolBusy` — the same fast-fail a saturated checkout answers, so the backpressure contract `POOL_BUSY` already defines is the refusal both paths share.
+  - The credential lookups propagate their storage errors instead of folding them into `None`: `resolve_key`, `resolve` and `authenticate_service` now return their `Result`, and a saturated pool answers `429 POOL_BUSY` on `/api/v1` and `/v1` alike rather than `401 UNAUTHORIZED`. `Ok(None)` still means "this credential authenticates nothing" — only a lookup that ran may say that.
+- Rejected:
+  - `pg_try_advisory_lock` in a retry loop: keeps the queued hold on a pooled connection while it polls — the same pinning, plus a poll interval.
+  - A dedicated lock-taking connection per hold: pins one connection per queued hold anyway; the budget is the same.
+  - A server-side per-key concurrency cap as a billing constraint (`maxConcurrentHolds` exists but is opt-in per key): the default-unconstrained key is exactly the case the probe broke; the fix has to live below the constraint layer, at the resource the queue consumes.
+  - Raising `OXSUM_DB_MAX_CONNECTIONS`: moves the cliff, doesn't remove it — a busier key or a second concurrent pile-up finds the new ceiling the same way.
+- Costs and knock-on effects:
+  - The queue is per-process: multi-instance deployments each carry their own `KEY_QUEUE_WIDTH` depth inside the transaction plus their own queued waiters — the semaphore is a resource-protection layer on top of the database lock, not a distributed queue. Two instances still cap the in-transaction pile-up at 2 (one per instance), never at the request count.
+  - `limit_lock_key` is now `pub` so the test can hold the same lock the wallet waits on.
+  - Pinned by `queued_holds_do_not_pin_the_pool` (key_limits.rs — the lock held on a side connection, five holds queue on a 3-connection pool, `pool.size() - pool.num_idle()` never exceeds one) and `a_saturated_pool_is_busy_not_unauthorized` (api.rs — every pooled connection held, a valid key answers `POOL_BUSY` not `UNAUTHORIZED`).
+
 ## 2026-10-17 Test scratch cleanup is self-healing on the next run (issue #271)
 
 - Status: Adopted. Complements #226 (per-suite scratch databases) and #241 (doubleentry on `DATABASE_URL`).
