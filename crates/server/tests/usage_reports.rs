@@ -255,6 +255,7 @@ async fn seed_request(
         mandate: None,
         subscription: None,
         cache: None,
+        guardrail: Vec::new(),
         reason: None,
     };
     wallet
