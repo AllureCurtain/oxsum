@@ -289,6 +289,8 @@ f. The customer's head is the pair the anchor map fixes:
    {size: enduserCount, root: mapRoot} via mapProof.
 ```
 
+Two consumers run this check over a report bundle — the server-rendered bill page (`/bill/{token}`) runs it on the `data-bundle` it embeds, and the `verify-oxsum-bill` package's `<verify-usage-report>` element lifts that same bundle (or takes a pasted one) and runs it in the customer's page.
+
 ## 6. Trust model
 
 | Check establishes | Check does not establish |

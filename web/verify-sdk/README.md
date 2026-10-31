@@ -85,6 +85,32 @@ The bundle is a superset of what the check consumes: the element splits it into 
 
 The wasm module instantiates on first verify, not on attach, and a browser without WebAssembly renders a readable fallback rather than failing blank — the same rules `<verify-bill>` keeps.
 
+## `<verify-usage-report>` — the usage-report check as an element
+
+`verify-oxsum-bill/verify-usage-report` registers a `<verify-usage-report>` custom element that runs `verifyUsageReport` inside a shadow root — the report counterpart, fed by a report bundle rather than a self-contained endpoint:
+
+```html
+<script type="module" src="verify-oxsum-bill/verify-usage-report"></script>
+
+<!-- lift the bundle the public bill page embeds -->
+<verify-usage-report server="https://oxsum.example.com"
+                     token="the-bill-link-token"></verify-usage-report>
+
+<!-- or paste the bundle the customer holds / render the paste form -->
+<verify-usage-report></verify-usage-report>
+```
+
+| Attribute | Meaning |
+| --- | --- |
+| `server` + `token` | The element GETs `{server}/bill/{token}` and lifts the `data-bundle` the page embeds — the credential-free surface a share link opens |
+| `bundle` | The report JSON verbatim — the `data-bundle`, or the `data` of `GET /api/v1/org/usage-reports/{id}` — or left unset to render a paste form |
+| `end-user` | Who the report should be for. Unset → the bundle's own `endUser`; supplied → a wrong-recipient check |
+| `key` | The published operator key `{keyName, publicKey, keyHash}` the customer holds. Unset → the key fields the bundle itself names |
+
+The org endpoint `GET /api/v1/org/usage-reports/{id}` is deliberately not a fetch mode — it wants an organization credential a public element does not hold, and the customer the report is *for* reaches the bundle through the bill link. A bundle with no `note` proves the rows are in the ledger and fold to the committed subset — membership, not a signature — and the element says "this deployment signs no heads"; a `completeness` block asserts the anchored-day proof.
+
+The wasm module instantiates on first verify, not on attach, and a browser without WebAssembly renders a readable fallback rather than failing blank — the same rules the other elements keep.
+
 ## License
 
 MIT OR Apache-2.0.
