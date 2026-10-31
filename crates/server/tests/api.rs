@@ -163,6 +163,71 @@ async fn an_unknown_key_is_unauthorized() {
 /// the 429-class refusal the service itself is reporting. With every pooled
 /// connection held, a valid key must fail as `POOL_BUSY`, still saying nothing
 /// about the credential.
+/// `/verify?sample` serves a real proof bundle off this deployment's seeded
+/// demo organization (issue #489): the form lands pre-filled with a bundle the
+/// server itself can verify, and the link a first-time visitor follows works
+/// without an account. On a deployment without the seed the page says so
+/// rather than fabricate a bundle.
+#[tokio::test]
+async fn the_verify_sample_is_a_real_bundle_or_an_honest_empty() {
+    let (app, pool) = app_or_skip!(Signup::Open);
+    let db = Db::from_pool(pool.clone());
+
+    // Before the seed the sample link answers the honest empty state.
+    let res = app
+        .clone()
+        .oneshot(Request::get("/verify?sample").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let html =
+        String::from_utf8_lossy(&res.into_body().collect().await.unwrap().to_bytes()).into_owned();
+    assert!(
+        html.contains("no sample") || html.contains("No settled bill"),
+        "the unseeded page explains there is no sample: {html}"
+    );
+
+    // Seed the demo world with a channel — without one the seed's turns have
+    // no catalog to bill under and there are no settlements to draw a sample
+    // from. A throwaway key seals the demo credential the way main's does.
+    db.seed_demo_with_channel(&oxsum_core::SecretKey::from_bytes([7u8; 32]))
+        .await
+        .expect("the demo world seeds");
+
+    let res = app
+        .oneshot(Request::get("/verify?sample").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let html =
+        String::from_utf8_lossy(&res.into_body().collect().await.unwrap().to_bytes()).into_owned();
+
+    // The form lands pre-filled: the bundle is real proof JSON (an `entry`
+    // inside it), and the content-hash field carries 64 hex. The `if let`
+    // note names it a sample from the seeded demo rather than a pasted one.
+    assert!(
+        html.contains("\"entry\""),
+        "the sample bundle is a real proof bundle: {html}"
+    );
+    assert!(
+        html.contains("seeded demo"),
+        "the page says where the sample came from: {html}"
+    );
+    // The content-hash input carries the entry's 64-hex content hash as its
+    // value — extract it structurally rather than guess the attribute order.
+    let hash = html
+        .split(r#"name="expected_hash""#)
+        .nth(1)
+        .and_then(|tail| tail.split(r#"value=""#).nth(1))
+        .and_then(|tail| tail.split('"').next())
+        .expect("the content-hash input carries a value");
+    assert_eq!(hash.len(), 64, "the hash is 64 hex, got {hash}");
+    assert!(
+        hash.chars().all(|c| c.is_ascii_hexdigit()),
+        "the hash is hex, got {hash}"
+    );
+}
+
 #[tokio::test]
 async fn a_saturated_pool_is_busy_not_unauthorized() {
     let (app, pool) = app_or_skip!(Signup::Open);
