@@ -473,7 +473,7 @@ Notes:
 - After a network timeout, retry with the same hold key and the same actual; you will not be charged twice.
 - `actualMinor` must not exceed what the hold reserved.
 - Naming a hold that was never taken, or one that is already settled, is refused (404, 409) — not free credit. Settle the hold you took, for the amount you took it for.
-- A hold that is never settled does not stay frozen forever: the hold sweeper (issue #13) releases gateway holds older than `OXSUM_HOLD_TIMEOUT` (default 30 minutes) at 0 with settlement kind `swept`, recorded as an anomaly.
+- A hold that is never settled does not stay frozen forever: the hold sweeper (issue #13) releases holds older than `OXSUM_HOLD_TIMEOUT` (default 30 minutes) at 0 with settlement kind `swept`, recorded as an anomaly. REST holds count since issue #485: a `POST /api/v1/holds` reservation shows on `GET /api/v1/holds` like a gateway hold does, and an unsettled one is reclaimed the same way — settle the holds you take.
 
 ## Balance
 
