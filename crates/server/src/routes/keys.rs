@@ -41,6 +41,10 @@ pub(crate) struct CreateKeyReq {
     /// Tag-scoped slices of the token allowance; absent or null scopes nothing.
     #[serde(default)]
     tokens_per_minute_scopes: Option<oxsum_core::TpmScopes>,
+    /// The guardrail policies the key's turns must run (issue #502); absent or
+    /// null requires none.
+    #[serde(default)]
+    required_policies: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -67,6 +71,10 @@ pub(crate) struct UpdateKeyConstraintsReq {
     /// The tag-scoped token allowances; null scopes nothing.
     #[serde(default)]
     tokens_per_minute_scopes: Option<oxsum_core::TpmScopes>,
+    /// The guardrail policies the key's turns must run (issue #502); null
+    /// clears it back to none.
+    #[serde(default)]
+    required_policies: Option<Vec<String>>,
 }
 
 /// Builds the constraint set both key endpoints carry, parsing the duration's name.
@@ -83,6 +91,7 @@ fn key_constraints(r: &UpdateKeyConstraintsReq) -> Result<oxsum_core::KeyConstra
         max_concurrent_holds: r.max_concurrent_holds,
         tokens_per_minute: r.tokens_per_minute,
         tokens_per_minute_scopes: r.tokens_per_minute_scopes.clone(),
+        required_policies: r.required_policies.clone(),
     })
 }
 pub(crate) async fn create_key(
@@ -102,6 +111,7 @@ pub(crate) async fn create_key(
                     max_concurrent_holds: r.max_concurrent_holds,
                     tokens_per_minute: r.tokens_per_minute,
                     tokens_per_minute_scopes: r.tokens_per_minute_scopes,
+                    required_policies: r.required_policies,
                 })
                 .map(|c| (r.name, r.expires_at, c))
             },
@@ -159,6 +169,11 @@ pub(crate) struct CreateMandateReq {
     /// absent means all the key serves.
     #[serde(default)]
     models: Option<Vec<String>>,
+    /// The guardrail policies the delegate's turns must run — a subset of the
+    /// key's `requiredPolicies` (issue #502); absent means none beyond the
+    /// key's.
+    #[serde(default)]
+    required_policies: Option<Vec<String>>,
     /// RFC 3339; absent means valid from now.
     #[serde(default, with = "time::serde::rfc3339::option")]
     not_before: Option<OffsetDateTime>,
@@ -190,6 +205,7 @@ pub(crate) async fn create_mandate(
             principal.key_scope(),
             r.cap_minor,
             r.models,
+            r.required_policies,
             r.not_before,
             r.not_after,
             secret,

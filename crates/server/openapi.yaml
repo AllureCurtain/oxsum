@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.89.0
+  version: 0.90.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -650,6 +650,25 @@ info:
     `ttlSeconds` when it names one. The policy is written through
     `POST /api/v1/admin/channels`' `semanticCache` field: absent leaves the
     stored policy alone, `null` clears it, an object replaces it.
+
+    0.90.0 adds the guardrail pipeline (issue #502): org-configured policies
+    the gateway evaluates around a turn. A policy is one of three kinds —
+    `keyword` (a regex list, each pattern `flag` or `block`), `pii` (the
+    built-in scan over the response's text, always a flag) or `moderation`
+    (an HTTP callout to the org's endpoint, whose bearer is sealed on the
+    policy row the way an upstream key is) — written through
+    `PUT /api/v1/admin/guardrail-policies/{name}` and attached through
+    `PUT /api/v1/admin/guardrail-bindings/{scope}/{target}` where `scope` is
+    `channel` or `key`. A key's own `requiredPolicies` names policies its
+    turns must run; a mandate's must be a subset of its key's. Resolution
+    folds channel binding, key binding, the key's requirement and the
+    presented mandate's into one deduplicated set. `pre_call` runs before the
+    hold — a `block` refuses 403 and costs nothing; `post_call` runs on the
+    completed answer — a `block` settles `Charge::Nothing` (the hold fully
+    refunded) and still refuses, while a streamed turn's verdict can only be
+    recorded. Every flag and block lands in the settlement's `guardrail` list
+    (description version 11) with `streamed` marking the verdicts a streamed
+    turn could not act on.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -4182,6 +4201,199 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/guardrail-policies:
+    get:
+      summary: List the configured guardrail policies
+      description: |
+        Every policy the gateway's pre_call/post_call hooks may evaluate
+        (issue #502), ordered by name. A policy is a named rule — `keyword`,
+        `pii` or `moderation` — whose `config` is its kind's own shape. The
+        `moderation` kind's sealed bearer never leaves the row: the answer
+        carries the rule, never the credential.
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: Every configured policy, ordered by name
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/GuardrailPolicy" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/guardrail-policies/{name}:
+    put:
+      summary: Write or replace one guardrail policy
+      description: |
+        `name` is the policy's address — what bindings and a key's
+        `requiredPolicies` reference — matching
+        `^[a-z0-9][a-z0-9._-]{0,63}$`. The kind picks the config's shape:
+        `keyword` takes `{patterns: [{re, action}]}` (each `action` `flag` or
+        `block`, compiled at write — a pattern the gateway could not build is
+        a 400); `pii` takes `{}` (its pattern set is the impl's, not config);
+        `moderation` takes `{endpoint, timeoutMs?}` — an absolute http(s) URL
+        the request's texts are posted to, plus `apiKey`, the endpoint's
+        bearer, sealed under the deployment's secret the way an upstream key
+        is. An absent `apiKey` keeps the stored bearer, so re-writing a
+        moderation policy's endpoint does not demand its key again. The write
+        lands in the admin audit log.
+      security:
+        - adminToken: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,63}$' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GuardrailPolicyRequest" }
+      responses:
+        "200":
+          description: The policy as written
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/GuardrailPolicy" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    delete:
+      summary: Delete a guardrail policy
+      description: |
+        Removes the policy; an unknown name is 404. Bindings and keys that
+        named it keep the dangling name — the gateway skips what does not
+        resolve rather than refuse the turn, so a retired policy's name
+        unguards quietly until its references are updated. The delete lands in
+        the admin audit log.
+      security:
+        - adminToken: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The policy was deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      deleted: { type: boolean }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/guardrail-bindings:
+    get:
+      summary: List the guardrail bindings
+      description: |
+        Every scope's policy set: `channel` bindings apply to every turn the
+        channel leads, `key` bindings to every key. Ordered by `(scope,
+        target)`.
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: Every binding, ordered by scope and target
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/GuardrailBinding" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/guardrail-bindings/{scope}/{target}:
+    put:
+      summary: Replace one scope's guardrail binding
+      description: |
+        `scope` is `channel` (target the channel's name) or `key` (target the
+        key's id). `policies` is the ordered set of policy names the scope
+        runs — every name must already exist as a configured policy, because a
+        binding that names nothing would silently unguard the turns it claims
+        to protect: the write refuses a dangling name before it lands. The
+        write lands in the admin audit log.
+      security:
+        - adminToken: []
+      parameters:
+        - name: scope
+          in: path
+          required: true
+          schema: { type: string, enum: [channel, key] }
+        - name: target
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GuardrailBindingRequest" }
+      responses:
+        "200":
+          description: The binding as written
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/GuardrailBinding" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    delete:
+      summary: Remove one scope's guardrail binding
+      description: |
+        Removes the binding; an unknown `(scope, target)` is 404. A `PUT`
+        with `policies: []` writes the same "runs nothing" — the delete exists
+        so the row does not linger as configuration noise. Lands in the admin
+        audit log.
+      security:
+        - adminToken: []
+      parameters:
+        - name: scope
+          in: path
+          required: true
+          schema: { type: string, enum: [channel, key] }
+        - name: target
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The binding was removed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      deleted: { type: boolean }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/admin/holds:
     get:
       summary: List every unsettled hold, across all organizations
@@ -5966,6 +6178,7 @@ components:
         maxConcurrentHolds: { type: [integer, "null"], minimum: 1, description: "holds the key may have outstanding at once; null (the default) is uncapped" }
         tokensPerMinute: { type: [integer, "null"], minimum: 1, description: "settled input+output tokens the key may burn inside a trailing minute, checked at admission on the gateway; null (the default) is uncapped" }
         tokensPerMinuteScopes: { $ref: "#/components/schemas/TokensPerMinuteScopes" }
+        requiredPolicies: { type: [array, "null"], items: { type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,63}$' }, description: "the guardrail policies this key's turns must run (issue #502); every name must already exist as a configured policy, and null (the default) requires none — a turn still runs whatever its channel binds" }
     UpdateKeyConstraintsRequest:
       type: object
       properties:
@@ -5976,9 +6189,10 @@ components:
         maxConcurrentHolds: { type: [integer, "null"], minimum: 1, description: "the new outstanding-holds cap, or null to uncap" }
         tokensPerMinute: { type: [integer, "null"], minimum: 1, description: "the new per-minute settled-token allowance, or null to uncap" }
         tokensPerMinuteScopes: { $ref: "#/components/schemas/TokensPerMinuteScopes" }
+        requiredPolicies: { type: [array, "null"], items: { type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,63}$' }, description: "the guardrail policies the key's turns must run; null or absent clears it back to none" }
     ApiKey:
       type: object
-      required: [id, name, prefix, createdBy, createdAt, expiresAt, revokedAt, spendLimitMinor, budgetDuration, modelAllowlist, requestsPerMinute, maxConcurrentHolds, tokensPerMinute, tokensPerMinuteScopes]
+      required: [id, name, prefix, createdBy, createdAt, expiresAt, revokedAt, spendLimitMinor, budgetDuration, modelAllowlist, requestsPerMinute, maxConcurrentHolds, tokensPerMinute, tokensPerMinuteScopes, requiredPolicies]
       properties:
         id: { type: string, format: uuid }
         name: { type: [string, "null"] }
@@ -5994,10 +6208,39 @@ components:
         maxConcurrentHolds: { type: [integer, "null"], minimum: 1, description: "the key's outstanding-holds cap; null is uncapped" }
         tokensPerMinute: { type: [integer, "null"], minimum: 1, description: "the key's rolling-minute settled-token allowance; null is uncapped" }
         tokensPerMinuteScopes: { $ref: "#/components/schemas/TokensPerMinuteScopes" }
+        requiredPolicies: { type: [array, "null"], items: { type: string }, description: "the guardrail policies the key's turns must run; null requires none" }
     TokensPerMinuteScopes:
       type: ["object", "null"]
       additionalProperties: { $ref: "#/components/schemas/TokenScope" }
       description: "Tag-scoped slices of the key's settled-token allowance (issue #209). Maps a request `metadata` tag key to one scope; each scoped bucket is an additional cap alongside `tokensPerMinute`, not a replacement. null (the default) scopes nothing."
+    GuardrailPolicy:
+      type: object
+      required: [name, kind, config, createdAt]
+      description: "A configured guardrail policy (issue #502). `config` is the kind's own shape: `keyword` holds `{patterns: [{re, action}]}` with `action` `flag` or `block`, `pii` holds `{}`, `moderation` holds `{endpoint, timeoutMs?}`. A `moderation` policy's bearer is stored sealed and never serialized."
+      properties:
+        name: { type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,63}$' }
+        kind: { type: string, enum: [keyword, pii, moderation] }
+        config: { type: object }
+        createdAt: { type: string, format: date-time }
+    GuardrailPolicyRequest:
+      type: object
+      required: [kind, config]
+      properties:
+        kind: { type: string, enum: [keyword, pii, moderation] }
+        config: { type: object, description: "the kind's own shape — `keyword`: `{patterns: [{re, action}]}`; `pii`: `{}`; `moderation`: `{endpoint, timeoutMs?}`" }
+        apiKey: { type: string, description: "the `moderation` kind's bearer, sealed on write and never echoed; absent keeps a stored bearer, required on the first write of a moderation policy that screens" }
+    GuardrailBinding:
+      type: object
+      required: [scope, target, policies]
+      properties:
+        scope: { type: string, enum: [channel, key] }
+        target: { type: string, description: "the channel's name, or the key's id" }
+        policies: { type: array, items: { type: string }, description: "the ordered policy names the scope runs" }
+    GuardrailBindingRequest:
+      type: object
+      required: [policies]
+      properties:
+        policies: { type: array, items: { type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,63}$' }, description: "every name must already exist as a configured policy" }
     TokenScope:
       type: object
       description: "One tag scope (issue #209): exactly one of `each`, `concrete`, or `total` is set. A settled turn accrues into the bucket its `metadata` tag selects — `each` fans out per value (`tag=value`), `concrete` only the pinned value, `total` the whole tag — and the bucket's cap is checked `window-actual + estimate ≤ cap` at admission, 429 when full while other buckets stay open."
@@ -6054,12 +6297,13 @@ components:
             mandateOk: { type: [boolean, "null"], description: "null when no mandate was presented" }
     Mandate:
       type: object
-      required: [mandateId, keyId, capMinor, models, notBefore, notAfter, nonce]
+      required: [mandateId, keyId, capMinor, models, requiredPolicies, notBefore, notAfter, nonce]
       properties:
         mandateId: { type: string, format: uuid, description: "the stable id a mandate's committed spend keys on" }
         keyId: { type: string, format: uuid, description: "the key this delegates" }
         capMinor: { type: integer, format: int64, minimum: 1, description: "total committed spend this mandate may carry, in minor units" }
         models: { type: [array, "null"], items: { type: string }, description: "the model allowlist — a subset of the key's own; null means all the key serves" }
+        requiredPolicies: { type: [array, "null"], items: { type: string }, description: "the guardrail policies this mandate requires — a subset of the key's own; null means all the key requires (issue #502)" }
         notBefore: { type: string, format: date-time }
         notAfter: { type: string, format: date-time, description: "when the mandate expires — there is no revocation, so mandates are short-lived" }
         nonce: { type: string, description: "uniqueness; hex of 16 random bytes" }
@@ -6077,6 +6321,7 @@ components:
       properties:
         capMinor: { type: integer, format: int64, minimum: 1, description: "total committed spend the mandate may carry — must sit inside the key's own `spendLimitMinor` when the key has one" }
         models: { type: [array, "null"], items: { type: string }, description: "the model allowlist — must be a subset of the key's own `modelAllowlist` when the key has one; omitted or null means all the key serves" }
+        requiredPolicies: { type: [array, "null"], items: { type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,63}$' }, description: "the guardrail policies the mandate's turns must run (issue #502) — a subset of the key's own `requiredPolicies`, never an addition the key does not already name; omitted or null means all the key requires" }
         notBefore: { type: string, format: date-time, description: "when the mandate starts being honored; absent means now" }
         notAfter: { type: string, format: date-time, description: "when the mandate expires — required, because no revocation exists" }
     Member:
