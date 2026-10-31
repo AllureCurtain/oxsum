@@ -36,7 +36,7 @@ const PROOF_PATH = "/api/v1/entries";
 type View =
   | { kind: "form" }
   | { kind: "busy" }
-  | { kind: "verdict"; verdict: string; charge?: string; price?: string; detail?: string }
+  | { kind: "verdict"; verdict: string; charge?: string; price?: string }
   | { kind: "error"; message: string };
 
 /** The element's attributes. Read once on connect and again on each verify. */
@@ -299,7 +299,6 @@ export class VerifyBillElement extends HTMLElement {
       verdict.className = "error";
       strong.textContent = "The bill does not verify.";
       note.textContent =
-        view.detail ??
         "Either the bundle was altered, or the hash you recorded does not match this entry.";
     }
     verdict.appendChild(strong);
