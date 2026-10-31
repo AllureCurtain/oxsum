@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
-import { useState } from "react";
-import { CreditCard, FlaskConical, Snowflake, TrendingUp, Wallet } from "lucide-react";
+import { useMemo, useState } from "react";
+import { ArrowDownRight, ArrowUpRight, CreditCard, FlaskConical, Snowflake, TrendingUp, Wallet } from "lucide-react";
 import {
   useBalance,
   useBudget,
@@ -10,6 +10,7 @@ import {
   useHolds,
   useSession,
   useSettleHold,
+  useUsage,
 } from "../api/hooks";
 import { Progress } from "../components/ui";
 import { Button } from "../components/ui";
@@ -22,6 +23,8 @@ import {
   EmptyRows,
   Field,
   Skeleton,
+  Sparkline,
+  StatChip,
   TableShell,
   Td,
   credits,
@@ -35,6 +38,58 @@ export function Overview() {
   const holds = useHolds();
   const entries = useEntries(10);
   const display = useDisplay();
+  const today = new Date().toISOString().slice(0, 10);
+  const weekAgo = new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 10);
+  const usage = useUsage(weekAgo, today);
+
+  // The API's `day` is the wire's `[year, dayOfYear]` pair; normalize it to the
+  // ISO date the rest of the page speaks.
+  const dayOf = (row: { day: string | [number, number] }) => {
+    if (typeof row.day === "string") return row.day;
+    const [y, doy] = row.day;
+    const d = new Date(Date.UTC(y, 0, doy));
+    return d.toISOString().slice(0, 10);
+  };
+
+  // The trailing-7-day charged series the sparkline reads — one entry per UTC
+  // day, zero-filled so a quiet week still draws a flat line.
+  const spark = useMemo(() => {
+    const byDay = new Map<string, number>();
+    for (const row of usage.data?.days ?? []) {
+      const d = dayOf(row);
+      byDay.set(d, (byDay.get(d) ?? 0) + row.chargedMinor);
+    }
+    const series: number[] = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(Date.now() - i * 86_400_000).toISOString().slice(0, 10);
+      series.push(byDay.get(d) ?? 0);
+    }
+    return series;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [usage.data]);
+
+  // Today's shape: turns and tokens summed across every (channel, model, key)
+  // bucket that booked under today's date. Yesterday is the comparison a
+  // single day never carries on its own.
+  const todayStats = useMemo(() => {
+    let turns = 0;
+    let charged = 0;
+    let tokens = 0;
+    for (const row of usage.data?.days ?? []) {
+      if (dayOf(row) === today) {
+        turns += row.turns;
+        charged += row.chargedMinor;
+        tokens += row.inputTokens + row.outputTokens;
+      }
+    }
+    let yesterdayCharged = 0;
+    const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+    for (const row of usage.data?.days ?? []) {
+      if (dayOf(row) === yesterday) yesterdayCharged += row.chargedMinor;
+    }
+    return { turns, charged, tokens, yesterdayCharged };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [usage.data, today]);
 
   return (
     <div className="flex flex-col gap-5">
@@ -127,6 +182,57 @@ export function Overview() {
           )}
         </div>
       </div>
+
+      {/* The week's shape: the daily charge sparkline answers "which way is
+          spend moving", today's counters answer "what is today costing" —
+          together the KPI row's numbers stop being point-in-time islands. */}
+      <Card title="Last 7 days">
+        <div className="flex flex-wrap items-center gap-x-10 gap-y-4">
+          <div className="flex items-end gap-4">
+            <Sparkline values={spark} width={160} height={40} />
+            <StatChip
+              label="Today"
+              value={<Cr minor={todayStats.charged} currency={display} />}
+              hint={
+                todayStats.yesterdayCharged > 0 ? (
+                  <span className="inline-flex items-center gap-0.5">
+                    {todayStats.charged >= todayStats.yesterdayCharged ? (
+                      <ArrowUpRight className="size-3 text-danger" />
+                    ) : (
+                      <ArrowDownRight className="size-3 text-success" />
+                    )}
+                    {Math.round(
+                      Math.abs(
+                        ((todayStats.charged - todayStats.yesterdayCharged) /
+                          todayStats.yesterdayCharged) * 100,
+                      ),
+                    )}
+                    % vs yesterday
+                  </span>
+                ) : (
+                  "charged"
+                )
+              }
+            />
+          </div>
+          <StatChip label="Turns today" value={todayStats.turns} />
+          <StatChip
+            label="Tokens today"
+            value={todayStats.tokens.toLocaleString("en-US")}
+            hint="in + out"
+          />
+          <StatChip
+            label="In flight"
+            value={holds.data?.holds.length ?? 0}
+            hint={holds.isLoading ? "…" : "open holds"}
+          />
+          <StatChip
+            label="Ledger size"
+            value={entries.data?.rows[0]?.index ?? "—"}
+            hint="entries"
+          />
+        </div>
+      </Card>
 
       {budget.data?.member?.budgetLimitMinor != null ? (
         <Card title="Your member budget">

@@ -221,15 +221,30 @@ export function Webhooks() {
         </TableShell>
       )}
 
-      {deliveriesFor ? <Deliveries endpointId={deliveriesFor} /> : null}
+      {deliveriesFor ? (
+        <Deliveries endpointId={deliveriesFor} />
+      ) : (webhooks.data?.length ?? 0) > 0 ? (
+        <Deliveries endpointId={webhooks.data![0].id} />
+      ) : null}
     </div>
   );
 }
 
 function Deliveries({ endpointId }: { endpointId: string }) {
   const deliveries = useWebhookDeliveries(endpointId);
+  const webhooks = useWebhooks();
+  const endpoint = (webhooks.data ?? []).find((e) => e.id === endpointId);
   return (
-    <Card title="Recent deliveries">
+    <Card
+      title="Recent deliveries"
+      actions={
+        endpoint ? (
+          <span className="mono max-w-96 truncate text-xs text-muted" title={endpoint.url}>
+            {endpoint.url}
+          </span>
+        ) : undefined
+      }
+    >
       {deliveries.isError ? (
         <PageState>The deliveries could not be read.</PageState>
       ) : (

@@ -1,14 +1,16 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Receipt } from "lucide-react";
 import { useBills, useConsistency, useDisplay, useLogHead } from "../api/hooks";
 import { entryKind } from "../lib/kinds";
 import {
+  Badge,
   Banner,
   Button,
   Card,
   EmptyRows,
   Field,
   PageState,
+  StatChip,
   TableShell,
   Td,
   NumberInput,
@@ -65,7 +67,15 @@ function BillRow({ row, display }: { row: { index: number; entryId: string; book
       <tr key={row.entryId}>
         <td className="mono">{row.index}</td>
         <td>{row.bookedOn}</td>
-        <td>{entryKind(row.kind)}</td>
+        <td>
+          <Badge
+            variant={
+              row.kind === "topUp" ? "success" : row.kind === "settlement" ? "secondary" : "outline"
+            }
+          >
+            {entryKind(row.kind)}
+          </Badge>
+        </td>
         <Td mono align="right">
           {signedCredits(row.amountMinor)}
           {display ? (
@@ -147,6 +157,7 @@ export function Bills() {
         <PageState>The bills could not be read.</PageState>
       ) : (
         <>
+          <WindowSummary rows={bills.data?.rows ?? []} display={display} />
           <TableShell
             head={[
               "#",
@@ -212,6 +223,54 @@ export function Bills() {
           ) : null}
         </Card>
       ) : null}
+    </div>
+  );
+}
+
+/** The loaded window's shape summed per kind: top-ups in, adjustments booked,
+ *  settlements out — so the table opens with the answer "what does this page of
+ *  the ledger add up to" before the rows walk it line by line. The window is
+ *  whatever `useBills` returned (the newest page, or the page `before` paged
+ *  back to); the band never pretends to be the whole account. */
+function WindowSummary({
+  rows,
+  display,
+}: {
+  rows: { kind: string; amountMinor: number }[];
+  display: DisplayCurrency | null;
+}) {
+  const sums = useMemo(() => {
+    const acc = { topUp: 0, adjustment: 0, settlement: 0, count: rows.length };
+    for (const row of rows) {
+      if (row.kind === "topUp") acc.topUp += row.amountMinor;
+      else if (row.kind === "adjustment") acc.adjustment += row.amountMinor;
+      else if (row.kind === "settlement") acc.settlement += row.amountMinor;
+    }
+    return acc;
+  }, [rows]);
+  if (sums.count === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-x-10 gap-y-4 rounded-xl border border-line bg-surface px-5 py-4 shadow-[0_1px_3px_rgba(20,34,64,.05)]">
+      <StatChip label="In this window" value={sums.count} hint="entries" />
+      <StatChip
+        label="Top-ups"
+        value={<span className="text-success">+{signedCredits(sums.topUp)}</span>}
+        hint={display ? `≈ ${displayAmount(sums.topUp, display)} ${display.code}` : undefined}
+      />
+      <StatChip
+        label="Adjustments"
+        value={signedCredits(sums.adjustment)}
+        hint={display ? `≈ ${displayAmount(sums.adjustment, display)} ${display.code}` : undefined}
+      />
+      <StatChip
+        label="Settled out"
+        value={signedCredits(sums.settlement)}
+        hint={display ? `≈ ${displayAmount(sums.settlement, display)} ${display.code}` : undefined}
+      />
+      <StatChip
+        label="Net"
+        value={signedCredits(sums.topUp + sums.adjustment + sums.settlement)}
+      />
     </div>
   );
 }
