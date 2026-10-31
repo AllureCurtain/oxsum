@@ -1,6 +1,6 @@
 # TODO
 
-Updated: 2026-10-30
+Updated: 2026-10-31
 
 ## In progress
 
@@ -11,6 +11,8 @@ Updated: 2026-10-30
 - Dashboard visual refresh, phase 2 — the post-#380 audit sweep (finesse-ui product register) is **closed**: all six issues shipped, one PR each. #412 component vocabulary (PR #418 — single `ui.tsx` layer on Base UI, `cult/`/`ui/` retired), #413 AppShell (PR #419 — lucide icons, real breadcrumb, mobile drawer), #414 TableShell (PR #421 — skeleton loading, sticky header, density, alignment), #415 auth pages (PR #420 — cobalt static substrate, `FractalDotGrid` removed), #416 Admin IA (PR #422 — 16 sections grouped into a side-nav under `pages/admin/`), #417 per-page polish (PR #423 — SVG usage chart, consequence lines, KPI anatomy, empty states).
 
 - Frontend hardening sweep (the post-sweep code read) is **closed**: all five issues shipped, one PR each. #425 (PR #430 — billing socket reconnects with bounded backoff + jitter, `dead`/manual `reconnect` surfaces in LiveIsland + Requests), #426 (PR #433 — `api/hooks` returns the generated `components["schemas"]` types, 4 schema-less shapes stay hand-typed), #427 (PR #431 — Topup's three duplicated payment rails collapse into `AmountRail`, Hyperswitch keeps its own lifecycle), #428 (PR #434 — `ui.tsx`/`hooks.ts`/`Auth.tsx` split into per-domain modules behind barrels, imports unchanged), #429 (PR #432 — `IconButton` owns the 44px touch floor, mid-sentence em-dashes cleaned from user copy).
+
+- shadcn/ui migration is **closed**: the `ui/` layer moved from `@base-ui/react` to Radix primitives and vendored shadcn sources rewritten onto the product palette — the code is owned, not an npm theme. Seven PRs, one issue each: #448 (PR #449 — `@theme` widened to the shadcn semantic set: surface ladder, shadows, z-order, finer type scale), #450 (PR #451 — tabs/select/switch/progress onto Radix, `@base-ui/react` removed, `components.json` added), #452 (PR #453 — the overlay layer: dialog, alert-dialog, dropdown-menu, popover, tooltip, sonner toaster, skeleton, sheet, hover-card, separator, scroll-area), #454 (PR #455 — form & navigation set: label, checkbox, radio-group, breadcrumb, pagination, avatar, toggle; shadcn's card/input/button deliberately skipped where existing components fit better), #456 (PR #457 — custom components adopt the shadcn conventions: forwardRef, data-slot, cva variants, displayName), #458 (PR #459 — pages adopt it: TooltipProvider+Toaster mounted, IconButton→Radix Tooltip, Settings/Webhooks destructive confirms→AlertDialog, Overview loading→Skeleton), #460 (this PR — DESIGN.md final polish: Radix+vendored vocabulary, motion and icon rules; README sync).
 
 The next-phase gap plan is closed: #276's test-sharding shipped (PR #279); job leader election (#281) shipped (PR #288); the x402 facilitator rail (#282) shipped (PR #289); upstream bill reconciliation (#283) shipped (PR #290); /verify browser-side wasm (#284) shipped (PR #291); the Airwallex deposit rail (#285) shipped (PR #292); model aliases (#286) shipped (PR #294); the demo GIF automation (#287) is closed as not planned — a live demo supersedes the recording.
 
