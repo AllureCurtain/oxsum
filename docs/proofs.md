@@ -39,4 +39,5 @@ in the reconciliation report catches any leaf that changed anyway. Unanchored hi
 older, weaker statement.
 
 The customer-facing version of this page is [Verifying an oxsum bill](verify-your-bill.md); the
-operator-facing surfaces are described in [product.md](product.md).
+operator-facing surfaces are described in [product.md](product.md). The wire-level companion —
+every object and check computed field-by-field — is [the transparency-log spec](transparency-log-v1.md).

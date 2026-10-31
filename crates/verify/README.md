@@ -37,6 +37,10 @@ The crate compiles clean to `wasm32-unknown-unknown`. Building with `--features 
 
 `SCALE` is `6` — one credit is `1_000_000` minor units, fine enough for per-token pricing. The entry encoding (and therefore the content hash) depends on it, so the writer and every verifier must agree; it lives here, not in any consumer.
 
+## The wire protocol
+
+The objects these functions speak — `ProofBundle`, the signed-note head, `PriceLink`, the consistency and witness proofs, the usage-report bundle — are written down field-by-field in [docs/transparency-log-v1.md](https://github.com/AllureCurtain/oxsum/blob/main/docs/transparency-log-v1.md). That document is the normative reference a third-party verifier implements against; this crate is its reference implementation.
+
 ## Status
 
 `publish = true` so it can ship on its own (issue #468), but the crate is developed inside the oxsum workspace — the vendored `doubleentry` copy it depends on is published too, and the two move together. This README is for the consumer verifying a bill or embedding the check; contributor notes live in the [repo](https://github.com/AllureCurtain/oxsum).

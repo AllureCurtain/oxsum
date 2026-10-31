@@ -29,6 +29,8 @@ const verdict = await verifyBill(JSON.stringify(bundle), hash);
 
 Every answer is `{ ok, detail, … }` — `detail` is the human-readable sentence the server's own `/verify` page prints, so a page only has to render it.
 
+The objects these functions speak — the proof bundle, signed-note head, `PriceLink`, the consistency and witness proofs — are written down field-by-field in [docs/transparency-log-v1.md](https://github.com/AllureCurtain/oxsum/blob/main/docs/transparency-log-v1.md), the protocol's normative reference.
+
 ## Embedding
 
 The package ships the wasm-bindgen output inside `wasm/` — the loader instantiates it lazily on first call, so importing the module costs nothing until a verification actually runs. No configuration, no endpoint, no key.
