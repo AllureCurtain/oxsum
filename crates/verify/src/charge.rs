@@ -19,7 +19,7 @@ use serde_json::Value;
 /// written before descriptions were versioned counts as older; every `v` above
 /// this is newer than this build. Versions it does know each get their own
 /// rule: an old bill stays recomputable after the writer has moved on.
-const KNOWN_VERSION: i64 = 9;
+const KNOWN_VERSION: i64 = 10;
 
 /// The line items the input side prices: their units must account for the
 /// whole `inputTokens`, between them and the usage record — cached reads and
@@ -99,7 +99,8 @@ pub fn verify_charge(description: &str) -> ChargeCheck {
             Some(6) => recompute_v6(&value),
             Some(7) => recompute_v7(&value),
             Some(8) => recompute_v8(&value),
-            Some(KNOWN_VERSION) => recompute_v9(&value),
+            Some(9) => recompute_v9(&value),
+            Some(KNOWN_VERSION) => recompute_v10(&value),
             Some(v) if v > KNOWN_VERSION => ChargeCheck::NewerSchema { version: v },
             Some(_) => ChargeCheck::OlderSchema,
             // A `v` that names no version is a broken record, not an old one.
@@ -221,7 +222,10 @@ fn recompute_v4(value: &Value) -> ChargeCheck {
 /// The v5 rule: v4's arithmetic unchanged, plus `upstreamAttempts` — how many
 /// upstream calls the turn made under the one hold (issue #168). It is not a
 /// price input, so it joins no sum: the rule is that an honest record carries
-/// it as a positive integer, and nothing more is claimed about it.
+/// it as a positive integer, and nothing more is claimed about it. Every
+/// writer at v9 or below relayed at least once — the one caller that may
+/// record zero is a v10 cache hit, and its rule lives in `recompute_v10`
+/// (issue #497).
 fn recompute_v5(value: &Value) -> ChargeCheck {
     match value.get("upstreamAttempts").and_then(Value::as_i64) {
         Some(attempts) if attempts >= 1 => recompute_v4(value),
@@ -323,6 +327,54 @@ fn recompute_v9(value: &Value) -> ChargeCheck {
         }
     }
     recompute_v8(value)
+}
+
+/// The v10 rule: a turn the semantic cache served (issue #497) — v9's
+/// arithmetic unchanged, plus the optional `cache` object naming the entry
+/// the answer was first produced under: `{sourceEntryId, similarity}`. The id
+/// is a UUID — the link a verifier follows to the original turn's bill — and
+/// the score is a number in `[0, 1]`: exact-digest hits write `1`, and a
+/// future similarity search writes its real figure, never a borrowed
+/// threshold. The fold a hit performs — the whole input repriced as
+/// `cache_read` — needs no new rule: v3's binding already sums the input
+/// items against `inputTokens`, which is what makes the hit's bill checkable
+/// at all. A `cache` that is not that shape is not an honest write.
+///
+/// One field's rule loosens under v10: `upstreamAttempts` may be `0`, the
+/// honest count for a hit that never called upstream. The arithmetic does
+/// not read it, so a zero is checked as a non-negative integer here and the
+/// rest of the record is verified by v9's chain — which a zero would fail,
+/// since every earlier writer relayed at least once.
+fn recompute_v10(value: &Value) -> ChargeCheck {
+    if let Some(cache) = value.get("cache") {
+        let id_ok = cache
+            .get("sourceEntryId")
+            .and_then(Value::as_str)
+            .is_some_and(is_uuid);
+        let score_ok = cache
+            .get("similarity")
+            .and_then(Value::as_f64)
+            .is_some_and(|score| (0.0..=1.0).contains(&score));
+        if !(id_ok && score_ok) {
+            return ChargeCheck::Mismatch;
+        }
+    }
+    match value.get("upstreamAttempts").and_then(Value::as_i64) {
+        Some(attempts) if attempts >= 0 => {
+            // The arithmetic chain: v9's fields, then v5's — the only step the
+            // hit's zero count cannot take, so it is taken for it.
+            let rewritten = match attempts {
+                0 => {
+                    let mut rewritten = value.clone();
+                    rewritten["upstreamAttempts"] = Value::from(1);
+                    rewritten
+                }
+                _ => value.clone(),
+            };
+            recompute_v9(&rewritten)
+        }
+        _ => ChargeCheck::Mismatch,
+    }
 }
 
 /// A UUID in its canonical `8-4-4-4-12` hex spelling — validated by hand so the
@@ -673,6 +725,48 @@ mod tests {
         assert_eq!(verify_charge(&negative), ChargeCheck::Mismatch);
     }
 
+    /// The v10 record: v9's arithmetic with a `cache` block naming the entry
+    /// the answer was first produced under (issue #497). The turn itself is a
+    /// cache hit: the whole 116-token input repriced as `cache_read`, which is
+    /// why the input lines split 0 + 116.
+    const V10: &str = r#"{"v":10,"request":"req-hit","channel":"backup","model":"deepseek-chat","priceVersion":2,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100,"cachedTokens":116,"reasoningTokens":20},"lines":[["input",0,1000000],["cache_read",116,100000],["output",80,2000000],["reasoning",20,3000000]],"upstreamAttempts":0,"charged":232,"freeze":400,"cache":{"sourceEntryId":"1ec7a2c2-3a13-4a2f-9b74-0f9d2e6a1b3c","similarity":1}}"#;
+
+    #[test]
+    fn a_genuine_v10_record_recomputes() {
+        // 0 fresh input + 116 cached at a tenth of the input rate + 80 output
+        // at 2 + 20 reasoning at 3: 11.6 + 160 + 60 = 231.6 → 232.
+        assert_eq!(verify_charge(V10), ChargeCheck::Recomputed);
+        // A fresh turn under a v10 writer carries no `cache` and still
+        // recomputes — the block is only on a hit's bill.
+        let plain = V10.replacen(
+            r#""cache":{"sourceEntryId":"1ec7a2c2-3a13-4a2f-9b74-0f9d2e6a1b3c","similarity":1}}"#,
+            "}",
+            1,
+        );
+        let plain = plain.replacen(r#""freeze":400,"#, r#""freeze":400"#, 1);
+        assert_eq!(verify_charge(&plain), ChargeCheck::Recomputed);
+    }
+
+    #[test]
+    fn a_v10_record_binds_the_cache_shape() {
+        // A `cache` without a UUID source or with an out-of-range score is not
+        // an honest write — and `upstreamAttempts: 0` is the hit's honest
+        // claim, since nothing went upstream.
+        for field in [
+            r#""cache":{"sourceEntryId":"not-a-uuid","similarity":1}}"#,
+            r#""cache":{"sourceEntryId":"1ec7a2c2-3a13-4a2f-9b74-0f9d2e6a1b3c","similarity":1.5}}"#,
+            r#""cache":{"sourceEntryId":"1ec7a2c2-3a13-4a2f-9b74-0f9d2e6a1b3c"}}"#,
+            r#""cache":null}"#,
+        ] {
+            let bad = V10.replacen(
+                r#""cache":{"sourceEntryId":"1ec7a2c2-3a13-4a2f-9b74-0f9d2e6a1b3c","similarity":1}}"#,
+                field,
+                1,
+            );
+            assert_eq!(verify_charge(&bad), ChargeCheck::Mismatch, "{field}");
+        }
+    }
+
     #[test]
     fn a_v3_record_must_account_for_the_whole_usage() {
         // The input lines split 116 into 20 + 96; claim only part of it and the
@@ -800,10 +894,10 @@ mod tests {
 
     #[test]
     fn a_newer_record_is_left_to_inclusion() {
-        let future = r#"{"v":10,"kind":"usage","charged":1,"freeze":1}"#;
+        let future = r#"{"v":11,"kind":"usage","charged":1,"freeze":1}"#;
         assert_eq!(
             verify_charge(future),
-            ChargeCheck::NewerSchema { version: 10 }
+            ChargeCheck::NewerSchema { version: 11 }
         );
     }
 

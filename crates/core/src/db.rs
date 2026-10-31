@@ -257,6 +257,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0063_rate_windows",
         include_str!("../migrations/0063_rate_windows.sql"),
     ),
+    (
+        "0064_semantic_cache",
+        include_str!("../migrations/0064_semantic_cache.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.

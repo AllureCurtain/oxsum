@@ -159,6 +159,10 @@ pub struct Channel {
     /// the channel carries none — the read-back an operator uses to confirm a
     /// billing key is attached without ever seeing it.
     pub bill_key_last4: Option<String>,
+    /// The channel's free-form settings blob (issue #497): what the reader
+    /// shows of `semanticCache` and any future channel-scoped knobs. Whole
+    /// object, never secrets — keys live under their own columns.
+    pub settings: serde_json::Value,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
     /// One entry per model, at its current version.
@@ -249,6 +253,9 @@ pub struct Serving {
     /// Empty when every credential sits out — a serving the gateway can still
     /// route to but cannot call, which is an upstream failure like any other.
     pub credentials: Vec<crate::pools::PoolCredential>,
+    /// The channel's `settings` blob, for [`crate::CachePolicy::of`] — carried
+    /// so a route check needs no second read.
+    pub settings: serde_json::Value,
     /// The price version this request is billed at, which the settlement records.
     pub version: i64,
     /// The route's relative preference for leading a request (issue #168).
@@ -421,6 +428,59 @@ impl Db {
         Ok(())
     }
 
+    /// Writes or clears a channel's `semanticCache` settings key (issue #497):
+    /// `Some(policy)` stores the object under `settings.semanticCache`,
+    /// `None` removes the key — and a settings blob that held only it returns
+    /// to `{}`. The policy is validated at read time by
+    /// [`crate::CachePolicy::of`]; the write only insists on an object, so a
+    /// key the reader would refuse never lands — `Misconfigured` is the same
+    /// refusal either way, raised here rather than at the gateway.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::Misconfigured`] when `policy` is not an object or fails
+    /// `CachePolicy::of`'s shape; [`WalletError::NotFound`] on an unknown
+    /// channel; storage failures surface as [`WalletError`].
+    pub async fn set_semantic_cache(
+        &self,
+        channel: &str,
+        policy: Option<&serde_json::Value>,
+    ) -> Result<(), WalletError> {
+        if let Some(policy) = policy {
+            crate::CachePolicy::of(Some(&serde_json::json!({
+                crate::cache::SETTINGS_KEY: policy
+            })))?;
+        }
+        let touched = match policy {
+            Some(policy) => {
+                sqlx::query(
+                    "UPDATE oxsum.channels \
+                     SET settings = jsonb_set(settings, '{semanticCache}', $2, true), \
+                         updated_at = now() \
+                     WHERE name = $1",
+                )
+                .bind(channel)
+                .bind(policy)
+                .execute(self.pool())
+                .await?
+            }
+            None => {
+                sqlx::query(
+                    "UPDATE oxsum.channels \
+                     SET settings = settings - 'semanticCache', updated_at = now() \
+                     WHERE name = $1",
+                )
+                .bind(channel)
+                .execute(self.pool())
+                .await?
+            }
+        };
+        if touched.rows_affected() == 0 {
+            return Err(WalletError::NotFound(format!("channel {channel:?}")));
+        }
+        Ok(())
+    }
+
     /// Appends a price version for one of a channel's models, and returns the version it wrote.
     ///
     /// Versions are allocated per `(channel, model)` under the channel's own row lock, so two
@@ -506,7 +566,7 @@ impl Db {
     pub async fn channels(&self) -> Result<Vec<Channel>, WalletError> {
         let rows = sqlx::query(
             "SELECT channel_id, name, base_url, bill_key_last4, \
-                    created_at, protocol \
+                    created_at, protocol, settings \
              FROM oxsum.channels ORDER BY created_at, name",
         )
         .fetch_all(self.pool())
@@ -521,6 +581,7 @@ impl Db {
                 base_url: row.try_get("base_url")?,
                 protocol: row.try_get("protocol")?,
                 bill_key_last4: row.try_get("bill_key_last4")?,
+                settings: row.try_get("settings")?,
                 created_at: row.try_get("created_at")?,
                 models: current_prices(self, channel_id).await?,
             });
@@ -564,7 +625,7 @@ impl Db {
         key: &SecretKey,
     ) -> Result<Vec<Serving>, WalletError> {
         let rows = sqlx::query(
-            "SELECT c.channel_id, c.name, c.base_url, c.protocol, p.version, p.weight, \
+            "SELECT c.channel_id, c.name, c.base_url, c.protocol, c.settings, p.version, p.weight, \
                     p.input_price_per_million, p.output_price_per_million, p.max_output_tokens, \
                     p.cache_read_price_per_million, p.cache_write_5m_price_per_million, \
                     p.cache_write_1h_price_per_million, p.reasoning_price_per_million, \
@@ -588,6 +649,7 @@ impl Db {
                 base_url: row.try_get("base_url")?,
                 protocol: row.try_get("protocol")?,
                 credentials: self.open_pool(channel_id, key).await?,
+                settings: row.try_get("settings")?,
                 version: i64::from(row.try_get::<i32, _>("version")?),
                 weight: i64::from(row.try_get::<i32, _>("weight")?),
                 price: price_from_row(row)?,
@@ -893,7 +955,7 @@ impl Db {
         key: &SecretKey,
     ) -> Result<Option<Serving>, WalletError> {
         let row = sqlx::query(
-            "SELECT c.channel_id, c.name, c.base_url, c.protocol, p.version, p.weight, \
+            "SELECT c.channel_id, c.name, c.base_url, c.protocol, c.settings, p.version, p.weight, \
                     p.input_price_per_million, p.output_price_per_million, p.max_output_tokens, \
                     p.cache_read_price_per_million, p.cache_write_5m_price_per_million, \
                     p.cache_write_1h_price_per_million, p.reasoning_price_per_million, \
@@ -918,6 +980,7 @@ impl Db {
                     base_url: row.try_get("base_url")?,
                     protocol: row.try_get("protocol")?,
                     credentials: self.open_pool(channel_id, key).await?,
+                    settings: row.try_get("settings")?,
                     version: i64::from(row.try_get::<i32, _>("version")?),
                     weight: i64::from(row.try_get::<i32, _>("weight")?),
                     price: price_from_row(&row)?,

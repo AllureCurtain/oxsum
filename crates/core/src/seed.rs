@@ -516,6 +516,7 @@ impl Db {
             upstream_attempts: 1,
             mandate: None,
             subscription: None,
+            cache: None,
             reason: None,
         }
         .description()?;
