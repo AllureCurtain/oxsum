@@ -694,10 +694,10 @@ info:
     first, then each fallback's in position order, re-judging the caller's
     reach for each fallback model — a key `modelAllowlist`, tier allowlist or
     mandate `models` subset that does not cover a fallback skips it rather
-    than refusing the turn. The settlement description moves to v12 and
-    carries `requestedModel` beside `servedModel`: the asked-for name and the
-    name that answered, equal until a cross-model failover serves under
-    another; `model` keeps meaning the served name for back-compat readers.
+    than refusing the turn. The settlement description moves to v12: it always
+    carries `servedModel`, the name that answered, and adds `requestedModel`,
+    the asked-for name, when a cross-model failover served under another;
+    `model` keeps meaning the served name for back-compat readers.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
