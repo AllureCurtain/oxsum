@@ -1575,6 +1575,88 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/org/keys/{keyId}/entitlement": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * May this key call now? A read-only admission preview
+         * @description The "can I" surface (issue #501): the same checks the gateway's
+         *     admission and `hold_for_key` run, answered without spending a request
+         *     slot, a window slot or a hold. `?model=` asks whether the key may call
+         *     that model (its `modelAllowlist`, and a presented mandate's own model
+         *     subset); `?estimate=` is a hypothetical charge in minor units — the
+         *     freeze a real request would take — judged against the spend limit's
+         *     headroom and, when the key carries `tokensPerMinute`, the token
+         *     window's occupancy. Absent `estimate` answers whether a request could
+         *     be admitted at all; absent `model` skips the allowlist question.
+         *
+         *     The answer is `allowed` plus, when refused, a `reason` naming which
+         *     check said no — `key_inactive` (revoked or expired — an id the caller
+         *     cannot see answers 404 as usual), `org_suspended`, `model_not_allowed`,
+         *     `rpm_exceeded`, `tpm_exceeded`, `budget_exhausted`,
+         *     `concurrent_holds`, `mandate_window`, `mandate_model` or
+         *     `mandate_cap` — and the headroom figures the caller can size by:
+         *     `remainingRpm` (the window's free slots, null while the window itself
+         *     refuses), `remainingTpm` (settled-side token headroom against the
+         *     estimate), `remainingBudgetMinor` (the spend limit minus committed),
+         *     `concurrentHolds` (open holds now), and `retryAfterSecs` when a window
+         *     says when it frees. A presented `X-Oxsum-Mandate` adds the
+         *     delegation's own answer — a mandate that cannot verify is
+         *     `mandate_invalid`. The read is a snapshot, not a reservation: a racing
+         *     request may spend the headroom between the answer and the call, which
+         *     is exactly what the atomic admission checks exist for.
+         *
+         *     The scope rules are the revoke's: a member reads only the keys they
+         *     created, owners, admins and API keys acting as the organization read
+         *     any key of it, and a key id of another organization — or, for a
+         *     member, a key they did not create — is `NOT_FOUND`. The entitlement
+         *     check itself is free: it consumes nothing and is never rate-limited.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description the gateway model the request would call */
+                    model?: string;
+                    /** @description a hypothetical charge in minor units — what the freeze would reserve */
+                    estimate?: number;
+                };
+                header?: never;
+                path: {
+                    keyId: components["parameters"]["KeyId"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The entitlement answer */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["Entitlement"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/org/invitations": {
         parameters: {
             query?: never;
@@ -8241,6 +8323,52 @@ export interface components {
         CreatedApiKey: components["schemas"]["ApiKey"] & {
             /** @description the plaintext key; shown once and stored only as a SHA-256 hash */
             secret: string;
+        };
+        /** @description The read-only admission preview (issue #501): whether the key's request would be admitted now, and the headroom each checked constraint leaves. A snapshot, not a reservation — a racing request may spend what it reports. */
+        Entitlement: {
+            /** @description whether a request with these parameters would be admitted now */
+            allowed: boolean;
+            /**
+             * @description which check refused, when `allowed` is false; null when admitted
+             * @enum {string|null}
+             */
+            reason?: "key_inactive" | "org_suspended" | "model_not_allowed" | "rpm_exceeded" | "tpm_exceeded" | "budget_exhausted" | "concurrent_holds" | "mandate_invalid" | "mandate_window" | "mandate_model" | "mandate_cap" | null;
+            /** @description free request slots in the key's rolling minute; null while the window itself refuses */
+            remainingRpm?: number | null;
+            /**
+             * Format: int64
+             * @description settled-token headroom inside the rolling minute against the estimate; null when the key is uncapped
+             */
+            remainingTpm?: number | null;
+            /**
+             * Format: int64
+             * @description the spend limit minus committed spend, in minor units; null when the key is unlimited
+             */
+            remainingBudgetMinor?: number | null;
+            /**
+             * Format: int64
+             * @description how many holds the key has outstanding now
+             */
+            concurrentHolds?: number;
+            /** @description when a refusing window frees — for `Retry-After`-style backoff */
+            retryAfterSecs?: number | null;
+            /** @description the per-constraint verdict, for a surface that wants the whole picture rather than the first refusal */
+            checks?: {
+                keyActive?: boolean;
+                orgSuspended?: boolean;
+                /** @description null when no model was asked */
+                modelAllowed?: boolean | null;
+                /** @description null when the key is uncapped */
+                rpmOk?: boolean | null;
+                /** @description null when the key is uncapped or no estimate was asked */
+                tpmOk?: boolean | null;
+                /** @description null when the key is unlimited */
+                budgetOk?: boolean | null;
+                /** @description null when the key is uncapped */
+                holdsOk?: boolean | null;
+                /** @description null when no mandate was presented */
+                mandateOk?: boolean | null;
+            };
         };
         Mandate: {
             /**

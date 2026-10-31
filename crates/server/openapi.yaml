@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.88.0
+  version: 0.89.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -565,6 +565,7 @@ info:
     entries' `windowHashes` in log order, the `expectedHead` right after the
     anchor and the `expectedOrigin` — so `verify_statement_anchor` runs off a
     single response instead of stitching three endpoints together.
+
     0.87.0 adds subscription quota plans (issue #496): a plan grants a
     per-period credit quota that meters before the wallet. The admin defines
     plans (`GET /api/v1/admin/subscription-plans`, `PUT
@@ -609,6 +610,18 @@ info:
     so the billed output is `candidatesTokenCount + thoughtsTokenCount`, the billed
     input `promptTokenCount + toolUsePromptTokenCount`, and `cachedContentTokenCount`
     fills the cached dimension.
+
+    0.89.0 adds the entitlement read (issue #501): `GET
+    /api/v1/org/keys/{keyId}/entitlement` previews a request's admission
+    read-only — the same key liveness, suspension, model-allowlist,
+    rolling-minute request and token windows, spend-limit, concurrent-holds and
+    presented-mandate checks the gateway and `hold_for_key` run, answered as
+    `{allowed, reason?, remainingRpm?, remainingTpm?, remainingBudgetMinor?,
+    concurrentHolds?}` plus a per-constraint `checks` object, without consuming
+    a slot, a window or a hold. `?model=` names the model the request would
+    call and `?estimate=` a hypothetical charge in minor units the budget and
+    token headroom are judged against; a presented `X-Oxsum-Mandate` adds the
+    delegation's own verdict.
 
     0.88.0 adds the async task relay (issue #503): `POST /v1/tasks` submits a
     long-running upstream job — an image, a video, a batch — on channels whose
@@ -1535,6 +1548,69 @@ paths:
                 required: [data]
                 properties:
                   data: { $ref: "#/components/schemas/CreatedMandate" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/keys/{keyId}/entitlement:
+    get:
+      summary: May this key call now? A read-only admission preview
+      description: |
+        The "can I" surface (issue #501): the same checks the gateway's
+        admission and `hold_for_key` run, answered without spending a request
+        slot, a window slot or a hold. `?model=` asks whether the key may call
+        that model (its `modelAllowlist`, and a presented mandate's own model
+        subset); `?estimate=` is a hypothetical charge in minor units — the
+        freeze a real request would take — judged against the spend limit's
+        headroom and, when the key carries `tokensPerMinute`, the token
+        window's occupancy. Absent `estimate` answers whether a request could
+        be admitted at all; absent `model` skips the allowlist question.
+
+        The answer is `allowed` plus, when refused, a `reason` naming which
+        check said no — `key_inactive` (revoked or expired — an id the caller
+        cannot see answers 404 as usual), `org_suspended`, `model_not_allowed`,
+        `rpm_exceeded`, `tpm_exceeded`, `budget_exhausted`,
+        `concurrent_holds`, `mandate_window`, `mandate_model` or
+        `mandate_cap` — and the headroom figures the caller can size by:
+        `remainingRpm` (the window's free slots, null while the window itself
+        refuses), `remainingTpm` (the settled-token window's room — the cap
+        minus what settled inside it; the estimate is a money figure, not
+        tokens, so the window judges `settled < cap`, not the estimate),
+        `remainingBudgetMinor` (the tightest spend cap minus committed),
+        `concurrentHolds` (open holds now), and `retryAfterSecs` when a window
+        says when it frees. A presented `X-Oxsum-Mandate` adds the
+        delegation's own answer — a mandate that cannot verify is
+        `mandate_invalid`. The read is a snapshot, not a reservation: a racing
+        request may spend the headroom between the answer and the call, which
+        is exactly what the atomic admission checks exist for.
+
+        The scope rules are the revoke's: a member reads only the keys they
+        created, owners, admins and API keys acting as the organization read
+        any key of it, and a key id of another organization — or, for a
+        member, a key they did not create — is `NOT_FOUND`. The entitlement
+        check itself is free: it consumes nothing and is never rate-limited.
+      parameters:
+        - { $ref: "#/components/parameters/KeyId" }
+        - name: model
+          in: query
+          required: false
+          schema: { type: string }
+          description: the gateway model the request would call
+        - name: estimate
+          in: query
+          required: false
+          schema: { type: integer, format: int64, minimum: 1 }
+          description: a hypothetical charge in minor units — what the freeze would reserve
+      responses:
+        "200":
+          description: The entitlement answer
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/Entitlement" }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
@@ -5929,6 +6005,33 @@ components:
           required: [secret]
           properties:
             secret: { type: string, description: "the plaintext key; shown once and stored only as a SHA-256 hash" }
+    Entitlement:
+      type: object
+      required: [allowed]
+      description: "The read-only admission preview (issue #501): whether the key's request would be admitted now, and the headroom each checked constraint leaves. A snapshot, not a reservation — a racing request may spend what it reports."
+      properties:
+        allowed: { type: boolean, description: "whether a request with these parameters would be admitted now" }
+        reason:
+          type: [string, "null"]
+          enum: [key_inactive, org_suspended, model_not_allowed, rpm_exceeded, tpm_exceeded, budget_exhausted, concurrent_holds, mandate_invalid, mandate_window, mandate_model, mandate_cap, null]
+          description: "which check refused, when `allowed` is false; null when admitted"
+        remainingRpm: { type: [integer, "null"], minimum: 0, description: "free request slots in the key's rolling minute; null while the window itself refuses" }
+        remainingTpm: { type: [integer, "null"], format: int64, minimum: 0, description: "settled-token headroom inside the rolling minute against the estimate; null when the key is uncapped" }
+        remainingBudgetMinor: { type: [integer, "null"], format: int64, description: "the spend limit minus committed spend, in minor units; null when the key is unlimited" }
+        concurrentHolds: { type: integer, format: int64, minimum: 0, description: "how many holds the key has outstanding now" }
+        retryAfterSecs: { type: [integer, "null"], minimum: 0, description: "when a refusing window frees — for `Retry-After`-style backoff" }
+        checks:
+          type: object
+          description: "the per-constraint verdict, for a surface that wants the whole picture rather than the first refusal"
+          properties:
+            keyActive: { type: boolean }
+            orgSuspended: { type: boolean }
+            modelAllowed: { type: [boolean, "null"], description: "null when no model was asked" }
+            rpmOk: { type: [boolean, "null"], description: "null when the key is uncapped" }
+            tpmOk: { type: [boolean, "null"], description: "null when the key is uncapped" }
+            budgetOk: { type: [boolean, "null"], description: "null when the key is unlimited" }
+            holdsOk: { type: [boolean, "null"], description: "null when the key is uncapped" }
+            mandateOk: { type: [boolean, "null"], description: "null when no mandate was presented" }
     Mandate:
       type: object
       required: [mandateId, keyId, capMinor, models, notBefore, notAfter, nonce]
