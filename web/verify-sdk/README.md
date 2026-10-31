@@ -35,6 +35,30 @@ The objects these functions speak — the proof bundle, signed-note head, `Price
 
 The package ships the wasm-bindgen output inside `wasm/` — the loader instantiates it lazily on first call, so importing the module costs nothing until a verification actually runs. No configuration, no endpoint, no key.
 
+## `<verify-bill>` — the check as an element
+
+`verify-oxsum-bill/verify-bill` registers a `<verify-bill>` custom element that renders the whole check — the same verdict the `/verify` page prints — inside a shadow root on any page:
+
+```html
+<script type="module" src="verify-oxsum-bill/verify-bill"></script>
+
+<!-- the element fetches the bundle itself -->
+<verify-bill server="https://oxsum.example.com"
+             entry="a8f3…uuid"
+             expected-hash="e2b9…64hex"></verify-bill>
+
+<!-- or render its own paste-a-bundle form -->
+<verify-bill></verify-bill>
+```
+
+| Attribute | Meaning |
+| --- | --- |
+| `server` + `entry` | The element GETs `{server}/api/v1/entries/{entryId}/proof` itself |
+| `bundle` | The bundle JSON verbatim — or left unset to render a paste form |
+| `expected-hash` | The 64-hex content hash the *customer* recorded — the half the check cannot supply, never the bundle's own `contentHash` |
+
+The wasm module instantiates on first verify, not on attach, so the element costs nothing until used; a browser without WebAssembly renders a readable fallback that points at the server's `/verify` page rather than failing blank.
+
 ## License
 
 MIT OR Apache-2.0.

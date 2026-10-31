@@ -172,6 +172,8 @@ Verdict: `true` or `false`. The check answers "this entry is in this ledger and 
 
 Verdict: `"pass"`, `"chargeMismatch"`, or `"fail"`. `charge` and `price` are whole sentences (each carries its leading space so a renderer concatenates after the inclusion clause); a `v7+` record's `mandate` line is folded into the charge sentence.
 
+Three surfaces render this one composition — the server-rendered `/verify` page, the `verifyBill` export in the `verify-oxsum-bill` package, and that package's `<verify-bill>` element — so a verdict reads identically whichever side of the trust boundary computed it.
+
 ### 5.3 `verify_signed_head` — the operator's attestation
 
 ```

@@ -14,7 +14,11 @@ export interface Verdict {
 }
 
 /** `verifyBundle`'s answer — the bill verdict plus the charge/price prose. */
-export interface BillVerdict extends Verdict {
+export interface BillVerdict {
+  /** `verdict === "pass"`. */
+  ok: boolean;
+  /** `"pass"`, `"chargeMismatch"` or `"fail"` — the machine name `ok` mirrors. */
+  verdict: "pass" | "chargeMismatch" | "fail" | string;
   charge?: string;
   price?: string;
 }
@@ -62,7 +66,7 @@ async function load(): Promise<VerifyWasmModule> {
   return modulePromise;
 }
 
-function parse<T extends Verdict>(json: string): T {
+function parse<T extends object>(json: string): T {
   return JSON.parse(json) as T;
 }
 
