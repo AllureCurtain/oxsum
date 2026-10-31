@@ -32,6 +32,7 @@ use crate::error::ApiError;
 mod billing;
 mod channels;
 mod credentials;
+mod fallbacks;
 mod guardrails;
 mod ops;
 mod organizations;
@@ -89,6 +90,12 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route(
             "/guardrail-bindings/{scope}/{target}",
             put(guardrails::set_binding).delete(guardrails::delete_binding),
+        )
+        .route(
+            "/model-fallbacks/{model}",
+            get(fallbacks::get_fallbacks)
+                .put(fallbacks::set_fallbacks)
+                .delete(fallbacks::delete_fallbacks),
         )
         .route("/deposits", get(ops::deposits))
         .route("/deposits/{deposit_id}/reverse", post(ops::reverse_deposit))

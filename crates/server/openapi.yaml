@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.91.0
+  version: 0.92.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -683,6 +683,21 @@ info:
     instead of a session, and `POST /api/v1/auth/totp` trades the challenge
     plus a live or backup code for it. `POST /api/v1/auth/totp/disable`
     removes the factor on a live code.
+
+    0.92.0 adds model-level fallbacks (issue #500): a request naming `model` may
+    serve under another model when its own channels all fail. The chain is
+    model → model, channel-agnostic, configured per model through
+    `GET`/`PUT`/`DELETE /api/v1/admin/model-fallbacks/{model}` — `PUT` takes
+    `{"fallbacks": ["b","c"]}` and replaces the whole ordered set atomically
+    (every name must resolve to a served model or alias, and a model may not
+    fall back to itself). The gateway tries every route of the requested model
+    first, then each fallback's in position order, re-judging the caller's
+    reach for each fallback model — a key `modelAllowlist`, tier allowlist or
+    mandate `models` subset that does not cover a fallback skips it rather
+    than refusing the turn. The settlement description moves to v12 and
+    carries `requestedModel` beside `servedModel`: the asked-for name and the
+    name that answered, equal until a cross-model failover serves under
+    another; `model` keeps meaning the served name for back-compat readers.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -4555,6 +4570,97 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/model-fallbacks/{model}:
+    get:
+      summary: Read one model's fallback chain
+      description: |
+        The ordered list of models a request naming `model` may serve under
+        when its own channels all fail, in try order (issue #500). Empty for a
+        model with no chain.
+      security:
+        - adminToken: []
+      parameters:
+        - name: model
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The model's fallback chain
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ModelFallbackChain" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    put:
+      summary: Replace one model's fallback chain
+      description: |
+        `fallbacks` is the whole ordered set, replaced atomically: a request
+        tries every route of `model` first, then each fallback in position
+        order. Every name must resolve to a served model or a registered alias
+        — a chain naming an unserved model would dead-end a request that
+        already failed once, so the write refuses a 400 rather than landing a
+        route that cannot serve — and `model` may not appear inside its own
+        chain. `model` itself must be served. An empty `fallbacks` clears the
+        chain. Lands in the admin audit log.
+      security:
+        - adminToken: []
+      parameters:
+        - name: model
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ModelFallbackChain" }
+      responses:
+        "200":
+          description: The chain as written
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ModelFallbackChain" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    delete:
+      summary: Drop one model's fallback chain
+      description: |
+        Removes the chain; a model that had none is 404. The chain is routing
+        configuration, not ledger data, so the delete is hard — a settled bill
+        still names the model that answered. Lands in the admin audit log.
+      security:
+        - adminToken: []
+      parameters:
+        - name: model
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The chain was removed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      cleared: { type: boolean }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/admin/holds:
     get:
       summary: List every unsettled hold, across all organizations
@@ -6879,6 +6985,14 @@ components:
       properties:
         alias: { type: string, minLength: 1, maxLength: 200, description: "the public name; unique across channels — a name another channel serves directly is a conflict" }
         upstreamModel: { type: string, minLength: 1, maxLength: 200, description: "the model the channel actually serves, forwarded upstream in place of the alias" }
+    ModelFallbackChain:
+      type: object
+      required: [fallbacks]
+      properties:
+        fallbacks:
+          type: array
+          items: { type: string }
+          description: "the ordered set of models a request may serve under when `model`'s channels all fail — position order, every name a served model or alias"
     ModelAlias:
       type: object
       required: [alias, channel, upstreamModel, createdAt]

@@ -74,6 +74,8 @@ pub mod action {
     pub const GUARDRAIL_POLICY_DELETE: &str = "guardrail.policy.delete";
     pub const GUARDRAIL_BINDING_SET: &str = "guardrail.binding.set";
     pub const GUARDRAIL_BINDING_DELETE: &str = "guardrail.binding.delete";
+    pub const MODEL_FALLBACK_SET: &str = "model_fallback.set";
+    pub const MODEL_FALLBACK_DELETE: &str = "model_fallback.delete";
 
     /// Every action the surface writes — the `action` filter's vocabulary.
     pub const ALL: &[&str] = &[
@@ -107,6 +109,8 @@ pub mod action {
         GUARDRAIL_POLICY_DELETE,
         GUARDRAIL_BINDING_SET,
         GUARDRAIL_BINDING_DELETE,
+        MODEL_FALLBACK_SET,
+        MODEL_FALLBACK_DELETE,
     ];
 }
 
