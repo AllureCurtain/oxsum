@@ -103,7 +103,14 @@ struct Plan {
     /// swaps them for the route that answered (`Turn::reroute`, issue #168).
     channel: String,
     version: i64,
+    /// The served name — what answered. A cross-model failover rewrites it via
+    /// `reroute` (issue #500); the settlement records it as both `model` (the
+    /// back-compat field) and `servedModel`.
     model: String,
+    /// The name the caller asked for, fixed at construction (issue #500): the
+    /// settlement's `requestedModel`, never rewritten by a failover. Equal to
+    /// `model` until a cross-model failover serves under another name.
+    requested_model: String,
     /// The upstream model the channel actually serves when `model` is an alias
     /// (issue #286): `Some` only for an aliased turn, and written into the v8
     /// settlement description as `upstreamModel` so a bill says both the name
@@ -294,6 +301,7 @@ impl Turn {
                 channel: serving.channel.clone(),
                 version: serving.version,
                 model: model.to_owned(),
+                requested_model: model.to_owned(),
                 upstream_model,
                 price: serving.price.clone(),
                 freeze,
@@ -321,12 +329,17 @@ impl Turn {
     /// failover settles under that channel's price and version, so the bill
     /// names the channel that served it, not the one the request started on.
     /// Called between the last failure and the first answered attempt, before
-    /// any settlement.
-    pub fn reroute(&mut self, serving: &Serving) {
+    /// any settlement. A cross-model failover also swaps the served *model*
+    /// (issue #500): `plan.model` becomes the name that answered — the
+    /// settlement's `servedModel` — while `requested_model` keeps the caller's
+    /// ask, and `upstream_model` becomes the served model's own resolution.
+    pub fn reroute(&mut self, serving: &Serving, model: &str, upstream_model: Option<String>) {
         if let Some(plan) = self.plan.as_mut() {
             plan.channel = serving.channel.clone();
             plan.version = serving.version;
             plan.price = serving.price.clone();
+            plan.model = model.to_owned();
+            plan.upstream_model = upstream_model;
         }
     }
 
@@ -799,6 +812,10 @@ impl Plan {
             request: &self.request,
             channel: &self.channel,
             model: &self.model,
+            // The asked-for name and the name that answered: equal until a
+            // cross-model failover rewrote `model` (issue #500).
+            requested_model: &self.requested_model,
+            served_model: &self.model,
             upstream_model: self.upstream_model.as_deref(),
             price_version: self.version,
             kind,

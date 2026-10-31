@@ -234,6 +234,8 @@ async fn settle_request(
         request,
         channel: "mock",
         model: "m",
+        requested_model: "m",
+        served_model: "m",
         upstream_model: None,
         price_version: 1,
         kind: SettlementKind::Usage,

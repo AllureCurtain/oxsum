@@ -1007,8 +1007,12 @@ impl SettlementKind {
 /// v10 adds the optional `cache` — which cached response the turn reused
 /// (issue #497): `{sourceEntryId, similarity}`, the proof link to the entry
 /// the answer was first produced under. v11 adds the optional `guardrail` —
-/// the pipeline's verdict on the turn (issue #502).
-const DESCRIPTION_VERSION: i64 = 11;
+/// the pipeline's verdict on the turn (issue #502). v12 adds `servedModel`,
+/// always, and `requestedModel` when it differs — the capability the caller
+/// asked for and the model that actually answered when a fallback served it
+/// (issue #500); `model` stays the served name for back-compat readers, and
+/// the two differ only when a fallback ran.
+const DESCRIPTION_VERSION: i64 = 12;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1017,8 +1021,20 @@ pub struct Settlement<'a> {
     pub request: &'a str,
     /// The channel that served the request.
     pub channel: &'a str,
-    /// The model the caller asked for.
+    /// The model that answered — the served name for back-compat readers
+    /// (v12's `servedModel` echoes it; they differ from `requestedModel` only
+    /// when a fallback served the turn, issue #500).
     pub model: &'a str,
+    /// The capability the caller asked for (v12, issue #500): `request.model`
+    /// as sent, before any fallback served it. Equals `served_model` when no
+    /// fallback ran — the description emits it only when the two differ, so a
+    /// clean serve's record stays inside the ledger's 512-char cap.
+    pub requested_model: &'a str,
+    /// The model that actually answered (v12, issue #500): the fallback that
+    /// served the turn, or the requested model when none ran. This is the
+    /// model whose price version priced the charge — the value `price_version`
+    /// and `lines` are read against.
+    pub served_model: &'a str,
     /// The upstream model name the served name resolved to (issue #286): the
     /// alias's target, present only when `model` is an alias — absent means the
     /// caller's name is the upstream's own.
@@ -1279,6 +1295,19 @@ struct SettlementV9<'a> {
     request: &'a str,
     channel: &'a str,
     model: &'a str,
+    /// The capability the caller asked for, v12's addition (issue #500):
+    /// `request.model` as sent. Written only when it differs from
+    /// `servedModel` — a clean serve carries just the served name, so the
+    /// two names cost their bytes only on the cross-model failover that made
+    /// them differ, which keeps a rule-priced turn inside the description's
+    /// 512-character cap.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    requested_model: Option<&'a str>,
+    /// The model that actually answered, v12's addition: the fallback that
+    /// served, or the requested model — the model `priceVersion` prices.
+    /// Always written: it is what `model` has always meant, spelled so a
+    /// reader no longer has to know the convention.
+    served_model: &'a str,
     /// The upstream name an alias resolved to, v8's addition (issue #286):
     /// absent when the served name is the upstream's own — metadata for the
     /// audit, never a price input.
@@ -1338,6 +1367,13 @@ impl Settlement<'_> {
             request: self.request,
             channel: self.channel,
             model: self.model,
+            // `requestedModel` is written only when the ask and the answer
+            // differ — a clean serve's record names just `servedModel`, so the
+            // second name costs its bytes only on the failover that produced
+            // it and the description stays inside the ledger's cap.
+            requested_model: (self.requested_model != self.served_model)
+                .then_some(self.requested_model),
+            served_model: self.served_model,
             upstream_model: self.upstream_model,
             price_version: self.price_version,
             kind: self.kind,
@@ -1473,8 +1509,17 @@ pub struct SettlementRecord {
     pub request: String,
     /// The channel that served the request.
     pub channel: String,
-    /// The model the caller asked for.
+    /// The model that answered — the served name (v12's `servedModel` echoes
+    /// it; `requestedModel` differs only when a fallback served).
     pub model: String,
+    /// The capability the caller asked for (v12, issue #500): `request.model`
+    /// as sent, before any fallback. Reads back as `model` on records that
+    /// predate the field — they named no model but the served one.
+    pub requested_model: String,
+    /// The model that actually answered (v12, issue #500): the fallback that
+    /// served, or the requested model — the model `price_version` prices.
+    /// Reads back as `model` on records that predate the field.
+    pub served_model: String,
     /// The upstream model the served name resolved to (v8, issue #286):
     /// `Some` on an aliased turn, `None` when the caller's name is the
     /// upstream's own — and on records that predate aliases.
@@ -1622,6 +1667,13 @@ struct SettlementRecordWire {
     request: String,
     channel: String,
     model: String,
+    /// The capability the caller asked for, written from v12 only when it
+    /// differs from `servedModel` (issue #500); `None` on earlier versions —
+    /// those named no model but the served one — and on a clean v12 serve.
+    requested_model: Option<String>,
+    /// The model that answered, written from v12; `None` earlier — `model`
+    /// already carried it.
+    served_model: Option<String>,
     /// The upstream name an alias resolved to — optional on every version:
     /// written from v8 on, absent earlier and on a turn that named the
     /// upstream's own model.
@@ -1682,7 +1734,11 @@ impl SettlementRecord {
             },
             request: wire.request,
             channel: wire.channel,
-            model: wire.model,
+            model: wire.model.clone(),
+            // On records predating v12 the two model fields are absent: the
+            // only model they ever named is `model`, so both read back as it.
+            requested_model: wire.requested_model.unwrap_or_else(|| wire.model.clone()),
+            served_model: wire.served_model.unwrap_or_else(|| wire.model.clone()),
             upstream_model: wire.upstream_model,
             price_version: wire.price_version,
             kind: wire.kind,
@@ -2284,6 +2340,8 @@ mod tests {
             request: "abc",
             channel: "deepseek",
             model: "deepseek-chat",
+            requested_model: "deepseek-chat",
+            served_model: "deepseek-chat",
             upstream_model: None,
             price_version: 3,
             kind: SettlementKind::Usage,
@@ -2303,7 +2361,7 @@ mod tests {
         let json = settlement.description().unwrap();
         assert_eq!(
             json,
-            r#"{"v":11,"request":"abc","channel":"deepseek","model":"deepseek-chat","priceVersion":3,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100},"lines":[["input",116,1000000],["output",100,2000000]],"upstreamAttempts":1,"charged":316,"freeze":400}"#
+            r#"{"v":12,"request":"abc","channel":"deepseek","model":"deepseek-chat","servedModel":"deepseek-chat","priceVersion":3,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100},"lines":[["input",116,1000000],["output",100,2000000]],"upstreamAttempts":1,"charged":316,"freeze":400}"#
         );
         // Within the ledger's limit, whatever the model is called.
         assert!(json.len() < 512);
@@ -2414,6 +2472,8 @@ mod tests {
             request: "abc",
             channel: "c",
             model: "m",
+            requested_model: "m",
+            served_model: "m",
             upstream_model: None,
             price_version: 3,
             kind: SettlementKind::Usage,
@@ -2468,6 +2528,8 @@ mod tests {
             request: "abc",
             channel: "c",
             model: "m",
+            requested_model: "m",
+            served_model: "m",
             upstream_model: None,
             price_version: 1,
             kind: SettlementKind::Usage,
@@ -2504,6 +2566,8 @@ mod tests {
             request: "abc",
             channel: "deepseek",
             model: "deepseek-chat",
+            requested_model: "deepseek-chat",
+            served_model: "deepseek-chat",
             upstream_model: None,
             price_version: 3,
             kind: SettlementKind::Usage,
@@ -2566,6 +2630,8 @@ mod tests {
             request: "abc",
             channel: "deepseek",
             model: "public-name",
+            requested_model: "public-name",
+            served_model: "public-name",
             upstream_model: Some("deepseek-chat"),
             price_version: 3,
             kind: SettlementKind::Usage,
@@ -2616,7 +2682,7 @@ mod tests {
         // (v2), or one whose priced lines are missing. A v3 record parses — the
         // reader tolerates the shape v4 superseded — but one that lacks the
         // lines the prices are read out of still cannot.
-        assert!(SettlementRecord::parse(r#"{"v":12,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[["input",1,1],["output",0,1]],"charged":1,"freeze":1}"#).is_none());
+        assert!(SettlementRecord::parse(r#"{"v":13,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[["input",1,1],["output",0,1]],"charged":1,"freeze":1}"#).is_none());
         assert!(SettlementRecord::parse(r#"{"v":2,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[{"item":"input","units":1,"pricePerM":1},{"item":"output","units":1,"pricePerM":1}],"charged":1,"freeze":1}"#).is_none());
         assert!(SettlementRecord::parse(r#"{"v":3,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[],"charged":1,"freeze":1}"#).is_none());
         assert!(

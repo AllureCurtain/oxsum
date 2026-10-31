@@ -334,10 +334,15 @@ impl GatewayRequest {
     #[must_use]
     pub fn forwarded(&self, output_bound: i64) -> Value {
         let mut body = self.body.clone();
-        if let Some(upstream) = &self.upstream_model
-            && *upstream != self.model
-        {
-            body.insert("model".to_owned(), json!(upstream));
+        // The body always names the model upstream should serve: the alias's
+        // target when one resolved, the request's model otherwise — and on a
+        // cross-model fallback (issue #500) the serving model's own name, which
+        // `model` carries once the caller's request has been re-pointed at the
+        // route that is about to be asked. A direct serve writes back the same
+        // name it read, so the insert is a no-op there.
+        let served = self.upstream_model.as_deref().unwrap_or(&self.model);
+        if served != self.model || body.get("model").and_then(Value::as_str) != Some(served) {
+            body.insert("model".to_owned(), json!(served));
         }
         match self.surface {
             Surface::Responses => {

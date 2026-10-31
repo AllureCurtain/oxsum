@@ -19,7 +19,7 @@ use serde_json::Value;
 /// written before descriptions were versioned counts as older; every `v` above
 /// this is newer than this build. Versions it does know each get their own
 /// rule: an old bill stays recomputable after the writer has moved on.
-const KNOWN_VERSION: i64 = 11;
+const KNOWN_VERSION: i64 = 12;
 
 /// The line items the input side prices: their units must account for the
 /// whole `inputTokens`, between them and the usage record — cached reads and
@@ -101,7 +101,8 @@ pub fn verify_charge(description: &str) -> ChargeCheck {
             Some(8) => recompute_v8(&value),
             Some(9) => recompute_v9(&value),
             Some(10) => recompute_v10(&value),
-            Some(KNOWN_VERSION) => recompute_v11(&value),
+            Some(11) => recompute_v11(&value),
+            Some(KNOWN_VERSION) => recompute_v12(&value),
             Some(v) if v > KNOWN_VERSION => ChargeCheck::NewerSchema { version: v },
             Some(_) => ChargeCheck::OlderSchema,
             // A `v` that names no version is a broken record, not an old one.
@@ -409,6 +410,29 @@ fn recompute_v11(value: &Value) -> ChargeCheck {
         }
     }
     recompute_v10(value)
+}
+
+/// The v12 rule: the model the caller asked for and the model that answered
+/// (issue #500) — v11's arithmetic unchanged, plus `servedModel`, always, and
+/// `requestedModel` only on a cross-model failover (it is omitted on a clean
+/// serve so the record stays inside the ledger's 512-char description cap).
+/// The served name is what priced the turn — it is what `model` has always
+/// meant, so the price binding below still reads `lines` against `usage`, and
+/// `requestedModel` is recorded, never a pricing input. `servedModel` must be
+/// a non-empty string; `requestedModel` is absent or a non-empty string.
+fn recompute_v12(value: &Value) -> ChargeCheck {
+    let served_ok = value
+        .get("servedModel")
+        .and_then(Value::as_str)
+        .is_some_and(|name| !name.is_empty());
+    let requested_ok = match value.get("requestedModel") {
+        Some(field) => field.as_str().is_some_and(|name| !name.is_empty()),
+        None => true,
+    };
+    if !(served_ok && requested_ok) {
+        return ChargeCheck::Mismatch;
+    }
+    recompute_v11(value)
 }
 
 /// A UUID in its canonical `8-4-4-4-12` hex spelling — validated by hand so the
@@ -931,10 +955,10 @@ mod tests {
         // One version beyond the newest this build recomputes — a verifier an
         // upgrade behind meets a settlement it cannot price, and inclusion
         // proof alone answers for it.
-        let future = r#"{"v":12,"kind":"usage","charged":1,"freeze":1}"#;
+        let future = r#"{"v":13,"kind":"usage","charged":1,"freeze":1}"#;
         assert_eq!(
             verify_charge(future),
-            ChargeCheck::NewerSchema { version: 12 }
+            ChargeCheck::NewerSchema { version: 13 }
         );
     }
 

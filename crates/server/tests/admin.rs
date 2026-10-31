@@ -873,6 +873,8 @@ async fn the_anomalies_list_shows_the_turns_that_did_not_price_cleanly() {
             request,
             channel: "chan-y",
             model: "model-x",
+            requested_model: "model-x",
+            served_model: "model-x",
             upstream_model: None,
             price_version: 2,
             kind: serde_json::from_str::<oxsum_core::SettlementKind>(&format!("\"{kind}\""))
@@ -1007,6 +1009,8 @@ async fn anomalies_carry_a_score_and_filter_by_severity() {
             request,
             channel: "chan-y",
             model: "model-x",
+            requested_model: "model-x",
+            served_model: "model-x",
             upstream_model: None,
             price_version: 2,
             kind: serde_json::from_str::<oxsum_core::SettlementKind>(&format!("\"{kind}\""))

@@ -51,6 +51,12 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// refusal: the caller's own retry policy is the right place for it.
 const RETRY_AFTER_MAX: Duration = Duration::from_secs(3);
 
+/// The most fallback hops a request may take past its own model (issue #500):
+/// a bound on a misconfigured chain, so a loop a write-time check missed still
+/// terminates. The chain is de-duplicated at resolve time, so a cycle can never
+/// spend more attempts than there are distinct models.
+const MAX_FALLBACK_CHAIN: usize = 8;
+
 /// The HTTP client every gateway request shares, so connections are pooled and the timeout is set
 /// once. A client that cannot be built would have no TLS backend at all; the default is the same
 /// client without the timeout, which is better than refusing to serve the wallet.
@@ -760,12 +766,37 @@ async fn run(
     let tier = tier?;
     let (candidates, upstream_model) = servings?;
     request.upstream_model = upstream_model;
+    // The fallback chain this model may serve under (issue #500): resolved at
+    // admission alongside everything else, capped and de-duplicated so a
+    // misconfigured `a→b→a` cannot cycle. The requested model leads, each
+    // configured fallback follows in position order, and a name already in the
+    // chain is dropped — `set_fallbacks` refuses a self-loop at write time, but
+    // a multi-hop cycle (`a→b→c→a`) only closes at resolve time.
+    let mut model_chain: Vec<String> = vec![request.model.clone()];
+    let mut seen: std::collections::HashSet<String> = [request.model.clone()].into_iter().collect();
+    for fallback in state
+        .db
+        .fallbacks_for(&request.model)
+        .await?
+        .into_iter()
+        .take(MAX_FALLBACK_CHAIN)
+    {
+        if seen.insert(fallback.clone()) {
+            model_chain.push(fallback);
+        }
+    }
+    // The key's model allowlist, read fresh for the fallback re-check (issue
+    // #500). The acting principal deliberately does not carry it — the hold's
+    // own locked read inside `hold_for_key` guards the requested name — but a
+    // fallback hop needs the list to re-judge a model the hold was not taken
+    // under. `None` is an unconstrained key.
+    let key_allowlist: Option<Vec<String>> = state.db.key_model_allowlist(key.key_id).await?;
     let discount_percent = discount?.map(i64::from);
     // The organization's tier is a capability package — limits and allowlists,
     // never a pricing input (issue #158): its model allowlist refuses 403 and
     // its rolling-minute allowance is one window shared by every key of the
     // organization, consumed at admission like the key's own below.
-    if let Some(profile) = tier {
+    if let Some(profile) = &tier {
         if let Some(allowlist) = &profile.model_allowlist
             && !allowlist.iter().any(|allowed| allowed == &request.model)
         {
@@ -829,6 +860,35 @@ async fn run(
         }
         None => None,
     };
+    // The constraints that re-judge a fallback model before it is routed to
+    // (issue #500). The requested model was judged at admission and inside
+    // `hold_for_key`; a fallback is a new model, so the caller's permission to
+    // reach it is re-checked against the same three gates — the key's
+    // allowlist (read fresh at admission), a presented mandate's `models`
+    // subset, and the tier's allowlist — never inherited. A denied fallback is
+    // skipped: the loop moves to the next model rather than refusing the whole
+    // turn, because the requested model was legitimately attempted and a
+    // mandate-denied fallback is simply not a route.
+    let fallback_permitted = |model: &str| -> bool {
+        if let Some(list) = &key_allowlist
+            && !list.iter().any(|allowed| allowed == model)
+        {
+            return false;
+        }
+        if let Some(models) = mandate.as_ref().and_then(|m| m.verified.models.as_ref())
+            && !models.iter().any(|allowed| allowed == model)
+        {
+            return false;
+        }
+        if let Some(list) = tier
+            .as_ref()
+            .and_then(|profile| profile.model_allowlist.as_ref())
+            && !list.iter().any(|allowed| allowed == model)
+        {
+            return false;
+        }
+        true
+    };
     // The routes for this model are resolved once, here, before anything is
     // frozen: this turn is priced by the versions in force when it starts,
     // whatever happens to prices later. A surface serves only the channels
@@ -845,6 +905,54 @@ async fn run(
         .collect();
     if candidates.is_empty() {
         return Err(GatewayError::model_not_served(&request.model));
+    }
+    // One model's resolved routes: the ordered servings a request naming it may
+    // take, plus the upstream name its channels relay (its own alias
+    // resolution, `None` for a direct name). The attempt loop walks these in
+    // chain order — every route of the requested model first, then each
+    // fallback's in turn (issue #500).
+    struct ModelRoutes {
+        /// The served name — what the settlement's `servedModel` records.
+        model: String,
+        /// The upstream name this model's channels relay, when it is an alias.
+        upstream_model: Option<String>,
+        /// The channels serving the name, in attempt order.
+        ordered: Vec<Serving>,
+    }
+    // The requested model leads its own route order, exactly as it always has.
+    let mut model_routes: Vec<ModelRoutes> = vec![ModelRoutes {
+        model: request.model.clone(),
+        upstream_model: request.upstream_model.clone(),
+        ordered: route_order(candidates, rand::random::<f64>()),
+    }];
+    // Each fallback resolves independently through `servings_named`: its own
+    // channels, its own alias target, its own route order. A fallback the
+    // caller may not reach is skipped at resolve time — the chain narrows to
+    // the permitted models, so the attempt loop never sees a route it must not
+    // serve. A fallback with no servable route on this surface contributes
+    // nothing and is skipped the same way.
+    for model in model_chain.iter().skip(1) {
+        if !fallback_permitted(model) {
+            tracing::info!(model = %model, request_model = %request.model,
+                "fallback model denied by the caller's constraints; skipped");
+            continue;
+        }
+        let (servings, upstream_model) = servings_named(state, model).await?;
+        let ordered: Vec<Serving> = servings
+            .into_iter()
+            .filter(|serving| {
+                serving.protocol == surface.protocol()
+                    && serving.price.mode == surface.billing_mode()
+            })
+            .collect();
+        if ordered.is_empty() {
+            continue;
+        }
+        model_routes.push(ModelRoutes {
+            model: model.clone(),
+            upstream_model,
+            ordered: route_order(ordered, rand::random::<f64>()),
+        });
     }
     // The surface selects the adapter that reads usage reports — every
     // candidate speaks its protocol after the filter. A name the registry does
@@ -871,8 +979,13 @@ async fn run(
     // at the tightest ceiling so no route can bill what its own price would
     // not have covered. A token-array request already counted its input —
     // `counted_input` is that exact figure, not a text estimate (issue #170).
-    let freeze = candidates
+    // The bound spans every model in the chain, not only the requested one: a
+    // failover may land on a fallback's dearest route, so the freeze reserves
+    // the dearest serving across the whole chain and `max_tokens` forwards at
+    // the tightest output ceiling any route could bill under (issue #500).
+    let freeze = model_routes
         .iter()
+        .flat_map(|routes| routes.ordered.iter())
         .map(|serving| match request.counted_input {
             Some(count) => serving.price.estimate_minor(
                 count,
@@ -889,8 +1002,9 @@ async fn run(
         .into_iter()
         .max()
         .unwrap_or(0);
-    let output_bound = candidates
+    let output_bound = model_routes
         .iter()
+        .flat_map(|routes| routes.ordered.iter())
         .map(|serving| serving.price.output_upper_bound(request.max_tokens))
         .collect::<Result<Vec<i64>, _>>()?
         .into_iter()
@@ -957,16 +1071,11 @@ async fn run(
             }
         }
     }
-    // Attempt order: a weighted pick leads — the rollout of `weight` is a real
-    // proportional preference — and the rest follow in descending weight, so a
-    // failed attempt falls over to the next-most-preferred route (issue #168).
-    let ordered = route_order(candidates, rand::random::<f64>());
-    // The intended route: what the watch row and the live event name, and what
-    // a swept turn's settlement records. A failover reroutes the turn before
-    // it settles, so the bill always names the channel that answered.
-    let Some(primary) = ordered.first() else {
-        return Err(GatewayError::model_not_served(&request.model));
-    };
+    // The intended route: the requested model's leading channel — what the
+    // watch row and the live event name, and what a swept turn's settlement
+    // records. A failover reroutes the turn before it settles, so the bill
+    // always names the channel that answered.
+    let primary = &model_routes[0].ordered[0];
 
     // The guardrail pipeline's pre_call (issue #502): the turn's policies —
     // the channel's binding, the key's `requiredPolicies`, and a presented
@@ -1035,14 +1144,26 @@ async fn run(
     // conversation key is the caller's `end_user`: the closest thing a request
     // has to a stable conversation, and absent it nothing sticks.
     let conversation = request.attribution.end_user.as_deref();
-    let attempts_list: Vec<(usize, oxsum_core::PoolCredential)> = ordered
+    // The attempt order flattens the whole chain (issue #500): every
+    // `(model, route, credential)` triple, the requested model's routes and
+    // their pools first, then each fallback's in turn. A single 429 still
+    // rotates to the same channel's next credential before the turn leaves the
+    // route, and a route's last credential still falls to the next route —
+    // only now "the next route" may belong to the next model.
+    let attempts_list: Vec<(usize, usize, oxsum_core::PoolCredential)> = model_routes
         .iter()
         .enumerate()
-        .flat_map(|(route_index, serving)| {
-            let sticky = state.db.affinity().sticky(serving.channel_id, conversation);
-            oxsum_core::credential_order(&serving.credentials, sticky)
-                .into_iter()
-                .map(move |credential| (route_index, credential))
+        .flat_map(|(model_index, routes)| {
+            routes
+                .ordered
+                .iter()
+                .enumerate()
+                .flat_map(move |(route_index, serving)| {
+                    let sticky = state.db.affinity().sticky(serving.channel_id, conversation);
+                    oxsum_core::credential_order(&serving.credentials, sticky)
+                        .into_iter()
+                        .map(move |credential| (model_index, route_index, credential))
+                })
         })
         .collect();
 
@@ -1261,18 +1382,20 @@ async fn run(
             channel: primary.channel.clone(),
             freeze_minor: freeze,
         });
-    let forwarded = request.forwarded(output_bound);
     // The attempt loop: a retriable failure before any answer bytes —
     // unreachable, 429, or 5xx — rotates to the next attempt under the same
-    // hold. The attempts walk the route order, and inside one route its pool's
-    // credentials first (issue #444): a single account's wall fails over onto
-    // the channel's next key before the turn leaves for a differently-priced
-    // channel. A 4xx fails fast, since the same refusal would come back from
-    // everywhere. When the last attempt's refusal is a 429 naming a short
-    // `Retry-After`, the wait is honored once rather than answered on the
-    // spot: failover first, a bounded wait last (issue #168). A failure after
-    // bytes started flowing is never retried — the client already holds a
-    // partial answer, and replaying upstream could double-bill the platform.
+    // hold. The attempts walk the flattened chain (issue #500): the requested
+    // model's routes and their pools first, then each fallback model's. Inside
+    // one route its credentials still lead (issue #444): a single account's
+    // wall fails over onto the channel's next key before the turn leaves the
+    // route, and the route's last attempt falls to the next route — which may
+    // belong to the next model. A 4xx fails fast, since the same refusal would
+    // come back from everywhere. When the last attempt's refusal is a 429
+    // naming a short `Retry-After`, the wait is honored once rather than
+    // answered on the spot: failover first, a bounded wait last (issue #168).
+    // A failure after bytes started flowing is never retried — the client
+    // already holds a partial answer, and replaying upstream could double-bill
+    // the platform.
     let mut attempts: i64 = 0;
     let mut retried_429 = false;
     let mut index = 0;
@@ -1282,7 +1405,7 @@ async fn run(
             // the answer is an upstream failure like any other, charged
             // `Nothing` under the route that would have led.
             break (
-                0_usize,
+                (0_usize, 0_usize),
                 Err((
                     GatewayError::upstream(
                         StatusCode::BAD_GATEWAY,
@@ -1293,27 +1416,37 @@ async fn run(
                 )),
             );
         }
-        let (route_index, credential) = &attempts_list[index];
-        let candidate = &ordered[*route_index];
+        let (model_index, route_index, credential) = &attempts_list[index];
+        let routes = &model_routes[*model_index];
+        let candidate = &routes.ordered[*route_index];
         attempts += 1;
         let attempt_started = Instant::now();
+        // The body is rebuilt per attempt: the `model` it names is the serving
+        // model's own upstream resolution — its alias target when it is one, its
+        // own name otherwise — so a fallback's channel is told the name it
+        // actually serves, not the requested one (issue #500). `model` and
+        // `upstream_model` are repointed together: a direct serve writes back
+        // the same name, an alias resolves to its target.
+        let mut forwarded_request = request.clone();
+        forwarded_request.model = routes.model.clone();
+        forwarded_request.upstream_model = routes.upstream_model.clone();
+        let forwarded = forwarded_request.forwarded(output_bound);
         // The credential goes upstream in the protocol's own spelling:
         // `Authorization: Bearer` for OpenAI, `x-api-key` for Anthropic — which
         // also wants its version header, forwarded when the caller sent one —
         // and `x-goog-api-key` for Gemini, the spelling both AI Studio and
         // Vertex accept (issue #494). Gemini also names its model in the path,
         // so the upstream name rides `upstream_target` rather than the body's.
+        let upstream_name = routes
+            .upstream_model
+            .as_deref()
+            .unwrap_or(routes.model.as_str());
         let mut call = state
             .http
             .post(format!(
                 "{}/{}",
                 candidate.base_url,
-                surface.upstream_target(
-                    request
-                        .upstream_model
-                        .as_deref()
-                        .unwrap_or(request.model.as_str())
-                )
+                surface.upstream_target(upstream_name)
             ))
             .json(&forwarded);
         call = match surface {
@@ -1338,7 +1471,7 @@ async fn run(
                     "ok",
                     attempt_started.elapsed().as_secs_f64(),
                 );
-                break (*route_index, Ok(response));
+                break ((*model_index, *route_index), Ok(response));
             }
             Ok(response) => {
                 let status = response.status();
@@ -1385,12 +1518,15 @@ async fn run(
                 let text = match read_body_limited(response).await {
                     Ok(text) => text,
                     Err(error) => {
-                        break (*route_index, Err((error, SettlementKind::UpstreamError)));
+                        break (
+                            (*model_index, *route_index),
+                            Err((error, SettlementKind::UpstreamError)),
+                        );
                     }
                 };
                 let preview = error_body_preview(&text);
                 break (
-                    *route_index,
+                    (*model_index, *route_index),
                     Err((
                         GatewayError::upstream(
                             StatusCode::BAD_GATEWAY,
@@ -1419,7 +1555,7 @@ async fn run(
                 }
                 tracing::warn!(%error, "upstream is unreachable");
                 break (
-                    *route_index,
+                    (*model_index, *route_index),
                     Err((
                         GatewayError::upstream(
                             StatusCode::BAD_GATEWAY,
@@ -1439,9 +1575,9 @@ async fn run(
     // picks fresh. `note_credential_used` feeds the least-recently-used rank
     // either way; both writes are best-effort.
     if upstream.is_ok() {
-        let (route_index, credential) = &attempts_list[index];
+        let (model_index, route_index, credential) = &attempts_list[index];
         state.db.affinity().note(
-            ordered[*route_index].channel_id,
+            model_routes[*model_index].ordered[*route_index].channel_id,
             conversation,
             credential.credential_id,
         );
@@ -1453,10 +1589,18 @@ async fn run(
             }
         });
     }
-    if served_at != 0 {
-        // The settlement names the route that answered: a failover settles
-        // under that channel's price and version, inside the same freeze.
-        turn.reroute(&ordered[served_at]);
+    let (served_model_index, served_route_index) = served_at;
+    if served_at != (0, 0) {
+        // The settlement names the model and route that answered: a failover
+        // settles under that channel's price and version, inside the same
+        // freeze — and a cross-model failover settles under the served model's
+        // name, so `servedModel` records what actually answered (issue #500).
+        let served = &model_routes[served_model_index];
+        turn.reroute(
+            &served.ordered[served_route_index],
+            &served.model,
+            served.upstream_model.clone(),
+        );
     }
 
     let response = match upstream {
@@ -1526,7 +1670,9 @@ async fn run(
                                 organization_id: organization.id,
                                 key_id: key.key_id,
                                 model: &request.model,
-                                channel: &ordered[served_at].channel,
+                                channel: &model_routes[served_model_index].ordered
+                                    [served_route_index]
+                                    .channel,
                                 output_text: &output_text,
                                 request_texts: &request.texts,
                                 streamed: false,
@@ -1591,7 +1737,9 @@ async fn run(
                         // answer is not stored: it was produced under another
                         // channel's upstream, and filing it under this one's
                         // key would serve it next time as this channel's own.
-                        if served_at == 0
+                        // A cross-model failover is failovered by definition —
+                        // the served model is not the name the lookup keys on.
+                        if served_at == (0, 0)
                             && let Some(((digest, policy), usage)) =
                                 cache_key.as_ref().zip(store_usage.as_ref())
                             && charged.is_some()

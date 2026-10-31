@@ -510,6 +510,7 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "mandates".to_owned(),
             "memberships".to_owned(),
             "model_aliases".to_owned(),
+            "model_fallbacks".to_owned(),
             "oauth_accounts".to_owned(),
             "oauth_states".to_owned(),
             "open_holds".to_owned(),

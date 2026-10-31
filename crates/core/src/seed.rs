@@ -506,6 +506,9 @@ impl Db {
             request,
             channel: &model.channel,
             model: &model.model,
+            // A seeded turn serves the model it names; no chain ran.
+            requested_model: &model.model,
+            served_model: &model.model,
             upstream_model: None,
             price_version: model.version,
             kind,
