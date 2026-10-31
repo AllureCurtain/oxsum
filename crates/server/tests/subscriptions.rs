@@ -502,9 +502,9 @@ async fn a_turn_draws_the_subscription_first_and_settles_its_share() {
         "the period counts the settled share, not the draw"
     );
 
-    // The settlement description names the entitlement that paid, at v9.
+    // The settlement description names the entitlement that paid, at v10.
     let record = settlement(&world, &id).await;
-    assert_eq!(record["v"], 9);
+    assert_eq!(record["v"], 10);
     assert_eq!(record["charged"], 5);
     let sub = &record["subscription"];
     assert!(sub["drawnMinor"].as_i64().unwrap() > 5);
