@@ -327,6 +327,7 @@ Copy `.env.example` to `.env` and the server and the tests pick it up automatica
 | `OXSUM_GITHUB_CLIENT_SECRET` | Optional; the OAuth app's client secret — keep it out of logs the way `OXSUM_SECRET_KEY` is kept |
 | `OXSUM_GITHUB_WEB_URL` | Tests only; the provider's web origin the authorize redirect and token exchange go to, default `https://github.com` — a stub stands there |
 | `OXSUM_GITHUB_API_URL` | Tests only; the provider's API origin, default `https://api.github.com` |
+| `OXSUM_OIDC_PROVIDERS` | Optional; the enterprise IdPs the login federates to (issue #504) — a JSON array `[{"name","issuer","clientId","clientSecret"}]`, one object per provider (`name` is the route segment: the login runs at `/api/v1/auth/oauth/oidc:{name}` and its callback registers as `<public-url>/api/v1/auth/oauth/oidc:{name}/callback`). Non-empty requires `OXSUM_PUBLIC_URL`; malformed JSON or a missing field refuses to boot. Unset or `[]`, no IdP buttons draw and the routes 404 |
 | `OXSUM_TURNSTILE_SITE_KEY` | Optional; the Cloudflare Turnstile site key the register page hands the widget — set together with `OXSUM_TURNSTILE_SECRET_KEY`, a subset is a startup error. Public by design: `auth/methods` publishes it |
 | `OXSUM_TURNSTILE_SECRET_KEY` | Optional; the secret `siteverify` authenticates with — keep it out of logs the way `OXSUM_SECRET_KEY` is kept |
 | `OXSUM_TURNSTILE_VERIFY_URL` | Tests only; the siteverify endpoint, default `https://challenges.cloudflare.com/turnstile/v0/siteverify` — a stub stands there |
