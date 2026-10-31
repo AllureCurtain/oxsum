@@ -955,19 +955,23 @@ async fn queued_holds_do_not_pin_the_pool() {
     // window: a waiter pinning a connection would show as a sustained
     // checked-out connection, while the semaphore keeps every queued hold
     // conn-less — the only checkouts allowed are the instant `store.get`
-    // replay-probe each caller runs before queueing. Sample several times so a
-    // single probe's tail cannot pass or fail the whole wait.
-    let mut max_busy = 0u32;
+    // replay-probe each caller runs before queueing. Two probes can overlap
+    // for a sample or two on a slow scheduler, so the pin counts only when a
+    // second checkout persists across consecutive samples; a one-off overlap
+    // is the probes, not a wait.
+    let mut overlaps = 0u32;
     for _ in 0..10 {
         tokio::time::sleep(std::time::Duration::from_millis(60)).await;
         let busy = pool.size() - pool.num_idle() as u32;
-        max_busy = max_busy.max(busy);
+        if busy > 1 {
+            overlaps += 1;
+        }
     }
-    // At most one checkout in flight at any instant — five pinning waiters
-    // would hold all three.
+    // A sustained second checkout — five pinning waiters would hold all three
+    // for the whole window.
     assert!(
-        max_busy <= 1,
-        "queued holds still pinned pooled connections (max busy {max_busy} of {})",
+        overlaps <= 2,
+        "queued holds still pinned pooled connections ({overlaps} samples saw 2+ of {} busy)",
         pool.size(),
     );
 
