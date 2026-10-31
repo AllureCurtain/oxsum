@@ -6975,7 +6975,7 @@ components:
       required: [planId, name, quotaMinor, resetPeriod, allowWalletOverflow, priceMinor, stripePriceId, enabled, sortOrder]
       properties:
         planId: { type: string, format: uuid }
-        name: { type: string, description: the catalog name — unique, and the PUT path's {name} }
+        name: { type: string, description: "the catalog name — unique, and the PUT path's {name}" }
         quotaMinor:
           type: integer
           format: int64

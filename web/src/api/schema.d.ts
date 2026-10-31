@@ -2077,6 +2077,169 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/org/subscription": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The organization's active subscription
+         * @description The subscription currently metering the organization's gateway
+         *     requests, or `null` when none is bound. The `consumedMinor` counter is
+         *     the period's spend so far against `quotaMinor`; when the plan's
+         *     `quotaMinor` is `null` the quota is unmetered and every request draws
+         *     in full. `state` is `active`, `cancelled` or `expired`; only an
+         *     `active` row is ever returned here — a cancelled or expired binding
+         *     leaves the organization unsubscribed.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The active subscription, or `null` */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["OrgSubscription"] | null;
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/org/subscription/checkout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open a Stripe checkout for a subscription plan
+         * @description Starts a Stripe Checkout session in `subscription` mode for the named
+         *     plan's `stripePriceId`; the answer is the URL the browser is sent to.
+         *     When Stripe reports `checkout.session.completed` the plan binds to the
+         *     organization with `source: stripe`, and each later `invoice.paid`
+         *     renews the period at the invoice's period end; a
+         *     `customer.subscription.deleted` event cancels the binding. A plan
+         *     without a `stripePriceId`, or a disabled one, is a `VALIDATION`;
+         *     without Stripe configured the endpoint answers `UNAVAILABLE`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SubscriptionCheckoutRequest"];
+                };
+            };
+            responses: {
+                /** @description The checkout URL and the plan it buys */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: {
+                                /**
+                                 * Format: uri
+                                 * @description where the browser completes payment
+                                 */
+                                checkoutUrl: string;
+                                /** Format: uuid */
+                                planId: string;
+                            };
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/org/subscription/periods": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The organization's subscription period history
+         * @description Every period a binding has ever metered for the organization, newest
+         *     first: the snapshot quota, what it consumed, and the `outcome` it
+         *     closed with (`boundary` for a rollover, `cancelled`, `expired`,
+         *     `upgrade` or `downgrade` for a mid-period rebind; `open` while it
+         *     meters). The audit trail for every subscription state transition is
+         *     these rows — one row opens with each binding or rollover and closes
+         *     with an outcome.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The organization's periods, newest first */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["SubscriptionPeriod"][];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/webhooks": {
         parameters: {
             query?: never;
@@ -2519,17 +2682,21 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Stripe's deposit-rail callback
+         * Stripe's deposit and subscription callback
          * @description The provider's unauthenticated webhook: `Stripe-Signature` verifies
          *     against `OXSUM_STRIPE_WEBHOOK_SECRET` (the same `t=<unix>,v1=<hex>`
          *     shape oxsum's own outbound webhooks use). `checkout.session.completed`
          *     confirms and credits the deposit the session names — the credit replays
          *     under `stripe:<session_id>` so a retried or raced delivery writes
-         *     nothing twice — and `checkout.session.expired` closes it.
-         *     `received_minor` records what Stripe reports paid; a number that
-         *     disagrees with `amount_minor` is for a human, never auto-patched.
-         *     A deployment without `OXSUM_STRIPE_*` answers 404: an unconfigured
-         *     rail has no webhook to verify.
+         *     nothing twice — and `checkout.session.expired` closes it. A session
+         *     opened in `subscription` mode instead binds the plan its metadata
+         *     names (`oxsum_plan_id`) to the `client_reference_id` organization,
+         *     with `source: stripe`. `invoice.paid` renews that binding's period at
+         *     the invoice line's period end, and `customer.subscription.deleted`
+         *     cancels it. `received_minor` records what Stripe reports paid; a
+         *     number that disagrees with `amount_minor` is for a human, never
+         *     auto-patched. A deployment without `OXSUM_STRIPE_*` answers 404: an
+         *     unconfigured rail has no webhook to verify.
          */
         post: {
             parameters: {
@@ -5345,6 +5512,212 @@ export interface paths {
                 500: components["responses"]["Error"];
             };
         };
+        trace?: never;
+    };
+    "/api/v1/admin/subscription-plans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the subscription plans
+         * @description Every plan the deployment defines, ordered by `sort_order` — the order
+         *     that also decides whether a rebind is an `upgrade` or a `downgrade` on
+         *     the closed period's outcome. Disabled plans are listed too; they
+         *     cannot be bound or checked out.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The plans, in catalog order */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["SubscriptionPlan"][];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/subscription-plans/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Create or update a subscription plan
+         * @description Upserts the plan by `name` (the unique catalog name in the path).
+         *     `quotaMinor` is the per-period credit quota in minor units; `null`
+         *     (explicit or absent) makes the plan unmetered — every request draws in
+         *     full. `resetPeriod` is `daily`, `weekly`, `monthly` or `never`: the
+         *     boundary on which `consumedMinor` returns to zero by closing the old
+         *     period as `boundary` and opening a fresh one — lazily on the first
+         *     draw after the boundary, and hourly from the rollover job; `never`
+         *     plans carry no `currentPeriodEnd` at all — they neither roll nor
+         *     expire, and only a cancel or the rail's `deleted` event ends them.
+         *     `allowWalletOverflow` decides what happens once the period quota is
+         *     exhausted: `true` (the default) holds the overflow against the
+         *     organization's wallet; `false` refuses the gateway request. Changing a
+         *     plan does not re-meter organizations already bound to it: the
+         *     `quotaMinor` and `allowWalletOverflow` a period runs under are
+         *     snapshotted onto the binding and its periods at bind and rollover
+         *     time.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    name: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SetSubscriptionPlanRequest"];
+                };
+            };
+            responses: {
+                /** @description The plan as it now stands */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["SubscriptionPlan"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/organizations/{organizationId}/subscription": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Bind a subscription plan to an organization
+         * @description Makes the `planId`'s plan the organization's metering subscription.
+         *     Rebinding the same plan it already runs is a no-op that answers the
+         *     current binding; binding a different plan closes the open period with
+         *     `outcome` `upgrade` or `downgrade` — decided by the plans' `sort_order`
+         *     — and opens a fresh binding whose period starts now. `source` names
+         *     how the binding came about (`admin` by default; `stripe` when a
+         *     checkout session completed); `stripeSubscriptionId` attaches the
+         *     Stripe subscription the webhook's `invoice.paid` and
+         *     `customer.subscription.deleted` events key on, and must be unique
+         *     across bindings (409 `CONFLICT`). A plan that does not exist is `404`,
+         *     a disabled one `400 VALIDATION_ERROR`.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    organizationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BindSubscriptionRequest"];
+                };
+            };
+            responses: {
+                /** @description The organization's binding as it now stands */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["OrgSubscription"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        post?: never;
+        /**
+         * Cancel the organization's subscription
+         * @description Ends the active binding: the subscription's state becomes `cancelled`,
+         *     its open period closes with `outcome` `cancelled`, and the
+         *     organization's next gateway request meters against the wallet alone.
+         *     Cancelling with no active binding is `404`.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    organizationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The cancelled subscription */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["OrgSubscription"];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/admin/holds": {
@@ -8873,6 +9246,147 @@ export interface components {
             validUntil?: string | null;
             /** @description a retry answers the row it created; the same key under different fields is 409 */
             idempotencyKey: string;
+        };
+        SubscriptionPlan: {
+            /** Format: uuid */
+            planId: string;
+            /** @description the catalog name — unique, and the PUT path's {name} */
+            name: string;
+            /**
+             * Format: int64
+             * @description the per-period credit quota; null meters the subscription without a quota — every request draws in full
+             */
+            quotaMinor: number | null;
+            /**
+             * @description the boundary on which the period closes as `boundary` and a fresh one opens; `never` plans carry no `currentPeriodEnd` — they neither roll nor expire
+             * @enum {string}
+             */
+            resetPeriod: "daily" | "weekly" | "monthly" | "never";
+            /** @description what an exhausted quota does — `true` holds the overflow against the wallet, `false` refuses the gateway request */
+            allowWalletOverflow: boolean;
+            /**
+             * Format: int64
+             * @description what the plan costs per period, for display and checkout — subscription quota itself is entitlement, not ledger money
+             */
+            priceMinor: number;
+            /** @description the Stripe price a subscription checkout creates sessions for; null means the plan is admin-bound only */
+            stripePriceId: string | null;
+            /** @description a disabled plan cannot be bound or checked out */
+            enabled: boolean;
+            /** @description catalog order — a rebind to a higher `sortOrder` closes the period as `upgrade`, a lower one as `downgrade` */
+            sortOrder: number;
+        };
+        SetSubscriptionPlanRequest: {
+            /**
+             * Format: int64
+             * @description the per-period quota; absent or null unmeters the plan
+             */
+            quotaMinor: number | null;
+            /** @enum {string} */
+            resetPeriod: "daily" | "weekly" | "monthly" | "never";
+            /**
+             * @description what an exhausted quota does — overflow to the wallet, or refuse
+             * @default true
+             */
+            allowWalletOverflow: boolean;
+            /**
+             * Format: int64
+             * @default 0
+             */
+            priceMinor: number;
+            stripePriceId?: string | null;
+            /** @default true */
+            enabled: boolean;
+            /** @default 0 */
+            sortOrder: number;
+        };
+        OrgSubscription: {
+            /** Format: uuid */
+            subscriptionId: string;
+            /** Format: uuid */
+            organizationId: string;
+            /** Format: uuid */
+            planId: string;
+            /**
+             * @description only an `active` binding meters requests
+             * @enum {string}
+             */
+            state: "active" | "cancelled" | "expired";
+            /** Format: date-time */
+            currentPeriodStart: string;
+            /**
+             * Format: date-time
+             * @description the boundary the period rolls at; null for a `never` plan, which has no boundary to roll and no lapse to expire
+             */
+            currentPeriodEnd: string | null;
+            /**
+             * Format: int64
+             * @description what this period has drawn against `quotaMinor`
+             */
+            consumedMinor: number;
+            /**
+             * Format: int64
+             * @description the plan quota snapshotted at bind time — a later plan change does not re-meter a running binding
+             */
+            quotaMinor: number | null;
+            /** @description the plan's overflow flag snapshotted at bind time */
+            allowWalletOverflow: boolean;
+            /** @description how the binding came about — `admin` for an operator bind, `stripe` for a checkout session */
+            source: string;
+            /** @description the Stripe subscription the `invoice.paid`/`customer.subscription.deleted` webhook events key on */
+            stripeSubscriptionId: string | null;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        SubscriptionPeriod: {
+            /** Format: uuid */
+            periodId: string;
+            /** Format: uuid */
+            subscriptionId: string;
+            /** Format: uuid */
+            organizationId: string;
+            /** Format: date-time */
+            periodStart: string;
+            /**
+             * Format: date-time
+             * @description the boundary the period was meant to roll at; null for a `never` plan
+             */
+            periodEnd: string | null;
+            /**
+             * Format: int64
+             * @description the quota this period ran under, snapshotted when it opened
+             */
+            quotaMinor: number | null;
+            /**
+             * Format: int64
+             * @description what the period drew — settled draws only move this counter; a released share returns
+             */
+            consumedMinor: number;
+            /**
+             * @description `open` while it meters; `boundary` on a rollover; `cancelled`, `expired`, `upgrade` or `downgrade` for how it ended
+             * @enum {string}
+             */
+            outcome: "open" | "boundary" | "cancelled" | "expired" | "upgrade" | "downgrade";
+            /** Format: date-time */
+            createdAt: string;
+        };
+        BindSubscriptionRequest: {
+            /** Format: uuid */
+            planId: string;
+            /**
+             * @description the binding's provenance — `admin` for an operator bind; the Stripe checkout webhook binds with `stripe`
+             * @default admin
+             */
+            source: string;
+            /** @description attaches the Stripe subscription id the webhook renewals and cancellations key on; must be unique across bindings */
+            stripeSubscriptionId?: string | null;
+        };
+        SubscriptionCheckoutRequest: {
+            /**
+             * Format: uuid
+             * @description must name an enabled plan with a `stripePriceId`
+             */
+            planId: string;
         };
         AuditEntry: {
             /** Format: uuid */
