@@ -342,7 +342,7 @@ The SPA's dashboard pages read these (issue #234); all are session or key scoped
 | `GET /api/v1/org` | the session's organization — including `displayCurrency`, the fiat rendering it declares (null: credits only) |
 | `PATCH /api/v1/org` | session-only, owner or admin — `{"displayCurrency": {"code","ratePerCredit","decimals"} | null}` sets or clears the organization's display currency (issue #257); a member session or an API key is `FORBIDDEN` |
 | `GET /api/v1/org/members` | `{members}` — every membership with role and budget cap |
-| `GET /api/v1/holds` | `{holds}` — the organization's in-flight holds, newest first |
+| `GET /api/v1/holds` | `{holds}` — the organization's in-flight holds (gateway turns and `POST /api/v1/holds` reservations alike, read off the sweeper's watch table), newest first |
 | `GET /api/v1/entries?before&limit` | `{rows, nextCursor}` — every ledger entry (index, id, description, contentHash) |
 | `GET /api/v1/bills?before` | `{rows, nextCursor}` — only money-moving entries (topUp/adjustment/settlement, signed amount) |
 | `GET /api/v1/balance` | plus `reservedMinor` and `spentThisMonthMinor` — the frozen total and month spend |
