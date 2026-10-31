@@ -19,6 +19,7 @@ mod device;
 mod discounts;
 mod display;
 mod email_tokens;
+mod entitlement;
 mod error;
 mod heads;
 mod holds;
@@ -85,6 +86,10 @@ pub use doubleentry::{
     TreeHead,
 };
 pub use email_tokens::{EmailPurpose, MintedEmailToken};
+pub use entitlement::{
+    Entitlement, EntitlementChecks, EntitlementMandate, EntitlementRead, EntitlementReason,
+    MandateVerdict, RpmVerdict, TpmVerdict,
+};
 pub use error::WalletError;
 pub use heads::{
     Consistency, Cosigner, HeadSigningKey, KeyPublication, MemoryWitnessStore, Origin,

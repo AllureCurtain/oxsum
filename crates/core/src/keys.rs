@@ -864,7 +864,7 @@ fn scopes_json(constraints: &KeyConstraints) -> Option<serde_json::Value> {
 
 /// Reads the stored `jsonb` scopes back into a map; `NULL` and an unreadable
 /// shape both yield `None`, matching the "no scopes" reading a NULL takes.
-fn scopes_from_json(value: Option<serde_json::Value>) -> Option<TpmScopes> {
+pub(crate) fn scopes_from_json(value: Option<serde_json::Value>) -> Option<TpmScopes> {
     value.and_then(|v| serde_json::from_value(v).ok())
 }
 
