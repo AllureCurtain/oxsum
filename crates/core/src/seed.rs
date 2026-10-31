@@ -277,6 +277,7 @@ impl Db {
                     requests_per_minute: None,
                     tokens_per_minute: None,
                     tokens_per_minute_scopes: None,
+                    required_policies: None,
                 },
             ),
             (
@@ -287,6 +288,7 @@ impl Db {
                     requests_per_minute: None,
                     tokens_per_minute: None,
                     tokens_per_minute_scopes: None,
+                    required_policies: None,
                 },
             ),
             (
@@ -297,6 +299,7 @@ impl Db {
                     requests_per_minute: None,
                     tokens_per_minute: None,
                     tokens_per_minute_scopes: None,
+                    required_policies: None,
                 },
             ),
         ];
@@ -517,6 +520,7 @@ impl Db {
             mandate: None,
             subscription: None,
             cache: None,
+            guardrail: Vec::new(),
             reason: None,
         }
         .description()?;
