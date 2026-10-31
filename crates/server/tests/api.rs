@@ -334,6 +334,119 @@ async fn a_settlement_naming_no_hold_is_not_found() {
     assert_eq!(body["data"]["availableMinor"], 4_000_000);
 }
 
+/// A REST hold is watched like a gateway hold (issue #485): the sweeper only
+/// reclaims holds it sees in `oxsum.open_holds`, and `POST /api/v1/holds` used to
+/// freeze the reservation without writing a watch row — invisible to the
+/// sweeper, to `GET /holds`, and to `/bills`. The hold must register the row so
+/// a process that never settles is reclaimed at the hold timeout.
+#[tokio::test]
+async fn a_rest_hold_is_watched_and_swept() {
+    let (app, pool) = app_or_skip!(Signup::Open);
+    let (_registration, key) = register(&app, "watched-hold").await;
+    let db = Db::from_pool(pool.clone());
+
+    // Fund the wallet so the hold can reserve.
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/topups",
+        Some(json!({"idempotencyKey": "t1", "amountMinor": 5_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Take a REST hold — the idempotency key is the hold key.
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/holds",
+        Some(json!({"idempotencyKey": "rest-h1", "amountMinor": 2_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // The watch row exists: the sweeper can see this hold. Before the fix the
+    // REST path froze the ledger without noting the row, so it was invisible.
+    let watch = db
+        .open_hold("rest-h1")
+        .await
+        .expect("the watch lookup runs")
+        .expect("the REST hold is watched");
+    assert_eq!(watch.freeze_minor, 2_000_000);
+    // Attributed to the key that took it.
+    assert!(watch.key_id.is_some());
+
+    // The org's open-holds list names it too — `/api/v1/holds` reads the same
+    // table, so the hold is no longer invisible to the organization. The REST
+    // hold carries no gateway context, so it is the row with an empty model and
+    // the freeze it took.
+    let (status, body) = call(&app, "GET", "/api/v1/holds", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body["data"]["holds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["freezeMinor"] == 2_000_000 && h["model"] == ""),
+        "the REST hold shows in the open-holds list: {body}"
+    );
+
+    // A settled REST hold's row clears with the settlement — the list and the
+    // sweeper both stop seeing it without waiting for the timeout.
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/settlements",
+        Some(json!({"holdKey": "rest-h1", "actualMinor": 500_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        db.open_hold("rest-h1").await.unwrap().is_none(),
+        "the settled hold's watch row cleared"
+    );
+
+    // A second watched hold that nobody settles is the sweeper's case: age it
+    // past the timeout and the freeze releases — the leak the issue reported.
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/holds",
+        Some(json!({"idempotencyKey": "rest-h2", "amountMinor": 1_000_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let tenants = oxsum_core::Tenants::new(pool.clone());
+    let cutoff = time::OffsetDateTime::now_utc() + time::Duration::minutes(31);
+    let report = oxsum_core::sweep_stale_holds(
+        &db,
+        &tenants,
+        cutoff,
+        time::OffsetDateTime::now_utc().date(),
+    )
+    .await
+    .expect("the sweep runs");
+    assert!(report.resolved >= 1, "the watched REST hold was swept");
+
+    // The reservation drained: 5M topped up, 500k settled, the swept hold's 1M
+    // freeze released — available stands at 4.5M, and the watch row is gone.
+    let (status, body) = call(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["data"]["availableMinor"], 4_500_000,
+        "the swept hold released its freeze"
+    );
+    assert!(
+        db.open_hold("rest-h2").await.unwrap().is_none(),
+        "the swept hold's watch row cleared"
+    );
+}
+
 #[tokio::test]
 async fn a_reused_key_with_different_content_is_a_conflict() {
     let (app, _pool) = app_or_skip!(Signup::Open);
