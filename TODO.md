@@ -4,7 +4,9 @@ Updated: 2026-10-31
 
 ## In progress
 
-- Verifier SDK extraction (local-notes/2026-10-31 §B-1): `oxsum-verify` and its vendored `doubleentry` dep become publishable so the proof math can ship on crates.io, and `web/verify-sdk/` scaffolds the `verify-oxsum-bill` npm package — the JS wrapper over the wasm-bindgen output any billing surface can embed (#468, this PR).
+- Public demo deployment (issue #470): `oxsum.785777.xyz` now runs the latest image with open signup (`OXSUM_SIGNUP=open`), a 5-credit signup bonus, the seeded world (`admin@oxsum.local` / `admin-password`), a real DeepSeek upstream wired as a channel, and the signed head on `OXSUM_HEAD_SIGNING_KEY`. README links it under the title.
+
+- Verifier SDK extraction (local-notes/2026-10-31 §B-1): `oxsum-verify` and its vendored `doubleentry` dep became publishable so the proof math can ship on crates.io, and `web/verify-sdk/` scaffolds the `verify-oxsum-bill` npm package — the JS wrapper over the wasm-bindgen output any billing surface can embed (#468, PR #469).
 
 - Backend direction sweep (local-notes/2026-10-30 §3): the x402 facilitator leg's settle refusals now record *why* on `deposits.meta.settleRefusal` — the facilitator's `error_reason` or a local transport note — while the caller still sees a plain `FORBIDDEN` and the nonce anchor keeps the retry clean (#439, PR #443); team-level budgets ship — `oxsum.teams` (migration 0059) groups members under a `budgetLimitMinor` enforced inside `hold_for_key`'s locked window between the member budget and the organization credit line, `team_committed_in` summing the ledger's own postings across the roster's keys. `teamId` on `PATCH /api/v1/org/members/{userId}` assigns the member; `/api/v1/org/teams` manages the subgroups (#440, PR #445); the `openai` usage adapter now tolerates the OpenAI-compatible providers' field drift — top-level `reasoning_tokens` (sglang/vLLM), `prompt_cache_hit_tokens`/`cached_tokens` aliases (DeepSeek), and `total_tokens` plus one side deriving the missing side (#441, this PR).
 

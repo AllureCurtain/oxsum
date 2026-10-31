@@ -1,6 +1,7 @@
 # oxsum
 
 [![CI](https://github.com/AllureCurtain/oxsum/actions/workflows/ci.yml/badge.svg)](https://github.com/AllureCurtain/oxsum/actions/workflows/ci.yml)
+[![Live demo](https://img.shields.io/badge/demo-oxsum.785777.xyz-blue)](https://oxsum.785777.xyz)
 
 A verifiable AI credit wallet, written in Rust. Users top up credits; before each streaming LLM call, oxsum freezes an upper-bound estimate, then settles against the actual token usage reported by the upstream provider and refunds whatever was not spent. Every transaction is recorded in an append-only Merkle log: users receive an inclusion proof for each bill and can verify in their own browser — without trusting the server — that their billing history has not been tampered with.
 
@@ -27,6 +28,10 @@ curl -X POST localhost:3000/api/v1/auth/register \
 ```
 
 The API reference is in [docs/api.md](docs/api.md).
+
+## Live demo
+
+**[oxsum.785777.xyz](https://oxsum.785777.xyz)** is a running deployment against a real upstream (DeepSeek). Register an account — new signups get 5 demo credits — or log in as `admin@oxsum.local` / `admin-password` to see the seeded world: 800 credits of balance, 100+ settled turns in the ledger, and a signed head you can verify on `/verify`.
 
 ## Demo
 
