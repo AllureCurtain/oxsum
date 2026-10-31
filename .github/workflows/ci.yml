@@ -123,6 +123,35 @@ jobs:
       - if: needs.filter.outputs.rust == 'true'
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+  # Publishability of the crates that ship outside the workspace (issue #468):
+  # oxsum-verify and its vendored doubleentry dependency must `cargo publish
+  # --dry-run` clean, or a broken manifest reaches main and the real publish
+  # fails on it. Runs whenever Cargo manifests or the publishable crates move.
+  publishable:
+    name: publishable
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            crates:
+              - 'crates/verify/**'
+              - 'crates/doubleentry/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/**'
+      - name: No publishable-crate change
+        if: steps.filter.outputs.crates != 'true'
+        run: echo "no publishable-crate change; skipping the dry-run"
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.filter.outputs.crates == 'true'
+      - if: steps.filter.outputs.crates == 'true'
+        run: |
+          cargo publish --dry-run -p doubleentry
+          cargo publish --dry-run -p oxsum-verify
+
   # The image's language-boundary stages (issues #296/#309). The release-image gate
   # only runs after merge, which is how #284 shipped a wasm stage that could not
   # build and #256 removed the assets its smoke test still probed. These jobs build

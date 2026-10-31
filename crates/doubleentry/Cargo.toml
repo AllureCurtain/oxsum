@@ -1,7 +1,7 @@
 [package]
 name        = "doubleentry"
 version     = "0.7.0"
-publish     = false  # oxsum: vendored copy, see docs/decisions.md
+publish     = true   # oxsum: publishable so oxsum-verify can ship (issue #468); still vendored here, see docs/decisions.md
 edition     = "2024"
 rust-version = "1.94"
 authors     = ["hupe1980"]
