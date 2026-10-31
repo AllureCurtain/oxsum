@@ -891,7 +891,25 @@ pub(crate) async fn hold(
                 )
                 .await
             {
-                Ok(receipt) => ok(receipt),
+                Ok(receipt) => {
+                    // Watch the hold so the sweeper can reclaim it — the same
+                    // contract the gateway keeps: a hold nobody watches freezes
+                    // forever (issue #485). A REST hold carries no gateway
+                    // context, so the swept record's request/model/channel are
+                    // honest placeholders; `SettlementKind::Swept` already marks
+                    // it an anomaly, not a turn that ran.
+                    state
+                        .db
+                        .note_open_hold(&rest_open_hold(
+                            &r.idempotency_key,
+                            &principal.organization().tenant_id,
+                            r.amount_minor,
+                            Some(key.key_id),
+                            mandate.as_ref().map(|m| m.verified.mandate_id),
+                        ))
+                        .await?;
+                    ok(receipt)
+                }
                 Err(error) => {
                     // A hold refused for funds while the organization lives on a
                     // credit line is `org.credit_limit_exceeded` (issue #200) —
@@ -907,9 +925,57 @@ pub(crate) async fn hold(
                 }
             }
         }
-        None => ok(w
-            .hold(&r.idempotency_key, "", r.amount_minor, today())
-            .await?),
+        None => {
+            let receipt = w
+                .hold(&r.idempotency_key, "", r.amount_minor, today())
+                .await?;
+            // A session hold is unattributed — no key, no mandate — but it still
+            // reserves, so it must be watched the same way (issue #485).
+            state
+                .db
+                .note_open_hold(&rest_open_hold(
+                    &r.idempotency_key,
+                    &principal.organization().tenant_id,
+                    r.amount_minor,
+                    None,
+                    None,
+                ))
+                .await?;
+            ok(receipt)
+        }
+    }
+}
+
+/// The watch row a REST hold registers (issue #485): `POST /api/v1/holds` takes
+/// an amount, not a gateway request, so the fields a swept settlement would
+/// rebuild a real turn from — request id, model, channel, the price version —
+/// are honest empties. A swept REST hold never ran a turn; the record it lands
+/// is the anomaly the kind already names, not a reconstruction.
+fn rest_open_hold(
+    hold_key: &str,
+    tenant_id: &str,
+    freeze_minor: i64,
+    key_id: Option<uuid::Uuid>,
+    mandate_id: Option<uuid::Uuid>,
+) -> oxsum_core::OpenHold {
+    oxsum_core::OpenHold {
+        hold_key: hold_key.to_owned(),
+        tenant_id: tenant_id.to_owned(),
+        request_id: String::new(),
+        model: String::new(),
+        channel: String::new(),
+        price_version: 0,
+        input_price: 0,
+        output_price: 0,
+        freeze_minor,
+        key_id,
+        mandate_id,
+        end_user: None,
+        service_tier: None,
+        tags: std::collections::BTreeMap::new(),
+        sweep_attempts: 0,
+        last_error: None,
+        dead_at: None,
     }
 }
 
@@ -921,7 +987,14 @@ pub(crate) async fn settle(
     let w = wallet(&state.tenants, principal.organization()).await?;
     // No description: this endpoint takes a hold key, not a reason. The gateway, which knows what
     // the hold is for, records one.
-    ok(w.settle(&r.hold_key, "", r.actual_minor, today()).await?)
+    let receipt = w.settle(&r.hold_key, "", r.actual_minor, today()).await?;
+    // A REST hold is watched (issue #485): the settled hold's row is done, and
+    // clearing it here keeps `GET /api/v1/holds` honest instead of leaving the
+    // row for the sweeper to reap as stale.
+    if let Err(clear) = state.db.clear_open_hold(&r.hold_key).await {
+        tracing::error!(%clear, "clearing a settled REST hold's watch row failed");
+    }
+    ok(receipt)
 }
 
 /// A statement and its itemized lines, as the detail endpoint answers it.
