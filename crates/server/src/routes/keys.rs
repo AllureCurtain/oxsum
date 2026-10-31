@@ -1,12 +1,16 @@
 use axum::extract::{Extension, Path, State};
+use axum::http::HeaderMap;
 use serde::Deserialize;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use oxsum_core::{ApiKey, CreatedApiKey, CreatedMandate, Mandate, Principal, WalletError};
+use oxsum_core::{
+    ApiKey, CreatedApiKey, CreatedMandate, Entitlement, EntitlementMandate, Mandate,
+    MandateVerdict, Principal, RpmVerdict, TpmVerdict, WalletError,
+};
 
 use crate::AppState;
-use crate::error::{ApiError, ApiJson};
+use crate::error::{ApiError, ApiJson, ApiQuery};
 use crate::routes::{ApiResult, ok};
 
 #[derive(Deserialize)]
@@ -232,4 +236,187 @@ pub(crate) async fn patch_key(
         Some(key) => ok(key),
         None => Err(ApiError::not_found()),
     }
+}
+
+/// The query of `GET /api/v1/org/keys/{keyId}/entitlement` (issue #501): the
+/// request the answer should be shaped for — the model it would call, the
+/// charge it would take, and the `metadata` tags it would carry (repeated
+/// `tag=name:value`, resolving which tag-scoped token buckets the request
+/// would land in).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EntitlementQuery {
+    /// The gateway model the request would call; absent skips the allowlist question.
+    #[serde(default)]
+    model: Option<String>,
+    /// A hypothetical charge in minor units — the freeze a real request would take.
+    #[serde(default)]
+    estimate: Option<i64>,
+    /// The request's `metadata` tag values, `name:value` — resolves which
+    /// tag-scoped TPM buckets the turn would accrue into.
+    #[serde(default)]
+    tag: Vec<String>,
+}
+
+/// `GET /api/v1/org/keys/{keyId}/entitlement`: may this key's request be
+/// admitted now — the same checks admission runs, read-only (issue #501).
+///
+/// The ledger-side verdicts come from `Wallet::entitlement_read`; the request
+/// window is peeked at through the server's limiter (consuming nothing) and
+/// the settled-token window through `Db::tpm_window*`, and
+/// `Entitlement::compose` picks the first refusal in the documented order. A
+/// presented `X-Oxsum-Mandate` adds the delegation's own verdict — a blob that
+/// cannot verify is the `mandate_invalid` answer, not an error: diagnosing a
+/// refused delegate is half of what the endpoint is for.
+pub(crate) async fn key_entitlement(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(key_id): Path<Uuid>,
+    headers: HeaderMap,
+    ApiQuery(query): ApiQuery<EntitlementQuery>,
+) -> ApiResult<Entitlement> {
+    let estimate = query.estimate;
+    if estimate.is_some_and(|e| e <= 0) {
+        return Err(ApiError::from(WalletError::InvalidInput(
+            "estimate must be a positive amount in minor units".into(),
+        )));
+    }
+    let mut tags = std::collections::BTreeMap::new();
+    for pair in &query.tag {
+        let Some((name, value)) = pair.split_once(':') else {
+            return Err(ApiError::from(WalletError::InvalidInput(
+                "a tag parameter is `name:value`".into(),
+            )));
+        };
+        tags.insert(name.to_owned(), value.to_owned());
+    }
+    // A presented mandate is verified the way the hold paths verify it — the
+    // signature checks against the asked-about key's own public half. Any way
+    // the blob can fail is the `mandate_invalid` verdict, not an HTTP error:
+    // the caller is asking *why* a delegate cannot call, and a blob that does
+    // not verify *is* the answer.
+    let mandate = match headers
+        .get(crate::gateway::MANDATE_HEADER)
+        .and_then(|v| v.to_str().ok())
+    {
+        Some(blob) => {
+            let verifying = match state.config.secret() {
+                Some(secret) => state.db.mandate_verifying_key(&key_id, secret).await?,
+                None => None,
+            };
+            match verifying.and_then(|v| oxsum_core::parse_presented(blob, &v)) {
+                Some(presented) => Some(MandateVerdictOrMandate::Verified(EntitlementMandate {
+                    mandate_id: presented.verified.mandate_id,
+                    key_id: presented.verified.key_id,
+                    not_before_ts: presented.not_before_ts(),
+                    not_after_ts: presented.not_after_ts(),
+                    cap_minor: presented.verified.cap_minor,
+                    models: presented.verified.models.clone(),
+                })),
+                None => Some(MandateVerdictOrMandate::Invalid),
+            }
+        }
+        None => None,
+    };
+    let w = crate::routes::wallet(&state.tenants, principal.organization()).await?;
+    let (mandate_param, mandate_presented_invalid) = match &mandate {
+        Some(MandateVerdictOrMandate::Verified(m)) => (Some(m), false),
+        Some(MandateVerdictOrMandate::Invalid) => (None, true),
+        None => (None, false),
+    };
+    let read = w
+        .entitlement_read(
+            &principal.organization().id,
+            &key_id,
+            principal.key_scope(),
+            query.model.as_deref(),
+            estimate,
+            &tags,
+            mandate_param,
+        )
+        .await?;
+    let Some(mut read) = read else {
+        // A key id outside the caller's scope — another organization's, or a
+        // member's colleague's — is not found, never forbidden: ids cannot be probed.
+        return Err(ApiError::not_found());
+    };
+    if mandate_presented_invalid {
+        read.mandate = Some(MandateVerdict::Invalid);
+    }
+    // The request window is peeked, not admitted: `peek` reports the allowance
+    // `admit` would answer without recording the request.
+    let rpm = read.requests_per_minute.and_then(|limit| {
+        (limit > 0).then(|| {
+            match state
+                .rate_limiter
+                .peek(key_id, limit as u32, std::time::Instant::now())
+            {
+                Ok(allowance) => RpmVerdict {
+                    limit: allowance.limit,
+                    remaining: allowance.remaining,
+                    allowed: true,
+                    retry_after_secs: None,
+                },
+                Err(limited) => RpmVerdict {
+                    limit: limited.limit,
+                    remaining: 0,
+                    allowed: false,
+                    retry_after_secs: Some(limited.retry_after.as_secs()),
+                },
+            }
+        })
+    });
+    // The token window, when the key caps it: settled tokens inside the
+    // trailing minute against the cap — `settled < limit` says the window has
+    // room at all, `remainingTpm` how much. The estimate is a money figure, not
+    // tokens, so it is not judged here; each tag-scoped bucket the request's
+    // tags land in is checked the same way, and the tightest is the answer's.
+    let mut tpm: Option<TpmVerdict> = None;
+    if let Some(limit) = read.tokens_per_minute
+        && limit > 0
+    {
+        let (settled, retry_after_secs) = state.db.tpm_window(key_id).await?;
+        tpm = Some(TpmVerdict {
+            settled,
+            limit: i64::from(limit),
+            allowed: settled < i64::from(limit),
+            retry_after_secs,
+        });
+    }
+    for (scope_name, cap) in &read.tpm_scopes {
+        let (settled, retry_after_secs) = state.db.tpm_window_scoped(key_id, scope_name).await?;
+        let verdict = TpmVerdict {
+            settled,
+            limit: *cap,
+            allowed: settled < *cap,
+            retry_after_secs,
+        };
+        // The tightest bucket is the answer's figure — a refusal always is;
+        // between passing buckets the least headroom names what the caller
+        // would hit first.
+        let replace = match &tpm {
+            None => true,
+            Some(current) => match (current.allowed, verdict.allowed) {
+                (true, false) => true,
+                (true, true) => {
+                    (verdict.limit - verdict.settled) < (current.limit - current.settled)
+                }
+                (false, _) => false,
+            },
+        };
+        if replace {
+            tpm = Some(verdict);
+        }
+    }
+    ok(Entitlement::compose(read, rpm, tpm))
+}
+
+/// What a presented `X-Oxsum-Mandate` resolved to for the entitlement read:
+/// the verified fields to judge, or the mark that the blob cannot verify —
+/// which the answer reports as `mandate_invalid` rather than an error.
+enum MandateVerdictOrMandate {
+    /// `parse_presented` verified the blob: the fields to judge.
+    Verified(EntitlementMandate),
+    /// The blob cannot verify — no seed, bad signature, foreign shape.
+    Invalid,
 }

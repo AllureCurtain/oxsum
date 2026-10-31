@@ -67,6 +67,7 @@ pub fn router(state: AppState) -> Router {
             "/org/keys/{key_id}/mandates",
             get(keys::list_mandates).post(keys::create_mandate),
         )
+        .route("/org/keys/{key_id}/entitlement", get(keys::key_entitlement))
         .route("/org/invitations", post(org::create_invitation))
         .route("/org/members", get(org::list_members).post(org::add_member))
         .route(

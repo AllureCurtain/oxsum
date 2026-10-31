@@ -49,6 +49,12 @@ pub trait RateLimiter: Send + Sync {
     /// the allowance consumed. A full window answers [`RateLimited`] and records
     /// nothing — a refused request is not itself rate-limited further.
     fn admit(&self, key: Uuid, per_minute: u32, at: Instant) -> Result<RateAllowance, RateLimited>;
+
+    /// The allowance `admit` would answer now, recording nothing (issue #501):
+    /// the entitlement read's peek at the same window admission judges. The
+    /// window may change before a real request arrives — the allowance is a
+    /// snapshot, like every figure that endpoint reports.
+    fn peek(&self, key: Uuid, per_minute: u32, at: Instant) -> Result<RateAllowance, RateLimited>;
 }
 
 /// The in-process [`RateLimiter`]: one queue of instants per key, the oldest
@@ -100,6 +106,43 @@ impl RateLimiter for SlidingWindow {
             hits.remove(&key);
         }
         Ok(allowance)
+    }
+
+    fn peek(&self, key: Uuid, per_minute: u32, at: Instant) -> Result<RateAllowance, RateLimited> {
+        if per_minute == 0 {
+            // Same fail-open as `admit`: a zero reaching here uncaps rather
+            // than refusing every request.
+            return Ok(RateAllowance {
+                limit: 0,
+                remaining: 0,
+                resets_in: WINDOW,
+            });
+        }
+        let mut hits = self.hits.lock().unwrap_or_else(|e| e.into_inner());
+        // The peek expires stale entries the way admit does — a window full of
+        // aged-out hits must not report itself full — but it pushes nothing and
+        // leaves an emptied queue behind, because the answer is a snapshot, not
+        // a record.
+        let queue = hits.entry(key).or_default();
+        while queue
+            .front()
+            .is_some_and(|t| at.duration_since(*t) >= WINDOW)
+        {
+            queue.pop_front();
+        }
+        if queue.len() >= per_minute as usize {
+            let oldest = queue.front().copied().unwrap_or(at);
+            return Err(RateLimited {
+                limit: per_minute,
+                retry_after: WINDOW.saturating_sub(at.duration_since(oldest)),
+            });
+        }
+        let oldest = queue.front().copied().unwrap_or(at);
+        Ok(RateAllowance {
+            limit: per_minute,
+            remaining: per_minute - queue.len() as u32,
+            resets_in: WINDOW.saturating_sub(at.duration_since(oldest)),
+        })
     }
 }
 
