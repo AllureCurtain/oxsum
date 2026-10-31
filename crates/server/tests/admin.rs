@@ -161,12 +161,30 @@ async fn a_channel_is_created_priced_and_listed() {
             "name": fresh("admin"),
             "baseUrl": "https://upstream.example/v1",
             "apiKey": "sk-upstream-abcd1234",
-            "protocol": "gemini",
+            "protocol": "grok",
         })),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+
+    // `gemini` is now a protocol the registry knows (issue #494): the write is
+    // accepted like `openai` and `anthropic` are.
+    let gemini_channel = fresh("admin");
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/admin/channels",
+        Some(json!({
+            "name": gemini_channel,
+            "baseUrl": "https://generativelanguage.example/v1beta",
+            "apiKey": "sk-gemini-abcd1234",
+            "protocol": "gemini",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["protocol"], "gemini");
 
     // Prices: the first write is version 1, the second appends version 2.
     let price = |input: i64, output: i64| {

@@ -63,6 +63,14 @@ async fn a_secret_seeds_a_catalog_and_history() {
     let models: Vec<&str> = catalog.iter().map(|m| m.model.as_str()).collect();
     assert!(models.contains(&"demo-chat"), "{models:?}");
     assert!(models.contains(&"demo-reasoner"), "{models:?}");
+    // The demo world's second protocol (issue #494): a `gemini` channel with
+    // its own priced model joins the seeded catalog.
+    assert!(models.contains(&"demo-gemini-flash"), "{models:?}");
+    let gemini = catalog
+        .iter()
+        .find(|model| model.model == "demo-gemini-flash")
+        .expect("the gemini model is seeded");
+    assert_eq!(gemini.protocol, "gemini");
 
     // The rerun stays a no-op even though the channel now exists.
     let second = db.seed_demo_with_channel(&key).await.unwrap();

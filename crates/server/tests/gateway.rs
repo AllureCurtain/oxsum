@@ -74,6 +74,12 @@ enum Answer {
     MessagesStream { terminated: bool },
     /// Upstream refuses, in Anthropic's own error shape.
     MessagesRefuse { status: u16, body: Value },
+    /// A whole Gemini `generateContent` answer — what `/v1beta` upstreams
+    /// answer with (issue #494). `usage` is the `usageMetadata` object verbatim.
+    Gemini { usage: Option<Value> },
+    /// A Gemini `streamGenerateContent` event stream; `terminated` says whether
+    /// the last event carries a candidate `finishReason`.
+    GeminiStream { terminated: bool },
     /// A whole embeddings answer: vectors plus a `prompt_tokens` usage report,
     /// or no report at all when `tokens` is `None` (issue #170).
     Embeddings { tokens: Option<i64> },
@@ -95,6 +101,7 @@ enum Answer {
 struct Seen {
     authorization: Option<String>,
     api_key: Option<String>,
+    goog_api_key: Option<String>,
     anthropic_version: Option<String>,
     body: Value,
 }
@@ -105,7 +112,6 @@ struct Script {
     answers: Arc<Mutex<HashMap<String, Answer>>>,
     seen: Arc<Mutex<Vec<Seen>>>,
 }
-
 impl Script {
     /// Teaches upstream how to answer for one model.
     fn answers(&self, model: &str, answer: Answer) {
@@ -124,14 +130,15 @@ impl Script {
 /// Starts the scripted upstream and returns its base URL, as a deployment would configure it.
 ///
 /// The base URL ends in `/v1` because that is what a provider publishes, and the gateway
-/// appends the protocol's own path — `/chat/completions` or `/messages` — to whatever
-/// it is given.
+/// appends the protocol's own path — `/chat/completions`, `/messages`, or a Gemini
+/// `models/{model}:<action>` — to whatever it is given.
 async fn start_upstream(script: Script) -> String {
     let app = Router::new()
         .route("/v1/chat/completions", post(upstream))
         .route("/v1/messages", post(messages_upstream))
         .route("/v1/embeddings", post(aux_upstream))
         .route("/v1/rerank", post(aux_upstream))
+        .route("/v1/models/{*target}", post(gemini_upstream))
         .with_state(script);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -152,6 +159,10 @@ fn note(script: &Script, headers: &HeaderMap, body: &Value) {
             .map(str::to_owned),
         api_key: headers
             .get("x-api-key")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned),
+        goog_api_key: headers
+            .get("x-goog-api-key")
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned),
         anthropic_version: headers
@@ -484,6 +495,66 @@ async fn messages_upstream(
         _ => (
             StatusCode::BAD_REQUEST,
             axum::Json(json!({"type": "error", "error": {"type": "invalid_request_error", "message": "an openai answer was scripted on the anthropic path"}})),
+        )
+            .into_response(),
+    }
+}
+
+/// The `/v1beta` side of the scripted upstream, in Gemini's shapes (issue
+/// #494): the wildcard carries `"{model}:{action}"`, exactly as the real
+/// `models/{model}:generateContent` URL spells it.
+async fn gemini_upstream(
+    State(script): State<Script>,
+    headers: HeaderMap,
+    axum::extract::Path(target): axum::extract::Path<String>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    note(&script, &headers, &body);
+    let (model, action) = target.split_once(':').unwrap_or((target.as_str(), ""));
+    let answer = script.answers.lock().unwrap().get(model).cloned();
+    let Some(answer) = answer else {
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(json!({"error": {"code": 404, "message": "no script for this model", "status": "NOT_FOUND"}})),
+        )
+            .into_response();
+    };
+    match answer {
+        Answer::Gemini { usage } => {
+            let mut generated = json!({
+                "candidates": [{
+                    "index": 0,
+                    "content": {"role": "model", "parts": [{"text": "Hello there"}]},
+                    "finishReason": "STOP",
+                }],
+                "modelVersion": model,
+            });
+            if let Some(usage) = usage {
+                generated["usageMetadata"] = usage;
+            }
+            axum::Json(generated).into_response()
+        }
+        Answer::GeminiStream { terminated } => {
+            let mut frames = String::from(
+                "data: {\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Hello\"}]}}]}\n\n\
+                 data: {\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\" there\"}]}}],\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":2,\"totalTokenCount\":12}}\n\n",
+            );
+            if terminated {
+                frames.push_str(
+                    "data: {\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[]},\"finishReason\":\"STOP\"}]}\n\n",
+                );
+            }
+            let _ = action;
+            sse(Body::from(frames))
+        }
+        Answer::Refuse { status, body } => (
+            StatusCode::from_u16(status).expect("the test's own status"),
+            axum::Json(body),
+        )
+            .into_response(),
+        _ => (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error": {"code": 400, "message": "a foreign answer was scripted on the gemini path", "status": "INVALID_ARGUMENT"}})),
         )
             .into_response(),
     }
@@ -877,6 +948,36 @@ fn simple_message(model: &str) -> Value {
         "model": model,
         "max_tokens": 100,
         "messages": [{"role": "user", "content": "hi"}],
+    })
+}
+
+/// A `generateContent` request against the Gemini surface, credentialed the way
+/// a Gemini SDK sends it: `x-goog-api-key` (issue #494). `streamed` picks the
+/// action — the URL, not a body field.
+async fn gemini(app: &Router, key: &str, model: &str, body: Value, streamed: bool) -> Response {
+    let action = if streamed {
+        "streamGenerateContent"
+    } else {
+        "generateContent"
+    };
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/v1beta/models/{model}:{action}"))
+        .header("content-type", "application/json")
+        .header("x-goog-api-key", key)
+        .body(Body::from(body.to_string()))
+        .expect("the test's own request");
+    app.clone()
+        .oneshot(request)
+        .await
+        .expect("the router answers")
+}
+
+/// The same little message in Gemini's shape: `contents` of text parts.
+fn simple_gemini() -> Value {
+    json!({
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+        "generationConfig": {"maxOutputTokens": 100},
     })
 }
 
@@ -3821,6 +3922,172 @@ async fn an_anthropic_upstream_error_is_passed_through() {
     let record = world.settlement(&id).await.expect("the turn settled");
     assert_eq!(record["kind"], "upstream_error");
     assert_eq!(record["charged"], 0);
+}
+
+// ── the Gemini surface (issue #494) ──────────────────────────────────────────
+
+/// A `generateContent` turn on a `gemini` channel freezes, forwards in Gemini's
+/// spelling (`models/{model}:generateContent`, `x-goog-api-key`), and settles
+/// against the normalized `usageMetadata` — the thinking share folded into the
+/// output side, the tool-use share into the input.
+#[tokio::test]
+async fn a_gemini_turn_freezes_then_settles_against_its_usage() {
+    let world = world!(1_000_000, "gemini");
+    world.answers(
+        "ok",
+        Answer::Gemini {
+            usage: Some(json!({
+                "promptTokenCount": 10,
+                "toolUsePromptTokenCount": 4,
+                "candidatesTokenCount": 2,
+                "thoughtsTokenCount": 3,
+                "cachedContentTokenCount": 5,
+                "totalTokenCount": 19,
+            })),
+        },
+    );
+
+    let response = gemini(
+        &world.app,
+        &world.key,
+        &world.model("ok"),
+        simple_gemini(),
+        false,
+    )
+    .await;
+    let id = request_id(&response);
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["candidates"][0]["content"]["parts"][0]["text"],
+        "Hello there"
+    );
+
+    // Upstream saw the model's name in the path, the credential in Gemini's
+    // spelling, and the freeze's ceiling under generationConfig.
+    let seen = world.script.seen();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].goog_api_key.as_deref(), Some("upstream-secret"));
+    assert!(seen[0].api_key.is_none());
+    assert!(seen[0].authorization.is_none());
+    assert_eq!(seen[0].body["generationConfig"]["maxOutputTokens"], 100);
+
+    // (10 + 4) input and (2 + 3) output tokens at one minor unit each.
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["kind"], "usage");
+    assert_eq!(record["usage"]["inputTokens"], 14);
+    assert_eq!(record["usage"]["outputTokens"], 5);
+    assert_eq!(record["usage"]["cachedTokens"], 5);
+    assert_eq!(record["usage"]["reasoningTokens"], 3);
+    assert_eq!(record["charged"], 19);
+}
+
+/// A `streamGenerateContent` turn relays Gemini's events unchanged, ends on the
+/// candidate's `finishReason` — there is no `[DONE]` — and reports the charge
+/// as a trailer.
+#[tokio::test]
+async fn a_gemini_stream_ends_on_the_finish_reason() {
+    let world = world!(1_000_000, "gemini");
+    world.answers("stream", Answer::GeminiStream { terminated: true });
+
+    let response = gemini(
+        &world.app,
+        &world.key,
+        &world.model("stream"),
+        simple_gemini(),
+        true,
+    )
+    .await;
+    let id = request_id(&response);
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("text/event-stream")
+    );
+    let body = text_of(response).await;
+    assert!(body.contains("\"text\":\"Hello\""), "{body}");
+    assert!(body.contains("finishReason"), "{body}");
+    // Gemini has no `[DONE]` sentinel, and the gateway does not synthesize one.
+    assert!(!body.contains("[DONE]"), "{body}");
+    // Upstream was asked at the streaming action's URL.
+    let seen = world.script.seen();
+    assert_eq!(seen.len(), 1);
+
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["kind"], "usage");
+    assert_eq!(record["charged"], 12);
+}
+
+/// A Gemini answer without `usageMetadata` settles `estimated`, priced from
+/// the request's own input bound — the same degraded policy the OpenAI
+/// surface already runs (issue #230).
+#[tokio::test]
+async fn a_gemini_answer_without_usage_settles_estimated() {
+    let world = world!(1_000_000, "gemini");
+    world.answers("no-usage", Answer::Gemini { usage: None });
+
+    let response = gemini(
+        &world.app,
+        &world.key,
+        &world.model("no-usage"),
+        simple_gemini(),
+        false,
+    )
+    .await;
+    let id = request_id(&response);
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["kind"], "estimated");
+    let charged = record["charged"].as_i64().expect("a charge");
+    assert!(charged > 0, "{record}");
+    assert!(charged <= record["freeze"].as_i64().unwrap(), "{record}");
+}
+
+/// A malformed `usageMetadata` — a negative count — is no usable report, so
+/// the turn falls back to the estimate path every protocol shares.
+#[tokio::test]
+async fn a_malformed_gemini_usage_falls_back_to_estimated() {
+    let world = world!(1_000_000, "gemini");
+    world.answers(
+        "no-usage",
+        Answer::Gemini {
+            usage: Some(json!({"promptTokenCount": -3, "candidatesTokenCount": 2})),
+        },
+    );
+
+    let response = gemini(
+        &world.app,
+        &world.key,
+        &world.model("no-usage"),
+        simple_gemini(),
+        false,
+    )
+    .await;
+    let id = request_id(&response);
+    let (status, _) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["kind"], "estimated");
+}
+
+/// A `stream: true` field is a refusal on this wire — the action chooses
+/// streaming, and the answer is 400 in the `{"error": …}` object a Gemini
+/// SDK reads.
+#[tokio::test]
+async fn a_gemini_stream_field_is_refused() {
+    let world = world!(1_000_000, "gemini");
+    let mut body = simple_gemini();
+    body["stream"] = json!(true);
+    let response = gemini(&world.app, &world.key, &world.model("ok"), body, false).await;
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+    assert!(world.script.seen().is_empty());
 }
 
 /// An organization discount lowers what its turns settle at: the gross lines
