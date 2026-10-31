@@ -462,7 +462,13 @@ Steps:
    settles, `x-oxsum-charged-minor` reports what it actually cost — a header on a
    non-streamed answer or a post-hold refusal, and an HTTP trailer (`Trailer:
    x-oxsum-charged-minor` announces it) on a streamed one, since the response head is sent
-   before the stream settles.
+   before the stream settles. `x-oxsum-cache: hit` says the answer came from the semantic
+   cache rather than upstream: on a channel whose operator enabled it, a repeat of an
+   earlier question (case and whitespace aside) re-serves the stored answer and bills the
+   cache-read rate instead of a fresh turn's — the settlement's `cache` block names the
+   original turn's entry, so the replay is provable on `/verify` like every other charge.
+   Cached answers never cross organizations, a `stream` request is never cached, and a
+   hit's `upstreamAttempts` reads `0` because no upstream call happened.
 
 Notes:
 
