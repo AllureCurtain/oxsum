@@ -218,7 +218,7 @@ Every failure on the envelope's surface is this shape, including a request body 
 | `INVALID_MANDATE` | 403 | a presented spend mandate did not verify against the key's public half — bad base64, bad JSON, or a signature that does not check (issue #262) |
 | `MANDATE_NOT_YET_VALID` / `MANDATE_EXPIRED` | 403 | the mandate's `notBefore` is still ahead, or its `notAfter` has passed |
 | `MANDATE_EXCEEDED` | 429 | the mandate's `capMinor` is spent: committed usage under it is at or over the ceiling |
-| `POOL_BUSY` | 429 | the shared database pool could not hand out a connection in time — momentary backpressure, not a caller quota; `Retry-After` without the `X-RateLimit-*` headers a caller-owned limit carries (issue #235) |
+| `POOL_BUSY` | 429 | the shared database pool could not hand out a connection in time, or a keyed hold queued longer than the wait budget behind another hold of the same key (issue #486) — momentary backpressure, not a caller quota; `Retry-After` without the `X-RateLimit-*` headers a caller-owned limit carries (issue #235) |
 | `NOT_FOUND` | 404 | resource does not exist, or belongs to another organization; a settlement naming a hold that is not outstanding |
 | `CONFLICT` | 409 | the value is already taken, or a key was reused for a different request; registering an email that exists; settling a hold that is already discharged |
 | `DAY_SEALED` | 409 | the settlement's booking day is already anchored by the daily usage-anchor pass: the day log's leaf for that day is committed and must not change (issue #340) |
