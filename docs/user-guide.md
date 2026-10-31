@@ -567,6 +567,44 @@ platform has opted the organization into dunning, a statement unpaid past
 new holds refuse `FORBIDDEN` until the line is repaid and the daily pass
 reinstates it — so paying an overdue bill is what restores the key's calls.
 
+## Subscription plans
+
+Purpose: pay a fixed price for a bundle of credits that renews on a cadence —
+the plan the operator bound to your organization draws first, and the wallet
+only pays what the period's quota could not.
+
+A subscription plan (issue #496) is a per-period credit quota, not a prepaid
+balance: quota spends never move a ledger account — they run the period's
+counter against the quota the plan carried when the binding was made (a plan
+edit later does not re-meter a binding already running). While a subscription
+is `active`, every gateway request draws from it first, up to the freeze, and
+the wallet holds only the remainder; on a plan with no `quotaMinor` at all the
+subscription admits every draw in full and the wallet never sees that traffic.
+`GET /api/v1/org/subscription` answers the live binding (`consumedMinor`
+against the snapshotted `quotaMinor`, the `currentPeriodEnd` it rolls at, and
+whether it may overflow), or `data: null` while none is bound.
+
+When the period's quota is exhausted, the plan's `allowWalletOverflow` decides:
+`true` holds the overflow against the wallet as usual, `false` refuses the
+request with `402`. The quota resets on the plan's `resetPeriod` — daily at the
+next UTC midnight, weekly on Monday 00:00 UTC, monthly on the first — by
+closing the running period `boundary` and opening a fresh one, lazily on the
+first request past the boundary and hourly from the platform's rollover job;
+a `never` plan's counter runs until the subscription is cancelled — nothing
+rolls, nothing expires. Every boundary, cancel and plan change files a
+`subscription_periods` row, and `GET /api/v1/org/subscription/periods` lists
+the history — open period first — so you can read what each period drew
+against the quota it ran under.
+
+On a deployment that offers Stripe checkout, buying a plan is
+`POST /api/v1/org/subscription/checkout` with `{"planId"}`: the answer's
+`checkoutUrl` opens the hosted payment page, and the webhook binds the plan
+once Stripe reports the session complete — nothing meters until then. Plans
+without a `stripePriceId` are bound by the operator only. The bill still
+verifies: a settled turn's record names the `subscriptionId` and `periodId`
+its draw ran under beside `drawnMinor`/`chargedMinor`, so what the period paid
+is provable, not just claimed.
+
 ## Webhooks
 
 Purpose: be notified when money moves — a request settles, a deposit lands,
