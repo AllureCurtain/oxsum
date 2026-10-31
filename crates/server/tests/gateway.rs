@@ -86,6 +86,12 @@ enum Answer {
     /// A whole rerank answer: ranked results plus a `total_tokens` usage report
     /// (issue #170).
     Rerank { tokens: Option<i64> },
+    /// A whole Responses answer — what `/v1/responses` upstreams answer with
+    /// (issue #495). `usage` is the Responses usage object verbatim.
+    Responses { usage: Option<Value> },
+    /// A Responses event stream; `terminated` says whether upstream ends it
+    /// with `response.completed`.
+    ResponsesStream { terminated: bool },
     /// [`Answer::Flaky`] for the embeddings path: refuses `refuse` requests,
     /// then answers a report-carrying embeddings body. Failover on the
     /// input-only surfaces is driven deterministically the same way (issue #170).
@@ -135,6 +141,7 @@ impl Script {
 async fn start_upstream(script: Script) -> String {
     let app = Router::new()
         .route("/v1/chat/completions", post(upstream))
+        .route("/v1/responses", post(responses_upstream))
         .route("/v1/messages", post(messages_upstream))
         .route("/v1/embeddings", post(aux_upstream))
         .route("/v1/rerank", post(aux_upstream))
@@ -298,6 +305,75 @@ async fn upstream(
         _ => (
             StatusCode::BAD_REQUEST,
             axum::Json(json!({"error": {"message": "a foreign answer was scripted on the openai chat path"}})),
+        )
+            .into_response(),
+    }
+}
+
+/// The `/v1/responses` side of the scripted upstream, in OpenAI's Responses
+/// shapes (issue #495): the model still arrives in the body, the usage report
+/// is the Responses spelling, and a stream ends on `response.completed` —
+/// there is no `[DONE]` on this wire.
+async fn responses_upstream(
+    State(script): State<Script>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    note(&script, &headers, &body);
+    let model = body["model"].as_str().unwrap_or_default().to_owned();
+    let answer = script.answers.lock().unwrap().get(&model).cloned();
+    let Some(answer) = answer else {
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(json!({"error": {"message": "no script for this model"}})),
+        )
+            .into_response();
+    };
+    match answer {
+        Answer::Responses { usage } => {
+            let mut response = json!({
+                "id": "resp_1",
+                "object": "response",
+                "model": model,
+                "status": "completed",
+                "output": [{
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Hello there"}],
+                }],
+            });
+            if let Some(usage) = usage {
+                response["usage"] = usage;
+            }
+            axum::Json(response).into_response()
+        }
+        Answer::ResponsesStream { terminated } => {
+            let mut frames = String::from(
+                "event: response.created\n\
+                 data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"in_progress\"}}\n\n\
+                 event: response.output_item.added\n\
+                 data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[]}}\n\n\
+                 event: response.output_text.delta\n\
+                 data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"Hello\"}\n\n\
+                 event: response.output_text.delta\n\
+                 data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\" there\"}\n\n",
+            );
+            if terminated {
+                frames.push_str(
+                    "event: response.completed\n\
+                     data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello there\"}]}],\"usage\":{\"input_tokens\":10,\"output_tokens\":4,\"total_tokens\":14,\"output_tokens_details\":{\"reasoning_tokens\":2}}}}\n\n",
+                );
+            }
+            sse(Body::from(frames))
+        }
+        Answer::Refuse { status, body } => (
+            StatusCode::from_u16(status).expect("the test's own status"),
+            axum::Json(body),
+        )
+            .into_response(),
+        _ => (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error": {"message": "a foreign answer was scripted on the responses path"}})),
         )
             .into_response(),
     }
@@ -940,6 +1016,31 @@ async fn messages(app: &Router, key: &str, body: Value) -> Response {
         .oneshot(request)
         .await
         .expect("the router answers")
+}
+
+/// A Responses request against the `/v1/responses` surface (issue #495),
+/// credentialed as `Authorization: Bearer` — the spelling the OpenAI SDK sends.
+async fn responses(app: &Router, key: &str, body: Value) -> Response {
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/responses")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {key}"))
+        .body(Body::from(body.to_string()))
+        .expect("the test's own request");
+    app.clone()
+        .oneshot(request)
+        .await
+        .expect("the router answers")
+}
+
+/// The same little message in the Responses shape: `input` carries the prompt.
+fn simple_response(model: &str) -> Value {
+    json!({
+        "model": model,
+        "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+        "max_output_tokens": 100,
+    })
 }
 
 /// The same little message in Anthropic's shape.
@@ -4087,6 +4188,156 @@ async fn a_gemini_stream_field_is_refused() {
     let (status, body) = json_of(response).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+    assert!(world.script.seen().is_empty());
+}
+
+// ── the Responses surface (issue #495) ───────────────────────────────────────
+
+/// A `/v1/responses` turn on an `openai` channel freezes, forwards in the
+/// Responses spelling (`{baseUrl}/responses`, `max_output_tokens`, Bearer),
+/// and settles against the Responses usage report — `input_tokens` /
+/// `output_tokens` with the reasoning subset already inside the output side.
+#[tokio::test]
+async fn a_responses_turn_freezes_then_settles_against_its_usage() {
+    let world = world!(1_000_000);
+    world.answers(
+        "ok",
+        Answer::Responses {
+            usage: Some(json!({
+                "input_tokens": 10,
+                "output_tokens": 4,
+                "total_tokens": 14,
+                "input_tokens_details": {"cached_tokens": 6},
+                "output_tokens_details": {"reasoning_tokens": 2},
+            })),
+        },
+    );
+
+    let response = responses(&world.app, &world.key, simple_response(&world.model("ok"))).await;
+    let id = request_id(&response);
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["object"], "response");
+    assert_eq!(body["output"][0]["content"][0]["text"], "Hello there");
+
+    // Upstream saw the Responses path, the Bearer credential, and the freeze's
+    // ceiling under `max_output_tokens` — never `max_tokens`.
+    let seen = world.script.seen();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(
+        seen[0].authorization.as_deref(),
+        Some("Bearer upstream-secret")
+    );
+    assert_eq!(seen[0].body["max_output_tokens"], 100);
+    assert!(seen[0].body.get("max_tokens").is_none());
+
+    // 10 input and 4 output tokens at one minor unit each.
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["kind"], "usage");
+    assert_eq!(record["usage"]["inputTokens"], 10);
+    assert_eq!(record["usage"]["outputTokens"], 4);
+    assert_eq!(record["usage"]["cachedTokens"], 6);
+    assert_eq!(record["usage"]["reasoningTokens"], 2);
+    assert_eq!(record["charged"], 14);
+}
+
+/// A streamed Responses turn relays the event stream unchanged, ends on
+/// `response.completed` — the wire's terminal event, not `[DONE]` — and
+/// settles against the usage the terminal event carries.
+#[tokio::test]
+async fn a_responses_stream_settles_on_the_completed_event() {
+    let world = world!(1_000_000);
+    world.answers("stream", Answer::ResponsesStream { terminated: true });
+
+    let mut body = simple_response(&world.model("stream"));
+    body["stream"] = json!(true);
+    let response = responses(&world.app, &world.key, body).await;
+    let id = request_id(&response);
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("text/event-stream")
+    );
+    let text = text_of(response).await;
+    assert!(text.contains("response.output_text.delta"), "{text}");
+    assert!(text.contains("response.completed"), "{text}");
+    // The Responses wire has no `[DONE]`, and the gateway does not synthesize one.
+    assert!(!text.contains("[DONE]"), "{text}");
+
+    // `stream: true` asked upstream for usage explicitly.
+    let seen = world.script.seen();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].body["stream_options"]["include_usage"], true);
+
+    // The terminal event's usage: 10 input and 4 output.
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["kind"], "usage");
+    assert_eq!(record["usage"]["inputTokens"], 10);
+    assert_eq!(record["usage"]["outputTokens"], 4);
+    assert_eq!(record["usage"]["reasoningTokens"], 2);
+    assert_eq!(record["charged"], 14);
+}
+
+/// A Responses answer without a usage block settles `estimated`, priced from
+/// the request's own input bound — the degraded policy every surface shares.
+#[tokio::test]
+async fn a_responses_answer_without_usage_settles_estimated() {
+    let world = world!(1_000_000);
+    world.answers("no-usage", Answer::Responses { usage: None });
+
+    let response = responses(
+        &world.app,
+        &world.key,
+        simple_response(&world.model("no-usage")),
+    )
+    .await;
+    let id = request_id(&response);
+    let (status, _) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let record = world.settlement(&id).await.expect("the turn settled");
+    assert_eq!(record["kind"], "estimated");
+    let charged = record["charged"].as_i64().expect("a charge");
+    assert!(charged > 0, "{record}");
+    assert!(charged <= record["freeze"].as_i64().unwrap(), "{record}");
+}
+
+/// A media part in `input` is refused before upstream is contacted — the
+/// freeze needs a computable input bound, the same rule every surface keeps.
+#[tokio::test]
+async fn a_responses_media_part_is_refused_before_upstream() {
+    let world = world!(1_000_000);
+    let body = json!({
+        "model": world.model("ok"),
+        "input": [{"type": "message", "role": "user", "content": [
+            {"type": "input_image", "image_url": "https://example.test/x.png"},
+        ]}],
+    });
+    let response = responses(&world.app, &world.key, body).await;
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+    assert!(world.script.seen().is_empty());
+}
+
+/// A malformed body — `input` of the wrong shape — is a 400 in the OpenAI
+/// envelope this surface answers.
+#[tokio::test]
+async fn a_malformed_responses_body_is_refused() {
+    let world = world!(1_000_000);
+    for body in [
+        json!({"model": world.model("ok")}),
+        json!({"model": world.model("ok"), "input": []}),
+        json!({"model": world.model("ok"), "input": 7}),
+        json!({"model": world.model("ok"), "input": "hi", "max_output_tokens": "a lot"}),
+    ] {
+        let response = responses(&world.app, &world.key, body).await;
+        let (status, _) = json_of(response).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
     assert!(world.script.seen().is_empty());
 }
 
