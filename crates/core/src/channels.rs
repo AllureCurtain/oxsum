@@ -716,6 +716,98 @@ impl Db {
         Ok(rows)
     }
 
+    // ── model fallbacks (issue #500) ──────────────────────────────────────────
+
+    /// The chain of models a request for `model` may serve under when its own
+    /// channels all fail, in try order — `fallback_model` at each `position`.
+    /// Empty for a model with no chain.
+    pub async fn fallbacks_for(&self, model: &str) -> Result<Vec<String>, WalletError> {
+        let rows = sqlx::query_scalar(
+            "SELECT fallback_model FROM oxsum.model_fallbacks \
+             WHERE model = $1 ORDER BY position",
+        )
+        .bind(model)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows)
+    }
+
+    /// Replaces one model's whole fallback chain atomically — config, not
+    /// ledger, so `DELETE` + re-insert is the write, never an append. Every
+    /// name must resolve to a model with a current price: a chain naming an
+    /// unserved model would dead-end a request that already failed once, so
+    /// the write refuses before it lands (the same name-must-resolve rule the
+    /// guardrail bindings keep). A cycle — the requested model appearing inside
+    /// its own chain — is refused the same way: the loop it would build serves
+    /// nobody. Position is assigned by order, so an empty list clears.
+    ///
+    /// # Errors
+    ///
+    /// `WalletError::InvalidInput` when a name is unserved or the chain names
+    /// the model itself; storage failures surface as `WalletError`.
+    pub async fn set_fallbacks(
+        &self,
+        model: &str,
+        fallbacks: &[String],
+    ) -> Result<(), WalletError> {
+        let served: std::collections::HashSet<String> =
+            self.served_models().await?.into_iter().collect();
+        let aliased: std::collections::HashSet<String> =
+            sqlx::query_scalar("SELECT alias FROM oxsum.model_aliases")
+                .fetch_all(self.pool())
+                .await?
+                .into_iter()
+                .collect();
+        // A name resolves if it is a priced model or a registered alias — an
+        // alias resolves to a channel's upstream model, so it is servable by
+        // definition even without a price row of its own.
+        let resolves = |name: &str| served.contains(name) || aliased.contains(name);
+        if !resolves(model) {
+            return Err(WalletError::InvalidInput(format!(
+                "model {model:?} is not served"
+            )));
+        }
+        for name in fallbacks {
+            if name == model {
+                return Err(WalletError::InvalidInput(format!(
+                    "model {model:?} cannot fall back to itself"
+                )));
+            }
+            if !resolves(name) {
+                return Err(WalletError::InvalidInput(format!(
+                    "fallback model {name:?} is not served"
+                )));
+            }
+        }
+        let mut tx = self.pool().begin().await?;
+        sqlx::query("DELETE FROM oxsum.model_fallbacks WHERE model = $1")
+            .bind(model)
+            .execute(&mut *tx)
+            .await?;
+        for (position, fallback) in fallbacks.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO oxsum.model_fallbacks (model, position, fallback_model) \
+                 VALUES ($1, $2, $3)",
+            )
+            .bind(model)
+            .bind(position as i32)
+            .bind(fallback)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Removes a model's fallback chain, answering whether it had one.
+    pub async fn clear_fallbacks(&self, model: &str) -> Result<bool, WalletError> {
+        let result = sqlx::query("DELETE FROM oxsum.model_fallbacks WHERE model = $1")
+            .bind(model)
+            .execute(self.pool())
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     // ── model aliases (issue #286) ────────────────────────────────────────────
 
     /// Claims a public alias for one of a channel's upstream models.

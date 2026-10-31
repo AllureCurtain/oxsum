@@ -476,6 +476,29 @@ impl Db {
         .transpose()
     }
 
+    /// One key's model allowlist, read fresh (issue #500). The acting
+    /// principal deliberately does not carry it — `hold_for_key` re-reads it
+    /// under the key lock so a PATCH landing between authentication and the
+    /// hold is never missed — but a fallback hop needs to re-judge the list
+    /// for a model the hold was not taken under, before it routes there. The
+    /// primary model's gate stays inside `hold_for_key`; this read is the
+    /// secondary check a fallback runs against, advisory in the same way the
+    /// admission-time tier read is.
+    ///
+    /// `None` means no list constrains the key (or no such key); an empty
+    /// `Some` is a list that allows nothing.
+    pub async fn key_model_allowlist(
+        &self,
+        key_id: Uuid,
+    ) -> Result<Option<Vec<String>>, WalletError> {
+        sqlx::query_scalar("SELECT model_allowlist FROM oxsum.api_keys WHERE key_id = $1")
+            .bind(key_id)
+            .fetch_optional(self.pool())
+            .await
+            .map(|row| row.flatten())
+            .map_err(WalletError::from)
+    }
+
     /// Replaces a key's whole constraint set: the request names the limit, the budget
     /// window and the allowlist, each cleared by null. A constraint write also clears
     /// `budget_forecast_sent_for`, so a new limit or window forecasts again from

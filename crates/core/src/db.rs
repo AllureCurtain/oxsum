@@ -269,6 +269,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0066_oidc_totp",
         include_str!("../migrations/0066_oidc_totp.sql"),
     ),
+    (
+        "0067_model_fallbacks",
+        include_str!("../migrations/0067_model_fallbacks.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.
