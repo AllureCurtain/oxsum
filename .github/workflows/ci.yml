@@ -147,9 +147,15 @@ jobs:
         run: echo "no publishable-crate change; skipping the dry-run"
       - uses: dtolnay/rust-toolchain@stable
         if: steps.filter.outputs.crates == 'true'
-      # The repo's .cargo/config.toml sets RUSTC_WRAPPER=sccache for the whole
-      # workspace; a publish dry-run is not compiled under that wrapper and
-      # sccache is not installed here, so clear it for these two commands.
+      # The repo's .cargo/config.toml sets RUSTC_WRAPPER=sccache and rustflags
+      # `-fuse-ld=mold` for the whole workspace; the dry-run compiles the
+      # packaged tarball under the same flags, so install mold and clear the
+      # sccache wrapper the same way the clippy job does.
+      - name: Install mold
+        if: steps.filter.outputs.crates == 'true'
+        run: |
+          curl -sL https://github.com/rui314/mold/releases/download/v2.40.0/mold-2.40.0-x86_64-linux.tar.gz | sudo tar -xz -C /usr/local --strip-components=1
+          mold --version
       - if: steps.filter.outputs.crates == 'true'
         env:
           RUSTC_WRAPPER: ""
