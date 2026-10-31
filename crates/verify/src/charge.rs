@@ -928,10 +928,13 @@ mod tests {
 
     #[test]
     fn a_newer_record_is_left_to_inclusion() {
-        let future = r#"{"v":11,"kind":"usage","charged":1,"freeze":1}"#;
+        // One version beyond the newest this build recomputes — a verifier an
+        // upgrade behind meets a settlement it cannot price, and inclusion
+        // proof alone answers for it.
+        let future = r#"{"v":12,"kind":"usage","charged":1,"freeze":1}"#;
         assert_eq!(
             verify_charge(future),
-            ChargeCheck::NewerSchema { version: 11 }
+            ChargeCheck::NewerSchema { version: 12 }
         );
     }
 
