@@ -404,6 +404,7 @@ async fn seed_request(
                 requests_per_minute: None,
                 tokens_per_minute: None,
                 tokens_per_minute_scopes: None,
+                required_policies: None,
             },
             None,
             &hold_key,
@@ -444,6 +445,7 @@ async fn seed_request(
         mandate: None,
         subscription: None,
         cache: None,
+        guardrail: Vec::new(),
         reason: None,
     };
     wallet

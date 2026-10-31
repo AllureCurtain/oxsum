@@ -887,6 +887,7 @@ async fn the_anomalies_list_shows_the_turns_that_did_not_price_cleanly() {
             mandate: None,
             subscription: None,
             cache: None,
+            guardrail: Vec::new(),
             reason: None,
         }
         .description()
@@ -1020,6 +1021,7 @@ async fn anomalies_carry_a_score_and_filter_by_severity() {
             mandate: None,
             subscription: None,
             cache: None,
+            guardrail: Vec::new(),
             reason: None,
         }
         .description()

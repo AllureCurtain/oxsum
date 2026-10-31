@@ -245,6 +245,7 @@ fn usage_settlement(request_id: &str, charged: i64, freeze: i64) -> String {
         mandate: None,
         subscription: None,
         cache: None,
+        guardrail: Vec::new(),
         reason: None,
     }
     .description()
