@@ -31,6 +31,34 @@ impl Signup {
     }
 }
 
+/// Which backend `requestsPerMinute` counts inside (issue #498). `memory` — the
+/// default — is the in-process `SlidingWindow` a single binary needs; `postgres`
+/// counts the window in `oxsum.rate_windows`, so a deployment running more than
+/// one instance behind a load balancer shares the count instead of
+/// double-admitting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RateLimitBackend {
+    /// The in-process `SlidingWindow` — the single-binary default.
+    #[default]
+    Memory,
+    /// `PostgresRateLimiter` over `oxsum.rate_windows` — the shared backend a
+    /// multi-instance deployment picks, on the database it already runs.
+    Postgres,
+}
+
+impl RateLimitBackend {
+    /// Parses `OXSUM_RATE_LIMIT_BACKEND`.
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "memory" => Ok(Self::Memory),
+            "postgres" => Ok(Self::Postgres),
+            other => Err(format!(
+                "OXSUM_RATE_LIMIT_BACKEND must be memory or postgres, got {other:?}"
+            )),
+        }
+    }
+}
+
 /// The first upstream channel a deployment starts with, and what its models cost.
 ///
 /// In v1 one model maps to exactly one channel (product.md), so a deployment has exactly one of
@@ -226,6 +254,12 @@ pub struct Config {
     /// mailer and the OAuth client, optional on its own: the device grant
     /// builds `verificationUri` from it when set (issue #156).
     public_url: Option<String>,
+    /// Which `RateLimiter` backend `requestsPerMinute` counts inside,
+    /// `OXSUM_RATE_LIMIT_BACKEND` (issue #498): `memory` — the default — is the
+    /// in-process `SlidingWindow` a single binary needs; `postgres` counts the
+    /// window in `oxsum.rate_windows` so a multi-instance deployment shares it
+    /// rather than double-admitting.
+    rate_limit_backend: RateLimitBackend,
     /// The retention windows the `retention` job applies, `OXSUM_RETENTION_*`.
     retention: oxsum_core::Retention,
     /// Whether `OXSUM_UPSTREAM_PRICE_SYNC` gates the `SYNC_UPSTREAM_PRICES`
@@ -288,6 +322,7 @@ impl Config {
             airwallex: None,
             hyperswitch: None,
             public_url: None,
+            rate_limit_backend: RateLimitBackend::default(),
             retention: oxsum_core::Retention::default(),
             upstream_price_sync: false,
             otlp_endpoint: None,
@@ -333,6 +368,14 @@ impl Config {
     #[must_use]
     pub fn with_secret(mut self, secret: SecretKey) -> Self {
         self.secret = Some(secret);
+        self
+    }
+
+    /// Sets the rate-limit backend. Tests use this; the server reads
+    /// `OXSUM_RATE_LIMIT_BACKEND` (issue #498).
+    #[must_use]
+    pub fn with_rate_limit_backend(mut self, backend: RateLimitBackend) -> Self {
+        self.rate_limit_backend = backend;
         self
     }
 
@@ -406,6 +449,7 @@ impl Config {
         // Optional on its own: the mailer and the OAuth client each require it,
         // and the device grant only prefers it for a stable `verificationUri`.
         let public_url = var("OXSUM_PUBLIC_URL");
+        let rate_limit_backend = rate_limit_backend_of()?;
         let retention = oxsum_core::Retention {
             provider_raw_days: retention_days("OXSUM_RETENTION_PROVIDER_RAW_DAYS")?.unwrap_or(7),
             deliveries_days: retention_days("OXSUM_RETENTION_DELIVERIES_DAYS")?.unwrap_or(30),
@@ -441,6 +485,7 @@ impl Config {
             airwallex,
             hyperswitch,
             public_url,
+            rate_limit_backend,
             retention,
             upstream_price_sync,
             otlp_endpoint,
@@ -469,6 +514,14 @@ impl Config {
     #[must_use]
     pub fn secret(&self) -> Option<&SecretKey> {
         self.secret.as_ref()
+    }
+
+    /// Which `RateLimiter` backend `requestsPerMinute` counts inside,
+    /// `OXSUM_RATE_LIMIT_BACKEND` — `memory` (the default) or `postgres`
+    /// (issue #498).
+    #[must_use]
+    pub(crate) fn rate_limit_backend(&self) -> RateLimitBackend {
+        self.rate_limit_backend
     }
 
     /// The mailer, or `None` when the deployment sends no email: every email
@@ -1010,6 +1063,15 @@ fn upstream_price_sync_of(raw: String) -> Result<bool, String> {
             "OXSUM_UPSTREAM_PRICE_SYNC must be true or false, got {other:?}"
         )),
     }
+}
+
+/// Parses `OXSUM_RATE_LIMIT_BACKEND` (issue #498) — `memory`/`postgres`, absent
+/// meaning `memory` so the single-binary story is unchanged.
+fn rate_limit_backend_of() -> Result<RateLimitBackend, String> {
+    var("OXSUM_RATE_LIMIT_BACKEND")
+        .map(|raw| RateLimitBackend::parse(&raw))
+        .transpose()
+        .map(|opt| opt.unwrap_or_default())
 }
 
 /// Parses the provider the `upstream-bill-sync` job reconciles through (issue
