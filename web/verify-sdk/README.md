@@ -59,6 +59,8 @@ The package ships the wasm-bindgen output inside `wasm/` — the loader instanti
 
 The wasm module instantiates on first verify, not on attach, so the element costs nothing until used; a browser without WebAssembly renders a readable fallback that points at the server's `/verify` page rather than failing blank.
 
+The `server`+`entry` mode fetches the proof endpoint cross-origin — embed it on the same origin the endpoint serves, or a deployment that answers `Access-Control-Allow-Origin` for the page. A page that cannot reach the endpoint can still use `bundle` or the paste form, which needs no fetch at all.
+
 ## License
 
 MIT OR Apache-2.0.
