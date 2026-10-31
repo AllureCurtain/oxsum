@@ -440,3 +440,36 @@ pub(crate) async fn delete_team(
         .delete_team(principal.organization().id, actor, team_id)
         .await?)
 }
+
+/// The organization's active subscription, as `GET /api/v1/org/subscription`
+/// answers it — the plan, the period window, what the period has consumed and
+/// whether an exhausted quota may fall through to the wallet. `None` for an
+/// organization on pay-as-you-go alone.
+pub(crate) async fn subscription(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+) -> ApiResult<Option<oxsum_core::OrgSubscription>> {
+    ok(state
+        .db
+        .active_subscription(principal.organization().id)
+        .await?)
+}
+
+/// The subscription's period history — the audit a bill's `subscription` field
+/// points back at, newest first.
+pub(crate) async fn subscription_periods(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+) -> ApiResult<Vec<oxsum_core::SubscriptionPeriod>> {
+    let Some(subscription) = state
+        .db
+        .active_subscription(principal.organization().id)
+        .await?
+    else {
+        return ok(Vec::new());
+    };
+    ok(state
+        .db
+        .subscription_periods(subscription.subscription_id)
+        .await?)
+}

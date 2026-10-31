@@ -1002,8 +1002,9 @@ impl SettlementKind {
 /// `verify_charge` dispatches on `v` and leaves those to inclusion proof alone
 /// (docs/decisions.md, T1-2). v8 adds the optional `upstreamModel` — the
 /// upstream name an alias resolved to, absent when the served name is the
-/// upstream's own (issue #286).
-const DESCRIPTION_VERSION: i64 = 8;
+/// upstream's own (issue #286). v9 adds the optional `subscription` — which
+/// subscription period a subscription-covered turn drew on (issue #496).
+const DESCRIPTION_VERSION: i64 = 9;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1052,12 +1053,37 @@ pub struct Settlement<'a> {
     /// settled bill proves which delegation authorized it. Absent on a turn no
     /// mandate was presented for.
     pub mandate: Option<SettlementMandate<'a>>,
+    /// The subscription quota the turn's hold drew on (issue #496):
+    /// `{subscriptionId, periodId, drawnMinor, chargedMinor}` — the
+    /// subscription's share of the freeze and what of it the charge consumed.
+    /// The bill proves which entitlement window paid the same way it proves the
+    /// figure. Absent on a turn the wallet alone paid for.
+    pub subscription: Option<SettlementSubscription<'a>>,
     /// Why the turn refused or errored, when it did (issue #233): the refusal
     /// or upstream error in the caller-facing words the answer already carried,
     /// truncated to fit the description — under the hash, so a bill proves the
     /// reason it was given, not one invented after the fact.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<&'a str>,
+}
+
+/// The subscription a settled turn's hold drew on, as the v9 description's
+/// `subscription` object: which subscription, which period it charged inside,
+/// and how much of the hold's freeze it covered. `chargedMinor` is what the
+/// settlement consumed of the draw; the released part is `drawnMinor -
+/// chargedMinor`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettlementSubscription<'a> {
+    /// The subscription's own id.
+    pub subscription_id: &'a uuid::Uuid,
+    /// The period the draw counted inside.
+    pub period_id: &'a uuid::Uuid,
+    /// How much of the freeze the subscription covered, minor units.
+    pub drawn_minor: i64,
+    /// How much of the draw the charge consumed, minor units — the
+    /// subscription's settled share of `charged`.
+    pub charged_minor: i64,
 }
 
 /// The mandate a settled turn ran under, as the v7 description's `mandate`
@@ -1195,7 +1221,7 @@ impl<'de> Deserialize<'de> for BillLine {
 /// A settlement's description on the wire, versioned.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SettlementV8<'a> {
+struct SettlementV9<'a> {
     /// The schema version — [`DESCRIPTION_VERSION`]. Spelled `v` on the wire.
     v: i64,
     request: &'a str,
@@ -1225,6 +1251,11 @@ struct SettlementV8<'a> {
     /// of the signed blob, absent when the turn was not delegated.
     #[serde(skip_serializing_if = "Option::is_none")]
     mandate: Option<SettlementMandate<'a>>,
+    /// The subscription quota the turn's hold drew on, v9's addition (issue
+    /// #496): `{subscriptionId, periodId, drawnMinor, chargedMinor}` — absent
+    /// when the turn drew nothing from a subscription.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subscription: Option<SettlementSubscription<'a>>,
     /// Why the turn refused or errored, when it did (issue #233): the caller's
     /// own answer words, under the content hash — absent for a clean settle.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1241,7 +1272,7 @@ impl Settlement<'_> {
     /// Refuses a description that cannot be serialised, which cannot happen for these fields; the
     /// `Result` keeps the caller honest rather than unwrapping a formality.
     pub fn description(&self) -> Result<String, WalletError> {
-        serde_json::to_string(&SettlementV8 {
+        serde_json::to_string(&SettlementV9 {
             v: DESCRIPTION_VERSION,
             request: self.request,
             channel: self.channel,
@@ -1257,6 +1288,7 @@ impl Settlement<'_> {
             charged: self.charged,
             freeze: self.freeze,
             mandate: self.mandate.clone(),
+            subscription: self.subscription.clone(),
             reason: self.reason,
         })
         .map_err(|error| WalletError::InvalidInput(format!("settlement record: {error}")))
@@ -1421,6 +1453,9 @@ pub struct SettlementRecord {
     /// The mandate the turn ran under (v7, issue #262): `{id, hash}`; `None`
     /// when the turn was not delegated and on records that predate it.
     pub mandate: Option<MandateRef>,
+    /// The subscription the turn's hold drew on (v9, issue #496): `{subscriptionId,
+    /// periodId, drawnMinor, chargedMinor}`; `None` when the wallet alone paid.
+    pub subscription: Option<SubscriptionRef>,
     /// Why the turn refused or errored, when the writer recorded one (issue
     /// #233); `None` on a clean settle and on records that predate it.
     pub reason: Option<String>,
@@ -1437,7 +1472,22 @@ pub struct MandateRef {
     pub hash: String,
 }
 
-/// The wire [`SettlementRecord::parse`] reads: [`SettlementV8`] owned, tolerant
+/// The subscription a settled record names, read back (v9, issue #496): which
+/// subscription, which period, and how much of the hold it covered.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionRef {
+    /// The subscription's own id.
+    pub subscription_id: Uuid,
+    /// The period the draw counted inside.
+    pub period_id: Uuid,
+    /// How much of the freeze the subscription covered, minor units.
+    pub drawn_minor: i64,
+    /// How much of the draw the charge consumed, minor units.
+    pub charged_minor: i64,
+}
+
+/// The wire [`SettlementRecord::parse`] reads: [`SettlementV9`] owned, tolerant
 /// of every version since v3 — the differences are fields the other writers
 /// never carried.
 #[derive(Deserialize)]
@@ -1460,6 +1510,8 @@ struct SettlementRecordWire {
     upstream_attempts: Option<i64>,
     service: Option<String>,
     mandate: Option<MandateRef>,
+    /// The subscription a v9 record carries; `None` on earlier versions.
+    subscription: Option<SubscriptionRef>,
     charged: i64,
     freeze: i64,
     reason: Option<String>,
@@ -1517,6 +1569,7 @@ impl SettlementRecord {
                 .unwrap_or(if wire.v >= 6 { 0 } else { 1 }),
             service: wire.service,
             mandate: wire.mandate,
+            subscription: wire.subscription,
             reason: wire.reason,
         })
     }
@@ -2110,12 +2163,13 @@ mod tests {
             freeze: 400,
             upstream_attempts: 1,
             mandate: None,
+            subscription: None,
             reason: None,
         };
         let json = settlement.description().unwrap();
         assert_eq!(
             json,
-            r#"{"v":8,"request":"abc","channel":"deepseek","model":"deepseek-chat","priceVersion":3,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100},"lines":[["input",116,1000000],["output",100,2000000]],"upstreamAttempts":1,"charged":316,"freeze":400}"#
+            r#"{"v":9,"request":"abc","channel":"deepseek","model":"deepseek-chat","priceVersion":3,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100},"lines":[["input",116,1000000],["output",100,2000000]],"upstreamAttempts":1,"charged":316,"freeze":400}"#
         );
         // Within the ledger's limit, whatever the model is called.
         assert!(json.len() < 512);
@@ -2237,6 +2291,7 @@ mod tests {
             freeze: 400,
             upstream_attempts: 1,
             mandate: None,
+            subscription: None,
             reason: None,
         }
         .description()
@@ -2288,6 +2343,7 @@ mod tests {
             freeze: 1,
             upstream_attempts: 1,
             mandate: None,
+            subscription: None,
             reason: None,
         }
         .description()
@@ -2321,6 +2377,7 @@ mod tests {
             freeze: 400,
             upstream_attempts: 2,
             mandate: None,
+            subscription: None,
             reason: None,
         };
         let record = SettlementRecord::parse(&settlement.description().unwrap()).unwrap();
@@ -2380,6 +2437,7 @@ mod tests {
             freeze: 400,
             upstream_attempts: 1,
             mandate: None,
+            subscription: None,
             reason: None,
         };
         let text = settlement.description().unwrap();
@@ -2416,7 +2474,7 @@ mod tests {
         // (v2), or one whose priced lines are missing. A v3 record parses — the
         // reader tolerates the shape v4 superseded — but one that lacks the
         // lines the prices are read out of still cannot.
-        assert!(SettlementRecord::parse(r#"{"v":9,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[["input",1,1],["output",0,1]],"charged":1,"freeze":1}"#).is_none());
+        assert!(SettlementRecord::parse(r#"{"v":10,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[["input",1,1],["output",0,1]],"charged":1,"freeze":1}"#).is_none());
         assert!(SettlementRecord::parse(r#"{"v":2,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[{"item":"input","units":1,"pricePerM":1},{"item":"output","units":1,"pricePerM":1}],"charged":1,"freeze":1}"#).is_none());
         assert!(SettlementRecord::parse(r#"{"v":3,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[],"charged":1,"freeze":1}"#).is_none());
         assert!(

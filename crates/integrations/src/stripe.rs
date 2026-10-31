@@ -144,6 +144,70 @@ impl Stripe {
         })
     }
 
+    /// Creates a Stripe Checkout Session in `subscription` mode for the plan's
+    /// `stripe_price_id`: the buyer is redirected to the hosted page, and the
+    /// subscription Stripe mints becomes the rail's renewal source —
+    /// `invoice.paid` rolls the period forward, `customer.subscription.deleted`
+    /// ends it (issue #496).
+    ///
+    /// `organization_id` rides `client_reference_id` the same way a deposit id
+    /// does on the top-up path, so the webhook names which organization's
+    /// subscription a `checkout.session.completed` opened. `plan_id` goes in
+    /// the session's metadata — Stripe echoes it back on the webhook, which is
+    /// how the bind knows which plan the subscription opens.
+    ///
+    /// # Errors
+    ///
+    /// `StripeError` on a transport failure, a non-2xx answer, or a body with
+    /// no `url`/`id`.
+    pub async fn create_subscription_session(
+        &self,
+        http: &reqwest::Client,
+        organization_id: uuid::Uuid,
+        plan_id: uuid::Uuid,
+        stripe_price_id: &str,
+    ) -> Result<CheckoutSession, StripeError> {
+        #[derive(Deserialize)]
+        struct Session {
+            id: String,
+            url: Option<String>,
+        }
+        let session: Session = http
+            .post(format!("{}/v1/checkout/sessions", self.api_url))
+            .bearer_auth(&self.secret_key)
+            .form(&[
+                ("mode", "subscription".to_owned()),
+                ("client_reference_id", organization_id.to_string()),
+                // The plan this session sells rides the session's own
+                // metadata, echoed back on `checkout.session.completed` — the
+                // webhook's answer to which plan the subscription opens.
+                ("metadata[oxsum_plan_id]", plan_id.to_string()),
+                (
+                    "success_url",
+                    format!("{}/app/subscription?session=success", self.public_url),
+                ),
+                (
+                    "cancel_url",
+                    format!("{}/app/subscription?session=cancel", self.public_url),
+                ),
+                ("line_items[0][quantity]", "1".to_owned()),
+                ("line_items[0][price]", stripe_price_id.to_owned()),
+            ])
+            .send()
+            .await
+            .map_err(|e| StripeError(format!("subscription session request failed: {e}")))?
+            .json()
+            .await
+            .map_err(|e| StripeError(format!("subscription session response unreadable: {e}")))?;
+        let url = session
+            .url
+            .ok_or_else(|| StripeError("subscription session answered no url".into()))?;
+        Ok(CheckoutSession {
+            url,
+            session_id: session.id,
+        })
+    }
+
     /// Whether `Stripe-Signature` on `body` verifies under the webhook secret.
     ///
     /// The header is `t=<unix>,v1=<hex>`; the MAC covers `"{t}.{body}"`. A

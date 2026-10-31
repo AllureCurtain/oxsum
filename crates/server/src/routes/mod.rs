@@ -79,6 +79,12 @@ pub fn router(state: AppState) -> Router {
             patch(org::update_team).delete(org::delete_team),
         )
         .route("/org/ownership", post(org::transfer_ownership))
+        .route("/org/subscription", get(org::subscription))
+        .route(
+            "/org/subscription/checkout",
+            post(billing::subscription_checkout),
+        )
+        .route("/org/subscription/periods", get(org::subscription_periods))
         .route(
             "/webhooks",
             get(webhooks::list_webhooks).post(webhooks::create_webhook),

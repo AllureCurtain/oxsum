@@ -67,6 +67,9 @@ pub mod action {
     pub const STATEMENT_SUSPEND: &str = "statement.suspend";
     pub const SERVICE_CREDENTIAL_MINT: &str = "service_credential.mint";
     pub const SERVICE_CREDENTIAL_REVOKE: &str = "service_credential.revoke";
+    pub const SUBSCRIPTION_PLAN_SET: &str = "subscription.plan.set";
+    pub const SUBSCRIPTION_BIND: &str = "subscription.bind";
+    pub const SUBSCRIPTION_CANCEL: &str = "subscription.cancel";
 
     /// Every action the surface writes — the `action` filter's vocabulary.
     pub const ALL: &[&str] = &[
@@ -93,6 +96,9 @@ pub mod action {
         STATEMENT_SUSPEND,
         SERVICE_CREDENTIAL_MINT,
         SERVICE_CREDENTIAL_REVOKE,
+        SUBSCRIPTION_PLAN_SET,
+        SUBSCRIPTION_BIND,
+        SUBSCRIPTION_CANCEL,
     ];
 }
 

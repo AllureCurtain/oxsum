@@ -252,6 +252,66 @@ pub(crate) async fn x402_topup(
     ok(receipt)
 }
 
+/// The body of `POST /api/v1/org/subscription/checkout`: which plan to buy on
+/// the Stripe rail.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SubscriptionCheckoutReq {
+    plan_id: Uuid,
+}
+
+/// Opens a Stripe subscription checkout for the plan: the org user's browser
+/// is sent to the hosted page, and the subscription Stripe mints becomes the
+/// rail's renewal source — `invoice.paid` rolls the period forward,
+/// `customer.subscription.deleted` ends it (issue #496).
+///
+/// A replayed intent answers the same session's URL — Stripe's own
+/// idempotency decides what one click means, and the row's
+/// `stripe_subscription_id` is the webhook's anchor.
+///
+/// A deployment without `OXSUM_STRIPE_*` answers 503 — the rail is
+/// configured or it is not, never silently manual.
+pub(crate) async fn subscription_checkout(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    ApiJson(r): ApiJson<SubscriptionCheckoutReq>,
+) -> ApiResult<serde_json::Value> {
+    let stripe = state
+        .config
+        .stripe()
+        .ok_or_else(|| ApiError::ServiceUnavailable("stripe is not configured".into()))?;
+    let plan = state
+        .db
+        .subscription_plan(r.plan_id)
+        .await?
+        .ok_or_else(|| ApiError::Validation("no such plan".into()))?;
+    if !plan.enabled {
+        return Err(ApiError::Validation(
+            "the plan is not accepting subscriptions".into(),
+        ));
+    }
+    let stripe_price_id = plan
+        .stripe_price_id
+        .as_deref()
+        .ok_or_else(|| ApiError::Validation("the plan is not sold on stripe".into()))?;
+    let session = stripe
+        .create_subscription_session(
+            &state.http,
+            principal.organization().id,
+            plan.plan_id,
+            stripe_price_id,
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e.0, "stripe subscription session failed");
+            ApiError::Internal
+        })?;
+    ok(json!({
+        "checkoutUrl": session.url,
+        "planId": plan.plan_id,
+    }))
+}
+
 /// The body of `POST /api/v1/topups/stripe`: the amount to charge and the
 /// idempotency key that anchors the deposit.
 #[derive(Deserialize)]
@@ -359,27 +419,50 @@ pub(crate) async fn stripe_webhook(
                 .as_str()
                 .ok_or_else(|| ApiError::Validation("no session id".into()))?;
             let amount = event.data.object["amount_total"].as_i64();
-            // Find the deposit this session opened, then confirm + credit it.
-            // Only a `pending` deposit moves, so a replayed or raced webhook
-            // does nothing twice.
-            if let Some((deposit_id, organization_id, tenant_id)) =
-                state.db.find_stripe_by_session(session_id).await?
-                && state.db.confirm_stripe_deposit(deposit_id).await?
+            // A subscription-mode session's object carries `subscription` — a
+            // top-up's does not, so the field decides which flow opened it.
+            if let Some(subscription_id) = event.data.object["subscription"].as_str()
+                && !subscription_id.is_empty()
             {
-                let w = state
-                    .tenants
-                    .get(&tenant_id)
-                    .await
-                    .map_err(ApiError::from)?;
+                // The subscription's opening: bind the organization the
+                // session named to the plan the session's line item priced.
+                // `metadata` is what the org user cannot fake — the session
+                // is Stripe's own record of what was sold.
+                let org = event.data.object["client_reference_id"]
+                    .as_str()
+                    .and_then(|id| uuid::Uuid::parse_str(id).ok())
+                    .ok_or_else(|| ApiError::Validation("no client reference".into()))?;
+                let price_id = event.data.object["metadata"]["oxsum_plan_id"]
+                    .as_str()
+                    .and_then(|id| uuid::Uuid::parse_str(id).ok())
+                    .ok_or_else(|| ApiError::Validation("no plan id".into()))?;
                 state
                     .db
-                    .credit_stripe_deposit(&w, deposit_id, session_id, amount, today())
+                    .bind_subscription(org, price_id, "stripe", Some(subscription_id))
                     .await?;
-                // Whatever the deposit repaid counts against the statement book.
-                state
-                    .db
-                    .reconcile_statements(organization_id, &w, today())
-                    .await?;
+            } else {
+                // Find the deposit this session opened, then confirm + credit it.
+                // Only a `pending` deposit moves, so a replayed or raced webhook
+                // does nothing twice.
+                if let Some((deposit_id, organization_id, tenant_id)) =
+                    state.db.find_stripe_by_session(session_id).await?
+                    && state.db.confirm_stripe_deposit(deposit_id).await?
+                {
+                    let w = state
+                        .tenants
+                        .get(&tenant_id)
+                        .await
+                        .map_err(ApiError::from)?;
+                    state
+                        .db
+                        .credit_stripe_deposit(&w, deposit_id, session_id, amount, today())
+                        .await?;
+                    // Whatever the deposit repaid counts against the statement book.
+                    state
+                        .db
+                        .reconcile_statements(organization_id, &w, today())
+                        .await?;
+                }
             }
         }
         "checkout.session.expired" => {
@@ -389,6 +472,31 @@ pub(crate) async fn stripe_webhook(
             if let Some((deposit_id, _, _)) = state.db.find_stripe_by_session(session_id).await? {
                 state.db.expire_stripe_deposit(deposit_id).await?;
             }
+        }
+        // A subscription renewal: the invoice Stripe settled rolls the
+        // subscription's period forward to the boundary the invoice opened.
+        "invoice.paid" => {
+            let subscription_id = event.data.object["subscription"]
+                .as_str()
+                .ok_or_else(|| ApiError::Validation("no subscription id".into()))?;
+            let period_end = event.data.object["lines"]["data"][0]["period"]["end"]
+                .as_i64()
+                .map(time::OffsetDateTime::from_unix_timestamp)
+                .transpose()
+                .map_err(|_| ApiError::Validation("bad period end".into()))?
+                .ok_or_else(|| ApiError::Validation("no period end".into()))?;
+            state
+                .db
+                .renew_stripe_subscription(subscription_id, period_end)
+                .await?;
+        }
+        // The rail's cancel: Stripe ended the subscription — the period
+        // closes, and the wallet takes over from the next hold.
+        "customer.subscription.deleted" => {
+            let subscription_id = event.data.object["id"]
+                .as_str()
+                .ok_or_else(|| ApiError::Validation("no subscription id".into()))?;
+            state.db.cancel_stripe_subscription(subscription_id).await?;
         }
         _ => {}
     }
