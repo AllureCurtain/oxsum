@@ -48,11 +48,46 @@ pub(crate) fn register(builder: RouterBuilder) -> RouterBuilder {
 
 /// The public verification page: anyone holding a bill and its content hash
 /// can verify it, no session needed.
+///
+/// `?sample` pre-fills the form with a real proof bundle drawn from this
+/// deployment's seeded demo organization (issue #489) — the one thing a
+/// first-time visitor cannot do is *see the check run*, and a sample they did
+/// not have to produce makes the claim tangible in one click. On an unseeded
+/// deployment — or one where the demo organization has no settled turn yet —
+/// the link answers the plain form with a note rather than a fabricated
+/// bundle: the page serves only what a real entry on this deployment attests.
 #[page("/verify")]
 async fn verify_page(cx: &Cx) -> Result<impl View> {
     let query = parse_query_params::<VerifyQuery>(cx).unwrap_or_default();
-    let bundle = query.bundle.unwrap_or_default();
-    let hash = query.hash.unwrap_or_default();
+    // `?sample` is a bare flag the page links, and a flag's presence — not its
+    // value — is the signal; read it off the raw query string rather than
+    // deserialize a value that may not parse the same way on every form of the
+    // URL (`?sample`, `?sample=`, `?sample=1` all mean the same thing here).
+    let wants_sample = topcoat::router::request::uri(cx)
+        .query()
+        .unwrap_or("")
+        .split('&')
+        .any(|pair| pair == "sample" || pair.starts_with("sample="));
+    let (bundle, hash, note) = if wants_sample {
+        match sample_bundle(cx).await? {
+            Some((bundle_json, content_hash)) => (
+                bundle_json,
+                content_hash,
+                Some("A sample from this deployment's seeded demo — yours verifies the same way."),
+            ),
+            None => (
+                String::new(),
+                String::new(),
+                Some("No settled bill on this deployment yet — there is no sample to show."),
+            ),
+        }
+    } else {
+        (
+            query.bundle.unwrap_or_default(),
+            query.hash.unwrap_or_default(),
+            None,
+        )
+    };
     let entry = query.entry.unwrap_or_default();
     Ok(view! {
         plain(
@@ -63,6 +98,10 @@ async fn verify_page(cx: &Cx) -> Result<impl View> {
                     "Paste a bill's proof bundle and the content hash you recorded with it. "
                     "The check runs in this browser when the verifier is served, on this server otherwise."
                 </p>
+                <p><a href="/verify?sample">"See it verify a real one."</a></p>
+                if let Some(note) = note {
+                    <p class="muted">(note)</p>
+                }
                 <form method="post" action="/verify">
                     <label>
                         "Proof bundle (JSON)"
@@ -79,6 +118,58 @@ async fn verify_page(cx: &Cx) -> Result<impl View> {
             </div>
         )
     })
+}
+
+/// One real bill's proof bundle and its content hash, drawn from the seeded
+/// demo organization's latest settled turn (issue #489).
+///
+/// `None` covers every way the sample cannot exist on this deployment — no
+/// seeded organization, no settled turn yet, or the proof itself refusing to
+/// build — so the page degrades to the plain form rather than fabricate a
+/// bundle or fail the page. The server runs the same `receipt_proof` the API
+/// endpoint answers; the sample is a real entry on this deployment, attested
+/// the same way a customer's is.
+async fn sample_bundle(cx: &Cx) -> Result<Option<(String, String)>> {
+    let db: oxsum_core::Db = crate::app_value(cx)?;
+    let tenants: oxsum_core::Tenants = crate::app_value(cx)?;
+    let config: crate::WebConfig = crate::app_value(cx)?;
+
+    let Some(tenant_id) = db
+        .tenant_id_named(oxsum_core::DEMO_ORGANIZATION)
+        .await
+        .map_err(|e| topcoat::Error::msg(e.to_string()))?
+    else {
+        return Ok(None);
+    };
+    let wallet = tenants
+        .get(&tenant_id)
+        .await
+        .map_err(|e| topcoat::Error::msg(e.to_string()))?;
+    let Some(turn) = wallet
+        .recent_settlements(1)
+        .await
+        .map_err(|e| topcoat::Error::msg(e.to_string()))?
+        .into_iter()
+        .next()
+    else {
+        return Ok(None);
+    };
+    let key = config
+        .head_seed
+        .map(oxsum_core::signing_key)
+        .transpose()
+        .map_err(|_| topcoat::Error::msg("the head signing seed did not decode"))?;
+    let Some(bundle) = wallet
+        .receipt_proof(turn.entry_id, key.as_ref())
+        .await
+        .map_err(|e| topcoat::Error::msg(e.to_string()))?
+    else {
+        return Ok(None);
+    };
+    let content_hash = bundle.entry.content_hash().to_hex();
+    let bundle_json = serde_json::to_string(&bundle)
+        .map_err(|e| topcoat::Error::msg(format!("the sample bundle did not serialize: {e}")))?;
+    Ok(Some((bundle_json, content_hash)))
 }
 
 #[derive(Deserialize, Default)]
