@@ -4,7 +4,7 @@ Updated: 2026-10-31
 
 ## In progress
 
-- Public demo deployment (issue #470): `oxsum.785777.xyz` now runs the latest image with open signup (`OXSUM_SIGNUP=open`), a 5-credit signup bonus, the seeded world (`admin@oxsum.local` / `admin-password`), a real DeepSeek upstream wired as a channel, and the signed head on `OXSUM_HEAD_SIGNING_KEY`. README links it under the title.
+- Public demo deployment (issue #470): `oxsum.785777.xyz` now runs the latest image with open signup (`OXSUM_SIGNUP=open`), a 5-credit signup bonus, the seeded world (`admin@oxsum.local` / `admin-password`), a real DeepSeek upstream wired as a channel, and the signed head on `OXSUM_HEAD_SIGNING_KEY`. README links it under the title. A witness sidecar (#476) cosigns each tenant head — a second container, own DB + signing key, `OXSUM_WITNESS_TRUST` pinning the demo origins at `size=0` — so `GET /api/v1/log/checkpoint` serves a real cosignature.
 
 - Verifier SDK extraction (local-notes/2026-10-31 §B-1): `oxsum-verify` and its vendored `doubleentry` dep became publishable so the proof math can ship on crates.io, and `web/verify-sdk/` scaffolds the `verify-oxsum-bill` npm package — the JS wrapper over the wasm-bindgen output any billing surface can embed (#468, PR #469).
 
