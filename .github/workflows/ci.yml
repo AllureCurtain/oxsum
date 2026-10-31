@@ -147,7 +147,12 @@ jobs:
         run: echo "no publishable-crate change; skipping the dry-run"
       - uses: dtolnay/rust-toolchain@stable
         if: steps.filter.outputs.crates == 'true'
+      # The repo's .cargo/config.toml sets RUSTC_WRAPPER=sccache for the whole
+      # workspace; a publish dry-run is not compiled under that wrapper and
+      # sccache is not installed here, so clear it for these two commands.
       - if: steps.filter.outputs.crates == 'true'
+        env:
+          RUSTC_WRAPPER: ""
         run: |
           cargo publish --dry-run -p doubleentry
           cargo publish --dry-run -p oxsum-verify
