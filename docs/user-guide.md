@@ -419,6 +419,15 @@ Steps:
    token arrays freeze at their exact count — and the turn settles against
    upstream's usage report, estimated from the request's input when none arrives.
 
+   Long-running work goes to `POST /v1/tasks` — image renders, video generation,
+   batch jobs on a `tasks`-protocol channel. The submit freezes `maxCostMinor` (or
+   the price's `costPerRequest` when none is named) and answers
+   `{taskId, submitted}`; the job then runs on a periodic pass that asks upstream
+   every 30s and settles the hold when the state goes terminal. The caller polls
+   `GET /v1/tasks/{taskId}` — a row read, never a second upstream call — or
+   subscribes to `task.succeeded`/`task.failed` webhooks; `POST
+   /v1/tasks/{taskId}/cancel` ends the billing side best-effort.
+
 2. Every response carries an `x-oxsum-request-id` header. That id is how the turn is found in the
    ledger: its entries are keyed `req-<id>:hold` and the settlement derived from it
    (`oxsum_core::settlement_key_for`).
