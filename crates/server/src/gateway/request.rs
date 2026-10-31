@@ -8,7 +8,7 @@
 
 use oxsum_core::{
     ANTHROPIC, Attribution, BillingMode, GEMINI, MAX_CONTEXT_NAME, MAX_END_USER, MAX_TAG, MAX_TAGS,
-    OPENAI,
+    OPENAI, PromptPart,
 };
 use serde_json::{Map, Value, json};
 
@@ -131,6 +131,12 @@ pub struct GatewayRequest {
     /// The text of every message, for the input upper bound and the local estimate. A message with
     /// no text (an assistant turn that only calls a tool) contributes none.
     pub texts: Vec<String>,
+    /// The same texts with the speaker's role attached, for the semantic
+    /// cache's prompt digest (issue #497): a `user` turn and an `assistant`
+    /// turn carrying the same words are different questions, and the digest
+    /// only knows that if the role rides in. The input-only surfaces carry
+    /// every text under `"user"` — they have no roles to lose.
+    pub prompt_parts: Vec<PromptPart>,
     /// The output ceiling the caller asked for, if it asked for one. The
     /// input-only surfaces have no output side, so this stays `None` there.
     pub max_tokens: Option<i64>,
@@ -185,36 +191,62 @@ impl GatewayRequest {
             }
             Some(_) => return Err(param("stream", "stream must be a boolean")),
         };
-        let (texts, counted_input, max_tokens, attribution) = match surface {
-            Surface::OpenAi => (
-                texts_of(&body)?,
-                None,
-                output_ceiling(&body)?,
-                attribution_of(&body)?,
-            ),
-            Surface::Responses => (
-                responses_texts(&body)?,
-                None,
-                int_ceiling(&body, "max_output_tokens")?,
-                attribution_of(&body)?,
-            ),
-            Surface::Anthropic => (
-                anthropic_texts(&body)?,
-                None,
-                int_ceiling(&body, "max_tokens")?,
-                anthropic_attribution(&body)?,
-            ),
+        let (texts, prompt_parts, counted_input, max_tokens, attribution) = match surface {
+            Surface::OpenAi => {
+                let (texts, parts) = texts_of(&body)?;
+                (
+                    texts,
+                    parts,
+                    None,
+                    output_ceiling(&body)?,
+                    attribution_of(&body)?,
+                )
+            }
+            Surface::Responses => {
+                let (texts, parts) = responses_texts(&body)?;
+                (
+                    texts,
+                    parts,
+                    None,
+                    int_ceiling(&body, "max_output_tokens")?,
+                    attribution_of(&body)?,
+                )
+            }
+            Surface::Anthropic => {
+                let (texts, parts) = anthropic_texts(&body)?;
+                (
+                    texts,
+                    parts,
+                    None,
+                    int_ceiling(&body, "max_tokens")?,
+                    anthropic_attribution(&body)?,
+                )
+            }
             Surface::Embeddings => {
                 let (texts, counted) = embeddings_input(&body)?;
-                (texts, counted, None, attribution_of(&body)?)
+                let parts = texts
+                    .iter()
+                    .map(|text| PromptPart {
+                        role: "user",
+                        text: text.clone(),
+                    })
+                    .collect();
+                (texts, parts, counted, None, attribution_of(&body)?)
             }
-            Surface::Rerank => (rerank_texts(&body)?, None, None, attribution_of(&body)?),
-            Surface::Gemini { .. } => (
-                gemini_texts(&body)?,
-                None,
-                gemini_ceiling(&body)?,
-                gemini_attribution(&body)?,
-            ),
+            Surface::Rerank => {
+                let (texts, parts) = rerank_texts(&body)?;
+                (texts, parts, None, None, attribution_of(&body)?)
+            }
+            Surface::Gemini { .. } => {
+                let (texts, parts) = gemini_texts(&body)?;
+                (
+                    texts,
+                    parts,
+                    None,
+                    gemini_ceiling(&body)?,
+                    gemini_attribution(&body)?,
+                )
+            }
         };
         Ok(Self {
             body,
@@ -225,6 +257,7 @@ impl GatewayRequest {
             upstream_model: None,
             stream,
             texts,
+            prompt_parts,
             max_tokens,
             counted_input,
             attribution,
@@ -431,11 +464,14 @@ fn embeddings_input(body: &Map<String, Value>) -> Result<(Vec<String>, Option<i6
 
 /// The rerank request's billable text: `query` plus every document's text —
 /// a string entry's own value, an object entry's `text`. A document of any
-/// other shape has no computable bound and is refused (issue #170).
-fn rerank_texts(body: &Map<String, Value>) -> Result<Vec<String>, GatewayError> {
+/// other shape has no computable bound and is refused (issue #170). There are
+/// no roles on this wire: everything is the asker's, so the digest tags all
+/// of it `user`.
+fn rerank_texts(body: &Map<String, Value>) -> Result<(Vec<String>, Vec<PromptPart>), GatewayError> {
     let mut texts = Vec::new();
+    let mut parts = Vec::new();
     match body.get("query") {
-        Some(Value::String(query)) => texts.push(query.clone()),
+        Some(Value::String(query)) => push_tagged(&mut texts, &mut parts, "user", query),
         Some(_) => return Err(param("query", "query must be a string")),
         None => return Err(param("query", "query is required")),
     }
@@ -443,9 +479,11 @@ fn rerank_texts(body: &Map<String, Value>) -> Result<Vec<String>, GatewayError> 
         Some(Value::Array(documents)) if !documents.is_empty() => {
             for document in documents {
                 match document {
-                    Value::String(text) => texts.push(text.clone()),
+                    Value::String(text) => push_tagged(&mut texts, &mut parts, "user", text),
                     Value::Object(document) => match document.get("text") {
-                        Some(Value::String(text)) => texts.push(text.clone()),
+                        Some(Value::String(text)) => {
+                            push_tagged(&mut texts, &mut parts, "user", text);
+                        }
                         _ => {
                             return Err(param(
                                 "documents",
@@ -468,7 +506,7 @@ fn rerank_texts(body: &Map<String, Value>) -> Result<Vec<String>, GatewayError> 
         Some(_) => return Err(param("documents", "documents must be an array")),
         None => return Err(param("documents", "documents is required")),
     }
-    Ok(texts)
+    Ok((texts, parts))
 }
 
 /// The text of a Responses request (issue #495): `instructions` plus `input`,
@@ -478,18 +516,21 @@ fn rerank_texts(body: &Map<String, Value>) -> Result<Vec<String>, GatewayError> 
 /// media); a `function_call`/`function_call_output`/`reasoning`-style item
 /// contributes its serialized JSON — the computable bound for whatever it
 /// carries, the same rule the Anthropic and Gemini surfaces apply.
-fn responses_texts(body: &Map<String, Value>) -> Result<Vec<String>, GatewayError> {
+fn responses_texts(
+    body: &Map<String, Value>,
+) -> Result<(Vec<String>, Vec<PromptPart>), GatewayError> {
     let mut texts = Vec::new();
+    let mut parts = Vec::new();
     match body.get("instructions") {
         None | Some(Value::Null) => {}
-        Some(Value::String(text)) => texts.push(text.clone()),
+        Some(Value::String(text)) => push_tagged(&mut texts, &mut parts, "system", text),
         Some(_) => return Err(param("instructions", "instructions must be a string")),
     }
     let Some(input) = body.get("input") else {
         return Err(param("input", "input is required"));
     };
     match input {
-        Value::String(text) => texts.push(text.clone()),
+        Value::String(text) => push_tagged(&mut texts, &mut parts, "user", text),
         Value::Array(items) => {
             if items.is_empty() {
                 return Err(param("input", "input must not be empty"));
@@ -498,7 +539,7 @@ fn responses_texts(body: &Map<String, Value>) -> Result<Vec<String>, GatewayErro
                 let Value::Object(item) = item else {
                     return Err(param("input", "every input item must be an object"));
                 };
-                responses_item(item, &mut texts)?;
+                responses_item(item, &mut texts, &mut parts)?;
             }
         }
         _ => {
@@ -508,26 +549,33 @@ fn responses_texts(body: &Map<String, Value>) -> Result<Vec<String>, GatewayErro
             ));
         }
     }
-    Ok(texts)
+    Ok((texts, parts))
 }
 
 /// One item of the `input` array. The wire spells messages two ways —
 /// `{type: "message", role, content}` and the shorthand `{role, content}` —
-/// so an object carrying `content` is read as a message; any other item is a
-/// structured input whose serialized JSON is the bound.
-fn responses_item(item: &Map<String, Value>, texts: &mut Vec<String>) -> Result<(), GatewayError> {
+/// so an object carrying `content` is read as a message and its texts take
+/// the item's `role`; any other item is a structured input whose serialized
+/// JSON is the bound, tagged as the asker's own.
+fn responses_item(
+    item: &Map<String, Value>,
+    texts: &mut Vec<String>,
+    parts: &mut Vec<PromptPart>,
+) -> Result<(), GatewayError> {
+    let role = role_of(item.get("role"));
     match item.get("content") {
-        Some(Value::String(text)) => texts.push(text.clone()),
-        Some(Value::Array(parts)) => {
-            for part in parts {
-                responses_part(part, texts)?;
+        Some(Value::String(text)) => push_tagged(texts, parts, role, text),
+        Some(Value::Array(content_parts)) => {
+            for part in content_parts {
+                responses_part(part, role, texts, parts)?;
             }
         }
         Some(Value::Null) | None => {
             // No `content` at all: a function call, a call output, a
             // reasoning item — serialized JSON is the bound, as on the
             // other structured-part surfaces.
-            texts.push(Value::Object(item.clone()).to_string());
+            let serialized = Value::Object(item.clone()).to_string();
+            push_tagged(texts, parts, "user", &serialized);
         }
         Some(_) => {
             return Err(param(
@@ -544,13 +592,18 @@ fn responses_item(item: &Map<String, Value>, texts: &mut Vec<String>) -> Result<
 /// `input_file` / `input_audio` are media with no computable bound and are
 /// refused. Any other shape — a refusal record, say — counts its serialized
 /// JSON.
-fn responses_part(part: &Value, texts: &mut Vec<String>) -> Result<(), GatewayError> {
+fn responses_part(
+    part: &Value,
+    role: &'static str,
+    texts: &mut Vec<String>,
+    parts: &mut Vec<PromptPart>,
+) -> Result<(), GatewayError> {
     let Value::Object(part) = part else {
         return Err(param("input", "a content part must be an object"));
     };
     match part.get("type").and_then(Value::as_str) {
         Some("input_text" | "output_text" | "text") => match part.get("text") {
-            Some(Value::String(text)) => texts.push(text.clone()),
+            Some(Value::String(text)) => push_tagged(texts, parts, role, text),
             _ => {
                 return Err(param(
                     "input",
@@ -565,13 +618,19 @@ fn responses_part(part: &Value, texts: &mut Vec<String>) -> Result<(), GatewayEr
                  computable input bound, so it cannot be frozen",
             ));
         }
-        _ => texts.push(Value::Object(part.clone()).to_string()),
+        _ => {
+            let serialized = Value::Object(part.clone()).to_string();
+            push_tagged(texts, parts, role, &serialized);
+        }
     }
     Ok(())
 }
 
-/// The text of every message, refusing content that is not text.
-fn texts_of(body: &Map<String, Value>) -> Result<Vec<String>, GatewayError> {
+/// The text of every message, refusing content that is not text — and the
+/// same texts tagged with each message's `role`, for the cache digest: an
+/// OpenAI message spells its role as a string, and an unspellable one keeps
+/// the text under `"user"` rather than failing a bound it never asked about.
+fn texts_of(body: &Map<String, Value>) -> Result<(Vec<String>, Vec<PromptPart>), GatewayError> {
     let Some(messages) = body.get("messages") else {
         return Err(param("messages", "messages is required"));
     };
@@ -582,22 +641,31 @@ fn texts_of(body: &Map<String, Value>) -> Result<Vec<String>, GatewayError> {
         return Err(param("messages", "messages must not be empty"));
     }
     let mut texts = Vec::new();
+    let mut parts = Vec::new();
     for message in messages {
         let Value::Object(message) = message else {
             return Err(param("messages", "every message must be an object"));
         };
+        let role = role_of(message.get("role"));
+        let mut push = |text: &String| {
+            texts.push(text.clone());
+            parts.push(PromptPart {
+                role,
+                text: text.clone(),
+            });
+        };
         match message.get("content") {
             // An assistant turn that only asks for a tool call has no text.
             None | Some(Value::Null) => {}
-            Some(Value::String(text)) => texts.push(text.clone()),
-            Some(Value::Array(parts)) => {
-                for part in parts {
+            Some(Value::String(text)) => push(text),
+            Some(Value::Array(content_parts)) => {
+                for part in content_parts {
                     let Value::Object(part) = part else {
                         return Err(param("messages", "a content part must be an object"));
                     };
                     match part.get("type").and_then(Value::as_str) {
                         Some("text") => match part.get("text") {
-                            Some(Value::String(text)) => texts.push(text.clone()),
+                            Some(Value::String(text)) => push(text),
                             _ => {
                                 return Err(param(
                                     "messages",
@@ -623,7 +691,21 @@ fn texts_of(body: &Map<String, Value>) -> Result<Vec<String>, GatewayError> {
             }
         }
     }
-    Ok(texts)
+    Ok((texts, parts))
+}
+
+/// The role label a message-like object carries, coerced to the digest's
+/// vocabulary: a missing or non-string role is `"user"` — the asker's own
+/// words — and anything else keeps its spelling, so `system`, `assistant`,
+/// `tool` and friends stay distinguishable.
+fn role_of(role: Option<&Value>) -> &'static str {
+    match role.and_then(Value::as_str) {
+        Some("system") => "system",
+        Some("assistant") => "assistant",
+        Some("tool") => "tool",
+        Some("developer") => "developer",
+        _ => "user",
+    }
 }
 
 /// The text of an Anthropic request: `system` plus every message's content.
@@ -632,13 +714,18 @@ fn texts_of(body: &Map<String, Value>) -> Result<Vec<String>, GatewayError> {
 /// block contributes its `text`; a block with any other non-media `type` — a tool
 /// call, a tool result, a thinking block — contributes its serialized JSON, because
 /// that is a computable bound for whatever it carries; a media block (`image`,
-/// `document`, `audio`, `video`) has no computable bound and is refused.
-fn anthropic_texts(body: &Map<String, Value>) -> Result<Vec<String>, GatewayError> {
+/// `document`, `audio`, `video`) has no computable bound and is refused. The role
+/// tag for the digest is `system` for the preamble and the message's own `role`
+/// otherwise — Anthropic spells only `user` and `assistant`.
+fn anthropic_texts(
+    body: &Map<String, Value>,
+) -> Result<(Vec<String>, Vec<PromptPart>), GatewayError> {
     let mut texts = Vec::new();
+    let mut parts = Vec::new();
     match body.get("system") {
         None | Some(Value::Null) => {}
-        Some(Value::String(text)) => texts.push(text.clone()),
-        Some(Value::Array(blocks)) => anthropic_blocks(blocks, "system", &mut texts)?,
+        Some(Value::String(text)) => push_tagged(&mut texts, &mut parts, "system", text),
+        Some(Value::Array(blocks)) => anthropic_blocks(blocks, "system", &mut texts, &mut parts)?,
         Some(_) => {
             return Err(param(
                 "system",
@@ -659,10 +746,13 @@ fn anthropic_texts(body: &Map<String, Value>) -> Result<Vec<String>, GatewayErro
         let Value::Object(message) = message else {
             return Err(param("messages", "every message must be an object"));
         };
+        let role = role_of(message.get("role"));
         match message.get("content") {
             None | Some(Value::Null) => {}
-            Some(Value::String(text)) => texts.push(text.clone()),
-            Some(Value::Array(blocks)) => anthropic_blocks(blocks, "messages", &mut texts)?,
+            Some(Value::String(text)) => push_tagged(&mut texts, &mut parts, role, text),
+            Some(Value::Array(blocks)) => {
+                anthropic_blocks_at(blocks, "messages", role, &mut texts, &mut parts)?;
+            }
             Some(_) => {
                 return Err(param(
                     "messages",
@@ -671,14 +761,42 @@ fn anthropic_texts(body: &Map<String, Value>) -> Result<Vec<String>, GatewayErro
             }
         }
     }
-    Ok(texts)
+    Ok((texts, parts))
 }
 
-/// Folds one array of Anthropic content blocks into the request's texts.
+/// One text into both collections under a fixed role.
+fn push_tagged(
+    texts: &mut Vec<String>,
+    parts: &mut Vec<PromptPart>,
+    role: &'static str,
+    text: &str,
+) {
+    texts.push(text.to_owned());
+    parts.push(PromptPart {
+        role,
+        text: text.to_owned(),
+    });
+}
+
+/// Folds one array of Anthropic content blocks into the request's texts — the
+/// `system` preamble spelling, where every block is system text.
 fn anthropic_blocks(
     blocks: &[Value],
     field: &'static str,
     texts: &mut Vec<String>,
+    parts: &mut Vec<PromptPart>,
+) -> Result<(), GatewayError> {
+    anthropic_blocks_at(blocks, field, "system", texts, parts)
+}
+
+/// The message-content spelling of [`anthropic_blocks`]: the blocks take the
+/// message's role.
+fn anthropic_blocks_at(
+    blocks: &[Value],
+    field: &'static str,
+    role: &'static str,
+    texts: &mut Vec<String>,
+    parts: &mut Vec<PromptPart>,
 ) -> Result<(), GatewayError> {
     for block in blocks {
         let Value::Object(block) = block else {
@@ -686,7 +804,7 @@ fn anthropic_blocks(
         };
         match block.get("type").and_then(Value::as_str) {
             Some("text") => match block.get("text") {
-                Some(Value::String(text)) => texts.push(text.clone()),
+                Some(Value::String(text)) => push_tagged(texts, parts, role, text),
                 _ => {
                     return Err(param(field, "a text block must carry a text string"));
                 }
@@ -700,7 +818,10 @@ fn anthropic_blocks(
             }
             // A `tool_use` input, a `tool_result`, a thinking block: serialized JSON is
             // the computable bound for whatever the block carries.
-            _ => texts.push(Value::Object(block.clone()).to_string()),
+            _ => {
+                let serialized = Value::Object(block.clone()).to_string();
+                push_tagged(texts, parts, role, &serialized);
+            }
         }
     }
     Ok(())
@@ -711,11 +832,21 @@ fn anthropic_blocks(
 /// `text` part contributes its text; a non-media part — a `functionCall`, a
 /// `functionResponse`, an `executableCode` block — contributes its serialized
 /// JSON as the computable bound for whatever it carries; a media part
-/// (`inlineData`, `fileData`) has no computable bound and is refused.
-fn gemini_texts(body: &Map<String, Value>) -> Result<Vec<String>, GatewayError> {
+/// (`inlineData`, `fileData`) has no computable bound and is refused. The
+/// digest role is `system` for the instruction and the content's own `role`
+/// otherwise — Gemini spells `user` and `model`, and `model` folds to the
+/// digest's `assistant`.
+fn gemini_texts(body: &Map<String, Value>) -> Result<(Vec<String>, Vec<PromptPart>), GatewayError> {
     let mut texts = Vec::new();
+    let mut parts = Vec::new();
     if let Some(instruction) = body.get("systemInstruction") {
-        gemini_parts(instruction, "systemInstruction", &mut texts)?;
+        gemini_parts(
+            instruction,
+            "systemInstruction",
+            "system",
+            &mut texts,
+            &mut parts,
+        )?;
     }
     let Some(contents) = body.get("contents") else {
         return Err(param("contents", "contents is required"));
@@ -730,11 +861,17 @@ fn gemini_texts(body: &Map<String, Value>) -> Result<Vec<String>, GatewayError> 
         let Value::Object(content) = content else {
             return Err(param("contents", "every content entry must be an object"));
         };
+        // Gemini's `model` is the answering role — the digest vocabulary's
+        // `assistant`; an unspellable role is the asker's.
+        let role = match content.get("role").and_then(Value::as_str) {
+            Some("model") => "assistant",
+            _ => "user",
+        };
         match content.get("parts") {
             None | Some(Value::Null) => {}
-            Some(Value::Array(parts)) => {
-                for part in parts {
-                    gemini_part(part, &mut texts)?;
+            Some(Value::Array(content_parts)) => {
+                for part in content_parts {
+                    gemini_part(part, role, &mut texts, &mut parts)?;
                 }
             }
             Some(_) => {
@@ -742,24 +879,26 @@ fn gemini_texts(body: &Map<String, Value>) -> Result<Vec<String>, GatewayError> 
             }
         }
     }
-    Ok(texts)
+    Ok((texts, parts))
 }
 
 /// `systemInstruction` is one Content-shaped object, not an array — its `parts`
-/// fold exactly like a contents entry's.
+/// fold exactly like a contents entry's, under the role it was called with.
 fn gemini_parts(
     content: &Value,
     field: &'static str,
+    role: &'static str,
     texts: &mut Vec<String>,
+    parts: &mut Vec<PromptPart>,
 ) -> Result<(), GatewayError> {
     let Value::Object(content) = content else {
         return Err(param(field, "systemInstruction must be an object"));
     };
     match content.get("parts") {
         None | Some(Value::Null) => {}
-        Some(Value::Array(parts)) => {
-            for part in parts {
-                gemini_part(part, texts)?;
+        Some(Value::Array(content_parts)) => {
+            for part in content_parts {
+                gemini_part(part, role, texts, parts)?;
             }
         }
         Some(_) => return Err(param(field, "systemInstruction.parts must be an array")),
@@ -769,14 +908,19 @@ fn gemini_parts(
 
 /// One part of a Gemini content: text counts its text, a structured part its
 /// serialized JSON, and a media part is refused like every surface's media.
-fn gemini_part(part: &Value, texts: &mut Vec<String>) -> Result<(), GatewayError> {
+fn gemini_part(
+    part: &Value,
+    role: &'static str,
+    texts: &mut Vec<String>,
+    parts: &mut Vec<PromptPart>,
+) -> Result<(), GatewayError> {
     let Value::Object(part) = part else {
         return Err(param("contents", "a content part must be an object"));
     };
     match part.get("text") {
         None | Some(Value::Null) => {}
         Some(Value::String(text)) => {
-            texts.push(text.clone());
+            push_tagged(texts, parts, role, text);
             return Ok(());
         }
         Some(_) => {
@@ -792,7 +936,8 @@ fn gemini_part(part: &Value, texts: &mut Vec<String>) -> Result<(), GatewayError
     }
     // A `functionCall`/`functionResponse`/`executableCode`-style part: the
     // serialized JSON is the bound, like the Anthropic block rule.
-    texts.push(Value::Object(part.clone()).to_string());
+    let serialized = Value::Object(part.clone()).to_string();
+    push_tagged(texts, parts, role, &serialized);
     Ok(())
 }
 

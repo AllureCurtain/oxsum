@@ -55,6 +55,17 @@ pub enum Charge {
     /// Upstream's own counts, normalized. Boxed: the record is wide and the other
     /// variants carry nothing.
     Usage(Box<UsageRecord>),
+    /// A cached answer the store served (issue #497): the original turn's usage,
+    /// repriced at the cache-read rate the hit deserves — every input token is a
+    /// cached token, which is what "reused the answer" means to the price book —
+    /// plus the entry id the answer was first produced under, so the v10
+    /// settlement's `cache` block can name it.
+    Cached {
+        /// The original turn's usage, folded so the whole input counts as read.
+        usage: Box<UsageRecord>,
+        /// The ledger entry the answer was first produced under.
+        source_entry_id: uuid::Uuid,
+    },
     /// A local estimate — under kind `estimated` the input side only (the
     /// degraded policy, issue #230); under `client_cancelled` the input plus
     /// the forwarded prefix.
@@ -493,9 +504,31 @@ impl Plan {
             }
             reason[..end].to_owned()
         });
+        // A cache hit's provenance: the source entry id has to outlive the
+        // match that produces `usage` — the `SettlementCache` below borrows
+        // it — so it is named here, on the plan's own stack frame.
+        let cache_source_id = match &charge {
+            Charge::Cached {
+                source_entry_id, ..
+            } => Some(*source_entry_id),
+            _ => None,
+        };
         let (mut usage, counts) = match charge {
             Charge::Nothing => (UsageRecord::tokens(0, 0)?, CountsProvenance::None),
             Charge::Usage(usage) => {
+                let counts = CountsProvenance::Provider {
+                    input: usage.input_tokens,
+                    output: usage.output_tokens,
+                };
+                (*usage, counts)
+            }
+            Charge::Cached { mut usage, .. } => {
+                // The whole input is a cached read: the answer was produced
+                // once and is being re-served, so the input side prices at
+                // the cache-read rate — or folds into the input rate when the
+                // price book has none, which is the honest "no cache
+                // discount" the same rule gives a provider cache hit.
+                usage.cached_tokens = usage.input_tokens;
                 let counts = CountsProvenance::Provider {
                     input: usage.input_tokens,
                     output: usage.output_tokens,
@@ -568,6 +601,25 @@ impl Plan {
                 .get_or_insert_with(|| serde_json::json!({}));
             if let Some(map) = details.as_object_mut() {
                 map.insert("estimation".to_owned(), estimation);
+            }
+        }
+        // A hit's own paper trail, in the same escape hatch: the usage row
+        // names the ledger entry the answer was produced under, so the admin
+        // surface can tell a re-served answer from a fresh one without
+        // re-parsing the settlement description (issue #497).
+        if let Some(source_entry_id) = cache_source_id {
+            let details = usage
+                .usage_details
+                .get_or_insert_with(|| serde_json::json!({}));
+            if let Some(map) = details.as_object_mut() {
+                map.insert(
+                    "cache".to_owned(),
+                    serde_json::json!({
+                        "sourceEntryId": source_entry_id,
+                        "similarity": 1.0,
+                        "cachedAnswer": true,
+                    }),
+                );
             }
         }
         // The turn's OTLP span gets the counts the charge was priced from —
@@ -675,6 +727,15 @@ impl Plan {
                 hash: &m.verified.hash,
             }),
             subscription: subscription_ref,
+            cache: cache_source_id
+                .as_ref()
+                .map(|source_entry_id| oxsum_core::SettlementCache {
+                    source_entry_id,
+                    // Exact-digest hits are the only kind this build serves, so
+                    // the score is honest at 1.0 — a similarity-search version
+                    // writes the real figure, never a threshold it borrowed.
+                    similarity: 1.0,
+                }),
             reason: reason.as_deref(),
         };
         let description = settlement.description()?;

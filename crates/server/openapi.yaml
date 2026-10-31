@@ -635,6 +635,22 @@ info:
     asks upstream to stop the job; upstream's usage on a task bills the
     computable part the same way a chat turn's does.
 
+    0.89.0 adds the semantic response cache (issue #497): a channel whose
+    `settings.semanticCache.enabled` is true re-serves a stored answer when a
+    request's normalized prompt digest repeats an earlier turn's on the same
+    `(organization, channel, model)` key — org-scoped always, shared across
+    the organization's keys. The lookup runs before any fresh-turn freeze: a
+    hit answers with the stored body, `x-oxsum-cache: hit`, and settles a
+    real charge at the cache-read rate — the whole input repriced as
+    `cache_read` — under the settlement version v10, whose `cache` block
+    names `{sourceEntryId, similarity}`: the ledger entry the answer was
+    first produced under, so the bill proves the reuse it charges for. The
+    cache holds whole non-streamed answers only — a `stream: true` request
+    is never looked up and never stored — and rows honour the channel's
+    `ttlSeconds` when it names one. The policy is written through
+    `POST /api/v1/admin/channels`' `semanticCache` field: absent leaves the
+    stored policy alone, `null` clears it, an object replaces it.
+
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
     whose job precedes authentication: `/api/v1/auth/login`, `/api/v1/auth/logout`,
@@ -5158,6 +5174,7 @@ paths:
             x-oxsum-freeze-minor: { $ref: "#/components/headers/FreezeMinor" }
             x-oxsum-balance-minor: { $ref: "#/components/headers/BalanceMinor" }
             x-oxsum-charged-minor: { $ref: "#/components/headers/ChargedMinor" }
+            x-oxsum-cache: { $ref: "#/components/headers/CacheStatus" }
             Trailer: { schema: { type: string, example: "x-oxsum-charged-minor" }, description: "on a streamed answer, announces the settled charge arrives as a trailer" }
           content:
             application/json:
@@ -5733,6 +5750,9 @@ components:
     ChargedMinor:
       description: "minor units the settled turn actually charged — a header on non-streamed answers and post-hold refusals, a trailer on streamed ones"
       schema: { type: integer }
+    CacheStatus:
+      description: "`hit` when the semantic cache answered instead of upstream (issue #497): the stored body re-served, billed at the cache-read rate, the settlement's v10 `cache` block naming the original turn's entry. Absent on a miss, a stream, or a channel that never opted in."
+      schema: { type: string, enum: [hit] }
   schemas:
     CreatedInvitation:
       type: object
@@ -6285,6 +6305,15 @@ components:
           description: "the channel's credential pool (issue #444): the whole ordered set of upstream keys — a `set` re-credentials the channel wholesale, so every key the pool should hold goes here. Absent leaves the stored pool untouched; a present empty array is VALIDATION_ERROR — a channel with no key cannot serve. One of `apiKey`/`apiKeys` is required when creating a channel."
         billKey: { type: string, minLength: 1, nullable: true, description: "the admin billing credential the upstream-bill-sync pass reads the provider's cost API under (issue #283) — sealed beside the metering keys, deliberately separate so a relay credential never reads the org's bill. Omit to leave any stored billing key untouched; explicit null clears it." }
         protocol: { type: string, enum: [openai, anthropic, gemini], description: "the upstream protocol the channel speaks, which selects the usage adapter its reports are normalized by and which surface serves its models: `/v1/*` for `openai` and `anthropic`, `/v1beta/*` for `gemini`; defaults to `openai` — any other name is VALIDATION_ERROR" }
+        semanticCache:
+          type: object
+          nullable: true
+          description: "the channel's semantic response cache policy (issue #497): `{enabled, ttlSeconds?, excludeSystem?}` — `enabled` gates the whole feature; `ttlSeconds` bounds a stored answer's lifetime (absent means no expiry); `excludeSystem` drops the system/instructions share from the prompt digest so two asks differing only there still hit. Omit to leave the stored policy untouched; explicit null clears `settings.semanticCache`; a non-object or a malformed policy is VALIDATION_ERROR."
+          properties:
+            enabled: { type: boolean }
+            ttlSeconds: { type: integer, format: int64, minimum: 1 }
+            excludeSystem: { type: boolean }
+          additionalProperties: true
     ChannelCredential:
       type: object
       required: [credentialId, apiKeyLast4, position, status, cooldownUntil, lastError, lastUsedAt, createdAt]
@@ -6299,7 +6328,7 @@ components:
         createdAt: { type: string, format: date-time }
     Channel:
       type: object
-      required: [name, baseUrl, protocol, credentials, billKeyLast4, createdAt, models]
+      required: [name, baseUrl, protocol, credentials, billKeyLast4, settings, createdAt, models]
       properties:
         name: { type: string }
         baseUrl: { type: string }
@@ -6309,6 +6338,7 @@ components:
           description: "the channel's credential pool (issue #444): one entry per upstream key, ordered by position, each showing only its last four plus the health state the pick reads"
           items: { $ref: "#/components/schemas/ChannelCredential" }
         billKeyLast4: { type: string, nullable: true, description: "the last four characters of the admin billing credential (issue #283), and nothing more of it; null when the channel carries none" }
+        settings: { type: object, description: "the channel's free-form settings (issue #497): `semanticCache` and any future channel-scoped knobs, exactly as written through `ChannelRequest.semanticCache` — `{}` when nothing was ever set" }
         createdAt: { type: string, format: date-time }
         models:
           type: array

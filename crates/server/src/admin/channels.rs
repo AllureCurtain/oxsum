@@ -33,6 +33,14 @@ pub(crate) struct ChannelReq {
     /// The upstream protocol the channel speaks; defaults to `openai`, the only
     /// protocol this build knows.
     protocol: Option<String>,
+    /// The channel's semantic-cache policy (issue #497): `{enabled,
+    /// ttlSeconds?, excludeSystem?}` under `settings.semanticCache`.
+    /// Triple-state like `billKey` — absent leaves the stored policy alone,
+    /// `null` clears the key, an object replaces it. The reader validates the
+    /// shape; the writer insists on it too, so a policy the gateway would
+    /// refuse never lands.
+    #[serde(default, deserialize_with = "crate::admin::double_option")]
+    semantic_cache: Option<Option<serde_json::Value>>,
 }
 
 /// A price to append for one of a channel's models.
@@ -122,6 +130,15 @@ pub(crate) async fn set(
         state
             .db
             .set_bill_key(&request.name, bill_key.as_deref(), &secret)
+            .await?;
+    }
+    // The cache policy is likewise independent: `semanticCache` writes or
+    // clears `settings.semanticCache` and nothing else in the blob, so an
+    // absent field cannot disturb a sibling setting (issue #497).
+    if let Some(semantic_cache) = request.semantic_cache {
+        state
+            .db
+            .set_semantic_cache(&request.name, semantic_cache.as_ref())
             .await?;
     }
     let channel = state

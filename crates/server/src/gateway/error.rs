@@ -25,6 +25,11 @@ pub const BALANCE_MINOR: &str = "x-oxsum-balance-minor";
 /// out when the settlement lands.
 pub const CHARGED_MINOR: &str = "x-oxsum-charged-minor";
 
+/// `hit` on an answer the semantic cache served instead of upstream (issue
+/// #497): the bill it settles under carries the `cache` block naming the
+/// original turn's entry, so the header only has to say the replay happened.
+pub const CACHE_STATUS: &str = "x-oxsum-cache";
+
 /// An error a gateway request can end in.
 #[derive(Debug)]
 pub enum GatewayError {
