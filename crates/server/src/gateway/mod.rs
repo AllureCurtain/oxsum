@@ -14,6 +14,7 @@ pub(crate) mod error;
 mod relay;
 mod request;
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::body::{Body, Bytes};
@@ -966,6 +967,65 @@ async fn run(
     let Some(primary) = ordered.first() else {
         return Err(GatewayError::model_not_served(&request.model));
     };
+
+    // The guardrail pipeline's pre_call (issue #502): the turn's policies —
+    // the channel's binding, the key's `requiredPolicies`, and a presented
+    // mandate's narrowed subset — judge the request's texts before any money
+    // moves. A `Block` refuses before the hold is taken, so a blocked request
+    // costs nothing and writes only the `refused` marker; a `Flag` is
+    // collected to land on the settlement. The policies resolve per request —
+    // two indexed reads — so a rule the org writes or binds takes effect on
+    // the next call, never on a restart.
+    let mandate_policies = match &mandate {
+        Some(m) => {
+            state
+                .db
+                .mandate_required_policies(m.verified.mandate_id)
+                .await?
+        }
+        None => Vec::new(),
+    };
+    let guardrails = state
+        .guardrails_for(
+            &primary.channel,
+            key.key_id,
+            key.required_policies.as_deref().unwrap_or(&[]),
+            &mandate_policies,
+        )
+        .await?;
+    let mut pending_flags: Vec<oxsum_core::SettlementGuardrailOwned> = Vec::new();
+    if !guardrails.is_empty() {
+        let ctx = oxsum_core::RequestContext {
+            organization_id: organization.id,
+            key_id: key.key_id,
+            model: &request.model,
+            texts: &request.texts,
+            end_user: request.attribution.end_user.as_deref(),
+            channel: &primary.channel,
+        };
+        for policy in &guardrails {
+            match policy.evaluate_request(&ctx) {
+                oxsum_core::Verdict::Allow => {}
+                oxsum_core::Verdict::Flag { policy, reason } => {
+                    pending_flags.push(oxsum_core::SettlementGuardrailOwned {
+                        policy,
+                        verdict: "flagged",
+                        reason,
+                        streamed: false,
+                    });
+                }
+                oxsum_core::Verdict::Block { policy, reason } => {
+                    // A blocked turn never takes a hold: refuse now, and the
+                    // `refused` marker records it like every other admission
+                    // refusal so the billing page sees the policy's verdict.
+                    return Err(GatewayError::Forbidden(format!(
+                        "guardrail {policy} refused the request: {reason}"
+                    )));
+                }
+            }
+        }
+    }
+
     // The credential pick inside each channel's pool (issue #444): one channel
     // may carry several upstream keys, and a single account's 429 should
     // rotate to the next credential of the *same* channel before the turn
@@ -1037,6 +1097,9 @@ async fn run(
             discount_percent,
             mandate,
             turn_span,
+            surface,
+            guardrails.clone(),
+            std::mem::take(&mut pending_flags),
         )
         .await;
     }
@@ -1176,8 +1239,16 @@ async fn run(
         turn_span,
         mandate,
         subscription,
+        organization.id,
+        guardrails.clone(),
     );
     turn.note_input_count(request.counted_input);
+    // The pre_call flags the pipeline collected land on the settlement — the
+    // turn proceeded under them, and the v11 description records which rules
+    // saw the request (issue #502).
+    for flag in pending_flags {
+        turn.note_guardrail(flag);
+    }
     // The dashboard's live section sees the turn from here: the hold is taken, upstream is
     // next. Best-effort — a missed event is a missed live update, not lost state.
     crate::metrics::hold(&state.metrics, &primary.channel, &request.model);
@@ -1440,6 +1511,69 @@ async fn run(
                             turn.note_usage(usage);
                         }
                         turn.note_text(&adapter.answer_text(&value));
+
+                        // The guardrail pipeline's post_call (issue #502): the
+                        // same policies judge the assembled answer before the
+                        // client sees it. A `Block` refunds the whole freeze —
+                        // upstream answered but the content is refused, so the
+                        // turn settles `Nothing` — and answers the caller the
+                        // policy's refusal. A `Flag` is recorded into the
+                        // settlement's `guardrail` field, the audit the flag
+                        // exists to leave.
+                        if !guardrails.is_empty() {
+                            let output_text = adapter.answer_text(&value);
+                            let response_ctx = oxsum_core::ResponseContext {
+                                organization_id: organization.id,
+                                key_id: key.key_id,
+                                model: &request.model,
+                                channel: &ordered[served_at].channel,
+                                output_text: &output_text,
+                                request_texts: &request.texts,
+                                streamed: false,
+                            };
+                            let mut blocked: Option<(String, String)> = None;
+                            for policy in &guardrails {
+                                match policy.evaluate_response(&response_ctx) {
+                                    oxsum_core::Verdict::Allow => {}
+                                    oxsum_core::Verdict::Flag { policy, reason } => {
+                                        turn.note_guardrail(oxsum_core::SettlementGuardrailOwned {
+                                            policy,
+                                            verdict: "flagged",
+                                            reason,
+                                            streamed: false,
+                                        });
+                                    }
+                                    oxsum_core::Verdict::Block { policy, reason } => {
+                                        turn.note_guardrail(oxsum_core::SettlementGuardrailOwned {
+                                            policy: policy.clone(),
+                                            verdict: "blocked",
+                                            reason: reason.clone(),
+                                            streamed: false,
+                                        });
+                                        blocked = Some((policy, reason));
+                                        break;
+                                    }
+                                }
+                            }
+                            if let Some((policy, reason)) = blocked {
+                                // The hold refunds in full: the answer is
+                                // refused, not served. The verdict rides the
+                                // settlement's `guardrail` field under the
+                                // `Nothing` charge, so the bill proves which
+                                // rule acted and that nothing was charged.
+                                let message =
+                                    format!("guardrail {policy} refused the response: {reason}");
+                                let charged = turn
+                                    .settle(SettlementKind::Usage, Charge::Nothing, Some(&message))
+                                    .await;
+                                let mut response =
+                                    error_response(GatewayError::Forbidden(message), surface);
+                                cost.stamp(&mut response);
+                                stamp_charged(&mut response, charged);
+                                return Ok(response);
+                            }
+                        }
+
                         let (kind, charge) = turn.closing();
                         // The cache write needs the provider's own counts —
                         // what a later hit reprices — so they are lifted out
@@ -1550,6 +1684,9 @@ async fn serve_cache_hit(
     discount_percent: Option<i64>,
     mandate: Option<oxsum_core::PresentedMandate>,
     turn_span: tracing::Span,
+    surface: Surface,
+    response_guardrails: Vec<Arc<dyn oxsum_core::Guardrail>>,
+    pending_flags: Vec<oxsum_core::SettlementGuardrailOwned>,
 ) -> Result<Response, GatewayError> {
     let wallet = state.tenants.get(&organization.tenant_id).await?;
     let hold_key = format!("req-{request_id}:hold");
@@ -1660,9 +1797,65 @@ async fn serve_cache_hit(
         turn_span,
         mandate,
         subscription,
+        organization.id,
+        response_guardrails.clone(),
     );
     turn.note_attempts(0);
     turn.note_upstream_end();
+    for flag in pending_flags {
+        turn.note_guardrail(flag);
+    }
+    // A re-served answer still passes the post_call (issue #502): the stored
+    // body is the response the client sees, and a policy that blocks or flags
+    // it now acts the same as on a fresh turn — a cached answer carrying PII
+    // flags like a new one. `streamed: false`: the whole body is held here,
+    // so a `Block` can still withhold it and refund.
+    if !response_guardrails.is_empty() {
+        let output_text = adapter.answer_text(&hit.body);
+        let response_ctx = oxsum_core::ResponseContext {
+            organization_id: organization.id,
+            key_id: key.key_id,
+            model: &request.model,
+            channel: &primary.channel,
+            output_text: &output_text,
+            request_texts: &request.texts,
+            streamed: false,
+        };
+        let mut blocked: Option<(String, String)> = None;
+        for policy in &response_guardrails {
+            match policy.evaluate_response(&response_ctx) {
+                oxsum_core::Verdict::Allow => {}
+                oxsum_core::Verdict::Flag { policy, reason } => {
+                    turn.note_guardrail(oxsum_core::SettlementGuardrailOwned {
+                        policy,
+                        verdict: "flagged",
+                        reason,
+                        streamed: false,
+                    });
+                }
+                oxsum_core::Verdict::Block { policy, reason } => {
+                    turn.note_guardrail(oxsum_core::SettlementGuardrailOwned {
+                        policy: policy.clone(),
+                        verdict: "blocked",
+                        reason: reason.clone(),
+                        streamed: false,
+                    });
+                    blocked = Some((policy, reason));
+                    break;
+                }
+            }
+        }
+        if let Some((policy, reason)) = blocked {
+            let message = format!("guardrail {policy} refused the response: {reason}");
+            let charged = turn
+                .settle(SettlementKind::Usage, Charge::Nothing, Some(&message))
+                .await;
+            let mut response = error_response(GatewayError::Forbidden(message), surface);
+            cost.stamp(&mut response);
+            stamp_charged(&mut response, charged);
+            return Ok(response);
+        }
+    }
     // The served row's counter moves best-effort — a missed increment is a
     // wrong admin counter, never a wrong bill.
     let db = state.db.clone();

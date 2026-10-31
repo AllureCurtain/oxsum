@@ -7,6 +7,7 @@ mod bills;
 mod config;
 mod error;
 mod gateway;
+mod guardrail;
 pub mod jobs;
 mod metering;
 mod metrics;
@@ -60,6 +61,30 @@ pub(crate) struct AppState {
     /// The process's own telemetry registry: per-app, not the `metrics` facade's global
     /// slot, so a test reads back exactly the counts it caused (src/metrics.rs).
     pub(crate) metrics: Metrics,
+}
+
+impl AppState {
+    /// The guardrail impls a turn runs (issue #502): the `GuardrailSet` built
+    /// per request from the stored policies and bindings — two indexed reads —
+    /// then filtered to this channel/key/mandate. Per request rather than at
+    /// startup so a policy the org writes or binds takes effect on the next
+    /// call, never on a restart; the build is cheap and the verdicts are the
+    /// hot path. `build_guardrail_set` skips a policy that cannot build, so a
+    /// misconfigured rule degrades to its absence rather than fail the app.
+    pub(crate) async fn guardrails_for(
+        &self,
+        channel: &str,
+        key_id: uuid::Uuid,
+        key_required: &[String],
+        mandate_required: &[String],
+    ) -> Result<Vec<Arc<dyn oxsum_core::Guardrail>>, WalletError> {
+        // A deployment without a secret seals nothing — and holds no moderation
+        // credentials either, so a `moderation` policy is skipped for want of
+        // the key that would open its bearer.
+        let set = guardrail::build_guardrail_set(&self.db, self.http.clone(), self.config.secret())
+            .await?;
+        Ok(set.for_turn(channel, key_id, key_required, mandate_required))
+    }
 }
 
 /// Builds the full application router. Shared by main and the integration tests.

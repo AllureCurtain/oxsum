@@ -3056,6 +3056,7 @@ impl Wallet {
             mandate: None,
             subscription: None,
             cache: None,
+            guardrail: Vec::new(),
             reason: Some(reason),
         }
         .description()?;

@@ -1006,8 +1006,9 @@ impl SettlementKind {
 /// subscription period a subscription-covered turn drew on (issue #496).
 /// v10 adds the optional `cache` — which cached response the turn reused
 /// (issue #497): `{sourceEntryId, similarity}`, the proof link to the entry
-/// the answer was first produced under.
-const DESCRIPTION_VERSION: i64 = 10;
+/// the answer was first produced under. v11 adds the optional `guardrail` —
+/// the pipeline's verdict on the turn (issue #502).
+const DESCRIPTION_VERSION: i64 = 11;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1067,6 +1068,12 @@ pub struct Settlement<'a> {
     /// the match's score (1.0 on an exact-digest hit, the only kind this build
     /// serves). Absent on a turn upstream answered fresh.
     pub cache: Option<SettlementCache<'a>>,
+    /// The guardrail verdict a turn's pipeline produced (issue #502):
+    /// `{policy, verdict, reason, streamed}` — which configured rule flagged or
+    /// blocked the turn, and whether the answer had already streamed when it
+    /// judged. Empty on a turn no policy acted on — the common case, since a
+    /// turn only carries the field when a verdict named itself.
+    pub guardrail: Vec<SettlementGuardrail<'a>>,
     /// Why the turn refused or errored, when it did (issue #233): the refusal
     /// or upstream error in the caller-facing words the answer already carried,
     /// truncated to fit the description — under the hash, so a bill proves the
@@ -1119,6 +1126,28 @@ pub struct SettlementCache<'a> {
     pub source_entry_id: &'a uuid::Uuid,
     /// The match's score: `1.0` on an exact-digest hit.
     pub similarity: f64,
+}
+
+/// The guardrail verdict a settled turn's pipeline produced, as the v11
+/// description's `guardrail` object (issue #502): which configured policy
+/// acted and how — the audit trail a `Flag` exists to leave, and the reason a
+/// `Block`'s refunded turn reads on the bill.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettlementGuardrail<'a> {
+    /// The policy that produced the verdict — its `guardrail_policies.name`.
+    pub policy: &'a str,
+    /// `flagged` or `blocked` — the verdict the turn carried. `flagged` settled
+    /// normally (the exposure is the record); `blocked` means the turn was
+    /// refused or its hold refunded.
+    pub verdict: &'a str,
+    /// The rule's own reason, bounded by the caller.
+    pub reason: &'a str,
+    /// Whether the answer had already streamed when the verdict landed: a
+    /// streamed `Block` cannot un-send bytes, so it settles as a flag and this
+    /// says so — `true` only on the post-call judgment of a finished stream.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub streamed: bool,
 }
 
 /// Whether a metered count is zero: zero fields are not written, so the common
@@ -1283,6 +1312,11 @@ struct SettlementV9<'a> {
     /// `{sourceEntryId, similarity}` — absent when upstream answered fresh.
     #[serde(skip_serializing_if = "Option::is_none")]
     cache: Option<SettlementCache<'a>>,
+    /// The guardrail verdicts the turn's pipeline produced, v11's addition
+    /// (issue #502): `{policy, verdict, reason, streamed}` each — absent when
+    /// no policy acted on the turn.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    guardrail: Vec<SettlementGuardrail<'a>>,
     /// Why the turn refused or errored, when it did (issue #233): the caller's
     /// own answer words, under the content hash — absent for a clean settle.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1317,6 +1351,7 @@ impl Settlement<'_> {
             mandate: self.mandate.clone(),
             subscription: self.subscription.clone(),
             cache: self.cache.clone(),
+            guardrail: self.guardrail.clone(),
             reason: self.reason,
         })
         .map_err(|error| WalletError::InvalidInput(format!("settlement record: {error}")))
@@ -1487,6 +1522,10 @@ pub struct SettlementRecord {
     /// The cached answer a cache-hit turn reused (v10, issue #497):
     /// `{sourceEntryId, similarity}`; `None` on a fresh turn.
     pub cache: Option<CacheRef>,
+    /// The guardrail verdicts the turn's pipeline produced (v11, issue #502):
+    /// `{policy, verdict, reason, streamed}` each; empty on a turn no policy
+    /// acted on and on records that predate it.
+    pub guardrail: Vec<GuardrailRef>,
     /// Why the turn refused or errored, when the writer recorded one (issue
     /// #233); `None` on a clean settle and on records that predate it.
     pub reason: Option<String>,
@@ -1529,6 +1568,50 @@ pub struct CacheRef {
     pub similarity: f64,
 }
 
+/// The guardrail verdict a settled record names, read back (v11, issue #502):
+/// which configured policy acted on the turn and how.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuardrailRef {
+    /// The policy that produced the verdict — its `guardrail_policies.name`.
+    pub policy: String,
+    /// `flagged` or `blocked`.
+    pub verdict: String,
+    /// The rule's own reason.
+    pub reason: String,
+    /// Whether the answer had already streamed when the verdict landed.
+    #[serde(default)]
+    pub streamed: bool,
+}
+
+/// A guardrail verdict owned for the settlement path (issue #502): the same
+/// shape [`SettlementGuardrail`] writes, held by value so the turn can carry it
+/// from the verdict's site to `Plan::write`. The borrowed form is built at
+/// serialize time.
+#[derive(Debug, Clone)]
+pub struct SettlementGuardrailOwned {
+    /// The policy that produced the verdict.
+    pub policy: String,
+    /// `flagged` or `blocked`.
+    pub verdict: &'static str,
+    /// The rule's own reason.
+    pub reason: String,
+    /// Whether the answer had already streamed.
+    pub streamed: bool,
+}
+
+impl SettlementGuardrailOwned {
+    /// The borrowed form the description serializes.
+    pub fn borrowed(&self) -> SettlementGuardrail<'_> {
+        SettlementGuardrail {
+            policy: &self.policy,
+            verdict: self.verdict,
+            reason: &self.reason,
+            streamed: self.streamed,
+        }
+    }
+}
+
 /// The wire [`SettlementRecord::parse`] reads: [`SettlementV9`] owned, tolerant
 /// of every version since v3 — the differences are fields the other writers
 /// never carried.
@@ -1556,6 +1639,9 @@ struct SettlementRecordWire {
     subscription: Option<SubscriptionRef>,
     /// The cached-answer a v10 record carries; `None` on earlier versions.
     cache: Option<CacheRef>,
+    /// The guardrail verdicts a v11 record carries; absent/`[]` earlier.
+    #[serde(default)]
+    guardrail: Vec<GuardrailRef>,
     charged: i64,
     freeze: i64,
     reason: Option<String>,
@@ -1615,6 +1701,7 @@ impl SettlementRecord {
             mandate: wire.mandate,
             subscription: wire.subscription,
             cache: wire.cache,
+            guardrail: wire.guardrail,
             reason: wire.reason,
         })
     }
@@ -2210,12 +2297,13 @@ mod tests {
             mandate: None,
             subscription: None,
             cache: None,
+            guardrail: Vec::new(),
             reason: None,
         };
         let json = settlement.description().unwrap();
         assert_eq!(
             json,
-            r#"{"v":10,"request":"abc","channel":"deepseek","model":"deepseek-chat","priceVersion":3,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100},"lines":[["input",116,1000000],["output",100,2000000]],"upstreamAttempts":1,"charged":316,"freeze":400}"#
+            r#"{"v":11,"request":"abc","channel":"deepseek","model":"deepseek-chat","priceVersion":3,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100},"lines":[["input",116,1000000],["output",100,2000000]],"upstreamAttempts":1,"charged":316,"freeze":400}"#
         );
         // Within the ledger's limit, whatever the model is called.
         assert!(json.len() < 512);
@@ -2339,6 +2427,7 @@ mod tests {
             mandate: None,
             subscription: None,
             cache: None,
+            guardrail: Vec::new(),
             reason: None,
         }
         .description()
@@ -2392,6 +2481,7 @@ mod tests {
             mandate: None,
             subscription: None,
             cache: None,
+            guardrail: Vec::new(),
             reason: None,
         }
         .description()
@@ -2427,6 +2517,7 @@ mod tests {
             mandate: None,
             subscription: None,
             cache: None,
+            guardrail: Vec::new(),
             reason: None,
         };
         let record = SettlementRecord::parse(&settlement.description().unwrap()).unwrap();
@@ -2488,6 +2579,7 @@ mod tests {
             mandate: None,
             subscription: None,
             cache: None,
+            guardrail: Vec::new(),
             reason: None,
         };
         let text = settlement.description().unwrap();
@@ -2524,7 +2616,7 @@ mod tests {
         // (v2), or one whose priced lines are missing. A v3 record parses — the
         // reader tolerates the shape v4 superseded — but one that lacks the
         // lines the prices are read out of still cannot.
-        assert!(SettlementRecord::parse(r#"{"v":11,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[["input",1,1],["output",0,1]],"charged":1,"freeze":1}"#).is_none());
+        assert!(SettlementRecord::parse(r#"{"v":12,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[["input",1,1],["output",0,1]],"charged":1,"freeze":1}"#).is_none());
         assert!(SettlementRecord::parse(r#"{"v":2,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[{"item":"input","units":1,"pricePerM":1},{"item":"output","units":1,"pricePerM":1}],"charged":1,"freeze":1}"#).is_none());
         assert!(SettlementRecord::parse(r#"{"v":3,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[],"charged":1,"freeze":1}"#).is_none());
         assert!(
