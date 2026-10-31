@@ -1,0 +1,40 @@
+{
+  "name": "verify-oxsum-bill",
+  "version": "0.1.0",
+  "description": "Verify an oxsum bill entirely in the browser — recomputes the entry hash, links it to the ledger head, and checks the signed price binding, with no server round-trip.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "wasm"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "verification",
+    "billing",
+    "merkle",
+    "proof",
+    "oxsum",
+    "wasm"
+  ],
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AllureCurtain/oxsum.git",
+    "directory": "web/verify-sdk"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0"
+  }
+}

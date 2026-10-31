@@ -1,11 +1,17 @@
 [package]
 name = "oxsum-verify"
-description = "oxsum bill verification: the pure, I/O-free proof check, shared by the server and the browser."
+description = "Pure, I/O-free bill verification for oxsum's verifiable AI credit wallet — recomputes the entry hash, links it to the ledger head, and checks the signed price binding, all offline."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = false
+repository = "https://github.com/AllureCurtain/oxsum"
+homepage = "https://github.com/AllureCurtain/oxsum"
+documentation = "https://docs.rs/oxsum-verify"
+readme = "README.md"
+keywords = ["verification", "billing", "merkle", "proof", "wasm"]
+categories = ["cryptography", "data-structures", "wasm"]
+publish = true
 
 # `cdylib` lets a `--target wasm32-unknown-unknown` build emit the `.wasm`
 # artifact wasm-bindgen post-processes; `rlib` keeps the crate an ordinary
@@ -21,12 +27,12 @@ crate-type = ["cdylib", "rlib"]
 wasm = ["dep:wasm-bindgen"]
 
 [dependencies]
-# Path, not the workspace entry: the workspace entry enables doubleentry's
-# `postgres` feature (sqlx plus the tokio `net` runtime), which cannot target
-# wasm32-unknown-unknown. The verifier only needs the serde transport impls;
-# on native targets the `postgres` feature is unified back in through
-# oxsum-core, which also depends on this crate.
-doubleentry = { path = "../doubleentry", default-features = false, features = ["serde", "witness"] }
+# Path + version: the workspace builds against the local tree, and crates.io
+# resolves the published version (the path is stripped on publish). The
+# `postgres` feature is deliberately not enabled — the verifier only needs the
+# serde transport impls; on native targets the workspace's own `postgres` dep
+# unifies it back in through oxsum-core, which also depends on this crate.
+doubleentry = { path = "../doubleentry", version = "0.7.0", default-features = false, features = ["serde", "witness"] }
 serde.workspace = true
 serde_json.workspace = true
 # The browser exports under the `wasm` feature; no `tsify` — the exports speak
