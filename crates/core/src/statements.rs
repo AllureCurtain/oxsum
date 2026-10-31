@@ -384,24 +384,7 @@ impl Db {
         // The window fold: every covered entry's content hash in log order, the
         // order the digest pins (issue #221). `log_index IS NOT NULL` is implied —
         // a usage row only exists for a settlement whose entry sequenced.
-        let hashes_sql = format!(
-            "SELECT e.content_hash {} ORDER BY e.log_index",
-            period_join(tenant_id)
-        );
-        let hash_rows = sqlx::query(&hashes_sql)
-            .bind(period.first)
-            .bind(period.last)
-            .bind(tenant_id)
-            .fetch_all(self.pool())
-            .await?;
-        let mut hashes = Vec::with_capacity(hash_rows.len());
-        for row in &hash_rows {
-            let bytes: Vec<u8> = row.try_get("content_hash")?;
-            let raw: [u8; 32] = bytes.try_into().map_err(|_| {
-                WalletError::InvalidInput("a covered entry's content hash is malformed".into())
-            })?;
-            hashes.push(Hash::from_bytes(raw));
-        }
+        let hashes = self.statement_window_hashes(tenant_id, period).await?;
         let window_hash = statement_window_hash(&hashes);
         // The rollup: the statement's own figures and lines in the canonical form
         // the verifier re-serializes — the document the rollup digest commits.
@@ -594,6 +577,42 @@ impl Db {
                 })
             })
             .collect()
+    }
+
+    /// The covered entries' content hashes for one tenant's statement period, in
+    /// log order — the inputs `verify_statement_anchor`'s window fold recomputes
+    /// (issue #479). The same period join the draft folded when it anchored,
+    /// re-run so a verifier refolds `oxsum/statement-window/v1` itself rather
+    /// than trusting `windowHash`.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::InvalidInput`] when a covered entry's stored hash is
+    /// malformed; storage failures surface as [`WalletError`].
+    pub async fn statement_window_hashes(
+        &self,
+        tenant_id: &str,
+        period: &StatementPeriod,
+    ) -> Result<Vec<Hash>, WalletError> {
+        let hashes_sql = format!(
+            "SELECT e.content_hash {} ORDER BY e.log_index",
+            period_join(tenant_id)
+        );
+        let hash_rows = sqlx::query(&hashes_sql)
+            .bind(period.first)
+            .bind(period.last)
+            .bind(tenant_id)
+            .fetch_all(self.pool())
+            .await?;
+        let mut hashes = Vec::with_capacity(hash_rows.len());
+        for row in &hash_rows {
+            let bytes: Vec<u8> = row.try_get("content_hash")?;
+            let raw: [u8; 32] = bytes.try_into().map_err(|_| {
+                WalletError::InvalidInput("a covered entry's content hash is malformed".into())
+            })?;
+            hashes.push(Hash::from_bytes(raw));
+        }
+        Ok(hashes)
     }
 
     /// Every statement, newest period first — the admin list, optionally narrowed by
