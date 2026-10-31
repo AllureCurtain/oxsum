@@ -239,6 +239,11 @@ pub struct Config {
     signup_bonus_minor: i64,
     mailer: Option<crate::mail::Mailer>,
     github: Option<crate::oauth::GitHub>,
+    /// The configured OIDC providers from `OXSUM_OIDC_PROVIDERS` (issue #504):
+    /// one entry per enterprise IdP the deployment federates logins to. Empty —
+    /// the default — mounts no OIDC login and the `{provider}` route 404s like
+    /// every unknown provider.
+    oidc_providers: Vec<crate::oidc::OidcProvider>,
     turnstile: Option<crate::antibot::Turnstile>,
     stripe: Option<crate::stripe::Stripe>,
     /// The Airwallex deposit rail (issue #285): the credential pair plus
@@ -317,6 +322,7 @@ impl Config {
             signup_bonus_minor: 0,
             mailer: None,
             github: None,
+            oidc_providers: Vec::new(),
             turnstile: None,
             stripe: None,
             airwallex: None,
@@ -441,14 +447,15 @@ impl Config {
             .transpose()?
             .unwrap_or(0);
         let mailer = mailer_of()?;
+        // Optional on its own: the mailer and the OAuth clients each require it,
+        // and the device grant only prefers it for a stable `verificationUri`.
+        let public_url = var("OXSUM_PUBLIC_URL");
         let github = github_of()?;
+        let oidc_providers = oidc_providers_of(public_url.as_deref())?;
         let turnstile = turnstile_of()?;
         let stripe = stripe_of()?;
         let airwallex = airwallex_of()?;
         let hyperswitch = hyperswitch_of()?;
-        // Optional on its own: the mailer and the OAuth client each require it,
-        // and the device grant only prefers it for a stable `verificationUri`.
-        let public_url = var("OXSUM_PUBLIC_URL");
         let rate_limit_backend = rate_limit_backend_of()?;
         let retention = oxsum_core::Retention {
             provider_raw_days: retention_days("OXSUM_RETENTION_PROVIDER_RAW_DAYS")?.unwrap_or(7),
@@ -480,6 +487,7 @@ impl Config {
             signup_bonus_minor,
             mailer,
             github,
+            oidc_providers,
             turnstile,
             stripe,
             airwallex,
@@ -538,6 +546,30 @@ impl Config {
     #[must_use]
     pub fn github(&self) -> Option<&crate::oauth::GitHub> {
         self.github.as_ref()
+    }
+
+    /// The configured OIDC providers, `OXSUM_OIDC_PROVIDERS` (issue #504): one
+    /// per IdP the deployment federates logins to. Empty — the default — mounts
+    /// no OIDC login; the login page draws no buttons and the `{provider}`
+    /// routes 404 like every unknown provider.
+    #[must_use]
+    pub fn oidc_providers(&self) -> &[crate::oidc::OidcProvider] {
+        &self.oidc_providers
+    }
+
+    /// One configured provider by its `oidc:{name}` route name, or `None`.
+    #[must_use]
+    pub fn oidc_provider(&self, route_name: &str) -> Option<&crate::oidc::OidcProvider> {
+        self.oidc_providers
+            .iter()
+            .find(|p| crate::oidc::provider_name(p.name()) == route_name)
+    }
+
+    /// For tests: a provider list in place of the environment's.
+    #[must_use]
+    pub fn with_oidc_providers(mut self, providers: Vec<crate::oidc::OidcProvider>) -> Self {
+        self.oidc_providers = providers;
+        self
     }
 
     /// The anti-bot check, or `None` when the pair is not configured — the
@@ -1267,6 +1299,63 @@ fn github_of() -> Result<Option<crate::oauth::GitHub>, String> {
         web_url,
         api_url,
     )))
+}
+
+/// Parses `OXSUM_OIDC_PROVIDERS` (issue #504): a JSON array of
+/// `{name, issuer, clientId, clientSecret}` — one per enterprise IdP the
+/// deployment federates logins to. `OXSUM_PUBLIC_URL` is required alongside
+/// (the callback URL each provider builds its redirect on); providers without
+/// it can only fail inside the callback, so a set list plus a missing origin is
+/// a startup error, not a login-time one. An absent list parses to `[]` — no
+/// OIDC login, the `{provider}` routes 404.
+fn oidc_providers_of(public_url: Option<&str>) -> Result<Vec<crate::oidc::OidcProvider>, String> {
+    let Some(raw) = var("OXSUM_OIDC_PROVIDERS") else {
+        return Ok(Vec::new());
+    };
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ProviderEntry {
+        name: String,
+        issuer: String,
+        client_id: String,
+        client_secret: String,
+    }
+    let entries: Vec<ProviderEntry> = serde_json::from_str(&raw)
+        .map_err(|e| format!("OXSUM_OIDC_PROVIDERS is not a JSON array of providers: {e}"))?;
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(public_url) = public_url else {
+        return Err(
+            "OXSUM_OIDC_PROVIDERS requires OXSUM_PUBLIC_URL: the callback each provider \
+             builds its redirect on"
+                .into(),
+        );
+    };
+    entries
+        .into_iter()
+        .map(|entry| {
+            if entry.name.is_empty() || entry.name.contains(':') || entry.name.contains('/') {
+                return Err(format!(
+                    "OXSUM_OIDC_PROVIDERS provider name {:?} must be non-empty and hold no ':' or '/'",
+                    entry.name
+                ));
+            }
+            if entry.issuer.is_empty() || entry.client_id.is_empty() {
+                return Err(format!(
+                    "OXSUM_OIDC_PROVIDERS provider {:?} needs a non-empty issuer and clientId",
+                    entry.name
+                ));
+            }
+            Ok(crate::oidc::OidcProvider::new(
+                entry.name,
+                entry.issuer,
+                entry.client_id,
+                entry.client_secret,
+                public_url.to_owned(),
+            ))
+        })
+        .collect()
 }
 
 /// Parses the Stripe pair: `OXSUM_STRIPE_SECRET_KEY` and

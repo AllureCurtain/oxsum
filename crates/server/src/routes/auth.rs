@@ -1,5 +1,5 @@
 use axum::Json;
-use axum::extract::{Extension, State};
+use axum::extract::{Extension, Path, State};
 use axum::http::header::SET_COOKIE;
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Redirect, Response};
@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use oxsum_core::{CreatedSession, NewUser, Principal, Registration};
+use oxsum_core::{CreatedSession, LoginOutcome, NewUser, Principal, Registration};
 
 use crate::auth::session_cookie_value;
 use crate::error::{ApiError, ApiJson, ApiQuery};
@@ -104,7 +104,10 @@ async fn grant_signup_bonus(state: &AppState, registration: &Registration) -> Re
     Ok(())
 }
 
-/// Logs in: verifies the password, mints a session, and answers it in a cookie.
+/// Logs in: verifies the password, then either mints a session in a cookie or —
+/// for a TOTP-enabled account — withholds it behind a second-factor challenge
+/// (issue #504): `requiresTotp` answers the challenge the client completes at
+/// `POST /auth/totp`, and carries no cookie.
 ///
 /// An unknown email and a wrong password fail identically (401, one message), so neither
 /// reveals whether an account exists.
@@ -112,7 +115,57 @@ pub(crate) async fn login(
     State(state): State<AppState>,
     ApiJson(r): ApiJson<LoginReq>,
 ) -> Result<Response, ApiError> {
-    let CreatedSession { principal, token } = state.db.login(&r.email, &r.password).await?;
+    match state.db.login(&r.email, &r.password).await? {
+        LoginOutcome::Session(created) => {
+            let CreatedSession { principal, token } = *created;
+            let mut response = Json(Data {
+                data: SessionInfo::from(principal),
+            })
+            .into_response();
+            response.headers_mut().insert(
+                SET_COOKIE,
+                HeaderValue::from_str(&session_cookie(
+                    &token,
+                    state.config.session_cookie_secure(),
+                ))
+                .map_err(|_| ApiError::Internal)?,
+            );
+            Ok(response)
+        }
+        LoginOutcome::TotpRequired { challenge_token } => Ok(Json(Data {
+            data: json!({
+                "requiresTotp": true,
+                "challengeToken": challenge_token,
+            }),
+        })
+        .into_response()),
+    }
+}
+
+/// The body of `POST /api/v1/auth/totp`: the challenge `login` withheld the
+/// session behind, plus the live six-digit code — or a single-use backup code.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct TotpLoginReq {
+    challenge_token: String,
+    code: String,
+}
+
+/// The login's second leg: a challenge plus a live code (or a backup code,
+/// consumed on use) mints the session the password leg withheld.
+pub(crate) async fn totp_login(
+    State(state): State<AppState>,
+    ApiJson(r): ApiJson<TotpLoginReq>,
+) -> Result<Response, ApiError> {
+    let Some(secret) = state.config.secret() else {
+        return Err(ApiError::ServiceUnavailable(
+            "the second factor is not configured on this deployment".into(),
+        ));
+    };
+    let CreatedSession { principal, token } = state
+        .db
+        .verify_totp(&r.challenge_token, &r.code, secret)
+        .await?;
     let mut response = Json(Data {
         data: SessionInfo::from(principal),
     })
@@ -126,6 +179,100 @@ pub(crate) async fn login(
         .map_err(|_| ApiError::Internal)?,
     );
     Ok(response)
+}
+
+/// What `POST /auth/totp/enroll` answers: the shared secret and the otpauth URL
+/// the client renders a QR from — the secret is the credential to protect.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TotpEnrollRes {
+    secret: String,
+    otpauth_url: String,
+}
+
+/// Begins second-factor enrollment: a fresh secret, sealed and held
+/// unconfirmed until `confirm` proves a live code against it.
+pub(crate) async fn totp_enroll(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+) -> ApiResult<TotpEnrollRes> {
+    let Some(user) = principal.user() else {
+        return Err(ApiError::Forbidden(
+            "a second factor is a person's setting: an API key names no user".into(),
+        ));
+    };
+    let Some(secret) = state.config.secret() else {
+        return Err(ApiError::ServiceUnavailable(
+            "the second factor is not configured on this deployment".into(),
+        ));
+    };
+    let raw = oxsum_core::totp::generate_secret();
+    let sealed = secret
+        .seal(&oxsum_core::totp::base32_encode_pub(&raw))
+        .map_err(|_| ApiError::Internal)?;
+    state.db.enroll_totp(user.id, &sealed).await?;
+    let b32 = oxsum_core::totp::base32_encode_pub(&raw);
+    ok(TotpEnrollRes {
+        secret: b32.clone(),
+        otpauth_url: oxsum_core::totp::otpauth_url("oxsum", &user.email, &raw),
+    })
+}
+
+/// The body of `POST /auth/totp/confirm` and `/disable`: one live code.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct TotpCodeReq {
+    code: String,
+}
+
+/// What `confirm` answers: the single-use backup codes, shown exactly once.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TotpBackupRes {
+    backup_codes: Vec<String>,
+}
+
+/// Confirms enrollment on a first live code: proves the authenticator scanned
+/// the secret, then mints and answers the backup codes — once, in the clear.
+pub(crate) async fn totp_confirm(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    ApiJson(r): ApiJson<TotpCodeReq>,
+) -> ApiResult<TotpBackupRes> {
+    let Some(user) = principal.user() else {
+        return Err(ApiError::Forbidden(
+            "a second factor is a person's setting: an API key names no user".into(),
+        ));
+    };
+    let Some(secret) = state.config.secret() else {
+        return Err(ApiError::ServiceUnavailable(
+            "the second factor is not configured on this deployment".into(),
+        ));
+    };
+    let codes = state.db.confirm_totp(user.id, &r.code, secret).await?;
+    ok(TotpBackupRes {
+        backup_codes: codes,
+    })
+}
+
+/// Disables the factor on a live code — removing it is itself second-factored.
+pub(crate) async fn totp_disable(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    ApiJson(r): ApiJson<TotpCodeReq>,
+) -> ApiResult<LogoutRes> {
+    let Some(user) = principal.user() else {
+        return Err(ApiError::Forbidden(
+            "a second factor is a person's setting: an API key names no user".into(),
+        ));
+    };
+    let Some(secret) = state.config.secret() else {
+        return Err(ApiError::ServiceUnavailable(
+            "the second factor is not configured on this deployment".into(),
+        ));
+    };
+    state.db.disable_totp(user.id, &r.code, secret).await?;
+    ok(LogoutRes {})
 }
 
 /// Logs out: revokes the session the cookie names and clears the cookie.
@@ -155,6 +302,9 @@ pub(crate) async fn logout(
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AuthMethods {
     oauth_github: bool,
+    /// The configured OIDC providers' route names (`oidc:{name}`), so the login
+    /// page draws one button per IdP the deployment federates to (issue #504).
+    oidc_providers: Vec<String>,
     turnstile_site_key: Option<String>,
 }
 
@@ -164,6 +314,12 @@ pub(crate) async fn auth_methods(State(state): State<AppState>) -> Json<Data<Aut
     Json(Data {
         data: AuthMethods {
             oauth_github: state.config.github().is_some(),
+            oidc_providers: state
+                .config
+                .oidc_providers()
+                .iter()
+                .map(|p| crate::oidc::provider_name(p.name()))
+                .collect(),
             turnstile_site_key: state.config.turnstile().map(|t| t.site_key().to_owned()),
         },
     })
@@ -197,14 +353,39 @@ pub(crate) async fn require_bot_check(
     }
 }
 
-/// What `POST /api/v1/device/code` answers: the tool's polling credential, the
-/// user's short code, and where to take it (issue #156).
-pub(crate) async fn oauth_github(State(state): State<AppState>) -> Result<Response, ApiError> {
-    let Some(github) = state.config.github() else {
+/// Begins an OAuth login on the named provider — `github`, or `oidc:{name}`
+/// for one of the deployment's configured IdPs (issue #504). The answer is a
+/// `Location` to the provider's authorize page; an unconfigured or unknown
+/// provider is a 404 like every unknown path.
+pub(crate) async fn oauth_start(
+    State(state): State<AppState>,
+    Path(provider): Path<String>,
+) -> Result<Response, ApiError> {
+    if provider == crate::oauth::PROVIDER {
+        let Some(github) = state.config.github() else {
+            return Err(ApiError::NotFound("not found".into()));
+        };
+        let oauth_state = state.db.mint_oauth_state(&provider).await?;
+        return Ok(Redirect::to(&github.authorize_url(&oauth_state)).into_response());
+    }
+    // An OIDC provider: discover, mint the PKCE pair, and redirect to the
+    // authorize page carrying the S256 challenge.
+    let Some(oidc) = state.config.oidc_provider(&provider).cloned() else {
         return Err(ApiError::NotFound("not found".into()));
     };
-    let oauth_state = state.db.mint_oauth_state(crate::oauth::PROVIDER).await?;
-    Ok(Redirect::to(&github.authorize_url(&oauth_state)).into_response())
+    let (verifier, challenge, nonce) = crate::oidc::pkce_pair();
+    let oauth_state = state
+        .db
+        .mint_oauth_state_pkce(&provider, &verifier, &nonce)
+        .await?;
+    let url = oidc
+        .authorize_url(&state.http, &oauth_state, &challenge, &nonce)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e.0, provider = %provider, "oidc authorize failed");
+            ApiError::ServiceUnavailable("the identity provider could not be reached".into())
+        })?;
+    Ok(Redirect::to(&url).into_response())
 }
 
 /// What the provider's redirect carries: `code` and `state` on success,
@@ -216,53 +397,83 @@ pub(crate) struct OAuthCallbackQuery {
     error: Option<String>,
 }
 
-/// Finishes a GitHub OAuth login. The caller is a browser mid-redirect, so the
-/// answer is always a `Location` — `/app` with the session cookie on success,
-/// `/app/login?error=oauth` on any failure; the detail goes to the logs, never
-/// to the query string the page would show.
-pub(crate) async fn oauth_github_callback(
+/// Finishes an OAuth login on the named provider. The caller is a browser
+/// mid-redirect, so the answer is always a `Location` — `/app` with the
+/// session cookie on success, `/app/login?error=oauth` on any failure; the
+/// detail goes to the logs, never to the query string the page would show.
+pub(crate) async fn oauth_callback(
     State(state): State<AppState>,
+    Path(provider): Path<String>,
     ApiQuery(query): ApiQuery<OAuthCallbackQuery>,
 ) -> Response {
-    match oauth_github_finish(&state, &query).await {
+    match oauth_finish(&state, &provider, &query).await {
         Ok(response) => response,
         Err(why) => {
-            tracing::warn!(error = %why, "github oauth login failed");
+            tracing::warn!(error = %why, provider = %provider, "oauth login failed");
             Redirect::to("/app/login?error=oauth").into_response()
         }
     }
 }
 
 /// The callback's legs, each one a possible refusal: the provider's own
-/// `error`, a spent or expired state, the token exchange, the verified-email
-/// requirement, and the account resolution — which itself refuses when the
-/// deployment registers by invitation only and the identity is new.
-async fn oauth_github_finish(
+/// `error`, a spent or expired state, the token exchange, the identity's own
+/// check (GitHub's verified email; OIDC's JWKS verify and `nonce`), and the
+/// account resolution — which itself refuses when the deployment registers by
+/// invitation only and the identity is new.
+async fn oauth_finish(
     state: &AppState,
+    provider: &str,
     query: &OAuthCallbackQuery,
 ) -> Result<Response, String> {
-    let Some(github) = state.config.github() else {
-        return Err("provider not configured".to_owned());
-    };
     if let Some(error) = &query.error {
         return Err(format!("provider refused: {error}"));
     }
     let (Some(code), Some(oauth_state)) = (&query.code, &query.state) else {
         return Err("callback carried no code or state".to_owned());
     };
-    let spent = state
-        .db
-        .consume_oauth_state(oauth_state, crate::oauth::PROVIDER)
-        .await
-        .map_err(|e| e.to_string())?;
-    if !spent {
-        return Err("unknown, spent or expired state".to_owned());
-    }
-    let token = github.exchange(&state.http, code).await.map_err(|e| e.0)?;
-    let identity = github
-        .identity(&state.http, &token)
-        .await
-        .map_err(|e| e.0)?;
+    // The identity comes from the provider's own leg: GitHub's access-token +
+    // userinfo, or the OIDC `id_token` verified against the consumed state's
+    // PKCE verifier and nonce.
+    let identity = if provider == crate::oauth::PROVIDER {
+        let Some(github) = state.config.github() else {
+            return Err("provider not configured".to_owned());
+        };
+        let spent = state
+            .db
+            .consume_oauth_state(oauth_state, provider)
+            .await
+            .map_err(|e| e.to_string())?;
+        if !spent {
+            return Err("unknown, spent or expired state".to_owned());
+        }
+        let token = github.exchange(&state.http, code).await.map_err(|e| e.0)?;
+        github
+            .identity(&state.http, &token)
+            .await
+            .map_err(|e| e.0)?
+    } else {
+        let Some(oidc) = state.config.oidc_provider(provider) else {
+            return Err("provider not configured".to_owned());
+        };
+        let consumed = state
+            .db
+            .consume_oauth_state_full(oauth_state, provider)
+            .await
+            .map_err(|e| e.to_string())?;
+        let Some(consumed) = consumed else {
+            return Err("unknown, spent or expired state".to_owned());
+        };
+        let (Some(verifier), Some(nonce)) = (consumed.pkce_verifier, consumed.nonce) else {
+            return Err("the consumed state held no PKCE pair".to_owned());
+        };
+        let id_token = oidc
+            .exchange(&state.http, code, &verifier)
+            .await
+            .map_err(|e| e.0)?;
+        oidc.identity(&state.http, &id_token, &nonce)
+            .await
+            .map_err(|e| e.0)?
+    };
     let created = state
         .db
         .oauth_login(&identity, state.config.signup() == Signup::Open)

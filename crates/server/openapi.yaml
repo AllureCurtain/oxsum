@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.90.0
+  version: 0.91.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -670,10 +670,25 @@ info:
     (description version 11) with `streamed` marking the verdicts a streamed
     turn could not act on.
 
+    0.91.0 adds federated login and a second factor (issue #504):
+    `OXSUM_OIDC_PROVIDERS` names enterprise IdPs (`oidc:{name}`) the
+    generalized `GET /api/v1/auth/oauth/{provider}` routes drive a
+    `code`+PKCE flow against — discovery and JWKS off the provider's
+    `.well-known`, the `id_token`'s `iss`/`aud`/`exp`/`nonce` verified —
+    while `GET /api/v1/auth/methods`' `oidcProviders` tells the login page
+    which IdP buttons to draw. A user may enroll a TOTP factor through
+    `POST /api/v1/auth/totp/enroll` + `/confirm` (ten single-use backup codes
+    answered once), which turns their password login two-phase: `POST
+    /api/v1/auth/login` answers `{"requiresTotp": true, "challengeToken"}`
+    instead of a session, and `POST /api/v1/auth/totp` trades the challenge
+    plus a live or backup code for it. `POST /api/v1/auth/totp/disable`
+    removes the factor on a live code.
+
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
     whose job precedes authentication: `/api/v1/auth/login`, `/api/v1/auth/logout`,
-    `/api/v1/auth/register`, `/api/v1/auth/oauth/github`, `/api/v1/auth/oauth/github/callback`,
+    `/api/v1/auth/register`, `/api/v1/auth/totp`, `/api/v1/auth/oauth/{provider}`,
+    `/api/v1/auth/oauth/{provider}/callback`,
     `/api/v1/auth/methods`, `/api/v1/auth/verify`, `/api/v1/auth/password/forgot`,
     `/api/v1/auth/password/reset`, `/api/v1/invitations/redeem`, `/api/v1/device/code`,
     `/api/v1/device/token`, `/api/v1/log/key`, `/api/v1/webhooks/stripe`,
@@ -827,9 +842,14 @@ paths:
     post:
       summary: Log in with email and password
       description: |
-        Mints a session and answers it in the body together with a `Set-Cookie` header carrying the
-        session cookie (`oxsum_session`, `HttpOnly`, `SameSite=Lax`, `Path=/`, plus `Secure` when the
-        deployment sets `OXSUM_SESSION_COOKIE_SECURE`).
+        Verifies the password, then either mints a session — answered in the body
+        together with a `Set-Cookie` header carrying the session cookie
+        (`oxsum_session`, `HttpOnly`, `SameSite=Lax`, `Path=/`, plus `Secure`
+        when the deployment sets `OXSUM_SESSION_COOKIE_SECURE`) — or, on an
+        account whose second factor is confirmed, withholds it behind a
+        challenge: the answer is `{"requiresTotp": true, "challengeToken"}` and
+        no cookie, and `POST /api/v1/auth/totp` trades the challenge plus a
+        live code for the session (issue #504).
 
         An unknown email and a wrong password answer the same 401 with the same message, and the
         unknown-email path still pays for one password-hash verification, so neither timing nor
@@ -855,7 +875,11 @@ paths:
                 type: object
                 required: [data]
                 properties:
-                  data: { $ref: "#/components/schemas/SessionInfo" }
+                  data:
+                    oneOf:
+                      - $ref: "#/components/schemas/SessionInfo"
+                      - $ref: "#/components/schemas/TotpRequired"
+                    description: "`SessionInfo` on a password-only login; `TotpRequired` when the account's second factor must be satisfied first"
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
@@ -1012,43 +1036,60 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
-  /api/v1/auth/oauth/github:
+  /api/v1/auth/oauth/{provider}:
     get:
-      summary: Start a GitHub OAuth login
+      summary: Start an OAuth login on a configured provider
       description: |
-        The first leg of the OAuth flow: answers `303 See Other` to GitHub's
-        authorize page with `scope=read:user user:email` and a `state` minted
-        server-side — single-use and ten-minute-lived, so a callback carries a
-        token that can be spent once ever. The callback URL is built from
-        `OXSUM_PUBLIC_URL`, which the OAuth configuration requires.
-        A deployment without the provider pair configured answers `404`, and
-        this route is only ever a browser redirect — no body.
+        The first leg of the OAuth flow: answers `303 See Other` to the
+        provider's authorize page with a `state` minted server-side —
+        single-use and ten-minute-lived, so a callback carries a token that
+        can be spent once ever. `provider` is `github` when the GitHub pair
+        is configured, or `oidc:{name}` for a provider `OXSUM_OIDC_PROVIDERS`
+        lists (issue #504); an OIDC leg also carries an S256 `code_challenge`
+        and a `nonce`, whose verifier and expected value ride inside the
+        stored state. The callback URL is built from `OXSUM_PUBLIC_URL`, which
+        every OAuth configuration requires. An unconfigured or unknown
+        provider answers `404`, and this route is only ever a browser
+        redirect — no body.
       security: []
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema: { type: string, description: "`github`, or `oidc:{name}` for a configured provider" }
       responses:
         "303":
           description: Redirect to the provider's authorize page
           headers:
             Location:
-              description: "the authorize URL: `{authorize}?client_id=…&redirect_uri=…&scope=read:user user:email&state=…`"
+              description: "the authorize URL: GitHub's carries `scope=read:user user:email&state=…`; an OIDC provider's carries `scope=openid email profile`, `code_challenge`/`code_challenge_method=S256`, `nonce` and `state`"
               schema: { type: string }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
-  /api/v1/auth/oauth/github/callback:
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/auth/oauth/{provider}/callback:
     get:
-      summary: Finish a GitHub OAuth login
+      summary: Finish an OAuth login on a configured provider
       description: |
         The provider's redirect lands here with `code` and `state`. The state is
         consumed atomically — an unknown, spent or expired one rejects the whole
-        attempt — the code is exchanged for an access token, and the account
-        resolves by the primary **verified** email the provider reports: a
-        linked `oauth_accounts` row first, then an email match that links the
-        identity, and otherwise a registration when `OXSUM_SIGNUP=open` (an
-        `invite` deployment refuses new accounts here). Success mints a session
-        and answers `303` to `/dashboard` with the session `Set-Cookie`; every
-        failure answers `303` back to `/login?error=oauth`, because the caller
-        is a browser mid-redirect, not an API client.
+        attempt — then the code is exchanged and the identity read off the
+        provider: GitHub's access-token plus userinfo, an OIDC provider's
+        `id_token` verified against its JWKS with `iss`/`aud`/`exp`/`nonce`
+        checked and the consumed state's PKCE verifier presented at the
+        exchange (issue #504). The account resolves by the **verified** email
+        the provider reports: a linked `oauth_accounts` row first, then an
+        email match that links the identity, and otherwise a registration when
+        `OXSUM_SIGNUP=open` (an `invite` deployment refuses new accounts here).
+        Success mints a session and answers `303` to `/app` with the session
+        `Set-Cookie`; every failure answers `303` back to `/app/login?error=oauth`,
+        because the caller is a browser mid-redirect, not an API client.
       security: []
       parameters:
+        - name: provider
+          in: path
+          required: true
+          schema: { type: string, description: "the same `{provider}` the start leg ran" }
         - name: code
           in: query
           required: true
@@ -1059,16 +1100,136 @@ paths:
           schema: { type: string }
       responses:
         "303":
-          description: Redirect to `/dashboard` with the session cookie on success, to `/login?error=oauth` on any failure
+          description: Redirect to `/app` with the session cookie on success, to `/app/login?error=oauth` on any failure
           headers:
             Location:
-              description: "`/dashboard` or `/login?error=oauth`"
+              description: "`/app` or `/app/login?error=oauth`"
               schema: { type: string }
             Set-Cookie:
               description: "the session cookie on success — `oxsum_session=<token>; Path=/; HttpOnly; SameSite=Lax`, plus `; Secure` when configured"
               schema: { type: string }
         "400": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/auth/totp:
+    post:
+      summary: Finish a TOTP-gated login
+      description: |
+        The second leg of a two-phase login (issue #504): when `POST
+        /api/v1/auth/login` verifies the password on an account whose second
+        factor is confirmed, it withholds the session and answers
+        `{"requiresTotp": true, "challengeToken"}`. This route trades that
+        challenge plus a live six-digit code — or a single-use backup code,
+        consumed on use — for the session the first leg withheld, answered in
+        the body with the same `Set-Cookie` a password-only login would have
+        carried. The challenge is single-use, ten-minute-lived and survives
+        five wrong codes, so neither the session nor the six digits are
+        brute-able off a stolen password.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TotpLoginRequest" }
+      responses:
+        "200":
+          description: The user, the organization, the role and the session; the `Set-Cookie` header carries the session cookie
+          headers:
+            Set-Cookie:
+              description: "the session cookie: `oxsum_session=<token>; Path=/; HttpOnly; SameSite=Lax`, plus `; Secure` when the deployment sets `OXSUM_SESSION_COOKIE_SECURE`"
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/SessionInfo" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/auth/totp/enroll:
+    post:
+      summary: Begin TOTP enrollment
+      description: |
+        Mints a fresh shared secret for the session user, sealed at rest under
+        `OXSUM_SECRET_KEY` the way an upstream credential is, and answers it
+        once as base32 plus the `otpauthUrl` the client renders a QR from. The
+        secret is unconfirmed — it gates nothing — until `confirm` proves a
+        live code against it. An API key is refused: a second factor is a
+        person's setting.
+      requestBody: { required: false }
+      responses:
+        "200":
+          description: The shared secret and its otpauth URL
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/TotpEnrollResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/auth/totp/confirm:
+    post:
+      summary: Confirm TOTP enrollment on a live code
+      description: |
+        Proves the authenticator scanned the pending secret: on a live code the
+        enrollment confirms — the factor now gates every password login — and
+        the answer carries ten single-use backup codes, shown exactly once and
+        stored only as hashes. A wrong code answers 401 like any failed
+        verification and leaves the enrollment pending.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TotpCodeRequest" }
+      responses:
+        "200":
+          description: The backup codes, this once
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/TotpConfirmResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/auth/totp/disable:
+    post:
+      summary: Disable the second factor on a live code
+      description: |
+        Removes the user's confirmed factor — itself second-factored: the
+        request carries a live code, so a hijacked session alone cannot strip
+        the protection. An empty answer follows the `LogoutResponse` shape.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TotpCodeRequest" }
+      responses:
+        "200":
+          description: Disabled
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/LogoutResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /api/v1/auth/verify/request:
     post:
       summary: Mail the session user's verification link
@@ -6126,12 +6287,48 @@ components:
     LogoutResponse:
       type: object
       description: "empty: the logout is in the Set-Cookie header that clears the cookie"
+    TotpRequired:
+      type: object
+      required: [requiresTotp, challengeToken]
+      description: "`POST /api/v1/auth/login`'s answer on an account with a confirmed second factor — no session, no cookie; `POST /api/v1/auth/totp` trades `challengeToken` plus a live code for the session (issue #504)"
+      properties:
+        requiresTotp: { type: boolean, enum: [true] }
+        challengeToken: { type: string, description: "single-use, ten-minute-lived; present it with a code at `POST /api/v1/auth/totp`" }
     AuthMethods:
       type: object
-      required: [oauthGithub]
+      required: [oauthGithub, oidcProviders]
       properties:
         oauthGithub: { type: boolean, description: "true when the GitHub OAuth client pair is configured" }
+        oidcProviders:
+          type: array
+          items: { type: string }
+          description: "the route names of the configured OIDC providers (`oidc:{name}`, one per `OXSUM_OIDC_PROVIDERS` entry) — the login page draws one button per entry"
         turnstileSiteKey: { type: [string, "null"], description: "the Turnstile site key when the anti-bot check is configured — public by design, the page hands it to the widget" }
+    TotpLoginRequest:
+      type: object
+      required: [challengeToken, code]
+      properties:
+        challengeToken: { type: string, description: "the `challengeToken` `POST /api/v1/auth/login` answered with `requiresTotp: true`" }
+        code: { type: string, description: "a live six-digit authenticator code, or a `xxxx-xxxx` backup code (consumed on use)" }
+    TotpCodeRequest:
+      type: object
+      required: [code]
+      properties:
+        code: { type: string, description: "a live six-digit authenticator code" }
+    TotpEnrollResponse:
+      type: object
+      required: [secret, otpauthUrl]
+      properties:
+        secret: { type: string, description: "the shared secret as base32 — the form an authenticator accepts typed in by hand" }
+        otpauthUrl: { type: string, description: "`otpauth://totp/…` — what the client renders a QR from" }
+    TotpConfirmResponse:
+      type: object
+      required: [backupCodes]
+      properties:
+        backupCodes:
+          type: array
+          items: { type: string }
+          description: "ten `xxxx-xxxx` single-use recovery codes, answered this once and stored only as hashes"
     Organization:
       type: object
       required: [id, name, tenantId, kind, createdAt, displayCurrency]
