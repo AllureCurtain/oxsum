@@ -4,6 +4,11 @@ The React dashboard — the oxsum UI. It reached parity and the Topcoat pages
 retired to it (issues #234, #256), so this is now the only dashboard; the legacy
 `/dashboard/*`, auth and `/admin` paths `301` here. Vite + React 19 + TypeScript
 + Tailwind v4 + TanStack Query, talking to the same `/api/v1` REST surface.
+The console is internationalized (issue #507): `src/i18n.ts` wires
+react-i18next with `en` + `zh-CN` locale JSON under `src/locales/`, the
+browser's `navigator.language` detected behind a `localStorage` override, and
+a header switch (`components/LanguageSwitcher.tsx`) flipping between them.
+Pages translate through `useTranslation()`/`t()`; inline markup rides `<Trans>`.
 
 ## Layout
 
@@ -30,6 +35,10 @@ retired to it (issues #234, #256), so this is now the only dashboard; the legacy
 - `src/pages/` — one file per dashboard page; `auth/` holds the session pages
   (`shared.tsx` carries `AuthCard`/`ErrorText`, one file per flow), `Admin.tsx`
   the operator console.
+- `src/i18n.ts` + `src/locales/{en,zh-CN}.json` — the i18n instance and its two
+  resource files (flat `namespace.key` pairs, shared verbs under `common`).
+  Every user-visible string is a key looked up through `t()`; add a key to
+  both files together — a missing `zh-CN` key renders English, never a blank.
 
 ## Development
 
