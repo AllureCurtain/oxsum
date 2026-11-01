@@ -1,7 +1,16 @@
 import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, ApiError } from "../api/client";
-import { useDeleteAccount, useHealth, useOrg, useSession, useUpdateOrgDisplay } from "../api/hooks";
+import {
+  useDeleteAccount,
+  useHealth,
+  useOrg,
+  useSession,
+  useTotpConfirm,
+  useTotpDisable,
+  useTotpEnroll,
+  useUpdateOrgDisplay,
+} from "../api/hooks";
 import { Button } from "../components/ui";
 import { Badge } from "../components/ui";
 import { Banner, Card, Field, NumberInput, PageState, TextInput, displayAmount } from "../components/ui";
@@ -207,6 +216,154 @@ function DisplayCurrencyCard({ role }: { role: "owner" | "admin" | "member" }) {
   );
 }
 
+/** Two-factor authentication (issue #504). The `User` wire carries no TOTP
+ * status flag, so the card can't read enabled-vs-not off the session — it
+ * drives purely off the enrollment flow: enroll mints a pending secret,
+ * confirm proves a live code against it and answers the ten backup codes
+ * (shown once), disable needs a live code. When nothing is in flight the
+ * card offers both doors, each confirming before it fires. */
+function TwoFactorCard() {
+  const enroll = useTotpEnroll();
+  const confirm = useTotpConfirm();
+  const disable = useTotpDisable();
+  const [code, setCode] = useState("");
+  const [disableCode, setDisableCode] = useState("");
+  const [msg, setMsg] = useState<string | null>(null);
+
+  function onConfirm(e: FormEvent) {
+    e.preventDefault();
+    setMsg(null);
+    confirm.mutate(
+      { code: code.trim() },
+      {
+        onError: (err) => setMsg(err instanceof ApiError ? err.message : "could not confirm"),
+      },
+    );
+  }
+
+  function onDisable(e: FormEvent) {
+    e.preventDefault();
+    setMsg(null);
+    disable.mutate(
+      { code: disableCode.trim() },
+      {
+        onSuccess: () => setMsg("Two-factor authentication disabled."),
+        onError: (err) => setMsg(err instanceof ApiError ? err.message : "could not disable"),
+      },
+    );
+  }
+
+  const pending = enroll.data;
+  const confirmed = confirm.data;
+
+  return (
+    <Card title="Two-factor authentication">
+      <div className="flex flex-col gap-4">
+        <p className="text-sm text-muted">
+          A confirmed authenticator gates every password login behind a live
+          six-digit code — or a single-use backup code — so a stolen password
+          alone cannot open the session.
+        </p>
+
+        {confirmed ? (
+          <div className="flex flex-col gap-3">
+            <Banner tone="info">
+              Two-factor authentication is on. Save these backup codes — they
+              are shown this once, each works a single time.
+            </Banner>
+            <ul className="grid grid-cols-2 gap-1 sm:grid-cols-3">
+              {confirmed.backupCodes.map((c) => (
+                <li key={c} className="mono rounded border border-line px-2 py-1 text-center text-sm">
+                  {c}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : pending ? (
+          <form className="flex flex-col gap-3" onSubmit={onConfirm}>
+            <p className="text-sm">
+              Add this secret to your authenticator — scan the link or type the
+              base32 — then prove it with a live code.
+            </p>
+            <dl className="grid grid-cols-1 gap-2">
+              <div>
+                <dt className="text-xs font-medium text-muted">Secret (base32)</dt>
+                <dd className="mono break-all rounded border border-line bg-canvas px-2 py-1 text-sm">
+                  {pending.secret}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs font-medium text-muted">otpauth URL</dt>
+                <dd className="mono break-all rounded border border-line bg-canvas px-2 py-1 text-xs">
+                  {pending.otpauthUrl}
+                </dd>
+              </div>
+            </dl>
+            <Field label="Live code" hint="the six digits the authenticator now shows">
+              <TextInput
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                required
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                placeholder="123456"
+              />
+            </Field>
+            <div className="flex gap-2">
+              <Button type="submit" isLoading={confirm.isPending} loadingText="Confirming…">
+                Confirm & enable
+              </Button>
+              <Button type="button" onClick={() => enroll.reset()}>
+                Cancel
+              </Button>
+            </div>
+          </form>
+        ) : (
+          <div className="flex flex-col gap-3">
+            <div>
+              <Button
+                type="button"
+                isLoading={enroll.isPending}
+                loadingText="Starting…"
+                onClick={() => {
+                  setMsg(null);
+                  enroll.mutate(undefined, {
+                    onError: (err) =>
+                      setMsg(
+                        err instanceof ApiError ? err.message : "could not start enrollment",
+                      ),
+                  });
+                }}
+              >
+                Set up an authenticator
+              </Button>
+            </div>
+            <form className="flex items-end gap-2 border-t border-line pt-3" onSubmit={onDisable}>
+              <Field label="Turn it off" hint="a live code disables the confirmed factor">
+                <TextInput
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  value={disableCode}
+                  onChange={(e) => setDisableCode(e.target.value)}
+                  placeholder="123456"
+                />
+              </Field>
+              <Button type="submit" tone="danger" isLoading={disable.isPending} loadingText="Disabling…">
+                Disable
+              </Button>
+            </form>
+          </div>
+        )}
+        {msg ? (
+          <Banner tone={msg.includes("disabled") && !msg.includes("could not") ? "info" : "error"}>
+            {msg}
+          </Banner>
+        ) : null}
+      </div>
+    </Card>
+  );
+}
+
 export function Settings() {
   const session = useSession();
   const org = useOrg();
@@ -287,6 +444,7 @@ export function Settings() {
         ) : null}
       </Card>
       <DisplayCurrencyCard role={role} />
+      <TwoFactorCard />
       <DeleteAccount />
     </div>
   );
