@@ -273,6 +273,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0067_model_fallbacks",
         include_str!("../migrations/0067_model_fallbacks.sql"),
     ),
+    (
+        "0068_request_log",
+        include_str!("../migrations/0068_request_log.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.
