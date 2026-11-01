@@ -205,6 +205,17 @@ The dashboard is the React app under `web/` (issue #234): overview, top-up, bill
   pages a hundred at a time — **Older** and **Newest** under the table, keeping the
   filters in the link. A turn that is still in flight has not settled yet, so it is
   not here — the overview shows those live.
+  Above the list, **Search the request log** runs the same record as a query
+  (issue #505): every request the organization made — settled *or* refused at
+  admission — narrowed by key, the model that served it, the channel, a time
+  window (`From`/`To`), the terminal status and a minimum charge. Each row names
+  the model asked for and the model that answered (the two differ only when a
+  fallback served it), the time to the first upstream byte and the whole turn's
+  clock, the tokens and the charge, and links to the settlement entry's verify
+  page. A refused request is in the log too — `refused`, charge 0, with the
+  reason — so the search is the place "which requests were turned away" gets an
+  answer without reading bills one by one. Results page fifty at a time on the
+  **Older** button.
 - **Usage**: the organization's settled usage aggregated by day
   (`/app/usage`): a bar chart of what each of the last 30 days charged in
   credits — the day is the settlement's ledger booking date — a token-mix bar
