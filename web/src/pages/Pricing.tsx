@@ -1,5 +1,6 @@
 import { useMemo, useState, type FormEvent } from "react";
 import { Tags } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { ApiError, useEstimatePrice, useLogKey, usePriceHead, usePricing } from "../api/hooks";
 import { CopyButton } from "../components/ui";
 import { Button } from "../components/ui";
@@ -27,29 +28,31 @@ import {
 
 const MODES = ["chat", "embeddings", "rerank", "event"] as const;
 
-function formatRate(minor: number | undefined): string {
+function formatRate(minor: number | undefined, perMtok: string): string {
   if (minor === undefined) return "—";
-  return `${credits(minor)} cr / Mtok`;
+  return `${credits(minor)} ${perMtok}`;
 }
 
 function Catalog() {
+  const { t } = useTranslation();
   const pricing = usePricing();
   if (pricing.error) {
     return <Banner tone="error">{(pricing.error as ApiError).message}</Banner>;
   }
   const models = pricing.data?.models ?? [];
+  const perMtok = t("pricing.perMtok");
   return (
     <TableShell
       head={[
-        { label: "Model", truncate: true },
-        "Channel",
-        "Protocol",
-        "v",
-        { label: "Weight", align: "right" },
-        { label: "Input", align: "right" },
-        { label: "Output", align: "right" },
-        { label: "Max out", align: "right" },
-        { label: "Cached", align: "right" },
+        { label: t("common.model"), truncate: true },
+        t("common.channel"),
+        t("pricing.colProtocol"),
+        t("pricing.colV"),
+        { label: t("pricing.colWeight"), align: "right" },
+        { label: t("pricing.colInput"), align: "right" },
+        { label: t("pricing.colOutput"), align: "right" },
+        { label: t("pricing.colMaxOut"), align: "right" },
+        { label: t("pricing.colCached"), align: "right" },
       ]}
       loading={pricing.isLoading ? 8 : 0}
     >
@@ -63,20 +66,21 @@ function Catalog() {
           </td>
           <td className="mono">{m.version}</td>
           <Td mono align="right">{m.weight}</Td>
-          <Td mono align="right">{formatRate(m.inputPricePerMillion)}</Td>
-          <Td mono align="right">{formatRate(m.outputPricePerMillion)}</Td>
+          <Td mono align="right">{formatRate(m.inputPricePerMillion, perMtok)}</Td>
+          <Td mono align="right">{formatRate(m.outputPricePerMillion, perMtok)}</Td>
           <Td mono align="right">{m.maxOutputTokens?.toLocaleString() ?? "—"}</Td>
-          <Td mono align="right">{formatRate(m.cacheReadPricePerMillion)}</Td>
+          <Td mono align="right">{formatRate(m.cacheReadPricePerMillion, perMtok)}</Td>
         </tr>
       ))}
       {!pricing.isLoading && models.length === 0 ? (
-        <EmptyRows colSpan={9} icon={<Tags />}>No routes priced yet.</EmptyRows>
+        <EmptyRows colSpan={9} icon={<Tags />}>{t("pricing.noRoutes")}</EmptyRows>
       ) : null}
     </TableShell>
   );
 }
 
 function Estimator({ models }: { models: string[] }) {
+  const { t } = useTranslation();
   const estimate = useEstimatePrice();
   const [model, setModel] = useState("");
   const [mode, setMode] = useState<string>("chat");
@@ -97,18 +101,15 @@ function Estimator({ models }: { models: string[] }) {
 
   return (
     <form className="flex flex-col gap-3" onSubmit={submit}>
-      <p className="text-sm text-muted">
-        The upper bound the gateway would freeze for a request of this shape. Nothing is held or
-        charged — a real settle never exceeds the answer.
-      </p>
+      <p className="text-sm text-muted">{t("pricing.estimateNote")}</p>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <Field label="Model">
+        <Field label={t("common.model")}>
           <SelectRoot
             value={model}
             onValueChange={(v) => setModel(String(v))}
           >
             <SelectTrigger>
-              <SelectValue placeholder="Pick a model" />
+              <SelectValue placeholder={t("pricing.pickModel")} />
             </SelectTrigger>
             <SelectContent>
               {models.map((m) => (
@@ -119,7 +120,7 @@ function Estimator({ models }: { models: string[] }) {
             </SelectContent>
           </SelectRoot>
         </Field>
-        <Field label="Billing mode">
+        <Field label={t("pricing.billingMode")}>
           <SelectRoot value={mode} onValueChange={(v) => setMode(String(v))}>
             <SelectTrigger>
               <SelectValue />
@@ -133,10 +134,10 @@ function Estimator({ models }: { models: string[] }) {
             </SelectContent>
           </SelectRoot>
         </Field>
-        <Field label="Input tokens" hint="empty estimates a prompt-free shape">
+        <Field label={t("pricing.inputTokens")} hint={t("pricing.inputHint")}>
           <NumberInput value={inputTokens} onChange={(e) => setInputTokens(e.target.value)} min="0" />
         </Field>
-        <Field label="Output tokens" hint="empty clamps to the model's ceiling">
+        <Field label={t("pricing.outputTokens")} hint={t("pricing.outputHint")}>
           <NumberInput
             value={outputTokens}
             onChange={(e) => setOutputTokens(e.target.value)}
@@ -144,7 +145,7 @@ function Estimator({ models }: { models: string[] }) {
             disabled={mode !== "chat"}
           />
         </Field>
-        <Field label="Service tier" hint="optional pricing dimension">
+        <Field label={t("pricing.serviceTier")} hint={t("pricing.serviceTierHint")}>
           <TextInput value={serviceTier} onChange={(e) => setServiceTier(e.target.value)} />
         </Field>
       </div>
@@ -152,16 +153,16 @@ function Estimator({ models }: { models: string[] }) {
         <Button
           type="submit"
           isLoading={estimate.isPending}
-          loadingText="Estimating…"
+          loadingText={t("pricing.estimating")}
           disabled={model === ""}
         >
-          Estimate
+          {t("pricing.estimate")}
         </Button>
         {estimate.data ? (
           <p className="text-lg font-semibold tabular-nums">
             ≤ {credits(estimate.data.estimateMinor)} cr
             <span className="ml-2 text-xs font-normal text-muted">
-              price v{estimate.data.version}
+              {t("pricing.priceVersion", { version: estimate.data.version })}
             </span>
           </p>
         ) : null}
@@ -174,6 +175,7 @@ function Estimator({ models }: { models: string[] }) {
 }
 
 function PriceHeadViewer({ channels }: { channels: string[] }) {
+  const { t } = useTranslation();
   const [channel, setChannel] = useState("");
   const [model, setModel] = useState("");
   const [version, setVersion] = useState("");
@@ -186,15 +188,12 @@ function PriceHeadViewer({ channels }: { channels: string[] }) {
 
   return (
     <div className="flex flex-col gap-3">
-      <p className="text-sm text-muted">
-        A channel-model price row, signed under the same key that signs tree heads. A bill names the
-        version it priced under — pass that to re-sign an older price.
-      </p>
+      <p className="text-sm text-muted">{t("pricing.checkpointNote")}</p>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <Field label="Channel">
+        <Field label={t("common.channel")}>
           <SelectRoot value={channel} onValueChange={(v) => setChannel(String(v))}>
             <SelectTrigger>
-              <SelectValue placeholder="Pick a channel" />
+              <SelectValue placeholder={t("pricing.pickChannel")} />
             </SelectTrigger>
             <SelectContent>
               {channels.map((c) => (
@@ -205,20 +204,20 @@ function PriceHeadViewer({ channels }: { channels: string[] }) {
             </SelectContent>
           </SelectRoot>
         </Field>
-        <Field label="Model">
-          <TextInput value={model} onChange={(e) => setModel(e.target.value)} placeholder="model id" />
+        <Field label={t("common.model")}>
+          <TextInput value={model} onChange={(e) => setModel(e.target.value)} placeholder={t("pricing.modelId")} />
         </Field>
-        <Field label="Version" hint="empty signs the latest">
+        <Field label={t("pricing.version")} hint={t("pricing.versionHint")}>
           <NumberInput value={version} onChange={(e) => setVersion(e.target.value)} min="1" />
         </Field>
       </div>
-      {head.isLoading ? <PageState>Signing…</PageState> : null}
+      {head.isLoading ? <PageState>{t("pricing.signing")}</PageState> : null}
       {head.error instanceof ApiError ? (
         <Banner tone={head.error.status === 503 ? "warn" : "error"}>
           {head.error.status === 503
-            ? "This deployment has no head-signing key configured."
+            ? t("pricing.noSigningKey")
             : head.error.status === 404
-              ? "No such (channel, model, version) row."
+              ? t("pricing.noSuchRow")
               : head.error.message}
         </Banner>
       ) : null}
@@ -243,10 +242,10 @@ function PriceHeadViewer({ channels }: { channels: string[] }) {
       {logKey.data ? (
         <div className="flex items-center gap-2 text-xs text-muted">
           <span>
-            Verify against <code className="mono">{logKey.data.keyName}</code>:
+            {t("pricing.verifyAgainst")} <code className="mono">{logKey.data.keyName}</code>:
           </span>
           <code className="mono">{logKey.data.publicKey}</code>
-          <CopyButton value={logKey.data.publicKey} aria-label="Copy verifying key" />
+          <CopyButton value={logKey.data.publicKey} aria-label={t("pricing.copyKey")} />
         </div>
       ) : null}
     </div>
@@ -254,6 +253,7 @@ function PriceHeadViewer({ channels }: { channels: string[] }) {
 }
 
 export function Pricing() {
+  const { t } = useTranslation();
   const pricing = usePricing();
   const models = useMemo(
     () => [...new Set((pricing.data?.models ?? []).map((m) => m.model))].sort(),
@@ -266,14 +266,14 @@ export function Pricing() {
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-2xl font-bold">Pricing</h1>
-      <Card title="Catalog" actions={<span className="text-xs text-muted">what the gateway charges</span>}>
+      <h1 className="text-2xl font-bold">{t("pricing.title")}</h1>
+      <Card title={t("pricing.catalog")} actions={<span className="text-xs text-muted">{t("pricing.catalogNote")}</span>}>
         <Catalog />
       </Card>
-      <Card title="Estimate a request">
+      <Card title={t("pricing.estimateRequest")}>
         <Estimator models={models} />
       </Card>
-      <Card title="Signed price checkpoint">
+      <Card title={t("pricing.signedCheckpoint")}>
         <PriceHeadViewer channels={channels} />
       </Card>
     </div>

@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { Webhook } from "lucide-react";
+import { Trans, useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { ApiError } from "../api/client";
 import { CopyButton } from "../components/ui";
 import {
@@ -29,28 +31,29 @@ import {
   TextInput,
 } from "../components/ui";
 
-const EVENT_GROUPS: { label: string; events: string[] }[] = [
-  { label: "Requests", events: ["request.settled"] },
+const EVENT_GROUPS: { labelKey: string; events: string[] }[] = [
+  { labelKey: "webhooks.groupRequests", events: ["request.settled"] },
   {
-    label: "Deposits",
+    labelKey: "webhooks.groupDeposits",
     events: ["deposit.credited", "deposit.failed", "deposit.reversed"],
   },
   {
-    label: "Statements",
+    labelKey: "webhooks.groupStatements",
     events: ["statement.finalized", "statement.payment_overdue", "statement.payment_status_updated"],
   },
   {
-    label: "Organization",
+    labelKey: "webhooks.groupOrg",
     events: ["org.suspended", "org.credit_limit_exceeded"],
   },
-  { label: "Balance", events: ["balance.low"] },
+  { labelKey: "webhooks.groupBalance", events: ["balance.low"] },
   {
-    label: "Budget & anomalies",
+    labelKey: "webhooks.groupBudget",
     events: ["budget.exhaustion_forecast", "budget.threshold_crossed", "anomaly.detected"],
   },
 ];
 
 export function Webhooks() {
+  const { t } = useTranslation();
   const webhooks = useWebhooks();
   const create = useCreateWebhook();
   const remove = useDeleteWebhook();
@@ -63,20 +66,24 @@ export function Webhooks() {
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-2xl font-bold">Webhooks</h1>
+      <h1 className="text-2xl font-bold">{t("webhooks.title")}</h1>
 
       {secret ? (
         <Banner tone="success">
-          Endpoint created. Signing secret — shown once: <code className="mono">{secret}</code>
-          <CopyButton value={secret} aria-label="Copy signing secret" />
+          <Trans
+            i18nKey="webhooks.createdNote"
+            components={{ code: <code className="mono" /> }}
+            values={{ secret }}
+          />
+          <CopyButton value={secret} aria-label={t("webhooks.copySecret")} />
           <Button tone="ghost" className="ml-3" onClick={() => setSecret(null)}>
-            Done
+            {t("webhooks.done")}
           </Button>
         </Banner>
       ) : null}
       {create.error instanceof ApiError ? <Banner tone="error">{create.error.message}</Banner> : null}
 
-      <Card title="New endpoint">
+      <Card title={t("webhooks.newEndpoint")}>
         <form
           className="grid grid-cols-1 gap-3"
           onSubmit={(e) => {
@@ -87,7 +94,7 @@ export function Webhooks() {
                 events,
                 balanceLowMinor: balanceLow === "" ? null : Math.round(Number(balanceLow) * 1_000_000),
                 budgetThresholdsPercent: thresholds.trim()
-                  ? thresholds.split(",").map((t) => Number(t.trim()))
+                  ? thresholds.split(",").map((v) => Number(v.trim()))
                   : undefined,
               },
               {
@@ -108,15 +115,15 @@ export function Webhooks() {
               required
               value={url}
               onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://example.com/hook"
+              placeholder={t("webhooks.endpointUrl")}
             />
           </Field>
-          <Field label="Events" hint={`${events.length} selected`}>
+          <Field label={t("webhooks.events")} hint={t("webhooks.selectedCount", { count: events.length })}>
             <div className="flex flex-col gap-2.5">
               {EVENT_GROUPS.map((group) => (
-                <div key={group.label}>
+                <div key={group.labelKey}>
                   <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-muted">
-                    {group.label}
+                    {t(group.labelKey)}
                   </p>
                   <div className="flex flex-wrap gap-1.5">
                     {group.events.map((event) => {
@@ -147,26 +154,26 @@ export function Webhooks() {
             </div>
           </Field>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <Field label="balance.low below (credits)">
+            <Field label={t("webhooks.balanceLow")}>
               <NumberInput value={balanceLow} min={0} onChange={(e) => setBalanceLow(e.target.value)} />
             </Field>
-            <Field label="Budget thresholds %" hint="comma-separated, e.g. 50,80,90">
+            <Field label={t("webhooks.budgetThresholds")} hint={t("webhooks.thresholdsHint")}>
               <TextInput value={thresholds} onChange={(e) => setThresholds(e.target.value)} />
             </Field>
           </div>
           <div>
             <Button type="submit" disabled={create.isPending || events.length === 0}>
-              {create.isPending ? "Creating…" : "Create endpoint"}
+              {create.isPending ? t("common.creating") : t("webhooks.createEndpoint")}
             </Button>
           </div>
         </form>
       </Card>
 
       {webhooks.isError ? (
-        <PageState>The webhooks could not be read.</PageState>
+        <PageState>{t("webhooks.readError")}</PageState>
       ) : (
         <TableShell
-          head={[{ label: "URL", truncate: true }, "Events", "Secret", "Enabled", ""]}
+          head={[{ label: "URL", truncate: true }, t("webhooks.events"), t("webhooks.colSecret"), t("webhooks.colEnabled"), ""]}
           loading={webhooks.isLoading ? 4 : 0}
         >
           {!webhooks.isLoading &&
@@ -175,7 +182,7 @@ export function Webhooks() {
               <Td mono truncate>{endpoint.url}</Td>
               <td className="text-xs">{endpoint.events.join(", ")}</td>
               <td className="mono">…{endpoint.secretLast4 ?? "????"}</td>
-              <td>{endpoint.enabled ? "yes" : "no"}</td>
+              <td>{endpoint.enabled ? t("webhooks.enabledYes") : t("webhooks.enabledNo")}</td>
               <td className="text-right">
                 <span className="inline-flex gap-2">
                   <Button
@@ -184,29 +191,28 @@ export function Webhooks() {
                       setDeliveriesFor(deliveriesFor === endpoint.id ? null : endpoint.id)
                     }
                   >
-                    Deliveries
+                    {t("webhooks.deliveries")}
                   </Button>
                   <AlertDialog>
                     <AlertDialogTrigger asChild>
-                      <Button tone="danger">Delete</Button>
+                      <Button tone="danger">{t("common.delete")}</Button>
                     </AlertDialogTrigger>
                     <AlertDialogContent>
                       <AlertDialogHeader>
-                        <AlertDialogTitle>Delete this endpoint?</AlertDialogTitle>
+                        <AlertDialogTitle>{t("webhooks.deleteEndpoint")}</AlertDialogTitle>
                         <AlertDialogDescription>
-                          {endpoint.url} will stop receiving events. The deliveries it already
-                          recorded stay on the books.
+                          {t("webhooks.deleteNote", { url: endpoint.url })}
                         </AlertDialogDescription>
                       </AlertDialogHeader>
                       <AlertDialogFooter>
-                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
                         <Button
                           tone="danger"
                           isLoading={remove.isPending}
-                          loadingText="Deleting…"
+                          loadingText={t("common.deleting")}
                           onClick={() => remove.mutate(endpoint.id)}
                         >
-                          Delete
+                          {t("common.delete")}
                         </Button>
                       </AlertDialogFooter>
                     </AlertDialogContent>
@@ -216,27 +222,27 @@ export function Webhooks() {
             </tr>
             ))}
           {!webhooks.isLoading && (webhooks.data?.length ?? 0) === 0 ? (
-            <EmptyRows colSpan={5} icon={<Webhook />}>No webhook endpoints yet.</EmptyRows>
+            <EmptyRows colSpan={5} icon={<Webhook />}>{t("webhooks.noEndpoints")}</EmptyRows>
           ) : null}
         </TableShell>
       )}
 
       {deliveriesFor ? (
-        <Deliveries endpointId={deliveriesFor} />
+        <Deliveries endpointId={deliveriesFor} t={t} />
       ) : (webhooks.data?.length ?? 0) > 0 ? (
-        <Deliveries endpointId={webhooks.data![0].id} />
+        <Deliveries endpointId={webhooks.data![0].id} t={t} />
       ) : null}
     </div>
   );
 }
 
-function Deliveries({ endpointId }: { endpointId: string }) {
+function Deliveries({ endpointId, t }: { endpointId: string; t: TFunction }) {
   const deliveries = useWebhookDeliveries(endpointId);
   const webhooks = useWebhooks();
   const endpoint = (webhooks.data ?? []).find((e) => e.id === endpointId);
   return (
     <Card
-      title="Recent deliveries"
+      title={t("webhooks.recentDeliveries")}
       actions={
         endpoint ? (
           <span className="mono max-w-96 truncate text-xs text-muted" title={endpoint.url}>
@@ -246,10 +252,10 @@ function Deliveries({ endpointId }: { endpointId: string }) {
       }
     >
       {deliveries.isError ? (
-        <PageState>The deliveries could not be read.</PageState>
+        <PageState>{t("webhooks.deliveriesError")}</PageState>
       ) : (
         <TableShell
-          head={["When", "Event", "Status", { label: "Attempts", align: "right" }, "Error"]}
+          head={[t("webhooks.colWhen"), t("webhooks.colEvent"), t("common.status"), { label: t("webhooks.colAttempts"), align: "right" }, t("webhooks.colError")]}
           loading={deliveries.isLoading ? 4 : 0}
         >
           {!deliveries.isLoading &&
@@ -263,7 +269,7 @@ function Deliveries({ endpointId }: { endpointId: string }) {
             </tr>
           ))}
           {!deliveries.isLoading && (deliveries.data?.length ?? 0) === 0 ? (
-            <EmptyRows colSpan={5} icon={<Webhook />}>No deliveries yet.</EmptyRows>
+            <EmptyRows colSpan={5} icon={<Webhook />}>{t("webhooks.noDeliveries")}</EmptyRows>
           ) : null}
         </TableShell>
       )}

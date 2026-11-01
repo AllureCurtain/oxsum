@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react";
 import { KeyRound } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import type { ApiKey } from "../api/hooks";
 import type { DisplayCurrency } from "../components/ui";
 import { useBudget, useCreateKey, useDisplay, useEntitlement, useKeys, usePatchKey, useRevokeKey } from "../api/hooks";
@@ -23,6 +25,7 @@ import { CopyButton } from "../components/ui";
 const DURATIONS = ["daily", "weekly", "monthly"] as const;
 
 export function Keys() {
+  const { t } = useTranslation();
   const keys = useKeys();
   const budget = useBudget();
   const display = useDisplay();
@@ -78,21 +81,21 @@ export function Keys() {
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-2xl font-bold">API keys</h1>
+      <h1 className="text-2xl font-bold">{t("keys.title")}</h1>
 
       {secret ? (
         <Banner tone="success">
-          The key was created. The secret is shown here and nowhere else:
+          {t("keys.createdNote")}
           <code className="mono ml-2">{secret}</code>
-          <CopyButton value={secret} aria-label="Copy key secret" />
+          <CopyButton value={secret} aria-label={t("keys.copySecret")} />
           <Button tone="ghost" className="ml-3" onClick={() => setSecret(null)}>
-            Done
+            {t("keys.done")}
           </Button>
         </Banner>
       ) : null}
       {create.error instanceof ApiError ? <Banner tone="error">{create.error.message}</Banner> : null}
 
-      <Card title="Create a key">
+      <Card title={t("keys.createKey")}>
         <form
           className="flex flex-col gap-5"
           onSubmit={(e) => {
@@ -104,29 +107,29 @@ export function Keys() {
               then the rate limits. */}
           <section className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <p className="col-span-full text-xs font-semibold uppercase tracking-wider text-muted">
-              Identity
+              {t("keys.identity")}
             </p>
-            <Field label="Name">
+            <Field label={t("keys.name")}>
               <TextInput value={name} onChange={(e) => setName(e.target.value)} maxLength={80} />
             </Field>
-            <Field label="Expires at">
+            <Field label={t("keys.expiresAt")}>
               <TextInput type="datetime-local" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} />
             </Field>
           </section>
 
           <section className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <p className="col-span-full text-xs font-semibold uppercase tracking-wider text-muted">
-              Budget
+              {t("keys.budget")}
             </p>
-            <Field label="Spend limit (credits)" hint="empty: unlimited">
+            <Field label={t("keys.spendLimit")} hint={t("keys.unlimitedHint")}>
               <NumberInput value={limit} min={0} onChange={(e) => setLimit(e.target.value)} />
             </Field>
-            <Field label="Budget window" hint="makes the limit periodic (UTC)">
+            <Field label={t("keys.budgetWindow")} hint={t("keys.budgetWindowHint")}>
               <Select value={duration} onChange={(e) => setDuration(e.target.value)}>
-                <option value="">cumulative</option>
+                <option value="">{t("keys.cumulative")}</option>
                 {DURATIONS.map((d) => (
                   <option key={d} value={d}>
-                    {d}
+                    {t(`keys.duration.${d}`)}
                   </option>
                 ))}
               </Select>
@@ -135,35 +138,43 @@ export function Keys() {
 
           <section className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <p className="col-span-full text-xs font-semibold uppercase tracking-wider text-muted">
-              Rate limits
+              {t("keys.rateLimits")}
             </p>
-            <Field label="Requests per minute">
+            <Field label={t("keys.requestsPerMinute")}>
               <NumberInput value={rpm} min={1} onChange={(e) => setRpm(e.target.value)} />
             </Field>
-            <Field label="Tokens per minute">
+            <Field label={t("keys.tokensPerMinute")}>
               <NumberInput value={tpm} min={1} onChange={(e) => setTpm(e.target.value)} />
             </Field>
-            <Field label="Max concurrent holds">
+            <Field label={t("keys.maxConcurrentHolds")}>
               <NumberInput value={maxHolds} min={1} onChange={(e) => setMaxHolds(e.target.value)} />
             </Field>
-            <Field label="Model allowlist" hint="comma-separated gateway model names">
+            <Field label={t("keys.modelAllowlist")} hint={t("keys.modelAllowlistHint")}>
               <TextInput value={models} onChange={(e) => setModels(e.target.value)} />
             </Field>
           </section>
 
           <div>
             <Button type="submit" disabled={create.isPending}>
-              {create.isPending ? "Creating…" : "Create key"}
+              {create.isPending ? t("common.creating") : t("keys.createKeyButton")}
             </Button>
           </div>
         </form>
       </Card>
 
       {keys.isError ? (
-        <PageState>The keys could not be read.</PageState>
+        <PageState>{t("keys.readError")}</PageState>
       ) : (
         <TableShell
-          head={["Name", "Prefix", "Live", "Budget", "Limits", "Created", ""]}
+          head={[
+            t("common.name"),
+            t("keys.colPrefix"),
+            t("keys.colLive"),
+            t("keys.colBudget"),
+            t("keys.colLimits"),
+            t("keys.colCreated"),
+            "",
+          ]}
           loading={keys.isLoading ? 4 : 0}
         >
           {!keys.isLoading &&
@@ -176,11 +187,12 @@ export function Keys() {
                 editing={editing === key.id}
                 onEdit={() => setEditing(editing === key.id ? null : key.id)}
                 onRevoke={() => revoke.mutate(key.id)}
+                t={t}
               />
             ))}
           {!keys.isLoading && (keys.data?.length ?? 0) === 0 ? (
             <EmptyRows colSpan={7} icon={<KeyRound />}>
-              No keys yet — create one above to start calling the gateway.
+              {t("keys.empty")}
             </EmptyRows>
           ) : null}
         </TableShell>
@@ -196,7 +208,9 @@ function KeyRow(props: {
   editing: boolean;
   onEdit: () => void;
   onRevoke: () => void;
+  t: TFunction;
 }) {
+  const { t } = props;
   const key = props.apiKey;
   const patch = usePatchKey();
   const [limit, setLimit] = useState(
@@ -211,21 +225,26 @@ function KeyRow(props: {
   return (
     <>
       <tr>
-        <td>{key.name ?? <span className="text-muted">unnamed</span>}</td>
+        <td>{key.name ?? <span className="text-muted">{t("keys.unnamed")}</span>}</td>
         <td className="mono">{key.prefix}</td>
         <td>
-          <LiveCell keyId={key.id} revoked={key.revokedAt != null} />
+          <LiveCell keyId={key.id} revoked={key.revokedAt != null} t={t} />
         </td>
         <td className="text-sm">
           {key.spendLimitMinor == null ? (
-            <span className="text-muted">unlimited</span>
+            <span className="text-muted">{t("keys.unlimited")}</span>
           ) : (
             <>
-              {props.committed?.consumedPercent != null ? `${props.committed.consumedPercent}% of ` : ""}
+              {props.committed?.consumedPercent != null
+                ? t("keys.percentOf", { percent: props.committed.consumedPercent })
+                : ""}
               <Cr minor={key.spendLimitMinor} currency={props.display} />
-              {key.budgetDuration ? ` / ${key.budgetDuration}` : ""}
+              {key.budgetDuration ? ` / ${t(`keys.duration.${key.budgetDuration}`)}` : ""}
               {props.committed?.windowStart ? (
-                <span className="text-muted"> · since {props.committed.windowStart}</span>
+                <span className="text-muted">
+                  {" "}
+                  {t("keys.sinceWindow", { start: props.committed.windowStart })}
+                </span>
               ) : null}
             </>
           )}
@@ -234,8 +253,12 @@ function KeyRow(props: {
           {[
             key.requestsPerMinute != null ? `${key.requestsPerMinute} rpm` : null,
             key.tokensPerMinute != null ? `${key.tokensPerMinute} tpm` : null,
-            key.maxConcurrentHolds != null ? `${key.maxConcurrentHolds} holds` : null,
-            key.modelAllowlist?.length ? `${key.modelAllowlist.length} models` : null,
+            key.maxConcurrentHolds != null
+              ? t("keys.holdsShort", { count: key.maxConcurrentHolds })
+              : null,
+            key.modelAllowlist?.length
+              ? t("keys.modelsShort", { count: key.modelAllowlist.length })
+              : null,
           ]
             .filter(Boolean)
             .join(" · ") || "—"}
@@ -243,14 +266,14 @@ function KeyRow(props: {
         <td>{key.createdAt.slice(0, 10)}</td>
         <td className="text-right">
           {key.revokedAt ? (
-            <span className="text-xs text-danger">revoked</span>
+            <span className="text-xs text-danger">{t("keys.revoked")}</span>
           ) : (
             <span className="inline-flex gap-2">
               <Button tone="ghost" onClick={props.onEdit}>
-                Constraints
+                {t("keys.constraints")}
               </Button>
               <Button tone="danger" onClick={props.onRevoke}>
-                Revoke
+                {t("keys.revoke")}
               </Button>
             </span>
           )}
@@ -261,7 +284,7 @@ function KeyRow(props: {
           <td colSpan={7} className="bg-canvas">
             <form
               className="grid grid-cols-1 gap-3 p-3 sm:grid-cols-3"
-              aria-label={`constraints for ${key.name ?? key.prefix}`}
+              aria-label={t("keys.constraintsFor", { name: key.name ?? key.prefix })}
               onSubmit={(e) => {
                 e.preventDefault();
                 patch.mutate({
@@ -276,36 +299,36 @@ function KeyRow(props: {
               }}
             >
               <p className="col-span-full -mb-1 text-xs font-semibold uppercase tracking-wider text-muted">
-                Constraints · {key.name ?? key.prefix}
+                {t("keys.constraintsHeading", { name: key.name ?? key.prefix })}
               </p>
-              <Field label="Spend limit (credits)">
+              <Field label={t("keys.spendLimit")}>
                 <NumberInput value={limit} min={0} onChange={(e) => setLimit(e.target.value)} />
               </Field>
-              <Field label="Budget window">
+              <Field label={t("keys.budgetWindow")}>
                 <Select value={duration} onChange={(e) => setDuration(e.target.value)}>
-                  <option value="">cumulative</option>
+                  <option value="">{t("keys.cumulative")}</option>
                   {DURATIONS.map((d) => (
                     <option key={d} value={d}>
-                      {d}
+                      {t(`keys.duration.${d}`)}
                     </option>
                   ))}
                 </Select>
               </Field>
-              <Field label="Requests per minute">
+              <Field label={t("keys.requestsPerMinute")}>
                 <NumberInput value={rpm} min={1} onChange={(e) => setRpm(e.target.value)} />
               </Field>
-              <Field label="Tokens per minute">
+              <Field label={t("keys.tokensPerMinute")}>
                 <NumberInput value={tpm} min={1} onChange={(e) => setTpm(e.target.value)} />
               </Field>
-              <Field label="Max concurrent holds">
+              <Field label={t("keys.maxConcurrentHolds")}>
                 <NumberInput value={maxHolds} min={1} onChange={(e) => setMaxHolds(e.target.value)} />
               </Field>
-              <Field label="Model allowlist">
+              <Field label={t("keys.modelAllowlist")}>
                 <TextInput value={models} onChange={(e) => setModels(e.target.value)} />
               </Field>
               <div className="flex items-end gap-2">
                 <Button type="submit" disabled={patch.isPending}>
-                  {patch.isPending ? "Saving…" : "Save"}
+                  {patch.isPending ? t("common.saving") : t("common.save")}
                 </Button>
                 {patch.error instanceof ApiError ? (
                   <span className="text-xs text-danger">{patch.error.message}</span>
@@ -322,10 +345,11 @@ function KeyRow(props: {
 /** The live-availability cell (issue #501): the entitlement endpoint's own
  * answer, refreshed on a slow poll — a revoked key's answer is fixed, so it
  * never asks. */
-function LiveCell(props: { keyId: string; revoked: boolean }) {
+function LiveCell(props: { keyId: string; revoked: boolean; t: TFunction }) {
+  const { t } = props;
   const entitlement = useEntitlement(props.keyId, !props.revoked);
   if (props.revoked) {
-    return <Badge tone="secondary">off</Badge>;
+    return <Badge tone="secondary">{t("keys.liveOff")}</Badge>;
   }
   if (entitlement.isLoading) {
     return <span className="text-xs text-muted">…</span>;
@@ -336,11 +360,18 @@ function LiveCell(props: { keyId: string; revoked: boolean }) {
   }
   return answer.allowed ? (
     <Badge tone="success" live>
-      ready
+      {t("keys.liveReady")}
     </Badge>
   ) : (
-    <Badge tone="danger" title={answer.retryAfterSecs != null ? `frees in ~${answer.retryAfterSecs}s` : undefined}>
-      {answer.reason ?? "refused"}
+    <Badge
+      tone="danger"
+      title={
+        answer.retryAfterSecs != null
+          ? t("keys.freesIn", { secs: answer.retryAfterSecs })
+          : undefined
+      }
+    >
+      {answer.reason ?? t("keys.liveRefused")}
     </Badge>
   );
 }
