@@ -52,6 +52,11 @@ Purpose: see and manage the organization in a browser instead of over the API.
 Open `/app` in a browser pointed at the server and log in with your email and
 password; the app opens on the overview. Log out from the app.
 
+The console speaks English and 中文: it opens in your browser's language, and
+the EN/中文 switch in the header flips it — the choice is remembered across
+visits. Public pages outside `/app` (`/verify`, the report links) stay English:
+a verification artifact is read against the ledger, not localized.
+
 The login page drives every auth surface the contract offers: a GitHub button
 and one button per configured OIDC provider (drawn from `auth/methods`), and
 the TOTP second leg — an account with a confirmed factor sees a code field
