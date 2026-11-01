@@ -10,6 +10,7 @@ import type {
   PriceEstimate,
   PricedModel,
   Receipt,
+  RequestLogRow,
   SignedHead,
   Statement,
   StatementLine,
@@ -42,6 +43,36 @@ export function useBillingRecords(limit = 50, before?: number) {
       api<{ rows: BillingRecord[]; nextCursor?: number }>(
         `/billing-records?limit=${limit}${before !== undefined ? `&before=${before}` : ""}`,
       ),
+  });
+}
+
+export interface RequestLogQuery {
+  keyId?: string;
+  model?: string;
+  channel?: string;
+  from?: string;
+  to?: string;
+  status?: string;
+  minCharge?: number;
+  limit?: number;
+  cursor?: string;
+}
+
+/** The request-analytics read (issue #505): the per-request operational
+ * record a billing dispute or an SRE query reads — served model, channel,
+ * token counts, latency, charge — filtered and cursor-paged, org-scoped by
+ * the session. */
+export function useRequestLog(query: RequestLogQuery) {
+  const params = new URLSearchParams();
+  for (const [name, value] of Object.entries(query)) {
+    if (value !== undefined && value !== "" && value !== null) {
+      params.set(name, String(value));
+    }
+  }
+  const qs = params.toString();
+  return useQuery({
+    queryKey: ["request-log", qs],
+    queryFn: () => api<{ rows: RequestLogRow[]; nextCursor?: string }>(`/requests?${qs}`),
   });
 }
 
