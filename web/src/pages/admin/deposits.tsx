@@ -1,4 +1,5 @@
 import { Fragment, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Banner,
   Button,
@@ -38,6 +39,7 @@ type AdminDeposit = {
 /// flips the row to `reversed`, and for a rail that moves money back it also
 /// issues the rail's refund, whose standing the row carries as `refundStatus`.
 export function Deposits({ token }: { token: string }) {
+  const { t } = useTranslation();
   const [organization, setOrganization] = useState("");
   const [reversing, setReversing] = useState<string | null>(null);
   const orgs = useAdmin<
@@ -56,7 +58,7 @@ export function Deposits({ token }: { token: string }) {
     <div className="flex flex-col gap-3">
       <div className="flex items-center gap-2">
         <label className="text-xs text-muted" htmlFor="deposit-org">
-          Organization
+          {t("admin.deposits.organization")}
         </label>
         <select
           id="deposit-org"
@@ -64,7 +66,7 @@ export function Deposits({ token }: { token: string }) {
           value={organization}
           onChange={(e) => setOrganization(e.target.value)}
         >
-          <option value="">All organizations</option>
+          <option value="">{t("admin.deposits.allOrganizations")}</option>
           {orgRows.map((o) => (
             <option key={o.id} value={o.id}>
               {o.name}
@@ -77,14 +79,14 @@ export function Deposits({ token }: { token: string }) {
       ) : (
         <TableShell
           head={[
-            "When",
-            "Organization",
-            "Rail",
-            "Status",
-            { label: "Amount", align: "right" },
-            { label: "Received", align: "right" },
-            { label: "Reference", truncate: true },
-            "Entry",
+            t("admin.deposits.colWhen"),
+            t("admin.deposits.colOrganization"),
+            t("admin.deposits.colRail"),
+            t("admin.deposits.colStatus"),
+            { label: t("admin.deposits.colAmount"), align: "right" },
+            { label: t("admin.deposits.colReceived"), align: "right" },
+            { label: t("admin.deposits.colReference"), truncate: true },
+            t("admin.deposits.colEntry"),
             "",
           ]}
           density="compact"
@@ -119,11 +121,11 @@ export function Deposits({ token }: { token: string }) {
                             : "text-muted"
                       }`}
                     >
-                      refund {d.refundStatus}
+                      {t("admin.deposits.refund", { status: d.refundStatus })}
                     </span>
                   ) : null}
                   {d.disputedAt ? (
-                    <span className="block text-danger">disputed</span>
+                    <span className="block text-danger">{t("admin.deposits.disputed")}</span>
                   ) : null}
                 </td>
                 <Td mono align="right">{credits(d.amountMinor)} cr</Td>
@@ -146,7 +148,7 @@ export function Deposits({ token }: { token: string }) {
                         setReversing(reversing === d.depositId ? null : d.depositId)
                       }
                     >
-                      Reverse
+                      {t("admin.deposits.reverse")}
                     </Button>
                   ) : null}
                 </td>
@@ -169,22 +171,13 @@ export function Deposits({ token }: { token: string }) {
             ))}
           {!deposits.loading && rows.length === 0 ? (
             <EmptyRows colSpan={9}>
-              No deposits yet — a top-up, a code redemption or a rail payment appears here.
+              {t("admin.deposits.empty")}
             </EmptyRows>
           ) : null}
         </TableShell>
       )}
       <p className="text-xs text-muted">
-        Statuses are the rails' facts: pending (opened, not paid), confirmed (the rail
-        says paid, the ledger has not credited yet), credited (the entry named on the
-        row moved the wallet), reversed (a refund or chargeback — the Entry cell then
-        names the reversal's own entry) or expired. A received amount appears only
-        when the rail reported a different figure than the deposit was opened for.
-        Reversing posts one ledger entry taking the purchased credit back — and
-        for a rail that moves money back (the Hyperswitch switch) it issues the
-        rail's refund too: the row then shows `refund pending`/`succeeded`/`failed`
-        under the status, `failed` meaning the rail refused the call so a retry
-        re-issues it. `disputed` marks a charge the rail reported contested.
+        {t("admin.deposits.statusNote")}
       </p>
     </div>
   );
@@ -204,6 +197,7 @@ function ReverseDeposit({
   deposit: AdminDeposit;
   onDone: () => void;
 }) {
+  const { t } = useTranslation();
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -227,8 +221,8 @@ function ReverseDeposit({
       }}
     >
       <Field
-        label={`Reverse ${credits(deposit.amountMinor)} cr — reason`}
-        hint="required, it becomes the reversal entry's description"
+        label={t("admin.deposits.reverseLabel", { amount: credits(deposit.amountMinor) })}
+        hint={t("admin.deposits.reverseHint")}
       >
         <TextInput
           value={reason}
@@ -237,7 +231,7 @@ function ReverseDeposit({
         />
       </Field>
       <Button type="submit" disabled={busy || reason.trim() === ""}>
-        Reverse deposit
+        {t("admin.deposits.reverseDeposit")}
       </Button>
       {msg ? <span className="text-xs text-danger">{msg}</span> : null}
     </form>

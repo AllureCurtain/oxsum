@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Banner,
   Button,
@@ -28,6 +29,7 @@ export interface AdminOrg {
 }
 
 export function Organizations({ token }: { token: string }) {
+  const { t } = useTranslation();
   const [cursor, setCursor] = useState<string | undefined>(undefined);
   const orgs = useAdmin<{ organizations?: AdminOrg[]; orgs?: AdminOrg[]; nextCursor?: string } | AdminOrg[]>(
     token,
@@ -46,13 +48,13 @@ export function Organizations({ token }: { token: string }) {
         <>
           <TableShell
             head={[
-              "Name",
-              "Kind",
-              { label: "Members", align: "right" },
-              { label: "Available", align: "right" },
-              { label: "Reserved", align: "right" },
-              { label: "Credit", align: "right" },
-              "State",
+              t("admin.organizations.colName"),
+              t("admin.organizations.colKind"),
+              { label: t("admin.organizations.colMembers"), align: "right" },
+              { label: t("admin.organizations.colAvailable"), align: "right" },
+              { label: t("admin.organizations.colReserved"), align: "right" },
+              { label: t("admin.organizations.colCredit"), align: "right" },
+              t("admin.organizations.colState"),
               "",
             ]}
             density="compact"
@@ -69,21 +71,21 @@ export function Organizations({ token }: { token: string }) {
                 <Td mono align="right">
                   {credits(o.creditUsedMinor)} / {credits(o.creditLimitMinor)} cr
                 </Td>
-                <td>{o.suspended ? <span className="text-danger">suspended</span> : "active"}</td>
+                <td>{o.suspended ? <span className="text-danger">{t("admin.organizations.suspended")}</span> : t("admin.organizations.active")}</td>
                 <td>
                   <Button tone="ghost" onClick={() => setAdjustId(adjustId === o.id ? null : o.id)}>
-                    Adjust
+                    {t("admin.organizations.adjust")}
                   </Button>
                 </td>
               </tr>
             ))}
             {!orgs.loading && rows.length === 0 ? (
-              <EmptyRows colSpan={8}>No organizations.</EmptyRows>
+              <EmptyRows colSpan={8}>{t("admin.organizations.empty")}</EmptyRows>
             ) : null}
           </TableShell>
           {nextCursor ? (
             <Button tone="ghost" onClick={() => setCursor(nextCursor)}>
-              Older
+              {t("common.older")}
             </Button>
           ) : null}
         </>
@@ -94,6 +96,7 @@ export function Organizations({ token }: { token: string }) {
 }
 
 function AdjustOrg({ token, id, onDone }: { token: string; id: string; onDone: () => void }) {
+  const { t } = useTranslation();
   const [amount, setAmount] = useState("");
   const [reason, setReason] = useState("");
   const [credit, setCredit] = useState("");
@@ -105,7 +108,7 @@ function AdjustOrg({ token, id, onDone }: { token: string; id: string; onDone: (
   const [msg, setMsg] = useState<string | null>(null);
 
   return (
-    <Card title={`Manage ${id.slice(0, 8)}…`}>
+    <Card title={t("admin.organizations.manageTitle", { id: id.slice(0, 8) })}>
       <form
         className="grid grid-cols-1 gap-3 sm:grid-cols-3"
         onSubmit={async (e) => {
@@ -149,29 +152,29 @@ function AdjustOrg({ token, id, onDone }: { token: string; id: string; onDone: (
                 },
               });
             }
-            setMsg("saved");
+            setMsg(t("admin.organizations.saved"));
             onDone();
           } catch (err) {
             setMsg(err instanceof ApiError ? err.message : "failed");
           }
         }}
       >
-        <Field label="Adjust amount (credits, signed)">
+        <Field label={t("admin.organizations.adjustAmount")}>
           <NumberInput value={amount} onChange={(e) => setAmount(e.target.value)} />
         </Field>
-        <Field label="Reason" hint="required for an adjustment">
+        <Field label={t("admin.organizations.reason")} hint={t("admin.organizations.reasonHint")}>
           <TextInput value={reason} maxLength={200} onChange={(e) => setReason(e.target.value)} />
         </Field>
-        <Field label="Credit limit (credits)">
+        <Field label={t("admin.organizations.creditLimit")}>
           <NumberInput min={0} value={credit} onChange={(e) => setCredit(e.target.value)} />
         </Field>
-        <Field label="Payment terms (days)">
+        <Field label={t("admin.organizations.paymentTerms")}>
           <NumberInput min={0} value={terms} onChange={(e) => setTerms(e.target.value)} />
         </Field>
-        <Field label="Tier">
+        <Field label={t("admin.organizations.tier")}>
           <TextInput value={tier} onChange={(e) => setTier(e.target.value)} />
         </Field>
-        <Field label="Display currency" hint="ISO code + rate per credit, e.g. USD / 0.0014">
+        <Field label={t("admin.organizations.displayCurrency")} hint={t("admin.organizations.displayCurrencyHint")}>
           <div className="flex gap-2">
             <TextInput
               value={displayCode}
@@ -187,19 +190,19 @@ function AdjustOrg({ token, id, onDone }: { token: string; id: string; onDone: (
             />
           </div>
         </Field>
-        <Field label="Suspend spend" hint="new holds refuse; in-flight still settles">
+        <Field label={t("admin.organizations.suspendSpend")} hint={t("admin.organizations.suspendSpendHint")}>
           <div className="flex items-center gap-2 pt-2">
             <Switch
               checked={suspend ?? false}
               onCheckedChange={(v) => setSuspend(v)}
             />
             <span className="text-xs text-muted">
-              {suspend === null ? "leave as is" : suspend ? "suspend" : "reinstate"}
+              {suspend === null ? t("admin.organizations.leaveAsIs") : suspend ? t("admin.organizations.suspend") : t("admin.organizations.reinstate")}
             </span>
           </div>
         </Field>
         <div className="flex items-end gap-2">
-          <Button type="submit">Apply</Button>
+          <Button type="submit">{t("admin.organizations.apply")}</Button>
           {msg ? <span className="text-xs text-muted">{msg}</span> : null}
         </div>
       </form>
@@ -222,6 +225,7 @@ type CreditNote = {
 /// (a new ledger entry, Revenue → Wallet, no money moved) and read back what
 /// was issued. Deliberately beside the adjustment form, not merged into it.
 function CreditNotes({ token, id }: { token: string; id: string }) {
+  const { t } = useTranslation();
   const [amount, setAmount] = useState("");
   const [reason, setReason] = useState("");
   const [notes, setNotes] = useState<CreditNote[]>([]);
@@ -236,10 +240,9 @@ function CreditNotes({ token, id }: { token: string; id: string }) {
 
   return (
     <div className="mt-4 border-t border-line pt-3">
-      <h3 className="text-sm font-semibold">Credit notes</h3>
+      <h3 className="text-sm font-semibold">{t("admin.organizations.creditNotes")}</h3>
       <p className="text-xs text-muted">
-        A reasoned credit for this organization: it posts a new ledger entry (Revenue debited,
-        Wallet credited) and moves no money. It is not a refund.
+        {t("admin.organizations.creditNotesNote")}
       </p>
       <form
         className="mt-2 flex flex-wrap items-end gap-2"
@@ -254,7 +257,7 @@ function CreditNotes({ token, id }: { token: string; id: string }) {
                 idempotencyKey: `cn-${crypto.randomUUID()}`,
               },
             });
-            setMsg("issued");
+            setMsg(t("admin.organizations.issued"));
             setAmount("");
             setReason("");
             setVersion((v) => v + 1);
@@ -263,7 +266,7 @@ function CreditNotes({ token, id }: { token: string; id: string }) {
           }
         }}
       >
-        <Field label="Amount (credits)">
+        <Field label={t("admin.organizations.amount")}>
           <NumberInput
             required
             min={0}
@@ -271,16 +274,16 @@ function CreditNotes({ token, id }: { token: string; id: string }) {
             onChange={(e) => setAmount(e.target.value)}
           />
         </Field>
-        <Field label="Reason" hint="required — it becomes the entry's description">
+        <Field label={t("admin.organizations.reasonRequired")} hint={t("admin.organizations.reasonRequiredHint")}>
           <TextInput value={reason} maxLength={200} onChange={(e) => setReason(e.target.value)} />
         </Field>
-        <Button type="submit">Issue note</Button>
+        <Button type="submit">{t("admin.organizations.issueNote")}</Button>
         {msg ? <span className="text-xs text-muted">{msg}</span> : null}
       </form>
       {notes.length > 0 ? (
         <div className="mt-2">
           <TableShell
-            head={["Issued", { label: "Amount", align: "right" }, "Reason", { label: "Entry", truncate: true }]}
+            head={[t("admin.organizations.colIssued"), { label: t("admin.organizations.colAmount"), align: "right" }, t("admin.organizations.colReason"), { label: t("admin.organizations.colEntry"), truncate: true }]}
             density="compact"
             sticky={false}
           >
@@ -297,7 +300,7 @@ function CreditNotes({ token, id }: { token: string; id: string }) {
           </TableShell>
         </div>
       ) : (
-        <p className="mt-2 text-xs text-muted">No credit notes issued to this organization yet.</p>
+        <p className="mt-2 text-xs text-muted">{t("admin.organizations.noCreditNotes")}</p>
       )}
     </div>
   );

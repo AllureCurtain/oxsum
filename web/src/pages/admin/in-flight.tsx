@@ -1,27 +1,29 @@
+import { useTranslation } from "react-i18next";
 import { Banner, Button, EmptyRows, TableShell, Td, credits } from "../../components/ui";
 import { useAdmin } from "./api";
 
 export function InFlight({ token }: { token: string }) {
+  const { t } = useTranslation();
   const holds = useAdmin<
     { organization: string; requestId: string; model: string; channel: string; freezeMinor: number; openedAt: string; sweepAttempts?: number; lastError?: string | null }[]
   >(token, "/holds");
   return (
     <div className="flex flex-col gap-3">
       <Button tone="ghost" onClick={holds.refresh} className="self-start">
-        Refresh
+        {t("admin.inFlight.refresh")}
       </Button>
       {holds.error ? (
         <Banner tone="error">{holds.error}</Banner>
       ) : (
         <TableShell
           head={[
-            "Organization",
-            { label: "Request", truncate: true },
-            "Model",
-            "Channel",
-            { label: "Frozen", align: "right" },
-            "Opened",
-            "Sweeps",
+            t("admin.inFlight.colOrganization"),
+            { label: t("admin.inFlight.colRequest"), truncate: true },
+            t("admin.inFlight.colModel"),
+            t("admin.inFlight.colChannel"),
+            { label: t("admin.inFlight.colFrozen"), align: "right" },
+            t("admin.inFlight.colOpened"),
+            t("admin.inFlight.colSweeps"),
           ]}
           density="compact"
           loading={holds.loading ? 6 : 0}
@@ -42,7 +44,7 @@ export function InFlight({ token }: { token: string }) {
             </tr>
           ))}
           {!holds.loading && (holds.data?.length ?? 0) === 0 ? (
-            <EmptyRows colSpan={7}>Nothing in flight.</EmptyRows>
+            <EmptyRows colSpan={7}>{t("admin.inFlight.empty")}</EmptyRows>
           ) : null}
         </TableShell>
       )}

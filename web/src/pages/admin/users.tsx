@@ -1,15 +1,17 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Button, Card, Field, TextInput } from "../../components/ui";
 import { ApiError } from "../../api/client";
 import { adminApi } from "./api";
 
 export function Users({ token }: { token: string }) {
+  const { t } = useTranslation();
   const [userId, setUserId] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   return (
-    <Card title="Reset a user's password">
+    <Card title={t("admin.users.resetTitle")}>
       <form
         className="flex flex-col gap-3"
         onSubmit={async (e) => {
@@ -22,7 +24,7 @@ export function Users({ token }: { token: string }) {
               `/users/${userId}/password-reset`,
               { method: "POST", body: { newPassword: password } },
             );
-            setMsg(`password set — ${res.sessionsRevoked} session(s) revoked`);
+            setMsg(t("admin.users.done", { count: res.sessionsRevoked }));
           } catch (err) {
             setMsg(err instanceof ApiError ? err.message : "failed");
           } finally {
@@ -31,11 +33,10 @@ export function Users({ token }: { token: string }) {
         }}
       >
         <p className="text-sm text-muted">
-          Sets the password and revokes every session the user holds — the only recovery path, since
-          no mail goes out.
+          {t("admin.users.note")}
         </p>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label="User id">
+          <Field label={t("admin.users.userId")}>
             <TextInput
               value={userId}
               onChange={(e) => setUserId(e.target.value)}
@@ -44,7 +45,7 @@ export function Users({ token }: { token: string }) {
               required
             />
           </Field>
-          <Field label="New password" hint="12+ characters">
+          <Field label={t("admin.users.newPassword")} hint={t("admin.users.newPasswordHint")}>
             <TextInput
               type="password"
               value={password}
@@ -55,8 +56,8 @@ export function Users({ token }: { token: string }) {
           </Field>
         </div>
         <div className="flex items-center gap-3">
-          <Button type="submit" isLoading={busy} loadingText="Resetting…">
-            Reset password
+          <Button type="submit" isLoading={busy} loadingText={t("admin.users.resetting")}>
+            {t("admin.users.resetPassword")}
           </Button>
           {msg ? <span className="text-sm text-muted">{msg}</span> : null}
         </div>

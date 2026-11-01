@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { Banner, Button, Card, Field, TextInput } from "../../components/ui";
 import { ApiError } from "../../api/client";
 
@@ -25,16 +26,17 @@ async function meteringApi<T>(credential: string, path: string, body: unknown): 
   return parsed.data as T;
 }
 
-function parseUsage(raw: string): Record<string, unknown> | string {
+function parseUsage(raw: string, notJson: string): Record<string, unknown> | string {
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     return parsed;
   } catch {
-    return "usage is not JSON";
+    return notJson;
   }
 }
 
 export function Metering() {
+  const { t } = useTranslation();
   const [cred, setCred] = useState(() => localStorage.getItem(METERING_CRED_KEY) ?? "");
   const [organizationId, setOrganizationId] = useState("");
   const [channel, setChannel] = useState("");
@@ -43,6 +45,7 @@ export function Metering() {
   const [holdKey, setHoldKey] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
+  const [msgTone, setMsgTone] = useState<"error" | "info">("info");
 
   async function call(
     path: string,
@@ -50,13 +53,15 @@ export function Metering() {
     label: string,
     withUsage = true,
   ) {
-    const usage = parseUsage(usageRaw);
+    const usage = parseUsage(usageRaw, t("admin.metering.usageNotJson"));
     if (withUsage && typeof usage === "string") {
       setMsg(usage);
+      setMsgTone("error");
       return;
     }
     setBusy(label);
     setMsg(null);
+    setMsgTone("info");
     try {
       const res = await meteringApi<Record<string, unknown>>(cred, path, {
         ...body,
@@ -76,16 +81,17 @@ export function Metering() {
 
   return (
     <div className="flex flex-col gap-4">
-      <Card title="Service credential">
+      <Card title={t("admin.metering.credentialTitle")}>
         <form
           className="flex items-end gap-2"
           onSubmit={(e) => {
             e.preventDefault();
             localStorage.setItem(METERING_CRED_KEY, cred);
-            setMsg("credential saved to this browser");
+            setMsg(t("admin.metering.credentialSaved"));
+            setMsgTone("info");
           }}
         >
-          <Field label="Credential" hint="a service credential minted under 'credentials' — bearer on /api/v1/metering/*">
+          <Field label={t("admin.metering.credential")} hint={t("admin.metering.credentialHint")}>
             <TextInput
               type="password"
               value={cred}
@@ -95,24 +101,24 @@ export function Metering() {
             />
           </Field>
           <Button type="submit" tone="ghost">
-            Save
+            {t("common.save")}
           </Button>
         </form>
       </Card>
 
-      <Card title="Event context">
+      <Card title={t("admin.metering.eventContext")}>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <Field label="Organization id">
+          <Field label={t("admin.metering.organizationId")}>
             <TextInput value={organizationId} onChange={(e) => setOrganizationId(e.target.value)} className="mono" />
           </Field>
-          <Field label="Channel">
+          <Field label={t("admin.metering.channel")}>
             <TextInput value={channel} onChange={(e) => setChannel(e.target.value)} />
           </Field>
-          <Field label="Billable code" hint="the price book's model name">
+          <Field label={t("admin.metering.billableCode")} hint={t("admin.metering.billableCodeHint")}>
             <TextInput value={billableCode} onChange={(e) => setBillableCode(e.target.value)} />
           </Field>
         </div>
-        <Field label="Usage (EventUsage JSON)" hint="eventType is required">
+        <Field label={t("admin.metering.usageJson")} hint={t("admin.metering.usageJsonHint")}>
           <textarea
             className="mono w-full rounded-md border border-line bg-surface px-2.5 py-1.5 text-sm"
             rows={5}
@@ -123,55 +129,57 @@ export function Metering() {
       </Card>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <Card title="Hold then settle">
+        <Card title={t("admin.metering.holdThenSettle")}>
           <div className="flex flex-col gap-2">
             <Button
               type="button"
-              isLoading={busy === "hold"}
-              loadingText="Holding…"
+              isLoading={busy === t("admin.metering.hold")}
+              loadingText={t("admin.metering.holding")}
               onClick={() =>
-                call("/holds", { ...common, idempotencyKey: `met-${Date.now()}` }, "hold")
+                call("/holds", { ...common, idempotencyKey: `met-${Date.now()}` }, t("admin.metering.hold"))
               }
             >
               POST /metering/holds
             </Button>
-            <Field label="Hold key" hint="the key a holds answer returned">
+            <Field label={t("admin.metering.holdKey")} hint={t("admin.metering.holdKeyHint")}>
               <TextInput value={holdKey} onChange={(e) => setHoldKey(e.target.value)} className="mono" />
             </Field>
             <Button
               type="button"
-              isLoading={busy === "settle"}
-              loadingText="Settling…"
+              isLoading={busy === t("admin.metering.settle")}
+              loadingText={t("admin.metering.settling")}
               onClick={() =>
-                call("/settle", { organizationId, holdKey }, "settle")
+                call("/settle", { organizationId, holdKey }, t("admin.metering.settle"))
               }
             >
               POST /metering/settle
             </Button>
             <Button
               type="button"
-              isLoading={busy === "release"}
-              loadingText="Releasing…"
+              isLoading={busy === t("admin.metering.release")}
+              loadingText={t("admin.metering.releasing")}
               onClick={() =>
-                call("/release", { organizationId, holdKey }, "release", false)
+                call("/release", { organizationId, holdKey }, t("admin.metering.release"), false)
               }
             >
               POST /metering/release
             </Button>
           </div>
         </Card>
-        <Card title="One-shot bill">
+        <Card title={t("admin.metering.oneShotTitle")}>
           <div className="flex flex-col gap-2">
             <p className="text-sm text-muted">
-              An event that already ran — declared usage bills at the code's latest
-              <code className="mono"> mode: event</code> price, hold and settle in one answer.
+              <Trans
+                i18nKey="admin.metering.oneShotNote"
+                components={{ code: <code className="mono" /> }}
+              />
             </p>
             <Button
               type="button"
-              isLoading={busy === "bill"}
-              loadingText="Billing…"
+              isLoading={busy === t("admin.metering.settlement")}
+              loadingText={t("admin.metering.billing")}
               onClick={() =>
-                call("/settlements", { ...common, idempotencyKey: `met-${Date.now()}` }, "settlement")
+                call("/settlements", { ...common, idempotencyKey: `met-${Date.now()}` }, t("admin.metering.settlement"))
               }
             >
               POST /metering/settlements
@@ -179,7 +187,7 @@ export function Metering() {
           </div>
         </Card>
       </div>
-      {msg ? <Banner tone={msg.startsWith("usage") ? "error" : "info"}>{msg}</Banner> : null}
+      {msg ? <Banner tone={msgTone}>{msg}</Banner> : null}
     </div>
   );
 }

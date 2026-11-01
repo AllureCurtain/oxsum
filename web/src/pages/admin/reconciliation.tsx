@@ -1,8 +1,10 @@
 import { Fragment, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { Banner, Button, PageState, TableShell, Td } from "../../components/ui";
 import { useAdmin } from "./api";
 
 export function Reconciliation({ token }: { token: string }) {
+  const { t } = useTranslation();
   const report = useAdmin<{
     checkedAt: string;
     organizations: number;
@@ -14,25 +16,27 @@ export function Reconciliation({ token }: { token: string }) {
     <div className="flex flex-col gap-4">
       <div className="flex items-center gap-3">
         <Button tone="ghost" onClick={report.refresh}>
-          Re-run scan
+          {t("admin.reconciliation.rerun")}
         </Button>
         {report.data ? (
           <span className="text-sm text-muted">
-            {report.data.organizations} organizations · checked{" "}
-            {String(report.data.checkedAt).slice(0, 19).replace("T", " ")}
+            {t("admin.reconciliation.summary", {
+              count: report.data.organizations,
+              checkedAt: String(report.data.checkedAt).slice(0, 19).replace("T", " "),
+            })}
           </span>
         ) : null}
       </div>
       {report.data ? (
         report.data.clean ? (
-          <Banner tone="success">Every ledger reconciles.</Banner>
+          <Banner tone="success">{t("admin.reconciliation.clean")}</Banner>
         ) : null
       ) : report.loading ? (
-        <PageState>Scanning…</PageState>
+        <PageState>{t("admin.reconciliation.scanning")}</PageState>
       ) : null}
       {report.data ? (
         <TableShell
-          head={["Class", { label: "Count", align: "right" }, "Sample"]}
+          head={[t("admin.reconciliation.colClass"), { label: t("admin.reconciliation.colCount"), align: "right" }, t("admin.reconciliation.colSample")]}
           density="compact"
           sticky={false}
         >
@@ -57,9 +61,9 @@ export function Reconciliation({ token }: { token: string }) {
                   </Td>
                   <td className="text-xs text-muted">
                     {c.count === 0
-                      ? "none detected"
+                      ? t("admin.reconciliation.noneDetected")
                       : first
-                        ? `${first.organization ?? "platform"} ${first.detail ?? ""}`.trim()
+                        ? `${first.organization ?? t("admin.reconciliation.platform")} ${first.detail ?? ""}`.trim()
                         : "—"}
                   </td>
                 </tr>
@@ -68,14 +72,14 @@ export function Reconciliation({ token }: { token: string }) {
                     <td colSpan={3} className="bg-canvas">
                       {c.samples.length === 0 ? (
                         <p className="text-xs text-muted">
-                          Nothing in this class on the last scan.
+                          {t("admin.reconciliation.nothingInClass")}
                         </p>
                       ) : (
                         <ul className="flex flex-col gap-1">
                           {c.samples.map((sample, index) => (
                             <li key={index} className="mono text-xs">
                               <span className="text-muted">
-                                {sample.organization ?? "platform"}
+                                {sample.organization ?? t("admin.reconciliation.platform")}
                               </span>{" "}
                               {sample.detail ?? "—"}
                             </li>
@@ -84,8 +88,8 @@ export function Reconciliation({ token }: { token: string }) {
                       )}
                       <p className="mt-1 text-xs text-muted">
                         {c.count > c.samples.length
-                          ? `Showing ${c.samples.length} of ${c.count} offenders.`
-                          : `${c.count} in this scan.`}
+                          ? t("admin.reconciliation.showingOf", { shown: c.samples.length, count: c.count })
+                          : t("admin.reconciliation.inThisScan", { count: c.count })}
                       </p>
                     </td>
                   </tr>
@@ -96,9 +100,10 @@ export function Reconciliation({ token }: { token: string }) {
         </TableShell>
       ) : null}
       <p className="text-xs text-muted">
-        <code className="mono">upstream_price_drift</code> only appears for channels whose base URL
-        serves the oxsum-compatible <code className="mono">GET /api/v1/pricing</code>. A real
-        provider's cost is compared by the upstream bill sync instead.
+        <Trans
+          i18nKey="admin.reconciliation.driftNote"
+          components={{ code: <code className="mono" /> }}
+        />
       </p>
     </div>
   );
