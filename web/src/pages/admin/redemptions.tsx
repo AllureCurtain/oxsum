@@ -1,9 +1,11 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Button, Card, Field, NumberInput } from "../../components/ui";
 import { ApiError } from "../../api/client";
 import { adminApi } from "./api";
 
 export function Redemptions({ token }: { token: string }) {
+  const { t } = useTranslation();
   const [amount, setAmount] = useState("");
   const [count, setCount] = useState("1");
   const [batch, setBatch] = useState<{ batchId: string; codes: string[] } | null>(null);
@@ -11,7 +13,7 @@ export function Redemptions({ token }: { token: string }) {
 
   return (
     <div className="flex flex-col gap-4">
-      <Card title="Mint redemption codes">
+      <Card title={t("admin.redemptions.mintTitle")}>
         <form
           className="flex items-end gap-2"
           onSubmit={async (e) => {
@@ -26,24 +28,24 @@ export function Redemptions({ token }: { token: string }) {
                 },
               );
               setBatch(res);
-              setMsg(`${res.codes.length} minted`);
+              setMsg(t("admin.redemptions.minted", { count: res.codes.length }));
             } catch (err) {
               setMsg(err instanceof ApiError ? err.message : "failed");
             }
           }}
         >
-          <Field label="Amount each (credits)">
+          <Field label={t("admin.redemptions.amountEach")}>
             <NumberInput required min={0} value={amount} onChange={(e) => setAmount(e.target.value)} />
           </Field>
-          <Field label="Count">
+          <Field label={t("admin.redemptions.count")}>
             <NumberInput required min={1} max={50} value={count} onChange={(e) => setCount(e.target.value)} />
           </Field>
-          <Button type="submit">Mint</Button>
+          <Button type="submit">{t("admin.redemptions.mint")}</Button>
         </form>
         {batch ? (
           <div className="mt-3">
             <p className="mb-1 text-xs text-muted">
-              Batch {batch.batchId.slice(0, 8)}… — the secrets, shown once:
+              {t("admin.redemptions.batchLine", { batchId: batch.batchId.slice(0, 8) })}
             </p>
             <ul className="max-h-60 overflow-y-auto space-y-1">
               {batch.codes.map((c) => (
@@ -57,8 +59,7 @@ export function Redemptions({ token }: { token: string }) {
         {msg ? <p className="mt-2 text-xs text-muted">{msg}</p> : null}
       </Card>
       <p className="text-xs text-muted">
-        The codes' secrets are answered here and nowhere else — the database keeps only their
-        hashes. Redeemed codes land on the wallet through `POST /api/v1/redemptions`.
+        {t("admin.redemptions.note")}
       </p>
     </div>
   );

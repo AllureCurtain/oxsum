@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useBillingSocket } from "../api/ws";
 import { credits } from "./ui";
 
@@ -8,20 +9,21 @@ import { credits } from "./ui";
  * pill into a reconnect control — clicking it forces a fresh attempt.
  */
 export function LiveIsland() {
+  const { t } = useTranslation();
   const { turns, live, dead, reconnect } = useBillingSocket();
   const lastSettled = turns.find((t) => t.state === "settled" && t.chargedMinor !== undefined);
   const inFlight = turns.filter((t) => t.state !== "settled").length;
 
   const dot = live ? "bg-success" : dead ? "bg-danger" : "bg-muted";
-  const status = live ? "billing live" : dead ? "connection lost" : "billing offline";
+  const status = live ? t("live.billingLive") : dead ? t("live.connectionLost") : t("live.billingOffline");
 
   const detail = dead
-    ? "retry"
+    ? t("live.retry")
     : lastSettled
-      ? `settled ${credits(lastSettled.chargedMinor!)} cr · ${lastSettled.kind ?? "usage"}`
+      ? t("live.settled", { amount: credits(lastSettled.chargedMinor!), kind: lastSettled.kind ?? "usage" })
       : inFlight > 0
-        ? `${inFlight} in flight`
-        : "idle";
+        ? t("live.inFlight", { count: inFlight })
+        : t("live.idle");
 
   const body = (
     <>
@@ -39,7 +41,7 @@ export function LiveIsland() {
     <button
       type="button"
       onClick={reconnect}
-      title="Reconnect the billing socket"
+      title={t("live.reconnect")}
       className="flex h-9 w-48 flex-col items-start justify-center rounded-lg border border-line bg-canvas px-3 hover:bg-canvas/60"
       role="status"
       aria-live="polite"

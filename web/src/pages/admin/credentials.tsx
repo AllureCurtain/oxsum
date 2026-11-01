@@ -1,9 +1,11 @@
 import { useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { Banner, Button, Card, Field, TableShell, TextInput } from "../../components/ui";
 import { ApiError } from "../../api/client";
 import { adminApi, useAdmin } from "./api";
 
 export function Credentials({ token }: { token: string }) {
+  const { t } = useTranslation();
   const credentials = useAdmin<
     { credentialId: string; name?: string | null; prefix: string; createdAt: string; revokedAt?: string | null }[]
   >(token, "/service-credentials");
@@ -16,10 +18,14 @@ export function Credentials({ token }: { token: string }) {
     <div className="flex flex-col gap-4">
       {secret ? (
         <Banner tone="success">
-          Credential minted — shown once: <code className="mono break-all">{secret}</code>
+          <Trans
+            i18nKey="admin.credentials.minted"
+            values={{ secret }}
+            components={{ code: <code className="mono break-all" /> }}
+          />
         </Banner>
       ) : null}
-      <Card title="Mint a metering credential">
+      <Card title={t("admin.credentials.mintTitle")}>
         <form
           className="flex items-end gap-2"
           onSubmit={async (e) => {
@@ -36,15 +42,15 @@ export function Credentials({ token }: { token: string }) {
             }
           }}
         >
-          <Field label="Name">
+          <Field label={t("admin.credentials.name")}>
             <TextInput required value={name} onChange={(e) => setName(e.target.value)} />
           </Field>
-          <Button type="submit">Mint</Button>
+          <Button type="submit">{t("admin.credentials.mint")}</Button>
         </form>
         {msg ? <p className="mt-2 text-xs text-muted">{msg}</p> : null}
       </Card>
       {rows.length ? (
-        <TableShell head={["Name", "Prefix", "Created", ""]} density="compact" sticky={false}>
+        <TableShell head={[t("admin.credentials.colName"), t("admin.credentials.colPrefix"), t("admin.credentials.colCreated"), ""]} density="compact" sticky={false}>
           {rows.map((c) => (
             <tr key={c.credentialId}>
               <td>{c.name ?? "—"}</td>
@@ -52,7 +58,7 @@ export function Credentials({ token }: { token: string }) {
               <td>{c.createdAt.slice(0, 10)}</td>
               <td>
                 {c.revokedAt ? (
-                  <span className="text-xs text-danger">revoked</span>
+                  <span className="text-xs text-danger">{t("admin.credentials.revoked")}</span>
                 ) : (
                   <Button
                     tone="danger"
@@ -67,7 +73,7 @@ export function Credentials({ token }: { token: string }) {
                       credentials.refresh();
                     }}
                   >
-                    Revoke
+                    {t("admin.credentials.revoke")}
                   </Button>
                 )}
               </td>

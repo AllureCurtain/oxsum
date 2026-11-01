@@ -1,7 +1,9 @@
+import { useTranslation } from "react-i18next";
 import { Banner, EmptyRows, TableShell, Td } from "../../components/ui";
 import { useAdmin } from "./api";
 
 export function Audit({ token }: { token: string }) {
+  const { t } = useTranslation();
   const audit = useAdmin<{
     entries: { auditId: string; recordedAt: string; actor: string; action: string; target?: string | null; detail?: unknown }[];
     nextCursor?: string;
@@ -13,7 +15,7 @@ export function Audit({ token }: { token: string }) {
         <Banner tone="error">{audit.error}</Banner>
       ) : (
         <TableShell
-          head={["When", "Actor", "Action", "Target", { label: "Detail", truncate: true }]}
+          head={[t("admin.audit.colWhen"), t("admin.audit.colActor"), t("admin.audit.colAction"), t("admin.audit.colTarget"), { label: t("admin.audit.colDetail"), truncate: true }]}
           density="compact"
           loading={audit.loading ? 8 : 0}
         >
@@ -30,7 +32,7 @@ export function Audit({ token }: { token: string }) {
             </tr>
           ))}
           {!audit.loading && rows.length === 0 ? (
-            <EmptyRows colSpan={5}>No audit entries.</EmptyRows>
+            <EmptyRows colSpan={5}>{t("admin.audit.empty")}</EmptyRows>
           ) : null}
         </TableShell>
       )}

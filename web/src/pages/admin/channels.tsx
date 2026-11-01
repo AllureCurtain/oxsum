@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import {
   Banner,
   Button,
@@ -35,6 +36,7 @@ interface Channel {
 }
 
 export function Channels({ token }: { token: string }) {
+  const { t } = useTranslation();
   const channels = useAdmin<Channel[]>(token, "/channels");
   const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -46,7 +48,7 @@ export function Channels({ token }: { token: string }) {
 
   return (
     <div className="flex flex-col gap-6">
-      <Card title="Upsert channel">
+      <Card title={t("admin.channels.upsertTitle")}>
         <form
           className="grid grid-cols-1 gap-3 sm:grid-cols-2"
           onSubmit={async (e) => {
@@ -69,16 +71,16 @@ export function Channels({ token }: { token: string }) {
             }
           }}
         >
-          <Field label="Name">
+          <Field label={t("admin.channels.name")}>
             <TextInput required value={name} onChange={(e) => setName(e.target.value)} />
           </Field>
-          <Field label="Base URL">
+          <Field label={t("admin.channels.baseUrl")}>
             <TextInput required type="url" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
           </Field>
-          <Field label="Upstream API key">
+          <Field label={t("admin.channels.apiKey")}>
             <TextInput required type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
           </Field>
-          <Field label="Protocol">
+          <Field label={t("admin.channels.protocol")}>
             <Select value={protocol} onChange={(e) => setProtocol(e.target.value)}>
               <option value="openai">openai</option>
               <option value="anthropic">anthropic</option>
@@ -87,7 +89,7 @@ export function Channels({ token }: { token: string }) {
           </Field>
           <div className="flex items-end gap-2">
             <Button type="submit" disabled={busy}>
-              Save channel
+              {t("admin.channels.saveChannel")}
             </Button>
             {formError ? <span className="text-xs text-danger">{formError}</span> : null}
           </div>
@@ -97,7 +99,7 @@ export function Channels({ token }: { token: string }) {
         <Banner tone="error">{channels.error}</Banner>
       ) : (
         <TableShell
-          head={["Name", { label: "Base URL", truncate: true }, "Protocol", "Key", { label: "Models", align: "right" }, ""]}
+          head={[t("admin.channels.colName"), { label: t("admin.channels.colBaseUrl"), truncate: true }, t("admin.channels.colProtocol"), t("admin.channels.colKey"), { label: t("admin.channels.colModels"), align: "right" }, ""]}
           density="compact"
           loading={channels.loading ? 5 : 0}
         >
@@ -122,20 +124,21 @@ export function Channels({ token }: { token: string }) {
               <Td align="right">{c.models.length}</Td>
               <td>
                 <Button tone="ghost" onClick={() => setPriceChannel(priceChannel === c.name ? null : c.name)}>
-                  Prices
+                  {t("admin.channels.prices")}
                 </Button>
               </td>
             </tr>
           ))}
           {!channels.loading && (channels.data?.length ?? 0) === 0 ? (
-            <EmptyRows colSpan={6}>No channels.</EmptyRows>
+            <EmptyRows colSpan={6}>{t("admin.channels.empty")}</EmptyRows>
           ) : null}
         </TableShell>
       )}
       <p className="text-xs text-muted">
-        Price drift is probed from each channel's <code className="mono">GET /api/v1/pricing</code>{" "}
-        catalog — an oxsum-compatible endpoint. A channel pointing at a real provider serves no such
-        catalog, so its cost signal is the upstream bill sync, not this probe.
+        <Trans
+          i18nKey="admin.channels.driftNote"
+          components={{ code: <code className="mono" /> }}
+        />
       </p>
       {priceChannel ? <ChannelPrices token={token} channel={priceChannel} /> : null}
     </div>
@@ -143,6 +146,7 @@ export function Channels({ token }: { token: string }) {
 }
 
 function ChannelPrices({ token, channel }: { token: string; channel: string }) {
+  const { t } = useTranslation();
   // The channel's models with their current price versions are already on the
   // channel row; the price form appends a new version to one model.
   const [model, setModel] = useState("");
@@ -153,7 +157,7 @@ function ChannelPrices({ token, channel }: { token: string; channel: string }) {
   const [msg, setMsg] = useState<string | null>(null);
 
   return (
-    <Card title={`Append a price version — ${channel}`}>
+    <Card title={t("admin.channels.appendTitle", { channel })}>
       <form
         className="grid grid-cols-1 gap-3 sm:grid-cols-3"
         onSubmit={async (e) => {
@@ -171,16 +175,16 @@ function ChannelPrices({ token, channel }: { token: string; channel: string }) {
                   costPerRequest === "" ? null : Math.round(Number(costPerRequest) * 1_000_000),
               },
             });
-            setMsg("price version stored");
+            setMsg(t("admin.channels.priceStored"));
           } catch (err) {
             setMsg(err instanceof ApiError ? err.message : "failed");
           }
         }}
       >
-        <Field label="Model">
+        <Field label={t("admin.channels.model")}>
           <TextInput required value={model} onChange={(e) => setModel(e.target.value)} />
         </Field>
-        <Field label="Mode">
+        <Field label={t("admin.channels.mode")}>
           <Select value={mode} onChange={(e) => setMode(e.target.value)}>
             <option value="chat">chat</option>
             <option value="embeddings">embeddings</option>
@@ -188,17 +192,17 @@ function ChannelPrices({ token, channel }: { token: string; channel: string }) {
             <option value="event">event</option>
           </Select>
         </Field>
-        <Field label="Input price / million (credits)">
+        <Field label={t("admin.channels.inputPrice")}>
           <NumberInput required min={0} value={inputPrice} onChange={(e) => setInputPrice(e.target.value)} />
         </Field>
-        <Field label="Output price / million (credits)">
+        <Field label={t("admin.channels.outputPrice")}>
           <NumberInput min={0} value={outputPrice} onChange={(e) => setOutputPrice(e.target.value)} />
         </Field>
-        <Field label="Cost per request (credits)">
+        <Field label={t("admin.channels.costPerRequest")}>
           <NumberInput min={0} value={costPerRequest} onChange={(e) => setCostPerRequest(e.target.value)} />
         </Field>
         <div className="flex items-end gap-2">
-          <Button type="submit">Set price</Button>
+          <Button type="submit">{t("admin.channels.setPrice")}</Button>
           {msg ? <span className="text-xs text-muted">{msg}</span> : null}
         </div>
       </form>

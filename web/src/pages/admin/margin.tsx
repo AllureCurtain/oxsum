@@ -1,7 +1,9 @@
+import { useTranslation } from "react-i18next";
 import { Banner, EmptyRows, TableShell, Td, credits } from "../../components/ui";
 import { useAdmin } from "./api";
 
 export function Margin({ token }: { token: string }) {
+  const { t } = useTranslation();
   const margin = useAdmin<
     {
       channel: string;
@@ -42,14 +44,14 @@ export function Margin({ token }: { token: string }) {
         <>
           <TableShell
             head={[
-              "Channel",
-              "Model",
-              { label: "Turns", align: "right" },
-              { label: "Charged", align: "right" },
-              { label: "Upstream cost", align: "right" },
-              { label: "Provider bill", align: "right" },
-              { label: "Margin", align: "right" },
-              { label: "Untracked", align: "right" },
+              t("admin.margin.colChannel"),
+              t("admin.margin.colModel"),
+              { label: t("admin.margin.colTurns"), align: "right" },
+              { label: t("admin.margin.colCharged"), align: "right" },
+              { label: t("admin.margin.colUpstreamCost"), align: "right" },
+              { label: t("admin.margin.colProviderBill"), align: "right" },
+              { label: t("admin.margin.colMargin"), align: "right" },
+              { label: t("admin.margin.colUntracked"), align: "right" },
             ]}
             density="compact"
             loading={margin.loading ? 6 : 0}
@@ -64,7 +66,7 @@ export function Margin({ token }: { token: string }) {
                 <Td mono align="right">{credits(m.upstreamCostMinor)} cr</Td>
                 <Td mono align="right" className="text-xs">
                   {m.providerBilledMinor === null ? (
-                    <span className="text-muted">not reconciled</span>
+                    <span className="text-muted">{t("admin.margin.notReconciled")}</span>
                   ) : (
                     `${credits(m.providerBilledMinor)} cr`
                   )}
@@ -77,21 +79,21 @@ export function Margin({ token }: { token: string }) {
             ))}
             {!margin.loading && rows.length > 0 ? (
               <tr className="font-semibold">
-                <td>Total</td>
+                <td>{t("admin.margin.total")}</td>
                 <td>
-                  {rows.length} row{rows.length === 1 ? "" : "s"}
+                  {t("admin.margin.rowCount", { count: rows.length })}
                 </td>
                 <Td align="right">{totals.turns}</Td>
                 <Td mono align="right">{credits(totals.charged)} cr</Td>
                 <Td mono align="right">{credits(totals.upstream)} cr</Td>
                 <Td mono align="right" className="text-xs">
                   {billedByChannel.size === 0 ? (
-                    <span className="text-muted">no channel reconciled</span>
+                    <span className="text-muted">{t("admin.margin.noChannelReconciled")}</span>
                   ) : (
                     <>
                       {credits(providerTotal)} cr{" "}
                       <span className="text-muted">
-                        ({billedByChannel.size} channel{billedByChannel.size === 1 ? "" : "s"})
+                        ({t("admin.margin.channelCount", { count: billedByChannel.size })})
                       </span>
                     </>
                   )}
@@ -103,18 +105,12 @@ export function Margin({ token }: { token: string }) {
               </tr>
             ) : !margin.loading ? (
               <EmptyRows colSpan={8}>
-                No settled turns yet — a row appears once a gateway turn settles and its upstream
-                cost is recorded.
+                {t("admin.margin.empty")}
               </EmptyRows>
             ) : null}
           </TableShell>
           <p className="text-xs text-muted">
-            The provider bill is what the upstream billed the channel, summed per day by the
-            upstream-bill-sync pass; “not reconciled” means that pass has not billed the channel
-            yet, not that it billed nothing. The total counts each channel once — the API repeats
-            the channel-scoped figure on every model row. Untracked turns are settled turns with no
-            upstream cost recorded (an untracked price, a swept hold, or history), so a growing gap
-            there is where missing upstream pricing shows up first.
+            {t("admin.margin.note")}
           </p>
         </>
       )}

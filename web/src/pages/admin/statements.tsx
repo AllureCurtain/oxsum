@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Banner,
   Button,
@@ -23,6 +24,7 @@ type AdminStatement = {
 };
 
 export function AdminStatements({ token }: { token: string }) {
+  const { t } = useTranslation();
   const statements = useAdmin<AdminStatement[]>(token, "/statements");
   return (
     <div>
@@ -31,12 +33,12 @@ export function AdminStatements({ token }: { token: string }) {
       ) : (
         <TableShell
           head={[
-            "Period",
-            "Organization",
-            "Status",
-            "Payment",
-            { label: "Total", align: "right" },
-            { label: "Outstanding", align: "right" },
+            t("admin.statements.colPeriod"),
+            t("admin.statements.colOrganization"),
+            t("admin.statements.colStatus"),
+            t("admin.statements.colPayment"),
+            { label: t("admin.statements.colTotal"), align: "right" },
+            { label: t("admin.statements.colOutstanding"), align: "right" },
             "",
           ]}
           density="compact"
@@ -47,7 +49,7 @@ export function AdminStatements({ token }: { token: string }) {
             <StatementRow key={s.id} token={token} s={s} onDone={statements.refresh} />
           ))}
           {!statements.loading && (statements.data?.length ?? 0) === 0 ? (
-            <EmptyRows colSpan={7}>No statements.</EmptyRows>
+            <EmptyRows colSpan={7}>{t("admin.statements.empty")}</EmptyRows>
           ) : null}
         </TableShell>
       )}
@@ -64,6 +66,7 @@ function StatementRow({
   s: AdminStatement;
   onDone: () => void;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [payment, setPayment] = useState("");
   const [busy, setBusy] = useState(false);
@@ -98,7 +101,7 @@ function StatementRow({
             </a>
           ) : null}
           <Button tone="ghost" onClick={() => setOpen((v) => !v)}>
-            {open ? "Close" : "Ops"}
+            {open ? t("admin.statements.close") : t("admin.statements.ops")}
           </Button>
         </td>
       </tr>
@@ -116,12 +119,12 @@ function StatementRow({
                     })
                   }
                 >
-                  Finalize
+                  {t("admin.statements.finalize")}
                 </Button>
               ) : null}
               {s.status === "finalized" && (s.paymentStatus === "pending" || s.paymentStatus === "overdue") ? (
                 <>
-                  <Field label="Payment (credits)">
+                  <Field label={t("admin.statements.paymentCredits")}>
                     <NumberInput
                       value={payment}
                       onChange={(e) => setPayment(e.target.value)}
@@ -138,7 +141,7 @@ function StatementRow({
                       })
                     }
                   >
-                    Record payment
+                    {t("admin.statements.recordPayment")}
                   </Button>
                   <Button
                     tone="danger"
@@ -149,12 +152,12 @@ function StatementRow({
                       })
                     }
                   >
-                    Suspend
+                    {t("admin.statements.suspend")}
                   </Button>
                 </>
               ) : null}
               {s.status === "finalized" && s.paymentStatus === "suspended" ? (
-                <span className="text-xs text-muted">payment suspended</span>
+                <span className="text-xs text-muted">{t("admin.statements.paymentSuspended")}</span>
               ) : null}
               {msg ? <span className="text-xs text-danger">{msg}</span> : null}
             </div>
