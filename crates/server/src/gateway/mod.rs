@@ -612,6 +612,35 @@ async fn record_refusal(
         tracing::warn!(%row_error, request = %request_id,
             "the refusal's usage row did not write");
     }
+    // A refused admission still logs a request-log row (issue #505): the
+    // analytics surface answers "which requests were turned away" from it —
+    // `admission_outcome: refused`, zero charge, no latency, no entry.
+    let log_row = oxsum_core::RequestLogRow {
+        request_id: request_id.to_owned(),
+        tenant_id: organization.tenant_id.clone(),
+        organization_id: organization.id,
+        entry_id: Some(entry_id),
+        key_id: Some(key.key_id),
+        model_requested: model.to_owned(),
+        model_served: String::new(),
+        channel: String::new(),
+        admission_outcome: "refused".to_owned(),
+        status: "refused".to_owned(),
+        ttft_ms: None,
+        total_ms: None,
+        input_tokens: 0,
+        output_tokens: 0,
+        cached_tokens: 0,
+        charge_minor: 0,
+        upstream_attempts: 0,
+        error_kind: Some(reason.to_owned()),
+        http_status: Some(i64::from(error.http_status().as_u16())),
+        created_at: time::OffsetDateTime::now_utc(),
+    };
+    if let Err(error) = state.db.record_request_log(&log_row).await {
+        tracing::warn!(%error, request = %request_id,
+            "the refusal's request-log row did not write");
+    }
 }
 
 /// The error envelope the surface's SDK parses: OpenAI's `{"error": {…}}` on

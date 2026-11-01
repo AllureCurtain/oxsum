@@ -96,8 +96,13 @@ struct Plan {
     billing: broadcast::Sender<BillingEvent>,
     /// The registry the settlement counters record into: same one `/metrics` renders.
     metrics: crate::metrics::Metrics,
-    /// When the turn's hold was taken — the `turn_seconds` histogram's start.
+    /// When the turn's hold was taken — the `turn_seconds` histogram's start,
+    /// and the request-log row's `total_ms` base (issue #505).
     started: std::time::Instant,
+    /// The first upstream byte's arrival — the request-log row's `ttft_ms`:
+    /// `Some` once upstream answered its first chunk, `None` on a whole-body
+    /// read or a refusal that never reached upstream (issue #505).
+    first_byte: Option<std::time::Instant>,
     /// The channel that served the request, and the price version it was priced by. Both go into the
     /// settlement, so a bill says which version priced it and not only at what price. A failover
     /// swaps them for the route that answered (`Turn::reroute`, issue #168).
@@ -298,6 +303,7 @@ impl Turn {
                 billing,
                 metrics,
                 started: std::time::Instant::now(),
+                first_byte: None,
                 channel: serving.channel.clone(),
                 version: serving.version,
                 model: model.to_owned(),
@@ -473,6 +479,11 @@ impl Turn {
         let Some(plan) = self.plan.as_mut() else {
             return false;
         };
+        // The first upstream byte is the row's ttft — set once, on the chunk
+        // that opens the stream (issue #505).
+        if plan.first_byte.is_none() {
+            plan.first_byte = Some(std::time::Instant::now());
+        }
         let terminated = plan.frames.observe(chunk, plan.adapter);
         if terminated {
             plan.finished = true;
@@ -919,6 +930,43 @@ impl Plan {
                 if let Err(error) = hold_outcome {
                     tracing::error!(%error, request = %self.request,
                         "clearing the settled hold's watch row failed");
+                }
+                // The request-log row (issue #505): the operational record a
+                // billing dispute reads. Post-settlement and non-blocking — a
+                // logging failure is traced and dropped, never a failed
+                // request, so it rides beside the settle but outside its
+                // transaction.
+                let log_row = oxsum_core::RequestLogRow {
+                    request_id: self.request.clone(),
+                    tenant_id: self.tenant_id.clone(),
+                    organization_id: self.organization_id,
+                    entry_id: Some(*entry_id_for(&settlement_key_for(&self.hold_key)).as_uuid()),
+                    key_id: Some(self.key_id),
+                    model_requested: self.requested_model.clone(),
+                    model_served: self.model.clone(),
+                    channel: self.channel.clone(),
+                    admission_outcome: "admitted".to_owned(),
+                    status: kind.status().to_owned(),
+                    ttft_ms: self
+                        .first_byte
+                        .map(|at| at.duration_since(self.started).as_millis() as i64),
+                    total_ms: Some(self.started.elapsed().as_millis() as i64),
+                    input_tokens: usage.input_tokens,
+                    output_tokens: usage.output_tokens,
+                    cached_tokens: usage.cached_tokens,
+                    charge_minor: charged,
+                    upstream_attempts: self.upstream_attempts,
+                    error_kind: if kind == SettlementKind::Usage {
+                        None
+                    } else {
+                        Some(kind.as_str().to_owned())
+                    },
+                    http_status: Some(200),
+                    created_at: time::OffsetDateTime::now_utc(),
+                };
+                if let Err(error) = self.db.record_request_log(&log_row).await {
+                    tracing::warn!(%error, request = %self.request,
+                        "the settled turn's request-log row did not write");
                 }
             }
             // The conflict arm is the race the derived settlement key decides: the sweeper

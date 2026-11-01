@@ -461,6 +461,7 @@ impl Config {
             provider_raw_days: retention_days("OXSUM_RETENTION_PROVIDER_RAW_DAYS")?.unwrap_or(7),
             deliveries_days: retention_days("OXSUM_RETENTION_DELIVERIES_DAYS")?.unwrap_or(30),
             jobs_days: retention_days("OXSUM_RETENTION_JOBS_DAYS")?.unwrap_or(90),
+            request_log_days: retention_days("OXSUM_RETENTION_REQUEST_LOG_DAYS")?.unwrap_or(30),
         };
         let upstream_price_sync = var("OXSUM_UPSTREAM_PRICE_SYNC")
             .map(upstream_price_sync_of)
@@ -671,8 +672,8 @@ impl Config {
     }
 
     /// Sets the retention windows. Tests use this; the server reads
-    /// `OXSUM_RETENTION_PROVIDER_RAW_DAYS`, `OXSUM_RETENTION_DELIVERIES_DAYS`
-    /// and `OXSUM_RETENTION_JOBS_DAYS`.
+    /// `OXSUM_RETENTION_PROVIDER_RAW_DAYS`, `OXSUM_RETENTION_DELIVERIES_DAYS`,
+    /// `OXSUM_RETENTION_JOBS_DAYS` and `OXSUM_RETENTION_REQUEST_LOG_DAYS`.
     #[must_use]
     pub fn with_retention(mut self, retention: oxsum_core::Retention) -> Self {
         self.retention = retention;
