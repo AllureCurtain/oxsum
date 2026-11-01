@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Link, useSearchParams } from "react-router-dom";
 import { useMutation } from "@tanstack/react-query";
 import { api } from "../../api/client";
@@ -6,6 +7,7 @@ import { Banner, Button, Field, TextInput } from "../../components/ui";
 import { AuthCard, ErrorText } from "./shared";
 
 export function ResetPassword() {
+  const { t } = useTranslation();
   const [params] = useSearchParams();
   const [password, setPassword] = useState("");
   const [done, setDone] = useState(false);
@@ -16,13 +18,13 @@ export function ResetPassword() {
   const token = params.get("token") ?? "";
 
   return (
-    <AuthCard title="Choose a new password">
+    <AuthCard title={t("auth.chooseNewPassword")}>
       {done ? (
         <>
-          <Banner tone="success">The password was changed. All sessions were revoked.</Banner>
+          <Banner tone="success">{t("auth.passwordChanged")}</Banner>
           <Button className="mt-4 w-full" onClick={() => undefined}>
             <Link to="/login" className="block w-full text-center text-white">
-              Sign in
+              {t("auth.signInLink")}
             </Link>
           </Button>
         </>
@@ -34,7 +36,7 @@ export function ResetPassword() {
             reset.mutate({ token, password }, { onSuccess: () => setDone(true) });
           }}
         >
-          <Field label="New password" hint="at least 12 characters">
+          <Field label={t("auth.newPassword")} hint={t("auth.passwordHint")}>
             <TextInput
               type="password"
               required
@@ -46,7 +48,7 @@ export function ResetPassword() {
           </Field>
           <ErrorText error={reset.error} />
           <Button type="submit" disabled={reset.isPending || !token}>
-            Reset password
+            {t("auth.resetPassword")}
           </Button>
         </form>
       )}

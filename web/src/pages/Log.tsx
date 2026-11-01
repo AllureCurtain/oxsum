@@ -1,10 +1,12 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ScrollText } from "lucide-react";
 import { useEntries, useLogHead, useLogKey, useWitnessCheckpoint } from "../api/hooks";
 import { CopyButton } from "../components/ui";
 import { Button, Card, EmptyRows, PageState, TableShell, Td } from "../components/ui";
 
 export function Log() {
+  const { t } = useTranslation();
   const [before, setBefore] = useState<number | undefined>(undefined);
   const entries = useEntries(100, before);
   const head = useLogHead();
@@ -13,15 +15,16 @@ export function Log() {
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-2xl font-bold">Transaction log</h1>
+      <h1 className="text-2xl font-bold">{t("log.title")}</h1>
 
       {checkpoint.data ? (
-        <Card title="Anchored checkpoint">
+        <Card title={t("log.anchoredCheckpoint")}>
           <p className="text-sm">
-            Head #{checkpoint.data.headSize}, published {checkpoint.data.updatedAt}, cosigned
-            by {checkpoint.data.cosignatures.length} witness
-            {checkpoint.data.cosignatures.length === 1 ? "" : "es"}: the "this log cannot be
-            rewritten" evidence.
+            {t("log.headPublished", {
+              size: checkpoint.data.headSize,
+              updatedAt: checkpoint.data.updatedAt,
+              count: checkpoint.data.cosignatures.length,
+            })}
           </p>
           {checkpoint.data.cosignatures.map((cosig) => {
             const pin = checkpoint.data?.witnessKeys.find(
@@ -32,8 +35,8 @@ export function Log() {
                 <code className="mono block text-xs">{cosig.witnessUrl}</code>
                 <p className="text-xs text-muted">
                   {pin
-                    ? `pinned key ${pin.keyName} · keyHash ${pin.keyHash}`
-                    : "no pinned key; the deployment publishes no key for this witness"}
+                    ? t("log.pinnedKey", { keyName: pin.keyName, keyHash: pin.keyHash })
+                    : t("log.noPinnedKey")}
                 </p>
               </div>
             );
@@ -42,25 +45,22 @@ export function Log() {
       ) : null}
 
       {head.data ? (
-        <Card title="Signed head">
+        <Card title={t("log.signedHead")}>
           <p className="text-sm">
             Size {head.data.size}, root <code className="mono">{head.data.root}</code>
           </p>
           <p className="mt-1 text-xs text-muted">
-            Signed by {head.data.keyName} ({head.data.keyHash})
+            {t("log.signedBy", { keyName: head.data.keyName, keyHash: head.data.keyHash })}
           </p>
         </Card>
       ) : null}
 
       {logKey.data ? (
-        <Card title="Operator verifying key">
-          <p className="text-xs text-muted">
-            The public half of the key that signs tree heads and price checkpoints. Fetching it here
-            is convenience — a verifier pins it through a channel the operator does not control.
-          </p>
+        <Card title={t("log.operatorKey")}>
+          <p className="text-xs text-muted">{t("log.keyNote")}</p>
           <div className="mt-2 flex items-center gap-2">
             <code className="mono text-sm">{logKey.data.publicKey}</code>
-            <CopyButton value={logKey.data.publicKey} aria-label="Copy verifying key" />
+            <CopyButton value={logKey.data.publicKey} aria-label={t("log.copyKey")} />
           </div>
           <p className="mt-1 text-xs text-muted">
             {logKey.data.keyName} · keyHash {logKey.data.keyHash}
@@ -69,11 +69,11 @@ export function Log() {
       ) : null}
 
       {entries.isError ? (
-        <PageState>The log could not be read.</PageState>
+        <PageState>{t("log.readError")}</PageState>
       ) : (
         <>
           <TableShell
-            head={["#", { label: "Description", truncate: true }, { label: "Content hash", truncate: true }, ""]}
+            head={["#", { label: t("log.colDescription"), truncate: true }, { label: t("log.colHash"), truncate: true }, ""]}
             loading={entries.isLoading ? 8 : 0}
           >
             {!entries.isLoading &&
@@ -90,13 +90,13 @@ export function Log() {
               </tr>
             ))}
             {!entries.isLoading && (entries.data?.rows.length ?? 0) === 0 ? (
-              <EmptyRows colSpan={4} icon={<ScrollText />}>The log is empty.</EmptyRows>
+              <EmptyRows colSpan={4} icon={<ScrollText />}>{t("log.empty")}</EmptyRows>
             ) : null}
           </TableShell>
           {entries.data?.nextCursor != null ? (
             <p>
               <Button tone="ghost" onClick={() => setBefore(entries.data?.nextCursor)}>
-                Older
+                {t("common.older")}
               </Button>
             </p>
           ) : null}

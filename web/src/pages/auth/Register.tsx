@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from "react";
+import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "react-router-dom";
 import { useMutation } from "@tanstack/react-query";
 import { api } from "../../api/client";
@@ -7,6 +8,7 @@ import { Banner, Button, Field, TextInput } from "../../components/ui";
 import { AuthCard, ErrorText } from "./shared";
 
 export function Register() {
+  const { t } = useTranslation();
   const methods = useAuthMethods();
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
@@ -38,25 +40,25 @@ export function Register() {
 
   if (secret) {
     return (
-      <AuthCard title="Registered">
+      <AuthCard title={t("auth.registeredTitle")}>
         <Banner tone="success">
-          Your first API key — stored only as a hash, shown once:
+          {t("auth.firstKey")}
           <code className="mono ml-2 break-all">{secret}</code>
         </Banner>
         <Button className="mt-4 w-full" onClick={() => navigate("/login")}>
-          To sign in
+          {t("auth.toSignIn")}
         </Button>
       </AuthCard>
     );
   }
 
   return (
-    <AuthCard title="Register">
+    <AuthCard title={t("auth.register")}>
       <form onSubmit={submit} className="flex flex-col gap-3">
-        <Field label="Email">
+        <Field label={t("auth.email")}>
           <TextInput type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
         </Field>
-        <Field label="Password" hint="at least 12 characters">
+        <Field label={t("auth.password")} hint={t("auth.passwordHint")}>
           <TextInput
             type="password"
             required
@@ -66,12 +68,12 @@ export function Register() {
             onChange={(e) => setPassword(e.target.value)}
           />
         </Field>
-        <Field label="Organization name" hint="defaults to your email's local part">
+        <Field label={t("auth.orgName")} hint={t("auth.orgNameHint")}>
           <TextInput value={orgName} maxLength={80} onChange={(e) => setOrgName(e.target.value)} />
         </Field>
         <ErrorText error={register.error} />
         <Button type="submit" disabled={register.isPending}>
-          {register.isPending ? "Registering…" : "Register"}
+          {register.isPending ? t("auth.registering") : t("auth.register")}
         </Button>
       </form>
       {methods.data?.oauthGithub ? (
@@ -79,12 +81,12 @@ export function Register() {
           href="/api/v1/auth/oauth/github"
           className="mt-3 block rounded-lg border border-line px-3 py-2 text-center text-sm hover:bg-canvas"
         >
-          Register with GitHub
+          {t("auth.registerGithub")}
         </a>
       ) : null}
       <p className="mt-4 text-sm">
         <Link to="/login" className="text-primary">
-          Already have an account
+          {t("auth.haveAccount")}
         </Link>
       </p>
     </AuthCard>

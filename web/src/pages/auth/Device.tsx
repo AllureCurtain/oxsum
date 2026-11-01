@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { api } from "../../api/client";
@@ -6,6 +7,7 @@ import { Banner, Button, Field, TextInput } from "../../components/ui";
 import { AuthCard, ErrorText } from "./shared";
 
 export function Device() {
+  const { t } = useTranslation();
   const [params] = useSearchParams();
   const [code, setCode] = useState(params.get("code") ?? "");
   const [done, setDone] = useState<"approved" | "denied" | null>(null);
@@ -24,10 +26,10 @@ export function Device() {
   });
 
   return (
-    <AuthCard title="Authorize a device">
+    <AuthCard title={t("auth.authorizeDevice")}>
       {done ? (
         <Banner tone="success">
-          {done === "approved" ? "The device may poll for its key." : "The request was denied."}
+          {done === "approved" ? t("auth.deviceApproved") : t("auth.deviceDenied")}
         </Banner>
       ) : (
         <form
@@ -37,7 +39,7 @@ export function Device() {
             authorize.mutate({ userCode: code, approve: true }, { onSuccess: () => setDone("approved") });
           }}
         >
-          <Field label="User code" hint="the code the tool shows">
+          <Field label={t("auth.userCode")} hint={t("auth.userCodeHint")}>
             <TextInput
               required
               value={code}
@@ -47,15 +49,13 @@ export function Device() {
           </Field>
           {pending.data ? (
             <Banner tone="info">
-              Request <code className="mono">{pending.data.userCode}</code>, minted{" "}
-              {new Date(pending.data.createdAt).toLocaleString()}, expires{" "}
-              {new Date(pending.data.expiresAt).toLocaleString()}.
+              {t("auth.requestLine",{code:pending.data.userCode,created:new Date(pending.data.createdAt).toLocaleString(),expires:new Date(pending.data.expiresAt).toLocaleString()})}
             </Banner>
           ) : null}
           <ErrorText error={authorize.error} />
           <div className="flex gap-2">
             <Button type="submit" disabled={authorize.isPending}>
-              Approve
+              {t("auth.approve")}
             </Button>
             <Button
               tone="danger"
@@ -65,7 +65,7 @@ export function Device() {
                 authorize.mutate({ userCode: code, approve: false }, { onSuccess: () => setDone("denied") })
               }
             >
-              Deny
+              {t("auth.deny")}
             </Button>
           </div>
         </form>

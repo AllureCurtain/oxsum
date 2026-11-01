@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ArrowLeftRight } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import { settlementOutcome } from "../lib/kinds";
@@ -20,6 +21,7 @@ import {
 // in-flight turns on top. Filters ride the URL (`?key=&model=`) so a filtered
 // view is a link that survives a reload, same as the Topcoat page.
 export function Requests() {
+  const { t } = useTranslation();
   const [params, setParams] = useSearchParams();
   const [before, setBefore] = useState<number | undefined>(undefined);
   const records = useBillingRecords(100, before);
@@ -75,41 +77,41 @@ export function Requests() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Requests</h1>
+        <h1 className="text-2xl font-bold">{t("requests.title")}</h1>
         {socket.dead ? (
           <button
             type="button"
             onClick={socket.reconnect}
-            title="Reconnect the billing socket"
+            title={t("requests.reconnect")}
             className="text-xs font-medium text-danger hover:text-ink"
           >
-            connection lost — retry
+            {t("requests.connectionLost")}
           </button>
         ) : (
           <span className={`text-xs ${socket.live ? "text-success" : "text-muted"}`}>
-            {socket.live ? "live" : "offline"}
+            {socket.live ? t("requests.live") : t("requests.offline")}
           </span>
         )}
       </div>
 
       <div className="flex flex-wrap gap-x-10 gap-y-4 rounded-xl border border-line bg-surface px-5 py-4 shadow-[0_1px_3px_rgba(20,34,64,.05)]">
         <StatChip
-          label="In flight"
+          label={t("requests.inFlight")}
           value={stats.inFlight}
-          hint={stats.inFlight > 0 ? "turns live" : "none"}
+          hint={stats.inFlight > 0 ? t("requests.turnsLive") : t("requests.none")}
         />
-        <StatChip label="Turns today" value={stats.todayTurns} />
+        <StatChip label={t("requests.turnsToday")} value={stats.todayTurns} />
         <StatChip
-          label="Tokens today"
+          label={t("requests.tokensToday")}
           value={stats.todayTokens.toLocaleString("en-US")}
-          hint="in + out"
+          hint={t("requests.inOut")}
         />
         <StatChip
-          label="Charged today"
+          label={t("requests.chargedToday")}
           value={<Cr minor={stats.todayCharged} currency={display} />}
         />
         <StatChip
-          label="Avg tokens/turn"
+          label={t("requests.avgTokens")}
           value={
             stats.todayTurns > 0 ? Math.round(stats.todayTokens / stats.todayTurns).toLocaleString("en-US") : "—"
           }
@@ -118,7 +120,7 @@ export function Requests() {
 
       <div className="flex flex-wrap gap-3">
         <TextInput
-          placeholder="Key prefix"
+          placeholder={t("requests.keyPrefix")}
           value={keyFilter}
           onChange={(e) =>
             setParams((p) => {
@@ -129,7 +131,7 @@ export function Requests() {
           }
         />
         <TextInput
-          placeholder="Model"
+          placeholder={t("requests.model")}
           value={modelFilter}
           onChange={(e) =>
             setParams((p) => {
@@ -141,14 +143,14 @@ export function Requests() {
         />
         {keyFilter || modelFilter ? (
           <Button tone="ghost" onClick={() => setParams({})}>
-            Clear filters
+            {t("requests.clearFilters")}
           </Button>
         ) : null}
       </div>
 
       {socket.turns.length > 0 ? (
         <TableShell
-          head={[{ label: "Request", truncate: true }, "Model", "State", { label: "Live", align: "right" }]}
+          head={[{ label: t("requests.colRequest"), truncate: true }, t("common.model"), t("requests.state"), { label: t("requests.colLive"), align: "right" }]}
           sticky={false}
         >
           {socket.turns.map((turn) => (
@@ -162,15 +164,15 @@ export function Requests() {
                 {turn.state === "settled" ? (
                   <>
                     <Cr minor={turn.chargedMinor ?? 0} currency={display} /> ·{" "}
-                    <span title={settlementOutcome(turn.kind).detail}>
-                      {settlementOutcome(turn.kind).label}
+                    <span title={settlementOutcome(turn.kind, t).detail}>
+                      {settlementOutcome(turn.kind, t).label}
                     </span>
                   </>
                 ) : turn.state === "streaming" ? (
-                  `${turn.outputChars ?? 0} chars out`
+                  t("requests.charsOut", { count: turn.outputChars ?? 0 })
                 ) : (
                   <>
-                    frozen <Cr minor={turn.freezeMinor ?? 0} currency={display} />
+                    {t("requests.frozen")}{" "}<Cr minor={turn.freezeMinor ?? 0} currency={display} />
                   </>
                 )}
               </Td>
@@ -180,19 +182,19 @@ export function Requests() {
       ) : null}
 
       {records.isError ? (
-        <PageState>The requests could not be read.</PageState>
+        <PageState>{t("requests.readError")}</PageState>
       ) : (
         <>
           <TableShell
             head={[
-              "Booked",
-              { label: "Request", truncate: true },
-              "Model",
-              "Key",
-              "Status",
-              { label: "In", align: "right" },
-              { label: "Out", align: "right" },
-              { label: "Charged", align: "right" },
+              t("requests.colBooked"),
+              { label: t("requests.colRequest"), truncate: true },
+              t("common.model"),
+              t("requests.colKey"),
+              t("common.status"),
+              { label: t("usage.in"), align: "right" },
+              { label: t("usage.out"), align: "right" },
+              { label: t("usage.charged"), align: "right" },
               "",
             ]}
             loading={records.isLoading ? 8 : 0}
@@ -241,9 +243,9 @@ export function Requests() {
                   <StatusBadge status={row.status} />
                   <span
                     className="ml-1 text-xs text-muted"
-                    title={settlementOutcome(row.kind).detail}
+                    title={settlementOutcome(row.kind, t).detail}
                   >
-                    {settlementOutcome(row.kind).label}
+                    {settlementOutcome(row.kind, t).label}
                   </span>
                   {row.failureReason ? (
                     <p className="text-xs text-danger">{row.failureReason}</p>
@@ -254,21 +256,21 @@ export function Requests() {
                 <Td mono align="right"><Cr minor={row.chargedMinor} currency={display} /></Td>
                 <td>
                   <a href={`/verify?entry=${row.entryId}`} className="text-primary">
-                    verify
+                    {t("common.verify")}
                   </a>
                 </td>
               </tr>
               ))}
             {!records.isLoading && rows.length === 0 ? (
               <EmptyRows colSpan={9} icon={<ArrowLeftRight />}>
-                {keyFilter || modelFilter ? "No requests match the filters." : "No requests yet."}
+                {keyFilter || modelFilter ? t("requests.emptyFiltered") : t("requests.empty")}
               </EmptyRows>
             ) : null}
           </TableShell>
           {records.data?.nextCursor != null ? (
             <p>
               <Button tone="ghost" onClick={() => setBefore(records.data?.nextCursor)}>
-                Older
+                {t("common.older")}
               </Button>
             </p>
           ) : null}
