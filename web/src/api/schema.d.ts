@@ -280,9 +280,14 @@ export interface paths {
         put?: never;
         /**
          * Log in with email and password
-         * @description Mints a session and answers it in the body together with a `Set-Cookie` header carrying the
-         *     session cookie (`oxsum_session`, `HttpOnly`, `SameSite=Lax`, `Path=/`, plus `Secure` when the
-         *     deployment sets `OXSUM_SESSION_COOKIE_SECURE`).
+         * @description Verifies the password, then either mints a session — answered in the body
+         *     together with a `Set-Cookie` header carrying the session cookie
+         *     (`oxsum_session`, `HttpOnly`, `SameSite=Lax`, `Path=/`, plus `Secure`
+         *     when the deployment sets `OXSUM_SESSION_COOKIE_SECURE`) — or, on an
+         *     account whose second factor is confirmed, withholds it behind a
+         *     challenge: the answer is `{"requiresTotp": true, "challengeToken"}` and
+         *     no cookie, and `POST /api/v1/auth/totp` trades the challenge plus a
+         *     live code for the session (issue #504).
          *
          *     An unknown email and a wrong password answer the same 401 with the same message, and the
          *     unknown-email path still pays for one password-hash verification, so neither timing nor
@@ -312,7 +317,8 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            data: components["schemas"]["SessionInfo"];
+                            /** @description `SessionInfo` on a password-only login; `TotpRequired` when the account's second factor must be satisfied first */
+                            data: components["schemas"]["SessionInfo"] | components["schemas"]["TotpRequired"];
                         };
                     };
                 };
@@ -625,7 +631,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/auth/oauth/github": {
+    "/api/v1/auth/oauth/{provider}": {
         parameters: {
             query?: never;
             header?: never;
@@ -633,20 +639,26 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Start a GitHub OAuth login
-         * @description The first leg of the OAuth flow: answers `303 See Other` to GitHub's
-         *     authorize page with `scope=read:user user:email` and a `state` minted
-         *     server-side — single-use and ten-minute-lived, so a callback carries a
-         *     token that can be spent once ever. The callback URL is built from
-         *     `OXSUM_PUBLIC_URL`, which the OAuth configuration requires.
-         *     A deployment without the provider pair configured answers `404`, and
-         *     this route is only ever a browser redirect — no body.
+         * Start an OAuth login on a configured provider
+         * @description The first leg of the OAuth flow: answers `303 See Other` to the
+         *     provider's authorize page with a `state` minted server-side —
+         *     single-use and ten-minute-lived, so a callback carries a token that
+         *     can be spent once ever. `provider` is `github` when the GitHub pair
+         *     is configured, or `oidc:{name}` for a provider `OXSUM_OIDC_PROVIDERS`
+         *     lists (issue #504); an OIDC leg also carries an S256 `code_challenge`
+         *     and a `nonce`, whose verifier and expected value ride inside the
+         *     stored state. The callback URL is built from `OXSUM_PUBLIC_URL`, which
+         *     every OAuth configuration requires. An unconfigured or unknown
+         *     provider answers `404`, and this route is only ever a browser
+         *     redirect — no body.
          */
         get: {
             parameters: {
                 query?: never;
                 header?: never;
-                path?: never;
+                path: {
+                    provider: string;
+                };
                 cookie?: never;
             };
             requestBody?: never;
@@ -654,7 +666,7 @@ export interface paths {
                 /** @description Redirect to the provider's authorize page */
                 303: {
                     headers: {
-                        /** @description the authorize URL: `{authorize}?client_id=…&redirect_uri=…&scope=read:user user:email&state=…` */
+                        /** @description the authorize URL: GitHub's carries `scope=read:user user:email&state=…`; an OIDC provider's carries `scope=openid email profile`, `code_challenge`/`code_challenge_method=S256`, `nonce` and `state` */
                         Location?: string;
                         [name: string]: unknown;
                     };
@@ -662,6 +674,7 @@ export interface paths {
                 };
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
             };
         };
         put?: never;
@@ -672,7 +685,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/auth/oauth/github/callback": {
+    "/api/v1/auth/oauth/{provider}/callback": {
         parameters: {
             query?: never;
             header?: never;
@@ -680,17 +693,20 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Finish a GitHub OAuth login
+         * Finish an OAuth login on a configured provider
          * @description The provider's redirect lands here with `code` and `state`. The state is
          *     consumed atomically — an unknown, spent or expired one rejects the whole
-         *     attempt — the code is exchanged for an access token, and the account
-         *     resolves by the primary **verified** email the provider reports: a
-         *     linked `oauth_accounts` row first, then an email match that links the
-         *     identity, and otherwise a registration when `OXSUM_SIGNUP=open` (an
-         *     `invite` deployment refuses new accounts here). Success mints a session
-         *     and answers `303` to `/dashboard` with the session `Set-Cookie`; every
-         *     failure answers `303` back to `/login?error=oauth`, because the caller
-         *     is a browser mid-redirect, not an API client.
+         *     attempt — then the code is exchanged and the identity read off the
+         *     provider: GitHub's access-token plus userinfo, an OIDC provider's
+         *     `id_token` verified against its JWKS with `iss`/`aud`/`exp`/`nonce`
+         *     checked and the consumed state's PKCE verifier presented at the
+         *     exchange (issue #504). The account resolves by the **verified** email
+         *     the provider reports: a linked `oauth_accounts` row first, then an
+         *     email match that links the identity, and otherwise a registration when
+         *     `OXSUM_SIGNUP=open` (an `invite` deployment refuses new accounts here).
+         *     Success mints a session and answers `303` to `/app` with the session
+         *     `Set-Cookie`; every failure answers `303` back to `/app/login?error=oauth`,
+         *     because the caller is a browser mid-redirect, not an API client.
          */
         get: {
             parameters: {
@@ -699,15 +715,17 @@ export interface paths {
                     state: string;
                 };
                 header?: never;
-                path?: never;
+                path: {
+                    provider: string;
+                };
                 cookie?: never;
             };
             requestBody?: never;
             responses: {
-                /** @description Redirect to `/dashboard` with the session cookie on success, to `/login?error=oauth` on any failure */
+                /** @description Redirect to `/app` with the session cookie on success, to `/app/login?error=oauth` on any failure */
                 303: {
                     headers: {
-                        /** @description `/dashboard` or `/login?error=oauth` */
+                        /** @description `/app` or `/app/login?error=oauth` */
                         Location?: string;
                         /** @description the session cookie on success — `oxsum_session=<token>; Path=/; HttpOnly; SameSite=Lax`, plus `; Secure` when configured */
                         "Set-Cookie"?: string;
@@ -721,6 +739,227 @@ export interface paths {
         };
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/totp": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Finish a TOTP-gated login
+         * @description The second leg of a two-phase login (issue #504): when `POST
+         *     /api/v1/auth/login` verifies the password on an account whose second
+         *     factor is confirmed, it withholds the session and answers
+         *     `{"requiresTotp": true, "challengeToken"}`. This route trades that
+         *     challenge plus a live six-digit code — or a single-use backup code,
+         *     consumed on use — for the session the first leg withheld, answered in
+         *     the body with the same `Set-Cookie` a password-only login would have
+         *     carried. The challenge is single-use, ten-minute-lived and survives
+         *     five wrong codes, so neither the session nor the six digits are
+         *     brute-able off a stolen password.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["TotpLoginRequest"];
+                };
+            };
+            responses: {
+                /** @description The user, the organization, the role and the session; the `Set-Cookie` header carries the session cookie */
+                200: {
+                    headers: {
+                        /** @description the session cookie: `oxsum_session=<token>; Path=/; HttpOnly; SameSite=Lax`, plus `; Secure` when the deployment sets `OXSUM_SESSION_COOKIE_SECURE` */
+                        "Set-Cookie"?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["SessionInfo"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/totp/enroll": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Begin TOTP enrollment
+         * @description Mints a fresh shared secret for the session user, sealed at rest under
+         *     `OXSUM_SECRET_KEY` the way an upstream credential is, and answers it
+         *     once as base32 plus the `otpauthUrl` the client renders a QR from. The
+         *     secret is unconfirmed — it gates nothing — until `confirm` proves a
+         *     live code against it. An API key is refused: a second factor is a
+         *     person's setting.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "*/*"?: never;
+                };
+            };
+            responses: {
+                /** @description The shared secret and its otpauth URL */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["TotpEnrollResponse"];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/totp/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm TOTP enrollment on a live code
+         * @description Proves the authenticator scanned the pending secret: on a live code the
+         *     enrollment confirms — the factor now gates every password login — and
+         *     the answer carries ten single-use backup codes, shown exactly once and
+         *     stored only as hashes. A wrong code answers 401 like any failed
+         *     verification and leaves the enrollment pending.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["TotpCodeRequest"];
+                };
+            };
+            responses: {
+                /** @description The backup codes, this once */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["TotpConfirmResponse"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/totp/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Disable the second factor on a live code
+         * @description Removes the user's confirmed factor — itself second-factored: the
+         *     request carries a live code, so a hijacked session alone cannot strip
+         *     the protection. An empty answer follows the `LogoutResponse` shape.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["TotpCodeRequest"];
+                };
+            };
+            responses: {
+                /** @description Disabled */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["LogoutResponse"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;
@@ -1601,8 +1840,10 @@ export interface paths {
          *     `concurrent_holds`, `mandate_window`, `mandate_model` or
          *     `mandate_cap` — and the headroom figures the caller can size by:
          *     `remainingRpm` (the window's free slots, null while the window itself
-         *     refuses), `remainingTpm` (settled-side token headroom against the
-         *     estimate), `remainingBudgetMinor` (the spend limit minus committed),
+         *     refuses), `remainingTpm` (the settled-token window's room — the cap
+         *     minus what settled inside it; the estimate is a money figure, not
+         *     tokens, so the window judges `settled < cap`, not the estimate),
+         *     `remainingBudgetMinor` (the tightest spend cap minus committed),
          *     `concurrentHolds` (open holds now), and `retryAfterSecs` when a window
          *     says when it frees. A presented `X-Oxsum-Mandate` adds the
          *     delegation's own answer — a mandate that cannot verify is
@@ -5802,6 +6043,409 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/guardrail-policies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the configured guardrail policies
+         * @description Every policy the gateway's pre_call/post_call hooks may evaluate
+         *     (issue #502), ordered by name. A policy is a named rule — `keyword`,
+         *     `pii` or `moderation` — whose `config` is its kind's own shape. The
+         *     `moderation` kind's sealed bearer never leaves the row: the answer
+         *     carries the rule, never the credential.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Every configured policy, ordered by name */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["GuardrailPolicy"][];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/guardrail-policies/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Write or replace one guardrail policy
+         * @description `name` is the policy's address — what bindings and a key's
+         *     `requiredPolicies` reference — matching
+         *     `^[a-z0-9][a-z0-9._-]{0,63}$`. The kind picks the config's shape:
+         *     `keyword` takes `{patterns: [{re, action}]}` (each `action` `flag` or
+         *     `block`, compiled at write — a pattern the gateway could not build is
+         *     a 400); `pii` takes `{}` (its pattern set is the impl's, not config);
+         *     `moderation` takes `{endpoint, timeoutMs?}` — an absolute http(s) URL
+         *     the request's texts are posted to, plus `apiKey`, the endpoint's
+         *     bearer, sealed under the deployment's secret the way an upstream key
+         *     is. An absent `apiKey` keeps the stored bearer, so re-writing a
+         *     moderation policy's endpoint does not demand its key again. The write
+         *     lands in the admin audit log.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    name: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["GuardrailPolicyRequest"];
+                };
+            };
+            responses: {
+                /** @description The policy as written */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["GuardrailPolicy"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        post?: never;
+        /**
+         * Delete a guardrail policy
+         * @description Removes the policy; an unknown name is 404. Bindings and keys that
+         *     named it keep the dangling name — the gateway skips what does not
+         *     resolve rather than refuse the turn, so a retired policy's name
+         *     unguards quietly until its references are updated. The delete lands in
+         *     the admin audit log.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    name: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The policy was deleted */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: {
+                                deleted?: boolean;
+                            };
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/guardrail-bindings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the guardrail bindings
+         * @description Every scope's policy set: `channel` bindings apply to every turn the
+         *     channel leads, `key` bindings to every key. Ordered by `(scope,
+         *     target)`.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Every binding, ordered by scope and target */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["GuardrailBinding"][];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/guardrail-bindings/{scope}/{target}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Replace one scope's guardrail binding
+         * @description `scope` is `channel` (target the channel's name) or `key` (target the
+         *     key's id). `policies` is the ordered set of policy names the scope
+         *     runs — every name must already exist as a configured policy, because a
+         *     binding that names nothing would silently unguard the turns it claims
+         *     to protect: the write refuses a dangling name before it lands. The
+         *     write lands in the admin audit log.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    scope: "channel" | "key";
+                    target: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["GuardrailBindingRequest"];
+                };
+            };
+            responses: {
+                /** @description The binding as written */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["GuardrailBinding"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        post?: never;
+        /**
+         * Remove one scope's guardrail binding
+         * @description Removes the binding; an unknown `(scope, target)` is 404. A `PUT`
+         *     with `policies: []` writes the same "runs nothing" — the delete exists
+         *     so the row does not linger as configuration noise. Lands in the admin
+         *     audit log.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    scope: "channel" | "key";
+                    target: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The binding was removed */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: {
+                                deleted?: boolean;
+                            };
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/model-fallbacks/{model}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read one model's fallback chain
+         * @description The ordered list of models a request naming `model` may serve under
+         *     when its own channels all fail, in try order (issue #500). Empty for a
+         *     model with no chain.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    model: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The model's fallback chain */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ModelFallbackChain"];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        /**
+         * Replace one model's fallback chain
+         * @description `fallbacks` is the whole ordered set, replaced atomically: a request
+         *     tries every route of `model` first, then each fallback in position
+         *     order. Every name must resolve to a served model or a registered alias
+         *     — a chain naming an unserved model would dead-end a request that
+         *     already failed once, so the write refuses a 400 rather than landing a
+         *     route that cannot serve — and `model` may not appear inside its own
+         *     chain. `model` itself must be served. An empty `fallbacks` clears the
+         *     chain. Lands in the admin audit log.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    model: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ModelFallbackChain"];
+                };
+            };
+            responses: {
+                /** @description The chain as written */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ModelFallbackChain"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        post?: never;
+        /**
+         * Drop one model's fallback chain
+         * @description Removes the chain; a model that had none is 404. The chain is routing
+         *     configuration, not ledger data, so the delete is hard — a settled bill
+         *     still names the model that answered. Lands in the admin audit log.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    model: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The chain was removed */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: {
+                                cleared?: boolean;
+                            };
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/holds": {
         parameters: {
             query?: never;
@@ -7308,6 +7952,7 @@ export interface paths {
                         "x-oxsum-freeze-minor": components["headers"]["FreezeMinor"];
                         "x-oxsum-balance-minor": components["headers"]["BalanceMinor"];
                         "x-oxsum-charged-minor": components["headers"]["ChargedMinor"];
+                        "x-oxsum-cache": components["headers"]["CacheStatus"];
                         /** @description on a streamed answer, announces the settled charge arrives as a trailer */
                         Trailer?: string;
                         [name: string]: unknown;
@@ -8185,11 +8830,40 @@ export interface components {
         };
         /** @description empty: the logout is in the Set-Cookie header that clears the cookie */
         LogoutResponse: Record<string, never>;
+        /** @description `POST /api/v1/auth/login`'s answer on an account with a confirmed second factor — no session, no cookie; `POST /api/v1/auth/totp` trades `challengeToken` plus a live code for the session (issue #504) */
+        TotpRequired: {
+            /** @enum {boolean} */
+            requiresTotp: true;
+            /** @description single-use, ten-minute-lived; present it with a code at `POST /api/v1/auth/totp` */
+            challengeToken: string;
+        };
         AuthMethods: {
             /** @description true when the GitHub OAuth client pair is configured */
             oauthGithub: boolean;
+            /** @description the route names of the configured OIDC providers (`oidc:{name}`, one per `OXSUM_OIDC_PROVIDERS` entry) — the login page draws one button per entry */
+            oidcProviders: string[];
             /** @description the Turnstile site key when the anti-bot check is configured — public by design, the page hands it to the widget */
             turnstileSiteKey?: string | null;
+        };
+        TotpLoginRequest: {
+            /** @description the `challengeToken` `POST /api/v1/auth/login` answered with `requiresTotp: true` */
+            challengeToken: string;
+            /** @description a live six-digit authenticator code, or a `xxxx-xxxx` backup code (consumed on use) */
+            code: string;
+        };
+        TotpCodeRequest: {
+            /** @description a live six-digit authenticator code */
+            code: string;
+        };
+        TotpEnrollResponse: {
+            /** @description the shared secret as base32 — the form an authenticator accepts typed in by hand */
+            secret: string;
+            /** @description `otpauth://totp/…` — what the client renders a QR from */
+            otpauthUrl: string;
+        };
+        TotpConfirmResponse: {
+            /** @description ten `xxxx-xxxx` single-use recovery codes, answered this once and stored only as hashes */
+            backupCodes: string[];
         };
         Organization: {
             /** Format: uuid */
@@ -8244,6 +8918,8 @@ export interface components {
             /** @description settled input+output tokens the key may burn inside a trailing minute, checked at admission on the gateway; null (the default) is uncapped */
             tokensPerMinute?: number | null;
             tokensPerMinuteScopes?: components["schemas"]["TokensPerMinuteScopes"];
+            /** @description the guardrail policies this key's turns must run (issue #502); every name must already exist as a configured policy, and null (the default) requires none — a turn still runs whatever its channel binds */
+            requiredPolicies?: string[] | null;
         };
         UpdateKeyConstraintsRequest: {
             /**
@@ -8265,6 +8941,8 @@ export interface components {
             /** @description the new per-minute settled-token allowance, or null to uncap */
             tokensPerMinute?: number | null;
             tokensPerMinuteScopes?: components["schemas"]["TokensPerMinuteScopes"];
+            /** @description the guardrail policies the key's turns must run; null or absent clears it back to none */
+            requiredPolicies?: string[] | null;
         };
         ApiKey: {
             /** Format: uuid */
@@ -8302,11 +8980,42 @@ export interface components {
             /** @description the key's rolling-minute settled-token allowance; null is uncapped */
             tokensPerMinute: number | null;
             tokensPerMinuteScopes: components["schemas"]["TokensPerMinuteScopes"];
+            /** @description the guardrail policies the key's turns must run; null requires none */
+            requiredPolicies: string[] | null;
         };
         /** @description Tag-scoped slices of the key's settled-token allowance (issue #209). Maps a request `metadata` tag key to one scope; each scoped bucket is an additional cap alongside `tokensPerMinute`, not a replacement. null (the default) scopes nothing. */
         TokensPerMinuteScopes: {
             [key: string]: components["schemas"]["TokenScope"];
         } | null;
+        /** @description A configured guardrail policy (issue #502). `config` is the kind's own shape: `keyword` holds `{patterns: [{re, action}]}` with `action` `flag` or `block`, `pii` holds `{}`, `moderation` holds `{endpoint, timeoutMs?}`. A `moderation` policy's bearer is stored sealed and never serialized. */
+        GuardrailPolicy: {
+            name: string;
+            /** @enum {string} */
+            kind: "keyword" | "pii" | "moderation";
+            config: Record<string, never>;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        GuardrailPolicyRequest: {
+            /** @enum {string} */
+            kind: "keyword" | "pii" | "moderation";
+            /** @description the kind's own shape — `keyword`: `{patterns: [{re, action}]}`; `pii`: `{}`; `moderation`: `{endpoint, timeoutMs?}` */
+            config: Record<string, never>;
+            /** @description the `moderation` kind's bearer, sealed on write and never echoed; absent keeps a stored bearer, required on the first write of a moderation policy that screens */
+            apiKey?: string;
+        };
+        GuardrailBinding: {
+            /** @enum {string} */
+            scope: "channel" | "key";
+            /** @description the channel's name, or the key's id */
+            target: string;
+            /** @description the ordered policy names the scope runs */
+            policies: string[];
+        };
+        GuardrailBindingRequest: {
+            /** @description every name must already exist as a configured policy */
+            policies: string[];
+        };
         /** @description One tag scope (issue #209): exactly one of `each`, `concrete`, or `total` is set. A settled turn accrues into the bucket its `metadata` tag selects — `each` fans out per value (`tag=value`), `concrete` only the pinned value, `total` the whole tag — and the bucket's cap is checked `window-actual + estimate ≤ cap` at admission, 429 when full while other buckets stay open. */
         TokenScope: {
             /** @description a separate bucket per value of this tag, each capped here */
@@ -8360,7 +9069,7 @@ export interface components {
                 modelAllowed?: boolean | null;
                 /** @description null when the key is uncapped */
                 rpmOk?: boolean | null;
-                /** @description null when the key is uncapped or no estimate was asked */
+                /** @description null when the key is uncapped */
                 tpmOk?: boolean | null;
                 /** @description null when the key is unlimited */
                 budgetOk?: boolean | null;
@@ -8388,6 +9097,8 @@ export interface components {
             capMinor: number;
             /** @description the model allowlist — a subset of the key's own; null means all the key serves */
             models: string[] | null;
+            /** @description the guardrail policies this mandate requires — a subset of the key's own; null means all the key requires (issue #502) */
+            requiredPolicies: string[] | null;
             /** Format: date-time */
             notBefore: string;
             /**
@@ -8412,6 +9123,8 @@ export interface components {
             capMinor: number;
             /** @description the model allowlist — must be a subset of the key's own `modelAllowlist` when the key has one; omitted or null means all the key serves */
             models?: string[] | null;
+            /** @description the guardrail policies the mandate's turns must run (issue #502) — a subset of the key's own `requiredPolicies`, never an addition the key does not already name; omitted or null means all the key requires */
+            requiredPolicies?: string[] | null;
             /**
              * Format: date-time
              * @description when the mandate starts being honored; absent means now
@@ -8629,6 +9342,15 @@ export interface components {
              * @enum {string}
              */
             protocol?: "openai" | "anthropic" | "gemini";
+            /** @description the channel's semantic response cache policy (issue #497): `{enabled, ttlSeconds?, excludeSystem?}` — `enabled` gates the whole feature; `ttlSeconds` bounds a stored answer's lifetime (absent means no expiry); `excludeSystem` drops the system/instructions share from the prompt digest so two asks differing only there still hit. Omit to leave the stored policy untouched; explicit null clears `settings.semanticCache`; a non-object or a malformed policy is VALIDATION_ERROR. */
+            semanticCache?: ({
+                enabled?: boolean;
+                /** Format: int64 */
+                ttlSeconds?: number;
+                excludeSystem?: boolean;
+            } & {
+                [key: string]: unknown;
+            }) | null;
         };
         ChannelCredential: {
             /** Format: uuid */
@@ -8666,6 +9388,8 @@ export interface components {
             credentials: components["schemas"]["ChannelCredential"][];
             /** @description the last four characters of the admin billing credential (issue #283), and nothing more of it; null when the channel carries none */
             billKeyLast4: string | null;
+            /** @description the channel's free-form settings (issue #497): `semanticCache` and any future channel-scoped knobs, exactly as written through `ChannelRequest.semanticCache` — `{}` when nothing was ever set */
+            settings: Record<string, never>;
             /** Format: date-time */
             createdAt: string;
             /** @description one entry per model, at its current version */
@@ -8798,6 +9522,10 @@ export interface components {
             alias: string;
             /** @description the model the channel actually serves, forwarded upstream in place of the alias */
             upstreamModel: string;
+        };
+        ModelFallbackChain: {
+            /** @description the ordered set of models a request may serve under when `model`'s channels all fail — position order, every name a served model or alias */
+            fallbacks: string[];
         };
         ModelAlias: {
             /** @description the public name callers write */
@@ -11074,6 +11802,8 @@ export interface components {
         BalanceMinor: number;
         /** @description minor units the settled turn actually charged — a header on non-streamed answers and post-hold refusals, a trailer on streamed ones */
         ChargedMinor: number;
+        /** @description `hit` when the semantic cache answered instead of upstream (issue #497): the stored body re-served, billed at the cache-read rate, the settlement's v10 `cache` block naming the original turn's entry. Absent on a miss, a stream, or a channel that never opted in. */
+        CacheStatus: "hit";
     };
     pathItems: never;
 }
