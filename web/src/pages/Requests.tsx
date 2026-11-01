@@ -1,12 +1,14 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowLeftRight } from "lucide-react";
+import { ArrowLeftRight, Search } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import { settlementOutcome } from "../lib/kinds";
-import { useBillingRecords, useDisplay, useKeys } from "../api/hooks";
+import { useBillingRecords, useDisplay, useKeys, useRequestLog } from "../api/hooks";
 import { useBillingSocket } from "../api/ws";
 import {
+  Card,
   EmptyRows,
+  Field,
   PageState,
   StatChip,
   StatusBadge,
@@ -16,6 +18,134 @@ import {
   Button,
   Cr,
 } from "../components/ui";
+
+/** Request analytics (issue #505): the per-request operational record, run as
+ * a query rather than a fixed window — key/model/channel/time/status/charge
+ * filters, cursor-paged, each row linking through to its settlement entry's
+ * proof. The search surface the billing-dispute and SRE question reads. */
+function RequestSearch() {
+  const display = useDisplay();
+  const [keyId, setKeyId] = useState("");
+  const [model, setModel] = useState("");
+  const [channel, setChannel] = useState("");
+  const [status, setStatus] = useState("");
+  const [minCharge, setMinCharge] = useState("");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [cursor, setCursor] = useState<string | undefined>(undefined);
+  // The filters only bind on submit — a query run is a deliberate act, not a
+  // live filter over keystrokes.
+  const [active, setActive] = useState<Record<string, string | number | undefined>>({});
+
+  const log = useRequestLog({ ...active, limit: 50, cursor });
+
+  function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setCursor(undefined);
+    setActive({
+      keyId: keyId || undefined,
+      model: model || undefined,
+      channel: channel || undefined,
+      status: status || undefined,
+      minCharge: minCharge ? Number(minCharge) : undefined,
+      from: from ? new Date(from).toISOString() : undefined,
+      to: to ? new Date(to).toISOString() : undefined,
+    });
+  }
+
+  return (
+    <Card title="Search the request log">
+      <form onSubmit={submit} className="flex flex-col gap-3">
+        <p className="text-sm text-muted">
+          Every request the organization made — settled or refused — with the
+          model that answered, the channel, the tokens, the latency and the
+          charge. The billing-dispute and SRE question reads this.
+        </p>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <Field label="Key">
+            <TextInput value={keyId} onChange={(e) => setKeyId(e.target.value)} placeholder="key id" />
+          </Field>
+          <Field label="Model served">
+            <TextInput value={model} onChange={(e) => setModel(e.target.value)} placeholder="gpt-4o-mini" />
+          </Field>
+          <Field label="Channel">
+            <TextInput value={channel} onChange={(e) => setChannel(e.target.value)} placeholder="openai-main" />
+          </Field>
+          <Field label="Status">
+            <TextInput value={status} onChange={(e) => setStatus(e.target.value)} placeholder="settled" />
+          </Field>
+          <Field label="From">
+            <TextInput type="datetime-local" value={from} onChange={(e) => setFrom(e.target.value)} />
+          </Field>
+          <Field label="To">
+            <TextInput type="datetime-local" value={to} onChange={(e) => setTo(e.target.value)} />
+          </Field>
+          <Field label="Min charge" hint="minor units">
+            <TextInput value={minCharge} onChange={(e) => setMinCharge(e.target.value)} placeholder="0" />
+          </Field>
+          <div className="flex items-end gap-2">
+            <Button type="submit" isLoading={log.isFetching} loadingText="Searching…">
+              <Search className="h-4 w-4" /> Search
+            </Button>
+          </div>
+        </div>
+      </form>
+      {log.data ? (
+        <div className="mt-4">
+          <TableShell
+            head={[
+              { label: "Request", truncate: true },
+              "Asked for",
+              "Served",
+              "Channel",
+              "Status",
+              { label: "TTFT", align: "right" },
+              { label: "Total", align: "right" },
+              { label: "In/Out", align: "right" },
+              { label: "Charged", align: "right" },
+              "",
+            ]}
+          >
+            {log.data.rows.map((row) => (
+              <tr key={row.requestId}>
+                <Td mono truncate>{row.requestId}</Td>
+                <td>{row.modelRequested}</td>
+                <td>{row.modelServed || "—"}</td>
+                <td>{row.channel || "—"}</td>
+                <td>
+                  <StatusBadge status={row.status} />
+                  {row.errorKind ? (
+                    <p className="text-xs text-danger">{row.errorKind}</p>
+                  ) : null}
+                </td>
+                <Td mono align="right">{row.ttftMs != null ? `${row.ttftMs}ms` : "—"}</Td>
+                <Td mono align="right">{row.totalMs != null ? `${row.totalMs}ms` : "—"}</Td>
+                <Td mono align="right">
+                  {row.inputTokens}+{row.outputTokens}
+                  {(row.cachedTokens ?? 0) > 0 ? ` (${row.cachedTokens} cached)` : ""}
+                </Td>
+                <Td mono align="right"><Cr minor={row.chargeMinor ?? 0} currency={display} /></Td>
+                <td>
+                  {row.entryId ? (
+                    <a href={`/verify?entry=${row.entryId}`} className="text-primary">verify</a>
+                  ) : null}
+                </td>
+              </tr>
+            ))}
+            {log.data.rows.length === 0 ? (
+              <EmptyRows colSpan={10} icon={<Search />}>No requests match.</EmptyRows>
+            ) : null}
+          </TableShell>
+          {log.data.nextCursor != null ? (
+            <p className="mt-2">
+              <Button tone="ghost" onClick={() => setCursor(log.data?.nextCursor)}>Older</Button>
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+    </Card>
+  );
+}
 
 // The requests page: the newest gateway requests with the live socket's
 // in-flight turns on top. Filters ride the URL (`?key=&model=`) so a filtered
@@ -93,6 +223,8 @@ export function Requests() {
           </span>
         )}
       </div>
+
+      <RequestSearch />
 
       <div className="flex flex-wrap gap-x-10 gap-y-4 rounded-xl border border-line bg-surface px-5 py-4 shadow-[0_1px_3px_rgba(20,34,64,.05)]">
         <StatChip

@@ -3919,6 +3919,84 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Search the organization's request log (issue
+         * @description The per-request operational record, newest first: one row per gateway
+         *     request the organization made, settled or refused — the served model,
+         *     the channel that answered, the token counts, the latency and the
+         *     charge, with `entryId` naming the settlement entry when the turn
+         *     reached one. This is the search surface `usage_records` cannot answer:
+         *     "every request this key made to this model in this window". A member's
+         *     read is scoped to their own organization; the operator's twin is
+         *     `GET /api/v1/admin/requests`. Rows write post-settlement — a logging
+         *     failure never fails a request — so a very recent turn may lag its
+         *     settlement by a moment. A refused admission logs a row too
+         *     (`status: refused`, `chargeMinor: 0`), so the surface answers "which
+         *     requests were turned away".
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description only requests this key made */
+                    keyId?: string;
+                    /** @description only requests that served this model (the answered name, not the asked-for) */
+                    model?: string;
+                    /** @description only requests this channel served */
+                    channel?: string;
+                    /** @description rows at or after this instant */
+                    from?: string;
+                    /** @description rows before this instant */
+                    to?: string;
+                    /** @description only requests with this terminal status */
+                    status?: "settled" | "errored" | "refused";
+                    /** @description only requests charged at least this much, in minor units */
+                    minCharge?: number;
+                    /** @description rows per page */
+                    limit?: number;
+                    /** @description An earlier answer's `nextCursor`, echoed verbatim. */
+                    cursor?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description One page of request-log rows, newest first */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: {
+                                rows: components["schemas"]["RequestLogRow"][];
+                                /** @description The cursor the next page asks with; absent at the log's start. */
+                                nextCursor?: string;
+                            };
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/org/usage-reports": {
         parameters: {
             query?: never;
@@ -5587,6 +5665,80 @@ export interface paths {
                             data: {
                                 organizations: components["schemas"]["AdminOrganization"][];
                                 /** @description The cursor the next page asks with; absent at the list's end. */
+                                nextCursor?: string;
+                            };
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Search every organization's request log (issue
+         * @description The operator's read of the same `request_log` the member endpoint
+         *     serves: one row per gateway request across every organization, settled
+         *     or refused, newest first. Where a member's read is locked to their own
+         *     organization, this one reads all of them and narrows with
+         *     `organizationId` — the SRE query "show me every refused request on
+         *     this channel this hour" runs here.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description only this organization's requests; omit for every organization */
+                    organizationId?: string;
+                    /** @description only requests this key made */
+                    keyId?: string;
+                    /** @description only requests that served this model */
+                    model?: string;
+                    /** @description only requests this channel served */
+                    channel?: string;
+                    /** @description rows at or after this instant */
+                    from?: string;
+                    /** @description rows before this instant */
+                    to?: string;
+                    /** @description only requests with this terminal status */
+                    status?: "settled" | "errored" | "refused";
+                    /** @description only requests charged at least this much, in minor units */
+                    minCharge?: number;
+                    /** @description rows per page */
+                    limit?: number;
+                    /** @description An earlier answer's `nextCursor`, echoed verbatim. */
+                    cursor?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description One page of request-log rows, newest first */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: {
+                                rows: components["schemas"]["RequestLogRow"][];
+                                /** @description The cursor the next page asks with; absent at the log's start. */
                                 nextCursor?: string;
                             };
                         };
@@ -9960,6 +10112,86 @@ export interface components {
              * @description the key that paid; absent for an unattributed hold
              */
             keyId?: string;
+        };
+        /** @description One gateway request's operational record (issue #505) — the search surface over `usage_records`, written post-settlement. `entryId` joins the row to the settlement entry whose proof `GET /api/v1/entries/{entryId}/proof` serves; `NULL` on a refusal that never reached a hold. Read by `GET /api/v1/requests` (org-scoped) and `GET /api/v1/admin/requests` (all organizations). */
+        RequestLogRow: {
+            /** @description the caller's request id; the settlement entry is `req-<requestId>:settle` */
+            requestId: string;
+            /**
+             * Format: uuid
+             * @description the settlement entry's id — `GET /api/v1/entries/{entryId}/proof` answers its proof; absent on a refusal
+             */
+            entryId?: string;
+            /**
+             * Format: uuid
+             * @description the organization the request billed; present on the admin read, elided on the org-scoped member read
+             */
+            organizationId?: string;
+            /**
+             * Format: uuid
+             * @description the key that paid; absent for an unattributed hold or a refusal
+             */
+            keyId?: string;
+            /** @description the model the caller asked for */
+            modelRequested: string;
+            /** @description the model that answered — differs from `modelRequested` only under a cross-model failover (issue */
+            modelServed: string;
+            /** @description the channel that served; empty on a refusal */
+            channel?: string;
+            /**
+             * @description whether the turn reached a hold (`admitted`) or admission turned it away (`refused`)
+             * @enum {string}
+             */
+            admissionOutcome: "admitted" | "refused";
+            /**
+             * @description how the turn ended, mirroring `usage_records.status`
+             * @enum {string}
+             */
+            status: "settled" | "errored" | "refused";
+            /**
+             * Format: int64
+             * @description milliseconds to the first upstream byte; absent on a whole-body read or a refusal
+             */
+            ttftMs?: number;
+            /**
+             * Format: int64
+             * @description milliseconds admission→settle — the turn's whole wall clock
+             */
+            totalMs?: number;
+            /**
+             * Format: int64
+             * @description tokens billed as input
+             */
+            inputTokens?: number;
+            /**
+             * Format: int64
+             * @description tokens billed as output
+             */
+            outputTokens?: number;
+            /**
+             * Format: int64
+             * @description input served from the cache
+             */
+            cachedTokens?: number;
+            /**
+             * Format: int64
+             * @description what the turn charged
+             */
+            chargeMinor?: number;
+            /**
+             * Format: int64
+             * @description how many upstream calls the turn made — above 1 means it failed over or fell back between models
+             */
+            upstreamAttempts?: number;
+            /** @description the settlement kind or failure reason on a non-settled turn — the terminal cause */
+            errorKind?: string;
+            /** @description the gateway's own answer status when it served one */
+            httpStatus?: number;
+            /**
+             * Format: date-time
+             * @description when the row was written — just after the turn settled
+             */
+            createdAt: string;
         };
         EstimatePriceRequest: {
             model: string;

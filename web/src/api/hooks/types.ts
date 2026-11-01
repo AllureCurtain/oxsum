@@ -15,6 +15,7 @@ export type WebhookEndpoint = components["schemas"]["WebhookEndpoint"];
 export type WebhookDelivery = components["schemas"]["WebhookDelivery"];
 export type BudgetSnapshot = components["schemas"]["BudgetSnapshot"];
 export type BillingRecord = components["schemas"]["BillingRecord"];
+export type RequestLogRow = components["schemas"]["RequestLogRow"];
 export type Statement = components["schemas"]["Statement"];
 export type StatementLine = components["schemas"]["StatementLine"];
 export type UserOrganization = components["schemas"]["UserOrganization"];
