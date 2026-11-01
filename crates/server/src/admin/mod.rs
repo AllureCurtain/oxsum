@@ -114,6 +114,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         )
         .route("/discounts/{discount_id}", delete(billing::end_discount))
         .route("/audit", get(ops::audit))
+        .route("/requests", get(crate::routes::requests::admin_requests))
         .route(
             "/service-credentials",
             get(credentials::service_credentials).post(credentials::mint_service_credential),

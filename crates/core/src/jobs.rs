@@ -147,6 +147,10 @@ pub struct Retention {
     pub deliveries_days: i64,
     /// Days a finished `jobs` row is kept.
     pub jobs_days: i64,
+    /// Days a `request_log` row is kept (issue #505) — the operational record
+    /// is a search surface, not a billing fact, so it ages out like the other
+    /// projections rather than living forever.
+    pub request_log_days: i64,
 }
 
 impl Default for Retention {
@@ -155,6 +159,7 @@ impl Default for Retention {
             provider_raw_days: 7,
             deliveries_days: 30,
             jobs_days: 90,
+            request_log_days: 30,
         }
     }
 }
@@ -170,6 +175,8 @@ pub struct RetentionReport {
     pub webhook_deliveries: u64,
     /// Finished `jobs` rows deleted.
     pub jobs: u64,
+    /// Expired `request_log` rows deleted.
+    pub request_log: u64,
 }
 
 /// How far out the next periodic occurrence of `kind` is due — the worker asks
@@ -440,6 +447,18 @@ impl Db {
         .execute(self.pool())
         .await?;
         report.jobs = jobs.rows_affected();
+
+        let request_log_cutoff =
+            OffsetDateTime::now_utc() - Duration::days(retention.request_log_days);
+        let request_log = sqlx::query(&format!(
+            "DELETE FROM oxsum.request_log WHERE (request_id, tenant_id) IN ( \
+                 SELECT request_id, tenant_id FROM oxsum.request_log \
+                 WHERE created_at <= $1 LIMIT {RETENTION_BATCH})"
+        ))
+        .bind(request_log_cutoff)
+        .execute(self.pool())
+        .await?;
+        report.request_log = request_log.rows_affected();
 
         Ok(report)
     }

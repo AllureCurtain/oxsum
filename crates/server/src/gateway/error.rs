@@ -193,6 +193,28 @@ impl GatewayError {
             code: "IDEMPOTENCY_MISMATCH",
         }
     }
+
+    /// The HTTP status this error answers — the same mapping `into_response`
+    /// applies, exposed so the request-log row can record the answer's status
+    /// beside the refusal (issue #505).
+    pub fn http_status(&self) -> StatusCode {
+        match self {
+            Self::Invalid { .. } => StatusCode::BAD_REQUEST,
+            Self::InsufficientFunds(_) => StatusCode::PAYMENT_REQUIRED,
+            Self::KeyLimitExceeded(_)
+            | Self::RateLimited { .. }
+            | Self::MandateExceeded { .. }
+            | Self::PoolBusy => StatusCode::TOO_MANY_REQUESTS,
+            Self::InvalidMandate | Self::MandateOutOfWindow { .. } | Self::Forbidden(_) => {
+                StatusCode::FORBIDDEN
+            }
+            Self::Idempotency { status, .. } => *status,
+            Self::Upstream { status, .. } => *status,
+            Self::Unauthorized => StatusCode::UNAUTHORIZED,
+            Self::Conflict(_) => StatusCode::CONFLICT,
+            Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
 }
 
 impl From<WalletError> for GatewayError {

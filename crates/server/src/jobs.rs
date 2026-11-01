@@ -379,6 +379,7 @@ async fn run_one(
                 provider_raw_nulled = report.provider_raw_nulled,
                 webhook_deliveries = report.webhook_deliveries,
                 jobs = report.jobs,
+                request_log = report.request_log,
                 "the retention pass cleaned up"
             );
         }
