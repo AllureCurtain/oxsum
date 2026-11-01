@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   ArrowDownRight,
   ArrowUpRight,
@@ -39,6 +40,7 @@ import {
 } from "../components/ui";
 
 export function Overview() {
+  const { t } = useTranslation();
   const session = useSession();
   const balance = useBalance();
   const budget = useBudget();
@@ -101,19 +103,17 @@ export function Overview() {
   return (
     <div className="flex flex-col gap-5">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold tracking-tight text-ink">Overview</h1>
+        <h1 className="text-xl font-bold tracking-tight text-ink">{t("overview.title")}</h1>
         <Link
           to="/topup"
           className="rounded-lg bg-primary px-3.5 py-2 text-sm font-medium text-white shadow-[0_2px_8px_rgba(45,91,216,.3)] transition-colors hover:bg-primary-hover"
         >
-          Top up
+          {t("topup.title")}
         </Link>
       </div>
 
       {!session.data?.user.emailVerified ? (
-        <Banner tone="warn">
-          Your email is not verified. Check your inbox for the verification mail.
-        </Banner>
+        <Banner tone="warn">{t("overview.emailUnverified")}</Banner>
       ) : null}
 
       {/* Hero: the balance carries the visual weight — the number that answers
@@ -125,7 +125,7 @@ export function Overview() {
             <div className="flex items-start justify-between gap-4">
               <div>
                 <p className="text-xs font-medium uppercase tracking-wider text-muted">
-                  Available balance
+                  {t("overview.availableBalance")}
                 </p>
                 {balance.data ? (
                   <>
@@ -154,11 +154,11 @@ export function Overview() {
               <div className="flex items-end gap-8">
                 <div className="shrink-0 pb-0.5">
                   <p className="text-[11px] font-medium uppercase tracking-wider text-muted">
-                    Last 7 days
+                    {t("overview.last7Days")}
                   </p>
                   <div className="mt-2 flex gap-7">
                     <StatChip
-                      label="Today"
+                      label={t("overview.today")}
                       value={<Cr minor={todayStats.charged} currency={display} />}
                       hint={
                         todayStats.yesterdayCharged > 0 ? (
@@ -179,9 +179,9 @@ export function Overview() {
                         ) : null
                       }
                     />
-                    <StatChip label="Turns" value={todayStats.turns} />
+                    <StatChip label={t("overview.turns")} value={todayStats.turns} />
                     <StatChip
-                      label="Tokens"
+                      label={t("overview.tokens")}
                       value={todayStats.tokens.toLocaleString("en-US")}
                     />
                   </div>
@@ -204,7 +204,7 @@ export function Overview() {
           <Card className="flex-1">
             <div className="flex h-full items-start justify-between gap-3">
               <div className="min-w-0">
-                <p className="text-xs font-medium text-muted">Frozen by open holds</p>
+                <p className="text-xs font-medium text-muted">{t("overview.frozenByHolds")}</p>
                 {balance.data ? (
                   <p className="mt-1.5 text-2xl font-bold tabular-nums tracking-tight text-ink">
                     <Cr minor={balance.data.reservedMinor} currency={display} />
@@ -213,8 +213,7 @@ export function Overview() {
                   <Skeleton className="mt-1.5 h-8 w-24" />
                 )}
                 <p className="mt-1 text-xs text-muted">
-                  {holds.data?.holds.length ?? 0} hold
-                  {(holds.data?.holds.length ?? 0) === 1 ? "" : "s"} in flight
+                  {t("overview.holdsInFlight", { count: holds.data?.holds.length ?? 0 })}
                 </p>
               </div>
               <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary-soft text-primary">
@@ -225,7 +224,7 @@ export function Overview() {
           <Card className="flex-1">
             <div className="flex h-full items-start justify-between gap-3">
               <div className="min-w-0">
-                <p className="text-xs font-medium text-muted">Spent this month</p>
+                <p className="text-xs font-medium text-muted">{t("overview.spentThisMonth")}</p>
                 {balance.data ? (
                   <p className="mt-1.5 text-2xl font-bold tabular-nums tracking-tight text-ink">
                     <Cr minor={balance.data.spentThisMonthMinor} currency={display} />
@@ -233,7 +232,7 @@ export function Overview() {
                 ) : (
                   <Skeleton className="mt-1.5 h-8 w-24" />
                 )}
-                <p className="mt-1 text-xs text-muted">settled charges</p>
+                <p className="mt-1 text-xs text-muted">{t("overview.settledCharges")}</p>
               </div>
               <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary-soft text-primary">
                 <TrendingUp className="size-4" />
@@ -243,7 +242,7 @@ export function Overview() {
           <Card className="flex-1">
             <div className="flex h-full items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
-                <p className="text-xs font-medium text-muted">Credit line</p>
+                <p className="text-xs font-medium text-muted">{t("overview.creditLine")}</p>
                 {balance.data ? (
                   balance.data.creditLimitMinor > 0 ? (
                     <>
@@ -260,14 +259,16 @@ export function Overview() {
                             className="w-full"
                           />
                           <p className="mt-1 text-[11px] text-muted">
-                            {budget.data.organization.consumedPercent}% committed
+                            {t("overview.percentCommitted", {
+                              percent: budget.data.organization.consumedPercent,
+                            })}
                           </p>
                         </div>
                       ) : null}
                     </>
                   ) : (
                     <p className="mt-1.5 text-sm leading-6 text-muted">
-                      No credit line — the wallet spends prepaid balance only.
+                      {t("overview.noCreditLine")}
                     </p>
                   )
                 ) : (
@@ -286,19 +287,19 @@ export function Overview() {
           latest entries — the live half and the recorded half, side by side. */}
       <div className="grid grid-cols-1 gap-3.5 xl:grid-cols-2">
         <Card
-          title="In-flight holds"
+          title={t("overview.inFlightHolds")}
           actions={
             <Link to="/requests" className="text-[13px] font-medium text-primary hover:underline">
-              Requests →
+              {t("overview.requestsLink")}
             </Link>
           }
         >
           <TableShell
             head={[
-              { label: "Request", truncate: true },
-              "Model",
-              "Key",
-              { label: "Frozen", align: "right" },
+              { label: t("overview.colRequest"), truncate: true },
+              t("common.model"),
+              t("overview.colKey"),
+              { label: t("overview.colFrozen"), align: "right" },
             ]}
             loading={holds.isLoading ? 4 : 0}
             sticky={false}
@@ -316,7 +317,7 @@ export function Overview() {
               ))}
             {!holds.isLoading && (holds.data?.holds.length ?? 0) === 0 ? (
               <EmptyRows colSpan={4} icon={<Snowflake />}>
-                Nothing in flight — holds appear here while a request is reserving credits.
+                {t("overview.emptyHolds")}
               </EmptyRows>
             ) : null}
           </TableShell>
@@ -324,15 +325,19 @@ export function Overview() {
         </Card>
 
         <Card
-          title="Recent entries"
+          title={t("overview.recentEntries")}
           actions={
             <Link to="/log" className="text-[13px] font-medium text-primary hover:underline">
-              Full log →
+              {t("overview.fullLogLink")}
             </Link>
           }
         >
           <TableShell
-            head={["#", { label: "Description", truncate: true }, { label: "Hash", truncate: true }]}
+            head={[
+              "#",
+              { label: t("overview.colDescription"), truncate: true },
+              { label: t("overview.colHash"), truncate: true },
+            ]}
             loading={entries.isLoading ? 4 : 0}
             sticky={false}
           >
@@ -350,7 +355,7 @@ export function Overview() {
               ))}
             {!entries.isLoading && (entries.data?.rows.length ?? 0) === 0 ? (
               <EmptyRows colSpan={3} icon={<TrendingUp />}>
-                No entries yet — settlements land in the ledger as they book.
+                {t("overview.emptyEntries")}
               </EmptyRows>
             ) : null}
           </TableShell>
@@ -363,14 +368,15 @@ export function Overview() {
       (budget.data && budget.data.keys.some((k) => k.spendLimitMinor != null)) ? (
         <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-2">
           {budget.data?.member?.budgetLimitMinor != null ? (
-            <Card title="Your member budget">
+            <Card title={t("overview.yourMemberBudget")}>
               <div className="flex flex-col gap-2.5">
                 <p className="text-sm text-ink">
-                  {budget.data.member.consumedPercent ?? 0}% of{" "}
+                  {t("overview.budgetCommitted", {
+                    percent: budget.data.member.consumedPercent ?? 0,
+                  })}{" "}
                   <strong className="tabular-nums">
                     <Cr minor={budget.data.member.budgetLimitMinor} currency={display} />
-                  </strong>{" "}
-                  committed this window.
+                  </strong>
                 </p>
                 <Progress
                   value={Math.min(100, budget.data.member.consumedPercent ?? 0)}
@@ -380,13 +386,13 @@ export function Overview() {
             </Card>
           ) : null}
           {budget.data && budget.data.keys.some((k) => k.spendLimitMinor != null) ? (
-            <Card title="Key budgets">
+            <Card title={t("overview.keyBudgets")}>
               <TableShell
                 head={[
-                  "Key",
-                  "Window",
-                  { label: "Committed", align: "right" },
-                  { label: "Consumed", align: "right" },
+                  t("overview.colKey"),
+                  t("overview.colWindow"),
+                  { label: t("overview.colCommitted"), align: "right" },
+                  { label: t("overview.colConsumed"), align: "right" },
                 ]}
                 sticky={false}
               >
@@ -395,7 +401,7 @@ export function Overview() {
                   .map((k) => (
                     <tr key={k.keyId}>
                       <td>{k.name ?? <code className="mono">{k.prefix}</code>}</td>
-                      <td>{k.budgetDuration ?? "cumulative"}</td>
+                      <td>{k.budgetDuration ?? t("overview.cumulative")}</td>
                       <Td mono align="right">
                         <Cr minor={k.committedMinor} currency={display} />
                       </Td>
@@ -418,10 +424,11 @@ export function Overview() {
  *  This is a dev bench (`POST /holds` / `POST /settlements`), not a product
  *  action — it collapses behind a `<details>` so the read surface stays read. */
 function HoldBench() {
+  const { t } = useTranslation();
   const [amount, setAmount] = useState("");
   const [holdKey, setHoldKey] = useState("");
   const [actual, setActual] = useState("0");
-  const [msg, setMsg] = useState<string | null>(null);
+  const [msg, setMsg] = useState<{ text: string; failed: boolean } | null>(null);
   const hold = useCreateHold();
   const settle = useSettleHold();
 
@@ -429,10 +436,10 @@ function HoldBench() {
     <details className="mt-3 border-t border-line pt-3.5">
       <summary className="flex cursor-pointer list-none items-center gap-2 text-xs font-medium text-muted hover:text-ink [&::-webkit-details-marker]:hidden">
         <FlaskConical className="size-3.5" />
-        Manual hold bench — dev tool, freezes real credits
+        {t("overview.holdBench")}
       </summary>
       <div className="mt-2.5 flex flex-wrap items-end gap-2">
-        <Field label="Hold (credits)">
+        <Field label={t("overview.holdCredits")}>
           <TextInput
             type="number"
             min="0"
@@ -445,7 +452,7 @@ function HoldBench() {
         <Button
           type="button"
           isLoading={hold.isPending}
-          loadingText="Holding…"
+          loadingText={t("overview.holding")}
           onClick={async () => {
             setMsg(null);
             const key = `manual-${Date.now()}`;
@@ -455,15 +462,18 @@ function HoldBench() {
                 amountMinor: Math.round(Number(amount) * 1_000_000),
               });
               setHoldKey(key);
-              setMsg(`held — key ${key}`);
+              setMsg({ text: t("overview.benchHeld", { key }), failed: false });
             } catch (err) {
-              setMsg(err instanceof Error ? err.message : "hold failed");
+              setMsg({
+                text: err instanceof Error ? err.message : t("overview.benchHoldFailed"),
+                failed: true,
+              });
             }
           }}
         >
-          Hold
+          {t("overview.benchHold")}
         </Button>
-        <Field label="Actual (credits)">
+        <Field label={t("overview.actualCredits")}>
           <TextInput
             type="number"
             min="0"
@@ -477,7 +487,7 @@ function HoldBench() {
           type="button"
           disabled={!holdKey}
           isLoading={settle.isPending}
-          loadingText="Settling…"
+          loadingText={t("overview.settling")}
           onClick={async () => {
             setMsg(null);
             try {
@@ -485,14 +495,17 @@ function HoldBench() {
                 holdKey,
                 actualMinor: Math.round(Number(actual) * 1_000_000),
               });
-              setMsg(`settled ${holdKey}`);
+              setMsg({ text: t("overview.benchSettled", { key: holdKey }), failed: false });
               setHoldKey("");
             } catch (err) {
-              setMsg(err instanceof Error ? err.message : "settle failed");
+              setMsg({
+                text: err instanceof Error ? err.message : t("overview.benchSettleFailed"),
+                failed: true,
+              });
             }
           }}
         >
-          Settle
+          {t("overview.benchSettle")}
         </Button>
         <Button
           type="button"
@@ -501,17 +514,20 @@ function HoldBench() {
             setMsg(null);
             try {
               await settle.mutateAsync({ holdKey, actualMinor: 0 });
-              setMsg(`released ${holdKey}`);
+              setMsg({ text: t("overview.benchReleased", { key: holdKey }), failed: false });
               setHoldKey("");
             } catch (err) {
-              setMsg(err instanceof Error ? err.message : "release failed");
+              setMsg({
+                text: err instanceof Error ? err.message : t("overview.benchReleaseFailed"),
+                failed: true,
+              });
             }
           }}
         >
-          Release
+          {t("overview.benchRelease")}
         </Button>
       </div>
-      {msg ? <Banner tone={msg.includes("failed") ? "error" : "info"}>{msg}</Banner> : null}
+      {msg ? <Banner tone={msg.failed ? "error" : "info"}>{msg.text}</Banner> : null}
     </details>
   );
 }

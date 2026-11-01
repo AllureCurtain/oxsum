@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { useKeys, useCreateKey } from "../api/hooks";
 import { Banner, Card, Field, TextInput } from "../components/ui";
 import { Button } from "../components/ui";
@@ -44,6 +45,7 @@ async function ensureChatKey(existing: ReturnType<typeof useKeys>["data"]): Prom
 }
 
 export function Chat() {
+  const { t } = useTranslation();
   const keys = useKeys();
   const createKey = useCreateKey();
   const [secret, setSecret] = useState<string | null>(null);
@@ -61,8 +63,8 @@ export function Chat() {
     }
     ensureChatKey(keys.data)
       .then(setSecret)
-      .catch(() => setError("the chat key could not be minted"));
-  }, [keys.data]);
+      .catch(() => setError(t("chat.keyMintError")));
+  }, [keys.data, t]);
 
   useEffect(() => {
     if (!secret) {
@@ -79,8 +81,8 @@ export function Chat() {
           setModel(ids[0]);
         }
       })
-      .catch(() => setError("the model list could not be read"));
-  }, [secret]);
+      .catch(() => setError(t("chat.modelsError")));
+  }, [secret, t]);
 
   async function send() {
     if (!secret || !input.trim() || streaming) {
@@ -107,7 +109,7 @@ export function Chat() {
         signal: abort.current.signal,
       });
       if (!res.ok || !res.body) {
-        setError(`the gateway answered ${res.status}`);
+        setError(t("chat.gatewayError", { status: res.status }));
         setStreaming(false);
         return;
       }
@@ -152,7 +154,7 @@ export function Chat() {
       }
     } catch {
       if (!abort.current?.signal.aborted) {
-        setError("the stream failed");
+        setError(t("chat.streamError"));
       }
     } finally {
       setStreaming(false);
@@ -161,18 +163,17 @@ export function Chat() {
 
   return (
     <div className="flex flex-col gap-4">
-      <h1 className="text-2xl font-bold">Chat</h1>
+      <h1 className="text-2xl font-bold">{t("chat.title")}</h1>
       <p className="text-sm text-muted">
-        Streams against the gateway with the <code className="mono">chat</code> key this browser
-        minted — every turn is a billed request on the organization's wallet.
+        <Trans i18nKey="chat.intro" components={{ code: <code className="mono" /> }} />
       </p>
       {error ? <Banner tone="error">{error}</Banner> : null}
       {createKey.isPending || !secret ? (
-        <p className="text-sm text-muted">Minting the chat key…</p>
+        <p className="text-sm text-muted">{t("chat.mintingKey")}</p>
       ) : (
         <>
           <SelectRoot value={model} onValueChange={(v) => setModel(String(v))}>
-            <SelectTrigger aria-label="model" className="w-72">
+            <SelectTrigger aria-label={t("chat.model")} className="w-72">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -186,14 +187,12 @@ export function Chat() {
           <Tabs defaultValue="chat">
             <div className="flex items-center justify-between gap-3">
               <TabsList>
-                <TabsTrigger value="chat">Chat</TabsTrigger>
-                <TabsTrigger value="messages">Messages</TabsTrigger>
-                <TabsTrigger value="embeddings">Embeddings</TabsTrigger>
-                <TabsTrigger value="rerank">Rerank</TabsTrigger>
+                <TabsTrigger value="chat">{t("chat.title")}</TabsTrigger>
+                <TabsTrigger value="messages">{t("chat.messages")}</TabsTrigger>
+                <TabsTrigger value="embeddings">{t("chat.embeddings")}</TabsTrigger>
+                <TabsTrigger value="rerank">{t("chat.rerank")}</TabsTrigger>
               </TabsList>
-              <p className="hidden text-xs text-muted sm:block">
-                messages / embeddings / rerank are billed probes, not chat
-              </p>
+              <p className="hidden text-xs text-muted sm:block">{t("chat.probeNote")}</p>
             </div>
             <TabsContent value="chat">
           <Card>
@@ -213,11 +212,7 @@ export function Chat() {
                 <p className="text-sm text-muted">
                   <Typewriter
                     delay={80}
-                    texts={[
-                      "Ask anything; every turn is a billed request.",
-                      "The wallet freezes an upper bound before the stream starts…",
-                      "…and settles against real usage after it ends.",
-                    ]}
+                    texts={[t("chat.hint1"), t("chat.hint2"), t("chat.hint3")]}
                   />
                 </p>
               ) : null}
@@ -234,16 +229,16 @@ export function Chat() {
               className="flex-1"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Say something…"
+              placeholder={t("chat.placeholder")}
               disabled={streaming}
             />
             <Button
               type="submit"
               isLoading={streaming}
-              loadingText="Streaming…"
+              loadingText={t("chat.streaming")}
               disabled={!input.trim()}
             >
-              Send
+              {t("chat.send")}
             </Button>
           </form>
             </TabsContent>
@@ -255,7 +250,7 @@ export function Chat() {
                   model,
                   messages: [{ role: "user", content: fields.text ?? "" }],
                 })}
-                fields={[{ name: "text", label: "User message", kind: "textarea" }]}
+                fields={[{ name: "text", label: t("chat.userMessage"), kind: "textarea" }]}
               />
             </TabsContent>
             <TabsContent value="embeddings">
@@ -263,7 +258,7 @@ export function Chat() {
                 path="/v1/embeddings"
                 secret={secret}
                 build={(fields) => ({ model, input: fields.text ?? "" })}
-                fields={[{ name: "text", label: "Input text", kind: "textarea" }]}
+                fields={[{ name: "text", label: t("chat.inputText"), kind: "textarea" }]}
               />
             </TabsContent>
             <TabsContent value="rerank">
@@ -279,8 +274,8 @@ export function Chat() {
                     .filter(Boolean),
                 })}
                 fields={[
-                  { name: "query", label: "Query" },
-                  { name: "documents", label: "Documents, one per line", kind: "textarea" },
+                  { name: "query", label: t("chat.query") },
+                  { name: "documents", label: t("chat.documents"), kind: "textarea" },
                 ]}
               />
             </TabsContent>
@@ -306,6 +301,7 @@ function Probe(props: {
   fields: ProbeField[];
   build: (fields: Record<string, string>) => Record<string, unknown>;
 }) {
+  const { t } = useTranslation();
   const [values, setValues] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<string | null>(null);
@@ -337,7 +333,7 @@ function Probe(props: {
               setResult(text);
             }
           } catch {
-            setResult("the request failed");
+            setResult(t("chat.requestFailed"));
           } finally {
             setBusy(false);
           }
@@ -363,12 +359,12 @@ function Probe(props: {
           </Field>
         ))}
         <div className="flex items-center gap-3">
-          <Button type="submit" isLoading={busy} loadingText="Sending…">
-            Send
+          <Button type="submit" isLoading={busy} loadingText={t("chat.sending")}>
+            {t("chat.send")}
           </Button>
           {charge != null ? (
             <p className="text-xs text-muted">
-              charged <code className="mono">{charge}</code> minor
+              {t("chat.chargedMinor")} <code className="mono">{charge}</code> minor
             </p>
           ) : null}
         </div>
