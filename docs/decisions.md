@@ -2,6 +2,17 @@
 
 New decisions go on top. Overturned decisions are never deleted; mark them "Superseded" and name the decision that replaces it.
 
+## 2026-11-01 Route picks fold observed upstream health in as an effective weight (issue #499)
+
+- Status: Adopted
+- Background: `route_order` picked by `weight` first, then cheapest-in-tier — a channel that is currently slow or erroring still led when its configured weight was highest, because the pick had no signal about what upstream was doing *now*. The credential pool already cooled a *dead* credential (`pools.rs` `cool_down`), but a *slow-but-alive* channel shed nothing.
+- Decision:
+  - A process-local per-channel `RouteStats` — an EMA of time-to-first-byte and error rate — lives on `Db` the way `pools::Affinity` does (`db.route_stats()`, `SharedRouteStats` = `Arc` across `Db`'s clones). In-memory is correct for a routing hint: the bill only names the channel that served, so which candidate a turn *almost* took is not part of its proof, and a process restart simply starts the window cold — the gateway falls back to weight+price until the first samples land, the healthy default.
+  - `route_order_stats(servings, roll, stats)` is the stats-aware pick; `route_order` delegates with `None` so the no-signal case is byte-for-byte today's behavior. Effective weight replaces configured weight throughout — the summed-weight roll and the failover ordering both — computed as: a channel dropped on error rate contributes `0` (skipped outright), a slow-but-alive one counts `weight * healthy_ttft / observed_ttft` floored at `weight/8` so latency alone never fully removes it.
+  - The constants are deliberate, not tuned: EMA α `0.2` (recent behavior weighs a fifth — one slow turn does not tank a channel, a turned-bad one sheds picks within a few calls), error-rate drop threshold `0.5` (half of recent attempts failing is past retry-worthiness), cool-down `60s` after which the channel is re-admitted at scaled weight — the decaying EMA reads healthier over time, so a recovered upstream regains picks without a probe — and a cold-start healthy baseline of `2000ms` TTFT until the fleet has samples to compare against (`healthy_ttft_ms` is the min of observed channels: "what does good look like" is the fastest observed upstream).
+  - The relay feeds samples at the single point every attempt passes through: `call.send()`'s resolution records the per-attempt elapsed as the latency sample and success/5xx+429/unreachable as the outcome, on `state.db.route_stats()` — the same seam `metrics::upstream_response` already counts. The task relay's pick (`tasks.rs`) folds the same window.
+- Rejected: *persisted stats* — a routing hint must not become a billing fact; persisting it would invite "what did it cost when the window said X" questions the row cannot answer, and a cold start is one feature not a bug. *Per-credential health in the pick* — the pool's own `cool_down` already skips dead credentials; stats live one level up at the channel the bill names. *Median or p95 latency* — an EMA is the honest running estimate; the pick needs "slower than healthy, roughly how much," not a distribution.
+
 ## 2026-11-01 A fallback is model→model, its own table, and the caller's reach is re-judged per hop (issue #500)
 
 - Status: Adopted. Extends "failover between channels under one hold" (issue #168) upward: the attempt loop now walks a chain of *models*, not only the routes one model prices.
