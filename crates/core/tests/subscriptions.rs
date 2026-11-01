@@ -706,11 +706,23 @@ async fn the_lazy_rollover_closes_the_ended_window_on_the_next_draw() {
         .subscription_periods(sub.subscription_id)
         .await
         .expect("periods read");
-    assert_eq!(periods.len(), 2);
-    assert_eq!(periods[1].outcome, "boundary");
-    assert_eq!(periods[1].consumed_minor, ONE / 2);
+    // The count is deliberately not exact: backdating the period end by a fixed
+    // offset spans a second due boundary whenever the run sits within that
+    // offset of a daily boundary (just past UTC midnight), so an extra closed
+    // row appears. What the test pins is the *shape*: the open tail holds this
+    // draw, the bind window closed as a boundary carrying the first draw, and
+    // every other closed row is a boundary too — never an exact count.
+    assert!(periods.len() >= 2);
     assert_eq!(periods[0].outcome, "open");
     assert_eq!(periods[0].consumed_minor, ONE / 4);
+    assert!(
+        periods[1..].iter().all(|p| p.outcome == "boundary"),
+        "every closed row is a boundary, not a leftover"
+    );
+    assert!(
+        periods.iter().any(|p| p.consumed_minor == ONE / 2),
+        "the bind window's draw is on its boundary row"
+    );
 }
 
 #[tokio::test]
@@ -749,8 +761,21 @@ async fn the_rollover_job_rolls_every_due_window() {
         .subscription_periods(sub.subscription_id)
         .await
         .expect("periods read");
-    assert_eq!(periods.len(), 2);
-    assert_eq!(periods[1].outcome, "boundary");
+    // The count is deliberately not exact: backdating the period end by a fixed
+    // offset spans a second due boundary whenever the run sits within that
+    // offset of a daily boundary (just past UTC midnight), so the pass rolls
+    // one boundary more than the naive one-hour gap implies. What the test
+    // pins is that every due window closed and an open tail is left — the
+    // rollover's own contract — never how many that was.
+    assert!(
+        periods.len() >= 2,
+        "the due window rolled plus an open tail"
+    );
+    assert_eq!(periods[0].outcome, "open");
+    assert!(
+        periods.iter().any(|p| p.outcome == "boundary"),
+        "a due window closed as a boundary"
+    );
 }
 
 #[tokio::test]
