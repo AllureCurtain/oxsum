@@ -1,10 +1,12 @@
 import { useState, type FormEvent } from "react";
+import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuthMethods, useLogin, useTotpLogin } from "../../api/hooks";
 import { Button, Field, TextInput } from "../../components/ui";
 import { AuthCard, ErrorText } from "./shared";
 
 export function Login() {
+  const { t } = useTranslation();
   const login = useLogin();
   const totp = useTotpLogin();
   const methods = useAuthMethods();
@@ -44,13 +46,10 @@ export function Login() {
 
   if (challengeToken) {
     return (
-      <AuthCard title="Two-factor authentication">
+      <AuthCard title={t("auth.twoFactor")}>
         <form onSubmit={submitTotp} className="flex flex-col gap-3">
-          <p className="text-sm text-muted">
-            Enter the six-digit code from your authenticator, or a single-use
-            backup code.
-          </p>
-          <Field label="Authentication code">
+          <p className="text-sm text-muted">{t("auth.twoFactorNote")}</p>
+          <Field label={t("auth.authCode")}>
             <TextInput
               inputMode="numeric"
               autoComplete="one-time-code"
@@ -63,7 +62,7 @@ export function Login() {
           </Field>
           <ErrorText error={totp.error} />
           <Button type="submit" disabled={totp.isPending}>
-            {totp.isPending ? "Verifying…" : "Verify"}
+            {totp.isPending ? t("auth.verifying") : t("auth.verify")}
           </Button>
           <button
             type="button"
@@ -74,7 +73,7 @@ export function Login() {
               totp.reset();
             }}
           >
-            Back to sign in
+            {t("auth.backToSignIn")}
           </button>
         </form>
       </AuthCard>
@@ -82,9 +81,9 @@ export function Login() {
   }
 
   return (
-    <AuthCard title="Sign in">
+    <AuthCard title={t("auth.signIn")}>
       <form onSubmit={submit} className="flex flex-col gap-3">
-        <Field label="Email">
+        <Field label={t("auth.email")}>
           <TextInput
             type="email"
             required
@@ -93,7 +92,7 @@ export function Login() {
             onChange={(e) => setEmail(e.target.value)}
           />
         </Field>
-        <Field label="Password">
+        <Field label={t("auth.password")}>
           <TextInput
             type="password"
             required
@@ -104,7 +103,7 @@ export function Login() {
         </Field>
         <ErrorText error={login.error} />
         <Button type="submit" disabled={login.isPending}>
-          {login.isPending ? "Signing in…" : "Sign in"}
+          {login.isPending ? t("auth.signingIn") : t("auth.signIn")}
         </Button>
       </form>
       {methods.data?.oauthGithub ? (
@@ -112,7 +111,7 @@ export function Login() {
           href="/api/v1/auth/oauth/github"
           className="mt-3 block rounded-lg border border-line px-3 py-2 text-center text-sm hover:bg-canvas"
         >
-          Sign in with GitHub
+          {t("auth.signInGithub")}
         </a>
       ) : null}
       {methods.data?.oidcProviders.map((name) => (
@@ -121,15 +120,15 @@ export function Login() {
           href={`/api/v1/auth/oauth/${encodeURIComponent(name)}`}
           className="mt-3 block rounded-lg border border-line px-3 py-2 text-center text-sm hover:bg-canvas"
         >
-          Sign in with {name.replace(/^oidc:/, "")}
+          {t("auth.signInWith", { provider: name.replace(/^oidc:/, "") })}
         </a>
       ))}
       <p className="mt-4 flex justify-between text-sm">
         <Link to="/forgot-password" className="text-primary">
-          Forgot password
+          {t("auth.forgotPassword")}
         </Link>
         <Link to="/register" className="text-primary">
-          Register
+          {t("auth.register")}
         </Link>
       </p>
     </AuthCard>

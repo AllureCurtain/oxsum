@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { Receipt } from "lucide-react";
 import { useBills, useConsistency, useDisplay, useLogHead } from "../api/hooks";
 import { entryKind } from "../lib/kinds";
@@ -43,6 +44,7 @@ function archived(): ArchivedHead | null {
  *  The fiat figure is the row's `displayAmount` when the export already carried it,
  *  else the org's current display rate converts it for the table. */
 function BillRow({ row, display }: { row: { index: number; entryId: string; bookedOn: string; kind: string; amountMinor: number; description: string; contentHash: string }; display: DisplayCurrency | null }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [proof, setProof] = useState<unknown>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -54,7 +56,7 @@ function BillRow({ row, display }: { row: { index: number; entryId: string; book
       try {
         setProof(await api(`/entries/${row.entryId}/proof`));
       } catch (e) {
-        setErr(e instanceof ApiError ? e.message : "the proof could not be read");
+        setErr(e instanceof ApiError ? e.message : t("bills.proofError"));
       } finally {
         setBusy(false);
       }
@@ -73,7 +75,7 @@ function BillRow({ row, display }: { row: { index: number; entryId: string; book
               row.kind === "topUp" ? "success" : row.kind === "settlement" ? "secondary" : "outline"
             }
           >
-            {entryKind(row.kind)}
+            {entryKind(row.kind, t)}
           </Badge>
         </td>
         <Td mono align="right">
@@ -88,10 +90,10 @@ function BillRow({ row, display }: { row: { index: number; entryId: string; book
         <Td mono truncate>{row.contentHash}</Td>
         <td className="flex items-center gap-2">
           <a href={`/verify?entry=${row.entryId}`} className="text-primary">
-            verify
+            {t("common.verify")}
           </a>
           <Button tone="ghost" onClick={toggle} disabled={busy}>
-            {open ? "hide" : busy ? "…" : "proof"}
+            {open ? t("bills.hide") : busy ? "…" : t("bills.proof")}
           </Button>
         </td>
       </tr>
@@ -104,8 +106,10 @@ function BillRow({ row, display }: { row: { index: number; entryId: string; book
               <CodeBlock language="json" code={JSON.stringify(proof, null, 2)} />
             )}
             <p className="mt-1 text-xs text-muted">
-              The bundle is the raw material <code className="mono">/verify</code> checks: signature,
-              path, and content hash.
+              <Trans
+                i18nKey="bills.bundleNote"
+                components={{ code: <code className="mono" /> }}
+              />
             </p>
           </td>
         </tr>
@@ -115,6 +119,7 @@ function BillRow({ row, display }: { row: { index: number; entryId: string; book
 }
 
 export function Bills() {
+  const { t } = useTranslation();
   const [before, setBefore] = useState<number | undefined>(undefined);
   const bills = useBills(before);
   const head = useLogHead();
@@ -142,7 +147,7 @@ export function Bills() {
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Bills</h1>
+        <h1 className="text-2xl font-bold">{t("bills.title")}</h1>
         <span className="flex gap-3 text-sm">
           <a href="/dashboard/bills/export.csv" className="text-primary">
             CSV
@@ -154,18 +159,18 @@ export function Bills() {
       </div>
 
       {bills.isError ? (
-        <PageState>The bills could not be read.</PageState>
+        <PageState>{t("bills.readError")}</PageState>
       ) : (
         <>
           <WindowSummary rows={bills.data?.rows ?? []} display={display} />
           <TableShell
             head={[
               "#",
-              "Booked",
-              "Kind",
-              { label: "Amount", align: "right" },
-              { label: "Description", truncate: true },
-              { label: "Hash", truncate: true },
+              t("bills.colBooked"),
+              t("bills.colKind"),
+              { label: t("bills.colAmount"), align: "right" },
+              { label: t("log.colDescription"), truncate: true },
+              { label: t("bills.colHash"), truncate: true },
               "",
             ]}
             loading={bills.isLoading ? 8 : 0}
@@ -175,13 +180,13 @@ export function Bills() {
                 <BillRow key={row.entryId} row={row} display={display} />
               ))}
             {!bills.isLoading && (bills.data?.rows.length ?? 0) === 0 ? (
-              <EmptyRows colSpan={7} icon={<Receipt />}>No transactions yet.</EmptyRows>
+              <EmptyRows colSpan={7} icon={<Receipt />}>{t("bills.empty")}</EmptyRows>
             ) : null}
           </TableShell>
           {bills.data?.nextCursor != null ? (
             <p>
               <Button tone="ghost" onClick={() => setBefore(bills.data?.nextCursor)}>
-                Older
+                {t("common.older")}
               </Button>
             </p>
           ) : null}
@@ -189,35 +194,36 @@ export function Bills() {
       )}
 
       {head.data ? (
-        <Card title="Ledger head">
+        <Card title={t("bills.ledgerHead")}>
           <p className="text-sm">
-            Size {head.data.size}, root <code className="mono">{head.data.root}</code>
+            {t("bills.headLine", { size: head.data.size, root: head.data.root })}
           </p>
           <p className="mt-1 text-xs text-muted">
-            Signed by {head.data.keyName}. Archive this head, then check later that the
-            served log still extends it.
+            {t("bills.signedBy", { keyName: head.data.keyName })}
           </p>
           <div className="mt-3 flex flex-wrap items-end gap-3">
             <Button tone="ghost" onClick={archiveCurrent}>
-              Archive this head
+              {t("bills.archiveThis")}
             </Button>
             <span className="text-sm text-muted">
-              Archived: {archiveSize ?? "nothing"}
+              {t("bills.archived", { size: archiveSize ?? t("bills.nothing") })}
             </span>
             <Button tone="ghost" onClick={checkConsistency} disabled={!archiveSize}>
-              Check consistency
+              {t("bills.checkConsistency")}
             </Button>
           </div>
           {checkFrom !== null ? (
             consistency.isLoading ? (
-              <p className="mt-2 text-sm text-muted">Checking…</p>
+              <p className="mt-2 text-sm text-muted">{t("bills.checking")}</p>
             ) : consistency.error instanceof ApiError ? (
               <Banner tone="error">{consistency.error.message}</Banner>
             ) : consistency.data ? (
               <Banner tone="success">
-                The log at size {consistency.data.head.size} extends your archived head at
-                size {consistency.data.oldHead.size} — proof carries{" "}
-                {consistency.data.proof.path.length} nodes.
+                {t("bills.consistencyOk", {
+                  headSize: consistency.data.head.size,
+                  oldSize: consistency.data.oldHead.size,
+                  nodes: consistency.data.proof.path.length,
+                })}
               </Banner>
             ) : null
           ) : null}
@@ -239,6 +245,7 @@ function WindowSummary({
   rows: { kind: string; amountMinor: number }[];
   display: DisplayCurrency | null;
 }) {
+  const { t } = useTranslation();
   const sums = useMemo(() => {
     const acc = { topUp: 0, adjustment: 0, settlement: 0, count: rows.length };
     for (const row of rows) {
@@ -251,24 +258,24 @@ function WindowSummary({
   if (sums.count === 0) return null;
   return (
     <div className="flex flex-wrap gap-x-10 gap-y-4 rounded-xl border border-line bg-surface px-5 py-4 shadow-[0_1px_3px_rgba(20,34,64,.05)]">
-      <StatChip label="In this window" value={sums.count} hint="entries" />
+      <StatChip label={t("bills.inThisWindow")} value={sums.count} hint={t("bills.entries")} />
       <StatChip
-        label="Top-ups"
+        label={t("bills.topups")}
         value={<span className="text-success">+{signedCredits(sums.topUp)}</span>}
         hint={display ? `≈ ${displayAmount(sums.topUp, display)} ${display.code}` : undefined}
       />
       <StatChip
-        label="Adjustments"
+        label={t("bills.adjustments")}
         value={signedCredits(sums.adjustment)}
         hint={display ? `≈ ${displayAmount(sums.adjustment, display)} ${display.code}` : undefined}
       />
       <StatChip
-        label="Settled out"
+        label={t("bills.settledOut")}
         value={signedCredits(sums.settlement)}
         hint={display ? `≈ ${displayAmount(sums.settlement, display)} ${display.code}` : undefined}
       />
       <StatChip
-        label="Net"
+        label={t("bills.net")}
         value={signedCredits(sums.topUp + sums.adjustment + sums.settlement)}
       />
     </div>
@@ -276,6 +283,7 @@ function WindowSummary({
 }
 
 export function ConsistencyForm() {
+  const { t } = useTranslation();
   const [size, setSize] = useState("");
   const [from, setFrom] = useState<number | null>(null);
   useConsistency(from);
@@ -287,11 +295,11 @@ export function ConsistencyForm() {
         setFrom(Number(size));
       }}
     >
-      <Field label="Archived size">
+      <Field label={t("bills.archivedSize")}>
         <NumberInput value={size} min={1} onChange={(e) => setSize(e.target.value)} required />
       </Field>
       <Button tone="ghost" type="submit">
-        Check
+        {t("bills.check")}
       </Button>
     </form>
   );

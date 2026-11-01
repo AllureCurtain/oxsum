@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation } from "@tanstack/react-query";
 import { api } from "../../api/client";
@@ -6,6 +7,7 @@ import { Button, Field, TextInput } from "../../components/ui";
 import { AuthCard, ErrorText } from "./shared";
 
 export function RedeemInvitation() {
+  const { t } = useTranslation();
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
@@ -17,7 +19,7 @@ export function RedeemInvitation() {
   const token = params.get("token") ?? "";
 
   return (
-    <AuthCard title="Join the organization">
+    <AuthCard title={t("auth.joinOrgTitle")}>
       <form
         className="flex flex-col gap-3"
         onSubmit={(e) => {
@@ -25,10 +27,10 @@ export function RedeemInvitation() {
           redeem.mutate({ token, email, password }, { onSuccess: () => navigate("/login") });
         }}
       >
-        <Field label="Email">
+        <Field label={t("auth.email")}>
           <TextInput type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
         </Field>
-        <Field label="Password" hint="at least 12 characters">
+        <Field label={t("auth.password")} hint={t("auth.passwordHint")}>
           <TextInput
             type="password"
             required
@@ -40,7 +42,7 @@ export function RedeemInvitation() {
         </Field>
         <ErrorText error={redeem.error} />
         <Button type="submit" disabled={redeem.isPending || !token}>
-          Register into the organization
+          {t("auth.registerIntoOrg")}
         </Button>
       </form>
     </AuthCard>

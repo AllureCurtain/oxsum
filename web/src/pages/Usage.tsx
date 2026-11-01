@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useReducedMotion } from "motion/react";
 import { ChartColumn } from "lucide-react";
 import { useDisplay, useKeys, useUsage } from "../api/hooks";
@@ -26,6 +27,7 @@ function dayString(offset: number): string {
 }
 
 export function Usage() {
+  const { t } = useTranslation();
   const [keyFilter, setKeyFilter] = useState("");
   const display = useDisplay();
   const keys = useKeys();
@@ -55,9 +57,9 @@ export function Usage() {
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Usage</h1>
-        <Select value={keyFilter} onChange={(e) => setKeyFilter(e.target.value)} aria-label="key filter">
-          <option value="">all keys</option>
+        <h1 className="text-2xl font-bold">{t("usage.title")}</h1>
+        <Select value={keyFilter} onChange={(e) => setKeyFilter(e.target.value)} aria-label={t("usage.keyFilter")}>
+          <option value="">{t("usage.allKeys")}</option>
           {(keys.data ?? []).map((key) => (
             <option key={key.id} value={key.id}>
               {key.name ?? key.prefix}
@@ -72,20 +74,20 @@ export function Usage() {
       <UsageChart perDay={perDay} max={max} currency={display} />
 
       {usage.isError ? (
-        <PageState>The usage could not be read.</PageState>
+        <PageState>{t("usage.readError")}</PageState>
       ) : (
         <TableShell
           head={[
-            "Day",
-            "Channel",
-            "Model",
-            "Key",
-            { label: "Turns", align: "right" },
-            { label: "In", align: "right" },
-            { label: "Out", align: "right" },
-            { label: "Cached", align: "right" },
-            { label: "Reasoning", align: "right" },
-            { label: "Charged", align: "right" },
+            t("usage.day"),
+            t("common.channel"),
+            t("common.model"),
+            t("usage.key"),
+            { label: t("common.turns"), align: "right" },
+            { label: t("usage.in"), align: "right" },
+            { label: t("usage.out"), align: "right" },
+            { label: t("usage.cached"), align: "right" },
+            { label: t("usage.reasoning"), align: "right" },
+            { label: t("usage.charged"), align: "right" },
           ]}
           loading={usage.isLoading ? 8 : 0}
         >
@@ -95,7 +97,7 @@ export function Usage() {
                 <td>{row.day}</td>
                 <td>{row.channel}</td>
                 <td>{row.model}</td>
-                <td className="mono">{keyLabel(row.keyId, keys.data)}</td>
+                <td className="mono">{keyLabel(row.keyId, keys.data, t("usage.shared"))}</td>
                 <Td mono align="right">{row.turns}</Td>
                 <Td mono align="right">{row.inputTokens}</Td>
                 <Td mono align="right">{row.outputTokens}</Td>
@@ -105,7 +107,7 @@ export function Usage() {
               </tr>
             ))}
           {!usage.isLoading && rows.length === 0 ? (
-            <EmptyRows colSpan={10} icon={<ChartColumn />}>No usage in this window.</EmptyRows>
+            <EmptyRows colSpan={10} icon={<ChartColumn />}>{t("usage.empty")}</EmptyRows>
           ) : null}
         </TableShell>
       )}
@@ -113,9 +115,9 @@ export function Usage() {
   );
 }
 
-function keyLabel(keyId: string | null | undefined, keys?: { id: string; name?: string | null; prefix: string }[]) {
+function keyLabel(keyId: string | null | undefined, keys: { id: string; name?: string | null; prefix: string }[] | undefined, sharedLabel: string) {
   if (!keyId) {
-    return "shared";
+    return sharedLabel;
   }
   const key = keys?.find((k) => k.id === keyId || k.id.replaceAll("-", "") === keyId);
   return key ? (key.name ?? key.prefix) : keyId.slice(0, 8);
@@ -137,6 +139,7 @@ function UsageChart({
   max: number;
   currency: DisplayCurrency | null;
 }) {
+  const { t } = useTranslation();
   const reduceMotion = useReducedMotion();
   const [hover, setHover] = useState<number | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -178,7 +181,7 @@ function UsageChart({
         viewBox={`0 0 ${W} ${H}`}
         className="block h-44 w-full"
         role="img"
-        aria-label={`Daily charge over the last ${n} days`}
+        aria-label={t("usage.dailyCharge",{count:n})}
         onMouseLeave={() => setHover(null)}
         onMouseMove={(e) => {
           const rect = e.currentTarget.getBoundingClientRect();
@@ -252,7 +255,7 @@ function UsageChart({
 
       {/* the tooltip — a real element, positioned over the chart */}
       <div className="mt-1 h-4 text-center text-xs text-muted" aria-live="polite">
-        {hover !== null ? `${days[hover]} · ${creditsWithDisplay(vals[hover], currency)}` : `last ${n} days`}
+        {hover !== null ? `${days[hover]} · ${creditsWithDisplay(vals[hover], currency)}` : t("usage.lastNDays",{count:n})}
       </div>
 
       {!reduceMotion ? (
