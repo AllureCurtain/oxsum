@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import {
   useCreateCustomerLink,
   useCreateReportLink,
@@ -37,34 +39,35 @@ function when(value: string | null | undefined): string {
   return value ? new Date(value).toLocaleString() : "—";
 }
 
-function linkState(link: ReportLink): string {
+function linkState(link: ReportLink, t: TFunction): string {
   if (link.revokedAt) {
-    return "revoked";
+    return t("reports.stateRevoked");
   }
-  return new Date(link.expiresAt).getTime() < Date.now() ? "expired" : "active";
+  return new Date(link.expiresAt).getTime() < Date.now()
+    ? t("reports.stateExpired")
+    : t("reports.stateActive");
 }
 
 /// What the notice says about a minted link: whether the mail went out, and if
 /// it did not, that the token below is still the way to pass it on.
-function delivered(link: CreatedReportLink): string {
+function delivered(link: CreatedReportLink, t: TFunction): string {
   if (link.delivery === "sent") {
-    return "The link was created and emailed.";
+    return t("reports.deliveredSent");
   }
   if (link.delivery === "failed") {
-    return "The link was created, but the mail did not go out; copy it below and pass it on.";
+    return t("reports.deliveredFailed");
   }
-  return "The link was created.";
+  return t("reports.deliveredPlain");
 }
 
 function TokenOnce({ created }: { created: CreatedReportLink }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const url = `${window.location.origin}/bill/${created.token}`;
   return (
     <div className="rounded-xl border border-line bg-canvas p-4">
-      <p className="text-sm font-semibold">The link, shown once</p>
-      <p className="text-xs text-muted">
-        The database keeps only its hash. Copy it now — if it is lost, revoke it and mint another.
-      </p>
+      <p className="text-sm font-semibold">{t("reports.linkShownOnce")}</p>
+      <p className="text-xs text-muted">{t("reports.hashNote")}</p>
       <div className="mt-2 flex items-center gap-2">
         <code className="mono flex-1 break-all text-xs">{url}</code>
         <Button
@@ -78,7 +81,7 @@ function TokenOnce({ created }: { created: CreatedReportLink }) {
             }
           }}
         >
-          {copied ? "Copied" : "Copy"}
+          {copied ? t("common.copied") : t("common.copy")}
         </Button>
       </div>
     </div>
@@ -86,6 +89,7 @@ function TokenOnce({ created }: { created: CreatedReportLink }) {
 }
 
 export function Reports() {
+  const { t } = useTranslation();
   const display = useDisplay();
   const reports = useUsageReports();
   const links = useReportLinks();
@@ -115,12 +119,8 @@ export function Reports() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="text-2xl font-bold">Reports</h1>
-        <p className="text-sm text-muted">
-          A report is one downstream customer's signed bill over an ended span. Share it as a link
-          the customer opens without an account; every row is provable against the organization's
-          ledger.
-        </p>
+        <h1 className="text-2xl font-bold">{t("reports.title")}</h1>
+        <p className="text-sm text-muted">{t("reports.whatIsReport")}</p>
       </div>
 
       {notice ? <Banner tone="success">{notice}</Banner> : null}
@@ -132,21 +132,21 @@ export function Reports() {
       <ol className="flex items-center gap-2 text-xs font-medium text-muted">
         <li className="flex items-center gap-1.5">
           <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary text-[11px] font-semibold text-white">1</span>
-          Mint the report
+          {t("reports.stepMint")}
         </li>
         <li className="text-line">→</li>
         <li className="flex items-center gap-1.5">
           <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary-soft text-[11px] font-semibold text-primary">2</span>
-          Share a link
+          {t("reports.stepShare")}
         </li>
         <li className="text-line">→</li>
         <li className="flex items-center gap-1.5">
           <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary-soft text-[11px] font-semibold text-primary">3</span>
-          Track in the links list
+          {t("reports.stepTrack")}
         </li>
       </ol>
 
-      <Card title="1 · Issue a report">
+      <Card title={t("reports.issueTitle")}>
         <form
           className="grid gap-3 sm:grid-cols-4"
           onSubmit={(event) => {
@@ -156,54 +156,62 @@ export function Reports() {
               {
                 onSuccess: (report) => {
                   setNotice(
-                    `Report minted for ${report.endUser}: ${report.entryCount} entries, ${report.chargedTotalMinor} minor units.`,
+                    t("reports.mintedNotice", {
+                      endUser: report.endUser,
+                      entries: report.entryCount,
+                      minor: report.chargedTotalMinor,
+                    }),
                   );
                 },
               },
             );
           }}
         >
-          <Field label="Customer (endUser)">
+          <Field label={t("reports.customer")}>
             <TextInput
               value={endUser}
               onChange={(event) => setEndUser(event.target.value)}
-              placeholder="customer-1"
+              placeholder={t("reports.customerPlaceholder")}
               required
             />
           </Field>
-          <Field label="From">
+          <Field label={t("reports.from")}>
             <TextInput type="date" value={from} onChange={(event) => setFrom(event.target.value)} required />
           </Field>
-          <Field label="To (ended day)">
+          <Field label={t("reports.toEnded")}>
             <TextInput type="date" value={to} onChange={(event) => setTo(event.target.value)} required />
           </Field>
           <div className="flex items-end">
             <Button tone="primary" disabled={mint.isPending}>
-              {mint.isPending ? "Minting…" : "Mint report"}
+              {mint.isPending ? t("reports.mintingButton") : t("reports.mintReport")}
             </Button>
           </div>
           <p className="col-span-full text-xs text-muted" aria-live="polite">
-            This mints a signed report for <strong>{endUser.trim() || "the customer"}</strong> over{" "}
-            {from} → {to}.
+            <Trans
+              i18nKey="reports.minting"
+              values={{
+                customer: endUser.trim() || t("reports.theCustomer"),
+                from,
+                to,
+              }}
+              components={{ strong: <strong /> }}
+            />
           </p>
         </form>
-        <p className="mt-2 text-xs text-muted">
-          The span must be fully ended: a report over a day still open would commit a subset that can
-          grow.
-        </p>
+        <p className="mt-2 text-xs text-muted">{t("reports.spanEnded")}</p>
       </Card>
 
-      <Card title="Minted reports">
+      <Card title={t("reports.minted")}>
         {reports.isError ? (
-          <PageState>The reports could not be read.</PageState>
+          <PageState>{t("reports.readError")}</PageState>
         ) : (
           <TableShell
             head={[
-              "Period",
-              "Customer",
-              { label: "Entries", align: "right" },
-              { label: "Total", align: "right" },
-              "Share",
+              t("reports.colPeriod"),
+              t("reports.colCustomer"),
+              { label: t("reports.colEntries"), align: "right" },
+              { label: t("common.total"), align: "right" },
+              t("reports.colShare"),
             ]}
             loading={reports.isLoading ? 4 : 0}
           >
@@ -226,14 +234,14 @@ export function Reports() {
                       setNotice(null);
                     }}
                   >
-                    Create link
+                    {t("reports.createLink")}
                   </Button>
                 </td>
               </tr>
             ))}
             {!reports.isLoading && (reports.data?.rows.length ?? 0) === 0 ? (
               <EmptyRows colSpan={5} icon={<FileText />}>
-                No reports yet — issue one above.
+                {t("reports.noReports")}
               </EmptyRows>
             ) : null}
           </TableShell>
@@ -241,24 +249,24 @@ export function Reports() {
       </Card>
 
       {linkFor && selected ? (
-        <Card title={`2 · Share ${selected.endUser} — ${selected.from} to ${selected.to}`}>
+        <Card title={t("reports.shareTitle", { endUser: selected.endUser, from: selected.from, to: selected.to })}>
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Label (optional)">
+            <Field label={t("reports.labelOptional")}>
               <TextInput
                 value={label}
                 onChange={(event) => setLabel(event.target.value)}
-                placeholder="August bill"
+                placeholder={t("reports.labelPlaceholder")}
               />
             </Field>
-            <Field label="Email the link to (optional)">
+            <Field label={t("reports.emailLinkOptional")}>
               <TextInput
                 type="email"
                 value={reportEmail}
                 onChange={(event) => setReportEmail(event.target.value)}
-                placeholder="customer@example.com"
+                placeholder={t("reports.emailPlaceholder")}
               />
             </Field>
-            <Field label="Expires (optional, 30 days by default)">
+            <Field label={t("reports.expiresOptional")}>
               <TextInput
                 type="datetime-local"
                 value={expiresAt}
@@ -280,7 +288,7 @@ export function Reports() {
                     {
                       onSuccess: (link) => {
                         setCreated(link);
-                        setNotice(delivered(link));
+                        setNotice(delivered(link, t));
                         setLinkFor(null);
                         setLabel("");
                         setReportEmail("");
@@ -290,35 +298,43 @@ export function Reports() {
                   )
                 }
               >
-                Create link
+                {t("reports.createLink")}
               </Button>
               <Button tone="ghost" onClick={() => setLinkFor(null)}>
-                Cancel
+                {t("common.cancel")}
               </Button>
             </div>
           </div>
         </Card>
       ) : null}
 
-      <Card title="3 · Links">
+      <Card title={t("reports.linksTitle")}>
         {links.isError ? (
-          <PageState>The links could not be read.</PageState>
+          <PageState>{t("reports.linksError")}</PageState>
         ) : (
           <TableShell
-            head={["Scope", "Customer", { label: "Report", truncate: true }, "Expires", "Last used", "State", ""]}
+            head={[
+              t("reports.colScope"),
+              t("reports.colCustomer"),
+              { label: t("reports.colReport"), truncate: true },
+              t("reports.colExpires"),
+              t("reports.colLastUsed"),
+              t("reports.colState"),
+              "",
+            ]}
             loading={links.isLoading ? 4 : 0}
           >
             {!links.isLoading &&
               (links.data?.rows ?? []).map((link) => (
               <tr key={link.linkId}>
-                <td>{link.scope === "report" ? "report" : "customer"}</td>
+                <td>{link.scope === "report" ? t("reports.scopeReport") : t("reports.scopeCustomer")}</td>
                 <td>{link.endUser}</td>
                 <Td mono truncate className="text-xs">
                   {link.reportId ?? "—"}
                 </Td>
                 <td className="text-xs">{when(link.expiresAt)}</td>
                 <td className="text-xs">{when(link.lastUsedAt)}</td>
-                <td>{linkState(link)}</td>
+                <td>{linkState(link, t)}</td>
                 <td>
                   {link.revokedAt ? null : (
                     <Button
@@ -326,11 +342,11 @@ export function Reports() {
                       disabled={revoke.isPending}
                       onClick={() =>
                         revoke.mutate(link.linkId, {
-                          onSuccess: () => setNotice("The link was revoked."),
+                          onSuccess: () => setNotice(t("reports.revokedNotice")),
                         })
                       }
                     >
-                      Revoke
+                      {t("reports.revoke")}
                     </Button>
                   )}
                 </td>
@@ -338,32 +354,29 @@ export function Reports() {
             ))}
             {!links.isLoading && (links.data?.rows.length ?? 0) === 0 ? (
               <EmptyRows colSpan={7} icon={<Link2 />}>
-                No links yet — share a report above.
+                {t("reports.noLinks")}
               </EmptyRows>
             ) : null}
           </TableShell>
         )}
       </Card>
 
-      <Card title="Customer link">
-        <p className="text-sm text-muted">
-          One link that lists every report issued to a customer — for the customer who wants their
-          history, not one bill.
-        </p>
+      <Card title={t("reports.customerLink")}>
+        <p className="text-sm text-muted">{t("reports.oneLink")}</p>
         <div className="mt-3 grid gap-3 sm:grid-cols-3">
-          <Field label="Customer (endUser)">
+          <Field label={t("reports.customer")}>
             <TextInput
               value={customer}
               onChange={(event) => setCustomer(event.target.value)}
-              placeholder="customer-1"
+              placeholder={t("reports.customerPlaceholder")}
             />
           </Field>
-          <Field label="Email the link to (optional)">
+          <Field label={t("reports.emailLinkOptional")}>
             <TextInput
               type="email"
               value={customerEmail}
               onChange={(event) => setCustomerEmail(event.target.value)}
-              placeholder="customer@example.com"
+              placeholder={t("reports.emailPlaceholder")}
             />
           </Field>
           <div className="flex items-end">
@@ -379,7 +392,7 @@ export function Reports() {
                   {
                     onSuccess: (link) => {
                       setCreated(link);
-                      setNotice(delivered(link));
+                      setNotice(delivered(link, t));
                       setCustomer("");
                       setCustomerEmail("");
                     },
@@ -387,7 +400,7 @@ export function Reports() {
                 )
               }
             >
-              Create customer link
+              {t("reports.createCustomerLink")}
             </Button>
           </div>
         </div>
