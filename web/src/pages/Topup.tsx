@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
+import { Trans, useTranslation } from "react-i18next";
 import {
   ApiError,
   useAirwallexTopup,
@@ -34,17 +35,21 @@ function Consequence({ children }: { children: ReactNode }) {
 }
 
 function ReceiptView({ receipt }: { receipt: { entryId: string; contentHash: string; isNew: boolean } }) {
+  const { t } = useTranslation();
   return (
     <div className="flex flex-col gap-2">
       <Banner tone="success">
-        {receipt.isNew ? "Credited." : "This request already landed; the receipt replays."}
+        {receipt.isNew ? t("topup.credited") : t("topup.receiptReplays")}
       </Banner>
       <CodeBlock
         code={JSON.stringify(receipt, null, 2)}
         language="json"
       />
       <p className="text-xs text-muted">
-        Keep <code className="mono">contentHash</code> — it names the ledger entry a bill verifies against.
+        <Trans
+          i18nKey="topup.keepContentHash"
+          components={{ code: <code className="mono" /> }}
+        />
       </p>
     </div>
   );
@@ -68,6 +73,7 @@ function AmountRail<TData>(props: {
   renderError?: (error: ApiError) => ReactNode;
 }) {
   const { mutation } = props;
+  const { t } = useTranslation();
   const [amount, setAmount] = useState("");
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -79,7 +85,7 @@ function AmountRail<TData>(props: {
   return (
     <form className="flex flex-col gap-3" onSubmit={submit}>
       <p className="text-sm text-muted">{props.intro}</p>
-      <Field label="Amount (credits)">
+      <Field label={t("topup.amountCredits")}>
         <TextInput
           type="number"
           step="any"
@@ -103,13 +109,20 @@ function AmountRail<TData>(props: {
 }
 
 function ManualRail() {
+  const { t } = useTranslation();
   const topup = useTopup();
   return (
     <AmountRail
-      intro="Record a payment that arrived out of band; the credit lands immediately. For card payment use Stripe; for an operator-minted code use the redemption rail."
-      consequence={(amount) => <>This books {amountToMinor(amount) !== null ? `${amount} cr` : "the amount"} onto your balance immediately.</>}
-      submitLabel="Credit balance"
-      loadingText="Booking…"
+      intro={t("topup.manualIntro")}
+      consequence={(amount) => (
+        <>
+          {amountToMinor(amount) !== null
+            ? t("topup.manualConsequence", { amount: `${amount} cr` })
+            : t("topup.manualConsequence", { amount: t("topup.theAmount") })}
+        </>
+      )}
+      submitLabel={t("topup.creditBalance")}
+      loadingText={t("topup.booking")}
       mutation={topup}
       renderSuccess={(receipt) => <ReceiptView receipt={receipt} />}
     />
@@ -117,20 +130,21 @@ function ManualRail() {
 }
 
 function StripeRail() {
+  const { t } = useTranslation();
   const stripe = useStripeTopup();
   return (
     <AmountRail
-      intro="Opens the hosted Stripe checkout; the deposit confirms through the Stripe webhook once the session completes. A deployment without Stripe configured answers 503."
-      consequence={() => <>This opens Stripe's hosted checkout; you aren't charged until you confirm there.</>}
-      submitLabel="Pay with Stripe"
-      loadingText="Opening checkout…"
+      intro={t("topup.stripeIntro")}
+      consequence={() => <>{t("topup.stripeConsequence")}</>}
+      submitLabel={t("topup.payStripe")}
+      loadingText={t("topup.openingCheckout")}
       mutation={stripe}
       onSuccess={(res) => {
         window.location.href = res.checkoutUrl;
       }}
       renderError={(error) => (
         <Banner tone="error">
-          {error.status === 503 ? "This deployment has no Stripe rail configured." : error.message}
+          {error.status === 503 ? t("topup.noStripeRail") : error.message}
         </Banner>
       )}
     />
@@ -138,20 +152,21 @@ function StripeRail() {
 }
 
 function AirwallexRail() {
+  const { t } = useTranslation();
   const airwallex = useAirwallexTopup();
   return (
     <AmountRail
-      intro="Opens the hosted Airwallex payment page; the deposit confirms through the Airwallex webhook once the intent succeeds. A deployment without Airwallex configured answers 503."
-      consequence={() => <>This opens Airwallex's hosted payment page; you aren't charged until you confirm there.</>}
-      submitLabel="Pay with Airwallex"
-      loadingText="Opening payment page…"
+      intro={t("topup.airwallexIntro")}
+      consequence={() => <>{t("topup.airwallexConsequence")}</>}
+      submitLabel={t("topup.payAirwallex")}
+      loadingText={t("topup.openingPayment")}
       mutation={airwallex}
       onSuccess={(res) => {
         window.location.href = res.checkoutUrl;
       }}
       renderError={(error) => (
         <Banner tone="error">
-          {error.status === 503 ? "This deployment has no Airwallex rail configured." : error.message}
+          {error.status === 503 ? t("topup.noAirwallexRail") : error.message}
         </Banner>
       )}
     />
@@ -201,6 +216,7 @@ function loadHyper(sdkUrl: string): Promise<void> {
 }
 
 function HyperswitchRail() {
+  const { t } = useTranslation();
   const hyperswitch = useHyperswitchTopup();
   const [amount, setAmount] = useState("");
   const [stage, setStage] = useState<"idle" | "mounting" | "mounted" | "failed">("idle");
@@ -228,7 +244,7 @@ function HyperswitchRail() {
         if (!cancelled) setStage("mounted");
       } catch (error) {
         if (!cancelled) {
-          setMountError(error instanceof Error ? error.message : "the checkout could not mount");
+          setMountError(error instanceof Error ? error.message : t("topup.mountError"));
           setStage("failed");
         }
       }
@@ -264,12 +280,8 @@ function HyperswitchRail() {
   return (
     <div className="flex flex-col gap-3">
       <form className="flex flex-col gap-3" onSubmit={submit}>
-        <p className="text-sm text-muted">
-          Mounts the switch's Unified Checkout in place; the deposit confirms through the
-          Hyperswitch webhook once the payment succeeds. A deployment without the rail configured
-          answers 503.
-        </p>
-        <Field label="Amount (credits)">
+        <p className="text-sm text-muted">{t("topup.hyperswitchIntro")}</p>
+        <Field label={t("topup.amountCredits")}>
           <TextInput
             type="number"
             step="any"
@@ -283,29 +295,26 @@ function HyperswitchRail() {
         </Field>
         {stage !== "mounted" ? (
           <>
-            <Consequence>
-              This creates a payment intent and mounts the switch's checkout below — nothing is
-              charged until you complete it.
-            </Consequence>
+            <Consequence>{t("topup.hyperswitchConsequence")}</Consequence>
             <Button
               type="submit"
               isLoading={hyperswitch.isPending || stage === "mounting"}
-              loadingText="Loading checkout…"
+              loadingText={t("topup.loadingCheckout")}
             >
-              Pay with Hyperswitch
+              {t("topup.payHyperswitch")}
             </Button>
             {stage === "mounting" ? (
-              <p className="text-xs text-muted" role="status">Loading the secure checkout…</p>
+              <p className="text-xs text-muted" role="status">{t("topup.loadingSecure")}</p>
             ) : null}
             {stage === "failed" ? (
-              <Banner tone="error">The checkout could not load; try again or pick another rail.</Banner>
+              <Banner tone="error">{t("topup.checkoutFailed")}</Banner>
             ) : null}
           </>
         ) : null}
         {hyperswitch.error instanceof ApiError ? (
           <Banner tone="error">
             {hyperswitch.error.status === 503
-              ? "This deployment has no Hyperswitch rail configured."
+              ? t("topup.noHyperswitchRail")
               : hyperswitch.error.message}
           </Banner>
         ) : null}
@@ -315,16 +324,13 @@ function HyperswitchRail() {
       <div id="hyperswitch-checkout" ref={mountRef} />
       {stage === "mounted" ? (
         <div className="flex flex-col gap-2">
-          <p className="text-xs text-muted">
-            Finish the payment in the form above — the wallet credits when the switch's webhook
-            lands. Nothing is charged until you confirm.
-          </p>
+          <p className="text-xs text-muted">{t("topup.finishPayment")}</p>
           <button
             type="button"
             className="self-start text-xs text-muted underline underline-offset-2"
             onClick={reset}
           >
-            Start over
+            {t("topup.startOver")}
           </button>
         </div>
       ) : null}
@@ -333,6 +339,7 @@ function HyperswitchRail() {
 }
 
 function RedeemRail() {
+  const { t } = useTranslation();
   const redeem = useRedeemCode();
   const display = useDisplay();
   const [code, setCode] = useState("");
@@ -343,10 +350,12 @@ function RedeemRail() {
   return (
     <form className="flex flex-col gap-3" onSubmit={submit}>
       <p className="text-sm text-muted">
-        An <code className="mono">oxr-…</code> code the operator minted. Unknown, spent, or expired
-        codes all answer 404 — which of the three it is stays the holder's business.
+        <Trans
+          i18nKey="topup.redeemIntro"
+          components={{ code: <code className="mono" /> }}
+        />
       </p>
-      <Field label="Redemption code">
+      <Field label={t("topup.redemptionCode")}>
         <TextInput
           value={code}
           onChange={(e) => setCode(e.target.value)}
@@ -355,14 +364,18 @@ function RedeemRail() {
           required
         />
       </Field>
-      <Consequence>This claims the code's value onto your balance immediately; a spent code can't be reused.</Consequence>
-      <Button type="submit" isLoading={redeem.isPending} loadingText="Claiming…">
-        Redeem code
+      <Consequence>{t("topup.redeemConsequence")}</Consequence>
+      <Button type="submit" isLoading={redeem.isPending} loadingText={t("topup.claiming")}>
+        {t("topup.redeemCode")}
       </Button>
       {redeem.error instanceof ApiError ? <Banner tone="error">{redeem.error.message}</Banner> : null}
       {redeem.data ? (
         <div className="flex flex-col gap-2">
-          <Banner tone="success">Credited {creditsWithDisplay(redeem.data.amountMinor, display)}.</Banner>
+          <Banner tone="success">
+            {t("topup.creditedAmount", {
+              amount: creditsWithDisplay(redeem.data.amountMinor, display),
+            })}
+          </Banner>
           <ReceiptView receipt={redeem.data} />
         </div>
       ) : null}
@@ -375,6 +388,7 @@ function RedeemRail() {
 // until the credit shows — success, cancel and failure all redirect here, so
 // the poll is what tells them apart.
 function HyperswitchReturn({ baseline }: { baseline: number | null }) {
+  const { t } = useTranslation();
   const balance = useBalance({ refetchInterval: 2_000 });
   const [timedOut, setTimedOut] = useState(false);
   useEffect(() => {
@@ -384,28 +398,20 @@ function HyperswitchReturn({ baseline }: { baseline: number | null }) {
   if (baseline !== null && balance.data && balance.data.availableMinor > baseline) {
     return (
       <Banner tone="success">
-        Payment confirmed — {creditsWithDisplay(balance.data.availableMinor - baseline, null)}{" "}
-        landed on the balance.
+        {t("topup.paymentConfirmed", {
+          amount: creditsWithDisplay(balance.data.availableMinor - baseline, null),
+        })}
       </Banner>
     );
   }
   if (timedOut) {
-    return (
-      <Banner tone="error">
-        No credit landed within a minute. If you completed the payment the webhook is still on its
-        way — the balance catches up on its own; if you cancelled, nothing was charged.
-      </Banner>
-    );
+    return <Banner tone="error">{t("topup.paymentTimeout")}</Banner>;
   }
-  return (
-    <Banner tone="info">
-      Waiting for the payment to confirm… the switch's webhook credits the wallet; this updates as
-      soon as it lands.
-    </Banner>
-  );
+  return <Banner tone="info">{t("topup.paymentWaiting")}</Banner>;
 }
 
 export function Topup() {
+  const { t } = useTranslation();
   const balance = useBalance();
   const display = useDisplay();
   const [params, setParams] = useSearchParams();
@@ -421,11 +427,13 @@ export function Topup() {
   }, [returned, balance.data]);
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-2xl font-bold">Top up</h1>
-      <Card title="Balance">
+      <h1 className="text-2xl font-bold">{t("topup.title")}</h1>
+      <Card title={t("topup.balance")}>
         <div className="flex flex-wrap items-center gap-x-12 gap-y-4">
           <div>
-            <p className="text-[11px] font-medium uppercase tracking-wider text-muted">Available</p>
+            <p className="text-[11px] font-medium uppercase tracking-wider text-muted">
+              {t("topup.available")}
+            </p>
             <p className="mt-1 text-3xl font-bold tabular-nums tracking-tight text-ink">
               {balance.data ? <Cr minor={balance.data.availableMinor} currency={display} /> : "…"}
             </p>
@@ -436,22 +444,26 @@ export function Topup() {
             ) : null}
           </div>
           <StatChip
-            label="In flight"
+            label={t("topup.inFlight")}
             value={balance.data ? <Cr minor={balance.data.reservedMinor} currency={display} /> : "…"}
-            hint="frozen by open holds"
+            hint={t("topup.frozenHint")}
           />
           <StatChip
-            label="Spent this month"
+            label={t("topup.spentThisMonth")}
             value={balance.data ? <Cr minor={balance.data.spentThisMonthMinor} currency={display} /> : "…"}
           />
           <StatChip
-            label="Credit line"
+            label={t("topup.creditLine")}
             value={
               balance.data && balance.data.creditLimitMinor > 0
                 ? `${(balance.data.creditUsedMinor / 1_000_000).toFixed(0)} / ${(balance.data.creditLimitMinor / 1_000_000).toFixed(0)}`
                 : "—"
             }
-            hint={balance.data && balance.data.creditLimitMinor > 0 ? "cr drawn" : "none"}
+            hint={
+              balance.data && balance.data.creditLimitMinor > 0
+                ? t("topup.crDrawn")
+                : t("topup.noLine")
+            }
           />
         </div>
       </Card>
@@ -463,40 +475,40 @@ export function Topup() {
             className="self-start text-xs text-muted underline underline-offset-2"
             onClick={() => setParams({})}
           >
-            Dismiss
+            {t("topup.dismiss")}
           </button>
         </div>
       ) : null}
       <Tabs defaultValue="manual">
         <TabsList variant="pill">
-          <TabsTrigger value="manual">Manual</TabsTrigger>
-          <TabsTrigger value="stripe">Stripe</TabsTrigger>
-          <TabsTrigger value="airwallex">Airwallex</TabsTrigger>
-          <TabsTrigger value="hyperswitch">Hyperswitch</TabsTrigger>
-          <TabsTrigger value="redeem">Redeem code</TabsTrigger>
+          <TabsTrigger value="manual">{t("topup.manual")}</TabsTrigger>
+          <TabsTrigger value="stripe">{t("topup.stripe")}</TabsTrigger>
+          <TabsTrigger value="airwallex">{t("topup.airwallex")}</TabsTrigger>
+          <TabsTrigger value="hyperswitch">{t("topup.hyperswitch")}</TabsTrigger>
+          <TabsTrigger value="redeem">{t("topup.redeemCode")}</TabsTrigger>
         </TabsList>
         <TabsContent value="manual" className="mt-4">
-          <Card title="Manual top-up">
+          <Card title={t("topup.manualTopup")}>
             <ManualRail />
           </Card>
         </TabsContent>
         <TabsContent value="stripe" className="mt-4">
-          <Card title="Stripe checkout">
+          <Card title={t("topup.stripeCheckout")}>
             <StripeRail />
           </Card>
         </TabsContent>
         <TabsContent value="airwallex" className="mt-4">
-          <Card title="Airwallex payment page">
+          <Card title={t("topup.airwallexPage")}>
             <AirwallexRail />
           </Card>
         </TabsContent>
         <TabsContent value="hyperswitch" className="mt-4">
-          <Card title="Hyperswitch checkout">
+          <Card title={t("topup.hyperswitchCheckout")}>
             <HyperswitchRail />
           </Card>
         </TabsContent>
         <TabsContent value="redeem" className="mt-4">
-          <Card title="Redeem a code">
+          <Card title={t("topup.redeemACode")}>
             <RedeemRail />
           </Card>
         </TabsContent>
