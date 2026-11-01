@@ -27,6 +27,7 @@ use uuid::Uuid;
 use crate::billing::{Price, PriceBook};
 use crate::db::Db;
 use crate::error::WalletError;
+use crate::routing::RouteStats;
 
 /// The longest a channel name may be; it appears in the admin URL path.
 const MAX_NAME: usize = 40;
@@ -1286,22 +1287,55 @@ impl Db {
 /// gateway passes a uniform `0.0 <= roll < 1.0`.
 #[must_use]
 pub fn route_order(servings: Vec<Serving>, roll: f64) -> Vec<Serving> {
+    // No health signal: identical to the historical pick — every serving at its
+    // configured weight.
+    route_order_stats(servings, roll, None)
+}
+
+/// [`route_order`] with observed upstream health folded in (issue #499): each
+/// serving leads at its *effective* weight — `weight` scaled by what the
+/// channel has done lately, from [`crate::RouteStats`]. A channel dropped on
+/// error rate contributes `0` and is skipped outright; a slow-but-alive one
+/// counts as a fraction of its weight; a healthy one counts full. `None` is
+/// the no-signal pick — the historical behavior, kept so the gateway's caller
+/// can pass `db.route_stats()` and a test an empty store.
+#[must_use]
+pub fn route_order_stats(
+    servings: Vec<Serving>,
+    roll: f64,
+    stats: Option<&crate::RouteStats>,
+) -> Vec<Serving> {
     let mut ordered = servings;
     ordered.sort_by(|a, b| a.channel.cmp(&b.channel));
     if ordered.len() > 1 {
-        let total: i64 = ordered.iter().map(|s| s.weight).sum();
-        let mut mark = (roll.clamp(0.0, 1.0 - f64::EPSILON) * total as f64) as i64;
+        // The fleet's healthy baseline is read once: the figure a slow channel
+        // is scaled against. With no stats or no samples it is the cold-start
+        // constant, and every serving counts its full weight — today's pick.
+        let healthy_ttft = stats.map_or(RouteStats::DEFAULT_TTFT_MS, |s| s.healthy_ttft_ms());
+        // Effective weight replaces the configured weight throughout the pick —
+        // both the summed-weight roll and the failover ordering — so a dropped
+        // channel leads nothing and ranks last.
+        let effective = |serving: &Serving| -> i64 {
+            stats.map_or(serving.weight, |s| {
+                s.effective_weight(&serving.channel, serving.weight, healthy_ttft)
+            })
+        };
+        let total: i64 = ordered.iter().map(&effective).sum();
+        let mut mark = (roll.clamp(0.0, 1.0 - f64::EPSILON) * total.max(1) as f64) as i64;
         let landed = ordered
             .iter()
             .position(|serving| {
-                mark -= serving.weight;
+                mark -= effective(serving);
                 mark < 0
             })
             .unwrap_or(0);
         // The roll picks a weight tier, not a channel: within the tier it
         // landed on, the cheapest route leads — the others are the same pick
         // as far as weight is concerned, and letting the dearer lead would
-        // spend more for an identical preference.
+        // spend more for an identical preference. The tier compares configured
+        // weights: two channels at the same configured weight but different
+        // observed health are the same *preference* tier — the cheaper one
+        // still leads it.
         let tier_weight = ordered[landed].weight;
         let leader = ordered
             .iter()
@@ -1317,8 +1351,8 @@ pub fn route_order(servings: Vec<Serving>, roll: f64) -> Vec<Serving> {
             .unwrap_or(landed);
         ordered.swap(0, leader);
         ordered[1..].sort_by(|a, b| {
-            b.weight
-                .cmp(&a.weight)
+            effective(b)
+                .cmp(&effective(a))
                 .then_with(|| {
                     a.price
                         .input_price_per_million

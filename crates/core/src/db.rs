@@ -290,6 +290,11 @@ pub struct Db {
     /// The process-local conversation→credential memory (issue #444): a cache
     /// warmer for the pool's pick, `Arc`-shared across `Db`'s cheap clones.
     pub(crate) affinity: crate::pools::SharedAffinity,
+    /// The process-local per-channel upstream-health window (issue #499): the
+    /// routing hint `route_order` reads and the relay writes — `Arc`-shared
+    /// across `Db`'s cheap clones so a request's pick and its attempt's sample
+    /// meet in the one store.
+    pub(crate) route_stats: crate::routing::SharedRouteStats,
 }
 
 /// How long a checkout may wait for a free connection before failing. See
@@ -332,6 +337,7 @@ impl Db {
         Ok(Self {
             pool,
             affinity: Default::default(),
+            route_stats: Default::default(),
         })
     }
 
@@ -341,6 +347,7 @@ impl Db {
         Self {
             pool,
             affinity: Default::default(),
+            route_stats: Default::default(),
         }
     }
 
