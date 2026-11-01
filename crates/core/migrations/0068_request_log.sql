@@ -14,6 +14,10 @@ CREATE TABLE IF NOT EXISTS oxsum.request_log (
     -- `x-oxsum-request-id`: joins the row to the settlement entry and its
     -- proof bundle the way `usage_records.request_id` does.
     request_id          text        NOT NULL,
+    -- The settlement entry the row's charge is provable against — the
+    -- "verify" link the dashboard renders. NULL only where a refused turn
+    -- left no entry marker to name.
+    entry_id            uuid,
     -- The organization's ledger tenant id — the same key `usage_records`
     -- partitions on, kept beside `organization_id` so the ledger-scoped reads
     -- and the org-scoped member reads both stay index-only.
