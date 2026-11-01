@@ -52,6 +52,14 @@ Purpose: see and manage the organization in a browser instead of over the API.
 Open `/app` in a browser pointed at the server and log in with your email and
 password; the app opens on the overview. Log out from the app.
 
+The login page drives every auth surface the contract offers: a GitHub button
+and one button per configured OIDC provider (drawn from `auth/methods`), and
+the TOTP second leg — an account with a confirmed factor sees a code field
+after the password, trading the `challengeToken` plus a live or backup code
+for the session. **Settings** carries the two-factor card: enroll shows the
+base32 secret and `otpauthUrl`, confirm with a live code shows the ten backup
+codes once, and disable needs a live code.
+
 The dashboard is the React app under `web/` (issue #234): overview, top-up, bills, requests, usage, pricing, keys, members, the transaction log, statements, webhooks, chat, settings and the admin console, built on vendored Cult UI components over the DESIGN.md palette, all reading the same `/api/v1` surface. The server-rendered Topcoat pages retired to it (issue #256), so an old `/dashboard/*`, `/app/login` or `/admin` bookmark answers `301` to its `/app` twin — the page names below are the `/app` routes. `/verify` keeps its server-rendered form on purpose — when the wasm bundle ships, the page's loader runs the same check in your browser instead (issue #284).
 
 - **Overview**: the organization, who you are logged in as and in which role, the

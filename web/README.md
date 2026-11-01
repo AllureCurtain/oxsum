@@ -70,8 +70,10 @@ checkout.
       is not in the contract, so the UI checks deliveries instead
 - [x] Statements: list, detail, PDF export link, log anchor
 - [x] Org switcher + create organization
-- [x] Session pages: register, login (GitHub OAuth when configured),
-      verify email, forgot/reset password, device authorize, redeem invitation
+- [x] Session pages: register, login (GitHub OAuth + per-provider OIDC
+      buttons when configured, the TOTP second leg for a confirmed account),
+      verify email, forgot/reset password, device authorize, redeem invitation;
+      Settings carries the two-factor enroll/confirm/disable card
 - [x] Admin console (channels+prices, organizations+adjustments, in-flight,
       anomalies, margin, reconciliation, closings, statements, redemptions,
       tiers, discounts, audit, credentials) — operator-token gated
