@@ -20,7 +20,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router, middleware};
 use oxsum_core::{
     ActingKey, NewTask, Organization, Task, TaskKind, TaskOutcome, TaskState, fingerprint,
-    hold_description, route_order,
+    hold_description, route_order_stats,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -196,7 +196,13 @@ async fn submit_inner(
     if servings.is_empty() {
         return Err(GatewayError::model_not_served(model));
     }
-    let ordered = route_order(servings, rand::random::<f64>());
+    // The routing window applies to the task pick the same as the chat pick
+    // (issue #499): a slow or erroring channel sheds weight for the submission.
+    let ordered = route_order_stats(
+        servings,
+        rand::random::<f64>(),
+        Some(state.db.route_stats()),
+    );
     let primary = ordered
         .first()
         .ok_or_else(|| GatewayError::model_not_served(model))?;

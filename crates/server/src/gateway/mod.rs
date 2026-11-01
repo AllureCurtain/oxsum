@@ -27,7 +27,7 @@ use futures_util::StreamExt;
 use http_body_util::{BodyExt, StreamBody};
 use oxsum_core::{
     ActingKey, BillingMode, Claim, OpenHold, Organization, Serving, SettlementKind, UsageRecord,
-    UsageRow, WalletError, fingerprint, hold_description, parse_presented, route_order,
+    UsageRow, WalletError, fingerprint, hold_description, parse_presented, route_order_stats,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -920,10 +920,14 @@ async fn run(
         ordered: Vec<Serving>,
     }
     // The requested model leads its own route order, exactly as it always has.
+    // The routing-health window (issue #499): the pick folds what upstream has
+    // done lately into each serving's effective weight — a slow channel counts
+    // as a fraction, an erroring one is skipped for its cool-down.
+    let route_stats = state.db.route_stats();
     let mut model_routes: Vec<ModelRoutes> = vec![ModelRoutes {
         model: request.model.clone(),
         upstream_model: request.upstream_model.clone(),
-        ordered: route_order(candidates, rand::random::<f64>()),
+        ordered: route_order_stats(candidates, rand::random::<f64>(), Some(route_stats)),
     }];
     // Each fallback resolves independently through `servings_named`: its own
     // channels, its own alias target, its own route order. A fallback the
@@ -951,7 +955,7 @@ async fn run(
         model_routes.push(ModelRoutes {
             model: model.clone(),
             upstream_model,
-            ordered: route_order(ordered, rand::random::<f64>()),
+            ordered: route_order_stats(ordered, rand::random::<f64>(), Some(route_stats)),
         });
     }
     // The surface selects the adapter that reads usage reports — every
@@ -1471,6 +1475,13 @@ async fn run(
                     "ok",
                     attempt_started.elapsed().as_secs_f64(),
                 );
+                // The routing window (issue #499): a served attempt feeds the
+                // channel's latency sample and a healthy outcome.
+                state.db.route_stats().note(
+                    &candidate.channel,
+                    Some(attempt_started.elapsed().as_secs_f64() * 1_000.0),
+                    false,
+                );
                 break ((*model_index, *route_index), Ok(response));
             }
             Ok(response) => {
@@ -1479,6 +1490,13 @@ async fn run(
                     &state.metrics,
                     "error",
                     attempt_started.elapsed().as_secs_f64(),
+                );
+                // The routing window: an answered-but-refused attempt still
+                // gives a latency sample, and counts as an error for the rate.
+                state.db.route_stats().note(
+                    &candidate.channel,
+                    Some(attempt_started.elapsed().as_secs_f64() * 1_000.0),
+                    true,
                 );
                 let retriable = status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
                 if retriable {
@@ -1545,6 +1563,9 @@ async fn run(
                     "unreachable",
                     attempt_started.elapsed().as_secs_f64(),
                 );
+                // The routing window: an unreachable attempt gives no latency
+                // sample (upstream never answered) but counts full as an error.
+                state.db.route_stats().note(&candidate.channel, None, true);
                 // An unreachable upstream is the channel's problem, not the
                 // credential's: the key never got to refuse, so nothing cools.
                 if index + 1 < attempts_list.len() {

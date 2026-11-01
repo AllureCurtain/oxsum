@@ -38,6 +38,7 @@ mod proof;
 mod ratelimit;
 mod reconcile;
 mod report_links;
+mod routing;
 mod seed;
 mod service_credentials;
 mod sessions;
@@ -75,7 +76,7 @@ pub use billing::{
 pub use cache::{CachePolicy, CacheStore, CachedAnswer, PromptPart, prompt_digest};
 pub use channels::{
     CatalogModel, Channel, MAX_WEIGHT, ModelAlias, ModelPrice, ProbeChannel, SecretKey, Serving,
-    event_price, price_row, route_order,
+    event_price, price_row, route_order, route_order_stats,
 };
 pub use credit_notes::CreditNote;
 pub use db::{Db, SCHEMA};
@@ -136,6 +137,7 @@ pub use proof::{ChargeCheck, ProofBundle, verify_bundle, verify_charge};
 pub use ratelimit::{PostgresRateLimiter, RateAllowance, RateLimited, RateLimiter, SlidingWindow};
 pub use reconcile::{DriftClass, DriftKind, DriftSample, Reconciliation};
 pub use report_links::{LinkScope, MintedReportLink, ReportLink, ResolvedReportLink};
+pub use routing::{ChannelStats, RouteStats, SharedRouteStats};
 pub use seed::{DEMO_EMAIL, DEMO_ORGANIZATION, DEMO_PASSWORD, MEMBER_EMAIL, SeedReport};
 pub use service_credentials::{ActingService, CreatedServiceCredential, ServiceCredential};
 pub use sessions::{
