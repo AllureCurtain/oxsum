@@ -67,7 +67,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # The OIDC `id_token` is a JWS the login verifies against the provider's JWKS —
 # the one place a JWT is a credential, and the crate that owns the RS256 verify
 # the codebase does not hand-roll.
-jsonwebtoken = "9"
+jsonwebtoken = "11"
 # Polling the relay by hand needs the `Stream` trait itself, nothing else from futures.
 futures-core = "0.3"
 # The relay is a generator: it forwards chunks, then awaits the settlement before it ends. A
