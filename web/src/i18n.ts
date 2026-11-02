@@ -20,7 +20,8 @@ void i18n
     },
     fallbackLng: "en",
     supportedLngs: ["en", "zh-CN"],
-    nonExplicitSupportedLngs: true, // "zh"/"zh-Hans" resolve to zh-CN
+    // Match full resource codes; i18next's best-match lookup maps Chinese
+    // browser variants (including "zh" and "zh-Hans") onto "zh-CN".
     returnEmptyString: false,
     interpolation: { escapeValue: false }, // React already escapes
     detection: {
