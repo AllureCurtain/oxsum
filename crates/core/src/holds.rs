@@ -500,6 +500,7 @@ async fn sweep_one(
         cache: None,
         guardrail: Vec::new(),
         reason: None,
+        experiment: None,
     }
     .description()?;
     match wallet.settle(&hold.hold_key, &description, 0, on).await {
