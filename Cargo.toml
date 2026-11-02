@@ -26,7 +26,7 @@ axum = "0.8"
 # first use, dropped when the suite's process exits.
 ctor = "0.2"
 # Sealing channel credentials at rest: AES-256-GCM, and the base64 the stored record uses.
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 base64 = "0.23"
 # Signed spend mandates (issue #262): Ed25519 over the mandate's canonical body.
 # Same crate doubleentry's witness feature already resolves; no `rand_core`, so
