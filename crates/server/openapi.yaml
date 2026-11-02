@@ -709,6 +709,30 @@ info:
     surface over `usage_records`, written post-settlement — a logging failure
     never fails a request.
 
+    0.93.0 adds experiments (issue #509): an A/B variant set an organization's
+    request opts into with the `X-Oxsum-Experiment` header. An experiment is a
+    named set of `{model, weight}` variants — every name must resolve to a
+    served model or alias — configured per organization through
+    `GET /api/v1/org/experiments`, `PUT /api/v1/org/experiments/{name}` (create
+    or replace the whole set atomically) and
+    `POST /api/v1/org/experiments/{name}/end`. A gateway request carrying the
+    header and naming an open experiment lets the relay pick a variant by
+    weight and rewrite the request's `model` to it before routing — the
+    variants all answer the same API shape, so the swap is transparent; the
+    caller's model allowlist, tier or mandate still constrains the pick's
+    landing model the way it constrains any request's. The settlement
+    description moves to v13: it adds the optional `experiment` block —
+    `{id, variant}` — recording which experiment the turn ran under and which
+    variant served it; the usage row's `usage_details.experiment` carries the
+    same pair. `GET /api/v1/org/experiments/{experimentId}/results` groups the
+    experiment's recorded usage by variant — turns, token and charge sums,
+    errored count — for the offline scorer. Scoring stays offline: oxsum
+    reports which variant served, it does not judge outputs or pick a winner.
+    An open request names no experiment (a missing or unknown or ended name
+    leaves the request's `model` untouched). The list and the results reads
+    answer any member; the writes are owner/admin actions the membership role
+    gates, the same rule `teams` keeps.
+
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
     whose job precedes authentication: `/api/v1/auth/login`, `/api/v1/auth/logout`,
@@ -2101,6 +2125,109 @@ paths:
                   data: { $ref: "#/components/schemas/Team" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/experiments:
+    get:
+      summary: List the organization's experiments
+      description: |
+        The A/B variant sets the organization carries (issue #509), oldest first — open
+        and ended. Reading the organization's own config is any member's right; the
+        writes beside it are owner/admin-gated.
+      responses:
+        "200":
+          description: The experiments
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/Experiment" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/experiments/{name}:
+    parameters: [{ $ref: "#/components/parameters/ExperimentName" }]
+    put:
+      summary: Create or replace an experiment
+      description: |
+        Creates the named experiment or replaces its whole variant set atomically —
+        config, not ledger, so the write is a `PUT` of the full
+        `{variants: [{model, weight}]}` rather than an append. Every variant's `model`
+        must resolve to a served model or an alias (400 `VALIDATION` otherwise — a
+        variant naming an unserved model would dead-end every request it lands on),
+        and a weight is at least 1. An owner or an admin, and only a session: an API
+        key names no role and is refused, the same rule `teams` keeps.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PutExperimentRequest" }
+      responses:
+        "200":
+          description: The experiment as it stands after the write
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/Experiment" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/experiments/{name}/end:
+    parameters: [{ $ref: "#/components/parameters/ExperimentName" }]
+    post:
+      summary: End an experiment
+      description: |
+        Flips the named experiment to `ended`: a later request carrying
+        `X-Oxsum-Experiment: {name}` resolves the plain `model` the request asked
+        for rather than a variant's pick. An owner or an admin, and only a session.
+        `NOT_FOUND` when no such experiment — or it already ended, so a second end
+        is not a silent success.
+      responses:
+        "200":
+          description: The experiment was ended
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { type: object, nullable: true }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/experiments/{experimentId}/results:
+    parameters: [{ $ref: "#/components/parameters/ExperimentId" }]
+    get:
+      summary: Group the experiment's recorded usage by variant
+      description: |
+        The usage the experiment served, grouped by variant: turns, token and
+        charge sums and the errored count — the columns an offline scorer groups
+        its judgment over. Answers an ended experiment too: its recorded spend
+        still groups. `NOT_FOUND` for an id the organization does not own, so a
+        foreign experiment reads as absent, not as "served nothing". Scoring
+        stays offline — oxsum reports which variant served; it does not judge
+        outputs or promote a winner.
+      responses:
+        "200":
+          description: The variant groups
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/VariantResult" }
+        "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/ownership:
@@ -6344,6 +6471,18 @@ components:
       required: true
       schema: { type: string, format: uuid }
       description: the id of the team this endpoint addresses, as a team's `teamId`
+    ExperimentName:
+      name: name
+      in: path
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 200 }
+      description: the experiment's name — unique per organization
+    ExperimentId:
+      name: experimentId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+      description: the experiment's own id, as an experiment's `id`
     ChannelName:
       name: channelName
       in: path
@@ -6818,6 +6957,48 @@ components:
             email no account holds is `NOT_FOUND` — a person without an account is invited by link
             (`POST /api/v1/org/invitations`) — and one that is already a member of this organization
             is `CONFLICT`.
+    Experiment:
+      type: object
+      required: [id, name, variants, status, createdAt]
+      properties:
+        id: { type: string, format: uuid, description: "the experiment's own id — what `X-Oxsum-Experiment` and `experimentId` name" }
+        name: { type: string, description: "the experiment's name — unique per organization" }
+        variants:
+          type: array
+          items: { $ref: "#/components/schemas/Variant" }
+          description: "the variant set `[{model, weight}]` the pick draws from"
+        status:
+          type: string
+          enum: [open, ended]
+          description: "`open` serves variants under `X-Oxsum-Experiment`; `ended` resolves the plain `model` instead"
+        createdAt: { type: string, format: date-time }
+        endedAt: { type: string, format: date-time, nullable: true, description: "when the experiment was ended; null while open" }
+    Variant:
+      type: object
+      required: [model, weight]
+      properties:
+        model: { type: string, minLength: 1, maxLength: 200, description: "the model this variant serves — must resolve to a served model or an alias" }
+        weight: { type: integer, format: int64, minimum: 1, description: "the variant's relative share of the weighted pick" }
+    PutExperimentRequest:
+      type: object
+      required: [variants]
+      properties:
+        variants:
+          type: array
+          minItems: 1
+          maxItems: 8
+          items: { $ref: "#/components/schemas/Variant" }
+          description: "the whole variant set — replaced atomically; every `model` must be served, every `weight` ≥ 1"
+    VariantResult:
+      type: object
+      required: [variant, turns, inputTokens, outputTokens, chargedMinor, errored]
+      properties:
+        variant: { type: string, description: "the variant's model name — the group key" }
+        turns: { type: integer, format: int64, description: "how many settled turns served this variant" }
+        inputTokens: { type: integer, format: int64 }
+        outputTokens: { type: integer, format: int64 }
+        chargedMinor: { type: integer, format: int64, description: "what the variant's turns charged, in minor units" }
+        errored: { type: integer, format: int64, description: "how many turns errored — served nothing after their hold" }
     Team:
       type: object
       required: [teamId, name, members, createdAt]
