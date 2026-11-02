@@ -22,7 +22,7 @@ export function useCreateKey() {
 export function usePatchKey() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: ({ keyId, ...body }: { keyId: string } & Record<string, unknown>) =>
+    mutationFn: ({ keyId, ...body }: { keyId: string } & components["schemas"]["UpdateKeyConstraintsRequest"]) =>
       api<ApiKey>(`/org/keys/${keyId}`, { method: "PATCH", body }),
     onSuccess: () => client.invalidateQueries({ queryKey: ["keys"] }),
   });

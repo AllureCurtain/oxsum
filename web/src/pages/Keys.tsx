@@ -295,6 +295,9 @@ function KeyRow(props: {
                   tokensPerMinute: tpm === "" ? null : Number(tpm),
                   maxConcurrentHolds: maxHolds === "" ? null : Number(maxHolds),
                   modelAllowlist: models.trim() ? models.split(",").map((m) => m.trim()) : null,
+                  // PATCH replaces these constraints too; keep values this form does not edit.
+                  requiredPolicies: key.requiredPolicies,
+                  tokensPerMinuteScopes: key.tokensPerMinuteScopes,
                 });
               }}
             >
