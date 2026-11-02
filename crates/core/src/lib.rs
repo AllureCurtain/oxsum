@@ -23,6 +23,7 @@ mod email_tokens;
 mod entitlement;
 mod error;
 mod experiments;
+mod groups;
 mod guardrail;
 mod heads;
 mod holds;
@@ -100,6 +101,7 @@ pub use entitlement::{
 };
 pub use error::WalletError;
 pub use experiments::{Experiment, ExperimentBinding, Variant, VariantResult, pick_variant};
+pub use groups::Group;
 pub use guardrail::{
     Guardrail, GuardrailBinding, GuardrailPolicy, GuardrailSet, KeywordConfig, KeywordPattern,
     KeywordPolicy, ModerationConfig, PiiScanner, RequestContext, ResponseContext, Verdict,
