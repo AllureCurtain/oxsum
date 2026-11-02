@@ -449,6 +449,7 @@ async fn seed_request(
         cache: None,
         guardrail: Vec::new(),
         reason: None,
+        experiment: None,
     };
     wallet
         .settle(
