@@ -22,6 +22,7 @@ mod display;
 mod email_tokens;
 mod entitlement;
 mod error;
+mod experiments;
 mod guardrail;
 mod heads;
 mod holds;
@@ -68,11 +69,11 @@ pub use adapters::{
 pub use anomaly::{AnomalyFacts, Severity, anomaly_score};
 pub use audit::{AuditEntry, AuditPage, action as audit_action};
 pub use billing::{
-    BillLine, BillingMode, CacheRef, GuardrailRef, ItemizedCharge, MandateRef, MeteredSettlement,
-    MeteredUsage, Price, PriceBook, PriceRule, PriceSet, RuleMatch, Settlement, SettlementCache,
-    SettlementGuardrail, SettlementGuardrailOwned, SettlementKind, SettlementMandate,
-    SettlementRecord, SettlementSubscription, SubscriptionRef, UpstreamPrices, estimate_tokens,
-    hold_description, input_upper_bound,
+    BillLine, BillingMode, CacheRef, ExperimentRef, GuardrailRef, ItemizedCharge, MandateRef,
+    MeteredSettlement, MeteredUsage, Price, PriceBook, PriceRule, PriceSet, RuleMatch, Settlement,
+    SettlementCache, SettlementExperiment, SettlementGuardrail, SettlementGuardrailOwned,
+    SettlementKind, SettlementMandate, SettlementRecord, SettlementSubscription, SubscriptionRef,
+    UpstreamPrices, estimate_tokens, hold_description, input_upper_bound,
 };
 pub use cache::{CachePolicy, CacheStore, CachedAnswer, PromptPart, prompt_digest};
 pub use channels::{
@@ -98,6 +99,7 @@ pub use entitlement::{
     MandateVerdict, RpmVerdict, TpmVerdict,
 };
 pub use error::WalletError;
+pub use experiments::{Experiment, ExperimentBinding, Variant, VariantResult, pick_variant};
 pub use guardrail::{
     Guardrail, GuardrailBinding, GuardrailPolicy, GuardrailSet, KeywordConfig, KeywordPattern,
     KeywordPolicy, ModerationConfig, PiiScanner, RequestContext, ResponseContext, Verdict,
