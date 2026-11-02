@@ -966,6 +966,19 @@ async fn run(
             serving.protocol == surface.protocol() && serving.price.mode == surface.billing_mode()
         })
         .collect();
+    // The key's request group narrows which channels may serve (issue #508):
+    // an ungrouped key (`None`) reaches every channel, a grouped key only its
+    // group's. The filter runs over the candidates a model resolved, before
+    // `route_order`, and re-applies to each fallback's servings below — a
+    // fallback may only serve through a channel the key's group allows.
+    let key_channel_scope = state.db.key_channel_scope(key.key_id).await?;
+    let candidates: Vec<Serving> = match &key_channel_scope {
+        Some(scope) => candidates
+            .into_iter()
+            .filter(|serving| scope.contains(&serving.channel_id))
+            .collect(),
+        None => candidates,
+    };
     if candidates.is_empty() {
         return Err(GatewayError::model_not_served(&request.model));
     }
@@ -1010,6 +1023,10 @@ async fn run(
             .filter(|serving| {
                 serving.protocol == surface.protocol()
                     && serving.price.mode == surface.billing_mode()
+            })
+            .filter(|serving| match &key_channel_scope {
+                Some(scope) => scope.contains(&serving.channel_id),
+                None => true,
             })
             .collect();
         if ordered.is_empty() {

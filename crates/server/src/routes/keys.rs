@@ -45,6 +45,10 @@ pub(crate) struct CreateKeyReq {
     /// null requires none.
     #[serde(default)]
     required_policies: Option<Vec<String>>,
+    /// The request group the key joins at mint (issue #508); absent or null
+    /// leaves it ungrouped, reaching every channel.
+    #[serde(default)]
+    group_id: Option<uuid::Uuid>,
 }
 
 #[derive(Deserialize)]
@@ -75,11 +79,18 @@ pub(crate) struct UpdateKeyConstraintsReq {
     /// clears it back to none.
     #[serde(default)]
     required_policies: Option<Vec<String>>,
+    /// The request group the key joins (issue #508) — a triple-state field:
+    /// absent keeps the current group, null ungroups the key (it reaches every
+    /// channel again), a group id reassigns it. The group must be the
+    /// organization's own.
+    #[serde(default, deserialize_with = "crate::admin::double_option")]
+    group_id: Option<Option<uuid::Uuid>>,
 }
 
 /// Builds the constraint set both key endpoints carry, parsing the duration's name.
 fn key_constraints(r: &UpdateKeyConstraintsReq) -> Result<oxsum_core::KeyConstraints, WalletError> {
     Ok(oxsum_core::KeyConstraints {
+        group_id: r.group_id,
         spend_limit_minor: r.spend_limit_minor,
         budget_duration: r
             .budget_duration
@@ -112,6 +123,7 @@ pub(crate) async fn create_key(
                     tokens_per_minute: r.tokens_per_minute,
                     tokens_per_minute_scopes: r.tokens_per_minute_scopes,
                     required_policies: r.required_policies,
+                    group_id: r.group_id.map(Some),
                 })
                 .map(|c| (r.name, r.expires_at, c))
             },
@@ -119,16 +131,11 @@ pub(crate) async fn create_key(
         .map_err(ApiError::from)?;
     // A key minted through a session records who minted it, for product.md's per-member
     // rules; a key minted with an API key records no creator, because no person acts there.
-    ok(state
+    let created = state
         .db
-        .create_key(
-            principal.organization().id,
-            name,
-            expires_at,
-            principal.user_id(),
-            constraints,
-        )
-        .await?)
+        .create_key_as(&principal, name, expires_at, constraints)
+        .await?;
+    ok(created)
 }
 
 pub(crate) async fn list_keys(
@@ -241,12 +248,7 @@ pub(crate) async fn patch_key(
     // and any other key id answers 404 with the key untouched, so ids cannot be probed.
     match state
         .db
-        .update_key_constraints(
-            principal.organization().id,
-            key_id,
-            principal.key_scope(),
-            key_constraints(&r)?,
-        )
+        .update_key_constraints_as(&principal, key_id, key_constraints(&r)?)
         .await?
     {
         Some(key) => ok(key),
@@ -435,4 +437,12 @@ enum MandateVerdictOrMandate {
     Verified(EntitlementMandate),
     /// The blob cannot verify — no seed, bad signature, foreign shape.
     Invalid,
+}
+
+/// Read-only group configuration for the authenticated organization.
+pub(crate) async fn list_groups(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+) -> ApiResult<Vec<oxsum_core::Group>> {
+    ok(state.db.groups(principal.organization().id).await?)
 }

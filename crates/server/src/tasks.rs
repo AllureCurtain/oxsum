@@ -185,6 +185,7 @@ async fn submit_inner(
     // The candidates: channels serving this model under the `tasks` protocol,
     // weighted-ordered the way a chat turn's routes are — a refused submission
     // fails over to the next route's channel under the same hold.
+    let channel_scope = state.db.key_channel_scope(key.key_id).await?;
     let servings = state
         .db
         .servings_named(model, state.config.secret().ok_or(GatewayError::Internal)?)
@@ -192,6 +193,11 @@ async fn submit_inner(
         .0
         .into_iter()
         .filter(|serving| serving.protocol == oxsum_core::TASKS)
+        .filter(|serving| {
+            channel_scope
+                .as_ref()
+                .is_none_or(|ids| ids.contains(&serving.channel_id))
+        })
         .collect::<Vec<_>>();
     if servings.is_empty() {
         return Err(GatewayError::model_not_served(model));
