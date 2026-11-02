@@ -525,6 +525,7 @@ impl Db {
             cache: None,
             guardrail: Vec::new(),
             reason: None,
+            experiment: None,
         }
         .description()?;
         world
