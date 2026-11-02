@@ -33,6 +33,7 @@ mod billing;
 mod channels;
 mod credentials;
 mod fallbacks;
+mod groups;
 mod guardrails;
 mod ops;
 mod organizations;
@@ -96,6 +97,11 @@ pub fn router(state: AppState) -> Router<AppState> {
             get(fallbacks::get_fallbacks)
                 .put(fallbacks::set_fallbacks)
                 .delete(fallbacks::delete_fallbacks),
+        )
+        .route("/groups", get(groups::list_groups))
+        .route(
+            "/organizations/{organization_id}/groups/{name}",
+            put(groups::set_group).delete(groups::delete_group),
         )
         .route("/deposits", get(ops::deposits))
         .route("/deposits/{deposit_id}/reverse", post(ops::reverse_deposit))

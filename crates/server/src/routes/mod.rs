@@ -61,6 +61,7 @@ pub fn router(state: AppState) -> Router {
             get(org::my_organizations).post(org::create_organization),
         )
         .route("/org/keys", get(keys::list_keys).post(keys::create_key))
+        .route("/org/groups", get(keys::list_groups))
         .route(
             "/org/keys/{key_id}",
             delete(keys::revoke_key).patch(keys::patch_key),
