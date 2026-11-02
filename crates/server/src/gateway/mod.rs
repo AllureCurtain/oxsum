@@ -210,6 +210,12 @@ const IDEMPOTENCY_KEY: &str = "idempotency-key";
 /// public half.
 pub(crate) const MANDATE_HEADER: &str = "x-oxsum-mandate";
 
+/// The header a request opts into an experiment with (issue #509):
+/// `X-Oxsum-Experiment: <name>` — the open experiment whose weighted variant
+/// pick rewrites the served model, recorded on the settlement and the usage
+/// row so a report groups spend by variant.
+pub(crate) const EXPERIMENT_HEADER: &str = "x-oxsum-experiment";
+
 /// The most of an upstream body the non-streaming path will buffer. A whole
 /// body has to sit in memory to be parsed as JSON, so a runaway or hostile
 /// upstream must not be able to grow it without bound — embeddings batches
@@ -779,6 +785,34 @@ async fn run(
         gen_ai.usage.input_tokens = tracing::field::Empty,
         gen_ai.usage.output_tokens = tracing::field::Empty,
     );
+    // The experiment opt-in (issue #509): `X-Oxsum-Experiment` names an open
+    // experiment of the organization, and the variant its weighted pick lands
+    // on rewrites the model the rest of admission resolves — a variant is just
+    // a model name plus a weight, resolved through the same `servings_named`
+    // and priced like any request, so the served model still carries the whole
+    // bill's proof. The binding (`{id, variant}`) is what the settlement and
+    // the usage row record, so a report can group spend by variant. An
+    // unknown or ended name resolves the plain model instead — an experiment
+    // is a routing hint, never an admission gate.
+    let experiment: Option<oxsum_core::ExperimentBinding> =
+        match headers.get(EXPERIMENT_HEADER).and_then(|v| v.to_str().ok()) {
+            Some(name) => match state.db.experiment_named(organization.id, name).await? {
+                Some(experiment) => {
+                    match oxsum_core::pick_variant(&experiment.variants, rand::random::<f64>()) {
+                        Some(variant) => {
+                            request.model = variant.model.clone();
+                            Some(oxsum_core::ExperimentBinding {
+                                experiment_id: experiment.id,
+                                variant: variant.model.clone(),
+                            })
+                        }
+                        None => None,
+                    }
+                }
+                None => None,
+            },
+            None => None,
+        };
     // The three admission-time reads are independent — the tier's capability
     // package, the model's servings, the discount in force — so they run
     // concurrently instead of as three serial pool round trips. A failure in
@@ -1254,6 +1288,7 @@ async fn run(
             surface,
             guardrails.clone(),
             std::mem::take(&mut pending_flags),
+            experiment.clone(),
         )
         .await;
     }
@@ -1402,6 +1437,12 @@ async fn run(
     // saw the request (issue #502).
     for flag in pending_flags {
         turn.note_guardrail(flag);
+    }
+    // The experiment binding rides the turn to its settlement and usage row
+    // (issue #509): `{id, variant}` on the v13 description and the row's
+    // `usage_details`, so a report groups spend by variant.
+    if let Some(binding) = experiment {
+        turn.note_experiment(binding);
     }
     // The dashboard's live section sees the turn from here: the hold is taken, upstream is
     // next. Best-effort — a missed event is a missed live update, not lost state.
@@ -1885,6 +1926,7 @@ async fn serve_cache_hit(
     surface: Surface,
     response_guardrails: Vec<Arc<dyn oxsum_core::Guardrail>>,
     pending_flags: Vec<oxsum_core::SettlementGuardrailOwned>,
+    experiment: Option<oxsum_core::ExperimentBinding>,
 ) -> Result<Response, GatewayError> {
     let wallet = state.tenants.get(&organization.tenant_id).await?;
     let hold_key = format!("req-{request_id}:hold");
@@ -2002,6 +2044,12 @@ async fn serve_cache_hit(
     turn.note_upstream_end();
     for flag in pending_flags {
         turn.note_guardrail(flag);
+    }
+    // A cache-hit turn still ran under the experiment that picked its model
+    // (issue #509): the binding rides to the settlement and usage row so a
+    // report groups it with the variant's other serves.
+    if let Some(binding) = experiment {
+        turn.note_experiment(binding);
     }
     // A re-served answer still passes the post_call (issue #502): the stored
     // body is the response the client sees, and a policy that blocks or flags

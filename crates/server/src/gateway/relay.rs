@@ -172,6 +172,11 @@ struct Plan {
     /// The organization the response's `ResponseContext` names — carried for
     /// the streamed post_call, which has no `run` scope left to read it from.
     organization_id: uuid::Uuid,
+    /// The experiment a turn serves under (issue #509): the binding whose
+    /// weighted pick chose this turn's model, recorded as `{id, variant}` on
+    /// the v13 settlement description and `usage_details.experiment` so a
+    /// report groups spend by variant. `None` on a turn no experiment served.
+    experiment: Option<oxsum_core::ExperimentBinding>,
     /// The subscription quota this turn's hold drew on (issue #496): what the
     /// settlement settles against `subscription_draws` before the wallet's
     /// entry, and the `{subscriptionId, periodId, drawnMinor, chargedMinor}`
@@ -326,8 +331,19 @@ impl Turn {
                 guardrails: Vec::new(),
                 response_guardrails,
                 organization_id,
+                experiment: None,
                 span,
             }),
+        }
+    }
+
+    /// Records the experiment this turn serves under (issue #509): the binding
+    /// whose weighted pick chose the model, written as `{id, variant}` into the
+    /// v13 settlement description and the usage row's `usage_details` so a
+    /// report groups spend by variant.
+    pub fn note_experiment(&mut self, experiment: oxsum_core::ExperimentBinding) {
+        if let Some(plan) = self.plan.as_mut() {
+            plan.experiment = Some(experiment);
         }
     }
 
@@ -729,6 +745,24 @@ impl Plan {
                 );
             }
         }
+        // The experiment's paper trail on the usage row, in the same escape
+        // hatch the cache hit uses (issue #509): `usage_details.experiment`
+        // carries `{id, variant}` so a results read can group spend by variant
+        // without re-parsing the settlement description.
+        if let Some(binding) = &self.experiment {
+            let details = usage
+                .usage_details
+                .get_or_insert_with(|| serde_json::json!({}));
+            if let Some(map) = details.as_object_mut() {
+                map.insert(
+                    "experiment".to_owned(),
+                    serde_json::json!({
+                        "id": binding.experiment_id,
+                        "variant": binding.variant,
+                    }),
+                );
+            }
+        }
         // The turn's OTLP span gets the counts the charge was priced from —
         // upstream's own report or the local estimate — at the one place every
         // settlement path passes through, plus the turn's wall time (the span's
@@ -853,6 +887,13 @@ impl Plan {
                 }),
             guardrail: guardrail_notes,
             reason: reason.as_deref(),
+            experiment: self
+                .experiment
+                .as_ref()
+                .map(|binding| oxsum_core::SettlementExperiment {
+                    id: &binding.experiment_id,
+                    variant: &binding.variant,
+                }),
         };
         let description = settlement.description()?;
         // The wallet settles only its own share: the hold took `freeze -
