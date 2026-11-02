@@ -503,6 +503,8 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "device_codes".to_owned(),
             "email_tokens".to_owned(),
             "experiments".to_owned(),
+            "group_channels".to_owned(),
+            "groups".to_owned(),
             "guardrail_bindings".to_owned(),
             "guardrail_policies".to_owned(),
             "idempotency_records".to_owned(),
