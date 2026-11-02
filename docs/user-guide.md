@@ -298,6 +298,12 @@ Notes:
 
 Purpose: several integrations, one organization, revocable separately.
 
+In **API keys**, open **Constraints** to edit a key's budget, rate limits or
+model allowlist. Saving preserves its required guardrail policies, tag-scoped
+token limits, and request-group assignment. Clearing a field in this form
+removes that field's limit; policy and scoped-token configuration can be
+changed through the API below.
+
 - `POST /api/v1/org/keys` mints another key, with an optional `name`, an optional RFC 3339 `expiresAt`, and optional constraints: `spendLimitMinor` (the most the key may have committed — settled charges plus outstanding holds, in minor units; null is unlimited), `budgetDuration` (`"daily"`, `"weekly"` or `"monthly"` makes the limit periodic over the UTC calendar window instead of cumulative; it needs a limit), `modelAllowlist` (the gateway models the key may call; null allows all), `requestsPerMinute` (requests the key may start inside a rolling minute; null is uncapped), `maxConcurrentHolds` (holds the key may keep open at once; null is uncapped), `requiredPolicies` (the guardrail policies the key's turns must run — every name must already exist as a policy the platform admin wrote; null requires none) and `groupId` (the request group the key routes through — a named channel subset the platform admin wrote; null leaves it ungrouped and reaching every channel). The secret comes back once.
 - `GET /api/v1/org/keys` lists the organization's keys: id, name, display prefix, timestamps, and the constraint fields. Never a secret.
 - `PATCH /api/v1/org/keys/{keyId}` replaces the constraint set — `spendLimitMinor`, `budgetDuration`, `modelAllowlist`, `requestsPerMinute`, `maxConcurrentHolds`, `requiredPolicies`, `groupId` — each cleared by `null`, under the same role rules as revoking. Ordinary constraints also clear on omission; `groupId` omission preserves its assignment. Grouped bearers cannot create or patch keys, and member sessions cannot change `groupId`. A hold that would push the key past its limit is refused with 429 `KEY_LIMIT_EXCEEDED` — on the gateway too, where it looks like OpenAI's `insufficient_quota` — so concurrent requests cannot exceed it. A limit of 0 means the key can never hold. A gateway request naming a model the allowlist does not carry is refused with 403 before upstream is contacted. A request past the key's minute allowance is refused 429 `RATE_LIMITED` with `Retry-After`, and a hold over the outstanding cap is refused 429 `TOO_MANY_HOLDS` until a settlement frees a slot.
