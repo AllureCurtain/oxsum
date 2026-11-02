@@ -1011,8 +1011,10 @@ impl SettlementKind {
 /// always, and `requestedModel` when it differs — the capability the caller
 /// asked for and the model that actually answered when a fallback served it
 /// (issue #500); `model` stays the served name for back-compat readers, and
-/// the two differ only when a fallback ran.
-const DESCRIPTION_VERSION: i64 = 12;
+/// the two differ only when a fallback ran. v13 adds the optional
+/// `experiment` — `{id, variant}`, the binding an experiment-served turn ran
+/// under (issue #509); absent on every turn no experiment picked.
+const DESCRIPTION_VERSION: i64 = 13;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1096,6 +1098,12 @@ pub struct Settlement<'a> {
     /// reason it was given, not one invented after the fact.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<&'a str>,
+    /// The experiment a settled turn served under (issue #509): `{id, variant}`
+    /// — the binding that picked this turn's model and which variant it landed
+    /// on, so a report groups spend by variant. Absent on a turn no experiment
+    /// served — the common case.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub experiment: Option<SettlementExperiment<'a>>,
 }
 
 /// The subscription a settled turn's hold drew on, as the v9 description's
@@ -1142,6 +1150,20 @@ pub struct SettlementCache<'a> {
     pub source_entry_id: &'a uuid::Uuid,
     /// The match's score: `1.0` on an exact-digest hit.
     pub similarity: f64,
+}
+
+/// The experiment a settled turn served under, as the v13 description's
+/// `experiment` object (issue #509): `id` names the `oxsum.experiments` row
+/// that picked this turn's model and `variant` the label it landed on, so an
+/// offline read can group the billed spend by variant. A turn no experiment
+/// served omits the field — the common case, so it costs nothing.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettlementExperiment<'a> {
+    /// The experiment's own id (`oxsum.experiments.id`).
+    pub id: &'a uuid::Uuid,
+    /// The variant the weighted pick landed on — a `variants[].model` name.
+    pub variant: &'a str,
 }
 
 /// The guardrail verdict a settled turn's pipeline produced, as the v11
@@ -1350,6 +1372,11 @@ struct SettlementV9<'a> {
     /// own answer words, under the content hash — absent for a clean settle.
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<&'a str>,
+    /// The experiment the turn served under, v13's addition (issue #509):
+    /// `{id, variant}` — the binding whose weighted pick chose the model.
+    /// Absent on a turn no experiment served.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    experiment: Option<SettlementExperiment<'a>>,
 }
 
 impl Settlement<'_> {
@@ -1389,6 +1416,7 @@ impl Settlement<'_> {
             cache: self.cache.clone(),
             guardrail: self.guardrail.clone(),
             reason: self.reason,
+            experiment: self.experiment.clone(),
         })
         .map_err(|error| WalletError::InvalidInput(format!("settlement record: {error}")))
     }
@@ -1574,6 +1602,20 @@ pub struct SettlementRecord {
     /// Why the turn refused or errored, when the writer recorded one (issue
     /// #233); `None` on a clean settle and on records that predate it.
     pub reason: Option<String>,
+    /// The experiment the turn served under (v13, issue #509): `{id, variant}`;
+    /// `None` on a turn no experiment served and on records that predate it.
+    pub experiment: Option<ExperimentRef>,
+}
+
+/// The experiment a settled record names, read back (v13, issue #509): which
+/// experiment's pick chose the turn's model and which variant it landed on.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExperimentRef {
+    /// The experiment's own id (`oxsum.experiments.id`).
+    pub id: Uuid,
+    /// The variant the weighted pick landed on — a `variants[].model` name.
+    pub variant: String,
 }
 
 /// The mandate a settled record names, read back: `{id, hash}` — the mandate's
@@ -1697,6 +1739,8 @@ struct SettlementRecordWire {
     charged: i64,
     freeze: i64,
     reason: Option<String>,
+    /// The experiment a v13 record carries; `None` on earlier versions.
+    experiment: Option<ExperimentRef>,
 }
 
 impl SettlementRecord {
@@ -1759,6 +1803,7 @@ impl SettlementRecord {
             cache: wire.cache,
             guardrail: wire.guardrail,
             reason: wire.reason,
+            experiment: wire.experiment,
         })
     }
 }
@@ -2357,11 +2402,12 @@ mod tests {
             cache: None,
             guardrail: Vec::new(),
             reason: None,
+            experiment: None,
         };
         let json = settlement.description().unwrap();
         assert_eq!(
             json,
-            r#"{"v":12,"request":"abc","channel":"deepseek","model":"deepseek-chat","servedModel":"deepseek-chat","priceVersion":3,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100},"lines":[["input",116,1000000],["output",100,2000000]],"upstreamAttempts":1,"charged":316,"freeze":400}"#
+            r#"{"v":13,"request":"abc","channel":"deepseek","model":"deepseek-chat","servedModel":"deepseek-chat","priceVersion":3,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100},"lines":[["input",116,1000000],["output",100,2000000]],"upstreamAttempts":1,"charged":316,"freeze":400}"#
         );
         // Within the ledger's limit, whatever the model is called.
         assert!(json.len() < 512);
@@ -2489,6 +2535,7 @@ mod tests {
             cache: None,
             guardrail: Vec::new(),
             reason: None,
+            experiment: None,
         }
         .description()
         .unwrap();
@@ -2545,6 +2592,7 @@ mod tests {
             cache: None,
             guardrail: Vec::new(),
             reason: None,
+            experiment: None,
         }
         .description()
         .unwrap();
@@ -2581,6 +2629,7 @@ mod tests {
             mandate: None,
             subscription: None,
             cache: None,
+            experiment: None,
             guardrail: Vec::new(),
             reason: None,
         };
@@ -2646,6 +2695,7 @@ mod tests {
             subscription: None,
             cache: None,
             guardrail: Vec::new(),
+            experiment: None,
             reason: None,
         };
         let text = settlement.description().unwrap();
@@ -2682,7 +2732,7 @@ mod tests {
         // (v2), or one whose priced lines are missing. A v3 record parses — the
         // reader tolerates the shape v4 superseded — but one that lacks the
         // lines the prices are read out of still cannot.
-        assert!(SettlementRecord::parse(r#"{"v":13,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[["input",1,1],["output",0,1]],"charged":1,"freeze":1}"#).is_none());
+        assert!(SettlementRecord::parse(r#"{"v":14,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[["input",1,1],["output",0,1]],"charged":1,"freeze":1}"#).is_none());
         assert!(SettlementRecord::parse(r#"{"v":2,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[{"item":"input","units":1,"pricePerM":1},{"item":"output","units":1,"pricePerM":1}],"charged":1,"freeze":1}"#).is_none());
         assert!(SettlementRecord::parse(r#"{"v":3,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[],"charged":1,"freeze":1}"#).is_none());
         assert!(
