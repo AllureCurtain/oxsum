@@ -1,11 +1,13 @@
-import { useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
+import { ArrowDown, ArrowUp, Plus, RotateCcw, X } from "lucide-react";
 import {
   Banner,
   Button,
   Card,
   EmptyRows,
   Field,
+  IconButton,
   NumberInput,
   Select,
   TableShell,
@@ -13,7 +15,11 @@ import {
   TextInput,
 } from "../../components/ui";
 import { ApiError } from "../../api/client";
+import type { components } from "../../api/schema";
 import { adminApi, useAdmin } from "./api";
+
+type ModelFallbackChain = components["schemas"]["ModelFallbackChain"];
+type ModelAlias = components["schemas"]["ModelAlias"];
 
 interface ChannelCredential {
   credentialId: string;
@@ -38,6 +44,7 @@ interface Channel {
 export function Channels({ token }: { token: string }) {
   const { t } = useTranslation();
   const channels = useAdmin<Channel[]>(token, "/channels");
+  const [channelAliases, setChannelAliases] = useState<string[]>([]);
   const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
@@ -45,6 +52,34 @@ export function Channels({ token }: { token: string }) {
   const [priceChannel, setPriceChannel] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!channels.data) return;
+    let current = true;
+    Promise.all(
+      channels.data.map((channel) =>
+        adminApi<ModelAlias[]>(token, `/channels/${encodeURIComponent(channel.name)}/aliases`)
+          .then((aliases) => aliases.map(({ alias }) => alias))
+          .catch(() => [] as string[]),
+      ),
+    ).then((aliases) => {
+      if (current) setChannelAliases(aliases.flat());
+    });
+    return () => {
+      current = false;
+    };
+  }, [channels.data, token]);
+  useEffect(() => {
+    if (!channels.data) return;
+    const names = new Set(channels.data.flatMap((channel) => channel.models.map(({ model }) => model)));
+    setChannelAliases((current) => current.filter((alias) => !names.has(alias)));
+  }, [channels.data]);
+  const modelNames = useMemo(
+    () => [...new Set([
+      ...(channels.data ?? []).flatMap((channel) => channel.models.map(({ model }) => model)),
+      ...channelAliases,
+    ])].sort(),
+    [channelAliases, channels.data],
+  );
 
   return (
     <div className="flex flex-col gap-6">
@@ -140,8 +175,246 @@ export function Channels({ token }: { token: string }) {
           components={{ code: <code className="mono" /> }}
         />
       </p>
+      <ModelFallbacks token={token} models={modelNames} />
       {priceChannel ? <ChannelPrices token={token} channel={priceChannel} /> : null}
     </div>
+  );
+}
+
+function ModelFallbacks({ token, models }: { token: string; models: string[] }) {
+  const { t } = useTranslation();
+  const [model, setModel] = useState("");
+  const [loadedModel, setLoadedModel] = useState<string | null>(null);
+  const [fallbackInput, setFallbackInput] = useState("");
+  const [fallbacks, setFallbacks] = useState<string[]>([]);
+  const [savedFallbacks, setSavedFallbacks] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const loadGeneration = useRef(0);
+  const normalizedModel = model.trim();
+  const isLoaded = loadedModel === normalizedModel;
+  const hasChanges = JSON.stringify(fallbacks) !== JSON.stringify(savedFallbacks);
+  const canSwitchModel = loadedModel === null || (isLoaded && !hasChanges && !saving);
+
+  useEffect(() => {
+    if (!model && models.length > 0) setModel(models[0]);
+  }, [model, models]);
+
+  async function loadChain() {
+    if (!normalizedModel) {
+      setError(t("admin.channels.fallbackModelRequired"));
+      return;
+    }
+    if (!models.includes(normalizedModel)) {
+      setError(t("admin.channels.fallbackModelUnknown", { model: normalizedModel }));
+      return;
+    }
+    const generation = ++loadGeneration.current;
+    setLoading(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const chain = await adminApi<ModelFallbackChain>(
+        token,
+        `/model-fallbacks/${encodeURIComponent(normalizedModel)}`,
+      );
+      if (generation !== loadGeneration.current) return;
+      setLoadedModel(normalizedModel);
+      setFallbackInput("");
+      setFallbacks(chain.fallbacks);
+      setSavedFallbacks(chain.fallbacks);
+    } catch (err) {
+      if (generation !== loadGeneration.current) return;
+      setError(err instanceof ApiError ? err.message : "failed");
+    } finally {
+      if (generation === loadGeneration.current) setLoading(false);
+    }
+  }
+
+  function addFallback(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const candidate = fallbackInput.trim();
+    setError(null);
+    setMessage(null);
+    if (!candidate) return;
+    if (candidate === normalizedModel) {
+      setError(t("admin.channels.fallbackSelf"));
+      return;
+    }
+    if (fallbacks.includes(candidate)) {
+      setError(t("admin.channels.fallbackDuplicate"));
+      return;
+    }
+    setFallbacks((current) => [...current, candidate]);
+    setFallbackInput("");
+  }
+
+  async function saveChain(nextFallbacks: string[]) {
+    setSaving(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const chain = await adminApi<ModelFallbackChain>(
+        token,
+        `/model-fallbacks/${encodeURIComponent(normalizedModel)}`,
+        { method: "PUT", body: { fallbacks: nextFallbacks } satisfies ModelFallbackChain },
+      );
+      setFallbacks(chain.fallbacks);
+      setSavedFallbacks(chain.fallbacks);
+      setMessage(t("admin.channels.fallbackSaved"));
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card title={t("admin.channels.fallbackTitle")}>
+      <div className="flex flex-col gap-4">
+        <p className="text-sm text-muted">{t("admin.channels.fallbackNote")}</p>
+        <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+          <Field label={t("admin.channels.fallbackModel")}>
+            <TextInput
+              list="channel-model-fallback-options"
+              value={model}
+              disabled={loading || loadedModel !== null || saving}
+              onChange={(event) => setModel(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  void loadChain();
+                }
+              }}
+              placeholder={t("admin.channels.fallbackModelPlaceholder")}
+            />
+            <datalist id="channel-model-fallback-options">
+              {models.map((name) => <option key={name} value={name} />)}
+            </datalist>
+          </Field>
+          <Button type="button" tone="ghost" disabled={loading || saving || hasChanges || !normalizedModel} onClick={() => void loadChain()}>
+            {loading ? t("admin.channels.fallbackLoading") : t("admin.channels.loadFallbacks")}
+          </Button>
+        </div>
+
+        {isLoaded ? (
+          <>
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs text-muted">{t("admin.channels.editingModel", { model: loadedModel })}</p>
+              <Button
+                type="button"
+                tone="ghost"
+                disabled={!canSwitchModel}
+                onClick={() => {
+                  setLoadedModel(null);
+                  setFallbackInput("");
+                  setFallbacks([]);
+                  setSavedFallbacks([]);
+                  setError(null);
+                  setMessage(null);
+                }}
+              >
+                {t("admin.channels.changeFallbackModel")}
+              </Button>
+            </div>
+            <div className="flex flex-col gap-2">
+              <p className="text-xs font-medium text-muted">{t("admin.channels.fallbackOrder")}</p>
+              {fallbacks.length === 0 ? (
+                <p className="rounded-lg border border-dashed border-line px-3 py-4 text-sm text-muted">
+                  {t("admin.channels.fallbackEmpty")}
+                </p>
+              ) : (
+                <ol className="divide-y divide-line rounded-lg border border-line">
+                  {fallbacks.map((fallback, index) => (
+                    <li key={`${fallback}-${index}`} className="flex min-h-12 items-center gap-2 px-3 py-2">
+                      <span className="w-6 shrink-0 text-right font-mono text-xs text-muted">{index + 1}</span>
+                      <span className="min-w-0 flex-1 break-all font-mono text-sm text-ink">{fallback}</span>
+                      <IconButton
+                        type="button"
+                        label={t("admin.channels.moveFallbackUp", { model: fallback })}
+                        disabled={saving || index === 0}
+                        onClick={() => setFallbacks((current) => {
+                          const next = [...current];
+                          [next[index - 1], next[index]] = [next[index], next[index - 1]];
+                          return next;
+                        })}
+                      >
+                        <ArrowUp className="size-4" />
+                      </IconButton>
+                      <IconButton
+                        type="button"
+                        label={t("admin.channels.moveFallbackDown", { model: fallback })}
+                        disabled={saving || index === fallbacks.length - 1}
+                        onClick={() => setFallbacks((current) => {
+                          const next = [...current];
+                          [next[index], next[index + 1]] = [next[index + 1], next[index]];
+                          return next;
+                        })}
+                      >
+                        <ArrowDown className="size-4" />
+                      </IconButton>
+                      <IconButton
+                        type="button"
+                        label={t("admin.channels.removeFallback", { model: fallback })}
+                        disabled={saving}
+                        onClick={() => setFallbacks((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+                      >
+                        <X className="size-4" />
+                      </IconButton>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </div>
+
+            <form className="grid grid-cols-1 items-end gap-3 sm:grid-cols-[minmax(0,1fr)_auto]" onSubmit={addFallback}>
+              <Field label={t("admin.channels.fallbackAddLabel")}>
+                <TextInput
+                  list="channel-model-fallback-options"
+                  value={fallbackInput}
+                  disabled={saving}
+                  onChange={(event) => setFallbackInput(event.target.value)}
+                  placeholder={t("admin.channels.fallbackModelPlaceholder")}
+                />
+              </Field>
+              <Button type="submit" tone="ghost" disabled={saving || !fallbackInput.trim()}>
+                <Plus className="size-4" />
+                {t("admin.channels.addFallback")}
+              </Button>
+            </form>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <Button type="button" disabled={!hasChanges || saving} onClick={() => void saveChain(fallbacks)}>
+                {saving ? t("admin.channels.fallbackSaving") : t("admin.channels.saveFallbacks")}
+              </Button>
+              <Button
+                type="button"
+                tone="ghost"
+                disabled={!hasChanges || saving}
+                onClick={() => {
+                  setFallbacks(savedFallbacks);
+                  setError(null);
+                  setMessage(null);
+                }}
+              >
+                <RotateCcw className="size-4" />
+                {t("admin.channels.discardFallbackChanges")}
+              </Button>
+              {hasChanges ? <span className="text-xs text-muted">{t("admin.channels.fallbackUnsaved")}</span> : null}
+              {message ? <span role="status" className="text-xs text-success">{message}</span> : null}
+            </div>
+          </>
+        ) : (
+          <p className="text-xs text-muted">
+            {models.length === 0 ? t("admin.channels.fallbackNoModels") : t("admin.channels.fallbackLoadHint")}
+          </p>
+        )}
+
+        {error ? <Banner tone="error">{error}</Banner> : null}
+      </div>
+    </Card>
   );
 }
 

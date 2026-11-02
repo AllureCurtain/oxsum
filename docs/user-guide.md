@@ -58,6 +58,15 @@ the EN/中文 switch in the header flips it — the choice is remembered across
 visits. Public pages outside `/app` (`/verify`, the report links) stay English:
 a verification artifact is read against the ledger, not localized.
 
+Platform operators enter the admin console with `OXSUM_ADMIN_TOKEN`. In
+**Channels**, **Model fallbacks** lets an operator choose a served model, read
+its current ordered chain, add served model names or aliases, move entries,
+remove entries, and save the replacement. An empty chain saved through the
+console clears the configuration. The gateway tries the requested model's
+channels first and follows the chain only when they all fail; each fallback is
+still checked against the caller's channel group and model policies. A fallback
+chain is a routing preference, not a guarantee that the fallback will answer.
+
 The login page drives every auth surface the contract offers: a GitHub button
 and one button per configured OIDC provider (drawn from `auth/methods`), and
 the TOTP second leg — an account with a confirmed factor sees a code field
