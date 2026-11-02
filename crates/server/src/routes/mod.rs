@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::http::StatusCode;
-use axum::routing::{delete, get, patch, post};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router, middleware};
 use oxsum_core::{
     Organization, Principal, Role, SESSION_COOKIE, Session, SessionPrincipal, Tenants, User, Wallet,
@@ -24,6 +24,7 @@ use crate::error::ApiError;
 mod auth;
 pub(crate) mod billing;
 mod device;
+mod experiments;
 mod keys;
 mod log;
 mod org;
@@ -79,6 +80,18 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/org/teams/{team_id}",
             patch(org::update_team).delete(org::delete_team),
+        )
+        // A/B experiments (issue #509): the list and the results any member
+        // reads, the writes owner/admin-only inside the handlers.
+        .route("/org/experiments", get(experiments::list_experiments))
+        .route("/org/experiments/{name}", put(experiments::put_experiment))
+        .route(
+            "/org/experiments/{name}/end",
+            post(experiments::end_experiment),
+        )
+        .route(
+            "/org/experiments/{experiment_id}/results",
+            get(experiments::experiment_results),
         )
         .route("/org/ownership", post(org::transfer_ownership))
         .route("/org/subscription", get(org::subscription))
