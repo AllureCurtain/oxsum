@@ -980,10 +980,10 @@ mod tests {
         // One version beyond the newest this build recomputes — a verifier an
         // upgrade behind meets a settlement it cannot price, and inclusion
         // proof alone answers for it.
-        let future = r#"{"v":13,"kind":"usage","charged":1,"freeze":1}"#;
+        let future = r#"{"v":14,"kind":"usage","charged":1,"freeze":1}"#;
         assert_eq!(
             verify_charge(future),
-            ChargeCheck::NewerSchema { version: 13 }
+            ChargeCheck::NewerSchema { version: 14 }
         );
     }
 
