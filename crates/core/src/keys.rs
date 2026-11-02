@@ -18,7 +18,7 @@ use uuid::Uuid;
 use crate::db::Db;
 use crate::error::WalletError;
 use crate::orgs::{self, Organization};
-use crate::sessions::KeyScope;
+use crate::sessions::{KeyScope, Principal};
 
 /// Every secret starts with this, so secret scanners and users can recognize one.
 const SECRET_MARK: &str = "oxs-";
@@ -34,7 +34,7 @@ pub(crate) const MAX_MODEL: usize = 128;
 const KEY_COLS: &str = "key_id, name, prefix, created_by, created_at, expires_at, \
                         revoked_at, spend_limit_minor, budget_duration, model_allowlist, \
                         requests_per_minute, max_concurrent_holds, tokens_per_minute, \
-                        tokens_per_minute_scopes, required_policies";
+                        tokens_per_minute_scopes, required_policies, group_id";
 
 /// The rule every model allowlist follows — a key's own, or a tier's: null or a
 /// non-empty list of non-empty model names.
@@ -231,9 +231,13 @@ impl TagScope {
 pub type TpmScopes = BTreeMap<String, TpmScope>;
 
 /// The constraints one key carries, written as a set — at mint or replaced wholesale
-/// by a patch. Every field is optional: `None` lifts that constraint.
+/// by a patch. An ordinary field's `None` lifts that constraint; `group_id`
+/// preserves its assignment unless explicitly supplied.
 #[derive(Debug, Clone, Default)]
 pub struct KeyConstraints {
+    /// Absent preserves the assignment on update; explicit `None` ungroups.
+    /// Creation defaults to ungrouped. Validated in the key write transaction.
+    pub group_id: Option<Option<Uuid>>,
     /// Settled charges plus outstanding holds attributed to the key may not exceed it.
     pub spend_limit_minor: Option<i64>,
     /// Makes the limit periodic over the current UTC period. Requires a limit.
@@ -362,6 +366,10 @@ pub struct ApiKey {
     /// The guardrail policies the key's turns must run (issue #502); `None`
     /// requires none — a turn still runs whatever the channel binds.
     pub required_policies: Option<Vec<String>>,
+    /// The request group the key belongs to (issue #508): a grouped key may
+    /// only reach its group's channels; `None` is the ungrouped default that
+    /// reaches every channel the organization sees.
+    pub group_id: Option<Uuid>,
 }
 
 /// The credential behind a key-authenticated request: which key acted, and the
@@ -409,6 +417,45 @@ impl Db {
         created_by: Option<Uuid>,
         constraints: KeyConstraints,
     ) -> Result<CreatedApiKey, WalletError> {
+        self.create_key_authorized(
+            organization_id,
+            name,
+            expires_at,
+            created_by,
+            constraints,
+            None,
+        )
+        .await
+    }
+
+    /// Mints a key with the caller's group-management authority checked atomically.
+    pub async fn create_key_as(
+        &self,
+        principal: &Principal,
+        name: Option<String>,
+        expires_at: Option<OffsetDateTime>,
+        constraints: KeyConstraints,
+    ) -> Result<CreatedApiKey, WalletError> {
+        self.create_key_authorized(
+            principal.organization().id,
+            name,
+            expires_at,
+            principal.user_id(),
+            constraints,
+            Some(principal),
+        )
+        .await
+    }
+
+    async fn create_key_authorized(
+        &self,
+        organization_id: Uuid,
+        name: Option<String>,
+        expires_at: Option<OffsetDateTime>,
+        created_by: Option<Uuid>,
+        constraints: KeyConstraints,
+        principal: Option<&Principal>,
+    ) -> Result<CreatedApiKey, WalletError> {
         let name = validate_name(name)?;
         if let Some(expires) = expires_at
             && expires <= OffsetDateTime::now_utc()
@@ -423,7 +470,12 @@ impl Db {
         self.require_guardrail_policies(&constraints.required_policies)
             .await?;
         let mut tx = self.pool().begin().await?;
-        let created = insert(
+        if let Some(principal) = principal {
+            require_key_management(&mut tx, principal, constraints.group_id.is_some()).await?;
+        }
+        validate_group(&mut tx, organization_id, constraints.group_id.flatten()).await?;
+        let group_id = constraints.group_id.flatten();
+        let mut created = insert(
             &mut tx,
             organization_id,
             name,
@@ -432,6 +484,12 @@ impl Db {
             constraints,
         )
         .await?;
+        sqlx::query("UPDATE oxsum.api_keys SET group_id = $2 WHERE key_id = $1")
+            .bind(created.key.id)
+            .bind(group_id)
+            .execute(&mut *tx)
+            .await?;
+        created.key.group_id = group_id;
         tx.commit().await?;
         Ok(created)
     }
@@ -518,12 +576,46 @@ impl Db {
         scope: KeyScope,
         constraints: KeyConstraints,
     ) -> Result<Option<ApiKey>, WalletError> {
+        self.update_key_authorized(organization_id, key_id, scope, constraints, None)
+            .await
+    }
+
+    /// Replaces constraints and group assignment in one authorized transaction.
+    pub async fn update_key_constraints_as(
+        &self,
+        principal: &Principal,
+        key_id: Uuid,
+        constraints: KeyConstraints,
+    ) -> Result<Option<ApiKey>, WalletError> {
+        self.update_key_authorized(
+            principal.organization().id,
+            key_id,
+            principal.key_scope(),
+            constraints,
+            Some(principal),
+        )
+        .await
+    }
+
+    async fn update_key_authorized(
+        &self,
+        organization_id: Uuid,
+        key_id: Uuid,
+        scope: KeyScope,
+        constraints: KeyConstraints,
+        principal: Option<&Principal>,
+    ) -> Result<Option<ApiKey>, WalletError> {
         constraints.validate()?;
         // A required policy must resolve: a name no `guardrail_policies` row
         // holds would silently unguard the turn it claims to protect, so the
         // write refuses before it lands rather than store a dangling name.
         self.require_guardrail_policies(&constraints.required_policies)
             .await?;
+        let mut tx = self.pool().begin().await?;
+        if let Some(principal) = principal {
+            require_key_management(&mut tx, principal, constraints.group_id.is_some()).await?;
+        }
+        validate_group(&mut tx, organization_id, constraints.group_id.flatten()).await?;
         // `model_allowlist` moves into its bind below, so the scopes JSON — a
         // borrow of the whole struct — is built before any field leaves.
         let scopes = scopes_json(&constraints);
@@ -537,6 +629,7 @@ impl Db {
                          requests_per_minute = $7, max_concurrent_holds = $8, \
                          tokens_per_minute = $9, tokens_per_minute_scopes = $10, \
                          required_policies = $11, \
+                         group_id = CASE WHEN $12 THEN $13 ELSE group_id END, \
                          budget_forecast_sent_for = NULL \
                      WHERE organization_id = $1 AND key_id = $2 AND created_by = $3 \
                      RETURNING {KEY_COLS}"
@@ -552,7 +645,9 @@ impl Db {
                 .bind(constraints.tokens_per_minute)
                 .bind(scopes.clone())
                 .bind(constraints.required_policies.clone())
-                .fetch_optional(self.pool())
+                .bind(constraints.group_id.is_some())
+                .bind(constraints.group_id.flatten())
+                .fetch_optional(&mut *tx)
                 .await?
             }
             KeyScope::Organization | KeyScope::All => {
@@ -562,6 +657,7 @@ impl Db {
                          requests_per_minute = $6, max_concurrent_holds = $7, \
                          tokens_per_minute = $8, tokens_per_minute_scopes = $9, \
                          required_policies = $10, \
+                         group_id = CASE WHEN $11 THEN $12 ELSE group_id END, \
                          budget_forecast_sent_for = NULL \
                      WHERE organization_id = $1 AND key_id = $2 \
                      RETURNING {KEY_COLS}"
@@ -576,7 +672,9 @@ impl Db {
                 .bind(constraints.tokens_per_minute)
                 .bind(scopes)
                 .bind(constraints.required_policies.clone())
-                .fetch_optional(self.pool())
+                .bind(constraints.group_id.is_some())
+                .bind(constraints.group_id.flatten())
+                .fetch_optional(&mut *tx)
                 .await?
             }
         };
@@ -588,10 +686,12 @@ impl Db {
                  WHERE scope = 'key' AND scope_id = $1",
             )
             .bind(key_id)
-            .execute(self.pool())
+            .execute(&mut *tx)
             .await?;
         }
-        row.as_ref().map(key_from_row).transpose()
+        let key = row.as_ref().map(key_from_row).transpose()?;
+        tx.commit().await?;
+        Ok(key)
     }
 
     /// Every key of an organization the principal may see, newest first. Metadata only.
@@ -900,6 +1000,7 @@ fn key_from_row(row: &sqlx::postgres::PgRow) -> Result<ApiKey, WalletError> {
             row.try_get::<Option<serde_json::Value>, _>("tokens_per_minute_scopes")?,
         ),
         required_policies: row.try_get("required_policies")?,
+        group_id: row.try_get("group_id")?,
     })
 }
 
@@ -948,4 +1049,60 @@ pub(crate) fn conflict_or_storage(
     } else {
         WalletError::from(error)
     }
+}
+
+/// Lock the acting key so a concurrent assignment cannot race an unrestricted
+/// key-management write. Session members manage their own keys but cannot change
+/// operator-owned access policy; owner/admin sessions are trusted administrators.
+async fn require_key_management(
+    tx: &mut Transaction<'_, Postgres>,
+    principal: &Principal,
+    changing_group: bool,
+) -> Result<(), WalletError> {
+    match principal {
+        Principal::Key(actor) => {
+            let group: Option<Option<Uuid>> = sqlx::query_scalar(
+                "SELECT group_id FROM oxsum.api_keys WHERE key_id = $1 AND organization_id = $2 \
+                 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now()) FOR UPDATE",
+            )
+            .bind(actor.key.key_id)
+            .bind(actor.organization.id)
+            .fetch_optional(&mut **tx)
+            .await?;
+            if group != Some(None) {
+                return Err(WalletError::Forbidden(
+                    "a grouped key cannot create or change keys; use an owner/admin session".into(),
+                ));
+            }
+        }
+        Principal::Session(session) if changing_group && session.role == crate::Role::Member => {
+            return Err(WalletError::Forbidden(
+                "changing groupId requires an owner or admin".into(),
+            ));
+        }
+        Principal::Session(_) => {}
+    }
+    Ok(())
+}
+
+async fn validate_group(
+    tx: &mut Transaction<'_, Postgres>,
+    organization_id: Uuid,
+    group_id: Option<Uuid>,
+) -> Result<(), WalletError> {
+    if let Some(id) = group_id {
+        let found: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM oxsum.groups WHERE org_id = $1 AND id = $2 FOR KEY SHARE",
+        )
+        .bind(organization_id)
+        .bind(id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        if found.is_none() {
+            return Err(WalletError::InvalidInput(
+                "groupId is not a group of this organization".into(),
+            ));
+        }
+    }
+    Ok(())
 }

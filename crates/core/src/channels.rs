@@ -146,6 +146,7 @@ impl std::fmt::Debug for SecretKey {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Channel {
+    pub id: Uuid,
     pub name: String,
     pub base_url: String,
     /// The upstream protocol the channel speaks: the name the usage-adapter registry
@@ -577,6 +578,7 @@ impl Db {
             let channel_id: Uuid = row.try_get("channel_id")?;
             let name: String = row.try_get("name")?;
             channels.push(Channel {
+                id: channel_id,
                 credentials: self.channel_credentials(&name).await?.unwrap_or_default(),
                 name,
                 base_url: row.try_get("base_url")?,
@@ -1089,6 +1091,21 @@ impl Db {
             .fetch_one(self.pool())
             .await?;
         Ok(exists)
+    }
+
+    /// One channel's id by name — `None` for a channel that does not exist.
+    /// The group admin surface names channels by id, so the tests and the
+    /// operator read it here.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn channel_id_named(&self, channel: &str) -> Result<Option<Uuid>, WalletError> {
+        sqlx::query_scalar("SELECT channel_id FROM oxsum.channels WHERE name = $1")
+            .bind(channel)
+            .fetch_optional(self.pool())
+            .await
+            .map_err(WalletError::from)
     }
 
     /// Opens every stored credential once, so a deployment whose key does not match its channels
