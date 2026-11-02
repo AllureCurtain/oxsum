@@ -276,6 +276,9 @@ const BILLS_SCAN: usize = 512;
 /// requests even when other writes interleave. A read stops as soon as it has enough.
 const REQUESTS_SCAN: usize = 512;
 
+// The API calendar-date representation for a gateway request's UTC booking date.
+time::serde::format_description!(request_date, Date, "[year]-[month]-[day]");
+
 /// One gateway request as the dashboard's requests page lists it, read from the ledger's
 /// settlement entries: what the turn was, how it was priced, what it used, what it charged
 /// and which key paid it.
@@ -284,6 +287,7 @@ const REQUESTS_SCAN: usize = 512;
 pub struct RequestEntry {
     /// The booking date: the server's UTC date when the settlement was written. The ledger
     /// records no time of day.
+    #[serde(with = "request_date")]
     pub booked_on: Date,
     /// The request id from `x-oxsum-request-id`; the ledger keys are derived from it.
     pub request_id: String,
