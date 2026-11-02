@@ -20,6 +20,7 @@ import { adminApi, useAdmin } from "./api";
 
 type ModelFallbackChain = components["schemas"]["ModelFallbackChain"];
 type ModelAlias = components["schemas"]["ModelAlias"];
+type PriceRequest = components["schemas"]["PriceRequest"];
 
 interface ChannelCredential {
   credentialId: string;
@@ -176,7 +177,7 @@ export function Channels({ token }: { token: string }) {
         />
       </p>
       <ModelFallbacks token={token} models={modelNames} />
-      {priceChannel ? <ChannelPrices token={token} channel={priceChannel} /> : null}
+      {priceChannel ? <ChannelPrices token={token} channel={priceChannel} onSaved={channels.refresh} /> : null}
     </div>
   );
 }
@@ -418,16 +419,20 @@ function ModelFallbacks({ token, models }: { token: string; models: string[] }) 
   );
 }
 
-function ChannelPrices({ token, channel }: { token: string; channel: string }) {
+function ChannelPrices({ token, channel, onSaved }: { token: string; channel: string; onSaved: () => void }) {
   const { t } = useTranslation();
   // The channel's models with their current price versions are already on the
   // channel row; the price form appends a new version to one model.
   const [model, setModel] = useState("");
-  const [mode, setMode] = useState("chat");
+  const [mode, setMode] = useState<NonNullable<PriceRequest["mode"]>>("chat");
   const [inputPrice, setInputPrice] = useState("");
   const [outputPrice, setOutputPrice] = useState("");
+  const [maxOutputTokens, setMaxOutputTokens] = useState("");
   const [costPerRequest, setCostPerRequest] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const hasOutput = mode === "chat" || mode === "event";
 
   return (
     <Card title={t("admin.channels.appendTitle", { channel })}>
@@ -435,22 +440,33 @@ function ChannelPrices({ token, channel }: { token: string; channel: string }) {
         className="grid grid-cols-1 gap-3 sm:grid-cols-3"
         onSubmit={async (e) => {
           e.preventDefault();
+          setBusy(true);
+          setMsg(null);
+          setError(null);
           try {
+            const body: PriceRequest = {
+              model,
+              mode,
+              weight: 100,
+              inputPricePerMillion: Math.round(Number(inputPrice) * 1_000_000),
+              ...(hasOutput && outputPrice !== "" ? {
+                outputPricePerMillion: Math.round(Number(outputPrice) * 1_000_000),
+              } : {}),
+              ...(mode === "chat" ? { maxOutputTokens: Number(maxOutputTokens) } : {}),
+              ...(costPerRequest !== "" ? {
+                costPerRequest: Math.round(Number(costPerRequest) * 1_000_000),
+              } : {}),
+            };
             await adminApi(token, `/channels/${channel}/prices`, {
               method: "POST",
-              body: {
-                model,
-                mode,
-                inputPricePerMillion: Math.round(Number(inputPrice) * 1_000_000),
-                outputPricePerMillion:
-                  outputPrice === "" ? null : Math.round(Number(outputPrice) * 1_000_000),
-                costPerRequest:
-                  costPerRequest === "" ? null : Math.round(Number(costPerRequest) * 1_000_000),
-              },
+              body,
             });
             setMsg(t("admin.channels.priceStored"));
+            onSaved();
           } catch (err) {
-            setMsg(err instanceof ApiError ? err.message : "failed");
+            setError(err instanceof ApiError ? err.message : "failed");
+          } finally {
+            setBusy(false);
           }
         }}
       >
@@ -458,7 +474,7 @@ function ChannelPrices({ token, channel }: { token: string; channel: string }) {
           <TextInput required value={model} onChange={(e) => setModel(e.target.value)} />
         </Field>
         <Field label={t("admin.channels.mode")}>
-          <Select value={mode} onChange={(e) => setMode(e.target.value)}>
+          <Select value={mode} onChange={(e) => setMode(e.target.value as NonNullable<PriceRequest["mode"]>)}>
             <option value="chat">chat</option>
             <option value="embeddings">embeddings</option>
             <option value="rerank">rerank</option>
@@ -468,15 +484,23 @@ function ChannelPrices({ token, channel }: { token: string; channel: string }) {
         <Field label={t("admin.channels.inputPrice")}>
           <NumberInput required min={0} value={inputPrice} onChange={(e) => setInputPrice(e.target.value)} />
         </Field>
-        <Field label={t("admin.channels.outputPrice")}>
-          <NumberInput min={0} value={outputPrice} onChange={(e) => setOutputPrice(e.target.value)} />
-        </Field>
+        {hasOutput ? (
+          <Field label={t("admin.channels.outputPrice")}>
+            <NumberInput min={0} value={outputPrice} onChange={(e) => setOutputPrice(e.target.value)} />
+          </Field>
+        ) : null}
+        {mode === "chat" ? (
+          <Field label={t("admin.channels.maxOutputTokens")}>
+            <NumberInput required min={1} value={maxOutputTokens} onChange={(e) => setMaxOutputTokens(e.target.value)} />
+          </Field>
+        ) : null}
         <Field label={t("admin.channels.costPerRequest")}>
           <NumberInput min={0} value={costPerRequest} onChange={(e) => setCostPerRequest(e.target.value)} />
         </Field>
         <div className="flex items-end gap-2">
-          <Button type="submit">{t("admin.channels.setPrice")}</Button>
-          {msg ? <span className="text-xs text-muted">{msg}</span> : null}
+          <Button type="submit" disabled={busy}>{t("admin.channels.setPrice")}</Button>
+          {msg ? <span className="text-xs text-success">{msg}</span> : null}
+          {error ? <span className="text-xs text-danger">{error}</span> : null}
         </div>
       </form>
     </Card>
