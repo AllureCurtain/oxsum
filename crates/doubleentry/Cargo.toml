@@ -99,7 +99,7 @@ ed25519-dalek = { version = "2", default-features = false, features = [
 # The note key hash is specified as SHA-256, and interoperating is the whole
 # point of using a specified format — BLAKE3 is already here and cannot be
 # substituted.
-sha2 = { version = "0.10", default-features = false, optional = true }
+sha2 = { version = "0.11", default-features = false, optional = true }
 
 # Cold tier. Arrow and Parquet must match what `iceberg` itself resolves.
 iceberg      = { version = "0.10", optional = true }
