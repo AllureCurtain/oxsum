@@ -670,6 +670,7 @@ async fn a_gateway_settlement_names_its_key_and_its_record() {
         cache: None,
         guardrail: Vec::new(),
         reason: None,
+        experiment: None,
     };
     w.settle("req-9:hold", &record.description().unwrap(), 77, D)
         .await
@@ -839,6 +840,7 @@ async fn request_pages_walk_only_settled_turns() {
             cache: None,
             guardrail: Vec::new(),
             reason: None,
+            experiment: None,
         };
         w.settle(
             &format!("{request}:h"),
