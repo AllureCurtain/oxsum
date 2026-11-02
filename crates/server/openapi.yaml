@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.93.0
+  version: 0.95.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -1636,6 +1636,9 @@ paths:
         Returns the secret once. A key minted through a session records who minted it (`createdBy`),
         for the per-member role rules; a key minted with an API key records no creator, because no
         person acts there.
+        Creation, constraints and group assignment commit atomically. A grouped bearer cannot
+        mint keys. Only an owner/admin session or an ungrouped organization key may assign
+        `groupId`; a member session may create an ungrouped key.
       requestBody:
         required: false
         content:
@@ -1653,6 +1656,7 @@ paths:
                   data: { $ref: "#/components/schemas/CreatedApiKey" }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/keys/{keyId}:
     patch:
@@ -1662,6 +1666,11 @@ paths:
         `budgetDuration`, `modelAllowlist`, `requestsPerMinute`,
         `maxConcurrentHolds` and `tokensPerMinute` is written as given, so a
         field left out or null clears it.
+
+        `groupId` differs: omission preserves its assignment; explicit null ungroups the key.
+        Only an owner/admin session or an ungrouped organization key may change it.
+        A grouped bearer cannot patch keys, including its own. Authorization, constraints
+        and assignment commit atomically.
 
         `spendLimitMinor` caps what the key may have committed — settled charges plus
         outstanding holds attributed to it, in minor units. `budgetDuration` makes
@@ -1718,6 +1727,7 @@ paths:
                   data: { $ref: "#/components/schemas/ApiKey" }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
     delete:
@@ -4948,6 +4958,140 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/groups:
+    get:
+      summary: List the current organization's request groups
+      description: |
+        Read-only access for organization credentials and members. Groups are
+        operator-managed channel restrictions. Assigning a group requires an
+        owner/admin session or an ungrouped organization key. A grouped bearer
+        cannot create or change keys, including clearing its own restriction.
+        Groups restrict bearer access; they do not isolate trusted member sessions.
+      security:
+        - bearer: []
+        - sessionCookie: []
+      responses:
+        "200":
+          description: The organization's groups
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/RequestGroup" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/groups:
+    get:
+      summary: List an organization's request groups
+      description: |
+        The request groups of one organization, each with the channel ids a
+        grouped key may reach (issue #508). A group is a key/channel scoping
+        dimension: a key assigned to a group may only serve through its
+        channels, so an operator can split traffic — "team X on the paid
+        channel, team Y on the mirror" — inside one organization.
+      security:
+        - adminToken: []
+      parameters:
+        - name: organizationId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The organization's groups
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/RequestGroup" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/organizations/{organizationId}/groups/{name}:
+    put:
+      summary: Create or replace a group's channel set
+      description: |
+        `channelIds` is the whole set, replaced atomically: a grouped key may
+        serve only through these channels. Every id must name a real channel —
+        a group pointing at a channel that does not exist would scope keys to
+        a serving that can never answer, so the write refuses a 400 rather
+        than land it. An empty set denies all channels. New requests read the
+        saved set; requests already admitted retain their snapshot through
+        retries, fallback and cache serving. Lands in the admin audit log.
+        An unknown organization is 404.
+      security:
+        - adminToken: []
+      parameters:
+        - name: organizationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RequestGroupChannels" }
+      responses:
+        "200":
+          description: The group as written
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/RequestGroup" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    delete:
+      summary: Drop a request group
+      description: |
+        Removes the group; the organization having none of that name is 404.
+        Returns 409 CONFLICT while any key (including a revoked key) remains
+        assigned. Reassign or explicitly ungroup those keys first; deletion
+        never broadens their access. Lands in the admin audit log.
+      security:
+        - adminToken: []
+      parameters:
+        - name: organizationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The group was removed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      deleted: { type: boolean }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/admin/holds:
     get:
       summary: List every unsettled hold, across all organizations
@@ -6781,6 +6925,7 @@ components:
         tokensPerMinute: { type: [integer, "null"], minimum: 1, description: "settled input+output tokens the key may burn inside a trailing minute, checked at admission on the gateway; null (the default) is uncapped" }
         tokensPerMinuteScopes: { $ref: "#/components/schemas/TokensPerMinuteScopes" }
         requiredPolicies: { type: [array, "null"], items: { type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,63}$' }, description: "the guardrail policies this key's turns must run (issue #502); every name must already exist as a configured policy, and null (the default) requires none — a turn still runs whatever its channel binds" }
+        groupId: { type: [string, "null"], format: uuid, description: "the request group the key joins at mint (issue #508); the group must be the organization's own — a grouped key reaches only its group's channels, null or absent (the default) leaves it ungrouped and reaching every channel" }
     UpdateKeyConstraintsRequest:
       type: object
       properties:
@@ -6792,9 +6937,10 @@ components:
         tokensPerMinute: { type: [integer, "null"], minimum: 1, description: "the new per-minute settled-token allowance, or null to uncap" }
         tokensPerMinuteScopes: { $ref: "#/components/schemas/TokensPerMinuteScopes" }
         requiredPolicies: { type: [array, "null"], items: { type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,63}$' }, description: "the guardrail policies the key's turns must run; null or absent clears it back to none" }
+        groupId: { type: [string, "null"], format: uuid, description: "the request group the key joins (issue #508) — a triple-state field: absent keeps the current group, null ungroups the key (it reaches every channel again), a group id reassigns it to that group, which must be the organization's own; assignment and constraints commit atomically; only an owner/admin session or ungrouped bearer may change groupId, and a grouped bearer cannot mutate keys" }
     ApiKey:
       type: object
-      required: [id, name, prefix, createdBy, createdAt, expiresAt, revokedAt, spendLimitMinor, budgetDuration, modelAllowlist, requestsPerMinute, maxConcurrentHolds, tokensPerMinute, tokensPerMinuteScopes, requiredPolicies]
+      required: [id, name, prefix, createdBy, createdAt, expiresAt, revokedAt, spendLimitMinor, budgetDuration, modelAllowlist, requestsPerMinute, maxConcurrentHolds, tokensPerMinute, tokensPerMinuteScopes, requiredPolicies, groupId]
       properties:
         id: { type: string, format: uuid }
         name: { type: [string, "null"] }
@@ -6811,6 +6957,21 @@ components:
         tokensPerMinute: { type: [integer, "null"], minimum: 1, description: "the key's rolling-minute settled-token allowance; null is uncapped" }
         tokensPerMinuteScopes: { $ref: "#/components/schemas/TokensPerMinuteScopes" }
         requiredPolicies: { type: [array, "null"], items: { type: string }, description: "the guardrail policies the key's turns must run; null requires none" }
+        groupId: { type: [string, "null"], format: uuid, description: "the request group the key belongs to (issue #508); a grouped key reaches only its group's channels, null reaches every channel" }
+    RequestGroup:
+      type: object
+      required: [id, name, channelIds]
+      description: "A request group (issue #508): a named subset of an organization's channels its keys may serve through."
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        channelIds: { type: array, items: { type: string, format: uuid }, description: "the channels a grouped key may reach" }
+    RequestGroupChannels:
+      type: object
+      required: [channelIds]
+      description: "The whole channel set a group installs — every id must name a real channel."
+      properties:
+        channelIds: { type: array, items: { type: string, format: uuid } }
     TokensPerMinuteScopes:
       type: ["object", "null"]
       additionalProperties: { $ref: "#/components/schemas/TokenScope" }
@@ -7217,8 +7378,9 @@ components:
         createdAt: { type: string, format: date-time }
     Channel:
       type: object
-      required: [name, baseUrl, protocol, credentials, billKeyLast4, settings, createdAt, models]
+      required: [id, name, baseUrl, protocol, credentials, billKeyLast4, settings, createdAt, models]
       properties:
+        id: { type: string, format: uuid, description: "stable channel identity used in request groups" }
         name: { type: string }
         baseUrl: { type: string }
         protocol: { type: string, description: "the upstream protocol the channel speaks" }

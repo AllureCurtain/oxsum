@@ -1561,6 +1561,9 @@ export interface paths {
          * @description Returns the secret once. A key minted through a session records who minted it (`createdBy`),
          *     for the per-member role rules; a key minted with an API key records no creator, because no
          *     person acts there.
+         *     Creation, constraints and group assignment commit atomically. A grouped bearer cannot
+         *     mint keys. Only an owner/admin session or an ungrouped organization key may assign
+         *     `groupId`; a member session may create an ungrouped key.
          */
         post: {
             parameters: {
@@ -1588,6 +1591,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -1649,6 +1653,11 @@ export interface paths {
          *     `budgetDuration`, `modelAllowlist`, `requestsPerMinute`,
          *     `maxConcurrentHolds` and `tokensPerMinute` is written as given, so a
          *     field left out or null clears it.
+         *
+         *     `groupId` differs: omission preserves its assignment; explicit null ungroups the key.
+         *     Only an owner/admin session or an ungrouped organization key may change it.
+         *     A grouped bearer cannot patch keys, including its own. Authorization, constraints
+         *     and assignment commit atomically.
          *
          *     `spendLimitMinor` caps what the key may have committed — settled charges plus
          *     outstanding holds attributed to it, in minor units. `budgetDuration` makes
@@ -1716,6 +1725,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -2339,6 +2349,223 @@ export interface paths {
                 500: components["responses"]["Error"];
             };
         };
+        trace?: never;
+    };
+    "/api/v1/org/experiments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the organization's experiments
+         * @description The A/B variant sets the organization carries (issue #509), oldest first — open
+         *     and ended. Reading the organization's own config is any member's right; the
+         *     writes beside it are owner/admin-gated.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The experiments */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["Experiment"][];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/org/experiments/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description the experiment's name — unique per organization */
+                name: components["parameters"]["ExperimentName"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Create or replace an experiment
+         * @description Creates the named experiment or replaces its whole variant set atomically —
+         *     config, not ledger, so the write is a `PUT` of the full
+         *     `{variants: [{model, weight}]}` rather than an append. Every variant's `model`
+         *     must resolve to a served model or an alias (400 `VALIDATION` otherwise — a
+         *     variant naming an unserved model would dead-end every request it lands on),
+         *     and a weight is at least 1. An owner or an admin, and only a session: an API
+         *     key names no role and is refused, the same rule `teams` keeps.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description the experiment's name — unique per organization */
+                    name: components["parameters"]["ExperimentName"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["PutExperimentRequest"];
+                };
+            };
+            responses: {
+                /** @description The experiment as it stands after the write */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["Experiment"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/org/experiments/{name}/end": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description the experiment's name — unique per organization */
+                name: components["parameters"]["ExperimentName"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * End an experiment
+         * @description Flips the named experiment to `ended`: a later request carrying
+         *     `X-Oxsum-Experiment: {name}` resolves the plain `model` the request asked
+         *     for rather than a variant's pick. An owner or an admin, and only a session.
+         *     `NOT_FOUND` when no such experiment — or it already ended, so a second end
+         *     is not a silent success.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description the experiment's name — unique per organization */
+                    name: components["parameters"]["ExperimentName"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The experiment was ended */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: Record<string, never> | null;
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/org/experiments/{experimentId}/results": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description the experiment's own id, as an experiment's `id` */
+                experimentId: components["parameters"]["ExperimentId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Group the experiment's recorded usage by variant
+         * @description The usage the experiment served, grouped by variant: turns, token and
+         *     charge sums and the errored count — the columns an offline scorer groups
+         *     its judgment over. Answers an ended experiment too: its recorded spend
+         *     still groups. `NOT_FOUND` for an id the organization does not own, so a
+         *     foreign experiment reads as absent, not as "served nothing". Scoring
+         *     stays offline — oxsum reports which variant served; it does not judge
+         *     outputs or promote a winner.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description the experiment's own id, as an experiment's `id` */
+                    experimentId: components["parameters"]["ExperimentId"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The variant groups */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["VariantResult"][];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/org/ownership": {
@@ -6598,6 +6825,199 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/org/groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the current organization's request groups
+         * @description Read-only access for organization credentials and members. Groups are
+         *     operator-managed channel restrictions. Assigning a group requires an
+         *     owner/admin session or an ungrouped organization key. A grouped bearer
+         *     cannot create or change keys, including clearing its own restriction.
+         *     Groups restrict bearer access; they do not isolate trusted member sessions.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The organization's groups */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["RequestGroup"][];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List an organization's request groups
+         * @description The request groups of one organization, each with the channel ids a
+         *     grouped key may reach (issue #508). A group is a key/channel scoping
+         *     dimension: a key assigned to a group may only serve through its
+         *     channels, so an operator can split traffic — "team X on the paid
+         *     channel, team Y on the mirror" — inside one organization.
+         */
+        get: {
+            parameters: {
+                query: {
+                    organizationId: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The organization's groups */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["RequestGroup"][];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/organizations/{organizationId}/groups/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Create or replace a group's channel set
+         * @description `channelIds` is the whole set, replaced atomically: a grouped key may
+         *     serve only through these channels. Every id must name a real channel —
+         *     a group pointing at a channel that does not exist would scope keys to
+         *     a serving that can never answer, so the write refuses a 400 rather
+         *     than land it. An empty set denies all channels. New requests read the
+         *     saved set; requests already admitted retain their snapshot through
+         *     retries, fallback and cache serving. Lands in the admin audit log.
+         *     An unknown organization is 404.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    organizationId: string;
+                    name: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["RequestGroupChannels"];
+                };
+            };
+            responses: {
+                /** @description The group as written */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["RequestGroup"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        post?: never;
+        /**
+         * Drop a request group
+         * @description Removes the group; the organization having none of that name is 404.
+         *     Returns 409 CONFLICT while any key (including a revoked key) remains
+         *     assigned. Reassign or explicitly ungroup those keys first; deletion
+         *     never broadens their access. Lands in the admin audit log.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    organizationId: string;
+                    name: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The group was removed */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: {
+                                deleted?: boolean;
+                            };
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/holds": {
         parameters: {
             query?: never;
@@ -9072,6 +9492,11 @@ export interface components {
             tokensPerMinuteScopes?: components["schemas"]["TokensPerMinuteScopes"];
             /** @description the guardrail policies this key's turns must run (issue #502); every name must already exist as a configured policy, and null (the default) requires none — a turn still runs whatever its channel binds */
             requiredPolicies?: string[] | null;
+            /**
+             * Format: uuid
+             * @description the request group the key joins at mint (issue #508); the group must be the organization's own — a grouped key reaches only its group's channels, null or absent (the default) leaves it ungrouped and reaching every channel
+             */
+            groupId?: string | null;
         };
         UpdateKeyConstraintsRequest: {
             /**
@@ -9095,6 +9520,11 @@ export interface components {
             tokensPerMinuteScopes?: components["schemas"]["TokensPerMinuteScopes"];
             /** @description the guardrail policies the key's turns must run; null or absent clears it back to none */
             requiredPolicies?: string[] | null;
+            /**
+             * Format: uuid
+             * @description the request group the key joins (issue #508) — a triple-state field: absent keeps the current group, null ungroups the key (it reaches every channel again), a group id reassigns it to that group, which must be the organization's own; assignment and constraints commit atomically; only an owner/admin session or ungrouped bearer may change groupId, and a grouped bearer cannot mutate keys
+             */
+            groupId?: string | null;
         };
         ApiKey: {
             /** Format: uuid */
@@ -9134,6 +9564,23 @@ export interface components {
             tokensPerMinuteScopes: components["schemas"]["TokensPerMinuteScopes"];
             /** @description the guardrail policies the key's turns must run; null requires none */
             requiredPolicies: string[] | null;
+            /**
+             * Format: uuid
+             * @description the request group the key belongs to (issue #508); a grouped key reaches only its group's channels, null reaches every channel
+             */
+            groupId: string | null;
+        };
+        /** @description A request group (issue #508): a named subset of an organization's channels its keys may serve through. */
+        RequestGroup: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** @description the channels a grouped key may reach */
+            channelIds: string[];
+        };
+        /** @description The whole channel set a group installs — every id must name a real channel. */
+        RequestGroupChannels: {
+            channelIds: string[];
         };
         /** @description Tag-scoped slices of the key's settled-token allowance (issue #209). Maps a request `metadata` tag key to one scope; each scoped bucket is an additional cap alongside `tokensPerMinute`, not a replacement. null (the default) scopes nothing. */
         TokensPerMinuteScopes: {
@@ -9324,6 +9771,65 @@ export interface components {
              *     is `CONFLICT`.
              */
             email: string;
+        };
+        Experiment: {
+            /**
+             * Format: uuid
+             * @description the experiment's own id — what `X-Oxsum-Experiment` and `experimentId` name
+             */
+            id: string;
+            /** @description the experiment's name — unique per organization */
+            name: string;
+            /** @description the variant set `[{model, weight}]` the pick draws from */
+            variants: components["schemas"]["Variant"][];
+            /**
+             * @description `open` serves variants under `X-Oxsum-Experiment`; `ended` resolves the plain `model` instead
+             * @enum {string}
+             */
+            status: "open" | "ended";
+            /** Format: date-time */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description when the experiment was ended; null while open
+             */
+            endedAt?: string | null;
+        };
+        Variant: {
+            /** @description the model this variant serves — must resolve to a served model or an alias */
+            model: string;
+            /**
+             * Format: int64
+             * @description the variant's relative share of the weighted pick
+             */
+            weight: number;
+        };
+        PutExperimentRequest: {
+            /** @description the whole variant set — replaced atomically; every `model` must be served, every `weight` ≥ 1 */
+            variants: components["schemas"]["Variant"][];
+        };
+        VariantResult: {
+            /** @description the variant's model name — the group key */
+            variant: string;
+            /**
+             * Format: int64
+             * @description how many settled turns served this variant
+             */
+            turns: number;
+            /** Format: int64 */
+            inputTokens: number;
+            /** Format: int64 */
+            outputTokens: number;
+            /**
+             * Format: int64
+             * @description what the variant's turns charged, in minor units
+             */
+            chargedMinor: number;
+            /**
+             * Format: int64
+             * @description how many turns errored — served nothing after their hold
+             */
+            errored: number;
         };
         Team: {
             /**
@@ -9532,6 +10038,11 @@ export interface components {
             createdAt: string;
         };
         Channel: {
+            /**
+             * Format: uuid
+             * @description stable channel identity used in request groups
+             */
+            id: string;
             name: string;
             baseUrl: string;
             /** @description the upstream protocol the channel speaks */
@@ -12015,6 +12526,10 @@ export interface components {
         UserId: string;
         /** @description the id of the team this endpoint addresses, as a team's `teamId` */
         TeamId: string;
+        /** @description the experiment's name — unique per organization */
+        ExperimentName: string;
+        /** @description the experiment's own id, as an experiment's `id` */
+        ExperimentId: string;
         /** @description the channel's name, which is its identity */
         ChannelName: string;
         /** @description the webhook endpoint's id */
