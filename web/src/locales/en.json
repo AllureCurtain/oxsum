@@ -766,6 +766,8 @@
       "mode": "Mode",
       "inputPrice": "Input price / million (credits)",
       "outputPrice": "Output price / million (credits)",
+      "maxOutputTokens": "Maximum output tokens",
+      "maxOutputTokensHint": "A positive whole number. Caps the caller's output limit and sizes the credit reserved before the request starts.",
       "costPerRequest": "Cost per request (credits)",
       "setPrice": "Set price",
       "priceStored": "price version stored"

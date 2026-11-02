@@ -766,6 +766,8 @@
       "mode": "模式",
       "inputPrice": "输入价 / 百万（点数）",
       "outputPrice": "输出价 / 百万（点数）",
+      "maxOutputTokens": "最大输出 token 数",
+      "maxOutputTokensHint": "填写正整数。限制调用方的输出上限，并用于计算请求开始前冻结的点数。",
       "costPerRequest": "每次请求成本（点数）",
       "setPrice": "设置价格",
       "priceStored": "价格版本已存储"
