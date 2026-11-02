@@ -703,3 +703,61 @@ async fn foreign_key_cannot_read() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+/// A task submission uses the same channel boundary as synchronous inference:
+/// denying all channels never dispatches upstream, writes a task or reserves money.
+#[tokio::test]
+async fn grouped_task_submission_cannot_use_a_forbidden_channel() {
+    let Some(url) = url() else { return };
+    let world = world(&url, 1_000_000).await;
+    let group = world
+        .db
+        .put_group(world.organization_id, "no-tasks", &[])
+        .await
+        .unwrap();
+    let key_id: Uuid =
+        sqlx::query_scalar("SELECT key_id FROM oxsum.api_keys WHERE organization_id = $1")
+            .bind(world.organization_id)
+            .fetch_one(&world.pool)
+            .await
+            .unwrap();
+    world
+        .db
+        .assign_key_group(world.organization_id, key_id, Some(group.id))
+        .await
+        .unwrap();
+    let response = submit_task(&world.app, &world.key, simple_submit()).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(world.script.seen_submits.lock().unwrap().is_empty());
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM oxsum.tasks WHERE organization_id = $1")
+            .bind(world.organization_id)
+            .fetch_one(&world.pool)
+            .await
+            .unwrap();
+    assert_eq!(count, 0);
+    let (_, balance) = call(&world.app, "GET", "/api/v1/balance", None, Some(&world.key)).await;
+    assert_eq!(balance["data"]["availableMinor"], 1_000_000);
+    assert_eq!(balance["data"]["reservedMinor"], 0);
+
+    let channel_id = world
+        .db
+        .channel_id_named(&world.channel)
+        .await
+        .unwrap()
+        .unwrap();
+    world
+        .db
+        .put_group(world.organization_id, "no-tasks", &[channel_id])
+        .await
+        .unwrap();
+    world.script.submit(
+        "task-model",
+        SubmitAnswer::Accept {
+            task_id: "allowed-task".into(),
+        },
+    );
+    let response = submit_task(&world.app, &world.key, simple_submit()).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(world.script.seen_submits.lock().unwrap().len(), 1);
+}
