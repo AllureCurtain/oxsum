@@ -277,6 +277,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0068_request_log",
         include_str!("../migrations/0068_request_log.sql"),
     ),
+    (
+        "0069_experiments",
+        include_str!("../migrations/0069_experiments.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.
