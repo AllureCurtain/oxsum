@@ -75,7 +75,7 @@ futures-core = "0.3"
 # visible to a client that is waiting for the stream to close.
 async-stream = "0.3"
 # Local token estimation, on the interruption path only; the vocabulary is built in.
-tiktoken-rs = "0.6"
+tiktoken-rs = "0.12"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal", "net"] }
 percent-encoding = "2"
 serde = { version = "1", features = ["derive"] }
