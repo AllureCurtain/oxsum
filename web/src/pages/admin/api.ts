@@ -40,12 +40,16 @@ export async function adminApi<T>(token: string, path: string, init?: { method?:
 }
 
 // A tiny query wrapper — the admin surface answers `data` arrays or objects.
-export function useAdmin<T>(token: string, path: string, deps: unknown[] = []) {
+export function useAdmin<T>(token: string, path: string, deps: unknown[] = [], enabled = true) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [tick, setTick] = useState(0);
   useEffect(() => {
+    if (!enabled) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     adminApi<T>(token, path)
       .then((d) => {
@@ -55,6 +59,6 @@ export function useAdmin<T>(token: string, path: string, deps: unknown[] = []) {
       .catch((e) => setError(e instanceof ApiError ? e.message : "failed"))
       .finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, path, tick, ...deps]);
+  }, [token, path, tick, enabled, ...deps]);
   return { data, error, loading, refresh: () => setTick((t) => t + 1) };
 }
