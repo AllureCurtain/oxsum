@@ -27,13 +27,23 @@ const MAX_NAME: usize = 64;
 
 /// One request group as the admin surface answers it: the name and the channel
 /// ids a grouped key may reach.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Group {
     pub id: Uuid,
     pub name: String,
     /// The channels this group may serve through.
     pub channel_ids: Vec<Uuid>,
+    /// Readable channel identities paired with `channel_ids` in order.
+    pub channels: Vec<GroupChannel>,
+}
+
+/// Public identity for a channel in a group's access set.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupChannel {
+    pub id: Uuid,
+    pub name: String,
 }
 
 impl Db {
@@ -45,9 +55,11 @@ impl Db {
     pub async fn groups(&self, organization_id: Uuid) -> Result<Vec<Group>, WalletError> {
         let rows = sqlx::query(
             "SELECT g.id, g.name, \
-                    COALESCE(array_agg(gc.channel_id ORDER BY gc.channel_id) FILTER (WHERE gc.channel_id IS NOT NULL), '{}') \
+                    COALESCE(array_agg(gc.channel_id ORDER BY gc.channel_id) FILTER (WHERE gc.channel_id IS NOT NULL), '{}') AS channel_ids, \
+                    COALESCE(jsonb_agg(jsonb_build_object('id', c.channel_id, 'name', c.name) ORDER BY gc.channel_id) FILTER (WHERE gc.channel_id IS NOT NULL), '[]'::jsonb) AS channels \
              FROM oxsum.groups g \
              LEFT JOIN oxsum.group_channels gc ON gc.group_id = g.id \
+             LEFT JOIN oxsum.channels c ON c.channel_id = gc.channel_id \
              WHERE g.org_id = $1 \
              GROUP BY g.id, g.name, g.created_at \
              ORDER BY g.created_at",
@@ -57,10 +69,19 @@ impl Db {
         .await?;
         rows.iter()
             .map(|row| {
+                let channels: Vec<GroupChannel> = serde_json::from_value(row.try_get("channels")?)
+                    .map_err(|error| {
+                        WalletError::Storage(
+                            doubleentry::storage::postgres::PostgresError::Malformed(format!(
+                                "invalid group channel data: {error}"
+                            )),
+                        )
+                    })?;
                 Ok(Group {
                     id: row.try_get("id")?,
                     name: row.try_get("name")?,
-                    channel_ids: row.try_get::<Vec<Uuid>, _>("coalesce")?,
+                    channel_ids: row.try_get("channel_ids")?,
+                    channels,
                 })
             })
             .collect()
@@ -139,10 +160,20 @@ impl Db {
             .await?;
         }
         tx.commit().await?;
+        let channels = sqlx::query(
+            "SELECT channel_id AS id, name FROM oxsum.channels WHERE channel_id = ANY($1) ORDER BY channel_id",
+        )
+        .bind(&channel_ids)
+        .fetch_all(self.pool())
+        .await?
+        .iter()
+        .map(|row| Ok(GroupChannel { id: row.try_get("id")?, name: row.try_get("name")? }))
+        .collect::<Result<Vec<_>, sqlx::Error>>()?;
         Ok(Group {
             id,
             name: name.to_owned(),
             channel_ids: channel_ids.to_vec(),
+            channels,
         })
     }
 

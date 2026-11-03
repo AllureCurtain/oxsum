@@ -6834,7 +6834,9 @@ export interface paths {
         };
         /**
          * List the current organization's request groups
-         * @description Read-only access for organization credentials and members. Groups are
+         * @description Read-only access for organization credentials and members. Each group
+         *     carries channelIds for writes and channels with readable channel names
+         *     so a key owner can verify the effective access set. Groups are
          *     operator-managed channel restrictions. Assigning a group requires an
          *     owner/admin session or an ungrouped organization key. A grouped bearer
          *     cannot create or change keys, including clearing its own restriction.
@@ -6881,7 +6883,8 @@ export interface paths {
         };
         /**
          * List an organization's request groups
-         * @description The request groups of one organization, each with the channel ids a
+         * @description The request groups of one organization, each with channel ids and
+         *     readable channel identities for the channels a
          *     grouped key may reach (issue #508). A group is a key/channel scoping
          *     dimension: a key assigned to a group may only serve through its
          *     channels, so an operator can split traffic — "team X on the paid
@@ -9570,6 +9573,12 @@ export interface components {
              */
             groupId: string | null;
         };
+        /** @description A channel identity exposed with a request group so operators and key owners can review the effective access set without resolving UUIDs themselves. */
+        RequestGroupChannel: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+        };
         /** @description A request group (issue #508): a named subset of an organization's channels its keys may serve through. */
         RequestGroup: {
             /** Format: uuid */
@@ -9577,6 +9586,8 @@ export interface components {
             name: string;
             /** @description the channels a grouped key may reach */
             channelIds: string[];
+            /** @description the readable identity of every channel in channelIds, in the same order */
+            channels: components["schemas"]["RequestGroupChannel"][];
         };
         /** @description The whole channel set a group installs — every id must name a real channel. */
         RequestGroupChannels: {
