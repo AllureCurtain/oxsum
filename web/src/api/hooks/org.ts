@@ -1,12 +1,19 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../client";
 import type { components } from "../schema";
-import type { ApiKey, DisplayCurrencyType, Entitlement, Member, UserOrganization } from "./types";
+import type { ApiKey, DisplayCurrencyType, Entitlement, Member, RequestGroup, UserOrganization } from "./types";
 
 export function useKeys() {
   return useQuery({
     queryKey: ["keys"],
     queryFn: () => api<ApiKey[]>("/org/keys"),
+  });
+}
+
+export function useRequestGroups() {
+  return useQuery({
+    queryKey: ["request-groups"],
+    queryFn: () => api<RequestGroup[]>("/org/groups"),
   });
 }
 

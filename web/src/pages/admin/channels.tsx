@@ -2,9 +2,19 @@ import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { ArrowDown, ArrowUp, Plus, RotateCcw, X } from "lucide-react";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
   Banner,
   Button,
   Card,
+  Checkbox,
   EmptyRows,
   Field,
   IconButton,
@@ -21,6 +31,8 @@ import { adminApi, useAdmin } from "./api";
 type ModelFallbackChain = components["schemas"]["ModelFallbackChain"];
 type ModelAlias = components["schemas"]["ModelAlias"];
 type PriceRequest = components["schemas"]["PriceRequest"];
+type RequestGroup = components["schemas"]["RequestGroup"];
+type AdminOrganization = components["schemas"]["AdminOrganization"];
 
 interface ChannelCredential {
   credentialId: string;
@@ -34,6 +46,7 @@ interface ChannelCredential {
 }
 
 interface Channel {
+  id: string;
   name: string;
   baseUrl: string;
   protocol: string;
@@ -45,6 +58,7 @@ interface Channel {
 export function Channels({ token }: { token: string }) {
   const { t } = useTranslation();
   const channels = useAdmin<Channel[]>(token, "/channels");
+  const organizations = useAdmin<{ organizations: AdminOrganization[]; nextCursor?: string }>(token, "/organizations?limit=100");
   const [channelAliases, setChannelAliases] = useState<string[]>([]);
   const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -53,6 +67,16 @@ export function Channels({ token }: { token: string }) {
   const [priceChannel, setPriceChannel] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const orgRows = organizations.data?.organizations ?? [];
+  const [groupOrgId, setGroupOrgId] = useState("");
+  const [groupName, setGroupName] = useState("");
+  const [selectedGroup, setSelectedGroup] = useState("");
+  const [selectedChannels, setSelectedChannels] = useState<string[]>([]);
+  const [groupMessage, setGroupMessage] = useState<{ tone: "success" | "error"; text: string } | null>(null);
+  const [groupBusy, setGroupBusy] = useState(false);
+  const groupsPath = `/groups?organizationId=${encodeURIComponent(groupOrgId)}`;
+  const groups = useAdmin<RequestGroup[]>(token, groupsPath, [groupOrgId], Boolean(groupOrgId));
+  const currentGroup = useMemo(() => groups.data?.find((g) => g.name === selectedGroup), [groups.data, selectedGroup]);
   useEffect(() => {
     if (!channels.data) return;
     let current = true;
@@ -81,6 +105,54 @@ export function Channels({ token }: { token: string }) {
     ])].sort(),
     [channelAliases, channels.data],
   );
+
+  function chooseGroup(name: string) {
+    setSelectedGroup(name);
+    const next = groups.data?.find((g) => g.name === name);
+    setGroupName(name);
+    setSelectedChannels(next?.channelIds ?? []);
+    setGroupMessage(null);
+  }
+
+  async function saveGroup(e: React.FormEvent) {
+    e.preventDefault();
+    if (!groupOrgId || !groupName.trim()) return;
+    setGroupBusy(true);
+    setGroupMessage(null);
+    try {
+      const saved = await adminApi<RequestGroup>(token, `/organizations/${groupOrgId}/groups/${encodeURIComponent(groupName.trim())}`, {
+        method: "PUT",
+        body: { channelIds: selectedChannels },
+      });
+      setSelectedGroup(saved.name);
+      setGroupName(saved.name);
+      setSelectedChannels(saved.channelIds);
+      setGroupMessage({ tone: "success", text: t("admin.channels.groupSaved") });
+      groups.refresh();
+    } catch (err) {
+      setGroupMessage({ tone: "error", text: err instanceof ApiError ? err.message : "failed" });
+    } finally {
+      setGroupBusy(false);
+    }
+  }
+
+  async function deleteGroup() {
+    if (!groupOrgId || !selectedGroup) return;
+    setGroupBusy(true);
+    setGroupMessage(null);
+    try {
+      await adminApi(token, `/organizations/${groupOrgId}/groups/${encodeURIComponent(selectedGroup)}`, { method: "DELETE" });
+      setSelectedGroup("");
+      setGroupName("");
+      setSelectedChannels([]);
+      setGroupMessage({ tone: "success", text: t("admin.channels.groupDeleted") });
+      groups.refresh();
+    } catch (err) {
+      setGroupMessage({ tone: "error", text: err instanceof ApiError ? err.message : "failed" });
+    } finally {
+      setGroupBusy(false);
+    }
+  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -141,7 +213,7 @@ export function Channels({ token }: { token: string }) {
         >
           {!channels.loading &&
             (channels.data ?? []).map((c) => (
-            <tr key={c.name}>
+            <tr key={c.id}>
               <td className="mono">{c.name}</td>
               <Td mono truncate>{c.baseUrl}</Td>
               <td>{c.protocol ?? "openai"}</td>
@@ -177,6 +249,80 @@ export function Channels({ token }: { token: string }) {
         />
       </p>
       <ModelFallbacks token={token} models={modelNames} />
+      <Card title={t("admin.channels.requestGroups")}>
+        <div className="flex flex-col gap-4">
+          <p className="text-xs text-muted">{t("admin.channels.groupsHint")}</p>
+          {organizations.error ? <Banner tone="error">{organizations.error}</Banner> : null}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field label={t("admin.channels.groupOrganization")}>
+              <Select value={groupOrgId} onChange={(e) => {
+                setGroupOrgId(e.target.value);
+                setSelectedGroup("");
+                setGroupName("");
+                setSelectedChannels([]);
+                setGroupMessage(null);
+              }}>
+                <option value="">{t("admin.channels.selectOrganization")}</option>
+                {orgRows.map((org) => <option key={org.id} value={org.id}>{org.name}</option>)}
+              </Select>
+            </Field>
+            <Field label={t("admin.channels.existingGroup")}>
+              <Select value={selectedGroup} disabled={!groupOrgId || groups.loading} onChange={(e) => chooseGroup(e.target.value)}>
+                <option value="">{t("admin.channels.newGroup")}</option>
+                {(groups.data ?? []).map((group) => <option key={group.id} value={group.name}>{group.name}</option>)}
+              </Select>
+            </Field>
+          </div>
+          {groups.error ? <Banner tone="error">{groups.error}</Banner> : null}
+          {groupOrgId ? (
+            <form className="flex flex-col gap-4" onSubmit={saveGroup}>
+              <Field label={t("admin.channels.groupName")} hint={t("admin.channels.groupNameHint")}>
+              <TextInput value={groupName} onChange={(e) => setGroupName(e.target.value)} required maxLength={64} disabled={Boolean(currentGroup)} />
+              </Field>
+              <fieldset className="flex flex-col gap-2">
+                <legend className="text-xs font-medium text-muted">{t("admin.channels.groupChannels")}</legend>
+                {(channels.data ?? []).map((channel) => {
+                  const checked = selectedChannels.includes(channel.id);
+                  return (
+                    <label key={channel.id} className="flex min-h-11 items-center gap-3 border-b border-line py-2 text-sm">
+                      <Checkbox checked={checked} onCheckedChange={(value) => setSelectedChannels((ids) => value ? [...ids, channel.id] : ids.filter((id) => id !== channel.id))} />
+                      <span>{channel.name}</span>
+                      <span className="ml-auto text-xs text-muted">{channel.protocol} · {channel.models.length} {t("admin.channels.modelsShort")}</span>
+                    </label>
+                  );
+                })}
+                {!channels.loading && (channels.data?.length ?? 0) === 0 ? <p className="text-xs text-muted">{t("admin.channels.noChannels")}</p> : null}
+              </fieldset>
+              {selectedChannels.length === 0 ? <Banner tone="error">{t("admin.channels.emptyGroupWarning")}</Banner> : null}
+              <div className="flex flex-wrap items-center gap-2">
+                <Button type="submit" disabled={groupBusy || groups.loading || !groupName.trim()} isLoading={groupBusy} loadingText={t("common.saving")}>
+                  {t("admin.channels.saveGroup")}
+                </Button>
+                {currentGroup ? (
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button type="button" tone="danger" disabled={groupBusy}>{t("admin.channels.deleteGroup")}</Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>{t("admin.channels.deleteGroupTitle", { name: currentGroup.name })}</AlertDialogTitle>
+                        <AlertDialogDescription>{t("admin.channels.deleteGroupNote")}</AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+                        <AlertDialogAction asChild>
+                          <Button type="button" tone="danger" isLoading={groupBusy} loadingText={t("common.deleting")} onClick={deleteGroup}>{t("admin.channels.deleteGroup")}</Button>
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                ) : null}
+                {groupMessage ? <span className={`text-xs ${groupMessage.tone === "error" ? "text-danger" : "text-success"}`}>{groupMessage.text}</span> : null}
+              </div>
+            </form>
+          ) : null}
+        </div>
+      </Card>
       {priceChannel ? <ChannelPrices token={token} channel={priceChannel} onSaved={channels.refresh} /> : null}
     </div>
   );
