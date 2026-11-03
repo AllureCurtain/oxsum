@@ -21,6 +21,33 @@ pub(crate) struct GroupView {
     id: Uuid,
     name: String,
     channel_ids: Vec<Uuid>,
+    channels: Vec<GroupChannelView>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GroupChannelView {
+    id: Uuid,
+    name: String,
+}
+
+impl From<oxsum_core::Group> for GroupView {
+    fn from(group: oxsum_core::Group) -> Self {
+        let channels = group
+            .channels
+            .into_iter()
+            .map(|channel| GroupChannelView {
+                id: channel.id,
+                name: channel.name,
+            })
+            .collect();
+        Self {
+            id: group.id,
+            name: group.name,
+            channel_ids: group.channel_ids,
+            channels,
+        }
+    }
 }
 
 /// The channel set a `PUT` installs, in one write.
@@ -43,14 +70,7 @@ pub(crate) async fn list_groups(
 ) -> ApiResult<Vec<GroupView>> {
     let organization_id = q.organization_id;
     let groups = state.db.groups(organization_id).await?;
-    ok(groups
-        .into_iter()
-        .map(|group| GroupView {
-            id: group.id,
-            name: group.name,
-            channel_ids: group.channel_ids,
-        })
-        .collect())
+    ok(groups.into_iter().map(GroupView::from).collect())
 }
 
 /// `PUT /api/v1/admin/organizations/{organizationId}/groups/{name}` — create or
@@ -76,11 +96,7 @@ pub(crate) async fn set_group(
         None,
     )
     .await?;
-    ok(GroupView {
-        id: group.id,
-        name: group.name,
-        channel_ids: group.channel_ids,
-    })
+    ok(GroupView::from(group))
 }
 
 /// `DELETE /api/v1/admin/organizations/{organizationId}/groups/{name}` — drop a

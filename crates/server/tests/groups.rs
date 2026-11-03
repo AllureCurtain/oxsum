@@ -378,6 +378,8 @@ async fn a_group_is_written_and_a_key_assigned() {
         1,
         "the group holds its channel"
     );
+    assert_eq!(body["data"]["channels"][0]["id"], world.chan_a_id);
+    assert_eq!(body["data"]["channels"][0]["name"], world.chan_a);
 
     // It lists.
     let (status, body) = call(
@@ -390,6 +392,7 @@ async fn a_group_is_written_and_a_key_assigned() {
     .await;
     assert_eq!(status, StatusCode::OK, "group list failed: {body}");
     assert_eq!(body["data"].as_array().unwrap().len(), 1);
+    assert_eq!(body["data"][0]["channels"][0]["name"], world.chan_a);
 
     // Assign the key to it through the key patch.
     let (status, body) = call(
@@ -778,6 +781,7 @@ async fn grouped_bearer_cannot_escape_through_key_management_or_group_deletion()
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(groups["data"][0]["id"], group.id.to_string());
+    assert_eq!(groups["data"][0]["channels"], json!([]));
     let (_, other) = register(&world.app).await;
     let (status, groups) = call(&world.app, "GET", "/api/v1/org/groups", None, Some(&other)).await;
     assert_eq!(status, StatusCode::OK);

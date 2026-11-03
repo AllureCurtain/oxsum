@@ -101,7 +101,7 @@ pub use entitlement::{
 };
 pub use error::WalletError;
 pub use experiments::{Experiment, ExperimentBinding, Variant, VariantResult, pick_variant};
-pub use groups::Group;
+pub use groups::{Group, GroupChannel};
 pub use guardrail::{
     Guardrail, GuardrailBinding, GuardrailPolicy, GuardrailSet, KeywordConfig, KeywordPattern,
     KeywordPolicy, ModerationConfig, PiiScanner, RequestContext, ResponseContext, Verdict,
