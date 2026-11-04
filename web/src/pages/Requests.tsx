@@ -24,6 +24,7 @@ import {
  * filters, cursor-paged, each row linking through to its settlement entry's
  * proof. The search surface the billing-dispute and SRE question reads. */
 function RequestSearch() {
+  const { t } = useTranslation();
   const display = useDisplay();
   const [keyId, setKeyId] = useState("");
   const [model, setModel] = useState("");
@@ -54,38 +55,34 @@ function RequestSearch() {
   }
 
   return (
-    <Card title="Search the request log">
+    <Card title={t("requests.search.title")}>
       <form onSubmit={submit} className="flex flex-col gap-3">
-        <p className="text-sm text-muted">
-          Every request the organization made — settled or refused — with the
-          model that answered, the channel, the tokens, the latency and the
-          charge. The billing-dispute and SRE question reads this.
-        </p>
+        <p className="text-sm text-muted">{t("requests.search.intro")}</p>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <Field label="Key">
-            <TextInput value={keyId} onChange={(e) => setKeyId(e.target.value)} placeholder="key id" />
+          <Field label={t("requests.search.key")}>
+            <TextInput value={keyId} onChange={(e) => setKeyId(e.target.value)} placeholder={t("requests.search.keyPlaceholder")} />
           </Field>
-          <Field label="Model served">
+          <Field label={t("requests.search.model")}>
             <TextInput value={model} onChange={(e) => setModel(e.target.value)} placeholder="gpt-4o-mini" />
           </Field>
-          <Field label="Channel">
+          <Field label={t("requests.search.channel")}>
             <TextInput value={channel} onChange={(e) => setChannel(e.target.value)} placeholder="openai-main" />
           </Field>
-          <Field label="Status">
+          <Field label={t("requests.search.status")}>
             <TextInput value={status} onChange={(e) => setStatus(e.target.value)} placeholder="settled" />
           </Field>
-          <Field label="From">
+          <Field label={t("requests.search.from")}>
             <TextInput type="datetime-local" value={from} onChange={(e) => setFrom(e.target.value)} />
           </Field>
-          <Field label="To">
+          <Field label={t("requests.search.to")}>
             <TextInput type="datetime-local" value={to} onChange={(e) => setTo(e.target.value)} />
           </Field>
-          <Field label="Min charge" hint="minor units">
+          <Field label={t("requests.search.minCharge")} hint={t("requests.search.minChargeHint")}>
             <TextInput value={minCharge} onChange={(e) => setMinCharge(e.target.value)} placeholder="0" />
           </Field>
           <div className="flex items-end gap-2">
-            <Button type="submit" isLoading={log.isFetching} loadingText="Searching…">
-              <Search className="h-4 w-4" /> Search
+            <Button type="submit" isLoading={log.isFetching} loadingText={t("requests.search.searching")}>
+              <Search className="h-4 w-4" /> {t("requests.search.search")}
             </Button>
           </div>
         </div>
@@ -94,15 +91,15 @@ function RequestSearch() {
         <div className="mt-4">
           <TableShell
             head={[
-              { label: "Request", truncate: true },
-              "Asked for",
-              "Served",
-              "Channel",
-              "Status",
-              { label: "TTFT", align: "right" },
-              { label: "Total", align: "right" },
-              { label: "In/Out", align: "right" },
-              { label: "Charged", align: "right" },
+              { label: t("requests.search.colRequest"), truncate: true },
+              t("requests.search.colAsked"),
+              t("requests.search.colServed"),
+              t("requests.search.colChannel"),
+              t("requests.search.colStatus"),
+              { label: t("requests.search.colTtft"), align: "right" },
+              { label: t("requests.search.colTotal"), align: "right" },
+              { label: t("requests.search.colTokens"), align: "right" },
+              { label: t("requests.search.colCharged"), align: "right" },
               "",
             ]}
           >
@@ -127,18 +124,18 @@ function RequestSearch() {
                 <Td mono align="right"><Cr minor={row.chargeMinor ?? 0} currency={display} /></Td>
                 <td>
                   {row.entryId ? (
-                    <a href={`/verify?entry=${row.entryId}`} className="text-primary">verify</a>
+                    <a href={`/verify?entry=${row.entryId}`} className="text-primary">{t("requests.search.verify")}</a>
                   ) : null}
                 </td>
               </tr>
             ))}
             {log.data.rows.length === 0 ? (
-              <EmptyRows colSpan={10} icon={<Search />}>No requests match.</EmptyRows>
+              <EmptyRows colSpan={10} icon={<Search />}>{t("requests.search.empty")}</EmptyRows>
             ) : null}
           </TableShell>
           {log.data.nextCursor != null ? (
             <p className="mt-2">
-              <Button tone="ghost" onClick={() => setCursor(log.data?.nextCursor)}>Older</Button>
+              <Button tone="ghost" onClick={() => setCursor(log.data?.nextCursor)}>{t("common.older")}</Button>
             </p>
           ) : null}
         </div>
