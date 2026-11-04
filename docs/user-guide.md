@@ -13,9 +13,10 @@ Steps:
    - A personal organization is created with you as its owner, named after the address's local part unless you chose a name.
    - An existing address answers 409 `CONFLICT`.
    - Some deployments answer 403 `FORBIDDEN`: registration is by invitation there. An
-     owner or admin of the organization hands you a link (`/register?invite=…`); it
-     registers one account, expires seven days after it was minted, and cannot be
-     reused. The same page also serves `open` deployments for invitees who prefer it.
+     owner or admin of the organization hands you a link (`/app/invite?token=…`) —
+     possibly by email — that registers one account; it expires seven days after it was
+     minted and cannot be reused. The same page also serves `open` deployments for
+     invitees who prefer it.
    - Deployments that run the anti-bot check draw a small Turnstile widget on the
      register page — solve it once and submit; a missing or expired answer answers
      `FORBIDDEN`, so redo the widget and resend. Send its token as `turnstileToken`
@@ -116,9 +117,11 @@ The dashboard is the React app under `web/` (issue #234): overview, top-up, bill
   - **Add member**: enter the email of an account that already exists. The page says
     so when no account has that email — for someone new, use the next control instead.
     The new member starts as a member.
-  - **Invite by link**: mint a link for someone who has no account yet. Copy it and
-    hand it over yourself — v1 sends no email. The link registers one account into the
-    organization as a member, expires seven days after minting, and is shown once.
+  - **Invite by link**: mint a link for someone who has no account yet. Enter an
+    address to have the invitation mailed (when the deployment configures a mailer),
+    or leave it blank to copy the link and hand it over yourself. The link registers
+    one account into the organization as a member, expires seven days after minting,
+    and is shown once.
   - **Make admin** / **Make member**: change a member's role. This never grants
     ownership; see below.
   - **Member budget**: the same member PATCH (`/api/v1/org/members/{userId}`)
