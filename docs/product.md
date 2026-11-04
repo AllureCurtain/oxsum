@@ -20,6 +20,8 @@ The piece must let a first-time visitor walk this path in minutes:
 4. The dashboard shows each in-flight freeze with its streaming progress live, and the newest settled entries below it.
 5. Open `/verify` — linked from every settled chat turn with both fields prefilled, and from every row of the bills page (`/app/bills`), which lists each transaction with its content hash and exports the list as CSV or JSON — and browser-local verification passes; change one number in the bundle and it fails.
 
+`/app/getting-started` (issue #559) turns that path into a checklist: five steps — a priced upstream channel, spendable credit, an API key, a settled request, and a live customer report link — each with the responsible role, the screen that completes it, and a state read from the deployment on every load rather than a stored checkbox. The Overview shows a progress card until all five are met; the page itself stays reachable after that. It explains the deliberate boundaries too: the test turn is a real billable request, reports cover only fully ended UTC days, and the customer's verification happens in their browser, not on this page.
+
 ## Roles
 
 | Role | Who | Can do | Status |
