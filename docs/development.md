@@ -741,10 +741,17 @@ table above names.
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on every push to `main` and every pull request that
-touches more than documentation (`paths-ignore` skips `docs/**` and `*.md`). Together
-the jobs below are the full gate — a regression cannot reach main through a PR, so
-the local pre-push bar stays at fmt + clippy + the touched crates' tests (issue
-#370). The toolchain comes from `dtolnay/rust-toolchain@stable` — the runner's
+touches more than documentation (`paths-ignore` skips `docs/**` and `*.md`). The gate
+has two tiers (issue #552). A pull request pays the fast tier only — the compile-time
+checks, the lib/doc tests and the two stage builds — and merges on those. The heavy
+tier (`build-tests`, the three shards, `test-extras`) runs on the push to `main`,
+where nothing is waiting on it. The five required checks (`fmt`, `clippy`, `test`,
+`wasm`, `frontend`) are all in the fast tier, so branch protection needs no change,
+and `clippy --all-targets` still compiles every test target — a type or borrow error
+cannot merge. The price is explicit: an integration or database failure can reach
+`main` and surface only after the merge, so a red `main` is fixed forward or reverted
+immediately. The local pre-push bar stays at fmt + clippy + the touched crates' tests
+(issue #370). The toolchain comes from `dtolnay/rust-toolchain@stable` — the runner's
 stable, no version pin — with the `rustfmt, clippy` components where they are
 needed:
 
@@ -766,19 +773,19 @@ needed:
   plus the doctests, with no postgres service and no integration binaries — the
   heavy test targets (testcontainers, sqlx test deps) never compile in this job,
   so a unit break answers in a few minutes instead of waiting on the full suite.
-- `build-tests`: `cargo nextest archive --workspace` compiles every test
+- `build-tests` (`main` only): `cargo nextest archive --workspace` compiles every test
   binary once into a `.tar.zst` artifact (issue #276). A second archive builds
   doubleentry's postgres suite with the feature on — its
   `#![cfg(feature = "postgres")]` gate means a plain `--workspace` archive would
   ship an empty binary. `Free disk space` lives here, the only job that still
   compiles the heavy targets.
-- `test-shard` (matrix of three): downloads the archive and runs
+- `test-shard` (matrix of three, `main` only): downloads the archive and runs
   `cargo nextest run --archive-file … --partition count:i/3`, so the suite's
   wall-clock is a third of one runner's. Each shard gets its own
   `postgres:17-alpine` service and runs the scratch-database sweep before the
   tests — an interrupted run's residue cannot bleed into the next shard's
   timing (issue #271).
-- `test-extras`: downloads the same artifact, extracts both archives, and runs
+- `test-extras` (`main` only): downloads the same artifact, extracts both archives, and runs
   the suites that cannot live under nextest — `generative`, `seed`, `jobs`
   coordinate through process-global state — by invoking the binaries straight
   from `target/debug/deps`, the same one-binary-per-process model `cargo test`
@@ -815,9 +822,9 @@ The compile jobs cache the cargo registry and `target/` through
 dependency tree. Compiled object files themselves are cached across runs through
 `mozilla-actions/sccache-action` (`RUSTC_WRAPPER=sccache`, GitHub cache backend —
 issue #237), which is what cuts cold-run compile time once a commit reuses any
-of the workspace's dependency graph. The three test shards and test-extras all
-run in parallel once build-tests hands them the archive; `main` requires every
-job to pass — a pull request cannot merge while any of them is red.
+of the workspace's dependency graph. On the `main` push the three test shards and
+test-extras all run in parallel once build-tests hands them the archive; a pull
+request never waits for any of them (issue #552).
 
 A second workflow, `.github/workflows/release-image.yml`, gates the release image
 itself: it runs on pushes to `main` and on `workflow_dispatch` — not on pull
