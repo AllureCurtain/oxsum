@@ -71,6 +71,51 @@ organization committed to**. It does not prove:
 - **The head.** The page prints the ledger head's size and root. If you archived an earlier head,
   ask the operator for a consistency proof that the current head extends it.
 
+## Verify offline, without the server
+
+The bill page is the simplest path, and it already runs the verifier in your
+browser. If you want a check that outlives the link — or you want to hold the
+evidence yourself — the same verifier is packaged as `verify-oxsum-bill`, and
+it needs no account and no connection to the billing server.
+
+Save three things while the link works, through the page or the API:
+
+- the proof bundle (`GET /api/v1/entries/{entryId}/proof`, or the bundle the
+  bill page embeds);
+- the 64-hex content hash the bill printed — your record, not the bundle's own
+  `contentHash`;
+- if you want the signature check, the operator key from
+  `GET /api/v1/log/key` or `GET /api/v1/log/head`, obtained through a channel
+  you trust.
+
+Then, in a separate project:
+
+```bash
+npm install /path/to/verify-oxsum-bill-0.1.0.tgz
+
+node --input-type=module -e '
+  import { verifyBill } from "verify-oxsum-bill";
+  import { readFileSync } from "node:fs";
+  const bundle = readFileSync("bundle.json", "utf8");
+  const hash = readFileSync("content-hash.txt", "utf8").trim();
+  console.log(await verifyBill(bundle, hash));
+'
+```
+
+A passing bill verdict means the entry's bytes hash to the value you saved, the
+entry is in the head the inclusion proof names, the charge recomputes from the
+usage and rates inside the entry, and the price it names is bound to a
+checkpoint the operator signed. It does not prove completeness, and it does not
+prove the writer counted the tokens the model really returned — those limits are
+the same ones above.
+
+The repository's [`examples/verify-consumer`](https://github.com/AllureCurtain/oxsum/tree/main/examples/verify-consumer)
+shows the full form: settlement bundle, signed head, consistency against an
+archived head, and the rejection cases (tampered content, a different hash, a
+different operator key, a different archived head). The package was not on npm
+as of 2026-11-04; the example validates the locally packed tarball, and the
+publication step is separate.
+
 ## If the link stops working
 
 A link expires — 30 days by default, 90 at most — and the operator can revoke one. An expired,

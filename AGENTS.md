@@ -20,6 +20,7 @@ crates/integrations/  Third-party service clients: GitHub OAuth, Stripe, Turnsti
 crates/server/        HTTP layer: routing, auth, error mapping, produces the oxsum binary. Conventions in crates/server/AGENTS.md
 crates/web/           The server-rendered sliver: `/verify` + its stylesheet + the bills-export types the server reuses. UI rules in DESIGN.md
 web/                  React dashboard (issue #234), embedded at /app; README has the parity checklist
+examples/verify-consumer/  Clean consumer of the packed verify-oxsum-bill npm tarball; offline evidence checks (issue #561)
 docs/                 Project documentation
 ```
 
