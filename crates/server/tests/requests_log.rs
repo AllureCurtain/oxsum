@@ -294,6 +294,11 @@ async fn a_settled_turn_writes_a_request_log_row() {
     assert_eq!(row["outputTokens"], 3);
     assert!(row["chargeMinor"].as_i64().unwrap() > 0);
     assert!(row["entryId"].is_string(), "a settled row names its entry");
+    assert!(
+        row["createdAt"].as_str().is_some_and(|v| v.contains('T')),
+        "createdAt is an RFC 3339 string per the contract, not a time array: {}",
+        row["createdAt"]
+    );
 }
 
 #[tokio::test]

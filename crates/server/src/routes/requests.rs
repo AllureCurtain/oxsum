@@ -102,6 +102,9 @@ pub(crate) struct RequestLogRowRes {
     error_kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     http_status: Option<i64>,
+    /// The contract says `string`/`date-time`; `time`'s default serialization is
+    /// an array of numbers, so the format is named explicitly.
+    #[serde(with = "time::serde::rfc3339")]
     created_at: OffsetDateTime,
 }
 
