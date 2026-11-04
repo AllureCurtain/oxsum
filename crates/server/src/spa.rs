@@ -2,9 +2,11 @@
 //! `web/dist` and is embedded into the binary, served under `/app` — the one
 //! dashboard now that the Topcoat pages retired to it (issue #256).
 //!
-//! `rust-embed`'s `debug-embed` feature reads `web/dist` from disk in debug
-//! builds — a `npm run build` is visible without a cargo rebuild — while
-//! release builds embed the directory at compile time. A committed placeholder
+//! In debug builds the assets are read from `web/dist` on disk, so an
+//! `npm run build` is visible without a cargo rebuild; release builds embed the
+//! directory at compile time. That split is `rust-embed`'s default, and the
+//! `debug-embed` feature (deliberately not enabled in the workspace manifest)
+//! is what would force a debug build to embed as well. A committed placeholder
 //! `web/dist/index.html` keeps the folder present in a fresh checkout.
 
 use axum::Router;
