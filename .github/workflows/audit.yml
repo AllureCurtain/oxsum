@@ -9,12 +9,17 @@ on:
       - Cargo.toml
       - Cargo.lock
       - '**/Cargo.toml'
+      # A change to this workflow should be exercised by its own branches,
+      # otherwise a broken install step goes unnoticed until the next lockfile
+      # bump (which is what this PR's cargo-audit install change is).
+      - '.github/workflows/audit.yml'
   push:
     branches: [main]
     paths:
       - Cargo.toml
       - Cargo.lock
       - '**/Cargo.toml'
+      - '.github/workflows/audit.yml'
   schedule:
     - cron: '0 6 * * 1'  # Monday 06:00 UTC
 
@@ -28,7 +33,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+      # A prebuilt binary (taiki-e/install-action fetches the release asset)
+      # instead of `cargo install`, which spent ~90s of this job's 197s
+      # compiling cargo-audit itself.
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
       - name: Audit the lockfile
         run: cargo audit

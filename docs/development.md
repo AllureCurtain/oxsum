@@ -792,6 +792,17 @@ needed:
   developer machine — `DOUBLEENTRY_DATABASE_URL` lifts that for local runs —
   which is why the conditional lives in CI rather than a local gate.
 
+The gate is built for wall-clock, not only for coverage (issue #550). `filter` and
+`fmt` are the only jobs the compile steps wait on — `clippy` runs beside them,
+because its ~130s of lints have nothing to give a build that is already compiling
+the same tree. Test binaries are archived with symbols stripped: the `nextest`
+artifact was 1242 MB and every shard spent over a minute downloading it. The
+disk-space step deletes its four trees in parallel rather than one after another,
+and `release-image.yml` imports the `wasm` and `frontend` stage caches that
+`ci.yml` exports, so the post-merge image build no longer rebuilds both stages
+from scratch. The audit workflow installs `cargo-audit` from its prebuilt
+release binary instead of compiling it.
+
 The retired `browser` job that used to gate the Leptos/wasm bundle went with the
 Topcoat dashboard (issue #256): `browser_contract` is an ordinary integration
 test now — no build step, no `wasm32` target — so it runs inside

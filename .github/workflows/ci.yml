@@ -27,6 +27,11 @@ env:
   # Test binaries don't need debuginfo (uv pattern): linking is the serial,
   # uncacheable part of CI, and debuginfo only makes it slower.
   CARGO_PROFILE_TEST_DEBUG: 0
+  # Test binaries carry symbol tables nothing in CI reads. The nextest archive
+  # they are shipped in was 1242 MB, and every shard paid 113s to download it;
+  # stripping roughly halves it. The cost is a symbol-less backtrace when a
+  # test fails in CI — rerun the suite locally for that.
+  CARGO_PROFILE_TEST_STRIP: symbols
   # sccache: content-addressed compile caching across runs (issue #237). The
   # rust-cache entries still cover registry/index/target-dir; sccache covers
   # the object files themselves, which is what dominates a cold PR run.
@@ -196,8 +201,10 @@ jobs:
           context: .
           target: wasm
           push: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Scoped so release-image.yml can import this stage instead of
+          # rebuilding it (it used the default scope, which these never wrote).
+          cache-from: type=gha,scope=wasm
+          cache-to: type=gha,mode=max,scope=wasm
 
   # The SPA half of the image (issue #309): the frontend stage runs `npm ci`,
   # regenerates the typed client from openapi.yaml and builds the Vite bundle.
@@ -229,16 +236,20 @@ jobs:
           context: .
           target: frontend
           push: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
 
   test:
     name: test
     # Fast signal first (issue #237): lib and doc tests — no postgres, no
     # integration binaries — so a unit break answers in minutes rather than
-    # waiting for the DB-backed suites. `test-integration` below still runs
-    # everything before merge.
-    needs: [filter, fmt, clippy]
+    # waiting for the DB-backed suites. The shards below still run everything
+    # before merge.
+    #
+    # Deliberately not `needs: clippy`: the two share only a checkout, and
+    # chaining them put 131s of clippy on the critical path before the first
+    # test compiled. A clippy failure still blocks the merge on its own check.
+    needs: [filter, fmt]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -280,7 +291,10 @@ jobs:
     # touches no Rust path. Required checks can't do this (a skipped job posts
     # no check), but this one isn't required, so the suite simply doesn't exist
     # for a web/docs-only change.
-    needs: [filter, fmt, clippy]
+    #
+    # Compiling waits on `fmt` (7s) only. It used to wait on `clippy` too, which
+    # serialized 131s of lints in front of a build that needs none of them.
+    needs: [filter, fmt]
     if: needs.filter.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -300,8 +314,11 @@ jobs:
       # on device" from rustc).
       - name: Free disk space
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          sudo docker image prune --all --force
+          # Four independent trees plus a docker prune, deleted in parallel: the
+          # serial form spent 86s here, more than a fifth of the job.
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL &
+          sudo docker image prune --all --force &
+          wait
           df -h
       # The registry, index and target dir: the workspace's dependency tree is the
       # expensive part of every run, and it only changes with the lockfile.
