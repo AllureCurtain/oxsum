@@ -55,8 +55,11 @@ jobs:
       # space for the same reason, "No space left on device" from a compiler.
       - name: Free disk space
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          sudo docker image prune --all --force
+          # Same parallel delete as ci.yml's build-tests job: the serial form
+          # spent 86s here.
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL &
+          sudo docker image prune --all --force &
+          wait
           df -h
       # The buildx `docker-container` driver is what makes the cache export below
       # possible: the default `docker` driver cannot export cache.
@@ -72,9 +75,15 @@ jobs:
           load: true
           tags: oxsum:ci
           # Without the Actions cache every rebuild is another 20-40 minute release
-          # compile; with it the Rust layers are reused.
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # compile; with it the Rust layers are reused. The first two scopes are
+          # the stage caches ci.yml exports from its wasm and frontend jobs — the
+          # release build imports them instead of rebuilding both stages from
+          # scratch, which is where most of its 721s went.
+          cache-from: |
+            type=gha,scope=wasm
+            type=gha,scope=frontend
+            type=gha,scope=release
+          cache-to: type=gha,mode=max,scope=release
       # The service container's health check normally gates the steps, but the server
       # migrates at startup and refuses to boot against a database it cannot reach, so
       # the wait is explicit and bounded instead of assumed.
