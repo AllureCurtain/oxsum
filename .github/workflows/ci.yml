@@ -11,6 +11,14 @@
 # can surface only after the merge, and main is then fixed forward or reverted
 # immediately, never left red.
 #
+# Every push to main owns its run (issue #549): the concurrency group is keyed
+# on the commit, because GitHub cancels the *pending* run when a newer one joins
+# the same group even with `cancel-in-progress: false`. A shared main group let
+# a burst of merges drop one push's gate entirely. A nightly `schedule` (and a
+# manual `workflow_dispatch`) ignores the path filter and runs the full tier, so
+# main is re-verified within a day whatever the last push touched — including a
+# docs-only push, which `paths-ignore` never triggered at all.
+#
 # The test job runs against a real PostgreSQL 17 service container. doubleentry's own
 # Postgres conformance suite spins up its container through testcontainers, which works
 # because GitHub-hosted runners provide Docker (docs/development.md, "Continuous
@@ -23,11 +31,20 @@ on:
     branches: [main]
     paths-ignore: ['docs/**', '**.md']
   pull_request:
+  # A nightly full run, ignoring the path filter (issue #549): it re-verifies
+  # main even when the last push touched only docs, or when a burst of merges
+  # displaced a push run. 03:17 UTC keeps it clear of the common merge hours.
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  # Cancel stale runs for pull requests only — never cancel a main-branch run
-  # mid-flight (helix pattern).
+  # A pull request keeps one group per branch, so a newer push cancels its stale
+  # run. Every other event gets a group keyed on its commit: GitHub cancels the
+  # *pending* run in a group when a newer one arrives, even with
+  # `cancel-in-progress: false`, which is how a burst of merges once left main
+  # commits with no gate at all (issue #549).
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -61,11 +78,16 @@ jobs:
     name: filter
     runs-on: ubuntu-latest
     outputs:
-      rust: ${{ steps.filter.outputs.rust }}
+      # A scheduled or manually dispatched run verifies the whole tree, whatever
+      # the last push touched (issue #549).
+      rust: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'true' || steps.filter.outputs.rust }}
     steps:
       - uses: actions/checkout@v7
+      # Only a push or a pull request has a base to diff against; a scheduled
+      # run is a full run by construction.
       - uses: dorny/paths-filter@v4
         id: filter
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
         with:
           # `rust` = anything the Rust toolchain builds, tests or lints against.
           # A change that misses every one of these cannot alter a Rust result.
@@ -148,8 +170,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # A default-branch schedule has no base to diff against; the nightly
+      # no-ops here rather than failing the whole run (issue #549).
       - uses: dorny/paths-filter@v4
         id: filter
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
         with:
           filters: |
             crates:
@@ -189,8 +214,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # A default-branch schedule has no base to diff against, so the step is
+      # skipped there and the job stays a green no-op; both stages are required
+      # checks on every pull request that can affect them.
       - uses: dorny/paths-filter@v4
         id: filter
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
         with:
           filters: |
             stages:
@@ -226,8 +255,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # See `wasm`: a scheduled run has no base to diff against and no-ops here.
       - uses: dorny/paths-filter@v4
         id: filter
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
         with:
           filters: |
             stages:
@@ -309,9 +340,10 @@ jobs:
     # Post-merge only (issue #552): this job plus the shards is the expensive
     # half of the suite, and none of them is a required check. On a pull request
     # the fast tier covers compilation; here the binaries get built and run with
-    # nobody waiting.
+    # nobody waiting. The nightly schedule and a manual dispatch run it too, so
+    # a commit a displaced push left ungated is verified within a day (#549).
     needs: [filter, fmt]
-    if: github.event_name == 'push' && needs.filter.outputs.rust == 'true'
+    if: needs.filter.outputs.rust == 'true' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -372,8 +404,9 @@ jobs:
   test-shard:
     name: test-shard (${{ matrix.shard }}/3)
     needs: [filter, build-tests]
-    # Heavy tier: main only (issue #552). See build-tests above.
-    if: github.event_name == 'push' && needs.filter.outputs.rust == 'true'
+    # Heavy tier: pushes to main, the nightly full run and manual dispatch
+    # (issues #552, #549). See build-tests above.
+    if: needs.filter.outputs.rust == 'true' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -432,8 +465,9 @@ jobs:
   test-extras:
     name: test-extras
     needs: [filter, build-tests]
-    # Heavy tier: main only (issue #552). See build-tests above.
-    if: github.event_name == 'push' && needs.filter.outputs.rust == 'true'
+    # Heavy tier: pushes to main, the nightly full run and manual dispatch
+    # (issues #552, #549). See build-tests above.
+    if: needs.filter.outputs.rust == 'true' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
