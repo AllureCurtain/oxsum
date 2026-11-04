@@ -67,7 +67,17 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # The OIDC `id_token` is a JWS the login verifies against the provider's JWKS —
 # the one place a JWT is a credential, and the crate that owns the RS256 verify
 # the codebase does not hand-roll.
-jsonwebtoken = "11"
+#
+# Held at 9 on purpose. Version 11 (and 10) ship no crypto backend: exactly one
+# of `rust_crypto` or `aws_lc_rs` must be selected or every encode and decode
+# panics at first use with "Could not automatically determine the
+# process-level CryptoProvider". `rust_crypto` reopens two advisory ignores —
+# rsa (RUSTSEC-2023-0071) and crypto-bigint 0.5 (RUSTSEC-2026-0387) — while
+# `aws_lc_rs` compiles AWS-LC through cmake, which neither the release image nor
+# a stock macOS contributor has. 9 bundles ring, which is already in the tree
+# through rustls, and carries no advisory. Revisit when 11 can be built without
+# either cost. See docs/decisions.md, "jsonwebtoken stays on 9".
+jsonwebtoken = "9.3.1"
 # Polling the relay by hand needs the `Stream` trait itself, nothing else from futures.
 futures-core = "0.3"
 # The relay is a generator: it forwards chunks, then awaits the settlement before it ends. A
