@@ -33,7 +33,12 @@ const TabsList = React.forwardRef<
     className={cn(
       "relative flex w-fit min-w-0 items-center gap-1",
       variant === "underline" && "w-full gap-5 border-b border-line pb-px",
-      variant === "pill" && "rounded-full border border-line bg-canvas p-1",
+      /* Five pill tabs do not fit a phone's content column; below `sm` the
+       * list spans the width and wraps so every tab stays reachable, and the
+       * capsule softens to a rounded rectangle that reads correctly in two
+       * rows. From `sm` up it hugs its content on one line, as before. */
+      variant === "pill" &&
+        "w-full flex-wrap rounded-2xl border border-line bg-canvas p-1 sm:w-fit sm:rounded-full",
       className,
     )}
     data-variant={variant}
