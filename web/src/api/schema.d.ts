@@ -1919,12 +1919,17 @@ export interface paths {
         put?: never;
         /**
          * Mint an invitation link
-         * @description A link into this organization: `/register?invite=<token>` in the dashboard, or
+         * @description A link into this organization: `/app/invite?token=<token>` in the dashboard, or
          *     `POST /api/v1/invitations/redeem` with the token, an email and a password. The
          *     token is answered exactly once, here; the database keeps only its hash. An
          *     invitation is valid seven days and works once. Owners and admins mint links;
          *     a member is refused, and a person's action means a bearer API key is refused
          *     too — a key is not a person.
+         *
+         *     An optional `email` mails the link instead of leaving it for the operator to
+         *     pass along. A deployment without a mailer refuses an address rather than
+         *     minting a link nobody receives; a send that fails answers `delivery: failed`
+         *     and the token is still in the answer.
          */
         post: {
             parameters: {
@@ -1933,7 +1938,11 @@ export interface paths {
                 path?: never;
                 cookie?: never;
             };
-            requestBody?: never;
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["CreateInvitationRequest"];
+                };
+            };
             responses: {
                 /** @description The invitation, with the one time the token is visible */
                 200: {
@@ -1946,6 +1955,7 @@ export interface paths {
                         };
                     };
                 };
+                400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
                 403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
@@ -9244,6 +9254,18 @@ export interface components {
              * @description seven days from minting
              */
             expiresAt: string;
+            /**
+             * @description present only when the request named an email: `sent` when the mailer accepted the message, `failed` when it did not — the token above is still valid for hand delivery
+             * @enum {string}
+             */
+            delivery?: "sent" | "failed";
+        };
+        CreateInvitationRequest: {
+            /**
+             * Format: email
+             * @description an optional recipient; with it the link is mailed, without it the token is only answered
+             */
+            email?: string;
         };
         RedeemInvitationRequest: {
             /** @description the invitation link's token */

@@ -422,7 +422,14 @@
     "addExisting": "通过邮箱添加已有账户。",
     "inviteNoAccount": "邀请没有账户的人",
     "createInvite": "创建邀请链接",
-    "add": "添加"
+    "add": "添加",
+    "inviteEmail": "邮箱（可选）",
+    "inviteEmailHint": "填写邮箱会直接发送邀请链接；留空则只生成链接，由你自行转交。",
+    "inviteEmailPlaceholder": "teammate@example.com",
+    "inviteAndMail": "生成链接并发送邮件",
+    "inviteSent": "邀请邮件已发送至 {{email}}。",
+    "inviteFailed": "无法向 {{email}} 发送邀请邮件，请手动转交链接。",
+    "inviteOnce": "请立即复制 —— 链接只显示这一次。"
   },
   "webhooks": {
     "title": "Webhook",

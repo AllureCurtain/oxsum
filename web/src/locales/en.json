@@ -422,7 +422,14 @@
     "addExisting": "Adds an existing account by email.",
     "inviteNoAccount": "Invite someone without an account",
     "createInvite": "Create invitation link",
-    "add": "Add"
+    "add": "Add",
+    "inviteEmail": "Email address (optional)",
+    "inviteEmailHint": "With an address the link is mailed. Leave it blank to copy the link and pass it along yourself.",
+    "inviteEmailPlaceholder": "teammate@example.com",
+    "inviteAndMail": "Create link and send email",
+    "inviteSent": "Invitation emailed to {{email}}.",
+    "inviteFailed": "The invitation email to {{email}} could not be sent; pass the link along.",
+    "inviteOnce": "Copy it now — the link is shown only once."
   },
   "webhooks": {
     "title": "Webhooks",

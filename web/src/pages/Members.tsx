@@ -41,7 +41,12 @@ export function Members() {
   const invite = useCreateInvitation();
 
   const [email, setEmail] = useState("");
-  const [inviteUrl, setInviteUrl] = useState<string | null>(null);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteResult, setInviteResult] = useState<{
+    url: string;
+    delivery?: "sent" | "failed";
+    email: string;
+  } | null>(null);
 
   const role = session.data?.role ?? "member";
   const canManage = role === "owner" || role === "admin";
@@ -55,9 +60,15 @@ export function Members() {
         <span className="text-xs text-muted">{t("members.yourRole",{role})}</span>
       </div>
 
-      {inviteUrl ? (
+      {inviteResult ? (
         <Banner tone="success">
-          {t("members.inviteLink")} <code className="mono">{inviteUrl}</code>
+          {inviteResult.delivery === "sent"
+            ? t("members.inviteSent", { email: inviteResult.email })
+            : inviteResult.delivery === "failed"
+              ? t("members.inviteFailed", { email: inviteResult.email })
+              : null}{" "}
+          {t("members.inviteLink")} <code className="mono break-all">{inviteResult.url}</code>
+          <span className="mt-1 block text-xs">{t("members.inviteOnce")}</span>
         </Banner>
       ) : null}
       {add.error instanceof ApiError ? <Banner tone="error">{add.error.message}</Banner> : null}
@@ -212,18 +223,36 @@ export function Members() {
             <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium text-muted hover:text-ink [&::-webkit-details-marker]:hidden">
               <Link2 className="size-4" /> {t("members.inviteNoAccount")}
             </summary>
-            <div className="mt-3">
-              <Button
-                tone="ghost"
-                disabled={invite.isPending}
-                onClick={() =>
-                  invite.mutate(undefined, { onSuccess: (created) => setInviteUrl(created.url) })
-                }
-              >
-                {t("members.createInvite")}
-              </Button>
+            <div className="mt-3 flex flex-col gap-3">
+              <Field label={t("members.inviteEmail")} hint={t("members.inviteEmailHint")}>
+                <TextInput
+                  type="email"
+                  value={inviteEmail}
+                  onChange={(e) => setInviteEmail(e.target.value)}
+                  placeholder={t("members.inviteEmailPlaceholder")}
+                />
+              </Field>
+              <div>
+                <Button
+                  tone="ghost"
+                  disabled={invite.isPending}
+                  onClick={() => {
+                    const to = inviteEmail.trim();
+                    invite.mutate(to || undefined, {
+                      onSuccess: (created) =>
+                        setInviteResult({
+                          url: `${window.location.origin}/app/invite?token=${encodeURIComponent(created.token)}`,
+                          delivery: created.delivery,
+                          email: to,
+                        }),
+                    });
+                  }}
+                >
+                  {inviteEmail.trim() ? t("members.inviteAndMail") : t("members.createInvite")}
+                </Button>
+              </div>
               {invite.error instanceof ApiError ? (
-                <p className="mt-2 text-xs text-danger">{invite.error.message}</p>
+                <p className="text-xs text-danger">{invite.error.message}</p>
               ) : null}
             </div>
           </details>
