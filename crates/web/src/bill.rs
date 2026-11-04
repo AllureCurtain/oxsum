@@ -334,7 +334,7 @@ async fn bill_page(cx: &Cx) -> Result<impl View> {
                 for bill in bills {
                     <section class="bill">
                         <h2>(format!("{} — {} to {}", bill.end_user, bill.from, bill.to))</h2>
-                        <p>(format!("{} entries · {} credits", bill.count, bill.total))</p>
+                        <p>(format!("{} · {} credits", bill.count, bill.total))</p>
                         <table>
                             <thead>
                                 <tr>
