@@ -83,7 +83,7 @@ export function Metering() {
     <div className="flex flex-col gap-4">
       <Card title={t("admin.metering.credentialTitle")}>
         <form
-          className="flex items-end gap-2"
+          className="flex flex-wrap items-end gap-2"
           onSubmit={(e) => {
             e.preventDefault();
             localStorage.setItem(METERING_CRED_KEY, cred);
@@ -96,7 +96,7 @@ export function Metering() {
               type="password"
               value={cred}
               onChange={(e) => setCred(e.target.value)}
-              className="w-96 mono"
+              className="w-full mono sm:w-96"
               required
             />
           </Field>
