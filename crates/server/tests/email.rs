@@ -534,6 +534,75 @@ async fn a_verify_token_does_not_reset_a_password() {
 }
 
 #[tokio::test]
+async fn inviting_with_an_address_mails_the_link() {
+    let (app, _pool, mut stub) = app_or_skip!();
+    let (owner_email, _registration, _secret) = register(&app, "invmail").await;
+    let _ = next_mail(&mut stub).await;
+    let cookie = session_cookie(&login(&app, &owner_email, PASSWORD).await);
+    let invitee = format!(
+        "invitee_{}@example.com",
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    );
+
+    let res = call(
+        &app,
+        "POST",
+        "/api/v1/org/invitations",
+        Some(json!({"email": invitee})),
+        None,
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert_eq!(res.body["data"]["delivery"], json!("sent"));
+    let token = res.body["data"]["token"].as_str().unwrap();
+
+    let mail = next_mail(&mut stub).await;
+    assert!(mail.contains("/app/invite?token="), "{mail}");
+    assert!(mail.contains(token), "{mail}");
+    assert!(mail.contains(invitee.as_str()), "{mail}");
+    assert!(mail.contains("seven days"), "{mail}");
+}
+
+#[tokio::test]
+async fn an_invitation_address_without_a_mailer_is_refused() {
+    let (app, _pool) = app_or_skip!(no_mailer);
+    let (owner_email, _registration, _secret) = register(&app, "nomail").await;
+    let cookie = session_cookie(&login(&app, &owner_email, PASSWORD).await);
+
+    let res = call(
+        &app,
+        "POST",
+        "/api/v1/org/invitations",
+        Some(json!({"email": "invitee@example.com"})),
+        None,
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::BAD_REQUEST, "{}", res.body);
+
+    // The link-only path still works: nothing was minted by the refused call.
+    let res = call(
+        &app,
+        "POST",
+        "/api/v1/org/invitations",
+        None,
+        None,
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert!(res.body["data"]["delivery"].is_null());
+    assert!(
+        res.body["data"]["token"]
+            .as_str()
+            .is_some_and(|token| token.starts_with("oxi-")),
+        "{}",
+        res.body
+    );
+}
+
+#[tokio::test]
 async fn redeeming_an_invitation_mails_the_verification_link() {
     let (app, _pool, mut stub) = app_or_skip!();
     let (owner_email, _r, _secret) = register(&app, "inv").await;

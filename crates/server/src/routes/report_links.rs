@@ -87,25 +87,6 @@ pub(crate) struct CreatedReportLinkRes {
     delivery: Option<&'static str>,
 }
 
-/// The one address rule applied before minting: a single address the mailer can
-/// parse. A malformed one is a caller mistake, not a reason to mint a link the
-/// operator believes was mailed.
-fn email_of(email: Option<&str>) -> Result<Option<&str>, ApiError> {
-    let Some(email) = email.map(str::trim).filter(|text| !text.is_empty()) else {
-        return Ok(None);
-    };
-    let valid = email.len() <= 254
-        && email.matches('@').count() == 1
-        && !email.starts_with('@')
-        && !email.ends_with('@')
-        && !email.chars().any(char::is_whitespace);
-    if valid {
-        Ok(Some(email))
-    } else {
-        Err(WalletError::InvalidInput("email must be a single address".into()).into())
-    }
-}
-
 /// Sends the mail and reduces the outcome to the wire's `delivery`. A send
 /// failure never turns the mint into an error: the link exists, and its token is
 /// in the answer for the operator to pass on by hand.
@@ -153,7 +134,7 @@ pub(crate) async fn create_for_report(
     body: Option<ApiJson<CreateLinkBody>>,
 ) -> ApiResult<CreatedReportLinkRes> {
     let body = body.map_or_else(CreateLinkBody::default, |ApiJson(body)| body);
-    let email = email_of(body.email.as_deref())?;
+    let email = super::recipient_email(body.email.as_deref())?;
     if email.is_some() && state.config.mailer().is_none() {
         return Err(
             WalletError::InvalidInput("this deployment has no mailer configured".into()).into(),
@@ -200,7 +181,7 @@ pub(crate) async fn create_for_end_user(
     Extension(principal): Extension<Principal>,
     ApiJson(body): ApiJson<CreateEndUserLinkBody>,
 ) -> ApiResult<CreatedReportLinkRes> {
-    let email = email_of(body.email.as_deref())?;
+    let email = super::recipient_email(body.email.as_deref())?;
     if email.is_some() && state.config.mailer().is_none() {
         return Err(
             WalletError::InvalidInput("this deployment has no mailer configured".into()).into(),
