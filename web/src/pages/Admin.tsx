@@ -11,6 +11,7 @@ import {
   ListChecks,
   Receipt,
   Scale,
+  Shield,
   ShieldCheck,
   Tags,
   Ticket,
@@ -37,9 +38,10 @@ import { Audit } from "./admin/audit";
 import { Credentials } from "./admin/credentials";
 import { Users } from "./admin/users";
 import { Metering } from "./admin/metering";
+import { Guardrails } from "./admin/guardrails";
 
 /**
- * The 16 operator sections grouped under 5 categories — the nav contract the
+ * The 17 operator sections grouped under 5 categories — the nav contract the
  * flat 16-tab row broke. Grouping is by what an operator reaches for: the
  * ledger's own record (Ledger), money movement (Money), the price book
  * (Catalog), who can act (Access), and the ops bench (Ops).
@@ -77,6 +79,7 @@ const SECTION_GROUPS: { group: string; items: { key: string; labelKey: string; I
       { key: "organizations", labelKey: "organizations", Icon: Banknote },
       { key: "users", labelKey: "users", Icon: UsersIcon },
       { key: "credentials", labelKey: "credentials", Icon: KeyRound },
+      { key: "guardrails", labelKey: "guardrails", Icon: Shield },
     ],
   },
   {
@@ -262,6 +265,8 @@ function Section({ token, name }: { token: string; name: SectionKey }) {
       return <Audit token={token} />;
     case "credentials":
       return <Credentials token={token} />;
+    case "guardrails":
+      return <Guardrails token={token} />;
     case "users":
       return <Users token={token} />;
     case "metering":
