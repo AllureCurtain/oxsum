@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import type { LucideIcon } from "lucide-react";
 import {
+  Activity,
   Banknote,
   FileCheck,
   KeyRound,
@@ -26,6 +27,7 @@ import { Channels } from "./admin/channels";
 import { Organizations } from "./admin/organizations";
 import { Deposits } from "./admin/deposits";
 import { InFlight } from "./admin/in-flight";
+import { AdminRequests } from "./admin/requests";
 import { Anomalies } from "./admin/anomalies";
 import { Margin } from "./admin/margin";
 import { Reconciliation } from "./admin/reconciliation";
@@ -41,7 +43,7 @@ import { Metering } from "./admin/metering";
 import { Guardrails } from "./admin/guardrails";
 
 /**
- * The 17 operator sections grouped under 5 categories — the nav contract the
+ * The 18 operator sections grouped under 5 categories — the nav contract the
  * flat 16-tab row broke. Grouping is by what an operator reaches for: the
  * ledger's own record (Ledger), money movement (Money), the price book
  * (Catalog), who can act (Access), and the ops bench (Ops).
@@ -60,6 +62,7 @@ const SECTION_GROUPS: { group: string; items: { key: string; labelKey: string; I
     group: "ledger",
     items: [
       { key: "in-flight", labelKey: "inFlight", Icon: Zap },
+      { key: "requests", labelKey: "requests", Icon: Activity },
       { key: "reconciliation", labelKey: "reconciliation", Icon: ListChecks },
       { key: "closings", labelKey: "closings", Icon: Wallet },
       { key: "audit", labelKey: "audit", Icon: ShieldCheck },
@@ -245,6 +248,8 @@ function Section({ token, name }: { token: string; name: SectionKey }) {
       return <Deposits token={token} />;
     case "in-flight":
       return <InFlight token={token} />;
+    case "requests":
+      return <AdminRequests token={token} />;
     case "anomalies":
       return <Anomalies token={token} />;
     case "margin":
