@@ -59,7 +59,69 @@
     "closeNav": "关闭导航",
     "mainNav": "主导航",
     "breadcrumb": "面包屑",
-    "newTeamOrg": "新建团队组织"
+    "newTeamOrg": "新建团队组织",
+    "gettingStarted": "开始使用"
+  },
+  "gettingStarted": {
+    "title": "开始使用",
+    "intro": "五个步骤把一台空部署走到客户可自行验证的账单。每一步都链接到现有页面；下面的状态每次加载都从本部署读取，不保存在浏览器里。",
+    "progress": "{{done}} / {{total}} 已就绪",
+    "ready": "已就绪",
+    "checking": "正在检查本部署…",
+    "unreachable": "这一步暂时无法检查。页面其余部分仍可用，刷新可重试。",
+    "role": {
+      "platformAdmin": "平台管理员",
+      "owner": "组织所有者",
+      "member": "组织成员"
+    },
+    "channel": {
+      "title": "接入上游并为模型定价",
+      "done": "已有渠道至少为一个模型配置了价格，key 可以路由并计费。",
+      "todoEmpty": "还没有渠道。在 Admin → Channels 创建渠道，然后为模型添加价格。",
+      "todoUnpriced": "已有 {{channels}} 个渠道，但都没有价格。请在 Admin → Channels 为模型添加价格。",
+      "blocked": "在 Admin 输入运营者令牌后才能检查此步骤。令牌只保存在当前浏览器。",
+      "action": "打开 Admin → Channels"
+    },
+    "credit": {
+      "title": "准备可用额度",
+      "done": "组织有可消费余额。",
+      "todo": "可用余额为零。所有者可以充值，平台管理员也可以在 Admin → Organizations 调整组织授信。",
+      "action": "去充值"
+    },
+    "key": {
+      "title": "创建 API key",
+      "done": "组织至少有一个 API key。",
+      "todo": "还没有 API key。创建一个，并把 SDK 的 base_url 指向本部署。",
+      "action": "打开 Keys"
+    },
+    "request": {
+      "title": "发送一次真实请求",
+      "done": "已有一条请求经过正常的冻结/结算流程并完成计费。",
+      "todoNone": "还没有记录到任何请求。",
+      "todoRecorded": "已记录 {{refused}} 条被拒绝、{{errored}} 条报错的请求，但都没有结算。打开 Requests 查看记录的原因。",
+      "action": "在 Chat 发送一轮",
+      "secondary": "查看请求结果",
+      "note": "这次测试是真实计费请求：开始前先冻结额度，结束后按实际用量结算，不是免费的连接探测。"
+    },
+    "bill": {
+      "title": "分享客户账单",
+      "done": "已有有效的账单分享链接。在未登录窗口打开它，验证会在那个浏览器里运行。",
+      "todo": "还没有有效的分享链接。为一位客户生成报表并分享链接。",
+      "action": "打开 Reports",
+      "secondary": "打开公共验证页",
+      "note": "报表只覆盖已经结束的 UTC 日期：今天发送的请求会出现在明天的报表里。账单页的结论是客户那边的，本页无法观察到。"
+    },
+    "boundary": {
+      "title": "客户端的检查能证明什么",
+      "body": "账单页会在客户浏览器里重算内容哈希和包含证明，并在部署发布了签名 key 时校验运营者签名的 head。它证明这些行没有被改写，但不证明上游确实返回了这些 token 数。未配置 OXSUM_HEAD_SIGNING_KEY 时，页面会说明 head 未签名，包含证明仍然有效。"
+    },
+    "card": {
+      "title": "完成初始设置",
+      "body": "{{done}} / {{total}} 步已就绪。",
+      "checking": "正在检查设置…",
+      "next": "下一步：{{step}}。",
+      "action": "开始使用"
+    }
   },
   "overview": {
     "title": "概览",

@@ -12,6 +12,7 @@ import {
 } from "./pages/auth";
 import { Bills } from "./pages/Bills";
 import { Chat } from "./pages/Chat";
+import { GettingStarted } from "./pages/GettingStarted";
 import { Keys } from "./pages/Keys";
 import { Log } from "./pages/Log";
 import { Members } from "./pages/Members";
@@ -36,6 +37,7 @@ export function App() {
       <Route path="/verify-email" element={<VerifyEmail />} />
       <Route element={<AppShell />}>
         <Route index element={<Overview />} />
+        <Route path="getting-started" element={<GettingStarted />} />
         <Route path="topup" element={<Topup />} />
         <Route path="pricing" element={<Pricing />} />
         <Route path="settings" element={<Settings />} />

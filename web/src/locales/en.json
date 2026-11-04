@@ -59,7 +59,69 @@
     "closeNav": "Close navigation",
     "mainNav": "Main navigation",
     "breadcrumb": "Breadcrumb",
-    "newTeamOrg": "New team organization"
+    "newTeamOrg": "New team organization",
+    "gettingStarted": "Get started"
+  },
+  "gettingStarted": {
+    "title": "Get started",
+    "intro": "Five steps take an empty deployment to a customer bill the recipient can verify. Each step links to the screen that does the work; the state below is read from this deployment on every load, not stored in this browser.",
+    "progress": "{{done}} of {{total}} ready",
+    "ready": "Ready",
+    "checking": "Checking this deployment…",
+    "unreachable": "Could not check this step. The rest of the page still works; reload to try again.",
+    "role": {
+      "platformAdmin": "Platform admin",
+      "owner": "Organization owner",
+      "member": "Organization member"
+    },
+    "channel": {
+      "title": "Connect an upstream and price a model",
+      "done": "A channel has at least one priced model, so a key can route and be charged.",
+      "todoEmpty": "No channel exists yet. Create one under Admin → Channels, then add a price for a model.",
+      "todoUnpriced": "{{channels}} channel(s) exist but none has a price. Add a price for a model under Admin → Channels.",
+      "blocked": "Enter the operator token in Admin to check this step. The token stays in this browser.",
+      "action": "Open Admin → Channels"
+    },
+    "credit": {
+      "title": "Make credit available",
+      "done": "The organization has spendable balance.",
+      "todo": "Available balance is zero. The owner can top up, or the platform admin can extend the organization's credit line under Admin → Organizations.",
+      "action": "Top up"
+    },
+    "key": {
+      "title": "Create an API key",
+      "done": "The organization has at least one API key.",
+      "todo": "No API key exists yet. Create one and point an SDK's base_url at this deployment.",
+      "action": "Open Keys"
+    },
+    "request": {
+      "title": "Send a real request",
+      "done": "A request was admitted, settled and charged through the normal hold pipeline.",
+      "todoNone": "No request has been recorded yet.",
+      "todoRecorded": "{{refused}} refused and {{errored}} errored request(s) are recorded, but none settled. Open Requests to see the recorded outcome.",
+      "action": "Send a turn from Chat",
+      "secondary": "See request outcomes",
+      "note": "The test turn is a real billable request — credit is frozen before it starts and settled afterwards. It is not a free connection probe."
+    },
+    "bill": {
+      "title": "Share a customer bill",
+      "done": "A live report link exists. Open it in a logged-out window; the check runs in that browser.",
+      "todo": "No live report link exists. Mint a report for one customer and share its link.",
+      "action": "Open Reports",
+      "secondary": "Open the public verifier",
+      "note": "Reports cover only fully ended UTC days: a turn sent today appears in tomorrow's report. The bill page's verdict is the customer's own — this page cannot observe it."
+    },
+    "boundary": {
+      "title": "What the customer's check establishes",
+      "body": "The bill page recomputes the content hash and the inclusion proof in the customer's browser and, where the deployment publishes one, checks the operator's signed head. It proves the rows were not rewritten; it does not prove the upstream returned those token counts. Without OXSUM_HEAD_SIGNING_KEY the page says the head is unsigned, and inclusion still verifies."
+    },
+    "card": {
+      "title": "Finish setting up",
+      "body": "{{done}} of {{total}} steps ready.",
+      "checking": "Checking setup…",
+      "next": "Next: {{step}}.",
+      "action": "Get started"
+    }
   },
   "overview": {
     "title": "Overview",

@@ -79,6 +79,7 @@ const NAV_INDEX: Record<string, { labelKey: string; parent?: string }> = Object.
   NAV_GROUPS.flatMap((g) => g.items.map((i) => [i.to, { labelKey: i.labelKey }])),
 );
 NAV_INDEX["/device"] = { labelKey: "nav.device" };
+NAV_INDEX["/getting-started"] = { labelKey: "nav.gettingStarted" };
 NAV_INDEX["/admin"] = { labelKey: "nav.admin" };
 NAV_INDEX["/statements/:id"] = { labelKey: "nav.statement", parent: "/statements" };
 

@@ -22,6 +22,7 @@ import {
   useUsage,
 } from "../api/hooks";
 import { Progress } from "../components/ui";
+import { GettingStartedCard } from "../components/GettingStartedCard";
 import { Button } from "../components/ui";
 import { TextInput } from "../components/ui";
 import {
@@ -115,6 +116,8 @@ export function Overview() {
       {!session.data?.user.emailVerified ? (
         <Banner tone="warn">{t("overview.emailUnverified")}</Banner>
       ) : null}
+
+      <GettingStartedCard />
 
       {/* Hero: the balance carries the visual weight — the number that answers
           "can I spend" plus the week's shape; the right rail is the operational
