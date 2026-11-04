@@ -31,9 +31,10 @@ use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
 
 use crate::{
-    AnchorError, Hash, PriceError, PublishedKey, StatementAnchorCheck, TreeHead, UsageReportError,
-    WitnessNote, WitnessPin, WitnessVerdict, verify_bill, verify_price_head, verify_signed_head,
-    verify_statement_anchor, verify_usage_report, verify_witnesses,
+    AnchorError, ConsistencyProof, Hash, PriceError, PublishedKey, StatementAnchorCheck, TreeHead,
+    UsageReportError, WitnessNote, WitnessPin, WitnessVerdict, verify_bill, verify_consistency,
+    verify_price_head, verify_signed_head, verify_statement_anchor, verify_usage_report,
+    verify_witnesses,
 };
 
 /// The JSON shape every exported verdict shares: `{"ok": bool, "detail":
@@ -135,6 +136,80 @@ pub fn verify_signed_head_js(
     };
     match verify_signed_head(note, &served, expected_origin, &key) {
         Ok(()) => Ok(verdict(true, "the signed head verifies")),
+        Err(error) => Err(JsError::new(&error.to_string())),
+    }
+}
+
+/// Verifies a consistency response against a head the caller already holds:
+/// `response_json` is the `data` of `GET /api/v1/log/consistency`
+/// (`{note, oldHead, head, proof, …}`), `held_json` the `TreeHead` the caller
+/// archived, and `key_json` `{keyName, publicKey, keyHash}`. The response's
+/// `oldHead` must equal `held_json`, the proof links it to the new head, and
+/// the new head must carry the operator's signature — the same order of trust
+/// `verify_consistency` keeps.
+///
+/// # Errors
+///
+/// [`JsError`] on malformed input or a failed check — the `HeadError` text.
+#[wasm_bindgen(js_name = verifyConsistency)]
+pub fn verify_consistency_js(
+    response_json: &str,
+    held_json: &str,
+    expected_origin: &str,
+    key_json: &str,
+) -> Result<String, JsError> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Response {
+        note: String,
+        old_head: TreeHead,
+        head: TreeHead,
+        proof: Proof,
+    }
+    /// The API's consistency proof spells its sizes camelCase; the verifier's
+    /// type is the ledger engine's snake_case wire, so map explicitly.
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Proof {
+        old_size: u64,
+        new_size: u64,
+        path: Vec<Hash>,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Key {
+        key_name: String,
+        public_key: String,
+        key_hash: String,
+    }
+    let response: Response =
+        serde_json::from_str(response_json).map_err(|e| JsError::new(&e.to_string()))?;
+    let held: TreeHead =
+        serde_json::from_str(held_json).map_err(|e| JsError::new(&e.to_string()))?;
+    let key: Key = serde_json::from_str(key_json).map_err(|e| JsError::new(&e.to_string()))?;
+    let key = PublishedKey {
+        key_name: &key.key_name,
+        public_key: &key.public_key,
+        key_hash: &key.key_hash,
+    };
+    let proof = ConsistencyProof {
+        old_size: response.proof.old_size,
+        new_size: response.proof.new_size,
+        path: response.proof.path,
+    };
+    match verify_consistency(
+        &held,
+        &response.old_head,
+        &proof,
+        &response.note,
+        &response.head,
+        expected_origin,
+        &key,
+    ) {
+        Ok(()) => Ok(verdict(
+            true,
+            "the new head extends the held head and carries the operator's signature",
+        )),
         Err(error) => Err(JsError::new(&error.to_string())),
     }
 }
