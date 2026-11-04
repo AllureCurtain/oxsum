@@ -1,5 +1,16 @@
 # Continuous integration: format, lints, and the full test suites.
 #
+# Two tiers (issue #552): a pull request runs the fast tier — `filter`, `fmt`,
+# `clippy --all-targets`, the lib/doc tests, `wasm`, `frontend`, `publishable`
+# and `audit` — and the heavy tier (`build-tests`, the three shards,
+# `test-extras`) runs on a push to `main`, where nothing is waiting on it. The
+# five required checks (`fmt`, `clippy`, `test`, `wasm`, `frontend`) are all in
+# the fast tier, so branch protection needs no changes; `clippy --all-targets`
+# still compiles every test target, which is what keeps a type error from
+# reaching main. The trade-off is explicit: an integration or database failure
+# can surface only after the merge, and main is then fixed forward or reverted
+# immediately, never left red.
+#
 # The test job runs against a real PostgreSQL 17 service container. doubleentry's own
 # Postgres conformance suite spins up its container through testcontainers, which works
 # because GitHub-hosted runners provide Docker (docs/development.md, "Continuous
@@ -243,8 +254,8 @@ jobs:
     name: test
     # Fast signal first (issue #237): lib and doc tests — no postgres, no
     # integration binaries — so a unit break answers in minutes rather than
-    # waiting for the DB-backed suites. The shards below still run everything
-    # before merge.
+    # waiting for the DB-backed suites. This is the whole test tier of a pull
+    # request; the heavy suites run on main after the merge (issue #552).
     #
     # Deliberately not `needs: clippy`: the two share only a checkout, and
     # chaining them put 131s of clippy on the critical path before the first
@@ -294,8 +305,13 @@ jobs:
     #
     # Compiling waits on `fmt` (7s) only. It used to wait on `clippy` too, which
     # serialized 131s of lints in front of a build that needs none of them.
+    #
+    # Post-merge only (issue #552): this job plus the shards is the expensive
+    # half of the suite, and none of them is a required check. On a pull request
+    # the fast tier covers compilation; here the binaries get built and run with
+    # nobody waiting.
     needs: [filter, fmt]
-    if: needs.filter.outputs.rust == 'true'
+    if: github.event_name == 'push' && needs.filter.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -356,7 +372,8 @@ jobs:
   test-shard:
     name: test-shard (${{ matrix.shard }}/3)
     needs: [filter, build-tests]
-    if: needs.filter.outputs.rust == 'true'
+    # Heavy tier: main only (issue #552). See build-tests above.
+    if: github.event_name == 'push' && needs.filter.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -415,7 +432,8 @@ jobs:
   test-extras:
     name: test-extras
     needs: [filter, build-tests]
-    if: needs.filter.outputs.rust == 'true'
+    # Heavy tier: main only (issue #552). See build-tests above.
+    if: github.event_name == 'push' && needs.filter.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
