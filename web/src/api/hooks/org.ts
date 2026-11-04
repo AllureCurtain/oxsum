@@ -104,8 +104,11 @@ export function useTransferOwnership() {
 
 export function useCreateInvitation() {
   return useMutation({
-    mutationFn: () =>
-      api<{ url: string }>("/org/invitations", { method: "POST" }),
+    mutationFn: (email?: string) =>
+      api<components["schemas"]["CreatedInvitation"]>("/org/invitations", {
+        method: "POST",
+        body: email ? { email } : undefined,
+      }),
   });
 }
 
