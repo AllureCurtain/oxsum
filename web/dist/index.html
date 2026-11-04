@@ -3,14 +3,30 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>oxsum</title>
-    <script type="module" crossorigin src="/app/assets/index-5ayAIU0h.js"></script>
-    <link rel="modulepreload" crossorigin href="/app/assets/react-vendor-DgkMQQTB.js">
-    <link rel="modulepreload" crossorigin href="/app/assets/motion-CmkF3F1x.js">
-    <link rel="modulepreload" crossorigin href="/app/assets/ui-vendor-DpmX3q57.js">
-    <link rel="stylesheet" crossorigin href="/app/assets/index-C7KKbKj4.css">
+    <title>oxsum — dashboard not built</title>
+    <style>
+      body { margin: 0; font: 15px/1.55 ui-sans-serif, system-ui, sans-serif; color: #1b1b1f; background: #f5f5f7; }
+      main { max-width: 40rem; margin: 15vh auto; padding: 0 1.5rem; }
+      h1 { font-size: 1.25rem; margin: 0 0 0.75rem; }
+      p { margin: 0 0 1rem; }
+      pre { margin: 0 0 1rem; padding: 0.75rem 1rem; overflow-x: auto; background: #fff; border: 1px solid #d8d8dc; border-radius: 0.5rem; }
+      code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <main>
+      <h1>The dashboard bundle is not built</h1>
+      <p>
+        This is the committed placeholder for <code>web/dist</code>; the React
+        dashboard in <code>web/</code> has not been built in this checkout yet.
+      </p>
+      <pre><code>npm --prefix web ci
+npm --prefix web run build</code></pre>
+      <p>
+        A debug build reads <code>web/dist</code> from disk, so the bundle is
+        served as soon as it exists — no cargo rebuild needed. Release builds
+        embed it at compile time.
+      </p>
+    </main>
   </body>
 </html>
