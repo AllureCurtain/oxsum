@@ -890,9 +890,11 @@ npm --prefix web run build   # emit web/dist
 The server embeds `web/dist` via `rust-embed` and serves it at `/app`
 (`crates/server/src/spa.rs`): extension-less routes fall back to
 `index.html`, hashed `assets/` get immutable caching, and a missing asset is
-a real 404. Debug builds read `dist` from disk (`debug-embed`), so a
-`npm run build` is visible without a cargo rebuild; release builds embed the
-directory at compile time — the Dockerfile's `frontend` stage produces it,
+a real 404. Debug builds read `dist` from disk, so a `npm run build` is
+visible without a cargo rebuild — this is `rust-embed`'s default, so the
+workspace keeps its `debug-embed` feature off (enabling it embeds even in
+debug builds). Release builds embed the directory at compile time — the
+Dockerfile's `frontend` stage produces it,
 so the release image is still one binary. `web/dist` is git-ignored except a
 committed placeholder `index.html` that keeps the embed folder present on a
 fresh checkout. Styling follows DESIGN.md: its tokens are mapped onto
