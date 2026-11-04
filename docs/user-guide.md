@@ -89,7 +89,7 @@ for the session. **Settings** carries the two-factor card: enroll shows the
 base32 secret and `otpauthUrl`, confirm with a live code shows the ten backup
 codes once, and disable needs a live code.
 
-The dashboard is the React app under `web/` (issue #234): overview, top-up, bills, requests, usage, pricing, keys, members, the transaction log, statements, webhooks, chat, settings and the admin console, built on vendored Cult UI components over the DESIGN.md palette, all reading the same `/api/v1` surface. The server-rendered Topcoat pages retired to it (issue #256), so an old `/dashboard/*`, `/app/login` or `/admin` bookmark answers `301` to its `/app` twin — the page names below are the `/app` routes. `/verify` keeps its server-rendered form on purpose — when the wasm bundle ships, the page's loader runs the same check in your browser instead (issue #284).
+The dashboard is the React app under `web/` (issue #234): overview, top-up, bills, requests, usage, pricing, keys, members, the transaction log, statements, webhooks, chat, settings and the admin console, built on the single component layer under `web/src/components/ui/` — Radix primitives and vendored shadcn sources, styled with the DESIGN.md palette (DESIGN.md) — all reading the same `/api/v1` surface. The server-rendered Topcoat pages retired to it (issue #256), so an old `/dashboard/*`, `/app/login` or `/admin` bookmark answers `301` to its `/app` twin — the page names below are the `/app` routes. `/verify` keeps its server-rendered form on purpose — when the wasm bundle ships, the page's loader runs the same check in your browser instead (issue #284).
 
 - **Overview**: the organization, who you are logged in as and in which role, the
   available balance, the frozen total (everything the organization's outstanding holds
@@ -533,11 +533,13 @@ Steps:
    settles, `x-oxsum-charged-minor` reports what it actually cost — a header on a
    non-streamed answer or a post-hold refusal, and an HTTP trailer (`Trailer:
    x-oxsum-charged-minor` announces it) on a streamed one, since the response head is sent
-   before the stream settles. `x-oxsum-cache: hit` says the answer came from the semantic
+   before the stream settles. `x-oxsum-cache: hit` says the answer came from the response
    cache rather than upstream: on a channel whose operator enabled it, a repeat of an
    earlier question (case and whitespace aside) re-serves the stored answer and bills the
-   cache-read rate instead of a fresh turn's — the settlement's `cache` block names the
-   original turn's entry, so the replay is provable on `/verify` like every other charge.
+   cache-read rate instead of a fresh turn's. The match is exact — the same normalized
+   prompt digest, not a similarity score; the settlement's `cache` block carries
+   `similarity: 1.0` and names the original turn's entry, so the replay is provable on
+   `/verify` like every other charge.
    Cached answers never cross organizations, a `stream` request is never cached, and a
    hit's `upstreamAttempts` reads `0` because no upstream call happened.
 
