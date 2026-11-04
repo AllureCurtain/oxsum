@@ -897,7 +897,8 @@ debug builds). Release builds embed the directory at compile time — the
 Dockerfile's `frontend` stage produces it,
 so the release image is still one binary. `web/dist` is git-ignored except a
 committed placeholder `index.html` that keeps the embed folder present on a
-fresh checkout. Styling follows DESIGN.md: its tokens are mapped onto
+fresh checkout and tells a developer to run the two `npm` commands above when
+the server serves it unbuilt. Styling follows DESIGN.md: its tokens are mapped onto
 Tailwind v4 theme colors in `web/src/index.css`.
 
 ## Test strategy
