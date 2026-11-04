@@ -1,10 +1,10 @@
 use axum::extract::{Extension, Path, State};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use oxsum_core::{
-    CreatedInvitation, Member, NewUser, Organization, Ownership, Principal, Registration, Role,
-    UserOrganization,
+    Member, NewUser, Organization, Ownership, Principal, Registration, Role, UserOrganization,
+    WalletError,
 };
 
 use crate::AppState;
@@ -175,17 +175,76 @@ pub(crate) struct RedeemReq {
     turnstile_token: Option<String>,
 }
 
+/// The optional body of `POST /api/v1/org/invitations`: an address to mail the
+/// link to (issue #567). With no body the token is only answered, as before.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CreateInvitationReq {
+    email: Option<String>,
+}
+
+/// A freshly minted invitation. `delivery` is present only when the request
+/// named an address: `sent` when the mailer accepted the message, `failed`
+/// when it did not — the token is valid either way, so the operator can still
+/// pass the link along by hand.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CreatedInvitationRes {
+    id: Uuid,
+    token: String,
+    #[serde(with = "time::serde::rfc3339")]
+    expires_at: time::OffsetDateTime,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    delivery: Option<&'static str>,
+}
+
 /// Mints an invitation link into the session's organization: the token is answered
 /// once, here. Owner or admin only — the same rule every membership write follows.
+/// With an `email` in the body the link is also mailed; without one it is the
+/// caller's to pass along.
 pub(crate) async fn create_invitation(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
-) -> ApiResult<CreatedInvitation> {
+    body: Option<ApiJson<CreateInvitationReq>>,
+) -> ApiResult<CreatedInvitationRes> {
     let actor = principal.membership_actor()?;
-    ok(state
+    let body = body.map_or_else(CreateInvitationReq::default, |ApiJson(body)| body);
+    let email = super::recipient_email(body.email.as_deref())?;
+    // An address on a deployment with no mailer is a caller mistake: refusing
+    // before the mint keeps the operator from believing a link was mailed.
+    if email.is_some() && state.config.mailer().is_none() {
+        return Err(
+            WalletError::InvalidInput("this deployment has no mailer configured".into()).into(),
+        );
+    }
+    let minted = state
         .db
         .create_invitation(actor, principal.organization().id)
-        .await?)
+        .await?;
+    let delivery = match (email, state.config.mailer()) {
+        (None, _) => None,
+        (Some(to), Some(mailer)) => {
+            match mailer
+                .send_invitation(to, &minted.token, &principal.organization().name)
+                .await
+            {
+                Ok(()) => Some("sent"),
+                Err(error) => {
+                    tracing::warn!(%error, "the invitation mail was not sent");
+                    Some("failed")
+                }
+            }
+        }
+        // The check above makes this unreachable; answering a failure rather
+        // than panicking keeps a misconfiguration from losing the token.
+        (Some(_), None) => Some("failed"),
+    };
+    ok(CreatedInvitationRes {
+        id: minted.id,
+        token: minted.token,
+        expires_at: minted.expires_at,
+        delivery,
+    })
 }
 
 /// Registers through an invitation link. Open in every signup mode — an `invite`

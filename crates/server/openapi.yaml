@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.96.0
+  version: 0.97.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -732,6 +732,14 @@ info:
     leaves the request's `model` untouched). The list and the results reads
     answer any member; the writes are owner/admin actions the membership role
     gates, the same rule `teams` keeps.
+
+    0.97.0 delivers invitation links (issue #567): `POST /api/v1/org/invitations`
+    accepts an optional `{email}`. With an address and a configured mailer the
+    minted link is mailed to that address, and the answer's `delivery` reports
+    `sent` or `failed`; a send failure never fails the mint, so the token is
+    still in the answer for hand delivery. A request naming an address on a
+    deployment without a mailer is refused with a validation error, and a
+    request sending no body keeps answering the link alone.
 
     Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
     endpoints that take no credential at all are the ones whose credential is in the body or
@@ -1874,14 +1882,24 @@ paths:
     post:
       summary: Mint an invitation link
       description: |
-        A link into this organization: `/register?invite=<token>` in the dashboard, or
+        A link into this organization: `/app/invite?token=<token>` in the dashboard, or
         `POST /api/v1/invitations/redeem` with the token, an email and a password. The
         token is answered exactly once, here; the database keeps only its hash. An
         invitation is valid seven days and works once. Owners and admins mint links;
         a member is refused, and a person's action means a bearer API key is refused
         too — a key is not a person.
+
+        An optional `email` mails the link instead of leaving it for the operator to
+        pass along. A deployment without a mailer refuses an address rather than
+        minting a link nobody receives; a send that fails answers `delivery: failed`
+        and the token is still in the answer.
       security:
         - sessionCookie: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateInvitationRequest" }
       responses:
         "200":
           description: The invitation, with the one time the token is visible
@@ -1892,6 +1910,7 @@ paths:
                 required: [data]
                 properties:
                   data: { $ref: "#/components/schemas/CreatedInvitation" }
+        "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
@@ -6688,6 +6707,18 @@ components:
           type: string
           description: "`oxi-` plus 32 random bytes — answered once; only its hash is stored"
         expiresAt: { type: string, format: date-time, description: seven days from minting }
+        delivery:
+          type: string
+          enum: [sent, failed]
+          description: "present only when the request named an email: `sent` when the mailer accepted the message, `failed` when it did not — the token above is still valid for hand delivery"
+    CreateInvitationRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+          description: "an optional recipient; with it the link is mailed, without it the token is only answered"
     RedeemInvitationRequest:
       type: object
       required: [token, email, password]

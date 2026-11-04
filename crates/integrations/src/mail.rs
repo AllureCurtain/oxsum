@@ -117,6 +117,31 @@ impl Mailer {
         .await
     }
 
+    /// Mails an invitation link: `/app/invite?token=…` (issue #567).
+    ///
+    /// The token is a capability — whoever holds it can register into
+    /// `organization` — so the mail goes only to the address the operator
+    /// named, once, and the token never appears in the database.
+    pub async fn send_invitation(
+        &self,
+        to: &str,
+        token: &str,
+        organization: &str,
+    ) -> Result<(), String> {
+        self.send(
+            to,
+            &format!("You are invited to {organization} on oxsum"),
+            &format!(
+                "You have been invited to join {organization} on oxsum.\n\nOpen the link to \
+                 create your account:\n\n{}/app/invite?token={}\n\nThe link works once and \
+                 expires in seven days. If you were not expecting this invitation, ignore \
+                 this mail — nothing happens until the link is opened.",
+                self.public_url, token
+            ),
+        )
+        .await
+    }
+
     /// Sends one plain-text mail. Failures are a description string: the callers
     /// log them and answer as if nothing had happened — a mail that never
     /// arrives must not turn a registration or a forgot-answer into an error.

@@ -425,6 +425,28 @@ where
     Option::<i64>::deserialize(deserializer).map(Some)
 }
 
+/// The one address rule for a link that will be mailed: a single address the
+/// mailer can parse. A malformed one is a caller mistake, not a reason to mint
+/// a link the operator believes was mailed (bill links, issue #315; invitation
+/// links, issue #567).
+pub(crate) fn recipient_email(email: Option<&str>) -> Result<Option<&str>, ApiError> {
+    let Some(email) = email.map(str::trim).filter(|text| !text.is_empty()) else {
+        return Ok(None);
+    };
+    let valid = email.len() <= 254
+        && email.matches('@').count() == 1
+        && !email.starts_with('@')
+        && !email.ends_with('@')
+        && !email.chars().any(char::is_whitespace);
+    if valid {
+        Ok(Some(email))
+    } else {
+        Err(ApiError::Validation(
+            "email must be a single address".into(),
+        ))
+    }
+}
+
 /// The [`double_option_i64`] peel for a uuid field — `null` means "clear the
 /// assignment", a value sets it (issue #440, `teamId` on a member PATCH).
 pub(crate) fn double_option_uuid<'de, D>(
