@@ -7,7 +7,8 @@
 //! directory at compile time. That split is `rust-embed`'s default, and the
 //! `debug-embed` feature (deliberately not enabled in the workspace manifest)
 //! is what would force a debug build to embed as well. A committed placeholder
-//! `web/dist/index.html` keeps the folder present in a fresh checkout.
+//! `web/dist/index.html` keeps the folder present in a fresh checkout and says
+//! how to build the bundle when it is served before one exists.
 
 use axum::Router;
 use axum::http::{StatusCode, Uri, header};
