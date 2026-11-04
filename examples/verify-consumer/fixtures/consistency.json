@@ -1,0 +1,22 @@
+{
+  "head": {
+    "root": "aedc742422bd4e41210a219746b17d736fad1af52f7ce62753962bde4996a6fa",
+    "size": 3
+  },
+  "keyHash": "cd38c389",
+  "keyName": "oxsum/tree-heads",
+  "note": "oxsum/ledgers/c73b93ee0e434e5991d8575fd0b0bdf5\n3\nrtx0JCK9TkEhCiGXRrF9c2+tGvUvfOYnU5Yr3kmWpvo=\n\n— oxsum/tree-heads zTjDiajBBC7DRFqHWbPOStdYB1tUSEje0nTidCpeBYSMpo2z/oEXKMvCFs7/XFO++6yh6+ss3PzthkggoQMsEgVF3wY=\n",
+  "oldHead": {
+    "root": "fdbca69b61291f5c1b4da63d39a8ca942cdbf860eb607191ef236c00b430f0f3",
+    "size": 1
+  },
+  "proof": {
+    "newSize": 3,
+    "oldSize": 1,
+    "path": [
+      "a5e88428d55b8c1c00a96779e14b1b227b69cda74edc5d230bb919d36b803ccd",
+      "e2b8b2cdd9de9102e5fd7dabe6488c25be9b3b0a3cdb75321afce4cd0aabd317"
+    ]
+  },
+  "publicKey": "GX9rI+FshTLGq8g4+s1ep4m+DHaykgM0A5v6iz02jWE="
+}

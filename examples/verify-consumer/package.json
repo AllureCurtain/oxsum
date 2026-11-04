@@ -1,0 +1,13 @@
+{
+  "name": "oxsum-verify-consumer-example",
+  "private": true,
+  "version": "0.1.0",
+  "description": "A clean consumer of the verify-oxsum-bill npm tarball: verifies exported oxsum evidence offline.",
+  "type": "module",
+  "engines": {
+    "node": ">=20.16"
+  },
+  "scripts": {
+    "verify": "node verify.mjs"
+  }
+}
