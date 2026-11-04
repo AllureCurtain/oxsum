@@ -154,12 +154,17 @@ export function Overview() {
               </span>
             </div>
             <div className="border-t border-line pt-4">
+              {/* The stats row wraps below `sm`: three chips plus their gaps
+                  are wider than a phone's content column, and the shrink-0
+                  block used to push the last one past the card's edge. The
+                  sparkline is hidden there rather than collapsing to a zero
+                  width beside the gap. */}
               <div className="flex items-end gap-8">
-                <div className="shrink-0 pb-0.5">
+                <div className="min-w-0 pb-0.5">
                   <p className="text-[11px] font-medium uppercase tracking-wider text-muted">
                     {t("overview.last7Days")}
                   </p>
-                  <div className="mt-2 flex gap-7">
+                  <div className="mt-2 flex flex-wrap gap-x-7 gap-y-3">
                     <StatChip
                       label={t("overview.today")}
                       value={<Cr minor={todayStats.charged} currency={display} />}
@@ -193,7 +198,7 @@ export function Overview() {
                   values={spark}
                   width={560}
                   height={72}
-                  className="h-16 min-w-0 flex-1 self-end"
+                  className="hidden h-16 min-w-0 flex-1 self-end sm:block"
                 />
               </div>
             </div>
