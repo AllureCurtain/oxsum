@@ -2,6 +2,14 @@
 
 New decisions go on top. Overturned decisions are never deleted; mark them "Superseded" and name the decision that replaces it.
 
+## 2026-11-04 — The dashboard bundle reads from disk in debug builds; `debug-embed` stays off (issue #569)
+
+- Status: Adopted. Corrects the `debug-embed` claim in "Dashboard: React + Vite, replacing the Topcoat pages" (2026-11-01), which stays as written and is corrected here.
+- Background: that entry — and the module comment in `crates/server/src/spa.rs` and docs/development.md — said the `debug-embed` feature is what makes a debug build read `web/dist` from disk. It is the opposite. rust-embed 8 picks its implementation with `#[cfg(any(not(debug_assertions), feature = "debug-embed"))]`: a debug build embeds at compile time *unless* the feature is off, and enabling `debug-embed` forces the embedded branch even in debug builds. The workspace enabled it, so the documented workflow (edit the frontend, rebuild it, see the change without touching Rust) did not hold — an acceptance run served the stale placeholder until a `.rs` file was touched to force a rebuild. The false claim had gone unnoticed because the committed placeholder is what a debug binary usually carries anyway.
+- Decision: `rust-embed` is declared without the `debug-embed` feature, restoring the documented split — debug builds read the directory from disk at runtime, release builds embed it. The three comments and docs that described the feature backwards are corrected, and this entry records why the feature is absent so it is not "helpfully" re-added.
+- Why not keep the feature and flip the documentation: always-embedding would make every frontend change wait on a Rust rebuild and would keep serving whatever bundle the binary was compiled with, which is exactly the failure the acceptance run hit. The disk-reading behaviour is the more useful development default and is what the docs promise.
+- Pinned by a debug-side check: build the server, replace a file under `web/dist`, and the next request serves the replacement with no cargo rebuild.
+
 ## 2026-11-01 An experiment is org-side routing config; the pick rewrites `model`, and scoring stays offline (issue #509)
 
 - Status: Adopted. Shares the mutable-config doctrine "A fallback is model→model, its own table" (2026-11-01) settled: `oxsum.experiments` sits beside `model_fallbacks` as a table an owner edits, never a ledger row.
