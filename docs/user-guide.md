@@ -45,6 +45,20 @@ Notes:
 - Members see and revoke only the keys they created; owners and admins see and revoke every key of the organization. Keys you mint while logged in record you as their creator.
 - Deleting the account: `DELETE /api/v1/users/me` with `{"password": "…"}` — the session cookie plus your password, since the act is irreversible. Your email is tombstoned, every session and every key you minted dies at once, your memberships go, and the `endUser`/`tags` attribution on usage your keys paid is erased. Your personal organization is suspended and renamed rather than deleted — the ledger under it cannot be orphaned — and any organization where you are the last owner among remaining members refuses until you transfer the seat. Your bills still verify: the ledger is never touched. An account created through GitHub has no password until one is set through the reset flow, so it cannot confirm the delete before that.
 
+## Getting started (first setup)
+
+Purpose: reach a first settled request and a customer-verifiable bill without guessing the order.
+
+The dashboard's **Get started** page (`/app/getting-started`) lists five steps, each linking to the screen that does the work:
+
+1. **Connect an upstream and price a model** — platform admin, under Admin → Channels. The state is checked with the operator token stored in this browser; without one the step says so instead of guessing.
+2. **Make credit available** — the organization owner tops up, or the platform admin grants credit under Admin → Organizations.
+3. **Create an API key** — registration already mints the first one; the Keys page mints more.
+4. **Send a real request** — a turn from Chat is a normal billable call: credit is frozen first and settled afterwards; it is not a free probe.
+5. **Share a customer bill** — Reports mints a signed report for one end user over a fully ended UTC span and shares it as a link. A turn sent today appears in tomorrow's report. The recipient opens `/bill/{token}` without an account and presses **Verify this bill** in their own browser; this dashboard cannot observe that check.
+
+The state comes from the deployment on every load, so completing a step and reloading flips it. The Overview carries a **Finish setting up** card with the next step until all five are met.
+
 ## Dashboard
 
 Purpose: see and manage the organization in a browser instead of over the API.
