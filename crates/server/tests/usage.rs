@@ -463,10 +463,15 @@ async fn the_usage_page_sums_the_window() {
         .iter()
         .find(|row| row["model"] == "mock-a")
         .expect("the mock-a rollup row");
+    // The contract types `day` as a `format: date` string, not `time`'s
+    // default `[year, ordinal]` array.
+    let today_date = today()
+        .format(&time::macros::format_description!("[year]-[month]-[day]"))
+        .unwrap();
     assert_eq!(
         mock_a["day"],
-        serde_json::to_value(today()).unwrap(),
-        "today's rollup row"
+        serde_json::Value::String(today_date),
+        "today's rollup row carries the contract's date string"
     );
     assert_eq!(mock_a["inputTokens"], 316, "the input tokens sum");
     assert_eq!(mock_a["outputTokens"], 150, "the output tokens sum");
