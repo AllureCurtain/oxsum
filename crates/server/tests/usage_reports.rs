@@ -1072,6 +1072,19 @@ async fn a_bill_link_renders_the_frozen_report_with_its_headers() {
         to,
     )
     .await;
+    // A second settlement on the same day gives the frozen report two entries,
+    // so the copy is checked in its plural form (issue #557).
+    seed_request(
+        &db,
+        &tenants,
+        &account.tenant_id,
+        "req-b",
+        end_user,
+        400,
+        500,
+        to,
+    )
+    .await;
     let to = to.to_string();
     let report = mint(&app, &account.cookie, end_user, &to, &to).await.json()["data"].clone();
     let report_id = report["reportId"].as_str().expect("a report id").to_owned();
@@ -1107,8 +1120,10 @@ async fn a_bill_link_renders_the_frozen_report_with_its_headers() {
     assert_eq!(page.status, StatusCode::OK, "the page did not render");
     let body = String::from_utf8(page.body.clone()).expect("the page is UTF-8");
     assert!(body.contains(end_user), "the bill names the customer");
-    assert!(body.contains("1 entry"), "the frozen count renders");
-    assert!(body.contains("0.000300"), "the frozen charge renders");
+    assert!(
+        body.contains("2 entries · 0.000700 credits"),
+        "the frozen count and charge render once"
+    );
     assert!(
         body.contains("Operator key: ") && !body.contains("not published"),
         "a signing deployment publishes its key on the page"
