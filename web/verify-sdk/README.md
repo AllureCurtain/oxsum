@@ -20,20 +20,24 @@ const verdict = await verifyBill(JSON.stringify(bundle), hash);
 | Function | What it checks |
 | --- | --- |
 | `verifyBill(bundleJson, hashHex)` | One settlement's proof bundle — hash recompute + inclusion + charge + price binding |
-| `verifySignedHead(json)` | A ledger head's operator Ed25519 signature |
-| `verifyConsistency(json, checkJson)` | A new head extends one the verifier already holds |
-| `verifyWitnesses(json, pinsJson)` | Cosignatures a checkpoint carries, against a pinned witness set |
+| `verifySignedHead(note, servedHeadJson, origin, keyJson)` | A ledger head's operator Ed25519 signature |
+| `verifyConsistency(responseJson, heldHeadJson, origin, keyJson)` | A new head extends one the verifier already holds |
+| `verifyWitnesses(notesJson, pinsJson, origin, headJson)` | Cosignatures a checkpoint carries, against a pinned witness set |
 | `verifyStatementAnchor(json, checkJson)` | A statement's completeness anchor |
-| `verifyUsageReport(json)` | A usage-report rollup's day/anchor leaves |
+| `verifyUsageReport(json, expectedEndUser, keyJson?)` | A usage-report rollup's day/anchor leaves |
 | `verifyPriceHead(json)` | A price-row checkpoint's signed binding |
 
-Every answer is `{ ok, detail, … }` — `detail` is the human-readable sentence the server's own `/verify` page prints, so a page only has to render it.
+Every answer is `{ ok, detail, … }` — `detail` is the human-readable sentence the server's own `/verify` page prints, so a page only has to render it. `verifyWitnesses` answers an array, one `{ witnessUrl, ok, detail }` per cosignature, and reports a failed witness in-band rather than throwing.
 
-The objects these functions speak — the proof bundle, signed-note head, `PriceLink`, the consistency and witness proofs — are written down field-by-field in [docs/transparency-log-v1.md](https://github.com/AllureCurtain/oxsum/blob/main/docs/transparency-log-v1.md), the protocol's normative reference.
+The trust inputs are the caller's, not the server's: the content hash the customer recorded, the operator key obtained through a channel the operator does not control, the head the customer archived, and the witness pins the customer chose. Passing the server's own echo of one of those checks only that the answer agrees with itself. The objects these functions speak — the proof bundle, signed-note head, `PriceLink`, the consistency and witness proofs — are written down field-by-field in [docs/transparency-log-v1.md](https://github.com/AllureCurtain/oxsum/blob/main/docs/transparency-log-v1.md), the protocol's normative reference.
 
 ## Embedding
 
 The package ships the wasm-bindgen output inside `wasm/` — the loader instantiates it lazily on first call, so importing the module costs nothing until a verification actually runs. No configuration, no endpoint, no key.
+
+The same functions run under Node 20.16 or newer, where the loader reads the packaged `.wasm` bytes instead of fetching them (browser bundlers never see a Node import). That is how the repository's [`examples/verify-consumer`](https://github.com/AllureCurtain/oxsum/tree/main/examples/verify-consumer) verifies exported evidence with the server switched off.
+
+Keys can be passed in either spelling: the base64 `publicKey` the `/api/v1/log/*` endpoints serve, or the hex form the proof and report bundles carry. The wrapper normalises both before the Rust verifier sees them.
 
 ## `<verify-bill>` — the check as an element
 

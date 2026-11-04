@@ -23,17 +23,55 @@ export interface BillVerdict {
   price?: string;
 }
 
-/** `verifySignedHead` / `verifyConsistency` / `verifyWitnesses` answer this. */
+/** `verifySignedHead` / `verifyConsistency` answer this. */
 export interface HeadVerdict extends Verdict {}
+
+/** One witness's answer from `verifyWitnesses`, in the notes' own order. */
+export interface WitnessVerdict {
+  /** The witness endpoint the note came from. */
+  witnessUrl: string;
+  ok: boolean;
+  /** The same human-readable sentence the Rust verifier prints. */
+  detail: string;
+}
 
 /** `verifyStatementAnchor` / `verifyUsageReport` / `verifyPriceHead` answer this. */
 export interface CheckVerdict extends Verdict {}
 
+/**
+ * The published operator key a signature check needs:
+ * `{keyName, publicKey, keyHash}`. `publicKey` may be the base64 form the
+ * `/api/v1/log/*` endpoints serve or the hex form the proof/report bundles
+ * carry; the wrapper normalises it. Obtain the key through a channel the
+ * operator does not control; a key fetched from the same server only proves
+ * the server agrees with itself.
+ */
+export interface PublishedKey {
+  keyName: string;
+  publicKey: string;
+  keyHash: string;
+}
+
 interface VerifyWasmModule {
   verifyBundle(bundleJson: string, expectedHashHex: string): Promise<string>;
-  verifySignedHead(json: string): Promise<string>;
-  verifyConsistency(json: string, checkJson: string): Promise<string>;
-  verifyWitnesses(json: string, pinsJson: string): Promise<string>;
+  verifySignedHead(
+    note: string,
+    servedHeadJson: string,
+    expectedOrigin: string,
+    keyJson: string,
+  ): Promise<string>;
+  verifyConsistency(
+    responseJson: string,
+    heldHeadJson: string,
+    expectedOrigin: string,
+    keyJson: string,
+  ): Promise<string>;
+  verifyWitnesses(
+    notesJson: string,
+    pinsJson: string,
+    expectedOrigin: string,
+    headJson: string,
+  ): Promise<string>;
   verifyStatementAnchor(json: string, checkJson: string): Promise<string>;
   verifyUsageReport(
     json: string,
@@ -55,16 +93,41 @@ async function load(): Promise<VerifyWasmModule> {
   if (!modulePromise) {
     modulePromise = (async () => {
       // wasm/verify_wasm.js is the wasm-bindgen `--target web` output — its
-      // default export is the async initializer the glue installs. We import
-      // it as a URL so the package ships the file it needs.
+      // default export is the async initializer the glue installs, and its
+      // named exports are the JS wrappers that take and return JSON strings.
+      // The initializer's own return value is the raw
+      // `WebAssembly.Instance.exports`, whose functions speak pointers, not
+      // JSON: the wrappers must come from the module namespace (issue #555).
       const glue = (await import(
         /* @vite-ignore */ new URL("../wasm/verify_wasm.js", import.meta.url).href
-      )) as { default: (input?: unknown) => Promise<unknown> };
-      const init = glue.default;
-      // The init resolves to the wasm-bindgen `__wbindgen` namespace when the
-      // module is instantiated — the exports object carries the functions.
-      const bound = (await init()) as VerifyWasmModule;
-      return bound;
+      )) as { default: (input?: unknown) => Promise<unknown> } & VerifyWasmModule;
+      // The glue's default path fetches the sibling `.wasm` — right in a
+      // browser, unavailable under Node's `file:` URLs. Give it the bytes
+      // instead when running under Node (process.getBuiltinModule is
+      // invisible to browser bundlers, unlike an import of `node:fs`).
+      const runtime = (
+        globalThis as {
+          process?: {
+            versions?: { node?: string };
+            getBuiltinModule?: (id: string) => unknown;
+          };
+        }
+      ).process;
+      if (runtime?.versions?.node) {
+        if (!runtime.getBuiltinModule) {
+          throw new Error("verify-oxsum-bill requires Node 20.16 or newer");
+        }
+        const fs = runtime.getBuiltinModule("node:fs/promises") as {
+          readFile: (path: URL) => Promise<Uint8Array>;
+        };
+        const bytes = await fs.readFile(
+          new URL("../wasm/verify_wasm_bg.wasm", import.meta.url),
+        );
+        await glue.default({ module_or_path: bytes });
+      } else {
+        await glue.default();
+      }
+      return glue;
     })();
   }
   return modulePromise;
@@ -72,6 +135,52 @@ async function load(): Promise<VerifyWasmModule> {
 
 function parse<T extends object>(json: string): T {
   return JSON.parse(json) as T;
+}
+
+/**
+ * The Rust verifier reads Ed25519 public keys as lowercase hex. The signed-head
+ * endpoints serve the operator key as base64 (C2SP's own spelling), while the
+ * proof/report bundles carry hex — normalise both to hex so a caller can pass
+ * whichever form it obtained. A value that is neither is left alone; the
+ * verifier reports it as malformed.
+ */
+function publicKeyHex(value: string): string {
+  if (/^[0-9a-f]{64}$/i.test(value)) {
+    return value.toLowerCase();
+  }
+  try {
+    const binary = atob(value);
+    if (binary.length !== 32) {
+      return value;
+    }
+    let hex = "";
+    for (let i = 0; i < binary.length; i += 1) {
+      hex += binary.charCodeAt(i).toString(16).padStart(2, "0");
+    }
+    return hex;
+  } catch {
+    return value;
+  }
+}
+
+/** A `{keyName, publicKey, keyHash}` JSON string with `publicKey` in hex. */
+function normalizedKeyJson(key: string): string {
+  const parsed = JSON.parse(key) as { publicKey?: unknown };
+  if (typeof parsed.publicKey === "string") {
+    parsed.publicKey = publicKeyHex(parsed.publicKey);
+  }
+  return JSON.stringify(parsed);
+}
+
+/** A `[{witnessUrl, keyName, publicKey, keyHash}]` array with hex keys. */
+function normalizedPinsJson(pins: string): string {
+  const parsed = JSON.parse(pins) as { publicKey?: unknown }[];
+  for (const pin of parsed) {
+    if (typeof pin.publicKey === "string") {
+      pin.publicKey = publicKeyHex(pin.publicKey);
+    }
+  }
+  return JSON.stringify(parsed);
 }
 
 /**
@@ -95,31 +204,68 @@ export async function verifyBill(
 /**
  * Checks that a signed tree head is genuine — the operator's Ed25519
  * signed-note signature over `oxsum/ledgers/<tenant>`.
+ *
+ * @param note the C2SP signed-note text verbatim (`data.note` from
+ *   `GET /api/v1/log/head`), never a re-rendered copy: the signature covers
+ *   the note's body byte for byte.
+ * @param servedHeadJson the `{size, root}` head the note must attest — the
+ *   `data.head` the caller read, or a head the caller already holds.
+ * @param expectedOrigin the ledger origin the note must name, for example
+ *   `oxsum/ledgers/<tenantId>`. Pass the one you recorded, not one taken from
+ *   the same answer you are checking.
+ * @param keyJson the published key `{keyName, publicKey, keyHash}`.
  */
-export async function verifySignedHead(json: string): Promise<HeadVerdict> {
+export async function verifySignedHead(
+  note: string,
+  servedHeadJson: string,
+  expectedOrigin: string,
+  keyJson: string,
+): Promise<HeadVerdict> {
   const m = await load();
-  return parse(await m.verifySignedHead(json));
+  return parse(await m.verifySignedHead(note, servedHeadJson, expectedOrigin, normalizedKeyJson(keyJson)));
 }
 
 /**
  * Checks that a new head extends a head the verifier already holds — the
  * consistency proof an archived head demands.
+ *
+ * @param responseJson the `data` of `GET /api/v1/log/consistency`: the new
+ *   signed note plus `oldHead`, `head` and `proof`.
+ * @param heldHeadJson the `{size, root}` head the caller archived. The
+ *   response's `oldHead` must match it exactly; a proof anchored anywhere
+ *   else proves nothing about the caller's archive.
+ * @param expectedOrigin the ledger origin the note must name.
+ * @param keyJson the published operator key `{keyName, publicKey, keyHash}`.
  */
 export async function verifyConsistency(
-  json: string,
-  checkJson: string,
+  responseJson: string,
+  heldHeadJson: string,
+  expectedOrigin: string,
+  keyJson: string,
 ): Promise<HeadVerdict> {
   const m = await load();
-  return parse(await m.verifyConsistency(json, checkJson));
+  return parse(await m.verifyConsistency(responseJson, heldHeadJson, expectedOrigin, normalizedKeyJson(keyJson)));
 }
 
-/** Checks the witness cosignatures a checkpoint carries against a pinset. */
+/**
+ * Checks every witness cosignature on a checkpoint against a pinset. A
+ * failure is reported in-band per witness, not thrown: the element and the
+ * example can say which witness failed and why.
+ *
+ * @param notesJson `[{witnessUrl, note}]` — the checkpoint's cosignatures.
+ * @param pinsJson `[{witnessUrl, keyName, publicKey, keyHash}]` — the pins the
+ *   caller trusts, not necessarily the ones the deployment serves.
+ * @param expectedOrigin the ledger origin the notes must name.
+ * @param headJson the `{size, root}` head the notes must attest.
+ */
 export async function verifyWitnesses(
-  json: string,
+  notesJson: string,
   pinsJson: string,
-): Promise<HeadVerdict> {
+  expectedOrigin: string,
+  headJson: string,
+): Promise<WitnessVerdict[]> {
   const m = await load();
-  return parse(await m.verifyWitnesses(json, pinsJson));
+  return parse<WitnessVerdict[]>(await m.verifyWitnesses(notesJson, normalizedPinsJson(pinsJson), expectedOrigin, headJson));
 }
 
 /** Verifies a statement's completeness anchor against its check payload. */
@@ -146,7 +292,7 @@ export async function verifyUsageReport(
   keyJson?: string | null,
 ): Promise<CheckVerdict> {
   const m = await load();
-  return parse(await m.verifyUsageReport(json, expectedEndUser, keyJson));
+  return parse(await m.verifyUsageReport(json, expectedEndUser, keyJson ? normalizedKeyJson(keyJson) : keyJson));
 }
 
 /** Verifies a signed price-head checkpoint against the row it attests. */
