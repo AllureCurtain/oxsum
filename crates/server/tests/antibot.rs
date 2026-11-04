@@ -125,16 +125,27 @@ struct Res {
 }
 
 async fn post(app: &Router, path: &str, body: Value, cookie: Option<&str>) -> Res {
-    let mut req = Request::builder()
-        .method("POST")
-        .uri(path)
-        .header("content-type", "application/json");
+    send(app, path, Some(body), cookie).await
+}
+
+/// A POST that sends no body at all — the spelling the optional-body endpoints
+/// expect, where a literal `null` is still a body and fails deserialization.
+async fn post_bare(app: &Router, path: &str, cookie: Option<&str>) -> Res {
+    send(app, path, None, cookie).await
+}
+
+async fn send(app: &Router, path: &str, body: Option<Value>, cookie: Option<&str>) -> Res {
+    let mut req = Request::builder().method("POST").uri(path);
+    if body.is_some() {
+        req = req.header("content-type", "application/json");
+    }
     if let Some(cookie) = cookie {
         req = req.header("cookie", cookie);
     }
+    let payload = body.map(|body| body.to_string()).unwrap_or_default();
     let res = app
         .clone()
-        .oneshot(req.body(Body::from(body.to_string())).unwrap())
+        .oneshot(req.body(Body::from(payload)).unwrap())
         .await
         .unwrap();
     let status = res.status();
@@ -262,7 +273,7 @@ async fn redemption_requires_the_check_when_configured() {
         .next()
         .unwrap()
         .to_owned();
-    let res = post(&app, "/api/v1/org/invitations", Value::Null, Some(&cookie)).await;
+    let res = post_bare(&app, "/api/v1/org/invitations", Some(&cookie)).await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
     let token = res.body["data"]["token"]
         .as_str()
