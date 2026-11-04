@@ -740,12 +740,20 @@ table above names.
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs on every push to `main` and every pull request that
-touches more than documentation (`paths-ignore` skips `docs/**` and `*.md`). The gate
-has two tiers (issue #552). A pull request pays the fast tier only — the compile-time
+`.github/workflows/ci.yml` runs on every push to `main`, every pull request that
+touches more than documentation (`paths-ignore` skips `docs/**` and `*.md`), and a
+nightly `schedule` at 03:17 UTC. Each push to `main` gets its own concurrency group
+keyed on the commit (issue #549): GitHub cancels a *pending* run when a newer one
+joins its group even with `cancel-in-progress: false`, so a shared main group let a
+burst of merges drop a push's gate. The nightly and a manual `workflow_dispatch`
+ignore the path filter and force the full tier, so main is re-verified within a day
+regardless of what the last push touched — including a docs-only push, which
+`paths-ignore` never triggered at all.
+
+The gate has two tiers (issue #552). A pull request pays the fast tier only — the compile-time
 checks, the lib/doc tests and the two stage builds — and merges on those. The heavy
-tier (`build-tests`, the three shards, `test-extras`) runs on the push to `main`,
-where nothing is waiting on it. The five required checks (`fmt`, `clippy`, `test`,
+tier (`build-tests`, the three shards, `test-extras`) runs on pushes to `main`, the
+nightly and a manual dispatch, where nothing is waiting on it. The five required checks (`fmt`, `clippy`, `test`,
 `wasm`, `frontend`) are all in the fast tier, so branch protection needs no change,
 and `clippy --all-targets` still compiles every test target — a type or borrow error
 cannot merge. The price is explicit: an integration or database failure can reach
@@ -773,19 +781,19 @@ needed:
   plus the doctests, with no postgres service and no integration binaries — the
   heavy test targets (testcontainers, sqlx test deps) never compile in this job,
   so a unit break answers in a few minutes instead of waiting on the full suite.
-- `build-tests` (`main` only): `cargo nextest archive --workspace` compiles every test
+- `build-tests` (pushes to `main`, the nightly, manual dispatch): `cargo nextest archive --workspace` compiles every test
   binary once into a `.tar.zst` artifact (issue #276). A second archive builds
   doubleentry's postgres suite with the feature on — its
   `#![cfg(feature = "postgres")]` gate means a plain `--workspace` archive would
   ship an empty binary. `Free disk space` lives here, the only job that still
   compiles the heavy targets.
-- `test-shard` (matrix of three, `main` only): downloads the archive and runs
+- `test-shard` (matrix of three, `main` pushes, nightly and manual dispatch): downloads the archive and runs
   `cargo nextest run --archive-file … --partition count:i/3`, so the suite's
   wall-clock is a third of one runner's. Each shard gets its own
   `postgres:17-alpine` service and runs the scratch-database sweep before the
   tests — an interrupted run's residue cannot bleed into the next shard's
   timing (issue #271).
-- `test-extras` (`main` only): downloads the same artifact, extracts both archives, and runs
+- `test-extras` (pushes to `main`, the nightly, manual dispatch): downloads the same artifact, extracts both archives, and runs
   the suites that cannot live under nextest — `generative`, `seed`, `jobs`
   coordinate through process-global state — by invoking the binaries straight
   from `target/debug/deps`, the same one-binary-per-process model `cargo test`
