@@ -20,7 +20,10 @@ export async function attach() {
   let verify;
   try {
     const module = await import("/verify-wasm/verify_wasm.js");
-    verify = await module.default();
+    // See bill.js: `default()` returns the raw wasm exports; the callable
+    // wrappers are the module's named exports (issue #555).
+    await module.default();
+    verify = module;
   } catch {
     // No wasm bundle on this deployment (the committed placeholder throws):
     // leave the form posting to the server.
