@@ -539,8 +539,16 @@ scripts/build-verify-wasm.sh
 cd web/verify-sdk
 npm pack --dry-run
 
-# 3. Publish. `--access public` is required the first time — scoped or not, npm
+# 3. Install that tarball into a clean temporary project and run the offline
+#    example over captured genuine evidence (`examples/verify-consumer`). This
+#    is the consumer-side check: no workspace path, no billing server, and the
+#    tampered/wrong-hash/wrong-key/wrong-archived-head cases must be rejected.
+cd -
+bash scripts/check-verify-consumer.sh
+
+# 4. Publish. `--access public` is required the first time — scoped or not, npm
 #    defaults to private on the first publish of a name.
+cd web/verify-sdk
 npm publish --access public
 ```
 
@@ -548,6 +556,12 @@ npm publish --access public
 nothing usable — the order above is the only order. `npm publish` runs `prepack`,
 which rebuilds `dist/` and refuses when `wasm/` is empty; a `tsc` error or a missing
 wasm-bindgen run therefore stops the publish rather than ship a broken tarball.
+`scripts/check-verify-consumer.sh` prints the version its tarball carries; record
+that version in `examples/verify-consumer/README.md` when the tested version changes.
+
+As of 2026-11-04 the package is **not published**: `npm view verify-oxsum-bill`
+answers E404. The tarball packs and verifies locally at `0.1.0`; publication waits
+on the maintainer's npm credentials and authorization.
 
 ## Deployment runbook
 
