@@ -91,11 +91,11 @@ impl SecretKey {
     /// records — the nonce is not a secret, but reusing one under one key is how AES-GCM breaks.
     /// `pub` because webhook signing secrets get the same protection.
     pub fn seal(&self, plaintext: &str) -> Result<String, WalletError> {
-        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&self.0));
+        let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(self.0));
         let mut nonce_bytes = [0u8; NONCE_BYTES];
         rand::rng().fill(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
-        let sealed = cipher.encrypt(nonce, plaintext.as_bytes()).map_err(|_| {
+        let nonce = Nonce::from(nonce_bytes);
+        let sealed = cipher.encrypt(&nonce, plaintext.as_bytes()).map_err(|_| {
             WalletError::Misconfigured("sealing an upstream credential failed".into())
         })?;
         let mut record = nonce_bytes.to_vec();
@@ -120,14 +120,17 @@ impl SecretKey {
             ));
         }
         let (nonce_bytes, ciphertext) = record.split_at(NONCE_BYTES);
-        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&self.0));
-        let opened = cipher
-            .decrypt(Nonce::from_slice(nonce_bytes), ciphertext)
-            .map_err(|_| {
-                WalletError::Misconfigured(
-                    "a stored upstream credential does not open with OXSUM_SECRET_KEY".into(),
-                )
-            })?;
+        let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(self.0));
+        let nonce = Nonce::try_from(nonce_bytes).map_err(|_| {
+            WalletError::Misconfigured(
+                "a stored upstream credential has an unreadable nonce".into(),
+            )
+        })?;
+        let opened = cipher.decrypt(&nonce, ciphertext).map_err(|_| {
+            WalletError::Misconfigured(
+                "a stored upstream credential does not open with OXSUM_SECRET_KEY".into(),
+            )
+        })?;
         String::from_utf8(opened).map_err(|_| {
             WalletError::Misconfigured("a stored upstream credential is not text".into())
         })
