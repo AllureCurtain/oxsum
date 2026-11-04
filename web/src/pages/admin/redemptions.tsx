@@ -15,7 +15,7 @@ export function Redemptions({ token }: { token: string }) {
     <div className="flex flex-col gap-4">
       <Card title={t("admin.redemptions.mintTitle")}>
         <form
-          className="flex items-end gap-2"
+          className="flex flex-wrap items-end gap-2"
           onSubmit={async (e) => {
             e.preventDefault();
             try {
