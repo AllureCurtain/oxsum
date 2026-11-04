@@ -1302,12 +1302,16 @@ impl Db {
     }
 }
 
+// `day` serializes as a bare `YYYY-MM-DD` — the contract's `format: date`.
+time::serde::format_description!(usage_day, Date, "[year]-[month]-[day]");
+
 /// One daily rollup row of `oxsum.usage_daily` — what the usage dashboard sums
 /// into its chart and table.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageDay {
     /// The settlement entries' `booking_date` these turns were booked under.
+    #[serde(with = "usage_day")]
     pub day: time::Date,
     /// The key that paid for these turns; `None` is the shared unattributed
     /// usage (session settles) every member may see.
