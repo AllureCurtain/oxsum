@@ -1,5 +1,10 @@
 # Product specification
 
+## Self-hosted release target
+
+The accepted [self-hosted release contract](roadmap/self-hosted-v1/README.md) (#591) supersedes the portfolio-only product direction. Operators own providers, sale prices and merchant collection; the oxsum project takes no payment or cut. Release one supports one business with many individual/team customer accounts. Existing organizations remain customers; business staff authority is separate. The contract specifies planned behavior, and [status](roadmap/self-hosted-v1/STATUS.md) distinguishes implementation and external validation. Shipped behavior below changes only as the corresponding issues integrate.
+
+
 Status: finalized (2026-10-01), audited against the code (2026-10-03, issue #61). The four open questions are all decided; the conclusions are folded into the body and the former "open questions" section is gone. Any behavior change starts with this document, then the code.
 
 This document records product behavior: who can do what, and how every situation is billed. Technical implementation lives in architecture.md, technology rationale in decisions.md, progress in TODO.md.

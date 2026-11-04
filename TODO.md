@@ -1,8 +1,46 @@
 # TODO
 
-Updated: 2026-11-04
+Updated: 2026-11-05
 
 ## In progress
+
+### Self-hosted release (#591)
+
+The accepted contract and evidence live in [docs/roadmap/self-hosted-v1](docs/roadmap/self-hosted-v1/README.md). Each issue below has its own completion criteria; no implementation is complete merely because this plan is adopted.
+
+- [ ] [#591](https://github.com/AllureCurtain/oxsum/issues/591) — Adopt the release contract and baseline (T00): in_progress.
+- [ ] [#592](https://github.com/AllureCurtain/oxsum/issues/592) — Restrict financial and metering authority (T01): pending.
+- [ ] [#593](https://github.com/AllureCurtain/oxsum/issues/593) — Add business and customer ownership without moving ledgers (T02): pending.
+- [ ] [#594](https://github.com/AllureCurtain/oxsum/issues/594) — Business staff, setup and session contexts (T03): pending.
+- [ ] [#595](https://github.com/AllureCurtain/oxsum/issues/595) — Customer profile and team lifecycle (T04): pending.
+- [ ] [#596](https://github.com/AllureCurtain/oxsum/issues/596) — Scoped consumption and integration credentials (T05): pending.
+- [ ] [#597](https://github.com/AllureCurtain/oxsum/issues/597) — Business-owned provider configuration (T06): pending.
+- [ ] [#598](https://github.com/AllureCurtain/oxsum/issues/598) — Model catalog and private serving context (T07): pending.
+- [ ] [#599](https://github.com/AllureCurtain/oxsum/issues/599) — Versioned customer sale books (T08): pending.
+- [ ] [#600](https://github.com/AllureCurtain/oxsum/issues/600) — Bind sale terms into evidence (T09): pending.
+- [ ] [#601](https://github.com/AllureCurtain/oxsum/issues/601) — Durable request operation (T10): pending.
+- [ ] [#602](https://github.com/AllureCurtain/oxsum/issues/602) — Transaction-aware ledger effects and zero-cost receipts (T11): pending.
+- [ ] [#603](https://github.com/AllureCurtain/oxsum/issues/603) — Coordinated customer admission and settlement (T12): pending.
+- [ ] [#604](https://github.com/AllureCurtain/oxsum/issues/604) — Cover every serving and metering path (T13): pending.
+- [ ] [#605](https://github.com/AllureCurtain/oxsum/issues/605) — Merchant settings and scoped event intake (T14): pending.
+- [ ] [#606](https://github.com/AllureCurtain/oxsum/issues/606) — Payment orders and durable fulfillment (T15): pending.
+- [ ] [#607](https://github.com/AllureCurtain/oxsum/issues/607) — Customer checkout and purchased funding (T16): pending.
+- [ ] [#608](https://github.com/AllureCurtain/oxsum/issues/608) — Corrections, partial refunds and disputes (T17): pending.
+- [ ] [#609](https://github.com/AllureCurtain/oxsum/issues/609) — Promotional lots and prepaid bundles (T18): pending.
+- [ ] [#610](https://github.com/AllureCurtain/oxsum/issues/610) — Customer entitlement and paid plan lifecycle (T19): pending.
+- [ ] [#611](https://github.com/AllureCurtain/oxsum/issues/611) — Plan fee journals and revenue allocation (T20): pending.
+- [ ] [#612](https://github.com/AllureCurtain/oxsum/issues/612) — Customer credit, statements and overdue handling (T21): pending.
+- [ ] [#613](https://github.com/AllureCurtain/oxsum/issues/613) — Financial facts, cost coverage and reconciliation (T22): pending.
+- [ ] [#614](https://github.com/AllureCurtain/oxsum/issues/614) — Customer self-service portal (T23): pending.
+- [ ] [#615](https://github.com/AllureCurtain/oxsum/issues/615) — Business console and operational resolution (T24): pending.
+- [ ] [#616](https://github.com/AllureCurtain/oxsum/issues/616) — End-to-end customer evidence and compatibility (T25): pending.
+- [ ] [#617](https://github.com/AllureCurtain/oxsum/issues/617) — Supported integrations and developer examples (T26): pending.
+- [ ] [#618](https://github.com/AllureCurtain/oxsum/issues/618) — Cross-cutting fault, isolation and capacity hardening (T27): pending.
+- [ ] [#619](https://github.com/AllureCurtain/oxsum/issues/619) — Self-hosted installation, upgrade and restore (T28): pending.
+- [ ] [#620](https://github.com/AllureCurtain/oxsum/issues/620) — Release artifact and candidate gates (T29): pending.
+- [ ] [#621](https://github.com/AllureCurtain/oxsum/issues/621) — Final integrated acceptance and launch materials (T30): pending.
+- [ ] [#622](https://github.com/AllureCurtain/oxsum/issues/622) — External certification and promotion gates (T31): pending.
+
 
 - Backend direction research (local-notes/2026-10-30) — landing item by item. #438 cost-aware route ordering (§3.B layer 1) shipped (PR #442): equal-weight routes lead with the cheapest `inputPricePerMillion`. #444 the credential routing pool (§3.F) shipped (PR #447), recorded with the rest of the sweep's first leg in Recently completed.
 
