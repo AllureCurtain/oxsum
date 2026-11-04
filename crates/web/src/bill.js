@@ -22,7 +22,12 @@ async function loadVerifier() {
   }
   const bytes = await response.arrayBuffer();
   const module = await import("/verify-wasm/verify_wasm.js");
-  const verify = await module.default(bytes);
+  // `default()` initializes the module and returns the raw wasm exports. The
+  // callable `verifyUsageReport`/`verifyWitnesses` wrappers are the module's
+  // own named exports; calling the init result's raw exports with the wrapper's
+  // arity returns `undefined` (issue #555).
+  await module.default(bytes);
+  const verify = module;
 
   // The artifact's hash, so the customer can say which verifier ran. A
   // non-secure context has no SubtleCrypto; the verdict still stands.
