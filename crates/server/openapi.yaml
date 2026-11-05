@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.97.0
+  version: 0.99.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -3957,6 +3957,50 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/business:
+    get:
+      summary: Read the deployment business and ownership migration receipt
+      description: |
+        Deployment authority only. One business is supported per deployment. Existing
+        organizations remain customer billing accounts with unchanged IDs and tenant ledgers.
+        Schema migration maps existing customers/channels/plans without appointing staff.
+        Setup remains required until an explicitly authenticated setup appoints the owner.
+      security: [{ adminToken: [] }]
+      responses:
+        "200":
+          description: Business profile and immutable counts captured when ownership was mapped
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessOwnership" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/business/customers/{organizationId}:
+    get:
+      summary: Read a customer identity within the deployment business
+      description: Preserves legacy organizationId and tenantId. Unknown or foreign business ownership answers 404.
+      security: [{ adminToken: [] }]
+      parameters:
+        - in: path
+          name: organizationId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Customer profile, with no credentials
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/CustomerProfile" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/admin/channels:
     get:
       summary: List the channels, with the current price version of each of their models
@@ -6698,6 +6742,40 @@ components:
       description: "`hit` when the semantic cache answered instead of upstream (issue #497): the stored body re-served, billed at the cache-read rate, the settlement's v10 `cache` block naming the original turn's entry. Absent on a miss, a stream, or a channel that never opted in."
       schema: { type: string, enum: [hit] }
   schemas:
+    BusinessOwnership:
+      type: object
+      required: [business, migration]
+      properties:
+        business:
+          type: object
+          required: [id, name, registrationMode, initializedAt, createdAt]
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string }
+            registrationMode: { type: string, enum: [invite, open], description: "Business policy; setup/registration enforcement is introduced with business authority." }
+            initializedAt: { type: string, format: date-time, nullable: true }
+            createdAt: { type: string, format: date-time }
+        migration:
+          type: object
+          required: [businessId, version, customers, channels, plans, recordedAt]
+          properties:
+            businessId: { type: string, format: uuid }
+            version: { type: string }
+            customers: { type: integer, format: int64 }
+            channels: { type: integer, format: int64 }
+            plans: { type: integer, format: int64 }
+            recordedAt: { type: string, format: date-time }
+    CustomerProfile:
+      type: object
+      required: [organizationId, businessId, externalId, contactEmail, state, name, tenantId]
+      properties:
+        organizationId: { type: string, format: uuid }
+        businessId: { type: string, format: uuid }
+        externalId: { type: string, description: "Initially the existing organization UUID; stable across rename." }
+        contactEmail: { type: string, nullable: true }
+        state: { type: string, enum: [active, archived] }
+        name: { type: string }
+        tenantId: { type: string, description: "Unchanged customer ledger identity." }
     CreatedInvitation:
       type: object
       required: [id, token, expiresAt]

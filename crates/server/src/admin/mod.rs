@@ -30,6 +30,7 @@ use crate::AppState;
 use crate::error::ApiError;
 
 mod billing;
+mod business;
 mod channels;
 mod credentials;
 mod fallbacks;
@@ -43,6 +44,11 @@ mod subscriptions;
 /// The `/api/v1/admin` surface. Nested by [`crate::routes`], which supplies the state.
 pub fn router(state: AppState) -> Router<AppState> {
     Router::new()
+        .route("/business", get(business::ownership))
+        .route(
+            "/business/customers/{organization_id}",
+            get(business::customer),
+        )
         .route("/channels", get(channels::list).post(channels::set))
         .route(
             "/channels/{name}/prices",
