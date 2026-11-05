@@ -38,4 +38,11 @@ Save the metering response's opaque holdKey instead of deriving the old `meterin
 
 ### Business provider configuration (T06.a, #641)
 
-Current business sessions can configure owned provider connections, encrypted pools/billing keys, aliases, immutable price versions, cache and fallback chains. Owner-only secret/destination mutations are separate from owner/admin catalog/routing capabilities. New writes bind request/actor/reason/result and audit atomically; exact replay never repeats the mutation. Endpoint changes require explicitly supplied keys and clear the existing billing credential. Migration 0078 preserves provider IDs, sealed values and price history while pinning ownership. Destination enforcement and explicit probes remain T06.b; this is not a provider certification or release-readiness claim.
+Current business sessions can configure owned provider connections, encrypted pools/billing keys, aliases, immutable price versions, cache and fallback chains. Owner-only secret/destination mutations are separate from owner/admin catalog/routing capabilities. New writes bind request/actor/reason/result and audit atomically; exact replay never repeats the mutation. Endpoint changes require explicitly supplied keys and clear the existing billing credential. Migration 0078 preserves provider IDs, sealed values and price history while pinning ownership. T06.b adds destination enforcement and explicit probes below. Provider certification and release readiness remain separate gates.
+
+
+### Provider destination policy (T06.b, #642)
+
+All channel gateway/task/catalog/billing calls use validated pinned DNS, no environment proxy and no redirects. Existing channels default to public HTTPS; internal/HTTP providers need explicit owner or deployment approval with exact IPs before use. Bootstrap accepts `OXSUM_UPSTREAM_DESTINATION_POLICY`. Metadata/link-local and special infrastructure destinations stay blocked. Saving does not probe; the owner can explicitly run an audited, idempotent HEAD check.
+
+New tasks retain their original provider coordinates and sealed credential across channel rotation. Migration 0079 captures the current directory for old tasks; drain them before upgrade since historical submission coordinates cannot be reconstructed. Preserve sealing keys for restore. This is software policy enforcement, not paid-provider certification.

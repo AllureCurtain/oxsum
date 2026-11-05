@@ -2,7 +2,7 @@
 
 Updated: 2026-11-06. Contract issue: [#591](https://github.com/AllureCurtain/oxsum/issues/591).
 
-Implementation: in progress. Release: not ready. T00 is integrated; T01.a and T02 are in review; T01.b is in review (PR #628); T03.a is in review (PR #631); T03.b is in review (PR #632, CI green; Entire requires independent approval). T04.a is in review (PR #635); T04.b #634 is in review as PR #636 at `f82d89e`. T05.a #637 is in review as PR #639; #638 is locally validated in `.worktrees/scoped-integration-credentials`, in review as PR #640. No release readiness claimed.
+Implementation: in progress. Release: not ready. T00 is integrated; T01.a and T02 are in review; T01.b is in review (PR #628); T03.a is in review (PR #631); T03.b is in review (PR #632, CI green; Entire requires independent approval). T04.a is in review (PR #635); T04.b #634 is in review as PR #636 at `f82d89e`. T05.a #637 is in review as PR #639; #638 is locally validated in `.worktrees/scoped-integration-credentials`, in review as PR #640. T06.a is in review as PR #643 at `f1860e7`; T06.b #642 is implemented at `9548212` with broad checks running. No release readiness claimed.
 
 | Task | Issue | State | Depends on |
 | --- | --- | --- | --- |
@@ -56,7 +56,7 @@ T05.a #637 is implemented in `.worktrees/consumption-key-scope` on `fix/consumpt
 
 T05.b #638 is in review as [PR #640](https://github.com/AllureCurtain/oxsum/pull/640) at `b924ccc`, locally validated in `.worktrees/scoped-integration-credentials`, branch `feat/scoped-integration-credentials`, based on `b36fa17`. Owner-only scoped credentials, legacy disablement, core metering/customer/replay isolation and the runnable Python client pass final validation: 1,521 workspace tests (four configured skips), 35 final focused checks, 26 process-shared tests, 29 doctests (five ignored examples), 29 PostgreSQL conformance tests, format/Clippy and codegen/frontend build. An obsolete 401/403 test expectation from the initial run was corrected; all final checks pass. Source review also removed a stale global-credential rotation instruction. Integration and actual browser QA remain pending. See [T05.b evidence](evidence/T05-b.md).
 
-T06.a #641 is in review as [PR #643](https://github.com/AllureCurtain/oxsum/pull/643), locally validated in `.worktrees/business-provider-config`, branch `feat/business-provider-config`, at `e9d73fa`: 55 focused checks passed. The workspace run passed 1,530 checks and found one stale schema inventory assertion; adding the new table to that expectation passed its focused rerun. Shared-process 26, doctests 29 (five ignored examples), PostgreSQL conformance 29, format/Clippy and codegen/frontend passed. See [T06.a evidence](evidence/T06-a.md). T06.b #642 is now in progress in `.worktrees/provider-destination-policy`, created from synchronized main and fast-forwarded to T06.a source. Both children are required for T06; destination enforcement and explicit checks are not yet complete. PR #640 CI and Entire findings/checks/up-to-date pass; independent approval is the only outstanding Entire gate.
+T06.a #641 is in review as [PR #643](https://github.com/AllureCurtain/oxsum/pull/643), locally validated in `.worktrees/business-provider-config`, branch `feat/business-provider-config`, at `e9d73fa`: 55 focused checks passed. The workspace run passed 1,530 checks and found one stale schema inventory assertion; adding the new table to that expectation passed its focused rerun. Shared-process 26, doctests 29 (five ignored examples), PostgreSQL conformance 29, format/Clippy and codegen/frontend passed. See [T06.a evidence](evidence/T06-a.md). T06.b #642 is now in progress in `.worktrees/provider-destination-policy`, created from synchronized main and fast-forwarded to T06.a source. Both children are required for T06 and normal integration remains pending. PR #640 CI and Entire findings/checks/up-to-date pass; independent approval is the only outstanding Entire gate.
 
 ## External gates
 
@@ -68,3 +68,6 @@ T06.a #641 is in review as [PR #643](https://github.com/AllureCurtain/oxsum/pull
 ## Evidence
 
 Use the fields in [ACCEPTANCE.md](ACCEPTANCE.md). No skipped database suite counts as passed. Update this file and task evidence at every checkpoint; preserve old evidence when superseded.
+
+
+T06.b #642 implements shared pinned destination policy, audited explicit HEAD checks and immutable task endpoint/key snapshots at `95482124f67e4f89cfc2f7584ab150446e0f0c76`. Final 22 targeted checks, 26 process-shared tests, strict Clippy, format and frontend/codegen pass. The full workspace and doctest/PostgreSQL supplements are still running; see [T06.b evidence](evidence/T06-b.md). T07 is split into catalog/serving permissions #644 and complete cache context #645, both required; #644 development proceeds in its own worktree while T06.b final checks run.
