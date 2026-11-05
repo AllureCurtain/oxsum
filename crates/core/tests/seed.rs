@@ -90,6 +90,7 @@ async fn clear_seed(db: &Db) {
             "memberships",
             "pricing_discounts",
             "device_codes",
+            "customer_profiles",
         ] {
             sqlx::query(&format!(
                 "DELETE FROM oxsum.{table} WHERE organization_id = $1"
