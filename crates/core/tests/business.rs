@@ -77,6 +77,11 @@ async fn ownership_upgrade_preserves_history_and_maps_new_customers_without_staf
         })
         .await
         .unwrap();
+    // Current admission/organization reads consult the additive profile table.
+    // Supply an empty read-only compatibility view only while constructing the
+    // historical ledger fixture, then remove it before snapshot and migration.
+    // No ownership rows, defaults, triggers or migration receipts are introduced.
+    sqlx::query("CREATE VIEW oxsum.customer_profiles AS SELECT NULL::uuid AS organization_id,NULL::timestamptz AS archived_at,NULL::text AS state WHERE false").execute(db.pool()).await.unwrap();
     let tenants = Tenants::new(db.pool().clone());
     let wallet = tenants
         .get(&registered.organization.tenant_id)
@@ -157,6 +162,10 @@ async fn ownership_upgrade_preserves_history_and_maps_new_customers_without_staf
         statement.anchor_entry_id.is_some(),
         "upgrade fixture includes genuine anchored statement"
     );
+    sqlx::query("DROP VIEW oxsum.customer_profiles")
+        .execute(db.pool())
+        .await
+        .unwrap();
     let snapshot = identity_snapshot(&db).await;
     let key = signing_key([4; 32]).unwrap();
     let head = wallet.signed_head(&key).await.unwrap().note;
