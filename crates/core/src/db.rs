@@ -313,6 +313,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0077_integration_credentials",
         include_str!("../migrations/0077_integration_credentials.sql"),
     ),
+    (
+        "0078_business_provider_mutations",
+        include_str!("../migrations/0078_business_provider_mutations.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.
