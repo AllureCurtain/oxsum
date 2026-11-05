@@ -59,7 +59,7 @@ async fn call(
 ) -> (StatusCode, Value) {
     let mut request = Request::builder().method(method).uri(path);
     if let Some(secret) = bearer {
-        request = request.header("authorization", format!("Bearer {secret}"));
+        request = support::credential(request, secret);
     }
     let response = app
         .clone()
@@ -109,6 +109,7 @@ struct World {
     app: Router,
     /// The organization's API key — for asserting it cannot meter.
     org_key: String,
+    session: String,
     organization_id: String,
     /// The minted service credential's plaintext secret.
     service_secret: String,
@@ -166,6 +167,7 @@ async fn world(url: &str, top_up: i64) -> World {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "registration failed: {body}");
+    let session = support::login(&app, &email, "correct horse battery").await;
     let org_key = body["data"]["apiKey"]["secret"]
         .as_str()
         .expect("registration returns a key")
@@ -208,6 +210,7 @@ async fn world(url: &str, top_up: i64) -> World {
     World {
         app,
         org_key,
+        session,
         organization_id,
         service_secret,
         credential_id,
@@ -652,7 +655,7 @@ async fn a_metered_event_lands_on_the_billing_records() {
         "GET",
         "/api/v1/billing-records",
         None,
-        Some(&w.org_key),
+        Some(&w.session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");

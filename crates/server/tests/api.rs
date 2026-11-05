@@ -77,7 +77,7 @@ async fn call(
         req = req.header("content-type", "application/json");
     }
     if let Some(key) = key {
-        req = req.header("authorization", format!("Bearer {key}"));
+        req = support::credential(req, key);
     }
     let req = req
         .body(body.map_or_else(Body::empty, |b| Body::from(b.to_string())))
@@ -160,43 +160,10 @@ async fn an_unknown_key_is_unauthorized() {
     assert!(!body["error"]["message"].as_str().unwrap().contains("oxs-"));
 }
 
-/// A storage failure resolving a credential is not a bad credential (issue
-/// #486): the auth middleware used to fold any lookup error into `None`, so a
-/// saturated pool answered `UNAUTHORIZED` — the probe's stray 401 — instead of
-/// the 429-class refusal the service itself is reporting. With every pooled
-/// connection held, a valid key must fail as `POOL_BUSY`, still saying nothing
-/// about the credential.
-/// `/verify?sample` serves a real proof bundle off this deployment's seeded
-/// demo organization (issue #489): the form lands pre-filled with a bundle the
-/// server itself can verify, and the link a first-time visitor follows works
-/// without an account. On a deployment without the seed the page says so
-/// rather than fabricate a bundle.
+/// The public example works without a database and is a genuine captured fixture.
 #[tokio::test]
-async fn the_verify_sample_is_a_real_bundle_or_an_honest_empty() {
-    let (app, pool) = app_or_skip!(Signup::Open);
-    let db = Db::from_pool(pool.clone());
-
-    // Before the seed the sample link answers the honest empty state.
-    let res = app
-        .clone()
-        .oneshot(Request::get("/verify?sample").body(Body::empty()).unwrap())
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let html =
-        String::from_utf8_lossy(&res.into_body().collect().await.unwrap().to_bytes()).into_owned();
-    assert!(
-        html.contains("no sample") || html.contains("No settled bill"),
-        "the unseeded page explains there is no sample: {html}"
-    );
-
-    // Seed the demo world with a channel — without one the seed's turns have
-    // no catalog to bill under and there are no settlements to draw a sample
-    // from. A throwaway key seals the demo credential the way main's does.
-    db.seed_demo_with_channel(&oxsum_core::SecretKey::from_bytes([7u8; 32]))
-        .await
-        .expect("the demo world seeds");
-
+async fn the_verify_sample_is_public_fixture_evidence_without_database_access() {
+    let app = offline_app(Signup::Open);
     let res = app
         .oneshot(Request::get("/verify?sample").body(Body::empty()).unwrap())
         .await
@@ -204,33 +171,84 @@ async fn the_verify_sample_is_a_real_bundle_or_an_honest_empty() {
     assert_eq!(res.status(), StatusCode::OK);
     let html =
         String::from_utf8_lossy(&res.into_body().collect().await.unwrap().to_bytes()).into_owned();
-
-    // The form lands pre-filled: the bundle is real proof JSON (an `entry`
-    // inside it), and the content-hash field carries 64 hex. The `if let`
-    // note names it a sample from the seeded demo rather than a pasted one.
-    assert!(
-        html.contains("\"entry\""),
-        "the sample bundle is a real proof bundle: {html}"
-    );
-    assert!(
-        html.contains("seeded demo"),
-        "the page says where the sample came from: {html}"
-    );
-    // The content-hash input carries the entry's 64-hex content hash as its
-    // value — extract it structurally rather than guess the attribute order.
+    assert!(html.contains("public test fixture"), "{html}");
+    assert!(html.contains("not a bill from this deployment"), "{html}");
     let hash = html
         .split(r#"name="expected_hash""#)
         .nth(1)
         .and_then(|tail| tail.split(r#"value=""#).nth(1))
         .and_then(|tail| tail.split('"').next())
         .expect("the content-hash input carries a value");
-    assert_eq!(hash.len(), 64, "the hash is 64 hex, got {hash}");
-    assert!(
-        hash.chars().all(|c| c.is_ascii_hexdigit()),
-        "the hash is hex, got {hash}"
+    let fixture = include_str!("../../../examples/verify-consumer/fixtures/settlement-bundle.json");
+    let hash = oxsum_verify::Hash::parse_hex(hash).unwrap();
+    assert_eq!(
+        oxsum_verify::verify_bill(fixture, &hash).unwrap().verdict,
+        "pass"
     );
+    assert!(html.contains("r4-fixture"));
 }
 
+/// A customer may choose the demo display name without publishing its private bills.
+#[tokio::test]
+async fn the_verify_sample_never_selects_a_same_named_customer_ledger() {
+    let (_, pool) = app_or_skip!(Signup::Open);
+    let db = Db::from_pool(pool);
+    let customer = db
+        .register(oxsum_core::NewUser {
+            email: format!("private-{}@example.com", uuid::Uuid::new_v4()),
+            password: "private sample password".into(),
+            organization_name: Some(oxsum_core::DEMO_ORGANIZATION.into()),
+        })
+        .await
+        .unwrap();
+    let secret = oxsum_core::SecretKey::from_bytes([7; 32]);
+    let model = support::flat_model(&db, &secret, 10).await;
+    let wallet = oxsum_core::Tenants::new(db.pool().clone())
+        .get(&customer.organization.tenant_id)
+        .await
+        .unwrap();
+    wallet
+        .top_up(
+            "private-funding",
+            10_000,
+            time::OffsetDateTime::now_utc().date(),
+        )
+        .await
+        .unwrap();
+    let app = oxsum_server::app(db, Config::new(Signup::Open, None).with_secret(secret));
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(support::chat_body(&model)),
+        Some(&customer.api_key.secret),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let entry = wallet.recent_settlements(1).await.unwrap().pop().unwrap();
+    let private_hash = wallet
+        .receipt_proof(entry.entry_id, None)
+        .await
+        .unwrap()
+        .unwrap()
+        .entry
+        .content_hash()
+        .to_hex();
+    let res = app
+        .oneshot(Request::get("/verify?sample").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let html =
+        String::from_utf8(res.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+    assert!(html.contains("r4-fixture"));
+    assert!(!html.contains(&entry.entry_id.to_string()));
+    assert!(!html.contains(&private_hash));
+    assert!(!html.contains(&customer.organization.tenant_id));
+}
+
+/// A storage failure resolving a credential is not a bad credential (issue
+/// #486): a saturated pool must return POOL_BUSY without disclosing the credential.
 #[tokio::test]
 async fn a_saturated_pool_is_busy_not_unauthorized() {
     let (app, pool) = app_or_skip!(Signup::Open);
@@ -284,7 +302,13 @@ async fn registering_rejects_bad_input() {
 #[tokio::test]
 async fn ledger_fixtures_round_trip_through_customer_reads() {
     let (app, _pool) = app_or_skip!(Signup::Open);
-    let (_registration, key) = register(&app, "roundtrip").await;
+    let (registration, key) = register(&app, "roundtrip").await;
+    let session = support::login(
+        &app,
+        registration["user"]["email"].as_str().unwrap(),
+        "correct horse battery",
+    )
+    .await;
 
     let (status, body) = call(
         &app,
@@ -332,7 +356,7 @@ async fn ledger_fixtures_round_trip_through_customer_reads() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let (status, body) = call(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    let (status, body) = call(&app, "GET", "/api/v1/balance", None, Some(&session)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["availableMinor"], 2_000_000);
 
@@ -345,7 +369,7 @@ async fn ledger_fixtures_round_trip_through_customer_reads() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let (status, body) = call(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    let (status, body) = call(&app, "GET", "/api/v1/balance", None, Some(&session)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["availableMinor"], 3_000_000);
 
@@ -354,7 +378,7 @@ async fn ledger_fixtures_round_trip_through_customer_reads() {
         "GET",
         &format!("/api/v1/entries/{entry_id}/proof"),
         None,
-        Some(&key),
+        Some(&session),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -364,7 +388,13 @@ async fn ledger_fixtures_round_trip_through_customer_reads() {
 #[tokio::test]
 async fn ledger_fixture_refuses_missing_or_already_settled_holds() {
     let (app, _pool) = app_or_skip!(Signup::Open);
-    let (_registration, key) = register(&app, "unheld").await;
+    let (registration, key) = register(&app, "unheld").await;
+    let session = support::login(
+        &app,
+        registration["user"]["email"].as_str().unwrap(),
+        "correct horse battery",
+    )
+    .await;
 
     let (status, _) = call(
         &app,
@@ -421,7 +451,7 @@ async fn ledger_fixture_refuses_missing_or_already_settled_holds() {
     assert_eq!(body["error"]["code"], "CONFLICT");
 
     // Neither refusal moved anything: the wallet holds what the one settlement left.
-    let (status, body) = call(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    let (status, body) = call(&app, "GET", "/api/v1/balance", None, Some(&session)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["availableMinor"], 4_000_000);
 }
@@ -431,7 +461,13 @@ async fn ledger_fixture_refuses_missing_or_already_settled_holds() {
 #[tokio::test]
 async fn legacy_raw_holds_remain_readable_and_sweepable() {
     let (app, pool) = app_or_skip!(Signup::Open);
-    let (_registration, key) = register(&app, "watched-hold").await;
+    let (registration, key) = register(&app, "watched-hold").await;
+    let session = support::login(
+        &app,
+        registration["user"]["email"].as_str().unwrap(),
+        "correct horse battery",
+    )
+    .await;
     let db = Db::from_pool(pool.clone());
 
     // Fund the wallet so the hold can reserve.
@@ -524,7 +560,7 @@ async fn legacy_raw_holds_remain_readable_and_sweepable() {
 
     // The reservation drained: 5M topped up, 500k settled, the swept hold's 1M
     // freeze released — available stands at 4.5M, and the watch row is gone.
-    let (status, body) = call(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    let (status, body) = call(&app, "GET", "/api/v1/balance", None, Some(&session)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         body["data"]["availableMinor"], 4_500_000,
@@ -539,7 +575,13 @@ async fn legacy_raw_holds_remain_readable_and_sweepable() {
 #[tokio::test]
 async fn ledger_fixture_conflict_keeps_the_original_receipt() {
     let (app, _pool) = app_or_skip!(Signup::Open);
-    let (_registration, key) = register(&app, "reuse").await;
+    let (registration, key) = register(&app, "reuse").await;
+    let session = support::login(
+        &app,
+        registration["user"]["email"].as_str().unwrap(),
+        "correct horse battery",
+    )
+    .await;
 
     let (status, first) = call(
         &app,
@@ -581,7 +623,7 @@ async fn ledger_fixture_conflict_keeps_the_original_receipt() {
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["error"]["code"], "CONFLICT");
 
-    let (status, body) = call(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    let (status, body) = call(&app, "GET", "/api/v1/balance", None, Some(&session)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["availableMinor"], 5_000_000);
 
@@ -621,8 +663,14 @@ async fn the_credential_names_the_organization() {
     assert_eq!(status, StatusCode::OK);
     let entry_id = body["data"]["entryId"].as_str().unwrap().to_owned();
 
-    // B's key sees B's money, which is none of A's.
-    let (status, body) = call(&app, "GET", "/api/v1/balance", None, Some(&second_key)).await;
+    // B's personal session reads only B's account balance.
+    let second_session = support::login(
+        &app,
+        second["user"]["email"].as_str().unwrap(),
+        "correct horse battery",
+    )
+    .await;
+    let (status, body) = call(&app, "GET", "/api/v1/balance", None, Some(&second_session)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["availableMinor"], 0);
 
@@ -645,23 +693,29 @@ async fn the_credential_names_the_organization() {
         Some(&second_key),
     )
     .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(status, StatusCode::FORBIDDEN);
     // A's key still works, so that attempt changed nothing.
-    let (status, _) = call(&app, "GET", "/api/v1/balance", None, Some(&first_key)).await;
+    let (status, _) = call(&app, "GET", "/api/v1/org", None, Some(&first_key)).await;
     assert_eq!(status, StatusCode::OK);
 }
 
 #[tokio::test]
 async fn keys_are_minted_listed_and_revoked() {
     let (app, pool) = app_or_skip!(Signup::Open);
-    let (_registration, key) = register(&app, "keys").await;
+    let (registration, key) = register(&app, "keys").await;
+    let session = support::login(
+        &app,
+        registration["user"]["email"].as_str().unwrap(),
+        "correct horse battery",
+    )
+    .await;
 
     let (status, body) = call(
         &app,
         "POST",
         "/api/v1/org/keys",
         Some(json!({"name": "ci"})),
-        Some(&key),
+        Some(&session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -671,7 +725,7 @@ async fn keys_are_minted_listed_and_revoked() {
     assert_ne!(second_secret, key);
 
     // Listing never carries a secret, and the new key names the same organization.
-    let (status, body) = call(&app, "GET", "/api/v1/org/keys", None, Some(&key)).await;
+    let (status, body) = call(&app, "GET", "/api/v1/org/keys", None, Some(&session)).await;
     assert_eq!(status, StatusCode::OK);
     let keys = body["data"].as_array().unwrap();
     assert_eq!(keys.len(), 2);
@@ -679,8 +733,8 @@ async fn keys_are_minted_listed_and_revoked() {
     assert_eq!(keys[0]["id"], second_id.as_str());
     assert_eq!(keys[0]["name"], "ci");
 
-    // Any active key of an organization may spend and mint; the second key works too.
-    let (status, _) = call(&app, "GET", "/api/v1/balance", None, Some(&second_secret)).await;
+    // The new consumption key authenticates for its own permitted reads.
+    let (status, _) = call(&app, "GET", "/api/v1/org", None, Some(&second_secret)).await;
     assert_eq!(status, StatusCode::OK);
 
     // Revoking takes effect immediately, and only for that key.
@@ -689,14 +743,14 @@ async fn keys_are_minted_listed_and_revoked() {
         "DELETE",
         &format!("/api/v1/org/keys/{second_id}"),
         None,
-        Some(&key),
+        Some(&session),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     assert!(body["data"]["revokedAt"].is_string());
-    let (status, _) = call(&app, "GET", "/api/v1/balance", None, Some(&second_secret)).await;
+    let (status, _) = call(&app, "GET", "/api/v1/org", None, Some(&second_secret)).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-    let (status, _) = call(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    let (status, _) = call(&app, "GET", "/api/v1/balance", None, Some(&session)).await;
     assert_eq!(status, StatusCode::OK);
 
     // A key id that does not exist is not found.
@@ -706,7 +760,7 @@ async fn keys_are_minted_listed_and_revoked() {
         "DELETE",
         &format!("/api/v1/org/keys/{missing}"),
         None,
-        Some(&key),
+        Some(&session),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -717,13 +771,13 @@ async fn keys_are_minted_listed_and_revoked() {
         "POST",
         "/api/v1/org/keys",
         Some(json!({"name": "short", "expiresAt": "2030-01-01T00:00:00Z"})),
-        Some(&key),
+        Some(&session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let expiring_id = body["data"]["id"].as_str().unwrap();
     let expiring_secret = body["data"]["secret"].as_str().unwrap();
-    let (status, _) = call(&app, "GET", "/api/v1/balance", None, Some(expiring_secret)).await;
+    let (status, _) = call(&app, "GET", "/api/v1/org", None, Some(expiring_secret)).await;
     assert_eq!(status, StatusCode::OK);
     // Move the expiry into the past rather than waiting for it.
     sqlx::query(
@@ -733,12 +787,12 @@ async fn keys_are_minted_listed_and_revoked() {
     .execute(&pool)
     .await
     .unwrap();
-    let (status, _) = call(&app, "GET", "/api/v1/balance", None, Some(expiring_secret)).await;
+    let (status, _) = call(&app, "GET", "/api/v1/org", None, Some(expiring_secret)).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     // The body is optional: a key without a name and without an expiry is a valid request.
     // (`{}` would do the same; a content type with an empty body is a malformed request.)
-    let (status, body) = call(&app, "POST", "/api/v1/org/keys", None, Some(&key)).await;
+    let (status, body) = call(&app, "POST", "/api/v1/org/keys", None, Some(&session)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body["data"]["name"].is_null());
     assert!(body["data"]["expiresAt"].is_null());
@@ -748,7 +802,13 @@ async fn keys_are_minted_listed_and_revoked() {
 #[tokio::test]
 async fn key_spend_limit_round_trip() {
     let (app, _pool) = app_or_skip!(Signup::Open);
-    let (_registration, key) = register(&app, "keylimit").await;
+    let (registration, _key) = register(&app, "keylimit").await;
+    let session = support::login(
+        &app,
+        registration["user"]["email"].as_str().unwrap(),
+        "correct horse battery",
+    )
+    .await;
 
     // Created with a limit: the response carries it, and the listing shows it.
     let (status, body) = call(
@@ -756,14 +816,14 @@ async fn key_spend_limit_round_trip() {
         "POST",
         "/api/v1/org/keys",
         Some(json!({"name": "capped", "spendLimitMinor": 1_000_000})),
-        Some(&key),
+        Some(&session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let key_id = body["data"]["id"].as_str().unwrap().to_owned();
     assert_eq!(body["data"]["spendLimitMinor"], 1_000_000);
 
-    let (status, body) = call(&app, "GET", "/api/v1/org/keys", None, Some(&key)).await;
+    let (status, body) = call(&app, "GET", "/api/v1/org/keys", None, Some(&session)).await;
     assert_eq!(status, StatusCode::OK);
     let listed = body["data"]
         .as_array()
@@ -779,7 +839,7 @@ async fn key_spend_limit_round_trip() {
         "PATCH",
         &format!("/api/v1/org/keys/{key_id}"),
         Some(json!({"spendLimitMinor": 500})),
-        Some(&key),
+        Some(&session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -790,7 +850,7 @@ async fn key_spend_limit_round_trip() {
         "PATCH",
         &format!("/api/v1/org/keys/{key_id}"),
         Some(json!({"spendLimitMinor": null})),
-        Some(&key),
+        Some(&session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -802,7 +862,7 @@ async fn key_spend_limit_round_trip() {
         "POST",
         "/api/v1/org/keys",
         Some(json!({"spendLimitMinor": -1})),
-        Some(&key),
+        Some(&session),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -812,7 +872,7 @@ async fn key_spend_limit_round_trip() {
         "PATCH",
         &format!("/api/v1/org/keys/{key_id}"),
         Some(json!({"spendLimitMinor": -1})),
-        Some(&key),
+        Some(&session),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -823,7 +883,7 @@ async fn key_spend_limit_round_trip() {
         "PATCH",
         &format!("/api/v1/org/keys/{}", uuid::Uuid::new_v4()),
         Some(json!({"spendLimitMinor": 1})),
-        Some(&key),
+        Some(&session),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -834,7 +894,13 @@ async fn key_spend_limit_round_trip() {
 #[tokio::test]
 async fn key_constraints_round_trip() {
     let (app, _pool) = app_or_skip!(Signup::Open);
-    let (_registration, key) = register(&app, "keyconstr").await;
+    let (registration, _key) = register(&app, "keyconstr").await;
+    let session = support::login(
+        &app,
+        registration["user"]["email"].as_str().unwrap(),
+        "correct horse battery",
+    )
+    .await;
 
     let (status, body) = call(
         &app,
@@ -849,7 +915,7 @@ async fn key_constraints_round_trip() {
             "maxConcurrentHolds": 4,
             "tokensPerMinute": 5000
         })),
-        Some(&key),
+        Some(&session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -861,7 +927,7 @@ async fn key_constraints_round_trip() {
     assert_eq!(body["data"]["maxConcurrentHolds"], 4);
     assert_eq!(body["data"]["tokensPerMinute"], 5000);
 
-    let (status, body) = call(&app, "GET", "/api/v1/org/keys", None, Some(&key)).await;
+    let (status, body) = call(&app, "GET", "/api/v1/org/keys", None, Some(&session)).await;
     assert_eq!(status, StatusCode::OK);
     let listed = body["data"]
         .as_array()
@@ -881,7 +947,7 @@ async fn key_constraints_round_trip() {
         "PATCH",
         &format!("/api/v1/org/keys/{key_id}"),
         Some(json!({"modelAllowlist": ["mock-c"]})),
-        Some(&key),
+        Some(&session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -898,7 +964,7 @@ async fn key_constraints_round_trip() {
         "PATCH",
         &format!("/api/v1/org/keys/{key_id}"),
         Some(json!({"spendLimitMinor": null, "budgetDuration": null, "modelAllowlist": null, "requestsPerMinute": null, "maxConcurrentHolds": null, "tokensPerMinute": null})),
-        Some(&key),
+        Some(&session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -913,7 +979,13 @@ async fn key_constraints_round_trip() {
 #[tokio::test]
 async fn key_constraints_reject_malformed_input() {
     let (app, _pool) = app_or_skip!(Signup::Open);
-    let (_registration, key) = register(&app, "keybadconstr").await;
+    let (registration, _key) = register(&app, "keybadconstr").await;
+    let session = support::login(
+        &app,
+        registration["user"]["email"].as_str().unwrap(),
+        "correct horse battery",
+    )
+    .await;
 
     for body in [
         json!({"budgetDuration": "fortnightly"}),
@@ -937,7 +1009,7 @@ async fn key_constraints_reject_malformed_input() {
             "POST",
             "/api/v1/org/keys",
             Some(body.clone()),
-            Some(&key),
+            Some(&session),
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
@@ -948,7 +1020,7 @@ async fn key_constraints_reject_malformed_input() {
         "POST",
         "/api/v1/org/keys",
         Some(json!({"spendLimitMinor": 1_000_000, "budgetDuration": "weekly"})),
-        Some(&key),
+        Some(&session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -965,7 +1037,7 @@ async fn key_constraints_reject_malformed_input() {
             "PATCH",
             &format!("/api/v1/org/keys/{key_id}"),
             Some(body.clone()),
-            Some(&key),
+            Some(&session),
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");

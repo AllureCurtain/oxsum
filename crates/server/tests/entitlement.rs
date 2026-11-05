@@ -81,6 +81,7 @@ struct World {
     app: Router,
     pool: PgPool,
     key: String,
+    session: String,
     key_id: String,
     model: String,
 }
@@ -143,6 +144,7 @@ async fn world(database_url: &str) -> World {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "registration failed: {body}");
+    let session = support::login(&app, &email, "correct horse battery").await;
     let key = body["data"]["apiKey"]["secret"]
         .as_str()
         .expect("registration returns a key")
@@ -166,6 +168,7 @@ async fn world(database_url: &str) -> World {
         app,
         pool,
         key,
+        session,
         key_id,
         model,
     }
@@ -186,7 +189,7 @@ async fn call(
         request = request.header("content-type", "application/json");
     }
     if let Some(key) = key {
-        request = request.header("authorization", format!("Bearer {key}"));
+        request = support::credential(request, key);
     }
     for (name, value) in headers {
         request = request.header(*name, *value);
@@ -247,7 +250,7 @@ async fn patch_key(world: &World, body: Value) -> (StatusCode, Value) {
         "PATCH",
         &format!("/api/v1/org/keys/{}", world.key_id),
         Some(body),
-        Some(&world.key),
+        Some(&world.session),
         &[],
     )
     .await
@@ -467,7 +470,7 @@ async fn a_presented_mandate_gets_its_own_verdicts() {
         "POST",
         &format!("/api/v1/org/keys/{}/mandates", world.key_id),
         Some(json!({"capMinor": 5_000_000, "notAfter": "2030-01-01T00:00:00Z"})),
-        Some(&world.key),
+        Some(&world.session),
         &[],
     )
     .await;

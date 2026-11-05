@@ -233,6 +233,7 @@ async fn billing_socket_sends_a_snapshot_then_live_events() {
     // A live event for this organization is forwarded.
     billing
         .send(BillingEvent::TurnProgress {
+            key_id: uuid::Uuid::new_v4(),
             tenant_id: tenant_id.clone(),
             request_id: "snapshot-1".to_owned(),
             output_chars: 2048,
@@ -247,6 +248,7 @@ async fn billing_socket_sends_a_snapshot_then_live_events() {
     // Another organization's event never reaches this socket.
     billing
         .send(BillingEvent::TurnStarted {
+            key_id: uuid::Uuid::new_v4(),
             tenant_id: "someone-else".to_owned(),
             request_id: "other-1".to_owned(),
             model: "mock-model".to_owned(),

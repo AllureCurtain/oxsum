@@ -604,8 +604,8 @@ async fn the_results_read_groups_spend_by_variant() {
         "GET",
         &format!("/api/v1/org/experiments/{experiment_id}/results"),
         None,
-        Some(&world.key),
         None,
+        Some(&world.cookie),
         None,
     )
     .await;
@@ -626,8 +626,8 @@ async fn the_results_read_groups_spend_by_variant() {
         "GET",
         &format!("/api/v1/org/experiments/{}/results", Uuid::new_v4()),
         None,
-        Some(&world.key),
         None,
+        Some(&world.cookie),
         None,
     )
     .await;
@@ -635,8 +635,7 @@ async fn the_results_read_groups_spend_by_variant() {
 }
 
 /// The role gate the writes keep: a member's session and an API key are both
-/// refused `PUT` and `end`; the reads stay open to any member — and to the
-/// organization's key, which acts with the organization's authority.
+/// refused account-wide reads and writes.
 #[tokio::test]
 async fn the_writes_are_owner_admin_only() {
     let world = world!(0);
@@ -661,7 +660,7 @@ async fn the_writes_are_owner_admin_only() {
     let res = put_experiment(&world, "ab", variants.clone()).await;
     assert_eq!(res.status, StatusCode::OK, "the owner writes");
 
-    // A member's session reads but cannot write: seed a second person into the
+    // A member's session cannot manage account-wide experiments: seed a person into the
     // owner's organization as a member.
     let member_email = format!(
         "exp_member_{}@example.com",
@@ -709,7 +708,7 @@ async fn the_writes_are_owner_admin_only() {
         .expect("the member's session cookie")
         .to_owned();
 
-    // The member reads the list.
+    // The member cannot read the account-wide list.
     let res = call(
         &world.app,
         "GET",
@@ -720,8 +719,11 @@ async fn the_writes_are_owner_admin_only() {
         None,
     )
     .await;
-    assert_eq!(res.status, StatusCode::OK, "a member reads the list");
-    assert_eq!(res.body["data"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        res.status,
+        StatusCode::FORBIDDEN,
+        "account-wide experiment reads require owner/admin"
+    );
 
     // The member cannot write or end.
     let res = call(

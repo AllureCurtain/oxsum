@@ -82,7 +82,7 @@ struct World {
     app: Router,
     org_id: String,
     key: String,
-    management_key: String,
+    management_session: String,
     key_id: String,
     #[allow(dead_code)]
     chan_a: String,
@@ -233,14 +233,17 @@ async fn world_for(url: &str) -> World {
         Some(&key),
     )
     .await;
-    let (status, body) = call(&app, "POST", "/api/v1/org/keys", None, Some(&key)).await;
-    assert_eq!(status, StatusCode::OK);
-    let management_key = body["data"]["secret"].as_str().unwrap().to_owned();
+    let management_session = support::login(
+        &app,
+        registration["user"]["email"].as_str().unwrap(),
+        "correct horse battery",
+    )
+    .await;
     World {
         app,
         org_id,
         key,
-        management_key,
+        management_session,
         key_id,
         chan_a,
         chan_b,
@@ -290,7 +293,7 @@ async fn call(
         request = request.header("content-type", "application/json");
     }
     if let Some(key) = key {
-        request = request.header("authorization", format!("Bearer {key}"));
+        request = support::credential(request, key);
     }
     let request = request
         .body(body.map_or_else(Body::empty, |value| Body::from(value.to_string())))
@@ -403,7 +406,7 @@ async fn a_group_is_written_and_a_key_assigned() {
         "PATCH",
         &format!("/api/v1/org/keys/{}", world.key_id),
         Some(json!({ "groupId": group_id })),
-        Some(&world.management_key),
+        Some(&world.management_session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "key group assign failed: {body}");
@@ -435,7 +438,7 @@ async fn a_grouped_key_stays_inside_its_channels() {
         "PATCH",
         &format!("/api/v1/org/keys/{}", world.key_id),
         Some(json!({ "groupId": group_id })),
-        Some(&world.management_key),
+        Some(&world.management_session),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -503,7 +506,7 @@ async fn a_group_with_no_serving_refuses_the_model() {
         "PATCH",
         &format!("/api/v1/org/keys/{}", world.key_id),
         Some(json!({ "groupId": group_id })),
-        Some(&world.management_key),
+        Some(&world.management_session),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -511,7 +514,14 @@ async fn a_group_with_no_serving_refuses_the_model() {
     // The key's group names no channel, so the model resolves no serving.
     let status = chat(&world, &world.key).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    let (_, balance) = call(&world.app, "GET", "/api/v1/balance", None, Some(&world.key)).await;
+    let (_, balance) = call(
+        &world.app,
+        "GET",
+        "/api/v1/balance",
+        None,
+        Some(&world.management_session),
+    )
+    .await;
     assert_eq!(balance["data"]["availableMinor"], 10_000_000);
     assert_eq!(balance["data"]["reservedMinor"], 0);
     assert!(world.script_a.seen.lock().unwrap().is_empty());
@@ -546,7 +556,7 @@ async fn a_foreign_group_id_refuses_the_assignment() {
         "PATCH",
         &format!("/api/v1/org/keys/{}", world.key_id),
         Some(json!({ "groupId": group.id })),
-        Some(&world.management_key),
+        Some(&world.management_session),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
@@ -585,7 +595,7 @@ async fn a_fallback_resolves_only_the_groups_channels() {
         "PATCH",
         &format!("/api/v1/org/keys/{}", world.key_id),
         Some(json!({ "groupId": group_id })),
-        Some(&world.management_key),
+        Some(&world.management_session),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -644,7 +654,7 @@ async fn group_assignment_is_atomic_and_null_is_distinct_from_omission() {
         "POST",
         "/api/v1/org/keys",
         Some(json!({"groupId": group.id, "name": "born restricted"})),
-        Some(&world.management_key),
+        Some(&world.management_session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{created}");
@@ -658,7 +668,7 @@ async fn group_assignment_is_atomic_and_null_is_distinct_from_omission() {
         "PATCH",
         &path,
         Some(json!({"groupId": group.id, "spendLimitMinor": 1234})),
-        Some(&world.management_key),
+        Some(&world.management_session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -667,7 +677,7 @@ async fn group_assignment_is_atomic_and_null_is_distinct_from_omission() {
         "PATCH",
         &path,
         Some(json!({"spendLimitMinor": 5678})),
-        Some(&world.management_key),
+        Some(&world.management_session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -678,7 +688,7 @@ async fn group_assignment_is_atomic_and_null_is_distinct_from_omission() {
         "PATCH",
         &path,
         Some(json!({"groupId": invalid, "spendLimitMinor": 9999})),
-        Some(&world.management_key),
+        Some(&world.management_session),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -687,7 +697,7 @@ async fn group_assignment_is_atomic_and_null_is_distinct_from_omission() {
         "GET",
         "/api/v1/org/keys",
         None,
-        Some(&world.management_key),
+        Some(&world.management_session),
     )
     .await;
     let current = before["data"]
@@ -703,7 +713,7 @@ async fn group_assignment_is_atomic_and_null_is_distinct_from_omission() {
         "POST",
         "/api/v1/org/keys",
         Some(json!({"groupId": invalid})),
-        Some(&world.management_key),
+        Some(&world.management_session),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -712,7 +722,7 @@ async fn group_assignment_is_atomic_and_null_is_distinct_from_omission() {
         "GET",
         "/api/v1/org/keys",
         None,
-        Some(&world.management_key),
+        Some(&world.management_session),
     )
     .await;
     assert_eq!(before, after, "invalid create leaves no orphan key");
@@ -721,7 +731,7 @@ async fn group_assignment_is_atomic_and_null_is_distinct_from_omission() {
         "PATCH",
         &path,
         Some(json!({"groupId": null})),
-        Some(&world.management_key),
+        Some(&world.management_session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -779,13 +789,19 @@ async fn grouped_bearer_cannot_escape_through_key_management_or_group_deletion()
         "GET",
         "/api/v1/org/groups",
         None,
-        Some(&world.key),
+        Some(&world.management_session),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(groups["data"][0]["id"], group.id.to_string());
     assert_eq!(groups["data"][0]["channels"], json!([]));
-    let (_, other) = register(&world.app).await;
+    let (other_registration, _) = register(&world.app).await;
+    let other = support::login(
+        &world.app,
+        other_registration["user"]["email"].as_str().unwrap(),
+        "correct horse battery",
+    )
+    .await;
     let (status, groups) = call(&world.app, "GET", "/api/v1/org/groups", None, Some(&other)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(groups["data"], json!([]));
@@ -831,7 +847,14 @@ async fn cached_answer_on_a_forbidden_channel_cannot_be_served_or_charged() {
             tokio::task::yield_now().await;
         }
     }).await.unwrap();
-    let (_, before) = call(&world.app, "GET", "/api/v1/balance", None, Some(&world.key)).await;
+    let (_, before) = call(
+        &world.app,
+        "GET",
+        "/api/v1/balance",
+        None,
+        Some(&world.management_session),
+    )
+    .await;
     let group = db
         .put_group(
             world.org_id.parse().unwrap(),
@@ -851,7 +874,14 @@ async fn cached_answer_on_a_forbidden_channel_cannot_be_served_or_charged() {
         chat_model(&world, &world.key, &world.model_a, None).await,
         StatusCode::BAD_REQUEST
     );
-    let (_, after) = call(&world.app, "GET", "/api/v1/balance", None, Some(&world.key)).await;
+    let (_, after) = call(
+        &world.app,
+        "GET",
+        "/api/v1/balance",
+        None,
+        Some(&world.management_session),
+    )
+    .await;
     assert_eq!(before, after, "refusal creates no charge or leaked hold");
     assert_eq!(world.script_a.seen.lock().unwrap().len(), 1);
     assert!(world.script_b.seen.lock().unwrap().is_empty());
@@ -904,7 +934,7 @@ async fn grouped_access_does_not_bypass_a_model_allowlist_or_budget() {
         "PATCH",
         &path,
         Some(json!({"groupId": group.id, "modelAllowlist": [world.model_b]})),
-        Some(&world.management_key),
+        Some(&world.management_session),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -917,7 +947,7 @@ async fn grouped_access_does_not_bypass_a_model_allowlist_or_budget() {
         "PATCH",
         &path,
         Some(json!({"spendLimitMinor": 0})),
-        Some(&world.management_key),
+        Some(&world.management_session),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -963,6 +993,14 @@ async fn session_group_assignment_requires_owner_or_admin() {
         .await
         .unwrap();
     assert_eq!(created.key.group_id, Some(group.id));
+    sqlx::query(
+        "UPDATE oxsum.memberships SET role='member' WHERE organization_id=$1 AND user_id=$2",
+    )
+    .bind(actor.organization.id)
+    .bind(actor.user.id)
+    .execute(&world.pool)
+    .await
+    .unwrap();
     actor.role = oxsum_core::Role::Member;
     let member = oxsum_core::Principal::Session(actor);
     assert!(matches!(
@@ -1003,6 +1041,14 @@ async fn session_group_assignment_requires_owner_or_admin() {
         .unwrap()
         .unwrap();
     assert_eq!(kept.group_id, Some(group.id));
+    sqlx::query(
+        "UPDATE oxsum.memberships SET role='owner' WHERE organization_id=$1 AND user_id=$2",
+    )
+    .bind(owner.organization().id)
+    .bind(owner.user_id().unwrap())
+    .execute(&world.pool)
+    .await
+    .unwrap();
     let cleared = db
         .update_key_constraints_as(
             &owner,
@@ -1049,7 +1095,7 @@ async fn group_validation_is_atomic_and_query_errors_use_the_api_envelope() {
         "GET",
         "/api/v1/org/groups",
         None,
-        Some(&world.key),
+        Some(&world.management_session),
     )
     .await;
     assert_eq!(groups["data"][0], initial["data"]);

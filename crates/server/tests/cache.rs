@@ -658,3 +658,52 @@ async fn a_stream_is_never_cached() {
     .expect("the count reads");
     assert_eq!(rows, 0, "a streamed answer is not stored");
 }
+
+#[tokio::test]
+async fn cached_response_does_not_cross_sibling_keys_or_legacy_digests() {
+    let world = world!();
+    world.semantic_cache(json!({"enabled": true})).await;
+    let (status, _, _) = chat(&world.app, &world.key, ask(&world.model, "private answer")).await;
+    assert_eq!(status, StatusCode::OK);
+    let _ = row_within(&world.pool, &world.organization_id).await;
+    let db = Db::from_pool(world.pool.clone());
+    let sibling = db
+        .create_key(
+            world.organization_id.parse().unwrap(),
+            None,
+            None,
+            None,
+            Default::default(),
+        )
+        .await
+        .unwrap();
+    let (status, headers, _) = chat(
+        &world.app,
+        &sibling.secret,
+        ask(&world.model, "private answer"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(headers.get("x-oxsum-cache").is_none());
+    assert_eq!(world.script.seen().len(), 2);
+    let (_, headers, _) = chat(&world.app, &world.key, ask(&world.model, "private answer")).await;
+    assert_eq!(headers["x-oxsum-cache"], "hit");
+    // A pre-upgrade row has the old prompt-only digest, so no credential may hit it.
+    let legacy = oxsum_core::prompt_digest(
+        "openai",
+        &world.model,
+        &[oxsum_core::PromptPart {
+            role: "user",
+            text: "legacy answer".into(),
+        }],
+        false,
+    )
+    .unwrap();
+    sqlx::query("UPDATE oxsum.cached_responses SET prompt_digest=$2 WHERE cache_id=(SELECT cache_id FROM oxsum.cached_responses WHERE organization_id=$1 LIMIT 1)")
+        .bind(world.organization_id.parse::<uuid::Uuid>().unwrap()).bind(legacy).execute(&world.pool).await.unwrap();
+    let (status, headers, _) =
+        chat(&world.app, &world.key, ask(&world.model, "legacy answer")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(headers.get("x-oxsum-cache").is_none());
+    assert_eq!(world.script.seen().len(), 3);
+}

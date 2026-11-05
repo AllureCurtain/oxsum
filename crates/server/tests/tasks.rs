@@ -201,6 +201,7 @@ struct World {
     tenant_id: String,
     organization_id: Uuid,
     key: String,
+    session: String,
     script: Script,
     channel: String,
     /// The broadcast sender — unused here, kept so `app_with_billing`'s wiring
@@ -255,6 +256,12 @@ async fn world(url: &str, top_up: i64) -> World {
     let tenants = Tenants::new(pool.clone());
 
     let (registration, key) = register(&app).await;
+    let session = support::login(
+        &app,
+        registration["user"]["email"].as_str().unwrap(),
+        "correct horse battery",
+    )
+    .await;
     let tenant_id = registration["organization"]["tenantId"]
         .as_str()
         .expect("registration names a tenant")
@@ -282,6 +289,7 @@ async fn world(url: &str, top_up: i64) -> World {
         tenant_id,
         organization_id,
         key,
+        session,
         script,
         channel,
         billing,
@@ -337,7 +345,7 @@ async fn call(
         request = request.header("content-type", "application/json");
     }
     if let Some(key) = key {
-        request = request.header("authorization", format!("Bearer {key}"));
+        request = support::credential(request, key);
     }
     let request = request
         .body(body.map_or_else(Body::empty, |value| Body::from(value.to_string())))
@@ -704,7 +712,7 @@ async fn foreign_key_cannot_read() {
         &format!("/v1/tasks/{task_id}"),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 /// A task submission uses the same channel boundary as synchronous inference:
@@ -739,7 +747,14 @@ async fn grouped_task_submission_cannot_use_a_forbidden_channel() {
             .await
             .unwrap();
     assert_eq!(count, 0);
-    let (_, balance) = call(&world.app, "GET", "/api/v1/balance", None, Some(&world.key)).await;
+    let (_, balance) = call(
+        &world.app,
+        "GET",
+        "/api/v1/balance",
+        None,
+        Some(&world.session),
+    )
+    .await;
     assert_eq!(balance["data"]["availableMinor"], 1_000_000);
     assert_eq!(balance["data"]["reservedMinor"], 0);
 
@@ -763,4 +778,98 @@ async fn grouped_task_submission_cannot_use_a_forbidden_channel() {
     let response = submit_task(&world.app, &world.key, simple_submit()).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(world.script.seen_submits.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn sibling_key_cannot_poll_cancel_or_replay_a_task() {
+    let Some(url) = url() else { return };
+    let world = world(&url, 10_000).await;
+    world.script.submit(
+        "task-model",
+        SubmitAnswer::Accept {
+            task_id: "isolated-task".into(),
+        },
+    );
+    let principal = oxsum_core::Principal::Session(
+        world
+            .db
+            .authenticate_session(&world.session)
+            .await
+            .unwrap()
+            .unwrap(),
+    );
+    let sibling = world
+        .db
+        .create_key_as(&principal, None, None, Default::default())
+        .await
+        .unwrap();
+    async fn submit(app: &Router, key: &str, body: Value) -> (StatusCode, Value) {
+        let res = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/tasks")
+                    .header("authorization", format!("Bearer {key}"))
+                    .header("idempotency-key", "private-task")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = res.status();
+        let body =
+            serde_json::from_slice(&res.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        (status, body)
+    }
+    let (status, original) = submit(&world.app, &world.key, simple_submit()).await;
+    assert_eq!(status, StatusCode::OK, "{original}");
+    let task_id = original["taskId"].as_str().unwrap();
+    let wallet = world.tenants.get(&world.tenant_id).await.unwrap();
+    let before = (
+        wallet.log_size().await.unwrap(),
+        wallet.available().await.unwrap(),
+        wallet.reserved().await.unwrap(),
+    );
+    for (method, path) in [
+        ("GET", format!("/v1/tasks/{task_id}")),
+        ("POST", format!("/v1/tasks/{task_id}/cancel")),
+    ] {
+        let (status, body) = task_call(&world.app, &sibling.secret, method, &path).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert_eq!(body["error"]["code"], "NOT_FOUND");
+    }
+    let (status, _) = submit(&world.app, &sibling.secret, simple_submit()).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let mut changed = simple_submit();
+    changed["input"]["prompt"] = json!("changed");
+    assert_eq!(
+        submit(&world.app, &world.key, changed).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    for _ in 0..3 {
+        let (status, replay) = submit(&world.app, &world.key, simple_submit()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(replay, original);
+    }
+    assert_eq!(world.script.seen_submits.lock().unwrap().len(), 1);
+    assert!(world.script.seen_cancels.lock().unwrap().is_empty());
+    assert_eq!(
+        (
+            wallet.log_size().await.unwrap(),
+            wallet.available().await.unwrap(),
+            wallet.reserved().await.unwrap()
+        ),
+        before
+    );
+    assert_eq!(
+        task_call(
+            &world.app,
+            &world.key,
+            "GET",
+            &format!("/v1/tasks/{task_id}")
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
 }
