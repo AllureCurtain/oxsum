@@ -95,7 +95,6 @@ Who may do what, and the gaps that are closed on purpose:
 - The last owner cannot be removed or demoted: that would leave an organization nobody owns. The answer is a 409 saying ownership has to be transferred first. In practice the only reachable case is the sole owner acting on themselves, since admins may not touch an owner at all.
 - Every new endpoint checks the acting role in the server, and so does the page: no control is rendered that the server would refuse, and a refusal is shown in the server's own words rather than silently swallowed. (docs/decisions.md, "membership management is a person's action".)
 
-
 ## Where credit comes from
 
 v1 has no payment integration. Credit has four designed sources; the table says which of them the code implements today, and what the ledger actually records.
@@ -333,3 +332,7 @@ Every mutating call on the admin surface is also audited (issue #160): one appen
 ## Planned, in one place
 
 Nothing this document describes is unbuilt: the last tracked gap — pagination of the hard-truncating lists (#93) — shipped. New planned work lands here as it is filed, tracked by issue as before.
+
+## Self-hosted customer identity foundation (#593)
+
+Each deployment has one Business; existing organizations are its individual/team customer billing accounts. Migration preserves account IDs, wallet balances, ledger origins and signed evidence. Customer external IDs initially equal organization UUIDs. New organizations acquire business ownership in the same creation transaction; unused accounts do not create physical ledger schemas. A customer owner has no business staff authority. The business starts uninitialized with no staff; explicit authenticated setup is the dependent T03 workflow. The stored registration policy defaults to invite, while existing `OXSUM_SIGNUP` enforcement remains until T03 connects it to setup.

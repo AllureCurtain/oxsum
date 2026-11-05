@@ -4,7 +4,6 @@
 
 The accepted [design](roadmap/self-hosted-v1/DESIGN.md) (#591) retains existing Organization IDs, tenant schemas and proofs as customer billing accounts and adds separate Business ownership/staff scope. There is no second commercial wallet or project wholesale charge. Durable single-customer operations coordinate financial and entitlement effects; sale prices remain independent of provider expense. These changes are planned until their [implementation issues](roadmap/self-hosted-v1/STATUS.md) integrate. [Baseline reconciliation](roadmap/self-hosted-v1/BASELINE.md) records the current source and compatibility boundaries.
 
-
 ## Overview
 
 ```
@@ -222,3 +221,11 @@ Only relationships; the ledger's table structure is authoritative in `crates/dou
 
 - One binary `oxsum` plus PostgreSQL 17. All configuration from environment variables, see `.env.example`.
 - The database runs locally via `compose.yaml`. The production runbook — backup, restore, migration ordering, upgrade/rollback and key rotation — shipped in docs/development.md's "Deployment runbook" (issue #174).
+
+## Business ownership without ledger migration (#593)
+
+Migration 0072 adds one deployment Business and maps every existing organization to a CustomerProfile keyed by the original organization ID. The profile holds business/external identity and lifecycle fields; existing membership, API keys, tenant pointers, wallet schemas, statements and proof origins are unchanged. An organization insert trigger assigns the same business in the creating transaction, covering signup, invitations, teams and seed without changing those identity paths. Empty accounts still create no ledger schema.
+
+Channels and subscription plans acquire the business foreign key, with aliases/credentials/price history inheriting channel ownership and subscription periods inheriting plan ownership. Existing collection history stays with its customer. Environment-based merchant configuration remains the default-business bootstrap until T14. Singleton business storage refuses unsupported second-business creation.
+
+An immutable business_migrations receipt captures counts at migration time. `ownership-preview` reads counts before migration without opening ledgers. Business staff is a separate, initially empty table: migration never promotes customer owners. Setup and staff capabilities are T03; configuration operations remain under deployment authority until that surface integrates.

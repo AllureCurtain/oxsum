@@ -402,3 +402,7 @@ The SPA's dashboard pages read these (issue #234); all are session or key scoped
 1. Change `crates/server/openapi.yaml`
 2. Change the backend implementation, add integration tests
 3. Change the callers (the React dashboard under `web/`)
+
+## Deployment business ownership (#593)
+
+`GET /api/v1/admin/business` returns the singleton business and immutable ownership-migration receipt. `GET /api/v1/admin/business/customers/{organizationId}` returns the customer profile within that business. Both require the deployment token; customer sessions/consumption keys cannot inspect seller administration. Customer wire IDs continue to use `organizationId` and `tenantId` for compatibility. A foreign or unknown ownership pair is not found. These reads do not initialize an owner, change registration policy or move money.
