@@ -27,7 +27,7 @@ The accepted contract and evidence live in [docs/roadmap/self-hosted-v1](docs/ro
 - [ ] [#642](https://github.com/AllureCurtain/oxsum/issues/642) — Provider destination policy and explicit probes (T06.b): PR #646; source `9548212` locally validated: 1,541 runtime, 22 targeted, 26 shared-process, 29 doctest and 29 engine checks pass; normal review/integration pending.
 - [ ] [#598](https://github.com/AllureCurtain/oxsum/issues/598) — Model catalog and private serving context (T07): in progress; #644 and #645 both required.
 - [ ] [#644](https://github.com/AllureCurtain/oxsum/issues/644) — Customer catalog and serving permissions (T07.a): in progress on T06.b source; normal integration awaits prerequisites.
-- [ ] [#645](https://github.com/AllureCurtain/oxsum/issues/645) — Complete response-cache context (T07.b): pending T07.a.
+- [ ] [#645](https://github.com/AllureCurtain/oxsum/issues/645) — Complete response-cache context (T07.b): in progress in its issue worktree on T07.a source; full validation and review pending.
 - [ ] [#599](https://github.com/AllureCurtain/oxsum/issues/599) — Versioned customer sale books (T08): pending.
 - [ ] [#600](https://github.com/AllureCurtain/oxsum/issues/600) — Bind sale terms into evidence (T09): pending.
 - [ ] [#601](https://github.com/AllureCurtain/oxsum/issues/601) — Durable request operation (T10): pending.

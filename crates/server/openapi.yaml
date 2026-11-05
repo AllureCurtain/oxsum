@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.109.0
-  x-consumption-cache: Cached responses are bound to the exact consumption key as well as customer, channel, model and prompt. Pre-upgrade cache digests are misses.
+  version: 0.110.0
+  x-consumption-cache: Response cache v2 binds the exact complete request, protocol and semantic headers, customer/key permissions, selected experiment/mandate, alias targets, price and route configuration. Text case and whitespace are significant; old digests miss. Legacy excludeSystem is accepted but ignored.
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -28,6 +28,12 @@ info:
     revocation and one-time secrets. Legacy global service credentials are disabled;
     deployment-token issuance is retired. Metering binds the credential, customer,
     original request and finalization body before any financial effect.
+
+    0.110.0 replaces incomplete normalized prompt cache keys with versioned keyed digests
+    of complete request and serving context. System/instructions, tools, media and generation
+    parameters always participate. Legacy excludeSystem is accepted but has no effect.
+    Only matching exact customer/key, current authorization, route/alias/configuration and
+    protocol/semantic-header context can reuse a whole response. Old cache rows miss.
 
     0.109.0 filters customer catalogs, estimates and serving routes by business,
     customer tier, current consumption key model grants and request-group channels.
@@ -8964,11 +8970,11 @@ components:
         semanticCache:
           type: object
           nullable: true
-          description: "the channel's semantic response cache policy (issue #497): `{enabled, ttlSeconds?, excludeSystem?}` — `enabled` gates the whole feature; `ttlSeconds` bounds a stored answer's lifetime (absent means no expiry); `excludeSystem` drops the system/instructions share from the prompt digest so two asks differing only there still hit. Omit to leave the stored policy untouched; explicit null clears `settings.semanticCache`; a non-object or a malformed policy is VALIDATION_ERROR."
+          description: "the channel's semantic response cache policy (issue #497): `{enabled, ttlSeconds?, excludeSystem?}` — `enabled` gates the whole feature; `ttlSeconds` bounds a stored answer's lifetime (absent means no expiry); `excludeSystem` is deprecated and ignored; system/instructions always participate in the complete request digest. Omit to leave the stored policy untouched; explicit null clears `settings.semanticCache`; a non-object or a malformed policy is VALIDATION_ERROR."
           properties:
             enabled: { type: boolean }
             ttlSeconds: { type: integer, format: int64, minimum: 1 }
-            excludeSystem: { type: boolean }
+            excludeSystem: { type: boolean, deprecated: true, description: "Accepted for compatibility, ignored; system/instructions always participate in the cache key." }
           additionalProperties: true
     ChannelCredential:
       type: object
@@ -10619,7 +10625,7 @@ components:
               properties:
                 enabled: { type: boolean }
                 ttlSeconds: { type: [integer, "null"], minimum: 1, format: int64 }
-                excludeSystem: { type: boolean }
+                excludeSystem: { type: boolean, deprecated: true, description: "Accepted for compatibility, ignored; system/instructions always participate in the cache key." }
     BusinessProviderAliasRequest:
       type: object
       additionalProperties: false

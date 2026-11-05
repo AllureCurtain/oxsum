@@ -8,7 +8,7 @@
 
 use oxsum_core::{
     ANTHROPIC, Attribution, BillingMode, GEMINI, MAX_CONTEXT_NAME, MAX_END_USER, MAX_TAG, MAX_TAGS,
-    OPENAI, PromptPart,
+    OPENAI,
 };
 use serde_json::{Map, Value, json};
 
@@ -113,6 +113,13 @@ impl Surface {
     }
 }
 
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct PromptPart {
+    role: &'static str,
+    text: String,
+}
+
 /// One parsed gateway request: the body to forward, and the parts the freeze depends on.
 #[derive(Debug, Clone)]
 pub struct GatewayRequest {
@@ -133,12 +140,6 @@ pub struct GatewayRequest {
     /// The text of every message, for the input upper bound and the local estimate. A message with
     /// no text (an assistant turn that only calls a tool) contributes none.
     pub texts: Vec<String>,
-    /// The same texts with the speaker's role attached, for the semantic
-    /// cache's prompt digest (issue #497): a `user` turn and an `assistant`
-    /// turn carrying the same words are different questions, and the digest
-    /// only knows that if the role rides in. The input-only surfaces carry
-    /// every text under `"user"` — they have no roles to lose.
-    pub prompt_parts: Vec<PromptPart>,
     /// The output ceiling the caller asked for, if it asked for one. The
     /// input-only surfaces have no output side, so this stays `None` there.
     pub max_tokens: Option<i64>,
@@ -153,6 +154,11 @@ pub struct GatewayRequest {
 }
 
 impl GatewayRequest {
+    /// Exact parsed request before routing or output-bound rewriting.
+    pub fn cache_body(&self) -> Value {
+        Value::Object(self.body.clone())
+    }
+
     /// Reads a request body in the surface's own dialect.
     ///
     /// # Errors
@@ -193,7 +199,7 @@ impl GatewayRequest {
             }
             Some(_) => return Err(param("stream", "stream must be a boolean")),
         };
-        let (texts, prompt_parts, counted_input, max_tokens, attribution) = match surface {
+        let (texts, _prompt_parts, counted_input, max_tokens, attribution) = match surface {
             Surface::OpenAi => {
                 let (texts, parts) = texts_of(&body)?;
                 (
@@ -259,7 +265,6 @@ impl GatewayRequest {
             upstream_model: None,
             stream,
             texts,
-            prompt_parts,
             max_tokens,
             counted_input,
             attribution,

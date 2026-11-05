@@ -126,6 +126,18 @@ impl SecretKey {
         Ok(BASE64.encode(mac.finalize().into_bytes()))
     }
 
+    /// Versioned keyed digest of private cache context. Only the digest is stored;
+    /// the keyed construction also prevents offline guessing of private prompts.
+    pub(crate) fn cache_fingerprint(&self, context: &[u8]) -> Result<String, WalletError> {
+        use hmac::{Hmac, KeyInit as HmacKeyInit, Mac};
+        use sha2::Sha256;
+        let mut mac = <Hmac<Sha256> as HmacKeyInit>::new_from_slice(&self.0)
+            .map_err(|_| WalletError::Misconfigured("invalid cache fingerprint key".into()))?;
+        mac.update(b"oxsum/response-cache/v2\0");
+        mac.update(context);
+        Ok(format!("v2:{}", BASE64.encode(mac.finalize().into_bytes())))
+    }
+
     /// Opens what [`seal`](Self::seal) wrote.
     ///
     /// AES-GCM authenticates as well as it encrypts, so a record sealed under another key, or
@@ -285,6 +297,8 @@ pub struct Serving {
     /// The channel's `settings` blob, for [`crate::CachePolicy::of`] — carried
     /// so a route check needs no second read.
     pub settings: serde_json::Value,
+    /// Connection/settings generation read in the same snapshot as credentials.
+    pub configuration_updated_at: OffsetDateTime,
     /// The price version this request is billed at, which the settlement records.
     pub version: i64,
     /// The route's relative preference for leading a request (issue #168).
@@ -701,7 +715,7 @@ impl Db {
         access: Option<&crate::ServingAccess>,
     ) -> Result<Vec<Serving>, WalletError> {
         let rows = sqlx::query(
-            "SELECT c.channel_id, c.name, c.base_url, c.protocol, c.settings, p.version, p.weight, \
+            "SELECT c.channel_id, c.name, c.base_url, c.protocol, c.settings, c.updated_at, p.version, p.weight, \
                     p.input_price_per_million, p.output_price_per_million, p.max_output_tokens, \
                     p.cache_read_price_per_million, p.cache_write_5m_price_per_million, \
                     p.cache_write_1h_price_per_million, p.reasoning_price_per_million, \
@@ -729,6 +743,7 @@ impl Db {
                 protocol: row.try_get("protocol")?,
                 credentials: Self::open_pool(connection, channel_id, key).await?,
                 settings: row.try_get("settings")?,
+                configuration_updated_at: row.try_get("updated_at")?,
                 version: i64::from(row.try_get::<i32, _>("version")?),
                 weight: i64::from(row.try_get::<i32, _>("weight")?),
                 price: price_from_row(row)?,
@@ -1214,7 +1229,7 @@ impl Db {
         key: &SecretKey,
     ) -> Result<Option<Serving>, WalletError> {
         let row = sqlx::query(
-            "SELECT c.channel_id, c.name, c.base_url, c.protocol, c.settings, p.version, p.weight, \
+            "SELECT c.channel_id, c.name, c.base_url, c.protocol, c.settings, c.updated_at, p.version, p.weight, \
                     p.input_price_per_million, p.output_price_per_million, p.max_output_tokens, \
                     p.cache_read_price_per_million, p.cache_write_5m_price_per_million, \
                     p.cache_write_1h_price_per_million, p.reasoning_price_per_million, \
@@ -1240,6 +1255,7 @@ impl Db {
                     protocol: row.try_get("protocol")?,
                     credentials: Self::open_pool(connection, channel_id, key).await?,
                     settings: row.try_get("settings")?,
+                    configuration_updated_at: row.try_get("updated_at")?,
                     version: i64::from(row.try_get::<i32, _>("version")?),
                     weight: i64::from(row.try_get::<i32, _>("weight")?),
                     price: price_from_row(&row)?,
