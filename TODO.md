@@ -16,9 +16,9 @@ The accepted contract and evidence live in [docs/roadmap/self-hosted-v1](docs/ro
 - [ ] [#594](https://github.com/AllureCurtain/oxsum/issues/594) — Business staff, setup and session contexts (T03): in progress on combined T01/T02 prerequisites; integration pending their reviews.
 - [ ] [#629](https://github.com/AllureCurtain/oxsum/issues/629) — Initialize the business through expiring owner consent (T03.a): locally validated; PR review pending.
 - [ ] [#630](https://github.com/AllureCurtain/oxsum/issues/630) — Business staff capabilities and session contexts (T03.b): PR #632; locally validated, CI/review pending.
-- [ ] [#595](https://github.com/AllureCurtain/oxsum/issues/595) — Customer profile and team lifecycle (T04): in progress; profile/lifecycle #633 and invitation consent #634 both required.
-- [ ] [#633](https://github.com/AllureCurtain/oxsum/issues/633) — Customer profiles and independent admission restrictions (T04.a): locally validated at `50c7db4`; PR pending.
-- [ ] [#634](https://github.com/AllureCurtain/oxsum/issues/634) — Customer and team invitation consent (T04.b): pending T04.a.
+- [ ] [#595](https://github.com/AllureCurtain/oxsum/issues/595) — Customer profile and team lifecycle (T04): in progress; profile/lifecycle #633 and invitation consent #634 both required; software validated, integration pending.
+- [ ] [#633](https://github.com/AllureCurtain/oxsum/issues/633) — Customer profiles and independent admission restrictions (T04.a): in review, PR #635 at `f92bd63`.
+- [ ] [#634](https://github.com/AllureCurtain/oxsum/issues/634) — Customer and team invitation consent (T04.b): locally validated at `199b155`; PR creation pending.
 - [ ] [#596](https://github.com/AllureCurtain/oxsum/issues/596) — Scoped consumption and integration credentials (T05): pending.
 - [ ] [#597](https://github.com/AllureCurtain/oxsum/issues/597) — Business-owned provider configuration (T06): pending.
 - [ ] [#598](https://github.com/AllureCurtain/oxsum/issues/598) — Model catalog and private serving context (T07): pending.

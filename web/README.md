@@ -125,3 +125,5 @@ checkout.
 `GET /api/v1/bills`, and `reservedMinor`/`spentThisMonthMinor` on
 `GET /api/v1/balance` — the four reads the server-rendered pages drew
 straight from core, plus the two overview figures no endpoint carried.
+
+Invitation consent (#634): Members creates bound invitation links for both new and existing users. `/app/invite` previews the offered customer role, retains the one-time registration key and supports explicit signed-in acceptance. Password/TOTP login preserves the invitation return path. Browser desktop/mobile/keyboard evidence remains pending; the configured Turnstile widget is part of T23 portal completion.

@@ -16,7 +16,7 @@ Steps:
    - An existing address answers 409 `CONFLICT`.
    - Some deployments answer 403 `FORBIDDEN`: registration is by invitation there. An
      owner or admin of the organization hands you a link (`/app/invite?token=…`) —
-     possibly by email — that registers one account; it expires seven days after it was
+     possibly by email — that lets you register or sign in and explicitly accept; it expires seven days after it was
      minted and cannot be reused. The same page also serves `open` deployments for
      invitees who prefer it.
    - Deployments that run the anti-bot check draw a small Turnstile widget on the
@@ -116,14 +116,14 @@ The dashboard is the React app under `web/` (issue #234): overview, top-up, bill
     like any other. The code lapses fifteen minutes after the tool minted it.
 - **Members**: everyone in the organization, with their role and join date. Every member
   sees the list. Owners and admins also manage it, from the controls on each row:
-  - **Add member**: enter the email of an account that already exists. The page says
-    so when no account has that email — for someone new, use the next control instead.
-    The new member starts as a member.
-  - **Invite by link**: mint a link for someone who has no account yet. Enter an
-    address to have the invitation mailed (when the deployment configures a mailer),
-    or leave it blank to copy the link and hand it over yourself. The link registers
-    one account into the organization as a member, expires seven days after minting,
-    and is shown once.
+  - **Invite a member**: enter the intended email for a new or existing account.
+    Choose **Create invitation link**, or enable email delivery when the deployment
+    has a mailer. Save the link; it expires in seven days. The recipient previews
+    the account and role, then either signs in and accepts or registers through it.
+    Registration shows the first API key once. Existing users select the joined
+    customer from the account menu afterwards; their personal account stays intact.
+    Retrying creation does not reveal the secret or resend mail. Revoke an unused
+    link with `POST /api/v1/org/invitations/{id}/revoke` and `{idempotencyKey,reason}`.
   - **Make admin** / **Make member**: change a member's role. This never grants
     ownership; see below.
   - **Member budget**: the same member PATCH (`/api/v1/org/members/{userId}`)
@@ -937,3 +937,7 @@ In business context, list `/api/v1/business/customers` and read a customer by `o
 POST `/api/v1/business/customers/{organizationId}/lifecycle` with `state: "archived"` to stop new consumption while keeping history and debt. Use `state: "active"` to restore it. POST the corresponding `/suspension` with `suspended: true` or `false` to control the manual reason; support staff may perform this action. Each request also requires `idempotencyKey` and `reason`.
 
 Customer state reports manual and dunning timestamps separately. Clearing a manual restriction or restoring an archived account does not clear overdue suspension. Paying an overdue bill can lift dunning while a separate manual or archive restriction still prevents new consumption. Existing requests still settle; the customer can read bills and make payments during restrictions. Business-console controls follow in T24.
+
+### Inviting a new customer as business staff
+
+In business context, owner/admin calls `POST /api/v1/business/customer-invitations` with a unique `idempotencyKey`, intended `email`, customer `name`, stable `externalId` and a `reason`. Save the returned token/link for the intended customer; this API does not mail it. The invitation reserves its identity for seven days, and the customer account is created only when the recipient consents. New users register; existing users sign in and accept. They become the initial customer owner, never business staff. Revoke before acceptance through `/business/customer-invitations/{id}/revoke` with a new idempotency key and reason. After acceptance, use customer lifecycle or membership operations.
