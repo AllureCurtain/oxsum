@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.97.0
+  version: 0.98.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -2489,21 +2489,50 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/topups:
     post:
-      summary: Top up credits
+      summary: Retired customer manual top-up
+      deprecated: true
       description: |
-        The `manual` deposit rail: the caller asserts money arrived out of band and the credit
-        lands in the purchased pool. The credit is also recorded on `oxsum.deposits`
-        (`rail = manual`, `payment_ref` = the idempotency key) so every funding event has one
-        record for reconciliation.
+        Always refuses authenticated customer credentials with 403. Customers may initiate
+        a configured payment checkout or redeem an issued code, but cannot assert money arrived.
+        Deployment-authorized out-of-band receipts use the admin manual-receipts endpoint.
+      responses:
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/organizations/{organizationId}/manual-receipts:
+    post:
+      summary: Record verified out-of-band money received
+      description: |
+        Deployment authority only. Requires a unique payment reference and reason.
+        The immutable authorization and audit commit before crediting; repeating the same
+        request recovers interrupted fulfillment without crediting twice. Changed terms conflict.
+        Reference uniqueness is deployment-wide; idempotency keys are customer-scoped.
+        Amounts are credits in integer minor units, not a fiat conversion assertion.
+        Promotional grants use adjustments instead. Repays existing credit debt before adding
+        purchased funds. New business currency/conversion payment orders arrive separately.
+      security: [{ adminToken: [] }]
+      parameters:
+        - in: path
+          name: organizationId
+          required: true
+          schema: { type: string, format: uuid }
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/AmountRequest" }
+            schema:
+              type: object
+              additionalProperties: false
+              required: [idempotencyKey, amountMinor, reference, reason]
+              properties:
+                idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+                amountMinor: { type: integer, format: int64, minimum: 1 }
+                reference: { type: string, minLength: 1, maxLength: 200 }
+                reason: { type: string, minLength: 1, maxLength: 1000 }
       responses:
         "200": { $ref: "#/components/responses/Receipt" }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/topups/stripe:
@@ -5911,7 +5940,10 @@ paths:
         `tier.delete`, …), what it acted on, the request's detail with
         credentials redacted, and the idempotency key it carried. Rows are
         written only after the mutation commits, so a crash may omit one but
-        the log never describes a change that did not happen. Newest first;
+        the log never describes a change that did not happen. Manual receipts are
+        the exception: `manual_receipt.authorized` records the immutable authority
+        before crediting, so it may describe a receipt still awaiting fulfillment.
+        Newest first;
         a full page answers `nextCursor`, echoed back as `cursor` — opaque,
         never constructed by hand; absent means the log is read out.
         `action` narrows to one action's rows exactly.
@@ -8552,7 +8584,7 @@ components:
           description: who acted — "operator" today; the single admin token is the only admin identity
         action:
           type: string
-          description: the mutating call, as a dotted name — channel.set, channel.price.append, organization.adjust, organization.update, tier.set, tier.delete, discount.create, discount.end, user.password_reset, codes.mint, closing.close, statement.generate, statement.finalize, statement.payment, statement.suspend
+          description: the mutating call, as a dotted name — manual_receipt.authorized, channel.set, channel.price.append, organization.adjust, organization.update, tier.set, tier.delete, discount.create, discount.end, user.password_reset, codes.mint, closing.close, statement.generate, statement.finalize, statement.payment, statement.suspend
         target:
           type: string
           nullable: true

@@ -3001,11 +3001,11 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Top up credits
-         * @description The `manual` deposit rail: the caller asserts money arrived out of band and the credit
-         *     lands in the purchased pool. The credit is also recorded on `oxsum.deposits`
-         *     (`rail = manual`, `payment_ref` = the idempotency key) so every funding event has one
-         *     record for reconciliation.
+         * Retired customer manual top-up
+         * @deprecated
+         * @description Always refuses authenticated customer credentials with 403. Customers may initiate
+         *     a configured payment checkout or redeem an issued code, but cannot assert money arrived.
+         *     Deployment-authorized out-of-band receipts use the admin manual-receipts endpoint.
          */
         post: {
             parameters: {
@@ -3014,15 +3014,62 @@ export interface paths {
                 path?: never;
                 cookie?: never;
             };
+            requestBody?: never;
+            responses: {
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/organizations/{organizationId}/manual-receipts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record verified out-of-band money received
+         * @description Deployment authority only. Requires a unique payment reference and reason.
+         *     The immutable authorization and audit commit before crediting; repeating the same
+         *     request recovers interrupted fulfillment without crediting twice. Changed terms conflict.
+         *     Reference uniqueness is deployment-wide; idempotency keys are customer-scoped.
+         *     Amounts are credits in integer minor units, not a fiat conversion assertion.
+         *     Promotional grants use adjustments instead. Repays existing credit debt before adding
+         *     purchased funds. New business currency/conversion payment orders arrive separately.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    organizationId: string;
+                };
+                cookie?: never;
+            };
             requestBody: {
                 content: {
-                    "application/json": components["schemas"]["AmountRequest"];
+                    "application/json": {
+                        idempotencyKey: string;
+                        /** Format: int64 */
+                        amountMinor: number;
+                        reference: string;
+                        reason: string;
+                    };
                 };
             };
             responses: {
                 200: components["responses"]["Receipt"];
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
                 409: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -8248,7 +8295,10 @@ export interface paths {
          *     `tier.delete`, …), what it acted on, the request's detail with
          *     credentials redacted, and the idempotency key it carried. Rows are
          *     written only after the mutation commits, so a crash may omit one but
-         *     the log never describes a change that did not happen. Newest first;
+         *     the log never describes a change that did not happen. Manual receipts are
+         *     the exception: `manual_receipt.authorized` records the immutable authority
+         *     before crediting, so it may describe a receipt still awaiting fulfillment.
+         *     Newest first;
          *     a full page answers `nextCursor`, echoed back as `cursor` — opaque,
          *     never constructed by hand; absent means the log is read out.
          *     `action` narrows to one action's rows exactly.
@@ -11214,7 +11264,7 @@ export interface components {
             recordedAt: string;
             /** @description who acted — "operator" today; the single admin token is the only admin identity */
             actor: string;
-            /** @description the mutating call, as a dotted name — channel.set, channel.price.append, organization.adjust, organization.update, tier.set, tier.delete, discount.create, discount.end, user.password_reset, codes.mint, closing.close, statement.generate, statement.finalize, statement.payment, statement.suspend */
+            /** @description the mutating call, as a dotted name — manual_receipt.authorized, channel.set, channel.price.append, organization.adjust, organization.update, tier.set, tier.delete, discount.create, discount.end, user.password_reset, codes.mint, closing.close, statement.generate, statement.finalize, statement.payment, statement.suspend */
             action: string;
             /** @description what the action acted on — a channel name, an organization id, a statement id */
             target?: string | null;

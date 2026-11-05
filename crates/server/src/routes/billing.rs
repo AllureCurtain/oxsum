@@ -169,37 +169,11 @@ pub(crate) async fn bills(
     })
 }
 
-pub(crate) async fn top_up(
-    State(state): State<AppState>,
-    Extension(principal): Extension<Principal>,
-    ApiJson(r): ApiJson<AmountReq>,
-) -> ApiResult<oxsum_core::Receipt> {
-    let w = wallet(&state.tenants, principal.organization()).await?;
-    let receipt = w
-        .top_up(&r.idempotency_key, r.amount_minor, today())
-        .await?;
-    // The manual deposit rail: every funding event leaves a row on deposits for
-    // reconciliation (decision D2). The caller's idempotency key is the payment
-    // reference, so a replayed top-up sees its own row. The post-credit balance
-    // clears the `balance.low` latches it lifts above (issue #200).
-    let available = w.available().await.ok();
-    state
-        .db
-        .record_manual_deposit(
-            principal.organization().id,
-            &r.idempotency_key,
-            r.amount_minor,
-            *receipt.entry_id.as_uuid(),
-            available,
-        )
-        .await?;
-    // Whatever the deposit repaid counts against the statement book: open
-    // statements are repaid oldest first (issue #124).
-    state
-        .db
-        .reconcile_statements(principal.organization().id, &w, today())
-        .await?;
-    ok(receipt)
+/// Customer credentials may request payment, never assert money received.
+pub(crate) async fn top_up() -> ApiResult<oxsum_core::Receipt> {
+    Err(ApiError::Forbidden(
+        "manual top-ups require deployment authority; use checkout or a redemption code".into(),
+    ))
 }
 
 /// The body of `POST /api/v1/topups/x402`: the signed payment authorization as

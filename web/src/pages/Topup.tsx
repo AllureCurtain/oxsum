@@ -9,7 +9,6 @@ import {
   useHyperswitchTopup,
   useRedeemCode,
   useStripeTopup,
-  useTopup,
 } from "../api/hooks";
 import { Button } from "../components/ui";
 import { TextInput } from "../components/ui";
@@ -105,27 +104,6 @@ function AmountRail<TData>(props: {
         : null}
       {mutation.data && props.renderSuccess ? props.renderSuccess(mutation.data) : null}
     </form>
-  );
-}
-
-function ManualRail() {
-  const { t } = useTranslation();
-  const topup = useTopup();
-  return (
-    <AmountRail
-      intro={t("topup.manualIntro")}
-      consequence={(amount) => (
-        <>
-          {amountToMinor(amount) !== null
-            ? t("topup.manualConsequence", { amount: `${amount} cr` })
-            : t("topup.manualConsequence", { amount: t("topup.theAmount") })}
-        </>
-      )}
-      submitLabel={t("topup.creditBalance")}
-      loadingText={t("topup.booking")}
-      mutation={topup}
-      renderSuccess={(receipt) => <ReceiptView receipt={receipt} />}
-    />
   );
 }
 
@@ -479,19 +457,14 @@ export function Topup() {
           </button>
         </div>
       ) : null}
-      <Tabs defaultValue="manual">
+      <Banner tone="info">{t("topup.paymentRequired")}</Banner>
+      <Tabs defaultValue="hyperswitch">
         <TabsList variant="pill">
-          <TabsTrigger value="manual">{t("topup.manual")}</TabsTrigger>
           <TabsTrigger value="stripe">{t("topup.stripe")}</TabsTrigger>
           <TabsTrigger value="airwallex">{t("topup.airwallex")}</TabsTrigger>
           <TabsTrigger value="hyperswitch">{t("topup.hyperswitch")}</TabsTrigger>
           <TabsTrigger value="redeem">{t("topup.redeemCode")}</TabsTrigger>
         </TabsList>
-        <TabsContent value="manual" className="mt-4">
-          <Card title={t("topup.manualTopup")}>
-            <ManualRail />
-          </Card>
-        </TabsContent>
         <TabsContent value="stripe" className="mt-4">
           <Card title={t("topup.stripeCheckout")}>
             <StripeRail />

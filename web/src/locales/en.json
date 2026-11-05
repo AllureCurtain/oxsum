@@ -173,6 +173,7 @@
     "benchReleaseFailed": "release failed"
   },
   "topup": {
+    "paymentRequired": "Credit is added only after a verified payment or redemption. For a bank payment, ask the business to record your payment reference.",
     "title": "Top up",
     "balance": "Balance",
     "available": "Available",

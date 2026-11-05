@@ -32,6 +32,7 @@ mod invitations;
 mod jobs;
 mod keys;
 mod mandates;
+mod manual_receipts;
 mod metering;
 mod oauth;
 mod orgs;
@@ -129,6 +130,7 @@ pub use keys::{
     ActingKey, ApiKey, BudgetDuration, CreatedApiKey, KeyConstraints, TagScope, TpmScope, TpmScopes,
 };
 pub use mandates::{CreatedMandate, Mandate, PresentedMandate, VerifiedMandate, parse_presented};
+pub use manual_receipts::{FundingAuthority, ManualReceiptRequest};
 pub use metering::{MeteredEvent, MeteredHold, MeteredOutcome};
 pub use oauth::{ConsumedState, OAuthIdentity};
 pub use orgs::{
