@@ -2,7 +2,7 @@
 
 Updated: 2026-11-05. Contract issue: [#591](https://github.com/AllureCurtain/oxsum/issues/591).
 
-Implementation: in progress. Release: not ready. T00 is integrated; T01.a and T02 are in review; T01.b is in review (PR #628); T03 prerequisite integration is under validation. No release readiness claimed.
+Implementation: in progress. Release: not ready. T00 is integrated; T01.a and T02 are in review; T01.b is in review (PR #628); T03.a is in review (PR #631); T03.b is locally validated on that prerequisite stack. No release readiness claimed.
 
 | Task | Issue | State | Depends on |
 | --- | --- | --- | --- |
@@ -48,7 +48,7 @@ T01 split: [#624](https://github.com/AllureCurtain/oxsum/issues/624) is PR #626,
 T02 is independently implemented and locally validated in PR #627 (`d5b3c0f`), with CI green. Entire reports only missing independent approval, no blocking findings. It is not integrated; preserve migrations 0071 and 0072 and revalidate the combined candidate during integration. No approval bypass is authorized.
 
 
-T03 development uses `.worktrees/business-setup`, branch `feat/business-setup`, combining T01/T02 locally without merging either into main. Conflicts preserve both migrations and authority changes. The combined prerequisites passed 18 focused checks. T03.a #629 now implements expiring owner consent at `361e8c6`: 1,485 workspace tests, 26 process-shared tests, 29 doctests and 29 PostgreSQL engine tests passed, along with setup race/rollback/HTTP checks. See [evidence](evidence/T03-a.md). T03.b #630 still owns staff sessions/capabilities, registration enforcement and last-owner lifecycle protection.
+T03 development uses `.worktrees/business-setup`, branch `feat/business-setup`, combining T01/T02 locally without merging either into main. Conflicts preserve both migrations and authority changes. The combined prerequisites passed 18 focused checks. T03.a #629 now implements expiring owner consent at `361e8c6`: 1,485 workspace tests, 26 process-shared tests, 29 doctests and 29 PostgreSQL engine tests passed, along with setup race/rollback/HTTP checks. See [evidence](evidence/T03-a.md). T03.a CI is green, with Entire Gates still failing. T03.b #630 implements staff contexts/capabilities, registration policy, last-owner lifecycle and atomic password/TOTP recovery at `ed58c3e` in `.worktrees/business-staff`: 1,489 workspace tests, 26 process-shared tests, 29 doctests, Clippy, format and frontend gates passed. See [evidence](evidence/T03-b.md). Normal integration awaits prerequisite review; business UI remains T24.
 
 ## External gates
 

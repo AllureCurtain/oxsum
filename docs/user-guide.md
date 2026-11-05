@@ -918,3 +918,13 @@ Billing a service of your own — one whose work no upstream LLM produced — ru
 ## Accepting initial business ownership (#629)
 
 If the deployment administrator has invited you as the initial business owner, use their setup token within 30 minutes. Existing customers log in and accept with their own session; a new owner registers using the invited email and a new password. The token chooses the intended owner, so owning a customer organization alone does not grant business access. Setup asks for the business name and records invite-only policy. It cannot be claimed twice. The customer account and its API key remain separate from staff authority; the staff console and role/session workflow are dependent release tasks.
+
+## Business staff API workflow (#630)
+
+After initial setup, sign in using the ordinary password/TOTP flow. Select business context with `POST /api/v1/session/context` and `{"idempotencyKey":"select-business-1","context":"business"}`. Read `/api/v1/business` to see your business role and capabilities. The business console for these APIs is delivered separately in T24.
+
+The owner can appoint an existing registered user with `POST /api/v1/business/staff`, passing `idempotencyKey`, `userId`, `role` (`admin`, `finance`, `support`, or `viewer`) and `reason`. Staff status is separate from customer team membership. Use `/business/staff/revoke` to remove staff access. Use `/business/ownership` with the successor's existing staff user ID to transfer ownership; your role then becomes admin. Transfer before deleting an owner account.
+
+Only the business owner can open self-registration: `POST /api/v1/business/registration` with `idempotencyKey`, `mode: "open"` and a reason. `mode: "invite"` closes it again. Fresh and upgraded deployments begin closed; changing `OXSUM_SIGNUP` does not change this policy. Password/GitHub/OIDC registration follow the same setting, while existing users can still log in.
+
+Select customer context before visiting customer balance/team/bill APIs, using `context: "customer"` and your own `organizationId` when needed. Business context grants no customer impersonation. If you enable TOTP, sign in again with password and the second factor before using business operations; an older session or an OAuth-only login cannot supply that proof. Revoked staff can still return to their own customer membership.
