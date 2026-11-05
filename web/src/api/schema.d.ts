@@ -1461,7 +1461,7 @@ export interface paths {
         /**
          * The current session
          * @description Who is logged in, as which organization, in which role. Takes the session cookie; a bearer
-         *     key names no session and answers 404.
+         *     key names no personal session and answers 403.
          */
         get: {
             parameters: {
@@ -1484,6 +1484,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -1804,8 +1805,8 @@ export interface paths {
         /**
          * List the organization's API keys
          * @description Metadata only. Neither a secret nor a hash is ever returned. Members see only the keys they
-         *     created; owners and admins see every key of the organization. An API key acting as the
-         *     organization sees all of them, as before sessions.
+         *     created; owners and admins see every key of the organization. A consumption key
+         *     sees only its own metadata, including constraints and expiry, never sibling keys.
          */
         get: {
             parameters: {
@@ -1834,12 +1835,11 @@ export interface paths {
         put?: never;
         /**
          * Create an API key
-         * @description Returns the secret once. A key minted through a session records who minted it (`createdBy`),
-         *     for the per-member role rules; a key minted with an API key records no creator, because no
-         *     person acts there.
-         *     Creation, constraints and group assignment commit atomically. A grouped bearer cannot
-         *     mint keys. Only an owner/admin session or an ungrouped organization key may assign
-         *     `groupId`; a member session may create an ungrouped key.
+         * @description Requires a live personal customer session. Returns the secret once and records
+         *     the session user as `createdBy`. Members create their own ungrouped keys;
+         *     current owner/admin sessions may assign `groupId`. Creation, current-session/role
+         *     checks, constraints and group assignment commit atomically. Consumption keys
+         *     cannot mint credentials, regardless of group assignment.
          */
         post: {
             parameters: {
@@ -1917,6 +1917,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -1931,9 +1932,8 @@ export interface paths {
          *     field left out or null clears it.
          *
          *     `groupId` differs: omission preserves its assignment; explicit null ungroups the key.
-         *     Only an owner/admin session or an ungrouped organization key may change it.
-         *     A grouped bearer cannot patch keys, including its own. Authorization, constraints
-         *     and assignment commit atomically.
+         *     Only a current owner/admin session may change it. Consumption keys cannot patch
+         *     keys, including their own. Authorization, constraints and assignment commit atomically.
          *
          *     `spendLimitMinor` caps what the key may have committed — settled charges plus
          *     outstanding holds attributed to it, in minor units. `budgetDuration` makes
@@ -1967,8 +1967,8 @@ export interface paths {
          *     cannot exceed it. A replayed hold answers its own receipt before any of
          *     these checks run: retrying one request never consumes the key's windows
          *     twice. The scope rules are the revoke's: a member may change only the keys
-         *     they created — any other key id answers 404 and the key is untouched; owners, admins
-         *     and API keys acting as the organization may change any key of the organization. A key
+         *     they created — any other key id answers 404 and the key is untouched; current owner/admin
+         *     sessions may change any key of the organization. Consumption keys receive 403. A key
          *     id belonging to another organization is `NOT_FOUND`.
          */
         patch: {
@@ -2043,6 +2043,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -2057,8 +2058,10 @@ export interface paths {
          *     path does. A mandate can only narrow the key's own constraints: `capMinor` and
          *     `models` must sit inside the key's, and `notAfter` bounds how long it lives. Every
          *     mandate carries a `nonce` for uniqueness, so two identical requests mint two
-         *     different mandates. Minting needs the key itself (`Authorization: Bearer oxs-…`) or
-         *     an owner/admin session — holding the credential is what authorizes delegation.
+         *     different mandates. Minting requires a current personal session: members may mint
+         *     only for their own keys, owner/admin sessions for any key in this customer.
+         *     Consumption keys cannot mint or list mandates. Using a mandate on the gateway
+         *     still requires the corresponding consumption key.
          */
         post: {
             parameters: {
@@ -2088,6 +2091,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -2135,10 +2139,10 @@ export interface paths {
          *     request may spend the headroom between the answer and the call, which
          *     is exactly what the atomic admission checks exist for.
          *
-         *     The scope rules are the revoke's: a member reads only the keys they
-         *     created, owners, admins and API keys acting as the organization read
-         *     any key of it, and a key id of another organization — or, for a
-         *     member, a key they did not create — is `NOT_FOUND`. The entitlement
+         *     A consumption key reads only its own ID. A member session reads only keys
+         *     they created; owner/admin sessions read any key in this customer. Every
+         *     out-of-scope key ID is `NOT_FOUND`. Headroom is the effective key/member/team
+         *     admission limit; it never reports the customer's wallet balance. The entitlement
          *     check itself is free: it consumes nothing and is never rate-limited.
          */
         get: {
@@ -2276,6 +2280,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -2461,6 +2466,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -2638,6 +2644,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -2809,6 +2816,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -2918,6 +2926,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -2983,6 +2992,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
                 503: components["responses"]["Error"];
@@ -3032,6 +3042,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -3077,6 +3088,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -3128,6 +3140,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -3176,6 +3189,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -3222,6 +3236,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -3378,6 +3393,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
                 503: components["responses"]["Error"];
             };
@@ -3449,6 +3465,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
                 503: components["responses"]["Error"];
             };
@@ -3695,6 +3712,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
                 503: components["responses"]["Error"];
             };
@@ -3806,6 +3824,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 409: components["responses"]["Error"];
                 500: components["responses"]["Error"];
@@ -4016,6 +4035,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -4065,6 +4085,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -4120,6 +4141,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -4172,6 +4194,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -4244,6 +4267,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -4325,7 +4349,7 @@ export interface paths {
          *     the key's `budgetDuration` when it has one. `consumedPercent` floors
          *     `committed * 100 / limit` and is null where no numeric limit exists. Three
          *     scopes: `organization` carries the credit line beside the wallet balances,
-         *     `member` the acting member's own `budgetLimitMinor` (null for a key and for a
+         *     `member` the acting member's own `budgetLimitMinor` (null for a
          *     seat with no limit), `keys` every live key the principal's scope reaches with
          *     its `spendLimitMinor`, `budgetDuration` and `windowStart`.
          */
@@ -4350,6 +4374,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
             };
         };
         put?: never;
@@ -4435,7 +4460,9 @@ export interface paths {
          *     charge, with `entryId` naming the settlement entry when the turn
          *     reached one. This is the search surface `usage_records` cannot answer:
          *     "every request this key made to this model in this window". A member's
-         *     read is scoped to their own organization; the operator's twin is
+         *     read includes only their own keys plus unattributed records. A consumption key
+         *     reads only its own attributed rows; query filters cannot widen this scope.
+         *     Owner/admin sessions see the customer-wide log; the operator's twin is
          *     `GET /api/v1/admin/requests`. Rows write post-settlement — a logging
          *     failure never fails a request — so a very recent turn may lag its
          *     settlement by a moment. A refused admission logs a row too
@@ -4535,6 +4562,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -4614,6 +4642,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -4662,6 +4691,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -4724,6 +4754,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -4771,6 +4802,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -4809,6 +4841,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -4858,6 +4891,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -7618,6 +7652,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -9254,8 +9289,8 @@ export interface paths {
          *     24 hours after it was first claimed.
          *
          *     Every answer that took the hold — a completion or an upstream refusal — carries
-         *     `x-oxsum-freeze-minor` (the reserved bound) and `x-oxsum-balance-minor` (the
-         *     spendable balance left after it) on the response head. The settled charge rides as
+         *     `x-oxsum-freeze-minor` (the reserved bound) on the response head. Customer-wide
+         *     balances are not disclosed to consumption keys. The settled charge rides as
          *     `x-oxsum-charged-minor`: a header on a non-streamed answer and on a refusal that
          *     settled `Charge::Nothing`, and — because the head goes out before a streamed turn
          *     settles — an HTTP trailer on a streamed answer, announced by `Trailer`.
@@ -9283,7 +9318,6 @@ export interface paths {
                     headers: {
                         "x-oxsum-request-id": components["headers"]["RequestId"];
                         "x-oxsum-freeze-minor": components["headers"]["FreezeMinor"];
-                        "x-oxsum-balance-minor": components["headers"]["BalanceMinor"];
                         "x-oxsum-charged-minor": components["headers"]["ChargedMinor"];
                         "x-oxsum-cache": components["headers"]["CacheStatus"];
                         /** @description on a streamed answer, announces the settled charge arrives as a trailer */
@@ -9374,7 +9408,6 @@ export interface paths {
                     headers: {
                         "x-oxsum-request-id": components["headers"]["RequestId"];
                         "x-oxsum-freeze-minor": components["headers"]["FreezeMinor"];
-                        "x-oxsum-balance-minor": components["headers"]["BalanceMinor"];
                         "x-oxsum-charged-minor": components["headers"]["ChargedMinor"];
                         /** @description on a streamed answer, announces the settled charge arrives as a trailer */
                         Trailer?: string;
@@ -9468,7 +9501,6 @@ export interface paths {
                     headers: {
                         "x-oxsum-request-id": components["headers"]["RequestId"];
                         "x-oxsum-freeze-minor": components["headers"]["FreezeMinor"];
-                        "x-oxsum-balance-minor": components["headers"]["BalanceMinor"];
                         [name: string]: unknown;
                     };
                     content: {
@@ -9507,9 +9539,9 @@ export interface paths {
          *     `failed` or `cancelled` once terminal — the terminal transition is
          *     also the settlement, so a terminal state means the bill is written.
          *     `result` carries upstream's answer body on success, `error` the
-         *     reported failure. The caller's API key must belong to the
-         *     organization that submitted the task — a foreign key reads 404, not
-         *     403, so a task's existence is not an oracle.
+         *     reported failure. Only the exact consumption key that submitted the task
+         *     may read or cancel it. Unknown, foreign-customer and sibling-key task
+         *     IDs all return 404 without contacting upstream or changing funds.
          */
         get: {
             parameters: {
@@ -9553,7 +9585,8 @@ export interface paths {
         put?: never;
         /**
          * Best-effort cancel — releases the hold and asks upstream to stop the job
-         * @description Asks upstream to cancel the external task
+         * @description Only the exact submitting key may cancel; every out-of-scope ID is 404.
+         *     Asks upstream to cancel the external task
          *     (`POST {baseUrl}/tasks/{externalTaskId}/cancel`), then releases the
          *     hold at zero whether upstream accepted or not: the billing side ends
          *     because the caller said the work is no longer wanted. A task already
@@ -9630,8 +9663,8 @@ export interface paths {
          *     turn is `metadata.user_id`, which lands on the usage record's `endUser`.
          *
          *     A `stream: true` response relays Anthropic's event stream unchanged and ends with
-         *     `message_stop`. The cost headers are the same three: `x-oxsum-freeze-minor` and
-         *     `x-oxsum-balance-minor` on the head, `x-oxsum-charged-minor` on a non-streamed head
+         *     `message_stop`. The cost headers are `x-oxsum-freeze-minor` on the head
+         *     and `x-oxsum-charged-minor` on a non-streamed head
          *     or a streamed trailer. `Idempotency-Key` behaves exactly as it does on
          *     `/v1/chat/completions`.
          */
@@ -9662,7 +9695,6 @@ export interface paths {
                     headers: {
                         "x-oxsum-request-id": components["headers"]["RequestId"];
                         "x-oxsum-freeze-minor": components["headers"]["FreezeMinor"];
-                        "x-oxsum-balance-minor": components["headers"]["BalanceMinor"];
                         "x-oxsum-charged-minor": components["headers"]["ChargedMinor"];
                         /** @description on a streamed answer, announces the settled charge arrives as a trailer */
                         Trailer?: string;
@@ -9709,8 +9741,9 @@ export interface paths {
          *
          *     There is no output side: `stream` is refused, and no `max_tokens` is injected into the
          *     forwarded body. The failover, bounded `Retry-After`, `Idempotency-Key` and
-         *     cost-header contract is the shared pipeline's — `x-oxsum-freeze-minor` and
-         *     `x-oxsum-balance-minor` on the head, `x-oxsum-charged-minor` once the turn settled.
+         *     cost-header contract is the shared pipeline's — `x-oxsum-freeze-minor` on the
+         *     head and `x-oxsum-charged-minor` once the turn settles. Customer balance is
+         *     never returned to a gateway caller.
          *
          *     Upstream is called at `{baseUrl}/embeddings` with the channel credential as
          *     `Authorization: Bearer`. A response without a usage report settles `estimated`,
@@ -9739,7 +9772,6 @@ export interface paths {
                     headers: {
                         "x-oxsum-request-id": components["headers"]["RequestId"];
                         "x-oxsum-freeze-minor": components["headers"]["FreezeMinor"];
-                        "x-oxsum-balance-minor": components["headers"]["BalanceMinor"];
                         "x-oxsum-charged-minor": components["headers"]["ChargedMinor"];
                         [name: string]: unknown;
                     };
@@ -9808,7 +9840,6 @@ export interface paths {
                     headers: {
                         "x-oxsum-request-id": components["headers"]["RequestId"];
                         "x-oxsum-freeze-minor": components["headers"]["FreezeMinor"];
-                        "x-oxsum-balance-minor": components["headers"]["BalanceMinor"];
                         "x-oxsum-charged-minor": components["headers"]["ChargedMinor"];
                         [name: string]: unknown;
                     };
@@ -9860,9 +9891,10 @@ export interface paths {
          *     `toolUsePromptTokenCount` sits outside `promptTokenCount` (so the billed input
          *     adds it in).
          *
-         *     The cost headers are the same three: `x-oxsum-freeze-minor` and
-         *     `x-oxsum-balance-minor` on the head, `x-oxsum-charged-minor` on a non-streamed
-         *     head. `Idempotency-Key` behaves exactly as it does on `/v1/chat/completions`.
+         *     The cost headers are the same two: `x-oxsum-freeze-minor` on the head and
+         *     `x-oxsum-charged-minor` on a non-streamed head. Customer balance is never
+         *     returned to a gateway caller. `Idempotency-Key` behaves exactly as it does on
+         *     `/v1/chat/completions`.
          *     `labels` maps onto the turn's usage tags, like OpenAI's `metadata` — strings
          *     only, ten entries, 64 characters a side.
          */
@@ -9892,7 +9924,6 @@ export interface paths {
                     headers: {
                         "x-oxsum-request-id": components["headers"]["RequestId"];
                         "x-oxsum-freeze-minor": components["headers"]["FreezeMinor"];
-                        "x-oxsum-balance-minor": components["headers"]["BalanceMinor"];
                         "x-oxsum-charged-minor": components["headers"]["ChargedMinor"];
                         [name: string]: unknown;
                     };
@@ -9962,7 +9993,6 @@ export interface paths {
                     headers: {
                         "x-oxsum-request-id": components["headers"]["RequestId"];
                         "x-oxsum-freeze-minor": components["headers"]["FreezeMinor"];
-                        "x-oxsum-balance-minor": components["headers"]["BalanceMinor"];
                         /** @description announces the settled charge arrives as a trailer */
                         Trailer?: string;
                         [name: string]: unknown;
@@ -13550,7 +13580,10 @@ export interface components {
         RequestId: string;
         /** @description minor units this request froze — the most it can cost */
         FreezeMinor: number;
-        /** @description the organization's spendable balance after this request's reservation */
+        /**
+         * @deprecated
+         * @description Retired in 0.105.0: consumption credentials do not disclose the customer's balance. This header is omitted.
+         */
         BalanceMinor: number;
         /** @description minor units the settled turn actually charged — a header on non-streamed answers and post-hold refusals, a trailer on streamed ones */
         ChargedMinor: number;
