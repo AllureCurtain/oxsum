@@ -5,6 +5,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod support;
+
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -27,7 +29,7 @@ async fn online_app(url: &str, secure_cookie: bool) -> (Router, PgPool) {
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
     let config = Config::new(Signup::Open, None).with_session_cookie_secure(secure_cookie);
-    (oxsum_server::app(db, config), pool)
+    (support::app(db, config), pool)
 }
 
 /// The DATABASE_URL tests need, or None to skip.
@@ -229,11 +231,12 @@ async fn the_cookie_authenticates_the_session_and_the_ledger_endpoints() {
     );
     assert_eq!(res.body["data"]["role"], "owner");
 
-    // The ledger endpoints work exactly as they do with a key.
+    // Seed purchased funds through the explicit test fixture; customer funding authority
+    // is tested separately against the production router.
     let res = call(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "s1", "amountMinor": 5_000_000})),
         None,
         Some(&cookie),
@@ -527,11 +530,11 @@ async fn a_session_hold_is_not_bound_by_any_key_limit() {
     let (app, _pool) = app_or_skip!(false);
     let (email, _registration, key) = register(&app, "sessionhold").await;
 
-    // Fund the wallet through the key.
+    // Seed purchased funds; the key identifies only the fixture customer.
     let res = call(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "t1", "amountMinor": 5_000_000})),
         Some(&key),
         None,

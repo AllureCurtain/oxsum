@@ -5,6 +5,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod support;
+
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -35,7 +37,7 @@ async fn online_app(url: &str) -> (Router, PgPool) {
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
     (
-        oxsum_server::app(
+        support::app(
             db,
             Config::new(Signup::Open, None).with_admin_token(OPERATOR_TOKEN),
         ),
@@ -162,7 +164,7 @@ async fn top_up(app: &Router, key: &str, minor: i64) {
     let (status, body) = call(
         app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({
             "idempotencyKey": format!("metrics-topup-{}", uuid::Uuid::new_v4().simple()),
             "amountMinor": minor,
@@ -175,7 +177,7 @@ async fn top_up(app: &Router, key: &str, minor: i64) {
 
 #[tokio::test]
 async fn the_scrape_answers_to_the_operator_token() {
-    let app = oxsum_server::app(
+    let app = support::app(
         Db::from_pool(unused_pool()),
         Config::new(Signup::Open, None).with_admin_token(OPERATOR_TOKEN),
     );

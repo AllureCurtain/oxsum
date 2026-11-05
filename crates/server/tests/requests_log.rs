@@ -8,6 +8,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod support;
+
 use axum::Json;
 use axum::Router;
 use axum::body::Body;
@@ -129,7 +131,7 @@ async fn world(database_url: &str) -> World {
     oxsum_server::prepare(&db, &config)
         .await
         .expect("the deployment is prepared");
-    let app = oxsum_server::app(db.clone(), config);
+    let app = support::app(db.clone(), config);
 
     let email = format!(
         "reqlog_{}@example.com",
@@ -156,7 +158,7 @@ async fn world(database_url: &str) -> World {
     let (status, body, _id) = call(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": format!("top-{suffix}"), "amountMinor": 100_000_000})),
         Some(&key),
         &[],
@@ -180,7 +182,7 @@ fn admin_app(world: &World) -> Router {
     let config = Config::new(Signup::Open, None)
         .with_secret(SecretKey::from_bytes([7; 32]))
         .with_admin_token(OPERATOR_TOKEN);
-    oxsum_server::app(db, config)
+    support::app(db, config)
 }
 
 /// One JSON call; `key` is the bearer credential and `headers` extra pairs.

@@ -9,6 +9,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod support;
+
 use std::time::Duration;
 
 use axum::Router;
@@ -129,7 +131,7 @@ async fn world_for(url: &str) -> World {
     oxsum_server::prepare(&db, &config)
         .await
         .expect("the deployment is prepared");
-    let (app, _billing, _metrics) = oxsum_server::app_with_billing(db.clone(), config);
+    let (app, _billing, _metrics) = support::app_with_billing(db.clone(), config);
     let tenants = Tenants::new(pool.clone());
 
     let email = format!(
@@ -347,11 +349,11 @@ async fn topup_chat_billing_and_proof() {
     );
     assert_eq!(res.location.as_deref(), Some("/app/chat"));
 
-    // Top-up through the session, the way the page's form does.
+    // Seed purchased funding for the session's customer through the test fixture.
     let (status, body) = call(
         &world.app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "chat-e2e-topup", "amountMinor": 100_000_000})),
         None,
         Some(&world.cookie),

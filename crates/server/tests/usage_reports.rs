@@ -11,6 +11,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod support;
+
 use std::time::Duration;
 
 use axum::Router;
@@ -44,7 +46,7 @@ async fn online_app(url: &str) -> (Router, Db) {
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
     (
-        oxsum_server::app(
+        support::app(
             db.clone(),
             Config::new(Signup::Open, None)
                 .with_head_signing_seed(HEAD_SEED)
@@ -192,7 +194,7 @@ async fn top_up(app: &Router, cookie: &str, amount_minor: i64) {
     let res = call(
         app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({
             "idempotencyKey": Uuid::new_v4().to_string(),
             "amountMinor": amount_minor,
@@ -1359,7 +1361,7 @@ async fn mailing_app(url: &str) -> (Router, Db, SmtpStub) {
     let config = Config::new(Signup::Open, None)
         .with_head_signing_seed(HEAD_SEED)
         .with_mailer(mailer);
-    (oxsum_server::app(db.clone(), config), db, stub)
+    (support::app(db.clone(), config), db, stub)
 }
 
 /// The next mail that carries `needle` — registration already sends a

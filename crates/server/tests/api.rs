@@ -5,6 +5,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod support;
+
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -26,7 +28,7 @@ fn unused_pool() -> PgPool {
 /// An app over a pool that never connects, for requests answered without the database.
 fn offline_app(signup: Signup) -> Router {
     // No gateway channel: these tests cover the wallet API, which does not depend on one.
-    oxsum_server::app(Db::from_pool(unused_pool()), Config::new(signup, None))
+    support::app(Db::from_pool(unused_pool()), Config::new(signup, None))
 }
 
 /// An app over a real database with oxsum's tables migrated.
@@ -38,7 +40,7 @@ async fn online_app(url: &str, signup: Signup) -> (Router, PgPool) {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
-    (oxsum_server::app(db, Config::new(signup, None)), pool)
+    (support::app(db, Config::new(signup, None)), pool)
 }
 
 /// The DATABASE_URL tests need, or None to skip.
@@ -286,7 +288,7 @@ async fn wallet_round_trip() {
     let (status, body) = call(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "t1", "amountMinor": 5_000_000})),
         Some(&key),
     )
@@ -298,7 +300,7 @@ async fn wallet_round_trip() {
     let (status, replay) = call(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "t1", "amountMinor": 5_000_000})),
         Some(&key),
     )
@@ -366,7 +368,7 @@ async fn a_settlement_naming_no_hold_is_not_found() {
     let (status, _) = call(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "t1", "amountMinor": 5_000_000})),
         Some(&key),
     )
@@ -438,7 +440,7 @@ async fn a_rest_hold_is_watched_and_swept() {
     let (status, _) = call(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "t1", "amountMinor": 5_000_000})),
         Some(&key),
     )
@@ -544,7 +546,7 @@ async fn a_reused_key_with_different_content_is_a_conflict() {
     let (status, first) = call(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "t1", "amountMinor": 5_000_000})),
         Some(&key),
     )
@@ -557,7 +559,7 @@ async fn a_reused_key_with_different_content_is_a_conflict() {
     let (status, body) = call(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "t1", "amountMinor": 6_000_000})),
         Some(&key),
     )
@@ -589,7 +591,7 @@ async fn a_reused_key_with_different_content_is_a_conflict() {
     let (status, body) = call(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "t1", "amountMinor": 5_000_000})),
         Some(&key),
     )
@@ -613,7 +615,7 @@ async fn the_credential_names_the_organization() {
     let (status, body) = call(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "a1", "amountMinor": 7_000_000})),
         Some(&first_key),
     )
@@ -980,7 +982,7 @@ async fn key_spend_limit_is_enforced_on_wallet_holds() {
     let (status, _) = call(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "t1", "amountMinor": 5_000_000})),
         Some(&key),
     )
@@ -1045,7 +1047,7 @@ async fn a_requests_per_minute_cap_refuses_at_admission() {
     let (status, _) = call(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "t1", "amountMinor": 10_000_000})),
         Some(&key),
     )
@@ -1118,7 +1120,7 @@ async fn a_tokens_per_minute_cap_refuses_the_hold_when_the_window_is_full() {
     let (status, _) = call(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "t1", "amountMinor": 10_000_000})),
         Some(&key),
     )
@@ -1213,7 +1215,7 @@ async fn a_max_concurrent_holds_cap_refuses_the_extra_hold() {
     let (status, _) = call(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "t1", "amountMinor": 10_000_000})),
         Some(&key),
     )

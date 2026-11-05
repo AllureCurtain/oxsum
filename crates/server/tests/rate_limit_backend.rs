@@ -9,6 +9,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod support;
+
 use axum::Json;
 use axum::Router;
 use axum::body::Body;
@@ -130,7 +132,7 @@ async fn world(database_url: &str) -> World {
     oxsum_server::prepare(&db, &config)
         .await
         .expect("the deployment is prepared");
-    let app = oxsum_server::app(db, config);
+    let app = support::app(db, config);
 
     let email = format!(
         "rl_{}@example.com",
@@ -156,7 +158,7 @@ async fn world(database_url: &str) -> World {
     let (status, body) = call(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": format!("top-{suffix}"), "amountMinor": 100_000_000})),
         Some(&key),
     )
