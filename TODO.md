@@ -20,7 +20,7 @@ The accepted contract and evidence live in [docs/roadmap/self-hosted-v1](docs/ro
 - [ ] [#633](https://github.com/AllureCurtain/oxsum/issues/633) — Customer profiles and independent admission restrictions (T04.a): in review, PR #635 at `f92bd63`.
 - [ ] [#634](https://github.com/AllureCurtain/oxsum/issues/634) — Customer and team invitation consent (T04.b): in review, PR #636 at `f82d89e`.
 - [ ] [#596](https://github.com/AllureCurtain/oxsum/issues/596) — Scoped consumption and integration credentials (T05): in progress; #637 and #638 both required.
-- [ ] [#637](https://github.com/AllureCurtain/oxsum/issues/637) — Consumption key and evidence scope (T05.a): locally validated at `56f184c`; PR/integration pending.
+- [ ] [#637](https://github.com/AllureCurtain/oxsum/issues/637) — Consumption key and evidence scope (T05.a): PR #639; locally validated, CI/review pending.
 - [ ] [#638](https://github.com/AllureCurtain/oxsum/issues/638) — Scoped business integration/metering credentials (T05.b): pending T05.a.
 - [ ] [#597](https://github.com/AllureCurtain/oxsum/issues/597) — Business-owned provider configuration (T06): pending.
 - [ ] [#598](https://github.com/AllureCurtain/oxsum/issues/598) — Model catalog and private serving context (T07): pending.

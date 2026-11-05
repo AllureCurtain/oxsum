@@ -2,7 +2,7 @@
 
 Updated: 2026-11-05. Contract issue: [#591](https://github.com/AllureCurtain/oxsum/issues/591).
 
-Implementation: in progress. Release: not ready. T00 is integrated; T01.a and T02 are in review; T01.b is in review (PR #628); T03.a is in review (PR #631); T03.b is in review (PR #632, CI green; Entire requires independent approval). T04.a is in review (PR #635); T04.b #634 is in review as PR #636 at `f82d89e`. T05.a #637 is locally validated; #638 remains pending. No release readiness claimed.
+Implementation: in progress. Release: not ready. T00 is integrated; T01.a and T02 are in review; T01.b is in review (PR #628); T03.a is in review (PR #631); T03.b is in review (PR #632, CI green; Entire requires independent approval). T04.a is in review (PR #635); T04.b #634 is in review as PR #636 at `f82d89e`. T05.a #637 is in review as PR #639; #638 remains pending. No release readiness claimed.
 
 | Task | Issue | State | Depends on |
 | --- | --- | --- | --- |
@@ -52,7 +52,7 @@ T03 development uses `.worktrees/business-setup`, branch `feat/business-setup`, 
 
 T04 split: profile/lifecycle #633 is implemented in `.worktrees/customer-lifecycle`, branch `feat/customer-lifecycle`, based on validated PR #632. Independent manual/dunning/archive admission reasons, business-scoped profile APIs and preservation tests passed 1,493 workspace tests, 26 shared-process tests, 29 doctests, fmt/clippy and frontend at `50c7db4`. See [evidence](evidence/T04-a.md). PR #635 at `f92bd63` has green CI; Entire trail 92 lacks independent approval only. Invitation and existing-team consent #634 is implemented in `.worktrees/customer-invitations` on `feat/customer-invitations`: 1,499 workspace tests, 26 shared-process tests, 29 doctests, format/clippy and frontend passed. Final invitation/upgrade/HTTP checks also cover TOTP and creation/revoke audit rollback. Browser evidence remains pending the missing Ego TaskSpace 24. See [T04.b evidence](evidence/T04-b.md). Both children require integration; parent #595 is not complete.
 
-T05.a #637 is implemented in `.worktrees/consumption-key-scope` on `fix/consumption-key-scope`, based on PR #636. Consumption/account capabilities, key-attributed records/proofs, current-session mutations, WebSocket revocation and credential-bound tasks/cache/replay are covered. The public verification sample now uses a fixed public fixture. The first workspace pass had 1,512 passing tests; 26 shared-process tests, 29 doctests and 70 final focused checks passed, as did format/Clippy/codegen/frontend. Final workspace revalidation after the sample fix passed 1,513 tests (four configured skips) at `56f184c`. PR and normal integration remain pending; browser QA remains pending the missing TaskSpace. See [T05.a evidence](evidence/T05-a.md).
+T05.a #637 is implemented in `.worktrees/consumption-key-scope` on `fix/consumption-key-scope`, based on PR #636. Consumption/account capabilities, key-attributed records/proofs, current-session mutations, WebSocket revocation and credential-bound tasks/cache/replay are covered. The public verification sample now uses a fixed public fixture. The first workspace pass had 1,512 passing tests; 26 shared-process tests, 29 doctests and 70 final focused checks passed, as did format/Clippy/codegen/frontend. Final workspace revalidation after the sample fix passed 1,513 tests (four configured skips) at `56f184c`. PR #639 is open against #636; CI and normal integration remain pending; browser QA remains pending the missing TaskSpace. See [T05.a evidence](evidence/T05-a.md).
 
 ## External gates
 
