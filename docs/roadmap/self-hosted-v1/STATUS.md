@@ -13,7 +13,7 @@ Implementation: in progress. Release: not ready. T00 is integrated; T01.a and T0
 | T04 — Customer profile and team lifecycle | [#595](https://github.com/AllureCurtain/oxsum/issues/595) | in_progress | T02, T03 |
 | T05 — Scoped consumption and integration credentials | [#596](https://github.com/AllureCurtain/oxsum/issues/596) | in_progress (#637, #638) | T03, T04 |
 | T06 — Business-owned provider configuration | [#597](https://github.com/AllureCurtain/oxsum/issues/597) | in_progress (#641, #642) | T02, T03 |
-| T07 — Model catalog and private serving context | [#598](https://github.com/AllureCurtain/oxsum/issues/598) | pending | T05, T06 |
+| T07 — Model catalog and private serving context | [#598](https://github.com/AllureCurtain/oxsum/issues/598) | in_progress (#644, #645) | T05, T06 |
 | T08 — Versioned customer sale books | [#599](https://github.com/AllureCurtain/oxsum/issues/599) | pending | T02, T04, T06 |
 | T09 — Bind sale terms into evidence | [#600](https://github.com/AllureCurtain/oxsum/issues/600) | pending | T08 |
 | T10 — Durable request operation | [#601](https://github.com/AllureCurtain/oxsum/issues/601) | pending | T05, T07, T08 |
@@ -68,3 +68,6 @@ T06.a #641 is in review as [PR #643](https://github.com/AllureCurtain/oxsum/pull
 ## Evidence
 
 Use the fields in [ACCEPTANCE.md](ACCEPTANCE.md). No skipped database suite counts as passed. Update this file and task evidence at every checkpoint; preserve old evidence when superseded.
+
+
+T07.a #644 is in progress in `.worktrees/customer-serving-permissions`, branch `fix/customer-serving-permissions`, on T06.b implementation `9548212`. OpenAPI 0.109.0 and customer catalog/serving permission changes are implemented with new core/HTTP regressions; frontend/codegen and workspace/all-target compilation pass; focused Rust runtime validation is running. Implementation source is `35cb24c` (contract `052a8ce`, implementation `d75e0b4`, regressions `35cb24c`). T07.b #645 remains required for complete cache context. T06.b is now draft PR #646 at `e75a141`, with passing CI; final local full checks are still running, and normal independent approval/integration remain pending.

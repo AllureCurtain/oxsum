@@ -990,3 +990,8 @@ required event prices and exact negative cases. No paid provider is called.
 ### Business provider authority tests (#641)
 
 `cargo nextest run -p oxsum-core --test business_providers --test provider_upgrade --test channels -p oxsum-server --test business_providers --test admin` exercises real setup/session authority, atomic audit faults, replay/rotation, pool concurrency across business and recovery paths, foreign configuration and pre-0078 provider preservation. Use isolated PostgreSQL 17 testkit databases. No provider call is made on configuration save. The focused command does not replace cross-crate workspace/shared-process gates or T06.b destination-policy tests.
+
+
+### Customer serving permissions (#644)
+
+Run `cargo nextest run -p oxsum-core --test serving_access -p oxsum-server --test serving_catalog --test gateway --test fallbacks --test experiments --test tasks --test groups --test heads --test apis --no-fail-fast` with the isolated local test database. Core checks verify key/customer/channel intersections, permission snapshots, denied credential opening and fail-closed unknown/revoked/expired keys. HTTP regressions check catalog/estimate/checkpoint filtering, original experiment names, fallback aliases and task recovery after permission edits. The [protocol matrix](roadmap/self-hosted-v1/PROTOCOL-MATRIX.md) records current adapter limits; full cross-crate validation remains required.

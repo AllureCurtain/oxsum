@@ -39,3 +39,7 @@ Save the metering response's opaque holdKey instead of deriving the old `meterin
 ### Business provider configuration (T06.a, #641)
 
 Current business sessions can configure owned provider connections, encrypted pools/billing keys, aliases, immutable price versions, cache and fallback chains. Owner-only secret/destination mutations are separate from owner/admin catalog/routing capabilities. New writes bind request/actor/reason/result and audit atomically; exact replay never repeats the mutation. Endpoint changes require explicitly supplied keys and clear the existing billing credential. Migration 0078 preserves provider IDs, sealed values and price history while pinning ownership. Destination enforcement and explicit probes remain T06.b; this is not a provider certification or release-readiness claim.
+
+### Customer catalog and serving authority (T07.a, #644)
+
+Model lists, pricing/estimates and direct price checkpoints are filtered by customer/key grants. Alias public and target names both require permission. Experiments preserve the original requested name and cannot replace a forbidden original route. Denied channel credentials are never opened during resolution. Existing task ownership and connection snapshots remain stable; newly admitted direct tasks apply customer model and rate limits. The generic adapter now explicitly refuses aliases and signed mandates until T13 can pin their complete billing context. T07.b must still replace incomplete response-cache keys.
