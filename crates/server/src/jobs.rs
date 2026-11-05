@@ -281,12 +281,17 @@ async fn run_one(
             crate::webhooks::deliver_due(db, http, secret, &ctx.metrics, None).await;
         }
         kinds::SYNC_UPSTREAM_PRICES => {
-            let Some((http, secret)) = &ctx.webhook else {
+            let Some((_http, secret)) = &ctx.webhook else {
                 return Err(oxsum_core::WalletError::Misconfigured(
                     "sync-upstream-prices has no sealing key configured".into(),
                 ));
             };
-            let report = sync_upstream_prices(db, http, secret).await?;
+            let report = sync_upstream_prices(
+                db,
+                &oxsum_integrations::provider_http::ProviderHttp::default(),
+                secret,
+            )
+            .await?;
             info!(
                 channels = report.channels,
                 probed = report.probed,
@@ -603,7 +608,7 @@ struct RemotePricedModel {
 /// one unreachable channel never fails the pass.
 async fn sync_upstream_prices(
     db: &Db,
-    http: &reqwest::Client,
+    http: &oxsum_integrations::provider_http::ProviderHttp,
     secret: &SecretKey,
 ) -> Result<SyncReport, oxsum_core::WalletError> {
     let channels = db.probe_channels().await?;
@@ -632,17 +637,16 @@ async fn sync_upstream_prices(
 /// the channel's catalog is the probe's business, not the pass's.
 async fn probe_channel(
     db: &Db,
-    http: &reqwest::Client,
+    http: &oxsum_integrations::provider_http::ProviderHttp,
     secret: &SecretKey,
     channel: &oxsum_core::ProbeChannel,
     stored: &[oxsum_core::CatalogModel],
 ) -> Result<usize, oxsum_core::WalletError> {
-    let url = format!("{}/api/v1/pricing", channel.base_url.trim_end_matches('/'));
     let api_key = match &channel.api_key_sealed {
         Some(sealed) => match secret.open(sealed) {
             Ok(api_key) => api_key,
-            Err(error) => {
-                db.record_probe(&channel.name, ProbeOutcome::Auth, &error.to_string())
+            Err(_error) => {
+                db.record_probe(&channel.name, ProbeOutcome::Auth, "provider request failed")
                     .await?;
                 return Ok(0);
             }
@@ -655,17 +659,40 @@ async fn probe_channel(
             return Ok(0);
         }
     };
-    let response = match http
-        .get(&url)
+    let call = match http
+        .request(
+            reqwest::Method::GET,
+            &channel.base_url,
+            &channel.destination_policy,
+            &["api", "v1", "pricing"],
+        )
+        .await
+    {
+        Ok(call) => call,
+        Err(_error) => {
+            db.record_probe(
+                &channel.name,
+                ProbeOutcome::Unreachable,
+                "provider request failed",
+            )
+            .await?;
+            return Ok(0);
+        }
+    };
+    let response = match call
         .bearer_auth(api_key)
         .timeout(Duration::from_secs(10))
         .send()
         .await
     {
         Ok(response) => response,
-        Err(error) => {
-            db.record_probe(&channel.name, ProbeOutcome::Unreachable, &error.to_string())
-                .await?;
+        Err(_error) => {
+            db.record_probe(
+                &channel.name,
+                ProbeOutcome::Unreachable,
+                "provider request failed",
+            )
+            .await?;
             return Ok(0);
         }
     };
@@ -682,9 +709,13 @@ async fn probe_channel(
     }
     let catalog = match response.json::<RemoteCatalog>().await {
         Ok(catalog) => catalog,
-        Err(error) => {
-            db.record_probe(&channel.name, ProbeOutcome::Invalid, &error.to_string())
-                .await?;
+        Err(_error) => {
+            db.record_probe(
+                &channel.name,
+                ProbeOutcome::Invalid,
+                "provider request failed",
+            )
+            .await?;
             return Ok(0);
         }
     };
@@ -797,11 +828,12 @@ async fn poll_open_tasks(
     webhook: &Option<(reqwest::Client, SecretKey)>,
     on: time::Date,
 ) -> Result<TaskPollReport, oxsum_core::WalletError> {
-    let Some((http, secret)) = webhook else {
+    let Some((_http, secret)) = webhook else {
         return Err(oxsum_core::WalletError::Misconfigured(
             "poll-tasks needs the webhook client and the sealing key".into(),
         ));
     };
+    let http = oxsum_integrations::provider_http::ProviderHttp::default();
     let targets = db.open_task_poll_targets(64).await?;
     let mut report = TaskPollReport {
         polled: targets.len(),
@@ -809,10 +841,13 @@ async fn poll_open_tasks(
     };
     for target in targets {
         let task = target.task;
-        let Some(sealed) = &target.api_key_sealed else {
-            // A channel whose pool is empty or fully cooled cannot be asked;
-            // the task stays open for the next tick — the credential's cool
-            // ends, or the hold timeout ends it.
+        let Some(endpoint) = target.endpoint else {
+            report.still_open += 1;
+            continue;
+        };
+        let Some(sealed) = &endpoint.api_key_sealed else {
+            // An old task with no captured credential cannot be safely
+            // redirected to a later pool member; leave it for recovery.
             report.still_open += 1;
             continue;
         };
@@ -824,18 +859,31 @@ async fn poll_open_tasks(
                 continue;
             }
         };
-        let upstream = match http
-            .get(format!(
-                "{}/tasks/{}",
-                target.base_url, task.external_task_id
-            ))
+        let call = match http
+            .request(
+                reqwest::Method::GET,
+                &endpoint.base_url,
+                &endpoint.destination_policy,
+                &["tasks", &task.external_task_id],
+            )
+            .await
+        {
+            Ok(call) => call,
+            Err(error) => {
+                warn!(%error, task = %task.task_id, "task poll destination refused");
+                report.still_open += 1;
+                continue;
+            }
+        };
+        let upstream = match call
+            .timeout(Duration::from_secs(30))
             .bearer_auth(&api_key)
             .send()
             .await
         {
             Ok(response) => response,
             Err(error) => {
-                warn!(%error, task = %task.task_id, "the task poll's upstream was unreachable");
+                warn!(error = %error.without_url(), task = %task.task_id, "the task poll's upstream was unreachable");
                 report.still_open += 1;
                 continue;
             }

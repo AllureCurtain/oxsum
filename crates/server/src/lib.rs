@@ -51,6 +51,7 @@ pub(crate) struct AppState {
     pub(crate) tenants: Tenants,
     pub(crate) config: Config,
     pub(crate) http: reqwest::Client,
+    pub(crate) provider_http: oxsum_integrations::provider_http::ProviderHttp,
     /// Where the gateway publishes [`BillingEvent`]s: the `/ws/billing` route forwards
     /// them to the dashboard. Process-wide and in-memory — a missed event is a missed
     /// live update, not lost state, because the watch table stays the record.
@@ -125,6 +126,7 @@ pub fn app_with_billing(
         db,
         config,
         http: gateway::client(),
+        provider_http: oxsum_integrations::provider_http::ProviderHttp::default(),
         billing: billing.clone(),
         rate_limiter,
         metrics: metrics.clone(),
@@ -177,11 +179,13 @@ pub async fn prepare(db: &Db, config: &Config) -> Result<(), WalletError> {
         && let Some(bootstrap) = config.bootstrap()
     {
         let seeded = db
-            .seed_channel(
+            .seed_channel_as_policy(
                 bootstrap.book(),
                 bootstrap.base_url(),
                 bootstrap.api_key(),
+                oxsum_core::OPENAI,
                 secret,
+                Some(bootstrap.destination_policy()),
             )
             .await?;
         if seeded {

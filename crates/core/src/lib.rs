@@ -45,6 +45,7 @@ mod oauth;
 mod orgs;
 mod pools;
 mod proof;
+mod provider_destination;
 mod ratelimit;
 mod reconcile;
 mod report_links;
@@ -89,9 +90,9 @@ pub use business::{
 };
 pub use business_providers::{
     BusinessChannelPage, ProviderAliasInput, ProviderBillKeyInput, ProviderCacheInput,
-    ProviderChange, ProviderConnection, ProviderCredentialInput, ProviderFallbackInput,
-    ProviderMutationResult, ProviderPriceInput, ProviderRemoveInput, ProviderRequest,
-    ProviderStatusInput,
+    ProviderChange, ProviderCheckStart, ProviderConnection, ProviderConnectionCheck,
+    ProviderCredentialInput, ProviderFallbackInput, ProviderMutationResult, ProviderPriceInput,
+    ProviderRemoveInput, ProviderRequest, ProviderStatusInput,
 };
 pub use business_setup::{
     BusinessSetupRegistrationRequest, BusinessSetupRequest, BusinessSetupResult,
@@ -178,6 +179,9 @@ pub use pools::{
     Affinity, CREDENTIAL_COOLDOWN, ChannelCredential, PoolCredential, order as credential_order,
 };
 pub use proof::{ChargeCheck, ProofBundle, verify_bundle, verify_charge};
+pub use provider_destination::{
+    DESTINATION_POLICY_KEY, ProviderDestinationPolicy, ProviderNetwork, public_address,
+};
 pub use ratelimit::{PostgresRateLimiter, RateAllowance, RateLimited, RateLimiter, SlidingWindow};
 pub use reconcile::{DriftClass, DriftKind, DriftSample, Reconciliation};
 pub use report_links::{LinkScope, MintedReportLink, ReportLink, ResolvedReportLink};
@@ -199,7 +203,7 @@ pub use subscriptions::{
 };
 pub use tasks::{
     NewTask, TASK_FAILED, TASK_SUCCEEDED, Task, TaskKind, TaskOutcome, TaskPollTarget,
-    TaskSettlement, TaskState, settle_task,
+    TaskProviderEndpoint, TaskSettlement, TaskState, settle_task,
 };
 pub use teams::Team;
 pub use tenants::Tenants;

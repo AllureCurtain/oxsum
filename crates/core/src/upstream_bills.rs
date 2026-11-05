@@ -77,6 +77,7 @@ pub trait UpstreamBillProvider: Debug + Send + Sync {
 /// immediate `None` — no bill is fetchable without it.
 #[derive(Clone)]
 pub struct ChannelBilling {
+    pub destination_policy: crate::ProviderDestinationPolicy,
     /// The channel's row id — the bill's `channel_id`.
     pub channel_id: Uuid,
     /// The channel's display name, for the provider's `group_by` and for logs.
@@ -158,7 +159,7 @@ impl Db {
         key: &crate::channels::SecretKey,
     ) -> Result<Vec<ChannelBilling>, WalletError> {
         let rows = sqlx::query(
-            "SELECT channel_id, name, protocol, base_url, bill_key_sealed \
+            "SELECT channel_id, name, protocol, base_url, bill_key_sealed, settings \
              FROM oxsum.channels ORDER BY name",
         )
         .fetch_all(self.pool())
@@ -167,6 +168,9 @@ impl Db {
         for row in &rows {
             let sealed: Option<String> = row.try_get("bill_key_sealed")?;
             channels.push(ChannelBilling {
+                destination_policy: crate::ProviderDestinationPolicy::from_settings(
+                    &row.try_get::<serde_json::Value, _>("settings")?,
+                )?,
                 channel_id: row.try_get("channel_id")?,
                 name: row.try_get("name")?,
                 protocol: row.try_get("protocol")?,

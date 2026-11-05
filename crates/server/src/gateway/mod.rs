@@ -1523,19 +1523,47 @@ async fn run(
         // also wants its version header, forwarded when the caller sent one —
         // and `x-goog-api-key` for Gemini, the spelling both AI Studio and
         // Vertex accept (issue #494). Gemini also names its model in the path,
-        // so the upstream name rides `upstream_target` rather than the body's.
+        // so the upstream name is encoded as path data rather than interpolated.
         let upstream_name = routes
             .upstream_model
             .as_deref()
             .unwrap_or(routes.model.as_str());
-        let mut call = state
-            .http
-            .post(format!(
-                "{}/{}",
-                candidate.base_url,
-                surface.upstream_target(upstream_name)
-            ))
-            .json(&forwarded);
+        let policy = oxsum_core::ProviderDestinationPolicy::from_settings(&candidate.settings);
+        let segments = surface.upstream_segments(upstream_name);
+        let segments: Vec<_> = segments.iter().map(String::as_str).collect();
+        let call = match policy {
+            Ok(policy) => {
+                state
+                    .provider_http
+                    .request(
+                        reqwest::Method::POST,
+                        &candidate.base_url,
+                        &policy,
+                        &segments,
+                    )
+                    .await
+            }
+            Err(_) => Err(oxsum_integrations::provider_http::ProviderHttpError::Blocked),
+        };
+        let mut call = match call {
+            Ok(call) => call.json(&forwarded),
+            Err(error) => {
+                if index + 1 < attempts_list.len() {
+                    index += 1;
+                    continue;
+                }
+                break (
+                    (*model_index, *route_index),
+                    Err((
+                        GatewayError::upstream(StatusCode::BAD_GATEWAY, error.to_string(), None),
+                        SettlementKind::UpstreamUnreachable,
+                    )),
+                );
+            }
+        };
+        if matches!(surface, Surface::Gemini { streamed: true }) {
+            call = call.query(&[("alt", "sse")]);
+        }
         call = match surface {
             Surface::OpenAi | Surface::Embeddings | Surface::Rerank | Surface::Responses => {
                 call.bearer_auth(&credential.api_key)
@@ -1652,18 +1680,18 @@ async fn run(
                 // An unreachable upstream is the channel's problem, not the
                 // credential's: the key never got to refuse, so nothing cools.
                 if index + 1 < attempts_list.len() {
-                    tracing::warn!(channel = %candidate.channel, %error,
+                    tracing::warn!(channel = %candidate.channel, error = %error.without_url(),
                         "upstream is unreachable; failing over");
                     index += 1;
                     continue;
                 }
-                tracing::warn!(%error, "upstream is unreachable");
+                tracing::warn!("upstream is unreachable");
                 break (
                     (*model_index, *route_index),
                     Err((
                         GatewayError::upstream(
                             StatusCode::BAD_GATEWAY,
-                            format!("upstream is unreachable: {error}"),
+                            "upstream is unreachable".to_owned(),
                             None,
                         ),
                         SettlementKind::UpstreamUnreachable,

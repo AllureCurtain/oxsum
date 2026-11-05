@@ -33,6 +33,7 @@ pub(crate) struct ChannelReq {
     /// The upstream protocol the channel speaks; defaults to `openai`, the only
     /// protocol this build knows.
     protocol: Option<String>,
+    destination_policy: Option<oxsum_core::ProviderDestinationPolicy>,
     /// The channel's semantic-cache policy (issue #497): `{enabled,
     /// ttlSeconds?, excludeSystem?}` under `settings.semanticCache`.
     /// Triple-state like `billKey` — absent leaves the stored policy alone,
@@ -115,12 +116,13 @@ pub(crate) async fn set(
     };
     state
         .db
-        .set_channel_pool(
+        .set_channel_pool_policy(
             &request.name,
             &request.base_url,
             api_keys.as_deref(),
             request.protocol.as_deref().unwrap_or(oxsum_core::OPENAI),
             &secret,
+            request.destination_policy.as_ref(),
         )
         .await?;
     // The billing credential is independent of the connection above: a present

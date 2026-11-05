@@ -23,6 +23,8 @@ pub struct ProviderConnection {
     pub base_url: String,
     pub protocol: String,
     pub api_keys: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination_policy: Option<crate::ProviderDestinationPolicy>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -119,7 +121,7 @@ fn redacted_endpoint(value: &str) -> String {
     url.to_string().trim_end_matches('/').to_owned()
 }
 fn redacted_settings(settings: &Value) -> Value {
-    match settings.get(crate::cache::SETTINGS_KEY) {
+    let mut result = match settings.get(crate::cache::SETTINGS_KEY) {
         Some(policy) => {
             let mut safe = serde_json::Map::new();
             for field in ["enabled", "ttlSeconds", "excludeSystem"] {
@@ -133,7 +135,11 @@ fn redacted_settings(settings: &Value) -> Value {
             json!({crate::cache::SETTINGS_KEY:safe})
         }
         None => json!({}),
+    };
+    if let Ok(policy) = crate::ProviderDestinationPolicy::from_settings(settings) {
+        result[crate::DESTINATION_POLICY_KEY] = json!(policy);
     }
+    result
 }
 
 /// Typed operations cannot carry arbitrary settings or SQL identifiers.
@@ -237,6 +243,20 @@ pub struct BusinessChannelPage {
     pub channels: Vec<Channel>,
     pub next_cursor: Option<Uuid>,
 }
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderConnectionCheck {
+    pub id: Uuid,
+    pub channel_id: Uuid,
+    pub state: String,
+    pub http_status: Option<i32>,
+}
+/// Only a newly committed intent returns coordinates. A replay never causes
+/// another network call, including after a process died with a pending check.
+pub struct ProviderCheckStart {
+    pub result: ProviderConnectionCheck,
+    pub endpoint: Option<crate::TaskProviderEndpoint>,
+}
 fn unknown() -> WalletError {
     WalletError::NotFound("provider resource is not known".into())
 }
@@ -289,6 +309,101 @@ async fn model_owned(
         .bind(business).bind(model).fetch_one(&mut **tx).await?)
 }
 impl Db {
+    pub async fn begin_provider_check(
+        &self,
+        token: &str,
+        channel: &str,
+        key: &str,
+        reason: &str,
+    ) -> Result<ProviderCheckStart, WalletError> {
+        authority::validate(key, Some(reason))?;
+        let mut tx = self.pool().begin().await?;
+        channels::lock_configuration(&mut tx).await?;
+        let business = authority::lock_business(&mut tx).await?;
+        let actor = authority::require_capability(
+            &mut tx,
+            business,
+            token,
+            BusinessCapability::ProviderSecretsWrite,
+        )
+        .await?;
+        let detail = json!({"channel":channel,"reason":reason});
+        let action = "business.provider.connection_check";
+        if let Some(id) =
+            authority::replay(&mut tx, business, actor.user_id, key, action, &detail).await?
+        {
+            let row = sqlx::query("SELECT channel_id,state,http_status FROM oxsum.provider_connection_checks WHERE mutation_id=$1")
+                .bind(id).fetch_one(&mut *tx).await?;
+            return Ok(ProviderCheckStart {
+                result: ProviderConnectionCheck {
+                    id,
+                    channel_id: row.try_get("channel_id")?,
+                    state: row.try_get("state")?,
+                    http_status: row.try_get("http_status")?,
+                },
+                endpoint: None,
+            });
+        }
+        let channel_id = owned_channel(&mut tx, business, channel).await?;
+        let row = sqlx::query("SELECT base_url,protocol,settings,(SELECT api_key_sealed FROM oxsum.channel_credentials WHERE channel_id=$1 AND status='active' ORDER BY position LIMIT 1) AS sealed FROM oxsum.channels WHERE channel_id=$1")
+            .bind(channel_id).fetch_one(&mut *tx).await?;
+        let endpoint = crate::TaskProviderEndpoint {
+            base_url: row.try_get("base_url")?,
+            protocol: row.try_get("protocol")?,
+            destination_policy: crate::ProviderDestinationPolicy::from_settings(
+                &row.try_get::<Value, _>("settings")?,
+            )?,
+            api_key_sealed: row.try_get("sealed")?,
+        };
+        let receipt =
+            authority::record(&mut tx, business, actor.user_id, key, action, &detail).await?;
+        sqlx::query(
+            "INSERT INTO oxsum.provider_connection_checks(mutation_id,channel_id) VALUES($1,$2)",
+        )
+        .bind(receipt.id)
+        .bind(channel_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(ProviderCheckStart {
+            result: ProviderConnectionCheck {
+                id: receipt.id,
+                channel_id,
+                state: "pending".into(),
+                http_status: None,
+            },
+            endpoint: Some(endpoint),
+        })
+    }
+
+    /// Trusted completion of the already-authorized single probe. No response
+    /// content is persisted; the first terminal classification is immutable.
+    pub async fn finish_provider_check(
+        &self,
+        id: Uuid,
+        state: &str,
+        status: Option<u16>,
+    ) -> Result<ProviderConnectionCheck, WalletError> {
+        if !matches!(
+            state,
+            "reachable" | "authenticationFailed" | "httpError" | "blocked" | "unreachable"
+        ) {
+            return Err(WalletError::InvalidInput(
+                "invalid provider check state".into(),
+            ));
+        }
+        sqlx::query("UPDATE oxsum.provider_connection_checks SET state=$2,http_status=$3,completed_at=now() WHERE mutation_id=$1 AND state='pending'")
+            .bind(id).bind(state).bind(status.map(i32::from)).execute(self.pool()).await?;
+        let row = sqlx::query("SELECT channel_id,state,http_status FROM oxsum.provider_connection_checks WHERE mutation_id=$1")
+            .bind(id).fetch_one(self.pool()).await?;
+        Ok(ProviderConnectionCheck {
+            id,
+            channel_id: row.try_get("channel_id")?,
+            state: row.try_get("state")?,
+            http_status: row.try_get("http_status")?,
+        })
+    }
+
     /// Check current authority in the same transaction as configuration and audit.
     pub async fn change_business_provider(
         &self,
@@ -489,7 +604,21 @@ async fn connection(
             validate_secret(key)?;
         }
     }
-    let old=sqlx::query("SELECT channel_id,business_id,base_url,protocol FROM oxsum.channels WHERE name=$1 FOR UPDATE").bind(name).fetch_optional(&mut **tx).await?;
+    let old=sqlx::query("SELECT channel_id,business_id,base_url,protocol,settings FROM oxsum.channels WHERE name=$1 FOR UPDATE").bind(name).fetch_optional(&mut **tx).await?;
+    let unchanged = old.as_ref().is_some_and(|row| {
+        row.get::<String, _>("base_url") == base
+            && row.get::<String, _>("protocol") == config.protocol
+    });
+    let policy = match &config.destination_policy {
+        Some(policy) => policy.clone(),
+        None if unchanged => crate::ProviderDestinationPolicy::from_settings(
+            &old.as_ref()
+                .ok_or_else(unknown)?
+                .try_get::<Value, _>("settings")?,
+        )?,
+        None => crate::ProviderDestinationPolicy::default(),
+    };
+    policy.endpoint(&base)?;
     let id = if let Some(old) = old {
         if old.try_get::<Uuid, _>("business_id")? != business {
             return Err(unknown());
@@ -525,6 +654,8 @@ async fn connection(
             insert_credential(tx, id, key, secret, index as i32 + 1).await?;
         }
     }
+    sqlx::query("UPDATE oxsum.channels SET settings=jsonb_set(settings,'{destinationPolicy}',$2,true) WHERE channel_id=$1")
+        .bind(id).bind(json!(policy)).execute(&mut **tx).await?;
     let count: i64 =
         sqlx::query_scalar("SELECT count(*) FROM oxsum.channel_credentials WHERE channel_id=$1")
             .bind(id)
