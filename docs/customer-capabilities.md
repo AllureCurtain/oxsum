@@ -1,6 +1,6 @@
 # Customer capability and evidence inventory
 
-Contract: OpenAPI 0.105.0, issue #637 (T05.a). The exact method/MatchedPath matrix in `crates/server/src/auth.rs` fails closed for every unclassified customer route or method. Authentication resolves the current membership for each request. Business and deployment credentials use separate gates; customer roles grant no business authority.
+Contract: OpenAPI 0.106.0, issues #637/#638 (T05). The exact method/MatchedPath matrix in `crates/server/src/auth.rs` fails closed for every unclassified customer route or method. Authentication resolves the current membership for each request. Business and deployment credentials use separate gates; customer roles grant no business authority.
 
 ## Record policy
 
@@ -125,13 +125,13 @@ The following inventory covers every remaining OpenAPI operation. A listed token
 | `POST /api/v1/webhooks/airwallex` | Configured provider signature; callback never trusts customer claims |
 | `POST /api/v1/webhooks/hyperswitch` | Configured provider signature; callback never trusts customer claims |
 | `GET /api/v1/log/key` | Public metadata |
-| `POST /api/v1/metering/holds` | Distinct service credential; scoped integration policy is T05.b (#638) |
-| `POST /api/v1/metering/settle` | Distinct service credential; scoped integration policy is T05.b (#638) |
-| `POST /api/v1/metering/release` | Distinct service credential; scoped integration policy is T05.b (#638) |
-| `POST /api/v1/metering/settlements` | Distinct service credential; scoped integration policy is T05.b (#638) |
+| `POST /api/v1/metering/holds` | Owner-issued meteringWrite integration credential; selected customer and exact originating credential/hold/body binding |
+| `POST /api/v1/metering/settle` | Owner-issued meteringWrite integration credential; selected customer and exact originating credential/hold/body binding |
+| `POST /api/v1/metering/release` | Owner-issued meteringWrite integration credential; selected customer and exact originating credential/hold/body binding |
+| `POST /api/v1/metering/settlements` | Owner-issued meteringWrite integration credential; selected customer and exact originating credential/hold/body binding |
 | `GET /api/v1/business` | Current business-context session with overviewRead |
-| `GET /api/v1/business/customers` | Current business-context session and explicit business capability |
-| `GET /api/v1/business/customers/{organizationId}` | Current business-context session and explicit business capability |
+| `GET /api/v1/business/customers` | Staff customersRead, or integration customersRead filtered to selected customers |
+| `GET /api/v1/business/customers/{organizationId}` | Staff customersRead, or integration customersRead for this selected customer |
 | `PATCH /api/v1/business/customers/{organizationId}` | Current business-context session and explicit business capability |
 | `POST /api/v1/business/customers/{organizationId}/lifecycle` | Current business-context session and explicit business capability |
 | `POST /api/v1/business/customers/{organizationId}/suspension` | Current business-context session and explicit business capability |
@@ -202,7 +202,7 @@ The following inventory covers every remaining OpenAPI operation. A listed token
 | `DELETE /api/v1/admin/discounts/{discountId}` | Deployment operator token; no customer/session authority |
 | `GET /api/v1/admin/audit` | Deployment operator token; no customer/session authority |
 | `GET /api/v1/admin/service-credentials` | Deployment operator token; no customer/session authority |
-| `POST /api/v1/admin/service-credentials` | Deployment operator token; no customer/session authority |
+| `POST /api/v1/admin/service-credentials` | Retired: 403 after deployment authentication |
 | `DELETE /api/v1/admin/service-credentials/{credentialId}` | Deployment operator token; no customer/session authority |
 | `GET /v1/models` | Consumption key only; model/admission constraints apply |
 | `POST /v1/chat/completions` | Consumption key only; model/admission constraints apply |
@@ -231,3 +231,15 @@ The following inventory covers every remaining OpenAPI operation. A listed token
 Ledger scans and SQL request-log queries filter immutable provenance before pagination. Internal WebSocket key IDs are not serialized. Gateway responses and insufficient-funds errors expose the request bound/charge, never the customer's wallet balance. Own entitlement preview retains effective key/member/team admission constraints.
 
 Evidence: `crates/core/tests/customer_authority.rs`, `crates/server/tests/consumption_scope.rs`, `crates/core/tests/idempotency.rs`, `crates/server/tests/tasks.rs`, `cache.rs`, `statements.rs`, and the existing key/mandate/session/export suites. [T05.a evidence](roadmap/self-hosted-v1/evidence/T05-a.md) records exact candidate/check results; this inventory alone is not a validation claim.
+
+
+## Business integration credential additions (#638)
+
+| Method and path | Required authority |
+| --- | --- |
+| GET /api/v1/business/integration-credentials | Current business owner session; metadata pagination only |
+| POST /api/v1/business/integration-credentials | Current business owner session/TOTP/context; audited explicit scopes/customers/expiry; secret once |
+| POST /api/v1/business/integration-credentials/{credentialId}/revoke | Current business owner session/TOTP/context; atomic receipt/audit |
+| GET /api/v1/business/customers and /customers/{organizationId} | Existing staff customersRead, or integration customersRead with selected customer filtering before pagination |
+
+No other business/customer/personal/gateway/deployment route accepts integration authority. Explicit bearer prevents cookie fallback; unsupported header credentials fail closed. Legacy oxs-svc- credentials never authenticate. Metering binds the current integration grant to original and terminal requests in core. External eventId/endUser is attribution, never customer selection or global operation identity.

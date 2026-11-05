@@ -27,3 +27,10 @@ Existing keys retain inference and own evidence/status access but lose account a
 The balance response header is removed. Tasks, response caches and replay records are exact-key scoped. A legacy replay record conflicts until its original 24-hour expiry; pre-upgrade cache rows miss. Existing key IDs/secrets, ledger balances, origins, entries and downloaded proofs remain unchanged. T05.b integration/metering credentials remain a separate required child, #638.
 
 - The public verification example no longer reads a customer selected by display name. `/verify?sample` uses fixed public test evidence, labeled as such, even when a customer calls itself `Acme Demo`.
+
+
+## Scoped business integrations (#638)
+
+Legacy global service secrets are disabled by migration 0077, and deployment `POST /admin/service-credentials` returns 403. Preserve old metadata/ledger evidence. The current business owner must issue an oxs-int- integration credential with selected customers, customersRead and/or meteringWrite, expiry and an audited reason. The secret is shown once; retries return null. Existing old holds remain recoverable by trusted jobs and are not transferred to replacement credentials.
+
+Save the metering response's opaque holdKey instead of deriving the old `metering:<key>:hold` spelling. Replays require the same credential, customer, operation and body. eventId remains the external label in settlement evidence, while usage/sweeper request identity uses the scoped hold key; repeated labels across customers no longer suppress usage rows. Prices/discount and bound remain pinned for retries. Broader management scopes and the complete business console remain later release work.
