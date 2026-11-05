@@ -95,6 +95,7 @@ Who may do what, and the gaps that are closed on purpose:
 - The last owner cannot be removed or demoted: that would leave an organization nobody owns. The answer is a 409 saying ownership has to be transferred first. In practice the only reachable case is the sole owner acting on themselves, since admins may not touch an owner at all.
 - Every new endpoint checks the acting role in the server, and so does the page: no control is rendered that the server would refuse, and a refusal is shown in the server's own words rather than silently swallowed. (docs/decisions.md, "membership management is a person's action".)
 
+
 ## Where credit comes from
 
 v1 has no payment integration. Credit has four designed sources; the table says which of them the code implements today, and what the ledger actually records.

@@ -960,6 +960,7 @@ A usage report that names a metered dimension no `PriceSet` covers — `toolCall
   - An `oxsum.anomalies` table written at settle time: a parallel store of ledger facts, one more thing to disagree with the books.
   - Flagging `upstream_error`/`upstream_unreachable` rows too: they are failures, not anomalies in the sense this page exists for — nothing was charged, so nothing was lost.
 
+
 ## 2026-10-03 Monthly closing is doubleentry's period seal (issue #57)
 
 - Status: Adopted
@@ -1271,6 +1272,7 @@ The judgment calls:
 - **Retention is batched and windowed.** `OXSUM_RETENTION_PROVIDER_RAW_DAYS` (7) nulls `usage_details.provider_raw` — the privacy window, since the raw payload may carry prompt fragments — while the normalized columns stay forever; `OXSUM_RETENTION_DELIVERIES_DAYS` (30) drops terminal deliveries; `OXSUM_RETENTION_JOBS_DAYS` (90) drops finished job rows; expired `idempotency_records` go with their own `expires_at`. Each rule takes at most 10k rows a pass, so the daily cadence drains a backlog without one giant transaction.
 
 Pinned by `crates/core/tests/jobs.rs` (enqueue idempotency, the lease's claim-once and reclaim-after-lapse, claim-stamp fencing, the backoff-to-dead path, `jobs_dead` drift, the retention rules) and `crates/server/tests/jobs.rs` (a stale hold swept through `run_due` with the next run chained, a kind retrying to dead and recovering on the cooldown, an unknown kind failing its run without killing the worker, a retention pass's chain).
+
 
 ## 2026-10-12 — One model to many channels: weights lead, failover follows (roadmap P8-2, issue #168)
 
@@ -1830,6 +1832,7 @@ The deferred-scope list promoted model aliases when the next-phase plan made "on
 - **`upstreamModel` is metadata, not a price input — v8's rule mirrors `upstreamAttempts`'s.** `verify_charge` recomputes a v8 record exactly as v7 and only binds the field's *shape*: present means a non-empty string, anything else (empty, non-string, `null`) is a mismatch. The name enters the content hash so a bill proves which model answered, but the arithmetic never reads it — an alias changes routing and audit, never pricing semantics.
 - **Aliases are configuration, hard-deleted; bills keep the name.** `DELETE …/aliases/{alias}` removes the row outright — the alias lives in `oxsum`, not in any ledger, so there is nothing to retain versioned. A settled bill that names the alias keeps it in its description, which is the record that matters.
 
+
 ## 2026-10-21 — A bill link is a capability token, not an end-user account (issue #300)
 
 The downstream customer a usage report is about holds nothing: no session, no key, no account. Three ways to give them the bill were considered — a real end-user account (rejected: a third authentication system, with its own password reset, abuse surface and support burden, for a page that shows one bill), a URL carrying the bundle inline (rejected: bills get large, and a URL that carries the data leaks it into logs, referrers and mail archives), and a random capability token (chosen).
@@ -1841,6 +1844,7 @@ The downstream customer a usage report is about holds nothing: no session, no ke
 - **`last_used_at` is touched on resolution, and is not a delivery receipt.** It tells the operator the customer opened the bill; a mail client prefetching the link would touch it too, so it is evidence of access, not of reading.
 - **The link resolves without a session; the page that consumes it is separate.** This issue ships the capability only — the `/bill/{token}` page is the next piece, and keeping the two apart means the security model (token TTL, revocation, 404 shape) is settled before any customer-facing HTML exists.
 
+
 ## 2026-10-22 — The bill page is server-rendered, scriptless and one 404 (issue #302)
 
 The customer a share link belongs to holds no account, so `/bill/{token}` is the page the capability opens. It is deliberately the same shape as `/verify`, not a React route: the numbers come from the ledger, the operator key and head are printed beside them, and a customer can read the bill with JavaScript disabled.
@@ -1850,6 +1854,7 @@ The customer a share link belongs to holds no account, so `/bill/{token}` is the
 - **Headers are part of the design.** `Referrer-Policy: no-referrer` keeps the token out of any outbound link; `X-Robots-Tag: noindex` keeps a bill out of search engines; `Cache-Control: private, no-store` keeps a shared cache from handing one customer's bill to the next request. A middleware on the page fallback sets them, so a future page inherits the rule instead of remembering it.
 - **No third-party script, and no script at all in the floor.** The page runs nothing; the browser verifier is the next step and will be the only script, served from the binary like `/verify.js`.
 - **Two scopes, one renderer.** A report link renders its one frozen report; a customer link lists every report issued to them, one section each. The per-report token is still the narrowest capability, so the customer link is the organization's deliberate choice.
+
 
 ## 2026-10-22 — The bill verifier runs in the browser over the bundle the page embeds (issue #305)
 
@@ -1861,6 +1866,7 @@ The bill page rendered the frozen report but could not prove it: the customer st
 - **No JavaScript is still a bill.** The page renders the figures and the key without the script; the button simply does nothing. The check is progressive enhancement, not the page.
 - **What it proves is stated, and what it does not.** The verdict names membership, the subset fold, the marker binding and the head signature, and says completeness remains the organization's claim.
 
+
 ## 2026-10-22 — The bill link is mailed at creation, because that is when the token exists (issue #315)
 
 The database keeps only the token's hash, so a link can be mailed exactly once: in the response to the mint. Waiting — a later "send" button, a job, an email log — would need the plaintext at rest, which is the one thing the design refuses.
@@ -1869,6 +1875,7 @@ The database keeps only the token's hash, so a link can be mailed exactly once: 
 - **No mailer is a refusal, not a silent skip.** A deployment without `OXSUM_SMTP_URL`, `OXSUM_MAIL_FROM` and `OXSUM_PUBLIC_URL` answers 400 when an address is asked for: minting a link the operator believes was mailed is worse than refusing.
 - **A send failure keeps the link.** The token is in the response either way, so the operator can pass it on by hand; turning the mint into an error would invite a retry and a second link.
 - **The mail is as sensitive as the bill.** It goes to the address the operator named, carries the `/bill/{token}` capability and the completeness caveat, and is not a generic notification.
+
 
 ## 2026-10-22 — The payment layer is the full Hyperswitch switch, not prism (issue #317)
 
@@ -1894,6 +1901,7 @@ Consequences:
 
 Sources: [Hyperswitch webhooks](https://docs.hyperswitch.io/integration-guide/webhooks), [prism product overview](https://docs.hyperswitch.io/integrations/prism/prism), [prism README](https://github.com/juspay/hyperswitch-prism), [local Docker setup](https://docs.hyperswitch.io/self-hosting/want-to-explore/readme-1/unified-local-setup-using-docker).
 
+
 ## 2026-10-22 — The bill page checks the witnesses itself, from the bundle (issue #328)
 
 The customer's page already proves inclusion and the operator's signature. A witness is the third party that makes a fork detectable, and until now only the dashboard's log page checked it — the party the witnesses exist for could not see them.
@@ -1905,6 +1913,7 @@ The customer's page already proves inclusion and the operator's signature. A wit
 
 Pinned by `crates/server/tests/usage_reports.rs` (the report names the pinset and the origin, carries the stored note, and the bill page embeds all three) plus the verify crate's `verify_witnesses` tests for the cryptography. Contract `openapi.yaml` 0.75.0.
 
+
 ## 2026-10-22 — The seed creates its own demo channel when the catalog is empty (issue #330)
 
 The demo world is the product's first impression — `docker compose up`, `oxsum seed`, a login — and on a database with no catalog it was writing top-ups and no history: the seeded turns need a price book to bill under, so an empty catalog meant zero turns and no statement.
@@ -1915,6 +1924,7 @@ The demo world is the product's first impression — `docker compose up`, `oxsum
 - **The rerun stays a no-op.** The demo email is still the idempotency anchor; the second run reports "already seeded" and writes nothing, even though the channel now exists.
 
 Pinned by `crates/core/tests/seed.rs` (a database with no catalog, seeded with the key, has turns, a statement and both demo models; the rerun writes nothing).
+
 
 ## 2026-10-22 — Completeness gets its own commitment: a per-customer day log anchored in the ledger (issue #336)
 
@@ -2074,6 +2084,7 @@ The Airwallex rail is now sandbox-verified end-to-end at the API and webhook lay
 - Why a spec before the component: the next artifact is a `<verify-bill>` web component on top of the npm SDK, and a component built against an unwritten protocol hard-codes whatever the implementation happened to do that day. Naming the wire `v1` gives both the SDK and any third-party verifier a fixed target — and gives a future incompatible change a version to bump against.
 - Rejected: *leaving the serde structs as the spec* — an implementation is not a contract; there is no way to tell which field orders and defaults are load-bearing. *Documenting inside openapi.yaml* — the proof objects are not request/response API; they are portable artifacts a verifier carries away, and the spec's audience is the verifier's author, not the API caller.
 
+
 ## 2026-11-01 — The Gemini surface lands on the adapter seam; one credential spelling for AI Studio and Vertex (issue #494)
 
 - Status: Adopted
@@ -2215,6 +2226,7 @@ The Airwallex rail is now sandbox-verified end-to-end at the API and webhook lay
 - Why not keep the example browser-only: the browser path already had acceptance, and a browser-only example would not have caught a package whose advertised API cannot be called. The clean Node consumer is the cheaper check and exercises the tarball exactly as a downstream project installs it. The browser loader path is unchanged apart from taking the wrappers from the namespace.
 - Why not trust the new wrapper API without fixtures: the fixture is a genuine settlement captured from an isolated in-process app with a signed head and a signed price link; the example asserts the positive verdicts and four rejections (tampered content, wrong hash, wrong operator key, wrong archived head), and the check fails if any of them stops behaving. The capture test itself was temporary and is not committed.
 - Pinned by `scripts/check-verify-consumer.sh`: it builds the wasm, packs the tarball, asserts `dist/`, the wasm module and both licenses are present, installs the tarball into a temporary project outside the repository, and runs the example offline. The package remains unpublished; publication is a separate maintainer step.
+
 
 ## 2026-11-05 — Adopt the self-hosted operating release contract (issue #591)
 

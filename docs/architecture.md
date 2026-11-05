@@ -4,6 +4,7 @@
 
 The accepted [design](roadmap/self-hosted-v1/DESIGN.md) (#591) retains existing Organization IDs, tenant schemas and proofs as customer billing accounts and adds separate Business ownership/staff scope. There is no second commercial wallet or project wholesale charge. Durable single-customer operations coordinate financial and entitlement effects; sale prices remain independent of provider expense. These changes are planned until their [implementation issues](roadmap/self-hosted-v1/STATUS.md) integrate. [Baseline reconciliation](roadmap/self-hosted-v1/BASELINE.md) records the current source and compatibility boundaries.
 
+
 ## Overview
 
 ```

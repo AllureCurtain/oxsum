@@ -10,7 +10,7 @@ The accepted contract and evidence live in [docs/roadmap/self-hosted-v1](docs/ro
 
 - [x] [#591](https://github.com/AllureCurtain/oxsum/issues/591) — Adopt the release contract and baseline (T00): integrated in PR #623.
 - [ ] [#592](https://github.com/AllureCurtain/oxsum/issues/592) — Restrict financial and metering authority (T01): T01.a PR #626 waiting for reviewer approval; T01.b #625 pending.
-- [ ] [#593](https://github.com/AllureCurtain/oxsum/issues/593) — Add business and customer ownership without moving ledgers (T02): validated; PR integration pending.
+- [ ] [#593](https://github.com/AllureCurtain/oxsum/issues/593) — Add business and customer ownership without moving ledgers (T02): locally validated; in review, PR #627.
 - [ ] [#594](https://github.com/AllureCurtain/oxsum/issues/594) — Business staff, setup and session contexts (T03): pending.
 - [ ] [#595](https://github.com/AllureCurtain/oxsum/issues/595) — Customer profile and team lifecycle (T04): pending.
 - [ ] [#596](https://github.com/AllureCurtain/oxsum/issues/596) — Scoped consumption and integration credentials (T05): pending.

@@ -2,13 +2,13 @@
 
 Updated: 2026-11-05. Contract issue: [#591](https://github.com/AllureCurtain/oxsum/issues/591).
 
-Implementation: in progress. Release: not ready. T00 integrated; T01.a in review, T02 locally validated; PR integration pending.
+Implementation: in progress. Release: not ready. T00 integrated; T01.a in review, T02 locally validated and in review (PR #627).
 
 | Task | Issue | State | Depends on |
 | --- | --- | --- | --- |
 | T00 — Adopt the release contract and baseline | [#591](https://github.com/AllureCurtain/oxsum/issues/591) | integrated (PR #623) | None |
 | T01 — Restrict financial and metering authority | [#592](https://github.com/AllureCurtain/oxsum/issues/592) | in_review (T01.a) | T00 |
-| T02 — Add business and customer ownership without moving ledgers | [#593](https://github.com/AllureCurtain/oxsum/issues/593) | validated | T00 |
+| T02 — Add business and customer ownership without moving ledgers | [#593](https://github.com/AllureCurtain/oxsum/issues/593) | in_review (PR #627) | T00 |
 | T03 — Business staff, setup and session contexts | [#594](https://github.com/AllureCurtain/oxsum/issues/594) | pending | T01, T02 |
 | T04 — Customer profile and team lifecycle | [#595](https://github.com/AllureCurtain/oxsum/issues/595) | pending | T02, T03 |
 | T05 — Scoped consumption and integration credentials | [#596](https://github.com/AllureCurtain/oxsum/issues/596) | pending | T03, T04 |
@@ -45,7 +45,7 @@ T00 merged in PR #623, commit `aadde114ca61cf97d5254ae3ea45d0a18e4542ba`.
 
 T01.a (#624) is PR #626, head `cc90eb5`: all CI checks passed; Entire Gates reports only missing reviewer approval (no blocking findings). Integration waits for normal review. T01.b (#625) still requires removal of customer raw hold/settlement writes after T01.a. No review bypass is authorized.
 
-T02 (#593) is implemented in `.worktrees/business-ownership`, branch `feat/business-ownership`, locally validated at code/test commit `f9ced4974b3432cdd80293f4e95046735798785f`. Migration preview, no automatic staff promotion, stable customer identity/proofs and 1,000-customer mapping are covered by database tests; workspace, process-shared, engine, doctest and frontend gates passed. See [T02 evidence](evidence/T02.md). PR integration remains pending. Explicit owner initialization belongs to dependent T03, never public registration.
+T02 (#593) is implemented in `.worktrees/business-ownership`, branch `feat/business-ownership`, locally validated at code/test commit `f9ced4974b3432cdd80293f4e95046735798785f`. Migration preview, no automatic staff promotion, stable customer identity/proofs and 1,000-customer mapping are covered by database tests; workspace, process-shared, engine, doctest and frontend gates passed. See [T02 evidence](evidence/T02.md). PR #627 awaits normal green checks and review. Explicit owner initialization belongs to dependent T03, never public registration.
 
 ## External gates
 
