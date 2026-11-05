@@ -90,6 +90,21 @@ impl Db {
         Ok(registration)
     }
 
+    /// Public customer signup checks the business policy in the creation transaction.
+    /// Trusted provisioning and explicit invitations use their separate paths.
+    pub async fn register_customer(&self, new: NewUser) -> Result<Registration, WalletError> {
+        let email = validate_email(&new.email)?;
+        validate_password(&new.password)?;
+        let organization_name = organization_name(new.organization_name.as_deref(), &email)?;
+        let password_hash = generate_hash(&new.password);
+        let mut tx = self.pool().begin().await?;
+        crate::business_staff::require_open_registration(&mut tx).await?;
+        let registration =
+            insert_registration(&mut tx, email, &organization_name, &password_hash).await?;
+        tx.commit().await?;
+        Ok(registration)
+    }
+
     /// Resets a user's password and revokes every session they hold, in one
     /// transaction. Both recovery paths call this — the platform admin's
     /// endpoint and the self-service reset through a mailed token (issue #150);
@@ -102,6 +117,8 @@ impl Db {
         let password_hash = generate_hash(password);
 
         let mut tx = self.pool().begin().await?;
+        // Match staff mutation/deletion ordering before updating the user and sessions.
+        crate::business_staff::lock_business(&mut tx).await?;
         let updated = sqlx::query("UPDATE oxsum.users SET password_hash = $1 WHERE user_id = $2")
             .bind(&password_hash)
             .bind(user_id)
@@ -117,6 +134,12 @@ impl Db {
         .bind(user_id)
         .execute(&mut *tx)
         .await?;
+        // A pending second-factor challenge proves the old password and must
+        // not mint a fresh session after recovery replaced that credential.
+        sqlx::query("DELETE FROM oxsum.totp_challenges WHERE user_id=$1")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await?;
         Ok(revoked.rows_affected())
     }
@@ -187,6 +210,8 @@ impl Db {
         }
 
         let mut tx = self.pool().begin().await?;
+
+        crate::business_staff::remove_staff_for_deletion(&mut tx, user_id).await?;
 
         // The last-owner wall, read inside the transaction against locked
         // membership rows: a delete that removes the seat must be refused

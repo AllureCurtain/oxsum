@@ -1,5 +1,5 @@
 use axum::Json;
-use axum::extract::{Extension, Path, State};
+use axum::extract::{Path, State};
 use axum::http::header::SET_COOKIE;
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Redirect, Response};
@@ -7,12 +7,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use oxsum_core::{CreatedSession, LoginOutcome, NewUser, Principal, Registration};
+use oxsum_core::{CreatedSession, LoginOutcome, NewUser, Registration};
 
 use crate::auth::session_cookie_value;
 use crate::error::{ApiError, ApiJson, ApiQuery};
 use crate::routes::{ApiResult, Data, SessionInfo, clear_session_cookie, ok, session_cookie};
-use crate::{AppState, Signup, today};
+use crate::{AppState, today};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,15 +40,10 @@ pub(crate) async fn register(
     State(state): State<AppState>,
     ApiJson(r): ApiJson<RegisterReq>,
 ) -> ApiResult<Registration> {
-    if state.config.signup() != Signup::Open {
-        return Err(ApiError::Forbidden(
-            "this deployment registers by invitation only".into(),
-        ));
-    }
     require_bot_check(&state, r.turnstile_token.as_deref()).await?;
     let mut registration = state
         .db
-        .register(NewUser {
+        .register_customer(NewUser {
             email: r.email,
             password: r.password,
             organization_name: r.organization_name,
@@ -117,11 +112,10 @@ pub(crate) async fn login(
 ) -> Result<Response, ApiError> {
     match state.db.login(&r.email, &r.password).await? {
         LoginOutcome::Session(created) => {
-            let CreatedSession { principal, token } = *created;
-            let mut response = Json(Data {
-                data: SessionInfo::from(principal),
-            })
-            .into_response();
+            let created = *created;
+            let body = login_body(&state, &created).await?;
+            let token = created.token;
+            let mut response = Json(Data { data: body }).into_response();
             response.headers_mut().insert(
                 SET_COOKIE,
                 HeaderValue::from_str(&session_cookie(
@@ -140,6 +134,17 @@ pub(crate) async fn login(
         })
         .into_response()),
     }
+}
+
+async fn login_body(
+    state: &AppState,
+    created: &CreatedSession,
+) -> Result<serde_json::Value, ApiError> {
+    match &created.principal {
+        Some(principal) => serde_json::to_value(SessionInfo::from(principal.clone())),
+        None => serde_json::to_value(state.db.session_context(&created.token).await?),
+    }
+    .map_err(|_| ApiError::Internal)
 }
 
 /// The body of `POST /api/v1/auth/totp`: the challenge `login` withheld the
@@ -162,14 +167,13 @@ pub(crate) async fn totp_login(
             "the second factor is not configured on this deployment".into(),
         ));
     };
-    let CreatedSession { principal, token } = state
+    let created = state
         .db
         .verify_totp(&r.challenge_token, &r.code, secret)
         .await?;
-    let mut response = Json(Data {
-        data: SessionInfo::from(principal),
-    })
-    .into_response();
+    let body = login_body(&state, &created).await?;
+    let token = created.token;
+    let mut response = Json(Data { data: body }).into_response();
     response.headers_mut().insert(
         SET_COOKIE,
         HeaderValue::from_str(&session_cookie(
@@ -194,13 +198,10 @@ pub(crate) struct TotpEnrollRes {
 /// unconfirmed until `confirm` proves a live code against it.
 pub(crate) async fn totp_enroll(
     State(state): State<AppState>,
-    Extension(principal): Extension<Principal>,
+    headers: HeaderMap,
 ) -> ApiResult<TotpEnrollRes> {
-    let Some(user) = principal.user() else {
-        return Err(ApiError::Forbidden(
-            "a second factor is a person's setting: an API key names no user".into(),
-        ));
-    };
+    let token = super::business::personal_token(&headers)?;
+    let user = state.db.session_user(&token).await?;
     let Some(secret) = state.config.secret() else {
         return Err(ApiError::ServiceUnavailable(
             "the second factor is not configured on this deployment".into(),
@@ -236,14 +237,11 @@ pub(crate) struct TotpBackupRes {
 /// the secret, then mints and answers the backup codes — once, in the clear.
 pub(crate) async fn totp_confirm(
     State(state): State<AppState>,
-    Extension(principal): Extension<Principal>,
+    headers: HeaderMap,
     ApiJson(r): ApiJson<TotpCodeReq>,
 ) -> ApiResult<TotpBackupRes> {
-    let Some(user) = principal.user() else {
-        return Err(ApiError::Forbidden(
-            "a second factor is a person's setting: an API key names no user".into(),
-        ));
-    };
+    let token = super::business::personal_token(&headers)?;
+    let user = state.db.session_user(&token).await?;
     let Some(secret) = state.config.secret() else {
         return Err(ApiError::ServiceUnavailable(
             "the second factor is not configured on this deployment".into(),
@@ -258,14 +256,11 @@ pub(crate) async fn totp_confirm(
 /// Disables the factor on a live code — removing it is itself second-factored.
 pub(crate) async fn totp_disable(
     State(state): State<AppState>,
-    Extension(principal): Extension<Principal>,
+    headers: HeaderMap,
     ApiJson(r): ApiJson<TotpCodeReq>,
 ) -> ApiResult<LogoutRes> {
-    let Some(user) = principal.user() else {
-        return Err(ApiError::Forbidden(
-            "a second factor is a person's setting: an API key names no user".into(),
-        ));
-    };
+    let token = super::business::personal_token(&headers)?;
+    let user = state.db.session_user(&token).await?;
     let Some(secret) = state.config.secret() else {
         return Err(ApiError::ServiceUnavailable(
             "the second factor is not configured on this deployment".into(),
@@ -476,7 +471,7 @@ async fn oauth_finish(
     };
     let created = state
         .db
-        .oauth_login(&identity, state.config.signup() == Signup::Open)
+        .oauth_login(&identity, true)
         .await
         .map_err(|e| e.to_string())?;
     let mut response = Redirect::to("/app").into_response();
@@ -505,13 +500,10 @@ pub(crate) struct VerifyRequestRes {
 /// A resend inside the sixty-second cooldown mints and mails nothing (`sent: false`).
 pub(crate) async fn request_verification(
     State(state): State<AppState>,
-    Extension(principal): Extension<Principal>,
+    headers: HeaderMap,
 ) -> ApiResult<VerifyRequestRes> {
-    let Some(user) = principal.user() else {
-        return Err(ApiError::Forbidden(
-            "verifying an email is a person's action: an API key names no user".into(),
-        ));
-    };
+    let token = super::business::personal_token(&headers)?;
+    let user = state.db.session_user(&token).await?;
     let Some(mailer) = state.config.mailer() else {
         return Err(ApiError::ServiceUnavailable(
             "email is not configured on this deployment".into(),

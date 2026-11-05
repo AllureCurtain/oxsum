@@ -241,16 +241,26 @@ impl Db {
     /// prior pending secret. The caller seals with the deployment's key and
     /// hands back the secret plus the otpauth URL for the QR.
     pub async fn enroll_totp(&self, user_id: Uuid, secret_sealed: &str) -> Result<(), WalletError> {
-        sqlx::query(
+        let mut tx = self.pool().begin().await?;
+        crate::business_staff::lock_business(&mut tx).await?;
+
+        let changed = sqlx::query(
             "INSERT INTO oxsum.user_totp (user_id, secret_sealed, confirmed_at, backup_code_hashes) \
              VALUES ($1, $2, NULL, '{}') \
              ON CONFLICT (user_id) DO UPDATE \
-             SET secret_sealed = $2, confirmed_at = NULL, backup_code_hashes = '{}'",
+             SET secret_sealed = $2, confirmed_at = NULL, backup_code_hashes = '{}' \
+             WHERE user_totp.confirmed_at IS NULL",
         )
         .bind(user_id)
         .bind(secret_sealed)
-        .execute(self.pool())
-        .await?;
+        .execute(&mut *tx)
+        .await?.rows_affected();
+        if changed == 0 {
+            return Err(WalletError::Conflict(
+                "disable the confirmed second factor before enrolling another".into(),
+            ));
+        }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -264,12 +274,15 @@ impl Db {
         presented: &str,
         secret: &crate::channels::SecretKey,
     ) -> Result<Vec<String>, WalletError> {
+        let mut tx = self.pool().begin().await?;
+        crate::business_staff::lock_business(&mut tx).await?;
+
         let secret_sealed: Option<String> = sqlx::query_scalar(
             "SELECT secret_sealed FROM oxsum.user_totp \
              WHERE user_id = $1 AND confirmed_at IS NULL",
         )
         .bind(user_id)
-        .fetch_optional(self.pool())
+        .fetch_optional(&mut *tx)
         .await?;
         let Some(sealed) = secret_sealed else {
             return Err(WalletError::InvalidInput(
@@ -298,8 +311,9 @@ impl Db {
         )
         .bind(user_id)
         .bind(&hashes)
-        .execute(self.pool())
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(codes)
     }
 
@@ -311,12 +325,15 @@ impl Db {
         presented: &str,
         secret: &crate::channels::SecretKey,
     ) -> Result<(), WalletError> {
+        let mut tx = self.pool().begin().await?;
+        crate::business_staff::lock_business(&mut tx).await?;
+
         let secret_sealed: Option<String> = sqlx::query_scalar(
             "SELECT secret_sealed FROM oxsum.user_totp \
              WHERE user_id = $1 AND confirmed_at IS NOT NULL",
         )
         .bind(user_id)
-        .fetch_optional(self.pool())
+        .fetch_optional(&mut *tx)
         .await?;
         let Some(sealed) = secret_sealed else {
             return Err(WalletError::InvalidInput("TOTP is not enabled".into()));
@@ -334,8 +351,9 @@ impl Db {
         }
         sqlx::query("DELETE FROM oxsum.user_totp WHERE user_id = $1")
             .bind(user_id)
-            .execute(self.pool())
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -343,6 +361,19 @@ impl Db {
     /// records who proved the password behind a single-use, attempt-capped,
     /// short-lived token.
     pub async fn mint_totp_challenge(&self, user_id: Uuid) -> Result<String, WalletError> {
+        let mut tx = self.pool().begin().await?;
+        crate::business_staff::lock_business(&mut tx).await?;
+        let token = self
+            .mint_totp_challenge_in_transaction(&mut tx, user_id)
+            .await?;
+        tx.commit().await?;
+        Ok(token)
+    }
+    pub(crate) async fn mint_totp_challenge_in_transaction(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        user_id: Uuid,
+    ) -> Result<String, WalletError> {
         let token = generate_challenge();
         sqlx::query(
             "INSERT INTO oxsum.totp_challenges (challenge_hash, user_id, expires_at) \
@@ -351,7 +382,7 @@ impl Db {
         .bind(hash_challenge(&token).as_slice())
         .bind(user_id)
         .bind(CHALLENGE_LIFETIME)
-        .execute(self.pool())
+        .execute(&mut **tx)
         .await?;
         Ok(token)
     }
@@ -367,6 +398,8 @@ impl Db {
         presented: &str,
         secret: &crate::channels::SecretKey,
     ) -> Result<CreatedSession, WalletError> {
+        let mut tx = self.pool().begin().await?;
+        crate::business_staff::lock_business(&mut tx).await?;
         let row = sqlx::query(
             "SELECT c.user_id, c.attempts, t.secret_sealed, t.backup_code_hashes \
              FROM oxsum.totp_challenges c \
@@ -375,7 +408,7 @@ impl Db {
                AND t.confirmed_at IS NOT NULL",
         )
         .bind(hash_challenge(challenge_token).as_slice())
-        .fetch_optional(self.pool())
+        .fetch_optional(&mut *tx)
         .await?;
         let Some(row) = row else {
             return Err(WalletError::NotFound("not found".into()));
@@ -408,9 +441,13 @@ impl Db {
             )
             .bind(user_id)
             .bind(&backup_hashes[position])
-            .execute(self.pool())
+            .execute(&mut *tx)
             .await?;
-            return self.session_after_totp(user_id, challenge_token).await;
+            let session = self
+                .session_after_totp(&mut tx, user_id, challenge_token)
+                .await?;
+            tx.commit().await?;
+            return Ok(session);
         }
 
         let opened = secret.open(&sealed)?;
@@ -427,11 +464,16 @@ impl Db {
                  WHERE challenge_hash = $1",
             )
             .bind(hash_challenge(challenge_token).as_slice())
-            .execute(self.pool())
+            .execute(&mut *tx)
             .await?;
+            tx.commit().await?;
             return Err(WalletError::InvalidCredentials);
         }
-        self.session_after_totp(user_id, challenge_token).await
+        let session = self
+            .session_after_totp(&mut tx, user_id, challenge_token)
+            .await?;
+        tx.commit().await?;
+        Ok(session)
     }
 
     /// The shared tail of a satisfied second factor: the challenge is spent
@@ -440,20 +482,21 @@ impl Db {
     /// re-checks.
     async fn session_after_totp(
         &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         user_id: Uuid,
         challenge_token: &str,
     ) -> Result<CreatedSession, WalletError> {
         sqlx::query("DELETE FROM oxsum.totp_challenges WHERE challenge_hash = $1")
             .bind(hash_challenge(challenge_token).as_slice())
-            .execute(self.pool())
+            .execute(&mut **tx)
             .await?;
-        let session = self.session_for(user_id).await?;
+        let session = self.session_for_in_transaction(tx, user_id).await?;
         sqlx::query(
             "UPDATE oxsum.sessions SET totp_verified_at = now() \
              WHERE session_id = $1",
         )
-        .bind(session.principal.session.id)
-        .execute(self.pool())
+        .bind(session.session.id)
+        .execute(&mut **tx)
         .await?;
         Ok(session)
     }

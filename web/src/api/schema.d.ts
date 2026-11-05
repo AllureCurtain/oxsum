@@ -175,7 +175,7 @@ export interface paths {
         put?: never;
         /**
          * Register a user, its personal organization and the first API key
-         * @description Refused with `FORBIDDEN` unless the deployment allows self-service signup (`OXSUM_SIGNUP=open`).
+         * @description Refused with `FORBIDDEN` unless the initialized business owner has enabled self-registration. `OXSUM_SIGNUP` cannot override this policy.
          *     The API key secret is returned once, here, and is never retrievable again.
          */
         post: {
@@ -291,9 +291,9 @@ export interface paths {
          *
          *     An unknown email and a wrong password answer the same 401 with the same message, and the
          *     unknown-email path still pays for one password-hash verification, so neither timing nor
-         *     wording reveals whether an account exists. The session acts as the user's organization, in
-         *     their role; it expires thirty days after login and stops authenticating the moment the
-         *     user's membership in that organization is gone.
+         *     wording reveals whether an account exists. The session starts in customer context. Customer authority requires a current membership.
+         *     A user with none receives an identity-only session and can explicitly select a current
+         *     staff context. Sessions expire thirty days after login.
          */
         post: {
             parameters: {
@@ -317,8 +317,8 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            /** @description `SessionInfo` on a password-only login; `TotpRequired` when the account's second factor must be satisfied first */
-                            data: components["schemas"]["SessionInfo"] | components["schemas"]["TotpRequired"];
+                            /** @description SessionInfo for a customer membership; SessionContextInfo with null organizationId when none remains; TotpRequired when the second factor must be satisfied first */
+                            data: components["schemas"]["SessionInfo"] | components["schemas"]["SessionContextInfo"] | components["schemas"]["TotpRequired"];
                         };
                     };
                 };
@@ -703,7 +703,7 @@ export interface paths {
          *     exchange (issue #504). The account resolves by the **verified** email
          *     the provider reports: a linked `oauth_accounts` row first, then an
          *     email match that links the identity, and otherwise a registration when
-         *     `OXSUM_SIGNUP=open` (an `invite` deployment refuses new accounts here).
+         *     the initialized business policy is `open` (an invite-only business refuses new accounts here).
          *     Success mints a session and answers `303` to `/app` with the session
          *     `Set-Cookie`; every failure answers `303` back to `/app/login?error=oauth`,
          *     because the caller is a browser mid-redirect, not an API client.
@@ -789,7 +789,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            data: components["schemas"]["SessionInfo"];
+                            data: components["schemas"]["SessionInfo"] | components["schemas"]["SessionContextInfo"];
                         };
                     };
                 };
@@ -817,7 +817,8 @@ export interface paths {
         put?: never;
         /**
          * Begin TOTP enrollment
-         * @description Mints a fresh shared secret for the session user, sealed at rest under
+         * @description Accepts a live personal session in either context, even without a customer membership. An explicit bearer credential is refused.
+         *     Mints a fresh shared secret for the session user, sealed at rest under
          *     `OXSUM_SECRET_KEY` the way an upstream credential is, and answers it
          *     once as base32 plus the `otpauthUrl` the client renders a QR from. The
          *     secret is unconfirmed — it gates nothing — until `confirm` proves a
@@ -850,6 +851,7 @@ export interface paths {
                 };
                 401: components["responses"]["Error"];
                 403: components["responses"]["Error"];
+                409: components["responses"]["Error"];
                 500: components["responses"]["Error"];
                 503: components["responses"]["Error"];
             };
@@ -871,7 +873,8 @@ export interface paths {
         put?: never;
         /**
          * Confirm TOTP enrollment on a live code
-         * @description Proves the authenticator scanned the pending secret: on a live code the
+         * @description Accepts a live personal session in either context, even without a customer membership. An explicit bearer credential is refused.
+         *     Proves the authenticator scanned the pending secret: on a live code the
          *     enrollment confirms — the factor now gates every password login — and
          *     the answer carries ten single-use backup codes, shown exactly once and
          *     stored only as hashes. A wrong code answers 401 like any failed
@@ -925,7 +928,8 @@ export interface paths {
         put?: never;
         /**
          * Disable the second factor on a live code
-         * @description Removes the user's confirmed factor — itself second-factored: the
+         * @description Accepts a live personal session in either context, even without a customer membership. An explicit bearer credential is refused.
+         *     Removes the user's confirmed factor — itself second-factored: the
          *     request carries a live code, so a hijacked session alone cannot strip
          *     the protection. An empty answer follows the `LogoutResponse` shape.
          */
@@ -977,7 +981,8 @@ export interface paths {
         put?: never;
         /**
          * Mail the session user's verification link
-         * @description Mints a single-use email token (seven-day life, stored as its SHA-256 hash) and
+         * @description Accepts a live personal session in either context, even without a customer membership. An explicit bearer credential is refused.
+         *     Mints a single-use email token (seven-day life, stored as its SHA-256 hash) and
          *     mails the verification link to the session user's address. The session is the
          *     credential: an API key names no user and is `FORBIDDEN` here.
          *
@@ -1288,7 +1293,8 @@ export interface paths {
         post?: never;
         /**
          * Delete the session user's account (pseudonymization)
-         * @description Irreversible. The account's identity is erased while the books keep their history:
+         * @description Accepts a live personal session in either context, even without a customer membership. An explicit bearer credential is refused.
+         *     Irreversible. The account's identity is erased while the books keep their history:
          *     the user row's `email` is tombstoned to `deleted-<userId>@deleted.invalid`, the
          *     password hash is blanked so no login can ever succeed, `emailVerified` is cleared,
          *     every session the user holds is revoked, and every API key they minted is revoked.
@@ -5394,6 +5400,134 @@ export interface paths {
                 500: components["responses"]["Error"];
             };
         };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/session/context": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the selected session context
+         * @description A personal session only. Customer membership never implies business authority.
+         */
+        get: operations["sessionContext"];
+        put?: never;
+        /**
+         * Select customer or business authority
+         * @description A live session selects its own context. Business selection requires current staff membership. An explicit bearer credential is refused. Context selection never changes customer membership.
+         */
+        post: operations["switchSessionContext"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the active business context
+         * @description Requires a personal session explicitly selected into business context. Rechecks current staff role on each call.
+         */
+        get: operations["businessContext"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/staff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List business staff
+         * @description Owner only. Customer keys and customer sessions have no staff authority.
+         */
+        get: operations["businessStaff"];
+        put?: never;
+        /**
+         * Appoint or change an existing staff member
+         * @description Owner only, audited and idempotent. Existing registered user by userId. The owner role cannot be assigned here; use ownership transfer. Cannot demote an owner.
+         */
+        post: operations["setBusinessStaff"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/staff/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revoke staff authority
+         * @description Owner only. Cannot revoke an owner. Personal customer access is retained. All subsequent business calls recheck the revoked membership.
+         */
+        post: operations["revokeBusinessStaff"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/ownership": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Transfer ownership to an existing staff member
+         * @description Owner only. Atomically promotes the selected current staff member and demotes the actor to admin. Last-owner deletion is refused. Replays recheck current owner permission.
+         */
+        post: operations["transferBusinessOwnership"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/registration": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Select customer registration policy
+         * @description Owner only. Fresh and upgraded installations remain invite-only until this audited change. Password, GitHub and OIDC new-account paths enforce the saved policy in their creation transaction.
+         */
+        post: operations["setBusinessRegistration"];
         delete?: never;
         options?: never;
         head?: never;
@@ -9535,6 +9669,80 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @enum {string} */
+        BusinessRole: "owner" | "admin" | "finance" | "support" | "viewer";
+        /** @enum {string} */
+        BusinessCapability: "overviewRead" | "customersRead" | "customersWrite" | "customersSuspend" | "requestsRead" | "catalogWrite" | "routingWrite" | "providerSecretsWrite" | "commercialWrite" | "fundsWrite" | "refundsWrite" | "reportsRead" | "merchantSecretsWrite" | "staffManage" | "ownershipTransfer" | "registrationWrite" | "integrationsManage";
+        BusinessPrincipal: {
+            /** Format: uuid */
+            businessId: string;
+            /** Format: uuid */
+            userId: string;
+            role: components["schemas"]["BusinessRole"];
+            capabilities: components["schemas"]["BusinessCapability"][];
+        };
+        SessionContextInfo: {
+            /** @enum {string} */
+            context: "customer" | "business";
+            user: components["schemas"]["User"];
+            /**
+             * Format: uuid
+             * @description Null in business context or when the user has no remaining customer membership.
+             */
+            organizationId: string | null;
+            business: components["schemas"]["BusinessPrincipal"] | null;
+        };
+        SessionContextRequest: {
+            idempotencyKey: string;
+            /** @enum {string} */
+            context: "customer" | "business";
+            /**
+             * Format: uuid
+             * @description Customer membership to select; omitted retains the existing customer selection. Forbidden for business context.
+             */
+            organizationId?: string | null;
+        };
+        BusinessStaff: {
+            /** Format: uuid */
+            userId: string;
+            /** Format: email */
+            email: string;
+            role: components["schemas"]["BusinessRole"];
+        };
+        BusinessStaffList: components["schemas"]["BusinessStaff"][];
+        BusinessMutationResult: {
+            /**
+             * Format: uuid
+             * @description Stable mutation receipt ID
+             */
+            id: string;
+        };
+        BusinessStaffRequest: {
+            idempotencyKey: string;
+            /** Format: uuid */
+            userId: string;
+            /** @enum {string} */
+            role: "admin" | "finance" | "support" | "viewer";
+            reason: string;
+        };
+        BusinessStaffRevokeRequest: {
+            idempotencyKey: string;
+            /** Format: uuid */
+            userId: string;
+            reason: string;
+        };
+        BusinessOwnershipRequest: {
+            idempotencyKey: string;
+            /** Format: uuid */
+            userId: string;
+            reason: string;
+        };
+        BusinessRegistrationRequest: {
+            idempotencyKey: string;
+            /** @enum {string} */
+            mode: "invite" | "open";
+            reason: string;
+        };
         BusinessSetupTokenRequest: {
             idempotencyKey: string;
             /** Format: email */
@@ -12954,4 +13162,241 @@ export interface components {
     pathItems: never;
 }
 export type $defs = Record<string, never>;
-export type operations = Record<string, never>;
+export interface operations {
+    sessionContext: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["SessionContextInfo"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    switchSessionContext: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SessionContextRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["SessionContextInfo"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    businessContext: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessPrincipal"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    businessStaff: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessStaffList"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    setBusinessStaff: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BusinessStaffRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessMutationResult"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    revokeBusinessStaff: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BusinessStaffRevokeRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessMutationResult"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    transferBusinessOwnership: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BusinessOwnershipRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessMutationResult"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    setBusinessRegistration: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BusinessRegistrationRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessMutationResult"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+}

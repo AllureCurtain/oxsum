@@ -13,6 +13,7 @@ mod audit;
 mod billing;
 mod business;
 mod business_setup;
+mod business_staff;
 mod cache;
 mod channels;
 mod credit_notes;
@@ -85,6 +86,12 @@ pub use business::{
 pub use business_setup::{
     BusinessSetupRegistrationRequest, BusinessSetupRequest, BusinessSetupResult,
     BusinessSetupToken, BusinessSetupTokenRequest, SetupAuthority,
+};
+pub use business_staff::{
+    BusinessCapability, BusinessMutationResult, BusinessOwnershipRequest, BusinessPrincipal,
+    BusinessRegistrationRequest, BusinessRole, BusinessStaff, BusinessStaffRequest,
+    BusinessStaffRevokeRequest, RegistrationMode, SessionContext, SessionContextInfo,
+    SessionContextRequest,
 };
 pub use cache::{CachePolicy, CacheStore, CachedAnswer, PromptPart, prompt_digest};
 pub use channels::{

@@ -508,7 +508,8 @@ impl Config {
     }
 
     #[must_use]
-    pub(crate) fn signup(&self) -> Signup {
+    /// Legacy parsed value for configuration compatibility. Business policy controls signup.
+    pub fn signup(&self) -> Signup {
         self.signup
     }
 
