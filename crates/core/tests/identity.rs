@@ -531,6 +531,7 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "organizations".to_owned(),
             "payment_events".to_owned(),
             "pricing_discounts".to_owned(),
+            "provider_connection_checks".to_owned(),
             "provider_mutation_results".to_owned(),
             "rate_windows".to_owned(),
             "redemption_codes".to_owned(),

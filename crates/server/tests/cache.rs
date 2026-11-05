@@ -211,9 +211,19 @@ async fn build_world(url: &str) -> World {
     let secret = oxsum_core::SecretKey::from_bytes([7; 32]);
     let script = Script::default();
     let base_url = start_upstream(script.clone()).await;
-    db.set_channel(&channel, &base_url, "upstream-secret", "openai", &secret)
-        .await
-        .expect("the channel is written");
+    db.set_channel_pool_policy(
+        &channel,
+        &base_url,
+        Some(&["upstream-secret".to_owned()]),
+        "openai",
+        &secret,
+        Some(&oxsum_core::ProviderDestinationPolicy {
+            network: oxsum_core::ProviderNetwork::Internal,
+            allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+        }),
+    )
+    .await
+    .expect("the channel is written");
     // 1 credit a token fresh, a tenth of that on the cached-read dimension —
     // the hit's bill reads plainly against the miss's.
     let book = oxsum_core::PriceBook::from_json(

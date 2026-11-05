@@ -223,9 +223,19 @@ async fn world(url: &str, top_up: i64) -> World {
     let base_url = start_upstream(script.clone()).await;
     // One channel under the `tasks` protocol, priced flat at 500 minor per
     // request — a task's bound is a declared amount, not a token estimate.
-    db.set_channel(&channel, &base_url, "upstream-secret", "tasks", &secret)
-        .await
-        .expect("the channel is written");
+    db.set_channel_pool_policy(
+        &channel,
+        &base_url,
+        Some(&["upstream-secret".to_owned()]),
+        "tasks",
+        &secret,
+        Some(&oxsum_core::ProviderDestinationPolicy {
+            network: oxsum_core::ProviderNetwork::Internal,
+            allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+        }),
+    )
+    .await
+    .expect("the channel is written");
     db.append_price(
         &channel,
         "task-model",
@@ -872,4 +882,84 @@ async fn sibling_key_cannot_poll_cancel_or_replay_a_task() {
         .0,
         StatusCode::OK
     );
+}
+
+#[tokio::test]
+async fn task_poll_and_cancel_retain_submission_endpoint_after_channel_repoint() {
+    let Some(url) = url() else { return };
+    let world = world(&url, 10000).await;
+    world.script.submit(
+        "task-model",
+        SubmitAnswer::Accept {
+            task_id: "old-provider-job".into(),
+        },
+    );
+    let (status, submitted) = call(
+        &world.app,
+        "POST",
+        "/v1/tasks",
+        Some(json!({"model":"task-model","kind":"custom","input":{},"maxCostMinor":500})),
+        Some(&world.key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{submitted}");
+    let task_id = submitted["taskId"].as_str().unwrap();
+    let replacement = Script::default();
+    let base = start_upstream(replacement.clone()).await;
+    world
+        .db
+        .set_channel_pool_policy(
+            &world.channel,
+            &base,
+            Some(&["replacement-key".into()]),
+            "tasks",
+            &SecretKey::from_bytes([7; 32]),
+            Some(&oxsum_core::ProviderDestinationPolicy {
+                network: oxsum_core::ProviderNetwork::Internal,
+                allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+            }),
+        )
+        .await
+        .unwrap();
+    let target = world
+        .db
+        .open_task_poll_targets(100)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|t| t.task.task_id.to_string() == task_id)
+        .unwrap();
+    let endpoint = target.endpoint.unwrap();
+    assert_ne!(endpoint.base_url, base);
+    assert_eq!(
+        SecretKey::from_bytes([7; 32])
+            .open(endpoint.api_key_sealed.as_deref().unwrap())
+            .unwrap(),
+        "upstream-secret"
+    );
+    enqueue_poll(&world.db).await;
+    run_due(&world.db, &ctx()).await;
+    assert!(
+        world
+            .script
+            .seen_polls
+            .lock()
+            .unwrap()
+            .contains(&"old-provider-job".into())
+    );
+    assert!(replacement.seen_polls.lock().unwrap().is_empty());
+    let (status, _) = call(
+        &world.app,
+        "POST",
+        &format!("/v1/tasks/{task_id}/cancel"),
+        None,
+        Some(&world.key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        *world.script.seen_cancels.lock().unwrap(),
+        vec!["old-provider-job"]
+    );
+    assert!(replacement.seen_cancels.lock().unwrap().is_empty());
 }
