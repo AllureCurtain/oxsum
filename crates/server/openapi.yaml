@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.108.0
+  version: 0.109.0
   x-consumption-cache: Cached responses are bound to the exact consumption key as well as customer, channel, model and prompt. Pre-upgrade cache digests are misses.
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
@@ -28,6 +28,12 @@ info:
     revocation and one-time secrets. Legacy global service credentials are disabled;
     deployment-token issuance is retired. Metering binds the credential, customer,
     original request and finalization body before any financial effect.
+
+    0.109.0 filters customer catalogs, estimates and serving routes by business,
+    customer tier, current consumption key model grants and request-group channels.
+    Alias public names and resolved targets must both be allowed. Experiments and
+    fallbacks never widen these permissions, and retain the original requested name.
+    Tasks use the same admission rules; status/cancel remain bound to their original key.
 
     0.108.0 enforces destination policy on channel gateway, task, catalog and billing requests.
     Public endpoints require HTTPS and public DNS addresses. Internal endpoints
@@ -2405,6 +2411,8 @@ paths:
       security: [{ sessionCookie: [] }]
       summary: Create or replace an experiment
       description: |
+        Every variant must be visible in the current customer-authorized catalog.
+        Runtime key/group and alias-target restrictions are checked again at admission.
         Creates the named experiment or replaces its whole variant set atomically —
         config, not ledger, so the write is a `PUT` of the full
         `{variants: [{model, weight}]}` rather than an append. Every variant's `model`
@@ -3817,11 +3825,14 @@ paths:
       summary: Price a declared token shape
       description: |
         The number the gateway would freeze for a request with this shape: the dearest
-        applicable price set over the declared input tokens and the output ceiling
+        permitted price set over the declared input tokens and the output ceiling
         (`outputTokens` clamped to the model's `maxOutputTokens`). Nothing is held or
         charged — the answer is the upper bound a real request could cost, and a real
         settle never exceeds it. An unknown model answers `VALIDATION`; a shape the
-        model's price cannot express answers the same.
+        model's price cannot express answers the same. Customer tier limits apply;
+        consumption keys additionally restrict model names and group channels. Aliases
+        require both the public and resolved model name to be allowed. Unavailable or
+        forbidden names return the same validation error, without hidden route details.
       requestBody:
         required: true
         content:
@@ -3856,15 +3867,19 @@ paths:
     get:
       security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
       x-consumption-key-access: own-records-or-metadata
-      summary: The public price catalog
+      summary: The customer-authorized price catalog
       description: |
-        Every route the operator sells — a model may be served by several
+        Every route this customer may use — a model may be served by several
         channels, and each `(model, channel)` pair lists its own row with the
         current price version and the route's `weight`, the relative preference
         for leading a request. These are the same rows `POST
         /v1/chat/completions` is priced by, without the channel's credential. A
         caller that wants a version's full rule set reads the flattened price on
-        each row; estimate-price answers what one shape costs.
+        each row; estimate-price answers what one shape costs. The customer tier filters
+        model names, and consumption keys also apply their own model and request-group
+        channel restrictions. Alias names and their resolved targets must both be allowed.
+        Customer sessions see the tier-authorized catalog, without a key-specific grant.
+        Alias prices use the alias version when present, otherwise the target version.
       responses:
         "200":
           description: The catalog, one row per route
@@ -4043,6 +4058,8 @@ paths:
       x-consumption-key-access: own-records-or-metadata
       summary: "A channel-model price row, signed by the operator"
       description: |
+        Current customer/key model and channel grants filter this direct price read.
+        Historical proof bundles already exported remain independently verifiable.
         The signed checkpoint of one `(channel, model)` price row — `version`'s exact
         row, or the latest when `version` is omitted — as a C2SP signed-note under the
         same Ed25519 key that signs tree heads (issue #204). The body reuses the
@@ -7339,11 +7356,15 @@ paths:
       description: |
         Only models with a relayable price are listed: a model the gateway cannot price cannot be
         frozen, so it cannot be served — and a `mode: event` price is a billable code for
-        `/api/v1/metering`, not a model any `/v1` surface relays, so it is not listed either.
+        `/api/v1/metering`, so it is omitted unless the channel uses the generic `tasks`
+        protocol. Task entries identify the generic task adapter, not certified media support.
         `owned_by` is the channel that serves the model, and `created` is when the version in force
         was written. Model aliases are listed beside the direct names (issue
         #286): a caller writes the public name and the channel relays the
-        upstream model it renames.
+        upstream model it renames. Only the authenticated customer's business channels,
+        tier-authorized models, key-authorized models and request-group channels appear.
+        Both public alias and resolved target must be allowed; denied or unpriced aliases
+        are omitted. Catalog reads never open provider credentials.
       responses:
         "200":
           description: The model list
@@ -7505,7 +7526,10 @@ paths:
         minutes — an image render, a video generation, a batch — where neither
         side wants a socket held open. The surface serves only channels whose
         `protocol` is `tasks`; upstream is called at `{baseUrl}/tasks` with the
-        channel credential as `Authorization: Bearer`.
+        channel credential as `Authorization: Bearer`. Customer tier, consumption-key
+        model and group-channel restrictions apply. Public aliases and signed spend
+        mandates are not supported by this generic task adapter and are refused
+        before provider contact. Use a permitted direct task model.
 
         Submission freezes the request's declared upper bound (`maxCostMinor`,
         or the channel price's own bound when the request names none), relays
