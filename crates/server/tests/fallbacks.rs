@@ -683,6 +683,13 @@ async fn a_fallback_alias_cannot_widen_the_keys_model_grant() {
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     let _ = response.into_body().collect().await.unwrap();
     assert_eq!(world.script.seen(), vec![requested.clone()]);
+    // The first upstream 502 cooled this fixture's shared credential. Advance
+    // that cooldown before the independent allowed-path admission below.
+    sqlx::query("UPDATE oxsum.channel_credentials SET cooldown_until=now()-interval '1 second' WHERE channel_id=(SELECT channel_id FROM oxsum.channels WHERE name=$1)")
+        .bind(&world.channel)
+        .execute(&world.pool)
+        .await
+        .unwrap();
     db.update_key_constraints(
         org.id,
         acting.key_id,
