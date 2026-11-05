@@ -243,3 +243,27 @@ Evidence: `crates/core/tests/customer_authority.rs`, `crates/server/tests/consum
 | GET /api/v1/business/customers and /customers/{organizationId} | Existing staff customersRead, or integration customersRead with selected customer filtering before pagination |
 
 No other business/customer/personal/gateway/deployment route accepts integration authority. Explicit bearer prevents cookie fallback; unsupported header credentials fail closed. Legacy oxs-svc- credentials never authenticate. Metering binds the current integration grant to original and terminal requests in core. External eventId/endUser is attribution, never customer selection or global operation identity.
+
+
+## Business provider additions (#641)
+
+All these routes require a current personal business-context session/TOTP. Explicit bearer/API-key headers prevent cookie fallback. Integration/consumption/deployment bearers have no authority here. Core checks current role/ownership in the mutation transaction before replay.
+
+| Method and path | Required authority |
+| --- | --- |
+| GET /api/v1/business/channels | Owner/admin; owned metadata page |
+| POST /api/v1/business/channels | Owner; connection and provider pool |
+| POST /api/v1/business/channels/{channelName}/credentials | Owner |
+| POST /api/v1/business/channels/{channelName}/billing-credential | Owner |
+| POST /api/v1/business/channels/{channelName}/credentials/{credentialId}/status | Owner, exact channel/credential |
+| POST /api/v1/business/channels/{channelName}/credentials/{credentialId}/remove | Owner, exact channel/credential |
+| POST /api/v1/business/channels/{channelName}/cache | Owner/admin routingWrite |
+| GET /api/v1/business/channels/{channelName}/prices | Owner/admin, owned channel |
+| POST /api/v1/business/channels/{channelName}/prices | Owner/admin catalogWrite |
+| GET /api/v1/business/channels/{channelName}/aliases | Owner/admin, owned channel |
+| POST /api/v1/business/channels/{channelName}/aliases | Owner/admin catalogWrite |
+| POST /api/v1/business/channels/{channelName}/aliases/{alias}/remove | Owner/admin, exact channel/alias |
+| GET /api/v1/business/model-fallbacks/{model} | Owner/admin, owned served model |
+| PUT /api/v1/business/model-fallbacks/{model} | Owner/admin routingWrite, all targets owned |
+
+Secrets are returned only as tails; audit binds full requests through a keyed fingerprint. Foreign identifiers return 404. No save triggers a network connection; DNS/redirect/internal endpoint policy and explicit probes remain #642.

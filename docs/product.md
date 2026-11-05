@@ -377,3 +377,8 @@ Existing consumption keys keep gateway access and their own usage/status/proofs.
 Task polling/cancellation and cached responses belong to the exact submitting key. Reusing a gateway idempotency key with another consumption key, protocol/path model or body conflicts. Old unbound replay records conflict until expiry; old cache rows miss. No ledger history, key identity or proof format is rewritten. WebSockets recheck current session/membership before each delivery and periodically while idle; logout, membership removal or account/context switching ends old access.
 
 The public `/verify?sample` example uses the captured public verifier fixture. It never selects a customer ledger by display name; choosing the demo name cannot publish customer bills (issue #637).
+
+
+### Business provider configuration (#641, T06.a)
+
+Business owners configure their own encrypted provider pools and billing credentials through current business sessions. Only the owner can alter the connection destination or protocol; owner/admin may manage the catalog, cache and routing configuration. These roles can read redacted provider metadata. Finance/support/viewer cannot read provider configuration; they retain separate customer/report capabilities. Every business configuration mutation records the current actor/reason with the configuration and an idempotent result in one transaction. A save never makes a provider call. Endpoint changes require explicitly supplied provider keys and clear the previous billing credential. Historical channel/price identities and in-flight snapshots stay stable. T06.b remains required for the complete destination policy and explicit connectivity checks; T24 provides the console.
