@@ -116,8 +116,8 @@ pub struct AdminOrganization {
     /// The tier profile assigned (issue #158): a capability package — limits and
     /// allowlists — never a pricing input. `None` when it carries none.
     pub tier: Option<String>,
-    /// When the platform suspended the organization's spend (issue #162);
-    /// `None` while it runs normally.
+    /// An applicable manual, dunning or archive timestamp. This compatibility
+    /// projection is `None` only when all admission restrictions are clear.
     pub suspended_at: Option<OffsetDateTime>,
     /// Days past a finalized statement's due date before the dunning sweep
     /// suspends the organization's spend (issue #258); `None` disables the
@@ -261,7 +261,7 @@ impl Db {
     /// Storage failures surface as [`WalletError`].
     pub async fn organizations(&self) -> Result<Vec<AdminOrganization>, WalletError> {
         let rows = sqlx::query(
-            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, o.payment_terms_days, o.tier, o.suspended_at, \
+            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, o.payment_terms_days, o.tier, COALESCE(o.suspended_at,o.dunning_suspended_at,(SELECT c.archived_at FROM oxsum.customer_profiles c WHERE c.organization_id=o.organization_id AND c.state='archived')) AS suspended_at, \
              o.dunning_grace_days, o.dunning_suspended_at, o.display_currency, o.display_rate_per_credit, \
              count(m.user_id) AS members \
              FROM oxsum.organizations o LEFT JOIN oxsum.memberships m USING (organization_id) \
@@ -299,7 +299,7 @@ impl Db {
         let (created_at, id) = after.unzip();
         let wanted = limit.clamp(1, 100) as i64;
         let rows = sqlx::query(
-            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, o.payment_terms_days, o.tier, o.suspended_at, \
+            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, o.payment_terms_days, o.tier, COALESCE(o.suspended_at,o.dunning_suspended_at,(SELECT c.archived_at FROM oxsum.customer_profiles c WHERE c.organization_id=o.organization_id AND c.state='archived')) AS suspended_at, \
              o.dunning_grace_days, o.dunning_suspended_at, o.display_currency, o.display_rate_per_credit, \
              count(m.user_id) AS members \
              FROM oxsum.organizations o LEFT JOIN oxsum.memberships m USING (organization_id) \
@@ -356,7 +356,7 @@ impl Db {
     /// failures surface as [`WalletError`].
     pub async fn organization_by_id(&self, id: Uuid) -> Result<AdminOrganization, WalletError> {
         let row = sqlx::query(
-            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, o.payment_terms_days, o.tier, o.suspended_at, o.dunning_grace_days, o.dunning_suspended_at,              o.display_currency, o.display_rate_per_credit,              count(m.user_id) AS members              FROM oxsum.organizations o LEFT JOIN oxsum.memberships m USING (organization_id)              WHERE o.organization_id = $1 GROUP BY o.organization_id",
+            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, o.payment_terms_days, o.tier, COALESCE(o.suspended_at,o.dunning_suspended_at,(SELECT c.archived_at FROM oxsum.customer_profiles c WHERE c.organization_id=o.organization_id AND c.state='archived')) AS suspended_at, o.dunning_grace_days, o.dunning_suspended_at,              o.display_currency, o.display_rate_per_credit,              count(m.user_id) AS members              FROM oxsum.organizations o LEFT JOIN oxsum.memberships m USING (organization_id)              WHERE o.organization_id = $1 GROUP BY o.organization_id",
         )
         .bind(id)
         .fetch_optional(self.pool())
@@ -717,7 +717,8 @@ impl Db {
 
     /// Suspends or reinstates an organization's spend (issue #162).
     ///
-    /// Suspension stamps `suspended_at`; reinstatement clears it. A suspended
+    /// Manual suspension stamps `suspended_at`; reinstatement clears only it.
+    /// Dunning and archive reasons are independent. A suspended
     /// organization's new holds refuse while its in-flight holds still settle,
     /// and money-in still lands so the line can be repaid — the flag gates
     /// admission, not the ledger. Answers whether the state actually changed:
@@ -823,27 +824,6 @@ impl Db {
                 "the organization is not known".into(),
             ));
         }
-        Ok(())
-    }
-
-    /// Drops the dunning sweep's ownership marker without touching `suspended_at`
-    /// (issue #258). An operator's manual suspend or reinstate through the PATCH
-    /// endpoint calls it after `set_suspended`: whoever manages the flag by hand
-    /// takes the sweep's marker off, so a later pass never "reinstates" a
-    /// suspension the operator owns now — or keeps the marker standing on an
-    /// organization the operator already reinstated.
-    ///
-    /// # Errors
-    ///
-    /// Storage failures surface as [`WalletError`].
-    pub async fn clear_dunning_suspension(&self, organization_id: Uuid) -> Result<(), WalletError> {
-        sqlx::query(
-            "UPDATE oxsum.organizations SET dunning_suspended_at = NULL \
-             WHERE organization_id = $1",
-        )
-        .bind(organization_id)
-        .execute(self.pool())
-        .await?;
         Ok(())
     }
 

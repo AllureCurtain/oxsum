@@ -5450,6 +5450,90 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/business/customers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List business customers
+         * @description Current customersRead capability. Keyset pagination by immutable organization UUID; all rows scoped to the selected business.
+         */
+        get: operations["listBusinessCustomers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/customers/{organizationId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read a business customer
+         * @description Current customersRead capability; unknown or foreign customer is 404.
+         */
+        get: operations["getBusinessCustomer"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update a customer profile
+         * @description Current customersWrite capability. Name/contact changes do not move identity or history. ExternalId is assigned once by creation or migration and is immutable. Same-key changed terms conflict.
+         */
+        patch: operations["updateBusinessCustomer"];
+        trace?: never;
+    };
+    "/api/v1/business/customers/{organizationId}/lifecycle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Archive or restore a customer
+         * @description Current customersWrite capability. Archive blocks new admission and preserves ledger, keys, debt, settlements and recovery. Restoring does not clear manual or dunning suspension.
+         */
+        post: operations["setCustomerLifecycle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/customers/{organizationId}/suspension": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set the manual customer suspension
+         * @description Current customersSuspend capability. Clearing manual suspension never clears dunning or archive state. Audit and state change commit together.
+         */
+        post: operations["setCustomerSuspension"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/business/staff": {
         parameters: {
             query?: never;
@@ -9669,6 +9753,50 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        BusinessCustomer: {
+            /** Format: uuid */
+            organizationId: string;
+            /** Format: uuid */
+            businessId: string;
+            /** @description Immutable business-scoped customer reference. Legacy and public signup accounts use their organization UUID. */
+            externalId: string;
+            name: string;
+            /** Format: email */
+            contactEmail: string | null;
+            /** @enum {string} */
+            state: "active" | "archived";
+            /** Format: date-time */
+            manualSuspendedAt: string | null;
+            /** Format: date-time */
+            dunningSuspendedAt: string | null;
+            /** @description True if manually suspended */
+            suspended: boolean;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        BusinessCustomerPage: {
+            customers: components["schemas"]["BusinessCustomer"][];
+            /** Format: uuid */
+            nextCursor: string | null;
+        };
+        BusinessCustomerUpdate: {
+            idempotencyKey: string;
+            name: string;
+            /** Format: email */
+            contactEmail: string | null;
+            reason: string;
+        };
+        BusinessCustomerLifecycle: {
+            idempotencyKey: string;
+            /** @enum {string} */
+            state: "active" | "archived";
+            reason: string;
+        };
+        BusinessCustomerSuspension: {
+            idempotencyKey: string;
+            suspended: boolean;
+            reason: string;
+        };
         /** @enum {string} */
         BusinessRole: "owner" | "admin" | "finance" | "support" | "viewer";
         /** @enum {string} */
@@ -11367,8 +11495,8 @@ export interface components {
              *     organization's new holds refuse — 403 on `/v1` —
              *     while its in-flight holds still settle and money-in still lands; suspending enqueues
              *     `org.suspended` to its subscribed webhook endpoints. A manual suspension is
-             *     never the dunning sweep's to lift — reinstating here also clears any marker a
-             *     sweep-set suspension left.
+             *     never the dunning sweep's to lift. Reinstating here clears only manual
+             *     suspension; an overdue or archived customer remains blocked.
              */
             suspended?: boolean;
             /**
@@ -13238,6 +13366,164 @@ export interface operations {
                 content: {
                     "application/json": {
                         data: components["schemas"]["BusinessPrincipal"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    listBusinessCustomers: {
+        parameters: {
+            query?: {
+                after?: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessCustomerPage"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    getBusinessCustomer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessCustomer"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    updateBusinessCustomer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BusinessCustomerUpdate"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessMutationResult"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    setCustomerLifecycle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BusinessCustomerLifecycle"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessMutationResult"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    setCustomerSuspension: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BusinessCustomerSuspension"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessMutationResult"];
                     };
                 };
             };

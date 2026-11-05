@@ -911,7 +911,7 @@ impl Wallet {
                 .execute(&mut *tx)
                 .await?;
             let suspended: bool = sqlx::query_scalar(
-                "SELECT suspended_at IS NOT NULL FROM oxsum.organizations \
+                "SELECT (suspended_at IS NOT NULL OR dunning_suspended_at IS NOT NULL OR EXISTS (SELECT 1 FROM oxsum.customer_profiles c WHERE c.organization_id=oxsum.organizations.organization_id AND c.state='archived')) FROM oxsum.organizations \
                  WHERE organization_id = $1",
             )
             .bind(organization)
@@ -1164,7 +1164,7 @@ impl Wallet {
             let constraints = sqlx::query(
                 "SELECT k.spend_limit_minor, k.budget_duration, k.model_allowlist, \
                         k.max_concurrent_holds, k.organization_id, \
-                        o.suspended_at IS NOT NULL AS suspended, \
+                        (o.suspended_at IS NOT NULL OR o.dunning_suspended_at IS NOT NULL OR EXISTS (SELECT 1 FROM oxsum.customer_profiles c WHERE c.organization_id=o.organization_id AND c.state='archived')) AS suspended, \
                         m.user_id AS budget_member, m.team_id AS budget_team \
                  FROM oxsum.api_keys k \
                  JOIN oxsum.organizations o ON o.organization_id = k.organization_id \
@@ -1759,7 +1759,7 @@ impl Wallet {
                         k.tokens_per_minute_scopes, \
                         k.revoked_at IS NOT NULL OR \
                             (k.expires_at IS NOT NULL AND k.expires_at <= now()) AS inactive, \
-                        o.suspended_at IS NOT NULL AS suspended, \
+                        (o.suspended_at IS NOT NULL OR o.dunning_suspended_at IS NOT NULL OR EXISTS (SELECT 1 FROM oxsum.customer_profiles c WHERE c.organization_id=o.organization_id AND c.state='archived')) AS suspended, \
                         m.user_id AS budget_member, m.team_id AS budget_team \
                  FROM oxsum.api_keys k \
                  JOIN oxsum.organizations o ON o.organization_id = k.organization_id \

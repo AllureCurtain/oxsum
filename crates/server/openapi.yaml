@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.102.0
+  version: 0.103.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -4027,6 +4027,152 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/customers:
+    get:
+      operationId: listBusinessCustomers
+      summary: List business customers
+      description: Current customersRead capability. Keyset pagination by immutable organization UUID; all rows scoped to the selected business.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - name: after
+          in: query
+          schema: { type: string, format: uuid }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessCustomerPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/customers/{organizationId}:
+    get:
+      operationId: getBusinessCustomer
+      summary: Read a business customer
+      description: Current customersRead capability; unknown or foreign customer is 404.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - name: organizationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessCustomer" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+    patch:
+      operationId: updateBusinessCustomer
+      summary: Update a customer profile
+      description: Current customersWrite capability. Name/contact changes do not move identity or history. ExternalId is assigned once by creation or migration and is immutable. Same-key changed terms conflict.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - name: organizationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessCustomerUpdate" }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/customers/{organizationId}/lifecycle:
+    post:
+      operationId: setCustomerLifecycle
+      summary: Archive or restore a customer
+      description: Current customersWrite capability. Archive blocks new admission and preserves ledger, keys, debt, settlements and recovery. Restoring does not clear manual or dunning suspension.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - name: organizationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessCustomerLifecycle" }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/customers/{organizationId}/suspension:
+    post:
+      operationId: setCustomerSuspension
+      summary: Set the manual customer suspension
+      description: Current customersSuspend capability. Clearing manual suspension never clears dunning or archive state. Audit and state change commit together.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - name: organizationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessCustomerSuspension" }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /api/v1/business/staff:
     get:
       operationId: businessStaff
@@ -7044,6 +7190,53 @@ components:
       description: "`hit` when the semantic cache answered instead of upstream (issue #497): the stored body re-served, billed at the cache-read rate, the settlement's v10 `cache` block naming the original turn's entry. Absent on a miss, a stream, or a channel that never opted in."
       schema: { type: string, enum: [hit] }
   schemas:
+    BusinessCustomer:
+      type: object
+      required: [organizationId, businessId, externalId, name, contactEmail, state, manualSuspendedAt, dunningSuspendedAt, suspended, createdAt]
+      properties:
+        organizationId: { type: string, format: uuid }
+        businessId: { type: string, format: uuid }
+        externalId: { type: string, description: Immutable business-scoped customer reference. Legacy and public signup accounts use their organization UUID. }
+        name: { type: string }
+        contactEmail: { type: [string, "null"], format: email }
+        state: { type: string, enum: [active, archived] }
+        manualSuspendedAt: { type: [string, "null"], format: date-time }
+        dunningSuspendedAt: { type: [string, "null"], format: date-time }
+        suspended: { type: boolean, description: True if manually suspended, dunning-suspended or archived. }
+        createdAt: { type: string, format: date-time }
+    BusinessCustomerPage:
+      type: object
+      required: [customers, nextCursor]
+      properties:
+        customers:
+          type: array
+          items: { $ref: "#/components/schemas/BusinessCustomer" }
+        nextCursor: { type: [string, "null"], format: uuid }
+    BusinessCustomerUpdate:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, name, contactEmail, reason]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        name: { type: string, minLength: 1, maxLength: 80 }
+        contactEmail: { type: [string, "null"], format: email }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    BusinessCustomerLifecycle:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, state, reason]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        state: { type: string, enum: [active, archived] }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    BusinessCustomerSuspension:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, suspended, reason]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        suspended: { type: boolean }
+        reason: { type: string, minLength: 1, maxLength: 500 }
     BusinessRole:
       type: string
       enum: [owner, admin, finance, support, viewer]
@@ -8618,8 +8811,8 @@ components:
             organization's new holds refuse — 403 on `/v1` —
             while its in-flight holds still settle and money-in still lands; suspending enqueues
             `org.suspended` to its subscribed webhook endpoints. A manual suspension is
-            never the dunning sweep's to lift — reinstating here also clears any marker a
-            sweep-set suspension left.
+            never the dunning sweep's to lift. Reinstating here clears only manual
+            suspension; an overdue or archived customer remains blocked.
         dunningGraceDays:
           type: integer
           format: int32

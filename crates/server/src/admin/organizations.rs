@@ -429,14 +429,8 @@ pub(crate) async fn update_organization(
             .await?;
     }
     if let Some(suspended) = request.suspended {
-        // A replayed flag writes nothing and enqueues no webhook — the
-        // transition, not the call, is what `org.suspended` announces. The
-        // operator's own call also clears any dunning marker: whoever manages
-        // the flag by hand takes the sweep's marker off, so a later pass never
-        // reinstates a suspension the operator owns now — or keeps the marker
-        // standing on one the operator already reinstated (issue #258).
+        // Manual changes never clear the independent dunning or archive reason.
         state.db.set_suspended(organization_id, suspended).await?;
-        state.db.clear_dunning_suspension(organization_id).await?;
     }
     let wallet = state.tenants.get(&organization.tenant_id).await?;
     let receipt = match request.credit_limit_minor {
