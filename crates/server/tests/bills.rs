@@ -338,7 +338,7 @@ async fn seed(app: &Router, cookie: &str, tag: &str, held: i64, charged: i64) ->
     let res = call(
         app,
         "POST",
-        "/api/v1/holds",
+        "/__test/holds",
         Some(json!({"idempotencyKey": hold_key, "amountMinor": held})),
         Some(cookie),
     )
@@ -352,7 +352,7 @@ async fn seed(app: &Router, cookie: &str, tag: &str, held: i64, charged: i64) ->
     let res = call(
         app,
         "POST",
-        "/api/v1/settlements",
+        "/__test/settlements",
         Some(json!({"holdKey": hold_key, "actualMinor": charged})),
         Some(cookie),
     )

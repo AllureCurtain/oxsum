@@ -36,10 +36,13 @@ async fn online_app(url: &str) -> (Router, PgPool) {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    let secret = oxsum_core::SecretKey::from_bytes([7; 32]);
     (
         support::app(
             db,
-            Config::new(Signup::Open, None).with_admin_token(OPERATOR_TOKEN),
+            Config::new(Signup::Open, None)
+                .with_admin_token(OPERATOR_TOKEN)
+                .with_secret(secret),
         ),
         pool,
     )
@@ -196,19 +199,24 @@ async fn the_scrape_answers_to_the_operator_token() {
 
 #[tokio::test]
 async fn a_scrape_counts_requests_and_reports_the_pool() {
-    let (app, _pool) = app_or_skip!();
+    let (app, pool) = app_or_skip!();
+    let model = support::flat_model(
+        &Db::from_pool(pool.clone()),
+        &oxsum_core::SecretKey::from_bytes([7; 32]),
+        1,
+    )
+    .await;
     let key = register(&app).await;
     top_up(&app, &key, 100).await;
 
-    // A request the middleware saw, and a hold the wallet took — the hold endpoint counts
-    // under its own route pattern.
+    // The health probe and a real gateway turn count under their route patterns.
     let (status, _) = call(&app, "GET", "/healthz", None, None).await;
     assert_eq!(status, StatusCode::OK);
     let (status, hold) = call(
         &app,
         "POST",
-        "/api/v1/holds",
-        Some(json!({"idempotencyKey": "metrics-hold-1", "amountMinor": 5})),
+        "/v1/chat/completions",
+        Some(support::chat_body(&model)),
         Some(&key),
     )
     .await;
@@ -226,9 +234,9 @@ async fn a_scrape_counts_requests_and_reports_the_pool() {
     let holds = sample(
         &body,
         "oxsum_http_requests_total",
-        &["route=\"/api/v1/holds\"", "status=\"200\""],
+        &["route=\"/v1/chat/completions\"", "status=\"200\""],
     )
-    .expect("the hold request was counted under its pattern, not its URL");
+    .expect("the gateway request was counted under its route pattern");
     assert_eq!(value(holds), 1.0, "{holds}");
     // The scrape-time gauges are there. Their values are the shared database's, so the
     // assertion is on presence — the gateway suite's scrape pins what they say.
@@ -247,11 +255,17 @@ async fn a_scrape_counts_requests_and_reports_the_pool() {
 
 #[tokio::test]
 async fn rate_limit_rejections_are_counted_by_surface() {
-    let (app, _pool) = app_or_skip!();
+    let (app, pool) = app_or_skip!();
+    let model = support::flat_model(
+        &Db::from_pool(pool.clone()),
+        &oxsum_core::SecretKey::from_bytes([7; 32]),
+        1,
+    )
+    .await;
     let key = register(&app).await;
     top_up(&app, &key, 100).await;
 
-    // A key capped at one request a minute: the second hold inside the window is refused.
+    // A key capped at one request a minute: the second gateway turn is refused.
     let (status, created) = call(
         &app,
         "POST",
@@ -268,8 +282,8 @@ async fn rate_limit_rejections_are_counted_by_surface() {
         let (status, _) = call(
             &app,
             "POST",
-            "/api/v1/holds",
-            Some(json!({"idempotencyKey": format!("metrics-rl-{n}"), "amountMinor": 1})),
+            "/v1/chat/completions",
+            Some(support::chat_body(&model)),
             Some(metered),
         )
         .await;
@@ -284,7 +298,7 @@ async fn rate_limit_rejections_are_counted_by_surface() {
     let rejected = sample(
         &body,
         "oxsum_rate_limit_rejections_total",
-        &["surface=\"api\""],
+        &["surface=\"gateway\""],
     )
     .expect("the rejection was counted");
     assert_eq!(value(rejected), 1.0, "{rejected}");

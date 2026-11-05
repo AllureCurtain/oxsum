@@ -213,7 +213,12 @@ async fn a_credentialed_endpoint_refuses_a_bad_body_in_the_envelope() {
     let key = register(&app).await;
 
     for path in ["/api/v1/holds", "/api/v1/settlements"] {
-        assert_envelope_rejection(&app, "POST", path, Some(&key), &WRONG_BODIES).await;
+        for (_, content_type, body) in WRONG_BODIES {
+            let (status, value) =
+                raw_call(&app, "POST", path, content_type, body, Some(&key)).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{value}");
+            assert_eq!(value["error"]["code"], "FORBIDDEN");
+        }
     }
 
     // The key's own surface: creating one, and changing one.

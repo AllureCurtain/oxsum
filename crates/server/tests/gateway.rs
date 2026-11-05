@@ -2484,6 +2484,24 @@ async fn a_stalled_turn_is_swept_when_its_hold_times_out() {
     // purpose: staleness is global, so the test scopes it with age and other tests' young rows
     // stay untouched.
     let hold_key = format!("req-{id}:hold");
+    // The actual gateway stream is still live. Its customer knows the hold
+    // key but must not be able to release it or choose a cheaper settlement.
+    let reserved = wallet.reserved().await.unwrap();
+    let head = wallet.log_size().await.unwrap();
+    for actual in [0, 1] {
+        let (status, denied) = call(
+            &world.app,
+            "POST",
+            "/api/v1/settlements",
+            Some(json!({"holdKey": hold_key, "actualMinor": actual})),
+            Some(&world.key),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{denied}");
+    }
+    assert_eq!(wallet.reserved().await.unwrap(), reserved);
+    assert_eq!(wallet.log_size().await.unwrap(), head);
+    assert!(db.open_hold(&hold_key).await.unwrap().is_some());
     sqlx::query("UPDATE oxsum.open_holds SET opened_at = $1 WHERE hold_key = $2")
         .bind(OffsetDateTime::now_utc() - Duration::from_secs(3600))
         .bind(&hold_key)
@@ -2882,7 +2900,7 @@ async fn a_model_allowlist_gates_the_gateway() {
     assert_eq!(world.script.seen().len(), 1);
     assert_eq!(world.wallet().await.reserved().await.unwrap(), 0);
 
-    // The generic hold endpoint names no model, so the list does not constrain it.
+    // Raw holds are forbidden even when a key has a model allowlist.
     let (status, body) = call(
         &world.app,
         "POST",
@@ -2891,7 +2909,7 @@ async fn a_model_allowlist_gates_the_gateway() {
         Some(&world.key),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
 
     // Clearing the list lets every model through again.
     let (status, body) = call(

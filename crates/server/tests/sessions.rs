@@ -526,7 +526,7 @@ async fn members_manage_only_their_own_keys() {
 }
 
 #[tokio::test]
-async fn a_session_hold_is_not_bound_by_any_key_limit() {
+async fn a_session_cannot_bypass_billing_authority_with_a_raw_hold() {
     let (app, _pool) = app_or_skip!(false);
     let (email, _registration, key) = register(&app, "sessionhold").await;
 
@@ -554,7 +554,7 @@ async fn a_session_hold_is_not_bound_by_any_key_limit() {
     .await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
 
-    // The session is a person, not a key: its hold is bounded by the balance only.
+    // A session cannot bypass billing authority or the key limits.
     let login = login(&app, &email, PASSWORD).await;
     assert_eq!(login.status, StatusCode::OK, "{}", login.body);
     let cookie = session_cookie(&login);
@@ -567,5 +567,5 @@ async fn a_session_hold_is_not_bound_by_any_key_limit() {
         Some(&cookie),
     )
     .await;
-    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert_eq!(res.status, StatusCode::FORBIDDEN, "{}", res.body);
 }
