@@ -2,7 +2,7 @@
 
 Updated: 2026-11-06. Contract issue: [#591](https://github.com/AllureCurtain/oxsum/issues/591).
 
-Implementation: in progress. Release: not ready. T00 is integrated; T01.a and T02 are in review; T01.b is in review (PR #628); T03.a is in review (PR #631); T03.b is in review (PR #632, CI green; Entire requires independent approval). T04.a is in review (PR #635); T04.b #634 is in review as PR #636 at `f82d89e`. T05.a #637 is in review as PR #639; #638 is locally validated in `.worktrees/scoped-integration-credentials`, in review as PR #640. T06.a is in review as PR #643 at `f1860e7`; T06.b #642 is implemented at `9548212` with broad checks running. No release readiness claimed.
+Implementation: in progress. Release: not ready. T00 is integrated; T01.a and T02 are in review; T01.b is in review (PR #628); T03.a is in review (PR #631); T03.b is in review (PR #632, CI green; Entire requires independent approval). T04.a is in review (PR #635); T04.b #634 is in review as PR #636 at `f82d89e`. T05.a #637 is in review as PR #639; #638 is locally validated in `.worktrees/scoped-integration-credentials`, in review as PR #640. T06.a is in review as PR #643 at `f1860e7`; T06.b #642 is locally validated at source `9548212`, in review as PR #646. No release readiness claimed.
 
 | Task | Issue | State | Depends on |
 | --- | --- | --- | --- |
@@ -70,4 +70,6 @@ T06.a #641 is in review as [PR #643](https://github.com/AllureCurtain/oxsum/pull
 Use the fields in [ACCEPTANCE.md](ACCEPTANCE.md). No skipped database suite counts as passed. Update this file and task evidence at every checkpoint; preserve old evidence when superseded.
 
 
-T06.b #642 implements shared pinned destination policy, audited explicit HEAD checks and immutable task endpoint/key snapshots at `95482124f67e4f89cfc2f7584ab150446e0f0c76`. Final 22 targeted checks, 26 process-shared tests, strict Clippy, format and frontend/codegen pass. The full workspace and doctest/PostgreSQL supplements are still running; see [T06.b evidence](evidence/T06-b.md). T07 is split into catalog/serving permissions #644 and complete cache context #645, both required; #644 development proceeds in its own worktree while T06.b final checks run.
+T06.b #642 implements shared pinned destination policy, audited explicit HEAD checks and immutable task endpoint/key snapshots at `95482124f67e4f89cfc2f7584ab150446e0f0c76`. Final 22 targeted checks, 26 process-shared tests, strict Clippy, format and frontend/codegen pass. The full workspace passed 1,541 tests (four configured skips); 29 doctests (five ignored examples) and 29 PostgreSQL conformance tests also passed; see [T06.b evidence](evidence/T06-b.md). T07 is split into catalog/serving permissions #644 and complete cache context #645, both required; #644 development proceeds in its own worktree after the T06.b local gate passed.
+
+T06.b [PR #646](https://github.com/AllureCurtain/oxsum/pull/646) at `e75a141` has passing CI. Entire trail97 has no blocking findings; independent approval remains missing.

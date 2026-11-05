@@ -24,7 +24,7 @@ The accepted contract and evidence live in [docs/roadmap/self-hosted-v1](docs/ro
 - [ ] [#638](https://github.com/AllureCurtain/oxsum/issues/638) — Scoped business integration/metering credentials (T05.b): PR #640; locally validated, CI/independent review pending.
 - [ ] [#597](https://github.com/AllureCurtain/oxsum/issues/597) — Business-owned provider configuration (T06): in progress; #641 and #642 both required.
 - [ ] [#641](https://github.com/AllureCurtain/oxsum/issues/641) — Business provider authority and atomic configuration (T06.a): PR #643; locally validated, review/integration pending.
-- [ ] [#642](https://github.com/AllureCurtain/oxsum/issues/642) — Provider destination policy and explicit probes (T06.b): implemented at `9548212`; 22 final targeted and 26 process-shared checks pass; full validation in progress.
+- [ ] [#642](https://github.com/AllureCurtain/oxsum/issues/642) — Provider destination policy and explicit probes (T06.b): draft PR #646; 1,541 runtime, 22 final targeted and 26 process-shared checks pass; docs/engine supplement validation in progress.
 - [ ] [#598](https://github.com/AllureCurtain/oxsum/issues/598) — Model catalog and private serving context (T07): pending.
 - [ ] [#599](https://github.com/AllureCurtain/oxsum/issues/599) — Versioned customer sale books (T08): pending.
 - [ ] [#600](https://github.com/AllureCurtain/oxsum/issues/600) — Bind sale terms into evidence (T09): pending.
