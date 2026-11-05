@@ -64,11 +64,8 @@ pub async fn require_key_gateway(
     Ok(next.run(request).await)
 }
 
-/// The metering surface's gate: a service credential, and only a service
-/// credential (issue #172). An organization's API key fails the same lookup a
-/// made-up secret does — its hash is in no `service_credentials` row — so an
-/// organization can never report its own usage, and the session cookie is not
-/// even read here.
+/// The metering surface accepts only current integration credentials. Scope
+/// and selected customer are rechecked inside the core authorization transaction.
 pub async fn require_service(
     State(state): State<AppState>,
     mut request: Request,
@@ -139,7 +136,7 @@ async fn resolve_key(
 }
 
 /// The `Bearer` credential, if the header is there and readable.
-fn bearer(headers: &HeaderMap) -> Option<&str> {
+pub(crate) fn bearer(headers: &HeaderMap) -> Option<&str> {
     headers
         .get(AUTHORIZATION)?
         .to_str()

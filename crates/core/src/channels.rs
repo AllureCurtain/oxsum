@@ -1398,8 +1398,9 @@ async fn current_prices(db: &Db, channel_id: Uuid) -> Result<Vec<ModelPrice>, Wa
 ///
 /// [`WalletError::Misconfigured`] on a stored row this build cannot read;
 /// storage failures surface as [`WalletError`].
-pub async fn event_price(
-    db: &Db,
+pub(crate) async fn event_price(
+    connection: &mut sqlx::PgConnection,
+    business: Uuid,
     channel: &str,
     code: &str,
     pinned: Option<i64>,
@@ -1411,14 +1412,15 @@ pub async fn event_price(
                 p.cache_write_1h_price_per_million, p.reasoning_price_per_million, \
                 p.cost_per_request, p.mode, p.upstream_prices, p.rules, p.created_at \
          FROM oxsum.channel_prices p JOIN oxsum.channels c USING (channel_id) \
-         WHERE c.name = $1 AND p.model = $2 AND p.mode = 'event' \
+         WHERE c.name = $1 AND p.model = $2 AND p.mode = 'event' AND c.business_id = $4 \
            AND ($3::int IS NULL OR p.version = $3) \
          ORDER BY p.version DESC LIMIT 1",
     )
     .bind(channel)
     .bind(code)
     .bind(pinned.map(|v| v as i32))
-    .fetch_optional(db.pool())
+    .bind(business)
+    .fetch_optional(connection)
     .await?;
     row.map(|row| {
         Ok(ModelPrice {

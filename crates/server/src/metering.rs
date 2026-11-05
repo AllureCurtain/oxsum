@@ -3,9 +3,9 @@
 //! rules — price resolution, hold/settle/release against the wallet, the watch
 //! row — live in `oxsum_core`'s metering module.
 //!
-//! The credential is a service credential and nothing else: `require_service`
-//! refuses API keys and never reads the session cookie, so an organization can
-//! never report its own usage.
+//! The credential needs explicit meteringWrite and a selected customer grant.
+//! `require_service` refuses customer keys and cookies; core binds current grants
+//! to the original and final metering requests before funds can change.
 
 use axum::extract::{Extension, State};
 use axum::routing::post;

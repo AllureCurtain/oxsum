@@ -309,6 +309,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0076_invitation_consent",
         include_str!("../migrations/0076_invitation_consent.sql"),
     ),
+    (
+        "0077_integration_credentials",
+        include_str!("../migrations/0077_integration_credentials.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.

@@ -100,6 +100,54 @@ async fn admission_lock(tx: &mut Transaction<'_, Postgres>, id: Uuid) -> Result<
     Ok(())
 }
 impl Db {
+    pub async fn integration_customers(
+        &self,
+        service: &crate::ActingService,
+        after: Option<Uuid>,
+        limit: i64,
+    ) -> Result<BusinessCustomerPage, WalletError> {
+        if !(1..=100).contains(&limit) {
+            return Err(WalletError::InvalidInput(
+                "limit must be between 1 and 100".into(),
+            ));
+        }
+        let mut tx = self.pool().begin().await?;
+        crate::integration_credentials::require_integration(
+            &mut tx,
+            service,
+            crate::IntegrationScope::CustomersRead,
+            None,
+        )
+        .await?;
+        let rows=sqlx::query(&format!("SELECT {COLUMNS} FROM oxsum.customer_profiles c JOIN oxsum.organizations o USING (organization_id) JOIN oxsum.integration_credential_customers a ON a.business_id=c.business_id AND a.organization_id=c.organization_id WHERE c.business_id=$1 AND a.credential_id=$2 AND ($3::uuid IS NULL OR c.organization_id>$3) ORDER BY c.organization_id LIMIT $4"))
+            .bind(service.business_id).bind(service.credential_id).bind(after).bind(limit+1).fetch_all(&mut *tx).await?;
+        let mut customers = rows.iter().map(from_row).collect::<Result<Vec<_>, _>>()?;
+        let next_cursor = if customers.len() > limit as usize {
+            customers.truncate(limit as usize);
+            customers.last().map(|c| c.organization_id)
+        } else {
+            None
+        };
+        Ok(BusinessCustomerPage {
+            customers,
+            next_cursor,
+        })
+    }
+    pub async fn integration_customer(
+        &self,
+        service: &crate::ActingService,
+        id: Uuid,
+    ) -> Result<BusinessCustomer, WalletError> {
+        let mut tx = self.pool().begin().await?;
+        crate::integration_credentials::require_integration(
+            &mut tx,
+            service,
+            crate::IntegrationScope::CustomersRead,
+            Some(id),
+        )
+        .await?;
+        customer(&mut tx, service.business_id, id).await
+    }
     pub async fn business_customers(
         &self,
         token: &str,

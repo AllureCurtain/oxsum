@@ -122,6 +122,13 @@ pub(crate) async fn customers(
     headers: HeaderMap,
     crate::error::ApiQuery(query): crate::error::ApiQuery<CustomerQuery>,
 ) -> ApiResult<oxsum_core::BusinessCustomerPage> {
+    if crate::auth::has_machine_credential(&headers) {
+        let service = integration(&state, &headers).await?;
+        return ok(state
+            .db
+            .integration_customers(&service, query.after, query.limit.unwrap_or(50))
+            .await?);
+    }
     ok(state
         .db
         .business_customers(
@@ -136,6 +143,10 @@ pub(crate) async fn customer(
     headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
 ) -> ApiResult<oxsum_core::BusinessCustomer> {
+    if crate::auth::has_machine_credential(&headers) {
+        let service = integration(&state, &headers).await?;
+        return ok(state.db.integration_customer(&service, id).await?);
+    }
     ok(state
         .db
         .business_customer(&personal_token(&headers)?, id)
@@ -194,5 +205,52 @@ pub(crate) async fn revoke_customer_invitation(
     ok(state
         .db
         .revoke_invitation(&personal_token(&headers)?, id, true, &request)
+        .await?)
+}
+
+async fn integration(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<oxsum_core::ActingService, ApiError> {
+    let secret = crate::auth::bearer(headers).ok_or(ApiError::Unauthorized)?;
+    state
+        .db
+        .authenticate_service(secret)
+        .await?
+        .ok_or(ApiError::Unauthorized)
+}
+pub(crate) async fn integration_credentials(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    crate::error::ApiQuery(query): crate::error::ApiQuery<CustomerQuery>,
+) -> ApiResult<oxsum_core::IntegrationCredentialPage> {
+    ok(state
+        .db
+        .integration_credentials(
+            &personal_token(&headers)?,
+            query.after,
+            query.limit.unwrap_or(50),
+        )
+        .await?)
+}
+pub(crate) async fn create_integration_credential(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<oxsum_core::IntegrationCredentialRequest>,
+) -> ApiResult<oxsum_core::CreatedIntegrationCredential> {
+    ok(state
+        .db
+        .create_integration_credential(&personal_token(&headers)?, &request)
+        .await?)
+}
+pub(crate) async fn revoke_integration_credential(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
+    ApiJson(request): ApiJson<oxsum_core::IntegrationCredentialRevokeRequest>,
+) -> ApiResult<oxsum_core::BusinessMutationResult> {
+    ok(state
+        .db
+        .revoke_integration_credential(&personal_token(&headers)?, id, &request)
         .await?)
 }
