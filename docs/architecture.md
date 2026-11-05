@@ -235,3 +235,7 @@ Migration 0072 adds one deployment Business and maps every existing organization
 Channels and subscription plans acquire the business foreign key, with aliases/credentials/price history inheriting channel ownership and subscription periods inheriting plan ownership. Existing collection history stays with its customer. Environment-based merchant configuration remains the default-business bootstrap until T14. Singleton business storage refuses unsupported second-business creation.
 
 An immutable business_migrations receipt captures counts at migration time. `ownership-preview` reads counts before migration without opening ledgers. Business staff is a separate, initially empty table: migration never promotes customer owners. Setup and staff capabilities are T03; configuration operations remain under deployment authority until that surface integrates.
+
+## Initial owner transaction (#629)
+
+`business_setup.rs` serializes setup on the singleton business row. Setup-token hashes live in `business_setup_tokens` with intended email, expiry, mint idempotency and acceptance. Existing-owner consent locks the live session/user/membership rows; fresh-owner registration uses `users::insert_registration` in the same transaction as staff assignment, profile initialization, token consumption and audit. No ledger is opened. The setup audit is immutable; customer identity mappings and old proofs are unchanged. Role/session-context and registration-policy enforcement are the next T03.b boundary.

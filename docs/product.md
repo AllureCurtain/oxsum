@@ -341,3 +341,7 @@ Customers may inspect reservations but cannot create raw holds, select actual us
 ## Self-hosted customer identity foundation (#593)
 
 Each deployment has one Business; existing organizations are its individual/team customer billing accounts. Migration preserves account IDs, wallet balances, ledger origins and signed evidence. Customer external IDs initially equal organization UUIDs. New organizations acquire business ownership in the same creation transaction; unused accounts do not create physical ledger schemas. A customer owner has no business staff authority. The business starts uninitialized with no staff; explicit authenticated setup is the dependent T03 workflow. The stored registration policy defaults to invite, while existing `OXSUM_SIGNUP` enforcement remains until T03 connects it to setup.
+
+## Initial business ownership (#629)
+
+The deployment administrator explicitly invites the initial business owner by email through a short-lived, single-use setup token. The named person accepts while logged in, or registers with the token on a new installation. Setup cannot be publicly claimed by an arbitrary customer owner and cannot run again after initialization. Setup records the business name and invite-only policy. Staff sessions, role management and policy enforcement are the dependent T03.b implementation; this setup foundation alone does not complete business operation.
