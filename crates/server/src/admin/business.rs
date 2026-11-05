@@ -23,3 +23,13 @@ pub(crate) async fn customer(
         .customer_profile(business.id, organization_id)
         .await?)
 }
+
+pub(crate) async fn setup_token(
+    State(state): State<AppState>,
+    crate::error::ApiJson(request): crate::error::ApiJson<oxsum_core::BusinessSetupTokenRequest>,
+) -> ApiResult<oxsum_core::BusinessSetupToken> {
+    ok(state
+        .db
+        .mint_business_setup(oxsum_core::SetupAuthority::Deployment, &request)
+        .await?)
+}

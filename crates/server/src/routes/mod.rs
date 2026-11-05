@@ -23,6 +23,7 @@ use crate::error::ApiError;
 
 mod auth;
 pub(crate) mod billing;
+mod business;
 mod device;
 mod experiments;
 mod keys;
@@ -187,6 +188,8 @@ pub fn router(state: AppState) -> Router {
     // error, so it must answer 200 with no session at all.
     let open = Router::new()
         .route("/auth/register", post(auth::register))
+        .route("/business/setup", post(business::accept_setup))
+        .route("/business/setup/register", post(business::register_owner))
         .route("/auth/login", post(auth::login))
         .route("/auth/logout", post(auth::logout))
         // The login's second factor (issue #504): enrollment needs a session,
