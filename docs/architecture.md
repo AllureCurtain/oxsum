@@ -227,3 +227,11 @@ Only relationships; the ledger's table structure is authoritative in `crates/dou
 ## Authorized manual receipts (#624)
 
 `manual_receipts.rs` stores immutable customer/key/reference/amount/reason and the operator authorization audit in one transaction before money moves. A distinct authority type is supplied by the authenticated deployment handler. Stable receipt UUIDs derive ledger keys, so an interrupted append/deposit/statement reconciliation can be recovered by the identical request. This bounded recovery path precedes T11/T15 transaction and payment-order work; there is no automatic recovery scan yet. Customer topups always refuse. Shared HTTP funding fixtures live only in `tests/support`, outside production routers; financial authority tests use the production router directly.
+
+## Business ownership without ledger migration (#593)
+
+Migration 0072 adds one deployment Business and maps every existing organization to a CustomerProfile keyed by the original organization ID. The profile holds business/external identity and lifecycle fields; existing membership, API keys, tenant pointers, wallet schemas, statements and proof origins are unchanged. An organization insert trigger assigns the same business in the creating transaction, covering signup, invitations, teams and seed without changing those identity paths. Empty accounts still create no ledger schema.
+
+Channels and subscription plans acquire the business foreign key, with aliases/credentials/price history inheriting channel ownership and subscription periods inheriting plan ownership. Existing collection history stays with its customer. Environment-based merchant configuration remains the default-business bootstrap until T14. Singleton business storage refuses unsupported second-business creation.
+
+An immutable business_migrations receipt captures counts at migration time. `ownership-preview` reads counts before migration without opening ledgers. Business staff is a separate, initially empty table: migration never promotes customer owners. Setup and staff capabilities are T03; configuration operations remain under deployment authority until that surface integrates.
