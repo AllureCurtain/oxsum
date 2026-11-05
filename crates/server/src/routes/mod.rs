@@ -82,8 +82,7 @@ pub fn router(state: AppState) -> Router {
             "/org/teams/{team_id}",
             patch(org::update_team).delete(org::delete_team),
         )
-        // A/B experiments (issue #509): the list and the results any member
-        // reads, the writes owner/admin-only inside the handlers.
+        // Account-wide experiments require a current owner/admin session.
         .route("/org/experiments", get(experiments::list_experiments))
         .route("/org/experiments/{name}", put(experiments::put_experiment))
         .route(

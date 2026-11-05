@@ -43,9 +43,8 @@ const LAST_USED_TOUCH: Duration = Duration::from_secs(5 * 60);
 /// Who acts: an organization's API key, or a logged-in user acting as their organization.
 #[derive(Debug, Clone)]
 pub enum Principal {
-    /// A machine credential: acts as the organization, with the organization's full authority.
-    /// Pre-session behaviour, deliberately unchanged — a key is not a person. Carries which
-    /// key acted, so the hold path can attribute spend to it and enforce its spend limit.
+    /// A consumption credential: spends for one customer and reads its own records.
+    /// Account administration requires a personal session or business capability.
     Key(KeyPrincipal),
     /// A person: the user, the organization they act as, and their role in it.
     Session(SessionPrincipal),
@@ -98,12 +97,11 @@ impl Principal {
 
     /// What the principal may do with the organization's keys (docs/product.md, "Roles").
     ///
-    /// Roles constrain sessions, not keys: a key keeps acting as the whole organization,
-    /// while a user acts with the authority their role grants them.
+    /// Keys see their own metadata; sessions carry the user's current role scope.
     #[must_use]
     pub fn key_scope(&self) -> KeyScope {
         match self {
-            Self::Key(_) => KeyScope::Organization,
+            Self::Key(key) => KeyScope::Key(key.key.key_id),
             Self::Session(session) => match session.role {
                 Role::Owner | Role::Admin => KeyScope::All,
                 Role::Member => KeyScope::Own(session.user.id),
@@ -113,8 +111,7 @@ impl Principal {
 
     /// Who manages the organization's memberships, if this credential may at all.
     ///
-    /// The one place a key does *not* act with the organization's full authority: managing
-    /// members is a person's action, and a key is not a person and names no role. A session
+    /// Managing members is a person's action, and a key names no role. A session
     /// carries the person and their role, and the rules in `crates/core/src/orgs.rs` refuse a
     /// member; a key is refused here, before any rule is reached (docs/decisions.md,
     /// "membership management is a person's action").
@@ -140,7 +137,9 @@ impl Principal {
 /// How much of an organization's key inventory a principal may see and touch.
 #[derive(Debug, Clone, Copy)]
 pub enum KeyScope {
-    /// The organization itself (an API key acting as it): every key, as before sessions.
+    /// A consumption credential may read only its own metadata; no mutations.
+    Key(Uuid),
+    /// Trusted provisioning/maintenance code: every key, never issued to a credential.
     Organization,
     /// An owner or admin: every key of the organization.
     All,

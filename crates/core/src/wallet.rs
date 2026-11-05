@@ -1750,6 +1750,12 @@ impl Wallet {
         let row = {
             let created_by = match scope {
                 crate::KeyScope::Own(user_id) => Some(user_id),
+                crate::KeyScope::Key(id) => {
+                    if id != *key_id {
+                        return Ok(None);
+                    }
+                    None
+                }
                 crate::KeyScope::Organization | crate::KeyScope::All => None,
             };
             sqlx::query(
@@ -2686,6 +2692,22 @@ impl Wallet {
         }))
     }
 
+    /// Customer evidence must apply the same attribution scope as record lists.
+    pub async fn scoped_receipt_proof(
+        &self,
+        entry_id: EntryId,
+        key: Option<&HeadSigningKey>,
+        scope: &crate::CustomerRecordScope,
+    ) -> Result<Option<ProofBundle>, WalletError> {
+        let Some(stored) = self.store.get(entry_id).await? else {
+            return Ok(None);
+        };
+        if !scope.allows_entry(&stored.entry) {
+            return Ok(None);
+        }
+        self.receipt_proof(entry_id, key).await
+    }
+
     /// The signed price binding for one settlement entry, or `None` when it is not a
     /// settlement or the price it names is gone.
     ///
@@ -3195,7 +3217,27 @@ impl Wallet {
         before: Option<u64>,
         limit: usize,
     ) -> Result<ListPage<LogEntry>, WalletError> {
+        self.scoped_entries_page(
+            before,
+            limit,
+            &crate::CustomerRecordScope {
+                key_ids: None,
+                include_unattributed: true,
+            },
+        )
+        .await
+    }
+    /// Raw entries filtered by their immutable provenance before they leave core.
+    pub async fn scoped_entries_page(
+        &self,
+        before: Option<u64>,
+        limit: usize,
+        scope: &crate::CustomerRecordScope,
+    ) -> Result<ListPage<LogEntry>, WalletError> {
         self.scan_back(before, limit.clamp(1, 100), 100, &mut |stored| {
+            if !scope.allows_entry(&stored.entry) {
+                return None;
+            }
             Some(LogEntry {
                 index: stored
                     .require_index()
@@ -3298,7 +3340,28 @@ impl Wallet {
         before: Option<u64>,
         limit: usize,
     ) -> Result<ListPage<TransactionEntry>, WalletError> {
+        self.scoped_transactions_page(
+            before,
+            limit,
+            &crate::CustomerRecordScope {
+                key_ids: None,
+                include_unattributed: true,
+            },
+        )
+        .await
+    }
+
+    /// Apply immutable record attribution before selecting a page of rows.
+    pub async fn scoped_transactions_page(
+        &self,
+        before: Option<u64>,
+        limit: usize,
+        scope: &crate::CustomerRecordScope,
+    ) -> Result<ListPage<TransactionEntry>, WalletError> {
         self.scan_back(before, limit.clamp(1, 100), BILLS_SCAN, &mut |stored| {
+            if !scope.allows_entry(&stored.entry) {
+                return None;
+            }
             let kind = self.classify(stored)?;
             Some(TransactionEntry {
                 id: stored.entry.id().to_string(),
@@ -3580,8 +3643,26 @@ impl Wallet {
         before: Option<u64>,
         limit: usize,
     ) -> Result<ListPage<RequestEntry>, WalletError> {
+        self.scoped_requests_page(
+            before,
+            limit,
+            &crate::CustomerRecordScope {
+                key_ids: None,
+                include_unattributed: true,
+            },
+        )
+        .await
+    }
+
+    /// Apply immutable record attribution before selecting a page of rows.
+    pub async fn scoped_requests_page(
+        &self,
+        before: Option<u64>,
+        limit: usize,
+        scope: &crate::CustomerRecordScope,
+    ) -> Result<ListPage<RequestEntry>, WalletError> {
         Ok(self
-            .settlements_page(before, limit)
+            .scoped_settlements_page(before, limit, scope)
             .await?
             .map(|turn| RequestEntry {
                 booked_on: turn.booked_on,
@@ -3627,7 +3708,28 @@ impl Wallet {
         before: Option<u64>,
         limit: usize,
     ) -> Result<ListPage<SettledTurn>, WalletError> {
+        self.scoped_settlements_page(
+            before,
+            limit,
+            &crate::CustomerRecordScope {
+                key_ids: None,
+                include_unattributed: true,
+            },
+        )
+        .await
+    }
+
+    /// Apply immutable record attribution before selecting a page of rows.
+    pub async fn scoped_settlements_page(
+        &self,
+        before: Option<u64>,
+        limit: usize,
+        scope: &crate::CustomerRecordScope,
+    ) -> Result<ListPage<SettledTurn>, WalletError> {
         self.scan_back(before, limit.clamp(1, 100), REQUESTS_SCAN, &mut |stored| {
+            if !scope.allows_entry(&stored.entry) {
+                return None;
+            }
             let record = SettlementRecord::parse(stored.entry.description().as_str())?;
             Some(SettledTurn {
                 booked_on: stored.entry.booking_date(),

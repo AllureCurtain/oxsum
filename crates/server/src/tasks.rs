@@ -19,15 +19,15 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router, middleware};
 use oxsum_core::{
-    ActingKey, NewTask, Organization, Task, TaskKind, TaskOutcome, TaskState, fingerprint,
-    hold_description, route_order_stats,
+    ActingKey, NewTask, Organization, Task, TaskKind, TaskOutcome, TaskState,
+    credential_fingerprint, hold_description, route_order_stats,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::AppState;
 use crate::auth::require_key_gateway;
-use crate::gateway::error::{BALANCE_MINOR, FREEZE_MINOR, GatewayError, REQUEST_ID};
+use crate::gateway::error::{FREEZE_MINOR, GatewayError, REQUEST_ID};
 use crate::today;
 
 /// The task surface, nested under `/v1` by [`crate::routes`].
@@ -83,14 +83,25 @@ async fn submit(
             &request_id,
         );
     };
-    match submit_inner(&state, &organization, &key, map, &request_id, &headers).await {
-        Ok((response, task)) => {
+    let mut claimed = None;
+    match submit_inner(
+        &state,
+        &organization,
+        &key,
+        map,
+        &request_id,
+        &headers,
+        &mut claimed,
+    )
+    .await
+    {
+        Ok((response, completed_body)) => {
             // The claim completes with the answer it produced: a retry under
             // the same key replays this body rather than submitting twice.
-            if let Some(key) = headers.get("idempotency-key").and_then(|v| v.to_str().ok()) {
+            if let (Some(key), Some(body)) = (claimed.as_deref(), completed_body.as_ref()) {
                 let _ = state
                     .db
-                    .complete_request(organization.id, key, 200, &response_json_body(&task))
+                    .complete_request(organization.id, key, 200, body)
                     .await;
             }
             response
@@ -98,7 +109,7 @@ async fn submit(
         Err(error) => {
             // A refused submit frees the claim so a corrected retry can take
             // it — the refusal carried no state worth replaying.
-            if let Some(key) = headers.get("idempotency-key").and_then(|v| v.to_str().ok()) {
+            if let Some(key) = claimed.as_deref() {
                 let _ = state.db.release_request(organization.id, key).await;
             }
             error_response(error, &request_id)
@@ -116,7 +127,8 @@ async fn submit_inner(
     body: &serde_json::Map<String, Value>,
     request_id: &str,
     headers: &HeaderMap,
-) -> Result<(Response, Task), GatewayError> {
+    claimed: &mut Option<String>,
+) -> Result<(Response, Option<Value>), GatewayError> {
     let kind = match body.get("kind").and_then(Value::as_str) {
         Some(raw) => TaskKind::parse(raw)?,
         None => {
@@ -140,18 +152,21 @@ async fn submit_inner(
         .get("idempotency-key")
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
+    let bound_fingerprint = credential_fingerprint(
+        key.key_id,
+        "tasks",
+        None,
+        &serde_json::to_vec(body).unwrap_or_default(),
+    );
     if let Some(key) = &idem_key {
         match state
             .db
-            .claim_request(
-                organization.id,
-                key,
-                &fingerprint(&serde_json::to_vec(body).unwrap_or_default()),
-                request_id,
-            )
+            .claim_request(organization.id, key, &bound_fingerprint, request_id)
             .await
         {
-            Ok(oxsum_core::Claim::Fresh { .. }) => {}
+            Ok(oxsum_core::Claim::Fresh { .. }) => {
+                *claimed = Some(key.clone());
+            }
             Ok(oxsum_core::Claim::InFlight) => {
                 return Err(GatewayError::idempotency_in_flight());
             }
@@ -168,16 +183,7 @@ async fn submit_inner(
                     serde_json::to_vec(&body).unwrap_or_default(),
                     &stored,
                 );
-                // A replay answers the stored body — the task read is only
-                // for the record; a task the replay predates reads nothing.
-                let task = state
-                    .db
-                    .task(organization.id, stored.parse().unwrap_or_default())
-                    .await
-                    .ok()
-                    .flatten()
-                    .unwrap_or_else(dummy_task);
-                return Ok((response, task));
+                return Ok((response, None));
             }
             Err(error) => return Err(error.into()),
         }
@@ -283,8 +289,7 @@ async fn submit_inner(
         }
         return Err(match error {
             oxsum_core::WalletError::InsufficientFunds => {
-                let available = wallet.available().await.ok();
-                GatewayError::freeze_refused(freeze, available, None)
+                GatewayError::freeze_refused(freeze, None)
             }
             other => other.into(),
         });
@@ -376,10 +381,9 @@ async fn submit_inner(
         })
         .await?;
 
-    let balance = wallet.available().await.ok();
     Ok((
-        task_response(&task, request_id, Some(freeze), balance),
-        task,
+        task_response(&task, request_id, Some(freeze)),
+        Some(response_json_body(&task)),
     ))
 }
 
@@ -389,16 +393,16 @@ async fn submit_inner(
 async fn poll(
     State(state): State<AppState>,
     Extension(organization): Extension<Organization>,
-    Extension(_key): Extension<ActingKey>,
+    Extension(key): Extension<ActingKey>,
     Path(task_id): Path<Uuid>,
 ) -> Response {
-    match state.db.task(organization.id, task_id).await {
-        Ok(Some(task)) => task_response(&task, &task_id.to_string(), None, None),
-        Ok(None) => GatewayError::Invalid {
-            message: format!("no task {task_id}"),
-            param: Some("taskId"),
-        }
-        .into_response(),
+    match state
+        .db
+        .task_for_key(organization.id, key.key_id, task_id)
+        .await
+    {
+        Ok(Some(task)) => task_response(&task, &task_id.to_string(), None),
+        Ok(None) => GatewayError::NotFound.into_response(),
         Err(error) => {
             tracing::error!(%error, %task_id, "reading a task failed");
             GatewayError::Internal.into_response()
@@ -412,17 +416,17 @@ async fn poll(
 async fn cancel(
     State(state): State<AppState>,
     Extension(organization): Extension<Organization>,
-    Extension(_key): Extension<ActingKey>,
+    Extension(key): Extension<ActingKey>,
     Path(task_id): Path<Uuid>,
 ) -> Response {
-    let task = match state.db.task(organization.id, task_id).await {
+    let task = match state
+        .db
+        .task_for_key(organization.id, key.key_id, task_id)
+        .await
+    {
         Ok(Some(task)) => task,
         Ok(None) => {
-            return GatewayError::Invalid {
-                message: format!("no task {task_id}"),
-                param: Some("taskId"),
-            }
-            .into_response();
+            return GatewayError::NotFound.into_response();
         }
         Err(error) => {
             tracing::error!(%error, %task_id, "reading a task to cancel failed");
@@ -431,7 +435,7 @@ async fn cancel(
     };
     // A terminal task is already settled: cancel answers it back unchanged.
     if task.state.is_terminal() {
-        return task_response(&task, &task_id.to_string(), None, None);
+        return task_response(&task, &task_id.to_string(), None);
     }
     // Ask upstream to stop the job — best-effort, because a refused cancel
     // still ends the billing side. The poll pass will not see the task again.
@@ -484,8 +488,12 @@ async fn cancel(
         }
     }
     // Read the row back: the settle updated it terminal.
-    match state.db.task(organization.id, task_id).await {
-        Ok(Some(task)) => task_response(&task, &task_id.to_string(), None, None),
+    match state
+        .db
+        .task_for_key(organization.id, key.key_id, task_id)
+        .await
+    {
+        Ok(Some(task)) => task_response(&task, &task_id.to_string(), None),
         _ => GatewayError::Internal.into_response(),
     }
 }
@@ -534,26 +542,8 @@ async fn release_task_hold(state: &AppState, hold_key: &str) {
 }
 
 /// The task row as the wire spells it — camelCase, `taskId` first.
-fn task_response(
-    task: &Task,
-    request_id: &str,
-    freeze: Option<i64>,
-    balance: Option<i64>,
-) -> Response {
-    let mut response = Json(json!({
-        "taskId": task.task_id,
-        "state": task.state.as_str(),
-        "kind": task.kind.as_str(),
-        "model": task.model,
-        "channel": task.channel,
-        "submittedAt": task.submitted_at,
-        "completedAt": task.completed_at,
-        "result": task.result_json,
-        "error": task.error_json,
-        "usage": task.usage_json,
-        "chargedMinor": task.charged_minor,
-    }))
-    .into_response();
+fn task_response(task: &Task, request_id: &str, freeze: Option<i64>) -> Response {
+    let mut response = Json(response_json_body(task)).into_response();
     let headers = response.headers_mut();
     if let Ok(value) = axum::http::HeaderValue::from_str(request_id) {
         headers.insert(REQUEST_ID, value);
@@ -562,11 +552,6 @@ fn task_response(
         && let Ok(value) = axum::http::HeaderValue::from_str(&freeze.to_string())
     {
         headers.insert(FREEZE_MINOR, value);
-    }
-    if let Some(balance) = balance
-        && let Ok(value) = axum::http::HeaderValue::from_str(&balance.to_string())
-    {
-        headers.insert(BALANCE_MINOR, value);
     }
     response
 }
@@ -607,31 +592,6 @@ fn preview(text: &str) -> String {
     text.chars().take(200).collect()
 }
 
-/// A never-reached task for a replayed claim — the response is the stored
-/// body, so the `Task` the tuple carries is a placeholder the caller never
-/// reads. `Default` does not exist on `Task`, so the fill is explicit.
-fn dummy_task() -> Task {
-    Task {
-        task_id: Uuid::nil(),
-        organization_id: Uuid::nil(),
-        key_id: None,
-        channel_id: Uuid::nil(),
-        channel: String::new(),
-        external_task_id: String::new(),
-        kind: TaskKind::Custom,
-        state: TaskState::Submitted,
-        hold_key: String::new(),
-        freeze_minor: 0,
-        charged_minor: None,
-        model: String::new(),
-        result_json: None,
-        error_json: None,
-        usage_json: None,
-        submitted_at: time::OffsetDateTime::UNIX_EPOCH,
-        completed_at: None,
-    }
-}
-
 /// The JSON body an `Ok` submit response carries — reconstructed from the
 /// task the response already serialized, so the idempotency record stores the
 /// same shape the client saw.
@@ -643,6 +603,10 @@ fn response_json_body(task: &Task) -> Value {
         "model": task.model,
         "channel": task.channel,
         "submittedAt": task.submitted_at,
+        "completedAt": task.completed_at,
+        "result": task.result_json,
+        "error": task.error_json,
+        "usage": task.usage_json,
         "chargedMinor": task.charged_minor,
     })
 }

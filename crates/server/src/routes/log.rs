@@ -23,8 +23,13 @@ pub(crate) async fn proof(
         .map(signing_key)
         .transpose()
         .map_err(|_| ApiError::Internal)?;
+    let scope = state.db.customer_record_scope(&principal).await?;
     match w
-        .receipt_proof(oxsum_core::EntryId::from_uuid(entry_id), key.as_ref())
+        .scoped_receipt_proof(
+            oxsum_core::EntryId::from_uuid(entry_id),
+            key.as_ref(),
+            &scope,
+        )
         .await?
     {
         Some(bundle) => ok(bundle),
@@ -375,7 +380,10 @@ pub(crate) async fn entries(
         return Err(ApiError::Validation("limit must be 1 to 100".into()));
     }
     let w = wallet(&state.tenants, principal.organization()).await?;
-    let page = w.entries_page(query.before, limit as usize).await?;
+    let scope = state.db.customer_record_scope(&principal).await?;
+    let page = w
+        .scoped_entries_page(query.before, limit as usize, &scope)
+        .await?;
     ok(EntriesRes {
         rows: page
             .rows

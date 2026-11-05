@@ -27,14 +27,15 @@ use futures_util::StreamExt;
 use http_body_util::{BodyExt, StreamBody};
 use oxsum_core::{
     ActingKey, BillingMode, Claim, OpenHold, Organization, Serving, SettlementKind, UsageRecord,
-    UsageRow, WalletError, fingerprint, hold_description, parse_presented, route_order_stats,
+    UsageRow, WalletError, credential_fingerprint, hold_description, parse_presented,
+    route_order_stats,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::AppState;
 use crate::auth::require_key_gateway;
-use crate::gateway::error::{BALANCE_MINOR, CHARGED_MINOR, FREEZE_MINOR, GatewayError, REQUEST_ID};
+use crate::gateway::error::{CHARGED_MINOR, FREEZE_MINOR, GatewayError, REQUEST_ID};
 use crate::gateway::relay::{Charge, Turn};
 use crate::gateway::request::{GatewayRequest, Surface};
 use crate::today;
@@ -454,11 +455,13 @@ async fn gateway(
     let idem_key = headers
         .get(IDEMPOTENCY_KEY)
         .map(|value| value.to_str().unwrap_or_default().to_owned());
+    let bound_fingerprint =
+        credential_fingerprint(key.key_id, &format!("{surface:?}"), path_model, &body);
     let claim = match &idem_key {
         Some(key) => {
             match state
                 .db
-                .claim_request(organization.id, key, &fingerprint(&body), &minted_id)
+                .claim_request(organization.id, key, &bound_fingerprint, &minted_id)
                 .await
             {
                 Ok(Claim::Fresh { request_id }) => {
@@ -1257,8 +1260,8 @@ async fn run(
     // billed at the cache-read rate — before any fresh-turn freeze is taken:
     // the answer is already paid for once, so the turn reserves only what the
     // replay itself costs. The lookup is org-scoped and keyed by
-    // `(channel, model, digest)`, so one tenant's answer can never reach
-    // another's, and a hit on a channel that opted out is simply a miss.
+    // `(channel, model, credential-bound digest)`. Sibling keys cannot read
+    // each other's answers, and legacy unbound digests miss after upgrade.
     // A streamed request never looks: the store holds whole bodies, and a
     // client that asked for SSE cannot be handed one — re-chunking a finished
     // answer is a feature, not this one's (whole-response hits only).
@@ -1280,7 +1283,12 @@ async fn run(
             &request.prompt_parts,
             cache_policy.exclude_system,
         )
-        .map(|digest| (digest, cache_policy))
+        .map(|digest| {
+            (
+                credential_fingerprint(key.key_id, "semantic-cache", Some(&digest), &[]),
+                cache_policy,
+            )
+        })
     } else {
         None
     };
@@ -1358,8 +1366,7 @@ async fn run(
             }
             return Err(match error {
                 oxsum_core::WalletError::InsufficientFunds => {
-                    let available = wallet.available().await.ok();
-                    GatewayError::freeze_refused(freeze, available, request.max_tokens)
+                    GatewayError::freeze_refused(freeze, request.max_tokens)
                 }
                 other => other.into(),
             });
@@ -1398,9 +1405,7 @@ async fn run(
         }
         return Err(match error {
             oxsum_core::WalletError::InsufficientFunds => {
-                // Reading the balance again can fail; saying so beats reporting a balance of zero.
-                let available = wallet.available().await.ok();
-                GatewayError::freeze_refused(freeze, available, request.max_tokens)
+                GatewayError::freeze_refused(freeze, request.max_tokens)
             }
             other => other.into(),
         });
@@ -1413,18 +1418,8 @@ async fn run(
         tracing::info!(oxsum.hold.freeze_minor = freeze, "hold taken");
     });
 
-    // The cost head: the reserved bound and the runway left under it are both known now,
-    // before upstream is asked — they ride every answer this turn produces, streamed or
-    // refused (P4-3). A balance that could not be read omits the header rather than
-    // reporting a made-up number.
-    let balance = match wallet.available().await {
-        Ok(balance) => Some(balance),
-        Err(error) => {
-            tracing::warn!(%error, "the balance runway could not be read");
-            None
-        }
-    };
-    let cost = CostHead { freeze, balance };
+    // Only request-attributed cost leaves through the consumption credential.
+    let cost = CostHead { freeze };
 
     let mut turn = Turn::new(
         state.db.clone(),
@@ -1467,6 +1462,7 @@ async fn run(
     let _ = state
         .billing
         .send(crate::billing::BillingEvent::TurnStarted {
+            key_id: key.key_id,
             tenant_id: organization.tenant_id.clone(),
             request_id: request_id.to_owned(),
             model: request.model.clone(),
@@ -1993,8 +1989,7 @@ async fn serve_cache_hit(
             }
             return Err(match error {
                 oxsum_core::WalletError::InsufficientFunds => {
-                    let available = wallet.available().await.ok();
-                    GatewayError::freeze_refused(freeze, available, request.max_tokens)
+                    GatewayError::freeze_refused(freeze, request.max_tokens)
                 }
                 other => other.into(),
             });
@@ -2024,8 +2019,7 @@ async fn serve_cache_hit(
         }
         return Err(match error {
             oxsum_core::WalletError::InsufficientFunds => {
-                let available = wallet.available().await.ok();
-                GatewayError::freeze_refused(freeze, available, request.max_tokens)
+                GatewayError::freeze_refused(freeze, request.max_tokens)
             }
             other => other.into(),
         });
@@ -2033,8 +2027,7 @@ async fn serve_cache_hit(
     turn_span.in_scope(|| {
         tracing::info!(oxsum.hold.freeze_minor = freeze, "cache hit hold taken");
     });
-    let balance = wallet.available().await.ok();
-    let cost = CostHead { freeze, balance };
+    let cost = CostHead { freeze };
     let mut turn = Turn::new(
         state.db.clone(),
         wallet,
@@ -2202,24 +2195,16 @@ fn sse(body: Body) -> Response {
     response
 }
 
-/// What a response head can say about cost before the turn settles (P4-3): the freeze is the
-/// most the request can be charged, and the balance is the organization's spendable runway
-/// left under that reservation — read once, right after the hold landed.
+/// The request's authorized bound, available before its settlement.
 struct CostHead {
     freeze: i64,
-    balance: Option<i64>,
 }
 
 impl CostHead {
-    /// Stamps `x-oxsum-freeze-minor` always and `x-oxsum-balance-minor` when the read worked.
+    /// Stamps the bound without exposing customer-wide money.
     fn stamp(&self, response: &mut Response) {
         if let Ok(value) = HeaderValue::from_str(&self.freeze.to_string()) {
             response.headers_mut().insert(FREEZE_MINOR, value);
-        }
-        if let Some(balance) = self.balance
-            && let Ok(value) = HeaderValue::from_str(&balance.to_string())
-        {
-            response.headers_mut().insert(BALANCE_MINOR, value);
         }
     }
 }

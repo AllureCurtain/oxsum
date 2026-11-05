@@ -72,9 +72,11 @@ pub(crate) async fn list_holds(
         .db
         .list_keys(principal.organization().id, principal.key_scope())
         .await?;
+    let scope = state.db.customer_record_scope(&principal).await?;
     ok(HoldsRes {
         holds: holds
             .into_iter()
+            .filter(|hold| scope.allows(hold.key_id.map(|id| id.simple().to_string()).as_deref()))
             .map(|hold| OpenHoldRes {
                 request_id: hold.request_id,
                 model: hold.model,
@@ -130,13 +132,14 @@ pub(crate) async fn bills(
     ApiQuery(query): ApiQuery<BillsQuery>,
 ) -> ApiResult<BillsRes> {
     let w = wallet(&state.tenants, principal.organization()).await?;
-    let page = w.transactions_page(query.before, 50).await?;
     let scoped = crate::routes::usage::scoped_key_ids(&state, &principal).await?;
+    let page = w
+        .scoped_transactions_page(query.before, 50, &scoped)
+        .await?;
     ok(BillsRes {
         rows: page
             .rows
             .into_iter()
-            .filter(|row| crate::routes::usage::in_scope(row.key_id.as_deref(), &scoped))
             .map(|row| BillRowRes {
                 index: row.index,
                 entry_id: row.id,

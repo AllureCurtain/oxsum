@@ -1,8 +1,8 @@
 //! Authentication: two credentials, one principal.
 //!
 //! A request may carry `Authorization: Bearer oxs-…` (an organization's API key) or the
-//! session cookie (a logged-in user). Both resolve to a [`Principal`]: a key acts *as* the
-//! organization, a session as the user, the organization they act as, and their role in it.
+//! session cookie (a logged-in user). Both resolve to a [`Principal`]: a consumption key
+//! spends for its customer and reads its own records; a session carries a user's role.
 //! The middleware resolves the credential once and hands the principal to the handler through
 //! the request extensions. Nothing else in the request can name an organization.
 //!
@@ -35,6 +35,12 @@ pub async fn require_principal(
     let principal = resolve(&state, request.headers())
         .await?
         .ok_or(ApiError::Unauthorized)?;
+    let path = request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|p| p.as_str())
+        .unwrap_or("");
+    principal.require_customer(customer_route_capability(request.method().as_str(), path))?;
     request.extensions_mut().insert(principal);
     Ok(next.run(request).await)
 }
@@ -80,7 +86,7 @@ pub async fn require_service(
 /// The principal the presented credential authenticates, if it authenticates one.
 ///
 /// A bearer token wins over the cookie: the explicitly supplied credential beats the
-/// ambient one. With no bearer credential at all, the session cookie is tried.
+/// ambient one. Only the absence of every machine credential header permits cookie auth.
 ///
 /// The credential lookups' errors propagate rather than folding into `None` —
 /// `Ok(None)` is "this credential authenticates nothing", while a storage
@@ -89,7 +95,7 @@ pub async fn require_service(
 /// 401 (the stray authentication refusal issue #486's probe saw). Only a lookup
 /// that ran says anything about the credential.
 async fn resolve(state: &AppState, headers: &HeaderMap) -> Result<Option<Principal>, ApiError> {
-    if bearer(headers).is_some() {
+    if has_machine_credential(headers) {
         let Some((organization, key)) =
             resolve_key(state, headers).await.map_err(ApiError::from)?
         else {
@@ -119,10 +125,14 @@ async fn resolve_key(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<Option<(Organization, ActingKey)>, oxsum_core::WalletError> {
-    let Some(presented) = bearer(headers)
-        .or_else(|| api_key_header(headers))
-        .or_else(|| goog_api_key_header(headers))
-    else {
+    let presented = if headers.contains_key(AUTHORIZATION) {
+        bearer(headers)
+    } else if headers.contains_key("x-api-key") {
+        api_key_header(headers)
+    } else {
+        goog_api_key_header(headers)
+    };
+    let Some(presented) = presented else {
         return Ok(None);
     };
     state.db.authenticate(presented).await
@@ -171,4 +181,127 @@ pub(crate) fn session_cookie_value(headers: &HeaderMap) -> Option<String> {
             .then(|| value.trim().to_owned())
             .filter(|value| !value.is_empty())
     })
+}
+
+/// An explicitly selected machine identity cannot inherit ambient browser rights.
+pub(crate) fn has_machine_credential(headers: &HeaderMap) -> bool {
+    headers.contains_key(AUTHORIZATION)
+        || headers.contains_key("x-api-key")
+        || headers.contains_key("x-goog-api-key")
+}
+
+/// Explicit allowlists. Axum's matched route (not a caller-supplied path string)
+/// selects the resource class; new paths fail closed until classified here.
+fn customer_route_capability(method: &str, path: &str) -> oxsum_core::CustomerCapability {
+    use oxsum_core::CustomerCapability as C;
+    // Nested MatchedPath includes the API prefix in the production router.
+    let path = path.strip_prefix("/api/v1").unwrap_or(path);
+    match (method, path) {
+        (
+            "GET",
+            "/org"
+            | "/org/keys"
+            | "/org/keys/{key_id}/entitlement"
+            | "/holds"
+            | "/bills"
+            | "/entries"
+            | "/usage"
+            | "/billing-records"
+            | "/requests"
+            | "/pricing"
+            | "/entries/{entry_id}/proof"
+            | "/log/head"
+            | "/log/consistency"
+            | "/log/checkpoint"
+            | "/log/price-head",
+        )
+        | ("POST", "/estimate-price") => C::ScopedRead,
+        ("POST", "/topups" | "/holds" | "/settlements" | "/org/members") => C::Retired,
+        (
+            "GET",
+            "/webhooks"
+            | "/webhooks/{endpoint_id}/deliveries"
+            | "/statements"
+            | "/statements/{statement_id}"
+            | "/statements/{statement_id}/proof"
+            | "/statements/{statement_id}/export.pdf"
+            | "/org/usage-reports"
+            | "/org/usage-reports/{report_id}"
+            | "/org/usage-reports/links"
+            | "/org/experiments"
+            | "/org/experiments/{experiment_id}/results",
+        )
+        | (
+            "POST",
+            "/webhooks"
+            | "/org/usage-reports"
+            | "/org/usage-reports/links"
+            | "/org/usage-reports/{report_id}/links"
+            | "/org/experiments/{name}/end",
+        )
+        | ("DELETE", "/webhooks/{endpoint_id}" | "/org/usage-reports/links/{link_id}")
+        | ("PUT", "/org/experiments/{name}") => C::AccountManage,
+        (
+            "GET",
+            "/orgs"
+            | "/org/groups"
+            | "/org/members"
+            | "/org/teams"
+            | "/org/subscription"
+            | "/org/subscription/periods"
+            | "/session"
+            | "/device/request"
+            | "/balance"
+            | "/budget"
+            | "/org/keys/{key_id}/mandates",
+        ) => C::Personal,
+        (
+            "POST",
+            "/orgs"
+            | "/org/keys"
+            | "/org/keys/{key_id}/mandates"
+            | "/org/teams"
+            | "/org/ownership"
+            | "/org/subscription/checkout"
+            | "/session/organization"
+            | "/device/authorize"
+            | "/topups/stripe"
+            | "/topups/airwallex"
+            | "/topups/hyperswitch"
+            | "/topups/x402"
+            | "/redemptions",
+        ) => C::Personal,
+        (
+            "PATCH",
+            "/org" | "/org/keys/{key_id}" | "/org/members/{user_id}" | "/org/teams/{team_id}",
+        )
+        | ("DELETE", "/org/keys/{key_id}" | "/org/members/{user_id}" | "/org/teams/{team_id}") => {
+            C::Personal
+        }
+        _ => C::Retired,
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::customer_route_capability;
+    use oxsum_core::CustomerCapability;
+
+    #[test]
+    fn unknown_routes_and_methods_have_no_inherited_customer_authority() {
+        for (method, path) in [
+            ("POST", "/api/v1/entries"),
+            ("GET", "/api/v1/webhooks/new-resource"),
+            ("PATCH", "/api/v1/statements/{statement_id}"),
+            ("GET", "/api/v1/org/future"),
+        ] {
+            assert!(
+                matches!(
+                    customer_route_capability(method, path),
+                    CustomerCapability::Retired
+                ),
+                "{method} {path}"
+            );
+        }
+    }
 }

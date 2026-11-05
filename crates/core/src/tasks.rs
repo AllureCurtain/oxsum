@@ -289,6 +289,25 @@ impl Db {
         row.map(|row| task_from_row(&row)).transpose()
     }
 
+    /// Only the submitting consumption key can poll or cancel its task.
+    pub async fn task_for_key(
+        &self,
+        organization_id: Uuid,
+        key_id: Uuid,
+        task_id: Uuid,
+    ) -> Result<Option<Task>, WalletError> {
+        let row = sqlx::query(&format!(
+            "SELECT {TASK_COLS} {TASK_JOIN} \
+             WHERE t.task_id = $1 AND t.organization_id = $2 AND t.key_id = $3"
+        ))
+        .bind(task_id)
+        .bind(organization_id)
+        .bind(key_id)
+        .fetch_optional(self.pool())
+        .await?;
+        row.map(|row| task_from_row(&row)).transpose()
+    }
+
     /// The still-open tasks the poll pass asks upstream about, with the
     /// channel reach they need — base URL and the pool's lead sealed
     /// credential joined, so the pass makes no second trip per task.

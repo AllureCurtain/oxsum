@@ -189,7 +189,11 @@ pub(crate) async fn requests(
         .map(decode_request_cursor)
         .transpose()?;
     let filter = build_filter(&query, Some(principal.organization().id), None)?;
-    let page = state.db.request_log_page(&filter, after, limit).await?;
+    let scope = state.db.customer_record_scope(&principal).await?;
+    let page = state
+        .db
+        .scoped_request_log_page(&filter, after, limit, &scope)
+        .await?;
     ok(RequestsRes {
         rows: page.rows.iter().map(RequestLogRowRes::member).collect(),
         next_cursor: page.next_cursor.map(encode_request_cursor),

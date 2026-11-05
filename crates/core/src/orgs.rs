@@ -54,8 +54,8 @@ impl Kind {
 ///
 /// Stored from the first membership so product.md's rules ("members manage their own keys,
 /// admins manage all") need no migration when sessions make a user the acting principal.
-/// Roles constrain sessions, not API keys: a key acts as the organization, while a user
-/// acts with the authority their role grants them (see [`crate::Principal::key_scope`]).
+/// Roles constrain personal sessions; consumption keys carry only their own scope
+/// (see [`crate::Principal::key_scope`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
@@ -328,10 +328,9 @@ impl Db {
     /// The tenant id of the organization carrying `name`, or `None` when none does.
     ///
     /// Names are not unique — two organizations may share one — so the read
-    /// answers the *first* matching tenant id in creation order, which is all a
-    /// caller that only wants "the seeded demo organization" needs (issue #489:
-    /// `/verify?sample` draws its bundle from that one). Anything stronger
-    /// belongs on the id-keyed lookups above.
+    /// answers the *first* matching tenant id in creation order. This is a
+    /// convenience lookup for trusted code, never an authorization identity.
+    /// Public evidence uses a fixed fixture; customer reads use IDs and scope.
     ///
     /// # Errors
     ///

@@ -17,7 +17,7 @@ use axum::extract::State;
 use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use oxsum_core::{KeyScope, Role};
+use oxsum_core::Principal;
 use oxsum_web::{BillView, csv, json};
 
 use crate::AppState;
@@ -53,10 +53,12 @@ pub async fn export_json(State(state): State<AppState>, headers: HeaderMap) -> R
     }
 }
 
-/// The session's organization's transactions, every one: an export archives the
-/// organization's whole history, so the read walks the ledger's pages to their end
-/// (issue #93). The `Err` is why it could not, and what to answer.
+/// The session's authorized transaction history, walking scoped ledger pages to
+/// their end (issue #93). The `Err` is why it could not, and what to answer.
 async fn rows(state: &AppState, headers: &HeaderMap) -> Result<Vec<BillView>, Refusal> {
+    if crate::auth::has_machine_credential(headers) {
+        return Err(Refusal::unauthorized());
+    }
     let Some(token) = session_cookie_value(headers) else {
         return Err(Refusal::unauthorized());
     };
@@ -77,11 +79,25 @@ async fn rows(state: &AppState, headers: &HeaderMap) -> Result<Vec<BillView>, Re
             tracing::error!(%error, "the wallet could not be opened");
             Refusal::internal("the wallet could not be opened")
         })?;
+    // The page's own scoping, the requests page's rule: a member reads only what
+    // their own keys paid plus the key-less organization history — top-ups and
+    // adjustments — while owners and admins read everything. The export carries the
+    // page's rows, so it applies the same filter.
+    // `Principal::key_scope` covers API keys too; here the credential is always a
+    // session, so the member rule is the role's directly.
+    let scope = state
+        .db
+        .customer_record_scope(&Principal::Session(principal.clone()))
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, "the keys could not be read");
+            Refusal::internal("the keys could not be read")
+        })?;
     let mut transactions = Vec::new();
     let mut before = None;
     loop {
         let page = wallet
-            .transactions_page(before, 100)
+            .scoped_transactions_page(before, 100, &scope)
             .await
             .map_err(|error| {
                 tracing::error!(%error, "the bills could not be read");
@@ -93,24 +109,6 @@ async fn rows(state: &AppState, headers: &HeaderMap) -> Result<Vec<BillView>, Re
             break;
         }
     }
-    // The page's own scoping, the requests page's rule: a member reads only what
-    // their own keys paid plus the key-less organization history — top-ups and
-    // adjustments — while owners and admins read everything. The export carries the
-    // page's rows, so it applies the same filter.
-    // `Principal::key_scope` covers API keys too; here the credential is always a
-    // session, so the member rule is the role's directly.
-    let scope = match principal.role {
-        Role::Owner | Role::Admin => KeyScope::All,
-        Role::Member => KeyScope::Own(principal.user.id),
-    };
-    let keys = state
-        .db
-        .list_keys(principal.organization.id, scope)
-        .await
-        .map_err(|error| {
-            tracing::error!(%error, "the keys could not be read");
-            Refusal::internal("the keys could not be read")
-        })?;
     // The organization's display unit (issue #257): the export renders the
     // converted figure beside the ledger's own minor units, and a deployment
     // default stands in when the organization names none. The conversion is a
@@ -118,10 +116,6 @@ async fn rows(state: &AppState, headers: &HeaderMap) -> Result<Vec<BillView>, Re
     let display = state.config.display_for(&principal.organization);
     Ok(transactions
         .iter()
-        .filter(|tx| match tx.key_id.as_deref() {
-            Some(id) => keys.iter().any(|key| key.id.as_simple().to_string() == id),
-            None => true,
-        })
         .map(|tx| {
             let mut view = BillView::from(tx);
             if let Some(display) = &display {
