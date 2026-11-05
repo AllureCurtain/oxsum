@@ -43,6 +43,10 @@ pub struct AuditEntry {
 /// The action names the admin surface writes under. Dotted and bounded — a
 /// typo'd name is a 400, not a row that says nothing recognizable.
 pub mod action {
+    pub const INVITATION_TEAM_CREATE: &str = "invitation.team.create";
+    pub const INVITATION_CUSTOMER_CREATE: &str = "business.customer.invitation.create";
+    pub const INVITATION_ACCEPT: &str = "invitation.accept";
+    pub const INVITATION_REVOKE: &str = "invitation.revoke";
     pub const SESSION_CONTEXT: &str = "session.context";
     pub const BUSINESS_CUSTOMER_UPDATE: &str = "business.customer.update";
     pub const BUSINESS_CUSTOMER_LIFECYCLE: &str = "business.customer.lifecycle";
@@ -93,6 +97,10 @@ pub mod action {
 
     /// Every action the surface writes — the `action` filter's vocabulary.
     pub const ALL: &[&str] = &[
+        INVITATION_TEAM_CREATE,
+        INVITATION_CUSTOMER_CREATE,
+        INVITATION_ACCEPT,
+        INVITATION_REVOKE,
         SESSION_CONTEXT,
         BUSINESS_CUSTOMER_UPDATE,
         BUSINESS_CUSTOMER_LIFECYCLE,

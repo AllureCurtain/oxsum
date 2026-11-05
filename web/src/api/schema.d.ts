@@ -225,13 +225,13 @@ export interface paths {
         put?: never;
         /**
          * Register through an invitation link
-         * @description The one registration an `invite`-mode deployment allows — the link is the
-         *     credential, so no other authentication applies, whatever `OXSUM_SIGNUP` is.
-         *     The token names one live invitation: usable once, valid seven days from minting,
-         *     and unknown, spent and expired tokens are all `404 NOT_FOUND` — which is wrong
-         *     is the holder's business. The new account joins the invitation's organization as
-         *     a `member`, with the first API key minted for that organization; no personal
-         *     organization is created — that is what `auth/register` is for.
+         * @description The token authorizes registration even with invite-only business policy.
+         *     A team invitation joins the existing customer as member; a business invitation
+         *     creates its reserved customer and initial customer owner. A bound email must
+         *     match. Registration, membership, first key, consumption and audit are atomic.
+         *     No staff authority or promotional funding is granted. Unknown, spent, revoked,
+         *     expired and wrong-email tokens return 404. Existing accounts must log in and
+         *     explicitly accept instead. The spent token cannot retrieve the first key again.
          */
         post: {
             parameters: {
@@ -261,6 +261,276 @@ export interface paths {
                 404: components["responses"]["Error"];
                 409: components["responses"]["Error"];
                 500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/invitations/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Inspect the offered customer membership before consenting
+         * @description The invitation token is the credential. Returns only the target name, identity, offered role and expiry. Unknown, spent, revoked and expired links return 404.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        token: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description The offered membership */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["InvitationPreview"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/invitations/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Consent to a customer or team invitation as an existing user
+         * @description Requires a live personal session and the invitation token. A bound email must
+         *     match the signed-in account. Creates only the offered customer membership,
+         *     never staff authority, and does not switch session context or mint a key.
+         *     Repeating acceptance by the same person returns the original receipt without
+         *     restoring a subsequently removed membership. Other spent, revoked, expired
+         *     or unknown tokens return 404. A confirmed second factor must be satisfied.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        token: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Consent receipt */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["InvitationAcceptance"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/org/invitations/{invitationId}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                invitationId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revoke an unaccepted invitation in the selected customer account
+         * @description Current owner/admin session required. Accepted links cannot be revoked; remove the membership separately.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    invitationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["InvitationRevokeRequest"];
+                };
+            };
+            responses: {
+                /** @description Immutable mutation receipt */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["BusinessMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/customer-invitations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Invite the first owner of a new customer account
+         * @description Business customersWrite capability (owner/admin), reason and idempotency key
+         *     required. Reserves a customer UUID and stable external ID for seven days.
+         *     The intended email holder must register or explicitly accept while signed in
+         *     before the customer account, owner membership and profile are created together.
+         *     No staff role or funding is granted. Live pending invitations and existing
+         *     customers cannot share an external ID. Revocation/expiry releases the reservation.
+         *     Returns the token once; identical retries return the same ID with token null.
+         *     Changed-body retries conflict. This endpoint does not send email.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CustomerInvitationRequest"];
+                };
+            };
+            responses: {
+                /** @description Invitation and reserved customer identity */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["CreatedInvitation"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/customer-invitations/{invitationId}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                invitationId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revoke a business customer invitation
+         * @description Business customersWrite capability required. Accepted invitations conflict; archive or manage the resulting customer separately.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    invitationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["InvitationRevokeRequest"];
+                };
+            };
+            responses: {
+                /** @description Immutable mutation receipt */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["BusinessMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
             };
         };
         delete?: never;
@@ -1923,17 +2193,15 @@ export interface paths {
         put?: never;
         /**
          * Mint an invitation link
-         * @description A link into this organization: `/app/invite?token=<token>` in the dashboard, or
-         *     `POST /api/v1/invitations/redeem` with the token, an email and a password. The
-         *     token is answered exactly once, here; the database keeps only its hash. An
-         *     invitation is valid seven days and works once. Owners and admins mint links;
-         *     a member is refused, and a person's action means a bearer API key is refused
-         *     too — a key is not a person.
-         *
-         *     An optional `email` mails the link instead of leaving it for the operator to
-         *     pass along. A deployment without a mailer refuses an address rather than
-         *     minting a link nobody receives; a send that fails answers `delivery: failed`
-         *     and the token is still in the answer.
+         * @description A seven-day invitation into the selected customer account. Requires a current
+         *     owner/admin personal session and idempotencyKey. New users register through
+         *     /invitations/redeem; existing users explicitly consent through /invitations/accept.
+         *     Only member authority is granted. The original customer/ledger/key IDs stay fixed.
+         *     The optional intendedEmail binds acceptance without sending mail. Optional email
+         *     both binds the recipient and requests delivery; when both are present they must
+         *     match. No mailer refuses delivery before minting. A failed send leaves a usable link.
+         *     Identical retries return the original ID with token null and do not resend mail;
+         *     changed terms conflict. The token is stored only as a hash and is shown once.
          */
         post: {
             parameters: {
@@ -1942,7 +2210,7 @@ export interface paths {
                 path?: never;
                 cookie?: never;
             };
-            requestBody?: {
+            requestBody: {
                 content: {
                     "application/json": components["schemas"]["CreateInvitationRequest"];
                 };
@@ -1962,6 +2230,7 @@ export interface paths {
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
                 403: components["responses"]["Error"];
+                409: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -2012,21 +2281,10 @@ export interface paths {
         };
         put?: never;
         /**
-         * Add an existing account to the organization as a member
-         * @description The email names an account that already exists, and that account becomes a member.
-         *     Someone who has no account yet comes in through an invitation link instead:
-         *     `POST /api/v1/org/invitations` mints one and `POST /api/v1/invitations/redeem`
-         *     registers through it. An unknown email here is `NOT_FOUND`, never a stored
-         *     invitation.
-         *
-         *     Only an owner or an admin may manage memberships, and only a logged-in person: an API key is
-         *     not a person and names no role, so it is refused here too (docs/decisions.md, "membership
-         *     management is a person's action"). A member is refused. A new membership's role is always
-         *     `member`; ownership is never granted here, and only `POST /api/v1/org/ownership` can move
-         *     the owner seat.
-         *
-         *     Adding the second person to a personal organization flips its kind to `team`; the ledger
-         *     does not move. An account that is already a member is `CONFLICT`.
+         * Retired direct membership addition
+         * @deprecated
+         * @description Authenticated callers receive 403 before body parsing. Use /org/invitations
+         *     and explicit recipient acceptance; knowing an email cannot grant membership.
          */
         post: {
             parameters: {
@@ -2035,29 +2293,10 @@ export interface paths {
                 path?: never;
                 cookie?: never;
             };
-            requestBody: {
-                content: {
-                    "application/json": components["schemas"]["AddMemberRequest"];
-                };
-            };
+            requestBody?: never;
             responses: {
-                /** @description The new membership */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": {
-                            data: components["schemas"]["Member"];
-                        };
-                    };
-                };
-                400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
                 403: components["responses"]["Error"];
-                404: components["responses"]["Error"];
-                409: components["responses"]["Error"];
-                500: components["responses"]["Error"];
             };
         };
         delete?: never;
@@ -9949,25 +10188,65 @@ export interface components {
         CreatedInvitation: {
             /** Format: uuid */
             id: string;
-            /** @description `oxi-` plus 32 random bytes — answered once; only its hash is stored */
-            token: string;
             /**
-             * Format: date-time
-             * @description seven days from minting
+             * Format: uuid
+             * @description Existing or reserved customer identity
              */
+            organizationId: string;
+            /** @description Random oxi- secret shown on first creation only; null on idempotent replay */
+            token: string | null;
+            /** Format: date-time */
             expiresAt: string;
             /**
-             * @description present only when the request named an email: `sent` when the mailer accepted the message, `failed` when it did not — the token above is still valid for hand delivery
+             * @description Present only for an attempted email delivery
              * @enum {string}
              */
             delivery?: "sent" | "failed";
         };
         CreateInvitationRequest: {
+            idempotencyKey: string;
+            /** Format: email */
+            intendedEmail?: string | null;
             /**
              * Format: email
-             * @description an optional recipient; with it the link is mailed, without it the token is only answered
+             * @description Bind and mail the invitation
              */
-            email?: string;
+            email?: string | null;
+        };
+        CustomerInvitationRequest: {
+            idempotencyKey: string;
+            /** Format: email */
+            email: string;
+            name: string;
+            externalId: string;
+            reason: string;
+        };
+        InvitationRevokeRequest: {
+            idempotencyKey: string;
+            reason: string;
+        };
+        InvitationPreview: {
+            /** Format: uuid */
+            organizationId: string;
+            name: string;
+            /** @enum {string} */
+            role: "owner" | "member";
+            /** Format: date-time */
+            expiresAt: string;
+        };
+        InvitationAcceptance: {
+            /**
+             * Format: uuid
+             * @description Invitation ID, a stable acceptance receipt
+             */
+            id: string;
+            /** Format: uuid */
+            organizationId: string;
+            /**
+             * @description Originally accepted customer role, not current authorization
+             * @enum {string}
+             */
+            role: "owner" | "member";
         };
         RedeemInvitationRequest: {
             /** @description the invitation link's token */
@@ -10497,15 +10776,6 @@ export interface components {
              * @description when the membership was created
              */
             joinedAt: string;
-        };
-        AddMemberRequest: {
-            /**
-             * @description the email of an account that already exists; the comparison is case-insensitive. An
-             *     email no account holds is `NOT_FOUND` — a person without an account is invited by link
-             *     (`POST /api/v1/org/invitations`) — and one that is already a member of this organization
-             *     is `CONFLICT`.
-             */
-            email: string;
         };
         Experiment: {
             /**

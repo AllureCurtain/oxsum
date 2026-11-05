@@ -72,7 +72,6 @@ pub fn router(state: AppState) -> Router {
             get(keys::list_mandates).post(keys::create_mandate),
         )
         .route("/org/keys/{key_id}/entitlement", get(keys::key_entitlement))
-        .route("/org/invitations", post(org::create_invitation))
         .route("/org/members", get(org::list_members).post(org::add_member))
         .route(
             "/org/members/{user_id}",
@@ -232,6 +231,21 @@ pub fn router(state: AppState) -> Router {
         // Registration through an invitation link: the token is the credential, so it
         // stays open in invite mode too — that mode exists for this.
         .route("/invitations/redeem", post(org::redeem_invitation))
+        .route("/invitations/accept", post(org::accept_invitation))
+        .route("/invitations/preview", post(org::preview_invitation))
+        .route("/org/invitations", post(org::create_invitation))
+        .route(
+            "/org/invitations/{invitationId}/revoke",
+            post(org::revoke_invitation),
+        )
+        .route(
+            "/business/customer-invitations",
+            post(business::invite_customer),
+        )
+        .route(
+            "/business/customer-invitations/{invitationId}/revoke",
+            post(business::revoke_customer_invitation),
+        )
         // The device grant's tool leg: the device code is the credential, so
         // both endpoints stay open in every signup mode (issue #156).
         .route("/device/code", post(device::device_code))

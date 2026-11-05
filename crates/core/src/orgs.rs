@@ -473,23 +473,9 @@ impl Db {
         Ok(members)
     }
 
-    /// Adds an existing account, named by its email, to the organization as a member.
-    ///
-    /// "Invite" means exactly this: the account must already exist. Pending invitations for
-    /// people who have none — invite links, tokens, email — are issue #59, so an email no
-    /// account holds is [`WalletError::NotFound`] and no invitation is stored. The new role is
-    /// always [`Role::Member`]: this call cannot grant a role, so it cannot grant ownership.
-    ///
-    /// Adding the second person to a `personal` organization flips its kind to `team`
-    /// (`oxsum.organizations.kind`), which is what the migration comment promises. The flip is
-    /// one-way: the ledger does not move, and removing a member does not move it back.
-    ///
-    /// # Errors
-    ///
-    /// [`WalletError::Forbidden`] for a member; [`WalletError::InvalidInput`] for an email that
-    /// is not one; [`WalletError::NotFound`] for an unknown account; [`WalletError::Conflict`]
-    /// when the account is already a member.
-    pub async fn add_member(
+    /// Trusted demo provisioning only. Production membership enrollment uses
+    /// invitations and recipient consent; this helper is not public API.
+    pub(crate) async fn provision_member(
         &self,
         organization_id: Uuid,
         acting: MembershipActor,
@@ -500,6 +486,7 @@ impl Db {
         let normalized = email.to_lowercase();
         let mut tx = self.pool().begin().await?;
         lock_organization(&mut tx, organization_id).await?;
+        current_manager(&mut tx, organization_id, acting.user_id).await?;
         let row = sqlx::query("SELECT user_id, email FROM oxsum.users WHERE email_normalized = $1")
             .bind(&normalized)
             .fetch_optional(&mut *tx)
@@ -552,6 +539,7 @@ impl Db {
         let acting = acting.authorized()?;
         let mut tx = self.pool().begin().await?;
         lock_organization(&mut tx, organization_id).await?;
+        let acting = current_manager(&mut tx, organization_id, acting.user_id).await?;
         let target = locked_member(&mut tx, organization_id, user_id)
             .await?
             .ok_or_else(not_a_member)?;
@@ -633,6 +621,7 @@ impl Db {
         }
         let mut tx = self.pool().begin().await?;
         lock_organization(&mut tx, organization_id).await?;
+        let acting = current_manager(&mut tx, organization_id, acting.user_id).await?;
         let mut target = locked_member(&mut tx, organization_id, user_id)
             .await?
             .ok_or_else(not_a_member)?;
@@ -905,7 +894,7 @@ impl Db {
 /// The rules count owners and change two rows together, so they need one writer at a time:
 /// the organization row is the lock, taken for the whole transaction. A concurrent transfer
 /// and removal therefore cannot both see the same owner count and both act on it.
-async fn lock_organization(
+pub(crate) async fn lock_organization(
     tx: &mut Transaction<'_, Postgres>,
     organization_id: Uuid,
 ) -> Result<(), WalletError> {
@@ -917,6 +906,28 @@ async fn lock_organization(
     .await?
     .ok_or_else(|| WalletError::NotFound("no such organization".into()))?;
     Ok(())
+}
+
+/// Membership role snapshots supplied by a caller are never write authority.
+async fn current_manager(
+    tx: &mut Transaction<'_, Postgres>,
+    org: Uuid,
+    user: Uuid,
+) -> Result<MembershipActor, WalletError> {
+    let role: Option<String> = sqlx::query_scalar(
+        "SELECT role FROM oxsum.memberships WHERE organization_id=$1 AND user_id=$2",
+    )
+    .bind(org)
+    .bind(user)
+    .fetch_optional(&mut **tx)
+    .await?;
+    MembershipActor {
+        user_id: user,
+        role: Role::parse(&role.ok_or_else(|| {
+            WalletError::Forbidden("current customer membership is required".into())
+        })?)?,
+    }
+    .authorized()
 }
 
 /// The owners of an organization: what makes "the last owner" decidable.
@@ -1022,7 +1033,7 @@ pub(crate) async fn insert(
 /// Inserts a membership and returns when it was created.
 ///
 /// The one insert path, shared by signup (which ignores the timestamp) and by
-/// [`Db::add_member`] (which answers with it). A duplicate membership is a conflict rather
+/// [`Db::provision_member`] (which answers with it). A duplicate membership is a conflict rather
 /// than a storage failure, because the only way to reach it is naming an account that is
 /// already in the organization.
 pub(crate) async fn add_member(

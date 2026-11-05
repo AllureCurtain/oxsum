@@ -169,7 +169,7 @@ impl Db {
             role: Role::Owner,
         };
         let member: Member = self
-            .add_member(organization.id, acting, MEMBER_EMAIL)
+            .provision_member(organization.id, acting, MEMBER_EMAIL)
             .await?;
         self.update_member(
             organization.id,
