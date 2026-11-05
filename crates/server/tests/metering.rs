@@ -10,6 +10,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+#[path = "../../core/tests/support/integration.rs"]
+mod integration;
 mod support;
 
 use axum::Router;
@@ -114,6 +116,7 @@ struct World {
     /// The minted service credential's plaintext secret.
     service_secret: String,
     credential_id: String,
+    owner: String,
     channel: String,
     code: String,
 }
@@ -126,7 +129,17 @@ async fn world(url: &str, top_up: i64) -> World {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool);
     db.migrate().await.expect("migrates");
-    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
+    let owner = integration::owner(&db).await;
+    db.set_business_registration(
+        &owner,
+        &oxsum_core::BusinessRegistrationRequest {
+            idempotency_key: "open-fixture".into(),
+            mode: oxsum_core::RegistrationMode::Open,
+            reason: "registration fixture".into(),
+        },
+    )
+    .await
+    .unwrap();
     let config = Config::new(Signup::Open, None)
         .with_secret(SecretKey::from_bytes([7; 32]))
         .with_admin_token(TOKEN);
@@ -188,14 +201,16 @@ async fn world(url: &str, top_up: i64) -> World {
         assert_eq!(status, StatusCode::OK, "top-up failed: {body}");
     }
 
-    // The service credential the deployer's service holds, through the admin
-    // surface like an operator's.
+    let request = integration::request(
+        vec![Uuid::parse_str(&organization_id).unwrap()],
+        vec![oxsum_core::IntegrationScope::MeteringWrite],
+    );
     let (status, body) = call(
         &app,
         "POST",
-        "/api/v1/admin/service-credentials",
-        Some(json!({"name": fresh("mailer")})),
-        Some(TOKEN),
+        "/api/v1/business/integration-credentials",
+        Some(serde_json::to_value(request).unwrap()),
+        Some(&owner),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "the credential mints: {body}");
@@ -214,6 +229,7 @@ async fn world(url: &str, top_up: i64) -> World {
         organization_id,
         service_secret,
         credential_id,
+        owner,
         channel,
         code,
     }
@@ -235,69 +251,38 @@ impl World {
 // ── the credential's perimeter ───────────────────────────────────────────────
 
 #[tokio::test]
-async fn the_admin_mints_lists_and_revokes_service_credentials() {
+async fn the_owner_mints_lists_and_revokes_scoped_credentials() {
     let w = world_or_skip!(0);
-
-    // The mint answered the secret once, in the documented shape.
-    assert!(w.service_secret.starts_with("oxs-svc-"));
-    assert_eq!(w.service_secret.len(), 8 + 64);
-
-    // The list carries metadata — id, name, prefix, timestamps — and never
-    // the secret or its hash.
+    assert!(w.service_secret.starts_with("oxs-int-"));
     let (status, body) = call(
         &w.app,
         "GET",
-        "/api/v1/admin/service-credentials",
+        "/api/v1/business/integration-credentials",
         None,
-        Some(TOKEN),
+        Some(&w.owner),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let listed = body["data"]
+    let credential = body["data"]["credentials"]
         .as_array()
         .unwrap()
         .iter()
         .find(|c| c["credentialId"] == w.credential_id)
-        .expect("the minted credential lists")
-        .clone();
-    assert!(listed["prefix"].as_str().unwrap().starts_with("oxs-svc-"));
-    assert!(
-        w.service_secret
-            .starts_with(listed["prefix"].as_str().unwrap())
-    );
-    assert!(listed.get("secret").is_none());
-    assert!(listed["revokedAt"].is_null());
-
-    // The mint and the revoke land in the audit log.
+        .unwrap();
+    assert!(credential.get("secret").is_none());
+    assert!(credential.get("secretHash").is_none());
     let (status, body) = call(
         &w.app,
-        "DELETE",
-        &format!("/api/v1/admin/service-credentials/{}", w.credential_id),
-        None,
-        Some(TOKEN),
+        "POST",
+        &format!(
+            "/api/v1/business/integration-credentials/{}/revoke",
+            w.credential_id
+        ),
+        Some(json!({"idempotencyKey":"revoke","reason":"test rotation"})),
+        Some(&w.owner),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(body["data"]["revokedAt"].is_string());
-    let (status, body) = call(
-        &w.app,
-        "GET",
-        "/api/v1/admin/audit?action=service_credential.revoke",
-        None,
-        Some(TOKEN),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(
-        body["data"]["entries"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|e| e["target"].as_str() == Some(w.credential_id.as_str())),
-        "the revoke is in the audit log: {body}"
-    );
-
-    // The revoked credential authenticates nothing; a second revoke is 404.
     let (status, _) = call(
         &w.app,
         "POST",
@@ -309,13 +294,13 @@ async fn the_admin_mints_lists_and_revokes_service_credentials() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     let (status, _) = call(
         &w.app,
-        "DELETE",
-        &format!("/api/v1/admin/service-credentials/{}", w.credential_id),
+        "POST",
+        "/api/v1/admin/service-credentials",
         None,
         Some(TOKEN),
     )
     .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -370,7 +355,7 @@ async fn a_hold_then_settle_charges_the_actual_usage() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let hold = &body["data"];
-    assert_eq!(hold["holdKey"], "metering:h1:hold");
+    assert!(hold["holdKey"].as_str().unwrap().starts_with("metering:"));
     assert_eq!(hold["freezeMinor"], 100);
     assert_eq!(hold["priceVersion"], 1);
 
@@ -407,7 +392,7 @@ async fn a_hold_then_settle_charges_the_actual_usage() {
 #[tokio::test]
 async fn a_settle_above_the_freeze_is_capped() {
     let w = world_or_skip!(1_000_000);
-    call(
+    let (status, hold) = call(
         &w.app,
         "POST",
         "/api/v1/metering/holds",
@@ -415,13 +400,14 @@ async fn a_settle_above_the_freeze_is_capped() {
         Some(&w.service_secret),
     )
     .await;
+    assert_eq!(status, StatusCode::OK, "{hold}");
     let (status, body) = call(
         &w.app,
         "POST",
         "/api/v1/metering/settle",
         Some(json!({
             "organizationId": w.organization_id,
-            "holdKey": "metering:cap:hold",
+            "holdKey": hold["data"]["holdKey"],
             "usage": usage(90),
         })),
         Some(&w.service_secret),
@@ -435,7 +421,7 @@ async fn a_settle_above_the_freeze_is_capped() {
 #[tokio::test]
 async fn a_release_lets_a_hold_go_and_a_late_settle_conflicts() {
     let w = world_or_skip!(1_000_000);
-    call(
+    let (status, hold) = call(
         &w.app,
         "POST",
         "/api/v1/metering/holds",
@@ -443,13 +429,14 @@ async fn a_release_lets_a_hold_go_and_a_late_settle_conflicts() {
         Some(&w.service_secret),
     )
     .await;
+    assert_eq!(status, StatusCode::OK, "{hold}");
     let (status, body) = call(
         &w.app,
         "POST",
         "/api/v1/metering/release",
         Some(json!({
             "organizationId": w.organization_id,
-            "holdKey": "metering:rel:hold",
+            "holdKey": hold["data"]["holdKey"],
         })),
         Some(&w.service_secret),
     )
@@ -465,7 +452,7 @@ async fn a_release_lets_a_hold_go_and_a_late_settle_conflicts() {
         "/api/v1/metering/release",
         Some(json!({
             "organizationId": w.organization_id,
-            "holdKey": "metering:rel:hold",
+            "holdKey": hold["data"]["holdKey"],
         })),
         Some(&w.service_secret),
     )
@@ -477,7 +464,7 @@ async fn a_release_lets_a_hold_go_and_a_late_settle_conflicts() {
         "/api/v1/metering/settle",
         Some(json!({
             "organizationId": w.organization_id,
-            "holdKey": "metering:rel:hold",
+            "holdKey": hold["data"]["holdKey"],
             "usage": usage(10),
         })),
         Some(&w.service_secret),

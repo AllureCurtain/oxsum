@@ -10,6 +10,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+#[path = "support/integration.rs"]
+mod integration;
 use oxsum_core::{
     BillingMode, ChargeCheck, Db, MeteredEvent, NewUser, Price, SecretKey, SettlementKind,
     SettlementRecord, Tenants, UsageRecord, WalletError, verify_charge,
@@ -130,12 +132,14 @@ async fn world(url: &str, top_up: i64) -> World {
     db.append_price(&channel, &code, event_price(ONE), 100)
         .await
         .expect("the event price appends");
-    let minted = db
-        .create_service_credential(Some(fresh("mailer")))
-        .await
-        .expect("the credential mints");
+    let minted = integration::mint(
+        &db,
+        vec![organization_id],
+        vec![oxsum_core::IntegrationScope::MeteringWrite],
+    )
+    .await;
     let service = db
-        .authenticate_service(&minted.secret)
+        .authenticate_service(minted.secret.as_deref().unwrap())
         .await
         .expect("authenticates")
         .expect("the minted credential resolves");
@@ -151,6 +155,10 @@ async fn world(url: &str, top_up: i64) -> World {
 }
 
 impl World {
+    async fn hold_key(&self, key: &str) -> String {
+        sqlx::query_scalar("SELECT hold_key FROM oxsum.metering_authorizations WHERE credential_id=$1 AND organization_id=$2 AND idempotency_key=$3")
+            .bind(self.service.credential_id()).bind(self.organization_id).bind(key).fetch_one(self.db.pool()).await.unwrap()
+    }
     fn event(&self, units: i64) -> MeteredEvent {
         MeteredEvent {
             channel: self.channel.clone(),
@@ -174,79 +182,73 @@ async fn a_service_credential_mints_authenticates_and_revokes() {
     let db = Db::from_pool(pool);
     db.migrate().await.expect("migrates");
 
-    let name = fresh("mailer");
-    let minted = db
-        .create_service_credential(Some(name.clone()))
+    let customer = db
+        .register(NewUser {
+            email: format!("{}@example.com", Uuid::new_v4()),
+            password: "customer fixture password".into(),
+            organization_name: None,
+        })
         .await
         .unwrap();
-    // The secret's shape is the documented one, and it is answered once.
-    assert!(minted.secret.starts_with("oxs-svc-"));
-    assert_eq!(minted.secret.len(), "oxs-svc-".len() + 64);
-    assert_eq!(minted.credential.name.as_deref(), Some(name.as_str()));
-    assert_eq!(
-        minted.credential.prefix,
-        minted.secret.chars().take(16).collect::<String>()
+    let owner = integration::owner(&db).await;
+    let request = integration::request(
+        vec![customer.organization.id],
+        vec![oxsum_core::IntegrationScope::MeteringWrite],
     );
-
-    // The secret resolves to the credential; a wrong one resolves to nothing.
-    let acting = db.authenticate_service(&minted.secret).await.unwrap();
+    let minted = db
+        .create_integration_credential(&owner, &request)
+        .await
+        .unwrap();
+    let secret = minted.secret.as_deref().unwrap();
+    assert!(secret.starts_with("oxs-int-"));
+    assert_eq!(secret.len(), 72);
     assert_eq!(
-        acting
-            .expect("the minted secret authenticates")
-            .credential_id,
+        db.authenticate_service(secret)
+            .await
+            .unwrap()
+            .unwrap()
+            .credential_id(),
         minted.credential.id
     );
-    assert!(
-        db.authenticate_service(
-            "oxs-svc-0000000000000000000000000000000000000000000000000000000000000000"
-        )
+    let replay = db
+        .create_integration_credential(&owner, &request)
         .await
-        .unwrap()
-        .is_none()
-    );
-
-    // The list carries the credential's metadata, never the secret or hash.
-    let listed = db.list_service_credentials().await.unwrap();
-    let entry = listed
-        .iter()
-        .find(|c| c.id == minted.credential.id)
-        .expect("the minted credential lists");
-    assert!(entry.revoked_at.is_none());
-    assert!(
-        !entry
-            .prefix
-            .contains(&minted.secret["oxs-svc-".len() + 8..])
-    );
-
-    // Revocation ends authentication, and a second revoke is not an answer.
-    let revoked = db
-        .revoke_service_credential(minted.credential.id)
+        .unwrap();
+    assert_eq!(replay.credential.id, minted.credential.id);
+    assert!(replay.secret.is_none());
+    let page = db.integration_credentials(&owner, None, 100).await.unwrap();
+    let encoded = serde_json::to_string(&page).unwrap();
+    assert!(!encoded.contains(secret));
+    assert!(!encoded.contains("secretHash"));
+    let revoke = oxsum_core::IntegrationCredentialRevokeRequest {
+        idempotency_key: "revoke".into(),
+        reason: "test rotation".into(),
+    };
+    let receipt = db
+        .revoke_integration_credential(&owner, minted.credential.id, &revoke)
         .await
-        .unwrap()
-        .expect("the live credential revokes");
-    assert!(revoked.revoked_at.is_some());
+        .unwrap();
+    assert_eq!(
+        db.revoke_integration_credential(&owner, minted.credential.id, &revoke)
+            .await
+            .unwrap()
+            .id,
+        receipt.id
+    );
+    assert!(db.authenticate_service(secret).await.unwrap().is_none());
     assert!(
-        db.authenticate_service(&minted.secret)
+        db.authenticate_service("oxs-svc-legacy")
             .await
             .unwrap()
             .is_none()
     );
-    assert!(
-        db.revoke_service_credential(minted.credential.id)
-            .await
-            .unwrap()
-            .is_none()
+    let mut invalid = integration::request(
+        vec![customer.organization.id],
+        vec![oxsum_core::IntegrationScope::MeteringWrite],
     );
-    assert!(
-        db.revoke_service_credential(Uuid::new_v4())
-            .await
-            .unwrap()
-            .is_none()
-    );
-
-    // A name over the bound is refused.
+    invalid.name = Some("x".repeat(81));
     assert!(matches!(
-        db.create_service_credential(Some("x".repeat(81))).await,
+        db.create_integration_credential(&owner, &invalid).await,
         Err(WalletError::InvalidInput(_))
     ));
 }
@@ -272,7 +274,8 @@ async fn a_hold_freezes_the_declared_bound_and_settles_at_actual() {
         .unwrap();
     assert_eq!(hold.freeze_minor, 100);
     assert_eq!(hold.price_version, 1);
-    assert_eq!(hold.hold_key, "metering:hold-1:hold");
+    assert!(hold.hold_key.starts_with("metering:"));
+    assert_eq!(hold.hold_key.len(), 78);
 
     // The settled usage prices inside the freeze: usage kind, charged 40.
     let outcome =
@@ -565,7 +568,7 @@ async fn the_description_of_a_metered_settlement_is_a_v6_record() {
     assert_eq!(outcome.charged_minor, 25);
     let wallet = w.tenants.get(&w.tenant_id).await.unwrap();
     let record = wallet
-        .settled_record("metering:v6-1:hold")
+        .settled_record(&w.hold_key("v6-1").await)
         .await
         .unwrap()
         .expect("the settlement committed");
@@ -574,7 +577,7 @@ async fn the_description_of_a_metered_settlement_is_a_v6_record() {
     assert_eq!(record.price_version, 1);
     assert_eq!(record.upstream_attempts, 0);
     // The reporting credential's name is on the record — who wrote this charge.
-    assert_eq!(record.service.as_deref(), w.service.name.as_deref());
+    assert_eq!(record.service.as_deref(), Some("metering fixture"));
     assert_eq!(record.request, "evt-42");
     assert_eq!(record.model, w.code);
 }
@@ -737,7 +740,12 @@ async fn a_suspended_organization_cannot_hold() {
         .await;
     assert!(matches!(refused, Err(WalletError::Forbidden(_))));
     // The refused hold left nothing for the sweeper to watch.
-    assert!(w.db.open_hold("metering:sus:hold").await.unwrap().is_none());
+    assert!(
+        w.db.open_hold(&w.hold_key("sus").await)
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -766,25 +774,24 @@ async fn an_unknown_organization_is_not_found() {
 async fn the_v6_description_recomputes_and_a_tampered_one_does_not() {
     let url = db_or_skip!();
     let w = world(&url, 100 * ONE).await;
-    w.db.metering_settle_once(
-        &w.tenants,
-        &w.service,
-        w.organization_id,
-        "ver-1",
-        &w.event(25),
-        D,
-    )
-    .await
-    .unwrap();
+    let outcome =
+        w.db.metering_settle_once(
+            &w.tenants,
+            &w.service,
+            w.organization_id,
+            "ver-1",
+            &w.event(25),
+            D,
+        )
+        .await
+        .unwrap();
     // The settlement entry's description as the ledger stored it — the
     // derivable entry id names it directly.
     let description: String = sqlx::query_scalar(&format!(
         "SELECT description FROM ledger_{}.entries WHERE entry_id = $1",
         w.tenant_id
     ))
-    .bind(
-        *oxsum_core::entry_id_for(&oxsum_core::settlement_key_for("metering:ver-1:hold")).as_uuid(),
-    )
+    .bind(outcome.settlement_id)
     .fetch_one(w.db.pool())
     .await
     .expect("the settlement entry is there");
