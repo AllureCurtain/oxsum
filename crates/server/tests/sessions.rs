@@ -28,6 +28,7 @@ async fn online_app(url: &str, secure_cookie: bool) -> (Router, PgPool) {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let config = Config::new(Signup::Open, None).with_session_cookie_secure(secure_cookie);
     (support::app(db, config), pool)
 }

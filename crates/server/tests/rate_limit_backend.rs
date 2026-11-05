@@ -95,6 +95,7 @@ async fn world(database_url: &str) -> World {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
 
     let suffix = Uuid::new_v4().simple().to_string()[..8].to_owned();
     let channel = format!("rl-{suffix}");

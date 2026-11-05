@@ -85,6 +85,7 @@ async fn world() -> Option<(Router, Db, StripeStub)> {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool);
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let (api_url, stub) = stub_stripe().await;
     *stub.answer_id.lock().unwrap() = "cs_test_123".to_owned();
     *stub.answer_url.lock().unwrap() = "https://checkout.stripe.com/pay/cs_test_123".to_owned();
@@ -389,6 +390,7 @@ async fn an_unconfigured_deployment_refuses_cleanly() {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool);
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let config = Config::new(Signup::Open, None).with_secret(sealing_key());
     let (app, _events, _metrics) = oxsum_server::app_with_billing(db.clone(), config);
     let key = register(&app).await;

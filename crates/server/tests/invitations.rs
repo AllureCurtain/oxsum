@@ -30,6 +30,7 @@ async fn online_app(url: &str, signup: Signup) -> (Router, PgPool) {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), signup == Signup::Open).await;
     (oxsum_server::app(db, Config::new(signup, None)), pool)
 }
 

@@ -125,6 +125,7 @@ async fn world(url: &str, top_up: i64) -> World {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool);
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let config = Config::new(Signup::Open, None)
         .with_secret(SecretKey::from_bytes([7; 32]))
         .with_admin_token(TOKEN);

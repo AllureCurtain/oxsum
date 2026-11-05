@@ -51,6 +51,7 @@ async fn app_for(database_url: &str) -> (Router, PgPool) {
         .expect("connects to PostgreSQL");
     let db = oxsum_core::Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let config = Config::new(Signup::Open, None)
         .with_secret(SecretKey::from_bytes([7; 32]))
         .with_admin_token(TOKEN);

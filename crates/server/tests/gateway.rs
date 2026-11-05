@@ -851,6 +851,7 @@ async fn world_on_pool(url: &str, top_up: i64, protocol: &str, connections: u32)
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
 
     let suffix = uuid::Uuid::new_v4().simple().to_string()[..8].to_owned();
     let channel = format!("mock-{suffix}");
