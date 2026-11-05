@@ -639,3 +639,71 @@ fn rfc3339(t: time::OffsetDateTime) -> String {
     t.format(&time::format_description::well_known::Rfc3339)
         .expect("the timestamp formats")
 }
+
+#[tokio::test]
+async fn a_fallback_alias_cannot_widen_the_keys_model_grant() {
+    let world = world!(10_000_000);
+    let requested = world.model("req");
+    let target = world.model("fall-a");
+    let alias = world.model("fallback-alias");
+    let db = Db::from_pool(world.pool.clone());
+    db.create_alias(&world.channel, &alias, &target)
+        .await
+        .unwrap();
+    world.answers(
+        "req",
+        Answer::Refuse {
+            status: 502,
+            body: json!({"error":{"message":"unavailable"}}),
+        },
+    );
+    world.answers(
+        "fall-a",
+        Answer::Completion {
+            usage: Some((5, 3)),
+        },
+    );
+    assert_eq!(
+        set_fallbacks(&world, &requested, &[&alias]).await,
+        StatusCode::OK
+    );
+    let (org, acting) = db.authenticate(&world.key).await.unwrap().unwrap();
+    db.update_key_constraints(
+        org.id,
+        acting.key_id,
+        oxsum_core::KeyScope::Organization,
+        oxsum_core::KeyConstraints {
+            model_allowlist: Some(vec![requested.clone(), alias.clone()]),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let response = chat(&world.app, &world.key, None, simple(&requested)).await;
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let _ = response.into_body().collect().await.unwrap();
+    assert_eq!(world.script.seen(), vec![requested.clone()]);
+    db.update_key_constraints(
+        org.id,
+        acting.key_id,
+        oxsum_core::KeyScope::Organization,
+        oxsum_core::KeyConstraints {
+            model_allowlist: Some(vec![requested.clone(), alias.clone(), target.clone()]),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let response = chat(&world.app, &world.key, None, simple(&requested)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let id = request_id(&response);
+    let _ = response.into_body().collect().await.unwrap();
+    assert_eq!(
+        world.script.seen(),
+        vec![requested.clone(), requested.clone(), target.clone()]
+    );
+    let record = world.settlement_within(&id).await;
+    assert_eq!(record["requestedModel"], requested);
+    assert_eq!(record["servedModel"], alias);
+    assert_eq!(record["upstreamModel"], target);
+}

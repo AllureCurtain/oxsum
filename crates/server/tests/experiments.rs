@@ -791,3 +791,56 @@ async fn an_unserved_variant_or_a_bad_weight_is_a_400() {
     let res = put_experiment(&world, "ab", json!([])).await;
     assert_eq!(res.status, StatusCode::BAD_REQUEST, "an empty set is a 400");
 }
+
+#[tokio::test]
+async fn an_experiment_cannot_replace_a_denied_original_or_land_on_a_denied_variant() {
+    let world = world!(10_000_000);
+    let db = Db::from_pool(world.pool.clone());
+    let (_, acting) = db.authenticate(&world.key).await.unwrap().unwrap();
+    let plain = world.model("plain");
+    let variant = world.model("var-a");
+    assert_eq!(
+        put_experiment(&world, "permission", json!([{"model":variant,"weight":1}]))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    world.answers("var-a");
+    for allowed in [&plain, &variant] {
+        db.update_key_constraints(
+            world.organization_id,
+            acting.key_id,
+            oxsum_core::KeyScope::Organization,
+            oxsum_core::KeyConstraints {
+                model_allowlist: Some(vec![allowed.clone()]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let response =
+            chat_keeping_headers(&world.app, &world.key, Some("permission"), simple(&plain)).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let _ = response.into_body().collect().await.unwrap();
+        assert!(world.script.seen().is_empty());
+    }
+    db.update_key_constraints(
+        world.organization_id,
+        acting.key_id,
+        oxsum_core::KeyScope::Organization,
+        oxsum_core::KeyConstraints {
+            model_allowlist: Some(vec![plain.clone(), variant.clone()]),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let response =
+        chat_keeping_headers(&world.app, &world.key, Some("permission"), simple(&plain)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let id = request_id(&response);
+    let _ = response.into_body().collect().await.unwrap();
+    let record = world.settlement_within(&id).await;
+    assert_eq!(record["requestedModel"], plain);
+    assert_eq!(record["servedModel"], variant);
+}
