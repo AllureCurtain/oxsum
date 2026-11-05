@@ -536,8 +536,8 @@ Steps:
    ledger: its entries are keyed `req-<id>:hold` and the settlement derived from it
    (`oxsum_core::settlement_key_for`).
 
-   The cost rides along too: `x-oxsum-freeze-minor` is the most the request can charge and
-   `x-oxsum-balance-minor` is the spendable balance left under that freeze. Once the turn
+   The cost rides along too: `x-oxsum-freeze-minor` is the most the request can charge.
+   Read account balance in your personal session; it is not returned to a consumption key. Once the turn
    settles, `x-oxsum-charged-minor` reports what it actually cost — a header on a
    non-streamed answer or a post-hold refusal, and an HTTP trailer (`Trailer:
    x-oxsum-charged-minor` announces it) on a streamed one, since the response head is sent
@@ -797,7 +797,7 @@ Steps:
 
 Purpose: pull usage, bills and prices into a pipeline instead of scraping the
 dashboard — all four are ordinary `GET`/`POST` calls under the organization's
-API key, and a member session sees its own keys' rows plus the shared ones.
+owner/admin session. A consumption key sees only its own rows, and a member session sees its own keys' rows plus shared unattributed history, excluding account-wide document markers.
 
 - `GET /api/v1/usage?from=YYYY-MM-DD&to=YYYY-MM-DD` — the daily rollup rows
   the usage page sums (bounded to a 92-day window).
@@ -820,7 +820,7 @@ Purpose: confirm a recorded transaction has not been altered since.
 Steps:
 
 1. `GET /api/v1/entries/{entryId}/proof` to fetch the proof bundle (the entry source, the inclusion proof and the tree head, as JSON).
-2. Open `/verify` in the browser — no login needed — paste the bundle and the `contentHash` you saved, and submit. When the deployment ships the wasm bundle (the usual case), the check runs entirely in your browser: the page loads the same `verify_bundle` the server runs compiled to WebAssembly, so a passed check does not depend on trusting the server, and the bundle never leaves your machine. A browser without the wasm bundle — or JavaScript off — posts the same fields to the server, which runs the identical check and renders the verdict. If you just want to see the check run on a real bill, the page's "See it verify a real one" link (`/verify?sample`) pre-fills the form with a bundle drawn from the deployment's seeded demo organization — a real settled entry on that deployment, attested the same way yours is (issue #489).
+2. Open `/verify` in the browser — no login needed — paste the bundle and the `contentHash` you saved, and submit. When the deployment ships the wasm bundle (the usual case), the check runs entirely in your browser: the page loads the same `verify_bundle` the server runs compiled to WebAssembly, so a passed check does not depend on trusting the server, and the bundle never leaves your machine. A browser without the wasm bundle — or JavaScript off — posts the same fields to the server, which runs the identical check and renders the verdict. The page's "Try an example bill" link (`/verify?sample`) pre-fills a captured public test fixture shared with the offline verifier example. It demonstrates the check without reading any customer's ledger and is labeled as evidence from a test environment, not this deployment (issue #637).
 3. Read the verdict. "Verification passed" means the bundle matches the content hash and the inclusion proof links it to the tree head — and, for a usage settlement, one more line: the charge inside the entry is recomputed from the usage and rates it records (`charged = ceil(Σ units × pricePerM ÷ 1,000,000)`, capped at the freeze). A settlement written before descriptions were versioned, or by a schema newer than the page's verifier, reports that inclusion passed but the arithmetic is too old or too new to recompute — it is skipped, not guessed at. "The charge does not add up" means the entry is proven but its own numbers disagree with each other, which an honest settlement never does. "Verification failed" means something changed: altering any single number in the bundle fails the check. A bundle that does not parse, or a hash that is not 64 hex characters, gets its own error instead.
 
 A passed check on a settlement also reports how the bill's *price* fared. The operator signs a checkpoint per `(channel, model, priceVersion)` — the same key that signs tree heads, under the origin `oxsum/price-catalog/<channel>` — and a fresh bundle carries that checkpoint in its `price` field: the canonical row the server hashed, the note attesting it, and the verifying key. "Bound to a checkpoint the operator signed" means the price your bill names is the catalog row the operator attested — a forged current price table cannot produce it. "No signed price binding" is information, not failure: a top-up names no price, a bundle made before this shipped carries none, and a deployment without `OXSUM_HEAD_SIGNING_KEY` signs nothing. A binding that *does not verify* is its own sentence — the note names a different price or its signature fails — and that never happens on an honest bill. You can also fetch any version's checkpoint yourself at `GET /api/v1/log/price-head?channel=<name>&model=<name>[&version=<n>]`; signing is deterministic, so an old version's note is identical whenever it is asked for.
@@ -941,3 +941,10 @@ Customer state reports manual and dunning timestamps separately. Clearing a manu
 ### Inviting a new customer as business staff
 
 In business context, owner/admin calls `POST /api/v1/business/customer-invitations` with a unique `idempotencyKey`, intended `email`, customer `name`, stable `externalId` and a `reason`. Save the returned token/link for the intended customer; this API does not mail it. The invitation reserves its identity for seven days, and the customer account is created only when the recipient consents. New users register; existing users sign in and accept. They become the initial customer owner, never business staff. Revoke before acceptance through `/business/customer-invitations/{id}/revoke` with a new idempotency key and reason. After acceptance, use customer lifecycle or membership operations.
+
+
+### Updating clients for scoped consumption keys (#637)
+
+Keep your existing key for SDK inference and its own receipts, usage and entitlement preview. Sign in personally to create or revoke keys, change constraints, mint mandates, view account balance, start checkout or redeem a code. Customer-wide statements, reports/share links, experiments and webhook configuration require an owner/admin session. A consumption key receives 403 on these account operations; a sibling or foreign evidence/task ID returns 404.
+
+Use the same consumption key to poll/cancel an asynchronous task and to retry an inference request. Replays also require the same protocol, path model and body. After upgrading, retry IDs whose records used the old fingerprint conflict until their original 24-hour expiry; choose a new ID only for a genuinely new operation, never to blindly repeat uncertain inference. Response caches warm separately for each key. Existing balances and downloaded proofs remain valid.

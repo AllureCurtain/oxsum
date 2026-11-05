@@ -18,3 +18,12 @@ Existing balances, organization/key IDs, ledger origins, entries and proofs rema
 Manual `suspended: false` on the deployment organization PATCH now clears only manual suspension. It cannot override dunning or archived customer state. Reconcile overdue payment or disable the configured dunning policy to remove its reason, and explicitly restore an archived customer. Existing balances, IDs, historical evidence and active settlement are preserved.
 
 - **Customer joining consent (#634):** `POST /api/v1/org/members` now returns 403. Use `POST /org/invitations` with an idempotency key and optional bound email, then explicit `/invitations/accept` for signed-in users or `/invitations/redeem` for new users. Creation retries return null token and do not resend mail. Existing unspent links survive upgrade. New business customer invitations reserve external identity until intended-recipient consent; no staff or funds are granted.
+
+
+## Scoped consumption keys (#637)
+
+Existing keys retain inference and own evidence/status access but lose account administration, payment initiation, balances/budgets and customer-wide history. Use a current personal session for keys/mandates/team/checkout; statements, reports/share links, experiments and webhooks require owner/admin. Members' raw entries/proofs/exports/sockets follow their key attribution and shared unattributed history, excluding account-wide document markers. Revocation does not hide a member's historic key receipts.
+
+The balance response header is removed. Tasks, response caches and replay records are exact-key scoped. A legacy replay record conflicts until its original 24-hour expiry; pre-upgrade cache rows miss. Existing key IDs/secrets, ledger balances, origins, entries and downloaded proofs remain unchanged. T05.b integration/metering credentials remain a separate required child, #638.
+
+- The public verification example no longer reads a customer selected by display name. `/verify?sample` uses fixed public test evidence, labeled as such, even when a customer calls itself `Acme Demo`.
