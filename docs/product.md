@@ -357,3 +357,12 @@ Core uses explicit capabilities: owner holds all listed business capabilities; a
 Fresh and upgraded businesses are invite-only until an initialized owner selects `open`. Password, GitHub and OIDC account creation check saved policy inside the creation transaction. Existing users can still log in while closed. `OXSUM_SIGNUP` is retained as a parsed legacy value and cannot override the policy. Existing invitation, email verification and configured bot-check controls continue to apply. Public registration grants only customer membership, never a staff seat.
 
 Staff, ownership, registration and context writes require idempotency keys. A repeated key with changed terms conflicts. Identical replay never reapplies an old change and still checks current authority; ownership transfer retry by the demoted former owner therefore returns forbidden. Security receipts and redacted audit rows commit with the change and cannot be edited or deleted.
+
+
+## Customer profile and lifecycle (#633)
+
+Business owner/admin can list/read customer accounts, change display name and billing contact, and archive/restore them. Support can read customers and set or lift manual suspension; finance can read but cannot change identity/profile/lifecycle, and viewer sees no customer details. Every lookup scopes the account to the selected business. Stable external IDs initially equal organization UUIDs and cannot be changed or reassigned; customer creation/invitation assigns its reference in T04.b. Names need not be unique.
+
+Archive is a reversible admission restriction, not deletion. Keys, memberships, tenant/ledger IDs, debt, balances, historical proofs and in-flight requests remain intact. Customer reads, settlement and incoming payments continue. New gateway/service admission checks archive as well as independent manual and dunning reasons. Restoring an archived customer cannot bypass overdue or manual suspension. Manual reinstatement cannot erase dunning, and dunning recovery cannot lift manual or archive restrictions. Each business change has a reason, idempotency receipt and immutable audit; no ledger posting is generated for profile or state changes.
+
+This is T04.a. Customer invitations and consent for joining existing teams remain T04.b #634; the parent T04 remains incomplete until both children integrate.

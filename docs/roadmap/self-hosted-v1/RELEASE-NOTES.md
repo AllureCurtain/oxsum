@@ -11,3 +11,8 @@ Existing balances, organization/key IDs, ledger origins, entries and proofs rema
 ## T01.b — Customer raw reservation and settlement removed (#625)
 
 `POST /api/v1/holds` and `POST /api/v1/settlements` now return 403 for authenticated customer sessions/API keys before parsing the body. Integrations must use the gateway for consumption or an explicitly provisioned service credential for `/api/v1/metering`. Customers cannot release an existing gateway hold or set the actual charge. `GET /api/v1/holds`, existing evidence, legacy hold sweeping and authorized service-metering operations remain supported. The overview's manual hold bench is removed in both locales.
+
+
+## Independent customer admission restrictions (#633)
+
+Manual `suspended: false` on the deployment organization PATCH now clears only manual suspension. It cannot override dunning or archived customer state. Reconcile overdue payment or disable the configured dunning policy to remove its reason, and explicitly restore an archived customer. Existing balances, IDs, historical evidence and active settlement are preserved.

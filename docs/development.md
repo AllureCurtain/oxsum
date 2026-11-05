@@ -963,3 +963,8 @@ Check `/api/v1/admin/business`: initialization should be non-null and the migrat
 ### Business authority validation (#630)
 
 Use `cargo nextest run -p oxsum-core -p oxsum-server -E 'binary(business_staff) or binary(business_setup) or binary(oidc) or binary(oauth) or binary(totp)'` for setup, context, policy and second-factor boundaries. These suites create isolated PostgreSQL databases and use real setup/session APIs. Legacy HTTP suites call the scratch-only `oxsum_testkit::set_registration_fixture` when their purpose assumes open registration; it refuses databases outside the test prefix and is never linked into production policy handling. New installs must complete owner setup and set registration policy before following public signup examples.
+
+
+### Customer lifecycle validation (#633)
+
+Focused checks: `cargo nextest run -p oxsum-core --test customer_lifecycle --test customer_upgrade --test dunning --test suspension` and `cargo nextest run -p oxsum-server --test customer_lifecycle --test suspension`. Customer tests exercise real setup and session authority, archive/admission races, independent reasons, audit rollback and historical proof preservation in isolated PostgreSQL. The HTTP suite sends actual gateway calls to a loopback provider before/after restoration; no paid call is required.
