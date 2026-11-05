@@ -146,6 +146,11 @@ async fn submit_inner(
             message: "model is required".to_owned(),
             param: Some("model"),
         })?;
+    // This generic adapter has no signed-mandate settlement binding. Reject a
+    // presented mandate explicitly instead of treating it as unrestricted use.
+    if headers.contains_key(crate::gateway::MANDATE_HEADER) {
+        return Err(GatewayError::InvalidMandate);
+    }
     // The idempotency claim rides the body fingerprint the gateway surfaces
     // use: a retry under the same key and body replays the stored answer.
     let idem_key = headers
@@ -191,22 +196,56 @@ async fn submit_inner(
     // The candidates: channels serving this model under the `tasks` protocol,
     // weighted-ordered the way a chat turn's routes are — a refused submission
     // fails over to the next route's channel under the same hold.
-    let channel_scope = state.db.key_channel_scope(key.key_id).await?;
-    let servings = state
+    let access = state
         .db
-        .servings_named(model, state.config.secret().ok_or(GatewayError::Internal)?)
-        .await?
-        .0
+        .serving_access(organization.id, Some(key.key_id))
+        .await?;
+    let (servings, upstream_model) = state
+        .db
+        .servings_named_for_access(
+            model,
+            state.config.secret().ok_or(GatewayError::Internal)?,
+            &access,
+        )
+        .await?;
+    if !access.allows_path(model, upstream_model.as_deref()) {
+        return Err(GatewayError::Forbidden(
+            "the caller cannot access this task model".into(),
+        ));
+    }
+    if upstream_model.is_some() {
+        return Err(GatewayError::Invalid {
+            message: "task aliases are not supported; use a permitted direct task model".into(),
+            param: Some("model"),
+        });
+    }
+    let servings = servings
         .into_iter()
         .filter(|serving| serving.protocol == oxsum_core::TASKS)
-        .filter(|serving| {
-            channel_scope
-                .as_ref()
-                .is_none_or(|ids| ids.contains(&serving.channel_id))
-        })
+        .filter(|serving| access.allows_channel(serving.channel_id))
         .collect::<Vec<_>>();
     if servings.is_empty() {
         return Err(GatewayError::model_not_served(model));
+    }
+    for (id, rpm) in [
+        (organization.id, access.requests_per_minute),
+        (key.key_id, key.requests_per_minute),
+    ] {
+        if let Some(rpm) = rpm
+            && rpm > 0
+            && let Err(limited) =
+                state
+                    .rate_limiter
+                    .admit(id, rpm as u32, std::time::Instant::now())
+        {
+            crate::metrics::rate_limited(&state.metrics, "gateway");
+            return Err(GatewayError::RateLimited {
+                message: format!("task admission is limited to {rpm} requests per minute"),
+                code: "RATE_LIMITED",
+                limit: i64::from(rpm),
+                retry_after_secs: limited.retry_after.as_secs(),
+            });
+        }
     }
     // The routing window applies to the task pick the same as the chat pick
     // (issue #499): a slow or erroring channel sheds weight for the submission.
