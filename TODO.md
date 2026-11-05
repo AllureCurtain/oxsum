@@ -24,7 +24,7 @@ The accepted contract and evidence live in [docs/roadmap/self-hosted-v1](docs/ro
 - [ ] [#638](https://github.com/AllureCurtain/oxsum/issues/638) — Scoped business integration/metering credentials (T05.b): PR #640; locally validated, CI/independent review pending.
 - [ ] [#597](https://github.com/AllureCurtain/oxsum/issues/597) — Business-owned provider configuration (T06): in progress; #641 and #642 both required.
 - [ ] [#641](https://github.com/AllureCurtain/oxsum/issues/641) — Business provider authority and atomic configuration (T06.a): PR #643; locally validated, review/integration pending.
-- [ ] [#642](https://github.com/AllureCurtain/oxsum/issues/642) — Provider destination policy and explicit probes (T06.b): in progress on T06.a source.
+- [ ] [#642](https://github.com/AllureCurtain/oxsum/issues/642) — Provider destination policy and explicit probes (T06.b): PR #646; source `9548212` locally validated: 1,541 runtime, 22 targeted, 26 shared-process, 29 doctest and 29 engine checks pass; normal review/integration pending.
 - [ ] [#598](https://github.com/AllureCurtain/oxsum/issues/598) — Model catalog and private serving context (T07): in progress; #644 and #645 both required.
 - [ ] [#644](https://github.com/AllureCurtain/oxsum/issues/644) — Customer catalog and serving permissions (T07.a): in progress on T06.b source; normal integration awaits prerequisites.
 - [ ] [#645](https://github.com/AllureCurtain/oxsum/issues/645) — Complete response-cache context (T07.b): pending T07.a.
