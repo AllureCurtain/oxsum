@@ -744,7 +744,7 @@ traffic — the dump before the upgrade is the answer to that.
 | `OXSUM_SECRET_KEY` | **Not a restart** | It seals the upstream credentials in `oxsum.channel_credentials` and the webhook signing secrets in `oxsum.webhook_endpoints`; a new value cannot open them. Rotate by re-entering every channel's upstream keys and recreating the webhook endpoints, *then* restart with the new value — or lose the ability to read what was sealed |
 | Database credentials | PostgreSQL's own role/password machinery | Update `DATABASE_URL` and restart |
 | Organization API keys | `DELETE`/`POST /api/v1/org/keys` | Per-organization, self-service, no restart |
-| Service credentials | `DELETE`/`POST /api/v1/admin/service-credentials` | Mint a new one, deploy it to the service, revoke the old one — metered calls fail `UNAUTHORIZED` between revoke and redeploy |
+| Integration credentials | Owner `POST /api/v1/business/integration-credentials`, then `POST /api/v1/business/integration-credentials/{credentialId}/revoke` | Issue a replacement with explicit scopes/customers/expiry and save its secret once. Finish old holds before revocation where possible; the replacement cannot close them. Trusted recovery handles orphaned holds. Legacy global service credentials are disabled and cannot be reissued. |
 
 Two of these are the expensive ones by design: `OXSUM_SECRET_KEY` is the root of
 what the database holds sealed, and the head-signing seed is the root of what
@@ -972,3 +972,16 @@ Focused checks: `cargo nextest run -p oxsum-core --test customer_lifecycle --tes
 ### Customer invitation upgrade and checks (#634)
 
 Migration 0076 extends existing links without changing their IDs, hashes or expiry. It adds nullable pending-customer terms and business ownership, then keeps the original organization/profile identity trigger compatible with signup/team/demo paths. Existing links remain single-use; the current API requires idempotency keys for new links and direct member POSTs return 403. No new environment setting is required. Run core `invitation_consent` and `invitation_upgrade`, server `invitation_consent` and the existing invitations/members/email/antibot suites against testkit scratch databases. The new creation/revoke endpoints send no mail unless the team request explicitly supplies `email`; tests use a local SMTP stub.
+
+
+### Scoped integration smoke client (#638)
+
+`python3 examples/scoped-integration/client.py --help` documents the standard-library
+client. `OXSUM_INTEGRATION_SECRET` is an example-only environment variable containing
+an owner-issued oxs-int- secret; it is not read by the server. The client reads only
+a selected customer unless the explicit `meter --confirm-metering` command is used.
+Run it against isolated test funds first. The production-router test
+`cargo nextest run -p oxsum-server --test integration_credentials` launches this
+client against loopback PostgreSQL-backed fixtures and checks replay/isolation.
+See the [example runbook](../examples/scoped-integration/README.md) for issuance,
+required event prices and exact negative cases. No paid provider is called.

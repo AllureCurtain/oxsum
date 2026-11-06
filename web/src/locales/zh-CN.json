@@ -921,7 +921,11 @@
       "colPrefix": "前缀",
       "colCreated": "创建时间",
       "revoked": "已吊销",
-      "revoke": "吊销"
+      "revoke": "吊销",
+      "retired": "旧服务凭据已停用。请向业务所有者申请具有所需权限、指定客户范围和到期时间的集成凭据。",
+      "disabled": "已停用",
+      "empty": "暂无旧服务凭据。",
+      "retry": "重试"
     },
     "deposits": {
       "organization": "组织",
@@ -1016,9 +1020,9 @@
       "note": "供应商账单是上游向该渠道收取的费用，由上游账单同步按天汇总；“未对账”表示该同步尚未为该渠道入账，而非账单为零。合计中每个渠道只计一次 —— API 会在每个模型行上重复渠道级数字。未跟踪轮次是已结算但无上游成本记录的轮次（未跟踪的价格、被清扫的冻结或历史数据），缺口拉大时最先体现在这里。"
     },
     "metering": {
-      "credentialTitle": "服务凭证",
+      "credentialTitle": "集成凭据",
       "credential": "凭证",
-      "credentialHint": "在“凭证”页签发的服务凭证 —— 用作 /api/v1/metering/* 的 bearer",
+      "credentialHint": "由业务所有者签发，具有此客户计量权限的集成凭据。",
       "credentialSaved": "凭证已保存到此浏览器",
       "eventContext": "事件上下文",
       "organizationId": "组织 id",

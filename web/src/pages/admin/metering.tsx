@@ -3,9 +3,8 @@ import { Trans, useTranslation } from "react-i18next";
 import { Banner, Button, Card, Field, TextInput } from "../../components/ui";
 import { ApiError } from "../../api/client";
 
-// The metering surface takes a service credential, not the operator token —
-// mint one under "credentials", paste it here, and the four routes become a
-// manual test bench: hold, settle, release, or the one-shot bill.
+// An owner-issued integration credential authorizes only its selected customers.
+// The manual bench supports hold, settle, release and one-shot billing.
 const METERING_CRED_KEY = "oxsum.metering-credential";
 
 async function meteringApi<T>(credential: string, path: string, body: unknown): Promise<T> {

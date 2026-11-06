@@ -33,6 +33,7 @@ mod guardrail;
 mod heads;
 mod holds;
 mod idempotency;
+mod integration_credentials;
 mod invitations;
 mod jobs;
 mod keys;
@@ -98,7 +99,7 @@ pub use business_staff::{
 pub use cache::{CachePolicy, CacheStore, CachedAnswer, PromptPart, prompt_digest};
 pub use channels::{
     CatalogModel, Channel, MAX_WEIGHT, ModelAlias, ModelPrice, ProbeChannel, SecretKey, Serving,
-    event_price, price_row, route_order, route_order_stats,
+    price_row, route_order, route_order_stats,
 };
 pub use credit_notes::CreditNote;
 pub use customers::{
@@ -143,6 +144,10 @@ pub use holds::{
     SweepReport, sweep_stale_holds,
 };
 pub use idempotency::{Claim, credential_fingerprint, fingerprint};
+pub use integration_credentials::{
+    ActingService, CreatedIntegrationCredential, IntegrationCredential, IntegrationCredentialPage,
+    IntegrationCredentialRequest, IntegrationCredentialRevokeRequest, IntegrationScope,
+};
 pub use invitations::{
     CreatedInvitation, CustomerInvitationRequest, InvitationAcceptRequest, InvitationAcceptance,
     InvitationPreview, InvitationRevokeRequest, TeamInvitationRequest,
@@ -172,7 +177,7 @@ pub use report_links::{LinkScope, MintedReportLink, ReportLink, ResolvedReportLi
 pub use request_log::{RequestLogFilter, RequestLogPage, RequestLogRow};
 pub use routing::{ChannelStats, RouteStats, SharedRouteStats};
 pub use seed::{DEMO_EMAIL, DEMO_ORGANIZATION, DEMO_PASSWORD, MEMBER_EMAIL, SeedReport};
-pub use service_credentials::{ActingService, CreatedServiceCredential, ServiceCredential};
+pub use service_credentials::ServiceCredential;
 pub use sessions::{
     CreatedSession, KeyPrincipal, KeyScope, Principal, SESSION_COOKIE, SESSION_LIFETIME, Session,
     SessionPrincipal,

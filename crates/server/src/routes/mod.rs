@@ -185,6 +185,14 @@ pub fn router(state: AppState) -> Router {
             get(business::context).post(business::select_context),
         )
         .route("/business", get(business::business))
+        .route(
+            "/business/integration-credentials",
+            get(business::integration_credentials).post(business::create_integration_credential),
+        )
+        .route(
+            "/business/integration-credentials/{credential_id}/revoke",
+            post(business::revoke_integration_credential),
+        )
         .route("/business/customers", get(business::customers))
         .route(
             "/business/customers/{organization_id}",

@@ -170,7 +170,11 @@ async fn customer_routes_scope_roles_and_keep_archive_independent_of_suspension(
                 )
                 .await
                 .0,
-                StatusCode::FORBIDDEN
+                if method == "GET" {
+                    StatusCode::UNAUTHORIZED
+                } else {
+                    StatusCode::FORBIDDEN
+                }
             );
         }
     }

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.105.0
+  version: 0.106.0
   x-consumption-cache: Cached responses are bound to the exact consumption key as well as customer, channel, model and prompt. Pre-upgrade cache digests are misses.
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
@@ -22,6 +22,12 @@ info:
     Gateway responses retain request/freeze/charge headers but no longer disclose
     customer-wide balance in headers or insufficient-funds errors. Explicit machine
     credential headers never fall through to a browser cookie, even if malformed.
+
+    0.106.0 adds owner-issued business integration credentials with explicit
+    customersRead/meteringWrite scopes, selected customer IDs, mandatory expiry,
+    revocation and one-time secrets. Legacy global service credentials are disabled;
+    deployment-token issuance is retired. Metering binds the credential, customer,
+    original request and finalization body before any financial effect.
 
     Three surfaces, deliberately different:
 
@@ -281,7 +287,7 @@ info:
 
     0.46.0 adds the metering surface (issue #172): the deployer's own services report billable
     events under `/api/v1/metering` — `holds`, `settle`, `release` and one-shot `settlements`
-    — authenticated by a service credential (`oxs-svc-…`) the admin mints, never by an
+    — originally authenticated by a global service credential (retired by 0.106.0), never by an
     organization's key or a session. A service names the `organizationId` it meters for, a
     `channel` and a `billableCode`, which resolve to the channel's `mode: event` price version;
     the declared `usage` is a UsageRecord in the code's own units, and every call carries an
@@ -4153,6 +4159,7 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/metering/holds:
     post:
+      x-integration-scope: meteringWrite
       summary: Freeze credit for a billable event a service will settle later
       description: |
         A service credential reports an event bound: the `billableCode` resolves to
@@ -4167,8 +4174,9 @@ paths:
         `402`, like every hold. The hold is watched by the sweeper: a hold that never
         settles releases at zero with kind `swept`. Replay of the same
         `idempotencyKey` answers the original hold.
+      x-authorization: Current meteringWrite credential, selected customer and exact credential ownership of the hold are checked in core before any side effect. Foreign or sibling hold IDs return 404. Same idempotency key with changed terms, including operation or finalization body, returns 409; exact replay returns the original result. endUser is attribution only.
       security:
-        - serviceCredential: []
+        - integrationCredential: []
       requestBody:
         required: true
         content:
@@ -4193,6 +4201,7 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/metering/settle:
     post:
+      x-integration-scope: meteringWrite
       summary: Settle a metering hold against the event's actual usage
       description: |
         The service reports what the event consumed; the charge is that usage itemized
@@ -4202,8 +4211,9 @@ paths:
         is derived from the hold's, so the hold settles at most once: a retry of the
         same body replays, a settled hold is 409, a hold that is not outstanding — of
         this organization — is 404.
+      x-authorization: Current meteringWrite credential, selected customer and exact credential ownership of the hold are checked in core before any side effect. Foreign or sibling hold IDs return 404. Same idempotency key with changed terms, including operation or finalization body, returns 409; exact replay returns the original result. endUser is attribution only.
       security:
-        - serviceCredential: []
+        - integrationCredential: []
       requestBody:
         required: true
         content:
@@ -4221,19 +4231,22 @@ paths:
                   data: { $ref: "#/components/schemas/MeteringSettlement" }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/metering/release:
     post:
+      x-integration-scope: meteringWrite
       summary: Release a metering hold the event will never settle
       description: >-
         The work the hold froze for is not billing — it was abandoned or refunded — so
         the hold settles at zero with kind `released`: deliberate, distinct from the
         sweeper's `swept`. Naming a hold that is not outstanding in this
         organization's ledger is 404; one already settled is 409.
+      x-authorization: Current meteringWrite credential, selected customer and exact credential ownership of the hold are checked in core before any side effect. Foreign or sibling hold IDs return 404. Same idempotency key with changed terms, including operation or finalization body, returns 409; exact replay returns the original result. endUser is attribution only.
       security:
-        - serviceCredential: []
+        - integrationCredential: []
       requestBody:
         required: true
         content:
@@ -4251,11 +4264,13 @@ paths:
                   data: { $ref: "#/components/schemas/MeteringSettlement" }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/metering/settlements:
     post:
+      x-integration-scope: meteringWrite
       summary: Bill a completed event in one call
       description: |
         For an event that already ran there is nothing to freeze against — the
@@ -4265,8 +4280,9 @@ paths:
         never spend what was not there. Every other refusal is `holds`'s: unknown
         organization, channel or code, unpriced usage, suspended organization. A
         replay of the `idempotencyKey` answers the original settlement.
+      x-authorization: Current meteringWrite credential, selected customer and exact credential ownership of the hold are checked in core before any side effect. Foreign or sibling hold IDs return 404. Same idempotency key with changed terms, including operation or finalization body, returns 409; exact replay returns the original result. endUser is attribution only.
       security:
-        - serviceCredential: []
+        - integrationCredential: []
       requestBody:
         required: true
         content:
@@ -4360,10 +4376,11 @@ paths:
         "409": { $ref: "#/components/responses/Error" }
   /api/v1/business/customers:
     get:
+      x-integration-scope: customersRead
       operationId: listBusinessCustomers
       summary: List business customers
-      description: Current customersRead capability. Keyset pagination by immutable organization UUID; all rows scoped to the selected business.
-      security: [{ sessionCookie: [] }]
+      description: Staff customersRead or an integration customersRead grant. Keyset pagination filters to the selected business and explicit integration customer allowlist before choosing the page.
+      security: [{ sessionCookie: [] }, { integrationCredential: [] }]
       parameters:
         - name: after
           in: query
@@ -4388,10 +4405,11 @@ paths:
         "409": { $ref: "#/components/responses/Error" }
   /api/v1/business/customers/{organizationId}:
     get:
+      x-integration-scope: customersRead
       operationId: getBusinessCustomer
       summary: Read a business customer
-      description: Current customersRead capability; unknown or foreign customer is 404.
-      security: [{ sessionCookie: [] }]
+      description: Staff customersRead or integration customersRead for this selected customer. Unknown, unselected or foreign customer is 404.
+      security: [{ sessionCookie: [] }, { integrationCredential: [] }]
       parameters:
         - name: organizationId
           in: path
@@ -4492,6 +4510,78 @@ paths:
       responses:
         "200":
           description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/integration-credentials:
+    get:
+      summary: List scoped integration credentials
+      description: Current business owner in business context. Metadata only; never secret or hash.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: after, in: query, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200":
+          description: Credential page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/IntegrationCredentialPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Issue a scoped integration credential
+      description: Current business owner in business context, with current TOTP. Secret returned once, null on exact replay. Terms, receipt and immutable audit commit atomically. Customer IDs and scopes must be distinct and explicit. Expiry must be in the future, within 365 days. No all-customer wildcard or unsupported scope.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IntegrationCredentialRequest" }
+      responses:
+        "200":
+          description: Credential and first-use secret
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/CreatedIntegrationCredential" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/integration-credentials/{credentialId}/revoke:
+    post:
+      summary: Revoke a scoped integration credential
+      description: Current business owner. Revocation, immutable receipt and audit commit together. Committed metering authorizations may finish after revocation; later API calls and captured principals are rejected. History and outstanding recovery remain intact.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: credentialId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IntegrationCredentialRevokeRequest" }
+      responses:
+        "200":
+          description: Mutation receipt
           content:
             application/json:
               schema:
@@ -6780,7 +6870,7 @@ paths:
       description: >-
         Every service credential, newest first — metadata only: the secret exists
         once, at mint. The list answers `prefix`, `createdAt` and `revokedAt`, so a
-        deployment can name which of its services may still meter.
+        deployment can inspect legacy credentials. All legacy credentials are disabled at upgrade; metadata remains available for recovery audits.
       security:
         - adminToken: []
       responses:
@@ -6798,32 +6888,13 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
     post:
-      summary: Mint a metering service credential
-      description: >-
-        The secret is answered exactly once, in this response — the database keeps
-        only its hash, like an API key's. `name` is what the settlement description
-        records as the reporting service, so name it for the service that will hold
-        it. The mint lands in the admin audit log.
-      security:
-        - adminToken: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/ServiceCredentialRequest" }
+      summary: Retired global service credential issuance
+      description: Returns 403 before body parsing. The current business owner must issue scoped credentials through /business/integration-credentials.
+      deprecated: true
+      security: [{ adminToken: [] }]
       responses:
-        "200":
-          description: The credential, with its secret — the only answer that carries it
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [data]
-                properties:
-                  data: { $ref: "#/components/schemas/CreatedServiceCredential" }
-        "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
-        "500": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
   /api/v1/admin/service-credentials/{credentialId}:
     delete:
       summary: Revoke a service credential
@@ -7420,14 +7491,15 @@ components:
         The operator token from `OXSUM_ADMIN_TOKEN`, at least 16 characters, compared in constant time.
         It is not an API key and belongs to no organization: it is whoever deploys oxsum. A deployment
         that sets no token has no admin surface at all.
-    serviceCredential:
+    integrationCredential:
       type: http
       scheme: bearer
       description: |
-        A metering service credential: `oxs-svc-` followed by 32 random bytes, shown once when
-        the admin mints it. It authenticates `/api/v1/metering/*` and nothing else — an
-        organization's key and a session are refused there, because an organization can never
-        report its own usage (issue #172).
+        Owner-issued oxs-int- secret with selected customer IDs and explicit scopes.
+        customersRead grants only business customer list/detail; meteringWrite grants
+        only metering for the selected customers. No gateway, personal, deployment,
+        funds-crediting or staff authority. Expired/revoked/legacy credentials fail
+        authentication. Explicit Authorization never falls back to cookies.
     sessionCookie:
       type: apiKey
       in: cookie
@@ -9953,11 +10025,11 @@ components:
       type: object
       required: [idempotencyKey, organizationId, channel, billableCode, usage]
       properties:
-        idempotencyKey: { type: string, minLength: 1, maxLength: 128, description: "UTF-8 idempotency key; the hold entry's key is `metering:<key>:hold`" }
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200, description: "UTF-8 idempotency key, scoped to the credential and customer; the returned opaque holdKey binds both" }
         organizationId: { type: string, format: uuid, description: whose wallet freezes }
         channel: { type: string, description: "the channel whose `mode: event` price version for the code applies" }
         billableCode: { type: string, minLength: 1, maxLength: 200, description: "what is being billed — the price book's model name on that channel" }
-        eventId: { type: string, maxLength: 128, description: "the service's own identifier for the event, recorded as the usage row's request id; defaults to the hold key" }
+        eventId: { type: string, maxLength: 128, description: "the service's own event label, recorded in settlement evidence; the usage projection uses the credential/customer-bound hold key to avoid global label collisions; defaults to the hold key" }
         usage: { $ref: "#/components/schemas/EventUsage" }
     MeteringSettleRequest:
       type: object
@@ -9977,7 +10049,7 @@ components:
       type: object
       required: [idempotencyKey, organizationId, channel, billableCode, usage]
       properties:
-        idempotencyKey: { type: string, minLength: 1, maxLength: 128 }
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
         organizationId: { type: string, format: uuid, description: whose wallet pays }
         channel: { type: string }
         billableCode: { type: string, minLength: 1, maxLength: 200 }
@@ -10001,10 +10073,53 @@ components:
           description: "`usage` when the declared usage priced inside the freeze, `capped` when it priced above and the freeze was charged, `released` when the hold was let go at zero"
         priceVersion: { type: integer, minimum: 1, description: the price version the usage priced at — the hold's pin on `settle`/`release`, the latest on a one-shot }
         settlementId: { type: string, format: uuid, description: the settlement ledger entry's id — derivable as `entry_id_for(settlement_key_for(holdKey))` }
-    ServiceCredentialRequest:
+    IntegrationScope:
+      type: string
+      enum: [customersRead, meteringWrite]
+    IntegrationCredentialRequest:
       type: object
+      additionalProperties: false
+      required: [idempotencyKey, scopes, customerIds, expiresAt, reason]
       properties:
-        name: { type: string, maxLength: 80, description: "which service holds this credential — the name settlement descriptions record as the reporter" }
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        name: { type: [string, "null"], maxLength: 80 }
+        scopes: { type: array, minItems: 1, maxItems: 2, uniqueItems: true, items: { $ref: "#/components/schemas/IntegrationScope" } }
+        customerIds: { type: array, minItems: 1, maxItems: 1000, uniqueItems: true, items: { type: string, format: uuid } }
+        expiresAt: { type: string, format: date-time }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    IntegrationCredentialRevokeRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    IntegrationCredential:
+      type: object
+      required: [credentialId, businessId, name, prefix, scopes, customerIds, createdAt, expiresAt, revokedAt]
+      properties:
+        credentialId: { type: string, format: uuid }
+        businessId: { type: string, format: uuid }
+        name: { type: [string, "null"] }
+        prefix: { type: string }
+        scopes: { type: array, items: { $ref: "#/components/schemas/IntegrationScope" } }
+        customerIds: { type: array, items: { type: string, format: uuid } }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        revokedAt: { type: [string, "null"], format: date-time }
+    CreatedIntegrationCredential:
+      allOf:
+        - $ref: "#/components/schemas/IntegrationCredential"
+        - type: object
+          required: [secret]
+          properties:
+            secret: { type: [string, "null"], description: "oxs-int- plus 64 random hexadecimal characters; returned once, null on replay" }
+    IntegrationCredentialPage:
+      type: object
+      required: [credentials, nextCursor]
+      properties:
+        credentials: { type: array, items: { $ref: "#/components/schemas/IntegrationCredential" } }
+        nextCursor: { type: [string, "null"], format: uuid }
     ServiceCredential:
       type: object
       required: [credentialId, prefix, createdAt]
@@ -10014,13 +10129,6 @@ components:
         prefix: { type: string, description: "the secret's leading characters, for recognizing it in a list" }
         createdAt: { type: string, format: date-time }
         revokedAt: { type: [string, "null"], format: date-time }
-    CreatedServiceCredential:
-      allOf:
-        - $ref: "#/components/schemas/ServiceCredential"
-        - type: object
-          required: [secret]
-          properties:
-            secret: { type: string, description: "`oxs-svc-` plus 64 hex characters — answered once, never stored readable" }
     RedeemRequest:
       type: object
       required: [code]

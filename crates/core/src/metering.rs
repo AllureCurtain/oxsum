@@ -1,7 +1,7 @@
 //! The metering surface's orchestration (issue #172, roadmap P8-4).
 //!
 //! A service credential's call prices a billable event: `hold` freezes the
-//! declared usage's itemized cost under a `metering:<key>:hold` ledger key,
+//! declared usage's itemized cost under an opaque credential/customer-scoped key,
 //! `settle` charges the event's actual usage against it — capped at the
 //! freeze — `release` lets it go at zero, and a one-shot `settlement` lands
 //! hold and settle under keys derived from the one idempotency key. Pricing
@@ -16,6 +16,11 @@
 //! credential as the ledger entry's actor, so the log answers "which service
 //! reported this" the way a key hold names its key.
 
+use crate::integration_credentials::{IntegrationScope, require_integration};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use sqlx::Row;
 use time::Date;
 use uuid::Uuid;
 
@@ -24,21 +29,23 @@ use crate::channels::event_price;
 use crate::db::Db;
 use crate::error::WalletError;
 use crate::holds::OpenHold;
-use crate::service_credentials::ActingService;
+use crate::integration_credentials::ActingService;
 use crate::tenants::Tenants;
 use crate::usage::UsageRecord;
 use crate::wallet::{entry_id_for, settlement_key_for};
 
 /// What a metering `hold` or one-shot `settlement` names: the price to resolve
 /// and the usage the event is bounded by — or settled at.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MeteredEvent {
     /// The channel whose `event`-mode price for the code applies.
     pub channel: String,
     /// The billable code — the price book's model name on that channel.
     pub billable_code: String,
-    /// The service's own identifier for the event, recorded as the usage row's
-    /// request id. `None` uses the hold key.
+    /// The service's own event label, recorded in settlement evidence.
+    /// Usage/watch rows use the scoped hold key.
+    /// `None` uses the hold key.
     pub event_id: Option<String>,
     /// The declared usage — a hold's bound, a settlement's actual.
     pub usage: UsageRecord,
@@ -81,22 +88,169 @@ fn service_name(service: &ActingService) -> String {
         .unwrap_or_else(|| format!("svc-{}", service.credential_id.as_simple()))
 }
 
-/// The ledger key a metering hold writes under: `metering:` keeps it out of
-/// the organization-side key space — an organization's own hold can never
-/// collide with an event's freeze. The engine bounds a key at 128 bytes, so the
-/// readable derivation bounds the caller's own key at what the affordance
-/// leaves.
-fn hold_key_for(idempotency_key: &str) -> Result<String, WalletError> {
-    let key = format!("metering:{idempotency_key}:hold");
-    if idempotency_key.is_empty() || key.len() > doubleentry::entry::MAX_IDEMPOTENCY_KEY_LEN {
-        return Err(WalletError::InvalidInput(format!(
-            "idempotencyKey must be 1 to {} characters: the hold key derives as \
-             `metering:<key>:hold`, inside the ledger's {}-byte bound",
-            doubleentry::entry::MAX_IDEMPOTENCY_KEY_LEN - "metering::hold".len(),
-            doubleentry::entry::MAX_IDEMPOTENCY_KEY_LEN,
-        )));
+/// Scoped and bounded even when a caller reuses a key in another customer.
+fn hold_key_for(service: &ActingService, customer: Uuid, key: &str) -> Result<String, WalletError> {
+    crate::business_staff::validate(key, None)?;
+    let digest = Sha256::digest(
+        json!((service.credential_id, customer, key))
+            .to_string()
+            .as_bytes(),
+    );
+    let digest = digest
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    Ok(format!("metering:{digest}:hold"))
+}
+
+#[derive(Serialize, Deserialize)]
+struct Admission {
+    hold_key: String,
+    request_id: String,
+    price: crate::Price,
+    version: i64,
+    freeze: i64,
+    discount: Option<i64>,
+}
+/// Persist original terms before writing the hold. Permissions are read in the
+/// same transaction as the immutable authorization, including on retries.
+async fn authorize_start(
+    db: &Db,
+    service: &ActingService,
+    customer: Uuid,
+    key: &str,
+    event: &MeteredEvent,
+    once: bool,
+) -> Result<Admission, WalletError> {
+    let hold_key = hold_key_for(service, customer, key)?;
+    let request = json!({"operation":if once {"settlements"} else {"holds"},"event":event});
+    let mut tx = db.pool().begin().await?;
+    require_integration(
+        &mut tx,
+        service,
+        IntegrationScope::MeteringWrite,
+        Some(customer),
+    )
+    .await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,638))")
+        .bind(&hold_key)
+        .execute(&mut *tx)
+        .await?;
+    if let Some(row) =
+        sqlx::query("SELECT request,admission FROM oxsum.metering_authorizations WHERE hold_key=$1")
+            .bind(&hold_key)
+            .fetch_optional(&mut *tx)
+            .await?
+    {
+        if row.try_get::<Value, _>("request")? != request {
+            return Err(WalletError::Conflict(
+                "idempotencyKey was used for different metering terms".into(),
+            ));
+        }
+        return serde_json::from_value(row.try_get("admission")?)
+            .map_err(|_| WalletError::Misconfigured("unreadable metering authorization".into()));
     }
-    Ok(key)
+    check_event(event)?;
+    let price = event_price(
+        &mut tx,
+        service.business_id,
+        &event.channel,
+        &event.billable_code,
+        None,
+    )
+    .await?
+    .ok_or_else(|| {
+        WalletError::InvalidInput("no owned event-mode price for channel and billableCode".into())
+    })?;
+    check_usage(&event.usage, &price.price, &event.billable_code)?;
+    let discount:Option<i32>=sqlx::query_scalar("SELECT max(percent) FROM oxsum.pricing_discounts WHERE (organization_id IS NULL OR organization_id=$1) AND (model IS NULL OR model=$2) AND valid_from<=now() AND (valid_until IS NULL OR valid_until>now())")
+        .bind(customer).bind(&event.billable_code).fetch_one(&mut *tx).await?;
+    let discount = discount.map(i64::from);
+    let itemized = price.price.itemize(&event.usage, true)?;
+    let freeze = if once {
+        match discount {
+            Some(p) => itemized.discounted_minor(p)?,
+            None => itemized.total_minor()?,
+        }
+    } else {
+        itemized.total_minor()?
+    };
+    if freeze <= 0 {
+        return Err(WalletError::InvalidInput(
+            "the declared usage prices to zero".into(),
+        ));
+    }
+    let admission = Admission {
+        request_id: event.event_id.clone().unwrap_or_else(|| hold_key.clone()),
+        hold_key,
+        price: price.price,
+        version: price.version,
+        freeze,
+        discount,
+    };
+    sqlx::query("INSERT INTO oxsum.metering_authorizations (hold_key,business_id,credential_id,organization_id,idempotency_key,request,admission) VALUES ($1,$2,$3,$4,$5,$6,$7)")
+        .bind(&admission.hold_key).bind(service.business_id).bind(service.credential_id).bind(customer).bind(key).bind(request).bind(json!(admission)).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(admission)
+}
+/// Bind the finalization body before settlement. A committed retry with changed
+/// usage is a conflict, never a read of an unrelated result.
+async fn authorize_finish(
+    db: &Db,
+    service: &ActingService,
+    customer: Uuid,
+    hold_key: &str,
+    request: Value,
+) -> Result<Admission, WalletError> {
+    let mut tx = db.pool().begin().await?;
+    require_integration(
+        &mut tx,
+        service,
+        IntegrationScope::MeteringWrite,
+        Some(customer),
+    )
+    .await?;
+    let row=sqlx::query("SELECT request,admission,finalization FROM oxsum.metering_authorizations WHERE hold_key=$1 AND business_id=$2 AND credential_id=$3 AND organization_id=$4 FOR UPDATE")
+        .bind(hold_key).bind(service.business_id).bind(service.credential_id).bind(customer).fetch_optional(&mut *tx).await?.ok_or_else(||WalletError::NotFound("the hold is not known".into()))?;
+    let original: Value = row.try_get("request")?;
+    if original["operation"] == "settlements" && request["operation"] != "settlements" {
+        return Err(WalletError::Conflict(
+            "hold belongs to a one-shot settlement".into(),
+        ));
+    }
+    let admission: Admission = serde_json::from_value(row.try_get("admission")?)
+        .map_err(|_| WalletError::Misconfigured("unreadable metering authorization".into()))?;
+    if let Some(usage) = request.get("usage") {
+        let usage: UsageRecord = serde_json::from_value(usage.clone())
+            .map_err(|_| WalletError::InvalidInput("invalid usage".into()))?;
+        check_usage(
+            &usage,
+            &admission.price,
+            original["event"]["billableCode"].as_str().unwrap_or(""),
+        )?;
+    }
+    if let Some(id) = request.get("eventId").and_then(Value::as_str)
+        && (id.is_empty() || id.len() > MAX_EVENT_ID)
+    {
+        return Err(WalletError::InvalidInput(
+            "eventId must contain 1 to 128 bytes".into(),
+        ));
+    }
+    if let Some(previous) = row.try_get::<Option<Value>, _>("finalization")? {
+        if previous != request {
+            return Err(WalletError::Conflict(
+                "hold was finalized with different metering terms".into(),
+            ));
+        }
+    } else {
+        sqlx::query("UPDATE oxsum.metering_authorizations SET finalization=$2 WHERE hold_key=$1")
+            .bind(hold_key)
+            .bind(request)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(admission)
 }
 
 /// The shape checks every metering event passes before a price is looked up:
@@ -137,24 +291,6 @@ fn check_usage(usage: &UsageRecord, price: &crate::Price, code: &str) -> Result<
         )));
     }
     Ok(())
-}
-
-/// The `(channel, billableCode)` resolution every metering call shares: the
-/// channel's `event`-mode price for the code, `pinned` when a hold named a
-/// version.
-async fn resolve_event_price(
-    db: &Db,
-    channel: &str,
-    code: &str,
-    pinned: Option<i64>,
-) -> Result<crate::channels::ModelPrice, WalletError> {
-    event_price(db, channel, code, pinned)
-        .await?
-        .ok_or_else(|| {
-            WalletError::InvalidInput(format!(
-                "no event-mode price for billableCode {code:?} on channel {channel:?}"
-            ))
-        })
 }
 
 /// The organization a metering call names, and its wallet.
@@ -213,9 +349,14 @@ async fn settled_outcome(
     db: &Db,
     wallet: &crate::wallet::Wallet,
     hold_key: &str,
+    expected: &[SettlementKind],
 ) -> Result<MeteredOutcome, WalletError> {
     if let Some(outcome) = committed_outcome(wallet, hold_key).await? {
-        return Ok(outcome);
+        return if expected.contains(&outcome.kind) {
+            Ok(outcome)
+        } else {
+            Err(WalletError::Conflict("hold already settled".into()))
+        };
     }
     let _ = db.clear_open_hold(hold_key).await;
     Err(WalletError::Conflict("hold already settled".into()))
@@ -275,27 +416,35 @@ impl Db {
         event: &MeteredEvent,
         on: Date,
     ) -> Result<MeteredHold, WalletError> {
+        let admission = authorize_start(
+            self,
+            service,
+            organization_id,
+            idempotency_key,
+            event,
+            false,
+        )
+        .await?;
         let (tenant_id, wallet) = metered_wallet(self, tenants, organization_id).await?;
-        check_event(event)?;
-        let price = resolve_event_price(self, &event.channel, &event.billable_code, None).await?;
-        check_usage(&event.usage, &price.price, &event.billable_code)?;
-        let freeze = price.price.itemize(&event.usage, true)?.total_minor()?;
-        if freeze <= 0 {
-            return Err(WalletError::InvalidInput(
-                "the declared usage prices to zero".into(),
-            ));
+        let freeze = admission.freeze;
+        let hold_key = admission.hold_key;
+        let request_id = admission.request_id;
+        if committed_outcome(&wallet, &hold_key).await?.is_some() {
+            return Ok(MeteredHold {
+                hold_key,
+                freeze_minor: freeze,
+                price_version: admission.version,
+            });
         }
-        let hold_key = hold_key_for(idempotency_key)?;
-        let request_id = event.event_id.clone().unwrap_or_else(|| hold_key.clone());
         self.note_open_hold(&OpenHold {
             hold_key: hold_key.clone(),
             tenant_id,
-            request_id: request_id.clone(),
+            request_id: hold_key.clone(),
             model: event.billable_code.clone(),
             channel: event.channel.clone(),
-            price_version: price.version,
-            input_price: price.price.input_price_per_million,
-            output_price: price.price.output_price_per_million,
+            price_version: admission.version,
+            input_price: admission.price.input_price_per_million,
+            output_price: admission.price.output_price_per_million,
             freeze_minor: freeze,
             key_id: None,
             mandate_id: None,
@@ -331,7 +480,7 @@ impl Db {
             None => committed_outcome(&wallet, &hold_key)
                 .await?
                 .map(|outcome| outcome.price_version)
-                .unwrap_or(price.version),
+                .unwrap_or(admission.version),
         };
         Ok(MeteredHold {
             hold_key,
@@ -360,6 +509,14 @@ impl Db {
         usage: &UsageRecord,
         on: Date,
     ) -> Result<MeteredOutcome, WalletError> {
+        let admission = authorize_finish(
+            self,
+            service,
+            organization_id,
+            hold_key,
+            json!({"operation":"settle","eventId":event_id,"usage":usage}),
+        )
+        .await?;
         let (tenant_id, wallet) = metered_wallet(self, tenants, organization_id).await?;
         let watch = match watched(self, &wallet, hold_key, &tenant_id).await? {
             Watched::Live(watch) => watch,
@@ -382,19 +539,8 @@ impl Db {
                 "eventId must be 1 to {MAX_EVENT_ID} characters"
             )));
         }
-        let price = resolve_event_price(
-            self,
-            &watch.channel,
-            &watch.model,
-            Some(watch.price_version),
-        )
-        .await?;
-        check_usage(usage, &price.price, &watch.model)?;
-        let discount_percent = self
-            .discount_percent(organization_id, &watch.model)
-            .await?
-            .map(i64::from);
-        let itemized = price.price.itemize(usage, true)?;
+        let discount_percent = admission.discount;
+        let itemized = admission.price.itemize(usage, true)?;
         let cost = match discount_percent {
             Some(percent) => itemized.discounted_minor(percent)?,
             None => itemized.total_minor()?,
@@ -404,7 +550,7 @@ impl Db {
         } else {
             (SettlementKind::Usage, cost)
         };
-        let request_id = event_id.unwrap_or_else(|| watch.request_id.clone());
+        let request_id = event_id.unwrap_or_else(|| admission.request_id.clone());
         let description = MeteredSettlement {
             request: &request_id,
             service: &service_name(service),
@@ -423,11 +569,17 @@ impl Db {
         match wallet.settle(hold_key, &description, charged, on).await {
             Ok(_) => {}
             Err(WalletError::Conflict(_)) | Err(WalletError::HoldNotFound(_)) => {
-                return settled_outcome(self, &wallet, hold_key).await;
+                return settled_outcome(
+                    self,
+                    &wallet,
+                    hold_key,
+                    &[SettlementKind::Usage, SettlementKind::Capped],
+                )
+                .await;
             }
             Err(error) => return Err(error),
         }
-        let upstream_cost = price
+        let upstream_cost = admission
             .price
             .upstream_cost(usage, true)
             .unwrap_or_else(|error| {
@@ -439,7 +591,7 @@ impl Db {
             self,
             &wallet,
             &crate::usage::UsageRow {
-                request_id,
+                request_id: hold_key.to_owned(),
                 tenant_id,
                 key_id: None,
                 mandate_id: None,
@@ -487,6 +639,14 @@ impl Db {
         hold_key: &str,
         on: Date,
     ) -> Result<MeteredOutcome, WalletError> {
+        let admission = authorize_finish(
+            self,
+            service,
+            organization_id,
+            hold_key,
+            json!({"operation":"release"}),
+        )
+        .await?;
         let (tenant_id, wallet) = metered_wallet(self, tenants, organization_id).await?;
         let watch = match watched(self, &wallet, hold_key, &tenant_id).await? {
             Watched::Live(watch) => watch,
@@ -515,7 +675,7 @@ impl Db {
             },
         ];
         let description = MeteredSettlement {
-            request: &watch.request_id,
+            request: &admission.request_id,
             service: &service_name(service),
             channel: &watch.channel,
             model: &watch.model,
@@ -532,7 +692,7 @@ impl Db {
         match wallet.settle(hold_key, &description, 0, on).await {
             Ok(_) => {}
             Err(WalletError::Conflict(_)) | Err(WalletError::HoldNotFound(_)) => {
-                return settled_outcome(self, &wallet, hold_key).await;
+                return settled_outcome(self, &wallet, hold_key, &[SettlementKind::Released]).await;
             }
             Err(error) => return Err(error),
         }
@@ -540,7 +700,7 @@ impl Db {
             self,
             &wallet,
             &crate::usage::UsageRow {
-                request_id: watch.request_id.clone(),
+                request_id: hold_key.to_owned(),
                 tenant_id,
                 key_id: None,
                 mandate_id: None,
@@ -591,38 +751,41 @@ impl Db {
         event: &MeteredEvent,
         on: Date,
     ) -> Result<MeteredOutcome, WalletError> {
+        let admission =
+            authorize_start(self, service, organization_id, idempotency_key, event, true).await?;
+        authorize_finish(
+            self,
+            service,
+            organization_id,
+            &admission.hold_key,
+            json!({"operation":"settlements","event":event}),
+        )
+        .await?;
         let (tenant_id, wallet) = metered_wallet(self, tenants, organization_id).await?;
-        check_event(event)?;
-        let price = resolve_event_price(self, &event.channel, &event.billable_code, None).await?;
-        check_usage(&event.usage, &price.price, &event.billable_code)?;
-        let itemized = price.price.itemize(&event.usage, true)?;
-        let discount_percent = self
-            .discount_percent(organization_id, &event.billable_code)
-            .await?
-            .map(i64::from);
-        let charged = match discount_percent {
-            Some(percent) => itemized.discounted_minor(percent)?,
-            None => itemized.total_minor()?,
-        };
-        if charged <= 0 {
-            return Err(WalletError::InvalidInput(
-                "the declared usage prices to zero".into(),
-            ));
+        if let Some(outcome) = committed_outcome(&wallet, &admission.hold_key).await? {
+            return if outcome.kind == SettlementKind::Usage {
+                Ok(outcome)
+            } else {
+                Err(WalletError::Conflict("hold already settled".into()))
+            };
         }
-        let hold_key = hold_key_for(idempotency_key)?;
-        let request_id = event.event_id.clone().unwrap_or_else(|| hold_key.clone());
+        let discount_percent = admission.discount;
+        let charged = admission.freeze;
+        let itemized = admission.price.itemize(&event.usage, true)?;
+        let hold_key = admission.hold_key;
+        let request_id = admission.request_id;
         // A one-shot hold is watched like a held one: a process dying between
         // the hold and the settle would otherwise leave the freeze pinned
         // forever — the sweeper releases it to zero like any orphaned hold.
         self.note_open_hold(&OpenHold {
             hold_key: hold_key.clone(),
             tenant_id: tenant_id.clone(),
-            request_id: request_id.clone(),
+            request_id: hold_key.clone(),
             model: event.billable_code.clone(),
             channel: event.channel.clone(),
-            price_version: price.version,
-            input_price: price.price.input_price_per_million,
-            output_price: price.price.output_price_per_million,
+            price_version: admission.version,
+            input_price: admission.price.input_price_per_million,
+            output_price: admission.price.output_price_per_million,
             freeze_minor: charged,
             key_id: None,
             mandate_id: None,
@@ -660,7 +823,7 @@ impl Db {
             service: &service_name(service),
             channel: &event.channel,
             model: &event.billable_code,
-            price_version: price.version,
+            price_version: admission.version,
             kind: SettlementKind::Usage,
             usage: &event.usage,
             lines: &itemized.lines,
@@ -673,12 +836,12 @@ impl Db {
         match wallet.settle(&hold_key, &description, charged, on).await {
             Ok(_) => {}
             Err(WalletError::Conflict(_)) | Err(WalletError::HoldNotFound(_)) => {
-                return settled_outcome(self, &wallet, &hold_key).await;
+                return settled_outcome(self, &wallet, &hold_key, &[SettlementKind::Usage]).await;
             }
             Err(error) => return Err(error),
         }
         let upstream_cost =
-            price
+            admission
                 .price
                 .upstream_cost(&event.usage, true)
                 .unwrap_or_else(|error| {
@@ -690,13 +853,13 @@ impl Db {
             self,
             &wallet,
             &crate::usage::UsageRow {
-                request_id,
+                request_id: hold_key.to_owned(),
                 tenant_id,
                 key_id: None,
                 mandate_id: None,
                 model: event.billable_code.clone(),
                 channel: event.channel.clone(),
-                price_version: price.version,
+                price_version: admission.version,
                 kind: SettlementKind::Usage,
                 entry_id: *entry_id_for(&settlement_key_for(&hold_key)).as_uuid(),
                 status: "settled".to_owned(),
@@ -717,7 +880,7 @@ impl Db {
         Ok(MeteredOutcome {
             charged_minor: charged,
             kind: SettlementKind::Usage,
-            price_version: price.version,
+            price_version: admission.version,
             settlement_id: *entry_id_for(&settlement_key_for(&hold_key)).as_uuid(),
         })
     }

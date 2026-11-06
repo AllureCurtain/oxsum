@@ -52,6 +52,8 @@ pub mod action {
     pub const BUSINESS_CUSTOMER_LIFECYCLE: &str = "business.customer.lifecycle";
     pub const BUSINESS_CUSTOMER_SUSPENSION: &str = "business.customer.suspension";
     pub const BUSINESS_STAFF_SET: &str = "business.staff.set";
+    pub const BUSINESS_INTEGRATION_CREATE: &str = "business.integration.create";
+    pub const BUSINESS_INTEGRATION_REVOKE: &str = "business.integration.revoke";
     pub const BUSINESS_STAFF_REVOKE: &str = "business.staff.revoke";
     pub const BUSINESS_STAFF_ACCOUNT_DELETED: &str = "business.staff.account_deleted";
     pub const BUSINESS_OWNERSHIP_TRANSFER: &str = "business.ownership.transfer";
@@ -97,6 +99,8 @@ pub mod action {
 
     /// Every action the surface writes — the `action` filter's vocabulary.
     pub const ALL: &[&str] = &[
+        BUSINESS_INTEGRATION_CREATE,
+        BUSINESS_INTEGRATION_REVOKE,
         INVITATION_TEAM_CREATE,
         INVITATION_CUSTOMER_CREATE,
         INVITATION_ACCEPT,

@@ -5560,6 +5560,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 409: components["responses"]["Error"];
                 500: components["responses"]["Error"];
@@ -5610,6 +5611,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 409: components["responses"]["Error"];
                 500: components["responses"]["Error"];
@@ -5732,7 +5734,7 @@ export interface paths {
         };
         /**
          * List business customers
-         * @description Current customersRead capability. Keyset pagination by immutable organization UUID; all rows scoped to the selected business.
+         * @description Staff customersRead or an integration customersRead grant. Keyset pagination filters to the selected business and explicit integration customer allowlist before choosing the page.
          */
         get: operations["listBusinessCustomers"];
         put?: never;
@@ -5752,7 +5754,7 @@ export interface paths {
         };
         /**
          * Read a business customer
-         * @description Current customersRead capability; unknown or foreign customer is 404.
+         * @description Staff customersRead or integration customersRead for this selected customer. Unknown, unselected or foreign customer is 404.
          */
         get: operations["getBusinessCustomer"];
         put?: never;
@@ -5801,6 +5803,139 @@ export interface paths {
          * @description Current customersSuspend capability. Clearing manual suspension never clears dunning or archive state. Audit and state change commit together.
          */
         post: operations["setCustomerSuspension"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/integration-credentials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List scoped integration credentials
+         * @description Current business owner in business context. Metadata only; never secret or hash.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    after?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Credential page */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["IntegrationCredentialPage"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Issue a scoped integration credential
+         * @description Current business owner in business context, with current TOTP. Secret returned once, null on exact replay. Terms, receipt and immutable audit commit atomically. Customer IDs and scopes must be distinct and explicit. Expiry must be in the future, within 365 days. No all-customer wildcard or unsupported scope.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["IntegrationCredentialRequest"];
+                };
+            };
+            responses: {
+                /** @description Credential and first-use secret */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["CreatedIntegrationCredential"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/integration-credentials/{credentialId}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revoke a scoped integration credential
+         * @description Current business owner. Revocation, immutable receipt and audit commit together. Committed metering authorizations may finish after revocation; later API calls and captured principals are rejected. History and outstanding recovery remain intact.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    credentialId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["IntegrationCredentialRevokeRequest"];
+                };
+            };
+            responses: {
+                /** @description Mutation receipt */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["BusinessMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;
@@ -9088,7 +9223,7 @@ export interface paths {
         };
         /**
          * List the metering service credentials
-         * @description Every service credential, newest first — metadata only: the secret exists once, at mint. The list answers `prefix`, `createdAt` and `revokedAt`, so a deployment can name which of its services may still meter.
+         * @description Every service credential, newest first — metadata only: the secret exists once, at mint. The list answers `prefix`, `createdAt` and `revokedAt`, so a deployment can inspect legacy credentials. All legacy credentials are disabled at upgrade; metadata remains available for recovery audits.
          */
         get: {
             parameters: {
@@ -9116,8 +9251,9 @@ export interface paths {
         };
         put?: never;
         /**
-         * Mint a metering service credential
-         * @description The secret is answered exactly once, in this response — the database keeps only its hash, like an API key's. `name` is what the settlement description records as the reporting service, so name it for the service that will hold it. The mint lands in the admin audit log.
+         * Retired global service credential issuance
+         * @deprecated
+         * @description Returns 403 before body parsing. The current business owner must issue scoped credentials through /business/integration-credentials.
          */
         post: {
             parameters: {
@@ -9126,26 +9262,10 @@ export interface paths {
                 path?: never;
                 cookie?: never;
             };
-            requestBody: {
-                content: {
-                    "application/json": components["schemas"]["ServiceCredentialRequest"];
-                };
-            };
+            requestBody?: never;
             responses: {
-                /** @description The credential, with its secret — the only answer that carries it */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": {
-                            data: components["schemas"]["CreatedServiceCredential"];
-                        };
-                    };
-                };
-                400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
-                500: components["responses"]["Error"];
+                403: components["responses"]["Error"];
             };
         };
         delete?: never;
@@ -12724,7 +12844,7 @@ export interface components {
             usageDetails?: Record<string, never>;
         };
         MeteringHoldRequest: {
-            /** @description UTF-8 idempotency key; the hold entry's key is `metering:<key>:hold` */
+            /** @description UTF-8 idempotency key, scoped to the credential and customer; the returned opaque holdKey binds both */
             idempotencyKey: string;
             /**
              * Format: uuid
@@ -12735,7 +12855,7 @@ export interface components {
             channel: string;
             /** @description what is being billed — the price book's model name on that channel */
             billableCode: string;
-            /** @description the service's own identifier for the event, recorded as the usage row's request id; defaults to the hold key */
+            /** @description the service's own event label, recorded in settlement evidence; the usage projection uses the credential/customer-bound hold key to avoid global label collisions; defaults to the hold key */
             eventId?: string;
             usage: components["schemas"]["EventUsage"];
         };
@@ -12795,9 +12915,45 @@ export interface components {
              */
             settlementId?: string;
         };
-        ServiceCredentialRequest: {
-            /** @description which service holds this credential — the name settlement descriptions record as the reporter */
-            name?: string;
+        /** @enum {string} */
+        IntegrationScope: "customersRead" | "meteringWrite";
+        IntegrationCredentialRequest: {
+            idempotencyKey: string;
+            name?: string | null;
+            scopes: components["schemas"]["IntegrationScope"][];
+            customerIds: string[];
+            /** Format: date-time */
+            expiresAt: string;
+            reason: string;
+        };
+        IntegrationCredentialRevokeRequest: {
+            idempotencyKey: string;
+            reason: string;
+        };
+        IntegrationCredential: {
+            /** Format: uuid */
+            credentialId: string;
+            /** Format: uuid */
+            businessId: string;
+            name: string | null;
+            prefix: string;
+            scopes: components["schemas"]["IntegrationScope"][];
+            customerIds: string[];
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            expiresAt: string;
+            /** Format: date-time */
+            revokedAt: string | null;
+        };
+        CreatedIntegrationCredential: components["schemas"]["IntegrationCredential"] & {
+            /** @description oxs-int- plus 64 random hexadecimal characters; returned once, null on replay */
+            secret: string | null;
+        };
+        IntegrationCredentialPage: {
+            credentials: components["schemas"]["IntegrationCredential"][];
+            /** Format: uuid */
+            nextCursor: string | null;
         };
         ServiceCredential: {
             /** Format: uuid */
@@ -12809,10 +12965,6 @@ export interface components {
             createdAt: string;
             /** Format: date-time */
             revokedAt?: string | null;
-        };
-        CreatedServiceCredential: components["schemas"]["ServiceCredential"] & {
-            /** @description `oxs-svc-` plus 64 hex characters — answered once, never stored readable */
-            secret: string;
         };
         RedeemRequest: {
             /** @description the redemption code as minted, `oxr-` plus 64 hex characters */

@@ -1,5 +1,4 @@
-//! `/api/v1/admin/service-credentials`: the metering surface's own
-//! credentials, and the user password-reset rescue.
+//! Legacy service credential metadata/revocation and user password-reset rescue.
 
 use axum::extract::{Path, State};
 use oxsum_core::audit_action;
@@ -10,41 +9,18 @@ use crate::error::{ApiError, ApiJson};
 use crate::routes::{ApiResult, ok};
 use crate::{AppState, admin::record};
 
-/// The body of `POST …/service-credentials`: which service holds the
-/// credential — the name settlement descriptions record as the reporter.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ServiceCredentialReq {
-    name: Option<String>,
-}
-
-/// Every service credential, newest first — metadata only; the secret exists
-/// once, at mint.
+/// Every legacy service credential, newest first; disabled metadata only.
 pub(crate) async fn service_credentials(
     State(state): State<AppState>,
 ) -> ApiResult<Vec<oxsum_core::ServiceCredential>> {
     ok(state.db.list_service_credentials().await?)
 }
 
-/// Mints a service credential for the metering surface, and answers its secret
-/// the one time it exists readable.
-pub(crate) async fn mint_service_credential(
-    State(state): State<AppState>,
-    ApiJson(request): ApiJson<ServiceCredentialReq>,
-) -> ApiResult<oxsum_core::CreatedServiceCredential> {
-    let created = state.db.create_service_credential(request.name).await?;
-    record(
-        &state,
-        audit_action::SERVICE_CREDENTIAL_MINT,
-        Some(created.credential.id.to_string()),
-        serde_json::json!({
-            "name": created.credential.name,
-            "prefix": created.credential.prefix,
-        }),
-        None,
-    )
-    .await?;
-    ok(created)
+/// Global service issuance is retired; rejection precedes body parsing.
+pub(crate) async fn mint_service_credential() -> Result<(), ApiError> {
+    Err(ApiError::Forbidden(
+        "use owner-issued scoped integration credentials".into(),
+    ))
 }
 
 /// Revokes a service credential: it authenticates nothing from here on; what it

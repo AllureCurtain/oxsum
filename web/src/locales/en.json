@@ -921,7 +921,11 @@
       "colPrefix": "Prefix",
       "colCreated": "Created",
       "revoked": "revoked",
-      "revoke": "Revoke"
+      "revoke": "Revoke",
+      "retired": "Legacy service credentials are disabled. Ask the business owner for an integration credential with the required scopes, selected customers and expiry.",
+      "disabled": "Disabled",
+      "empty": "No legacy service credentials.",
+      "retry": "Retry"
     },
     "deposits": {
       "organization": "Organization",
@@ -1016,9 +1020,9 @@
       "note": "The provider bill is what the upstream billed the channel, summed per day by the upstream-bill-sync pass; “not reconciled” means that pass has not billed the channel yet, not that it billed nothing. The total counts each channel once — the API repeats the channel-scoped figure on every model row. Untracked turns are settled turns with no upstream cost recorded (an untracked price, a swept hold, or history), so a growing gap there is where missing upstream pricing shows up first."
     },
     "metering": {
-      "credentialTitle": "Service credential",
+      "credentialTitle": "Integration credential",
       "credential": "Credential",
-      "credentialHint": "a service credential minted under 'credentials' — bearer on /api/v1/metering/*",
+      "credentialHint": "An owner-issued integration credential with metering permission for this customer.",
       "credentialSaved": "credential saved to this browser",
       "eventContext": "Event context",
       "organizationId": "Organization id",
