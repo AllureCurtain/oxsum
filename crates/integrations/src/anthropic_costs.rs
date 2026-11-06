@@ -29,9 +29,6 @@ use oxsum_core::{ChannelBilling, DailyBill, UpstreamBillProvider};
 
 use crate::openai_costs::parse_minor;
 
-/// The admin cost endpoint's path under a channel's `base_url`.
-const COST_REPORT_PATH: &str = "/organizations/cost_report";
-
 /// The admin API version the request pins — Anthropic's header-versioned
 /// contract, independent of the `v1` path prefix the base URL carries.
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -41,7 +38,7 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// OpenAI provider keeps.
 #[derive(Debug)]
 pub struct AnthropicBillProvider {
-    http: reqwest::Client,
+    http: crate::provider_http::ProviderHttp,
 }
 
 /// One day's bucket as the cost report answers it. `starting_at`/`ending_at`
@@ -95,7 +92,7 @@ struct CostReportPage {
 impl AnthropicBillProvider {
     /// Builds the provider around the shared HTTP client the job carries.
     #[must_use]
-    pub fn new(http: reqwest::Client) -> Self {
+    pub fn new(http: crate::provider_http::ProviderHttp) -> Self {
         Self { http }
     }
 
@@ -115,16 +112,21 @@ impl AnthropicBillProvider {
         let end_s = end
             .format(&time::format_description::well_known::Rfc3339)
             .ok()?;
-        let url = format!(
-            "{}{}?starting_at={}&ending_at={}&bucket_width=1d",
-            channel.base_url.trim_end_matches('/'),
-            COST_REPORT_PATH,
-            start_s,
-            end_s,
-        );
         let res = self
             .http
-            .get(&url)
+            .request(
+                reqwest::Method::GET,
+                &channel.base_url,
+                &channel.destination_policy,
+                &["organizations", "cost_report"],
+            )
+            .await
+            .ok()?
+            .query(&[
+                ("starting_at", start_s),
+                ("ending_at", end_s),
+                ("bucket_width", "1d".into()),
+            ])
             // Anthropic's admin API authenticates on `x-api-key`, not Bearer —
             // and pins the contract version on a second header the relay's own
             // `/v1/messages` surface uses the same way.
@@ -182,6 +184,10 @@ mod tests {
 
     fn channel(protocol: &str, base_url: &str, bill_key: Option<&str>) -> ChannelBilling {
         ChannelBilling {
+            destination_policy: oxsum_core::ProviderDestinationPolicy {
+                network: oxsum_core::ProviderNetwork::Internal,
+                allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+            },
             channel_id: Uuid::new_v4(),
             name: "claude-main".into(),
             protocol: protocol.into(),
@@ -221,7 +227,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_non_anthropic_channel_is_a_coverage_gap() {
-        let provider = AnthropicBillProvider::new(reqwest::Client::new());
+        let provider = AnthropicBillProvider::new(crate::provider_http::ProviderHttp::default());
         // No HTTP server stands behind the URL — a protocol mismatch must
         // answer `None` without a request being attempted.
         let c = channel(
@@ -234,7 +240,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_missing_bill_key_is_a_coverage_gap() {
-        let provider = AnthropicBillProvider::new(reqwest::Client::new());
+        let provider = AnthropicBillProvider::new(crate::provider_http::ProviderHttp::default());
         let c = channel(oxsum_core::ANTHROPIC, "https://api.anthropic.com/v1", None);
         assert!(provider.daily_cost(&c, date()).await.is_none());
     }
@@ -261,7 +267,7 @@ mod tests {
         }))
         .await;
 
-        let provider = AnthropicBillProvider::new(reqwest::Client::new());
+        let provider = AnthropicBillProvider::new(crate::provider_http::ProviderHttp::default());
         let c = channel(oxsum_core::ANTHROPIC, &base_url, Some("sk-ant-admin-real"));
         let bill = provider.daily_cost(&c, date()).await.unwrap();
         // 12.5 + 0.75 + 1.2 = 14.45 USD → 14_450_000 minor.
@@ -291,7 +297,7 @@ mod tests {
         }))
         .await;
 
-        let provider = AnthropicBillProvider::new(reqwest::Client::new());
+        let provider = AnthropicBillProvider::new(crate::provider_http::ProviderHttp::default());
         let c = channel(oxsum_core::ANTHROPIC, &base_url, Some("sk-ant-admin-x"));
         let bill = provider.daily_cost(&c, date()).await.unwrap();
         assert_eq!(bill.provider_billed_minor, 0);
@@ -304,7 +310,7 @@ mod tests {
         }))
         .await;
 
-        let provider = AnthropicBillProvider::new(reqwest::Client::new());
+        let provider = AnthropicBillProvider::new(crate::provider_http::ProviderHttp::default());
         let c = channel(oxsum_core::ANTHROPIC, &base_url, Some("sk-ant-admin-bad"));
         // A 401 body parses as JSON but has no `data` — the deserialize fails
         // and the answer is None, never a panic or a zero.

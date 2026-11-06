@@ -51,6 +51,7 @@ async fn app_for(database_url: &str) -> (Router, PgPool) {
         .expect("connects to PostgreSQL");
     let db = oxsum_core::Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let config = Config::new(Signup::Open, None)
         .with_secret(SecretKey::from_bytes([7; 32]))
         .with_admin_token(TOKEN);
@@ -439,8 +440,8 @@ async fn org_suspended_is_a_subscribable_event() {
         "POST",
         "/api/v1/webhooks",
         Some(json!({"url": "https://receiver.example/x", "events": ["org.suspended"]})),
-        Some(&account.key),
         None,
+        Some(&account.cookie),
     )
     .await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
@@ -458,8 +459,8 @@ async fn org_suspended_is_a_subscribable_event() {
         "GET",
         &format!("/api/v1/webhooks/{endpoint_id}/deliveries"),
         None,
-        Some(&account.key),
         None,
+        Some(&account.cookie),
     )
     .await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);

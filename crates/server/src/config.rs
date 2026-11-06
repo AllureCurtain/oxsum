@@ -66,11 +66,17 @@ impl RateLimitBackend {
 /// no channels yet, and after that the rows are the configuration (docs/decisions.md, "channels and
 /// versioned prices"). A deployment can therefore describe its first channel here and change its
 /// prices over the admin API, without ever editing the environment again.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Gateway {
     base_url: String,
     api_key: String,
     book: PriceBook,
+    destination_policy: oxsum_core::ProviderDestinationPolicy,
+}
+impl std::fmt::Debug for Gateway {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Gateway([provider credentials redacted])")
+    }
 }
 
 impl Gateway {
@@ -81,6 +87,7 @@ impl Gateway {
             base_url: base_url.into().trim_end_matches('/').to_owned(),
             api_key: api_key.into(),
             book,
+            destination_policy: Default::default(),
         }
     }
 
@@ -128,7 +135,25 @@ impl Gateway {
         }
         let channel = var("OXSUM_UPSTREAM_NAME").unwrap_or_else(|| "upstream".to_owned());
         let book = PriceBook::from_json(&channel, &models)?;
-        Ok(Some(Self::new(base_url, api_key, book)))
+        let policy = var("OXSUM_UPSTREAM_DESTINATION_POLICY")
+            .map(|raw| {
+                serde_json::from_str::<oxsum_core::ProviderDestinationPolicy>(&raw).map_err(|_| {
+                    "OXSUM_UPSTREAM_DESTINATION_POLICY must be a provider network policy".to_owned()
+                })
+            })
+            .transpose()?
+            .unwrap_or_default();
+        policy.endpoint(&base_url).map_err(|_| {
+            "OXSUM_UPSTREAM_BASE_URL is not permitted by OXSUM_UPSTREAM_DESTINATION_POLICY"
+                .to_owned()
+        })?;
+        let mut gateway = Self::new(base_url, api_key, book);
+        gateway.destination_policy = policy;
+        Ok(Some(gateway))
+    }
+
+    pub fn destination_policy(&self) -> &oxsum_core::ProviderDestinationPolicy {
+        &self.destination_policy
     }
 
     /// The channel's base URL, without a trailing slash. `/chat/completions` is appended to it.
@@ -508,7 +533,8 @@ impl Config {
     }
 
     #[must_use]
-    pub(crate) fn signup(&self) -> Signup {
+    /// Legacy parsed value for configuration compatibility. Business policy controls signup.
+    pub fn signup(&self) -> Signup {
         self.signup
     }
 
@@ -1141,11 +1167,11 @@ fn bill_provider_of(
     Ok(Some(std::sync::Arc::new(
         oxsum_integrations::bill_providers::CompositeBillProvider::new(vec![
             std::sync::Arc::new(oxsum_integrations::openai_costs::OpenAiBillProvider::new(
-                reqwest::Client::new(),
+                oxsum_integrations::provider_http::ProviderHttp::default(),
             )),
             std::sync::Arc::new(
                 oxsum_integrations::anthropic_costs::AnthropicBillProvider::new(
-                    reqwest::Client::new(),
+                    oxsum_integrations::provider_http::ProviderHttp::default(),
                 ),
             ),
         ]),

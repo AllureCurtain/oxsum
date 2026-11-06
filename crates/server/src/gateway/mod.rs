@@ -27,14 +27,15 @@ use futures_util::StreamExt;
 use http_body_util::{BodyExt, StreamBody};
 use oxsum_core::{
     ActingKey, BillingMode, Claim, OpenHold, Organization, Serving, SettlementKind, UsageRecord,
-    UsageRow, WalletError, fingerprint, hold_description, parse_presented, route_order_stats,
+    UsageRow, WalletError, credential_fingerprint, hold_description, parse_presented,
+    route_order_stats,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::AppState;
 use crate::auth::require_key_gateway;
-use crate::gateway::error::{BALANCE_MINOR, CHARGED_MINOR, FREEZE_MINOR, GatewayError, REQUEST_ID};
+use crate::gateway::error::{CHARGED_MINOR, FREEZE_MINOR, GatewayError, REQUEST_ID};
 use crate::gateway::relay::{Charge, Turn};
 use crate::gateway::request::{GatewayRequest, Surface};
 use crate::today;
@@ -100,87 +101,40 @@ pub fn beta_router(state: AppState) -> Router<AppState> {
 ///
 /// Only models with a price appear: a model the gateway cannot price cannot be frozen, so it is not
 /// served at all. An `event`-mode price is not a model at all — it is the billable code a service
-/// reports on `/api/v1/metering`, which no `/v1` surface relays — so it stays out of the list
-/// rather than inviting a chat request that can only be refused (issue #180). `created` is when
+/// reports on `/api/v1/metering`; it appears only for the separate generic task adapter.
+/// Listing a task model does not certify a particular media provider. `created` is when
 /// the version in force was written — the closest thing a price row has to a creation time — and
 /// `owned_by` is the channel that serves it. A model served by several channels lists once, under
 /// the route that leads it (issue #168).
-async fn models(State(state): State<AppState>) -> Response {
-    let channels = match state.db.channels().await {
-        Ok(channels) => channels,
-        // A listing that cannot be read does not touch the wallet, but it is answered in OpenAI's
-        // shape: this is the surface an OpenAI client is pointed at.
-        Err(error) => {
-            tracing::error!(%error, "listing the served models failed");
-            return GatewayError::upstream(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "the model list could not be read".to_owned(),
-                None,
-            )
-            .into_response();
-        }
-    };
-    // A model served by several channels lists once, under the route with the
-    // greatest weight — the one most likely to lead a request.
-    let mut listed: std::collections::BTreeMap<String, (i64, Value)> = Default::default();
-    for channel in channels {
-        for model in channel.models {
-            if model.price.mode == BillingMode::Event {
-                continue;
-            }
-            let entry = (
-                model.weight,
+async fn models(
+    State(state): State<AppState>,
+    Extension(organization): Extension<Organization>,
+    Extension(key): Extension<ActingKey>,
+) -> Result<Response, GatewayError> {
+    let access = state
+        .db
+        .serving_access(organization.id, Some(key.key_id))
+        .await?;
+    let catalog = state.db.catalog_for_access(&access).await?;
+    let mut listed = std::collections::BTreeMap::new();
+    // The core catalog orders equal public names by weight, after permission
+    // filtering. No denied route can provide this row's channel identity.
+    for route in catalog {
+        if route.price.mode != BillingMode::Event || route.protocol == oxsum_core::TASKS {
+            listed.entry(route.model.clone()).or_insert_with(|| {
                 json!({
-                    "id": model.model,
+                    "id": route.model,
                     "object": "model",
-                    "created": model.created_at.unix_timestamp(),
-                    "owned_by": channel.name,
-                }),
-            );
-            listed
-                .entry(model.model.clone())
-                .and_modify(|(weight, kept)| {
-                    if model.weight > *weight {
-                        *weight = entry.0;
-                        *kept = entry.1.clone();
-                    }
+                    "created": route.created_at.unix_timestamp(),
+                    "owned_by": route.channel,
                 })
-                .or_insert(entry);
+            });
         }
     }
-    // Aliases list beside the served names, under the channel that claims them
-    // (issue #286): a caller can point at the public name on every surface the
-    // channel speaks. A name listed twice — once as a served model, once as an
-    // alias — keeps the direct entry: one name answers one route set, and the
-    // admin checks keep the two from colliding across channels.
-    match state.db.all_aliases().await {
-        Ok(aliases) => {
-            for alias in aliases {
-                listed.entry(alias.alias.clone()).or_insert_with(|| {
-                    (
-                        0,
-                        json!({
-                            "id": alias.alias,
-                            "object": "model",
-                            "created": alias.created_at.unix_timestamp(),
-                            "owned_by": alias.channel,
-                        }),
-                    )
-                });
-            }
-        }
-        Err(error) => {
-            tracing::error!(%error, "listing the model aliases failed");
-            return GatewayError::upstream(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "the model list could not be read".to_owned(),
-                None,
-            )
-            .into_response();
-        }
-    }
-    let data: Vec<Value> = listed.into_values().map(|(_, entry)| entry).collect();
-    Json(json!({ "object": "list", "data": data })).into_response()
+    Ok(
+        Json(json!({"object":"list","data":listed.into_values().collect::<Vec<_>>()}))
+            .into_response(),
+    )
 }
 
 /// The routes a request for this model may take, plus the upstream name an
@@ -194,11 +148,15 @@ async fn models(State(state): State<AppState>) -> Response {
 async fn servings_named(
     state: &AppState,
     model: &str,
+    access: &oxsum_core::ServingAccess,
 ) -> Result<(Vec<Serving>, Option<String>), GatewayError> {
     let Some(secret) = state.config.secret() else {
         return Ok((Vec::new(), None));
     };
-    Ok(state.db.servings_named(model, secret).await?)
+    Ok(state
+        .db
+        .servings_named_for_access(model, secret, access)
+        .await?)
 }
 
 /// The header a retry carries to claim the same turn, Stripe-shaped.
@@ -454,11 +412,13 @@ async fn gateway(
     let idem_key = headers
         .get(IDEMPOTENCY_KEY)
         .map(|value| value.to_str().unwrap_or_default().to_owned());
+    let bound_fingerprint =
+        credential_fingerprint(key.key_id, &format!("{surface:?}"), path_model, &body);
     let claim = match &idem_key {
         Some(key) => {
             match state
                 .db
-                .claim_request(organization.id, key, &fingerprint(&body), &minted_id)
+                .claim_request(organization.id, key, &bound_fingerprint, &minted_id)
                 .await
             {
                 Ok(Claim::Fresh { request_id }) => {
@@ -785,6 +745,32 @@ async fn run(
         gen_ai.usage.input_tokens = tracing::field::Empty,
         gen_ai.usage.output_tokens = tracing::field::Empty,
     );
+    let requested_model = request.model.clone();
+    let access = state
+        .db
+        .serving_access(organization.id, Some(key.key_id))
+        .await?;
+    if !access.allows_model(&requested_model) {
+        return Err(GatewayError::Forbidden(
+            "the caller cannot access the requested model".into(),
+        ));
+    }
+    // Validate the original name and channel even when an experiment will
+    // choose a different model. An experiment is never an authority grant.
+    let (original_candidates, original_upstream) =
+        servings_named(state, &requested_model, &access).await?;
+    if !access.allows_path(&requested_model, original_upstream.as_deref()) {
+        return Err(GatewayError::Forbidden(
+            "the caller cannot access the resolved model".into(),
+        ));
+    }
+    if !original_candidates.iter().any(|route| {
+        access.allows_channel(route.channel_id)
+            && route.protocol == surface.protocol()
+            && route.price.mode == surface.billing_mode()
+    }) {
+        return Err(GatewayError::model_not_served(&requested_model));
+    }
     // The experiment opt-in (issue #509): `X-Oxsum-Experiment` names an open
     // experiment of the organization, and the variant its weighted pick lands
     // on rewrites the model the rest of admission resolves — a variant is just
@@ -813,21 +799,23 @@ async fn run(
             },
             None => None,
         };
-    // The three admission-time reads are independent — the tier's capability
-    // package, the model's servings, the discount in force — so they run
-    // concurrently instead of as three serial pool round trips. A failure in
-    // any one still surfaces the same error the serial order produced. The
-    // serving lookup is alias-aware (issue #286): an alias resolves to the
-    // channel that claims it, priced by the alias's own row when the price
-    // book has one, and the upstream name rides along for the forwarded body
-    // and the settlement description.
-    let (tier, servings, discount) = tokio::join!(
-        state.db.tier_of(organization.id),
-        servings_named(state, &request.model),
+    let requested_upstream = original_upstream.clone();
+    let (servings, discount) = tokio::join!(
+        async {
+            if request.model == requested_model {
+                Ok((original_candidates, original_upstream))
+            } else {
+                servings_named(state, &request.model, &access).await
+            }
+        },
         state.db.discount_percent(organization.id, &request.model),
     );
-    let tier = tier?;
     let (candidates, upstream_model) = servings?;
+    if !access.allows_path(&request.model, upstream_model.as_deref()) {
+        return Err(GatewayError::Forbidden(
+            "the caller cannot access the selected model".into(),
+        ));
+    }
     request.upstream_model = upstream_model;
     // The fallback chain this model may serve under (issue #500): resolved at
     // admission alongside everything else, capped and de-duplicated so a
@@ -848,41 +836,21 @@ async fn run(
             model_chain.push(fallback);
         }
     }
-    // The key's model allowlist, read fresh for the fallback re-check (issue
-    // #500). The acting principal deliberately does not carry it — the hold's
-    // own locked read inside `hold_for_key` guards the requested name — but a
-    // fallback hop needs the list to re-judge a model the hold was not taken
-    // under. `None` is an unconstrained key.
-    let key_allowlist: Option<Vec<String>> = state.db.key_model_allowlist(key.key_id).await?;
     let discount_percent = discount?.map(i64::from);
-    // The organization's tier is a capability package — limits and allowlists,
-    // never a pricing input (issue #158): its model allowlist refuses 403 and
-    // its rolling-minute allowance is one window shared by every key of the
-    // organization, consumed at admission like the key's own below.
-    if let Some(profile) = &tier {
-        if let Some(allowlist) = &profile.model_allowlist
-            && !allowlist.iter().any(|allowed| allowed == &request.model)
-        {
-            return Err(GatewayError::Forbidden(format!(
-                "the organization's tier does not allow {}",
-                request.model
-            )));
-        }
-        if let Some(rpm) = profile.requests_per_minute
-            && rpm > 0
-            && let Err(limited) =
-                state
-                    .rate_limiter
-                    .admit(organization.id, rpm as u32, std::time::Instant::now())
-        {
-            crate::metrics::rate_limited(&state.metrics, "gateway");
-            return Err(GatewayError::RateLimited {
-                message: format!("the organization's tier is limited to {rpm} requests per minute"),
-                code: "RATE_LIMITED",
-                limit: i64::from(rpm),
-                retry_after_secs: limited.retry_after.as_secs(),
-            });
-        }
+    if let Some(rpm) = access.requests_per_minute
+        && rpm > 0
+        && let Err(limited) =
+            state
+                .rate_limiter
+                .admit(organization.id, rpm as u32, std::time::Instant::now())
+    {
+        crate::metrics::rate_limited(&state.metrics, "gateway");
+        return Err(GatewayError::RateLimited {
+            message: format!("the organization's tier is limited to {rpm} requests per minute"),
+            code: "RATE_LIMITED",
+            limit: i64::from(rpm),
+            retry_after_secs: limited.retry_after.as_secs(),
+        });
     }
     // The key's rolling-minute request allowance is consumed at admission, before
     // any money moves: a refused request never reaches the wallet. A client retry
@@ -923,35 +891,23 @@ async fn run(
         }
         None => None,
     };
-    // The constraints that re-judge a fallback model before it is routed to
-    // (issue #500). The requested model was judged at admission and inside
-    // `hold_for_key`; a fallback is a new model, so the caller's permission to
-    // reach it is re-checked against the same three gates — the key's
-    // allowlist (read fresh at admission), a presented mandate's `models`
-    // subset, and the tier's allowlist — never inherited. A denied fallback is
-    // skipped: the loop moves to the next model rather than refusing the whole
-    // turn, because the requested model was legitimately attempted and a
-    // mandate-denied fallback is simply not a route.
-    let fallback_permitted = |model: &str| -> bool {
-        if let Some(list) = &key_allowlist
-            && !list.iter().any(|allowed| allowed == model)
-        {
-            return false;
-        }
-        if let Some(models) = mandate.as_ref().and_then(|m| m.verified.models.as_ref())
-            && !models.iter().any(|allowed| allowed == model)
-        {
-            return false;
-        }
-        if let Some(list) = tier
-            .as_ref()
-            .and_then(|profile| profile.model_allowlist.as_ref())
-            && !list.iter().any(|allowed| allowed == model)
-        {
-            return false;
-        }
-        true
+    let model_permitted = |model: &str, upstream: Option<&str>| -> bool {
+        access.allows_path(model, upstream)
+            && mandate
+                .as_ref()
+                .and_then(|m| m.verified.models.as_ref())
+                .is_none_or(|names| {
+                    names.iter().any(|name| name == model)
+                        && upstream.is_none_or(|target| names.iter().any(|name| name == target))
+                })
     };
+    if !model_permitted(&requested_model, requested_upstream.as_deref())
+        || !model_permitted(&request.model, request.upstream_model.as_deref())
+    {
+        return Err(GatewayError::Forbidden(
+            "the mandate does not allow this model path".into(),
+        ));
+    }
     // The routes for this model are resolved once, here, before anything is
     // frozen: this turn is priced by the versions in force when it starts,
     // whatever happens to prices later. A surface serves only the channels
@@ -959,26 +915,17 @@ async fn run(
     // OpenAI surface, and vice versa (issue #168) — and only prices of the
     // surface's own billing mode: a chat-priced model is not an embeddings
     // route, because its rates do not mean the same counts (issue #170). The
-    // servings were fetched above, concurrently with the tier and discount.
+    // servings were fetched above under the admitted access snapshot.
     let candidates: Vec<Serving> = candidates
         .into_iter()
         .filter(|serving| {
             serving.protocol == surface.protocol() && serving.price.mode == surface.billing_mode()
         })
         .collect();
-    // The key's request group narrows which channels may serve (issue #508):
-    // an ungrouped key (`None`) reaches every channel, a grouped key only its
-    // group's. The filter runs over the candidates a model resolved, before
-    // `route_order`, and re-applies to each fallback's servings below — a
-    // fallback may only serve through a channel the key's group allows.
-    let key_channel_scope = state.db.key_channel_scope(key.key_id).await?;
-    let candidates: Vec<Serving> = match &key_channel_scope {
-        Some(scope) => candidates
-            .into_iter()
-            .filter(|serving| scope.contains(&serving.channel_id))
-            .collect(),
-        None => candidates,
-    };
+    let candidates: Vec<Serving> = candidates
+        .into_iter()
+        .filter(|serving| access.allows_channel(serving.channel_id))
+        .collect();
     if candidates.is_empty() {
         return Err(GatewayError::model_not_served(&request.model));
     }
@@ -1012,22 +959,22 @@ async fn run(
     // serve. A fallback with no servable route on this surface contributes
     // nothing and is skipped the same way.
     for model in model_chain.iter().skip(1) {
-        if !fallback_permitted(model) {
+        if !model_permitted(model, None) {
             tracing::info!(model = %model, request_model = %request.model,
                 "fallback model denied by the caller's constraints; skipped");
             continue;
         }
-        let (servings, upstream_model) = servings_named(state, model).await?;
+        let (servings, upstream_model) = servings_named(state, model, &access).await?;
+        if !model_permitted(model, upstream_model.as_deref()) {
+            continue;
+        }
         let ordered: Vec<Serving> = servings
             .into_iter()
             .filter(|serving| {
                 serving.protocol == surface.protocol()
                     && serving.price.mode == surface.billing_mode()
             })
-            .filter(|serving| match &key_channel_scope {
-                Some(scope) => scope.contains(&serving.channel_id),
-                None => true,
-            })
+            .filter(|serving| access.allows_channel(serving.channel_id))
             .collect();
         if ordered.is_empty() {
             continue;
@@ -1053,7 +1000,7 @@ async fn run(
         ))
         .into());
     };
-    // The discount was resolved above, beside the tier and the servings: the
+    // The discount was resolved above, beside the servings: the
     // turn settles under the percent in force when it started, whatever the
     // rows do later — the snapshot the settlement description writes
     // (issue #158).
@@ -1257,8 +1204,8 @@ async fn run(
     // billed at the cache-read rate — before any fresh-turn freeze is taken:
     // the answer is already paid for once, so the turn reserves only what the
     // replay itself costs. The lookup is org-scoped and keyed by
-    // `(channel, model, digest)`, so one tenant's answer can never reach
-    // another's, and a hit on a channel that opted out is simply a miss.
+    // `(channel, model, credential-bound digest)`. Sibling keys cannot read
+    // each other's answers, and legacy unbound digests miss after upgrade.
     // A streamed request never looks: the store holds whole bodies, and a
     // client that asked for SSE cannot be handed one — re-chunking a finished
     // answer is a feature, not this one's (whole-response hits only).
@@ -1280,7 +1227,12 @@ async fn run(
             &request.prompt_parts,
             cache_policy.exclude_system,
         )
-        .map(|digest| (digest, cache_policy))
+        .map(|digest| {
+            (
+                credential_fingerprint(key.key_id, "semantic-cache", Some(&digest), &[]),
+                cache_policy,
+            )
+        })
     } else {
         None
     };
@@ -1306,6 +1258,7 @@ async fn run(
             guardrails.clone(),
             std::mem::take(&mut pending_flags),
             experiment.clone(),
+            &requested_model,
         )
         .await;
     }
@@ -1358,8 +1311,7 @@ async fn run(
             }
             return Err(match error {
                 oxsum_core::WalletError::InsufficientFunds => {
-                    let available = wallet.available().await.ok();
-                    GatewayError::freeze_refused(freeze, available, request.max_tokens)
+                    GatewayError::freeze_refused(freeze, request.max_tokens)
                 }
                 other => other.into(),
             });
@@ -1398,9 +1350,7 @@ async fn run(
         }
         return Err(match error {
             oxsum_core::WalletError::InsufficientFunds => {
-                // Reading the balance again can fail; saying so beats reporting a balance of zero.
-                let available = wallet.available().await.ok();
-                GatewayError::freeze_refused(freeze, available, request.max_tokens)
+                GatewayError::freeze_refused(freeze, request.max_tokens)
             }
             other => other.into(),
         });
@@ -1413,18 +1363,8 @@ async fn run(
         tracing::info!(oxsum.hold.freeze_minor = freeze, "hold taken");
     });
 
-    // The cost head: the reserved bound and the runway left under it are both known now,
-    // before upstream is asked — they ride every answer this turn produces, streamed or
-    // refused (P4-3). A balance that could not be read omits the header rather than
-    // reporting a made-up number.
-    let balance = match wallet.available().await {
-        Ok(balance) => Some(balance),
-        Err(error) => {
-            tracing::warn!(%error, "the balance runway could not be read");
-            None
-        }
-    };
-    let cost = CostHead { freeze, balance };
+    // Only request-attributed cost leaves through the consumption credential.
+    let cost = CostHead { freeze };
 
     let mut turn = Turn::new(
         state.db.clone(),
@@ -1448,6 +1388,7 @@ async fn run(
         organization.id,
         guardrails.clone(),
     );
+    turn.note_requested_model(&requested_model);
     turn.note_input_count(request.counted_input);
     // The pre_call flags the pipeline collected land on the settlement — the
     // turn proceeded under them, and the v11 description records which rules
@@ -1467,6 +1408,7 @@ async fn run(
     let _ = state
         .billing
         .send(crate::billing::BillingEvent::TurnStarted {
+            key_id: key.key_id,
             tenant_id: organization.tenant_id.clone(),
             request_id: request_id.to_owned(),
             model: request.model.clone(),
@@ -1527,19 +1469,47 @@ async fn run(
         // also wants its version header, forwarded when the caller sent one —
         // and `x-goog-api-key` for Gemini, the spelling both AI Studio and
         // Vertex accept (issue #494). Gemini also names its model in the path,
-        // so the upstream name rides `upstream_target` rather than the body's.
+        // so the upstream name is encoded as path data rather than interpolated.
         let upstream_name = routes
             .upstream_model
             .as_deref()
             .unwrap_or(routes.model.as_str());
-        let mut call = state
-            .http
-            .post(format!(
-                "{}/{}",
-                candidate.base_url,
-                surface.upstream_target(upstream_name)
-            ))
-            .json(&forwarded);
+        let policy = oxsum_core::ProviderDestinationPolicy::from_settings(&candidate.settings);
+        let segments = surface.upstream_segments(upstream_name);
+        let segments: Vec<_> = segments.iter().map(String::as_str).collect();
+        let call = match policy {
+            Ok(policy) => {
+                state
+                    .provider_http
+                    .request(
+                        reqwest::Method::POST,
+                        &candidate.base_url,
+                        &policy,
+                        &segments,
+                    )
+                    .await
+            }
+            Err(_) => Err(oxsum_integrations::provider_http::ProviderHttpError::Blocked),
+        };
+        let mut call = match call {
+            Ok(call) => call.json(&forwarded),
+            Err(error) => {
+                if index + 1 < attempts_list.len() {
+                    index += 1;
+                    continue;
+                }
+                break (
+                    (*model_index, *route_index),
+                    Err((
+                        GatewayError::upstream(StatusCode::BAD_GATEWAY, error.to_string(), None),
+                        SettlementKind::UpstreamUnreachable,
+                    )),
+                );
+            }
+        };
+        if matches!(surface, Surface::Gemini { streamed: true }) {
+            call = call.query(&[("alt", "sse")]);
+        }
         call = match surface {
             Surface::OpenAi | Surface::Embeddings | Surface::Rerank | Surface::Responses => {
                 call.bearer_auth(&credential.api_key)
@@ -1656,18 +1626,18 @@ async fn run(
                 // An unreachable upstream is the channel's problem, not the
                 // credential's: the key never got to refuse, so nothing cools.
                 if index + 1 < attempts_list.len() {
-                    tracing::warn!(channel = %candidate.channel, %error,
+                    tracing::warn!(channel = %candidate.channel, error = %error.without_url(),
                         "upstream is unreachable; failing over");
                     index += 1;
                     continue;
                 }
-                tracing::warn!(%error, "upstream is unreachable");
+                tracing::warn!("upstream is unreachable");
                 break (
                     (*model_index, *route_index),
                     Err((
                         GatewayError::upstream(
                             StatusCode::BAD_GATEWAY,
-                            format!("upstream is unreachable: {error}"),
+                            "upstream is unreachable".to_owned(),
                             None,
                         ),
                         SettlementKind::UpstreamUnreachable,
@@ -1944,6 +1914,7 @@ async fn serve_cache_hit(
     response_guardrails: Vec<Arc<dyn oxsum_core::Guardrail>>,
     pending_flags: Vec<oxsum_core::SettlementGuardrailOwned>,
     experiment: Option<oxsum_core::ExperimentBinding>,
+    requested_model: &str,
 ) -> Result<Response, GatewayError> {
     let wallet = state.tenants.get(&organization.tenant_id).await?;
     let hold_key = format!("req-{request_id}:hold");
@@ -1993,8 +1964,7 @@ async fn serve_cache_hit(
             }
             return Err(match error {
                 oxsum_core::WalletError::InsufficientFunds => {
-                    let available = wallet.available().await.ok();
-                    GatewayError::freeze_refused(freeze, available, request.max_tokens)
+                    GatewayError::freeze_refused(freeze, request.max_tokens)
                 }
                 other => other.into(),
             });
@@ -2024,8 +1994,7 @@ async fn serve_cache_hit(
         }
         return Err(match error {
             oxsum_core::WalletError::InsufficientFunds => {
-                let available = wallet.available().await.ok();
-                GatewayError::freeze_refused(freeze, available, request.max_tokens)
+                GatewayError::freeze_refused(freeze, request.max_tokens)
             }
             other => other.into(),
         });
@@ -2033,8 +2002,7 @@ async fn serve_cache_hit(
     turn_span.in_scope(|| {
         tracing::info!(oxsum.hold.freeze_minor = freeze, "cache hit hold taken");
     });
-    let balance = wallet.available().await.ok();
-    let cost = CostHead { freeze, balance };
+    let cost = CostHead { freeze };
     let mut turn = Turn::new(
         state.db.clone(),
         wallet,
@@ -2057,6 +2025,7 @@ async fn serve_cache_hit(
         organization.id,
         response_guardrails.clone(),
     );
+    turn.note_requested_model(requested_model);
     turn.note_attempts(0);
     turn.note_upstream_end();
     for flag in pending_flags {
@@ -2202,24 +2171,16 @@ fn sse(body: Body) -> Response {
     response
 }
 
-/// What a response head can say about cost before the turn settles (P4-3): the freeze is the
-/// most the request can be charged, and the balance is the organization's spendable runway
-/// left under that reservation — read once, right after the hold landed.
+/// The request's authorized bound, available before its settlement.
 struct CostHead {
     freeze: i64,
-    balance: Option<i64>,
 }
 
 impl CostHead {
-    /// Stamps `x-oxsum-freeze-minor` always and `x-oxsum-balance-minor` when the read worked.
+    /// Stamps the bound without exposing customer-wide money.
     fn stamp(&self, response: &mut Response) {
         if let Ok(value) = HeaderValue::from_str(&self.freeze.to_string()) {
             response.headers_mut().insert(FREEZE_MINOR, value);
-        }
-        if let Some(balance) = self.balance
-            && let Ok(value) = HeaderValue::from_str(&balance.to_string())
-        {
-            response.headers_mut().insert(BALANCE_MINOR, value);
         }
     }
 }

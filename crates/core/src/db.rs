@@ -293,6 +293,38 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0072_business_ownership",
         include_str!("../migrations/0072_business_ownership.sql"),
     ),
+    (
+        "0073_business_setup",
+        include_str!("../migrations/0073_business_setup.sql"),
+    ),
+    (
+        "0074_business_authority",
+        include_str!("../migrations/0074_business_authority.sql"),
+    ),
+    (
+        "0075_customer_lifecycle",
+        include_str!("../migrations/0075_customer_lifecycle.sql"),
+    ),
+    (
+        "0076_invitation_consent",
+        include_str!("../migrations/0076_invitation_consent.sql"),
+    ),
+    (
+        "0077_integration_credentials",
+        include_str!("../migrations/0077_integration_credentials.sql"),
+    ),
+    (
+        "0078_business_provider_mutations",
+        include_str!("../migrations/0078_business_provider_mutations.sql"),
+    ),
+    (
+        "0079_provider_destinations",
+        include_str!("../migrations/0079_provider_destinations.sql"),
+    ),
+    (
+        "0085_merchant_configuration",
+        include_str!("../migrations/0085_merchant_configuration.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.

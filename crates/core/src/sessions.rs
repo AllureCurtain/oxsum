@@ -18,7 +18,7 @@ use password_auth::verify_password;
 use rand::Rng;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use sqlx::{PgPool, Row};
+use sqlx::{PgPool, Postgres, Row, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -43,9 +43,8 @@ const LAST_USED_TOUCH: Duration = Duration::from_secs(5 * 60);
 /// Who acts: an organization's API key, or a logged-in user acting as their organization.
 #[derive(Debug, Clone)]
 pub enum Principal {
-    /// A machine credential: acts as the organization, with the organization's full authority.
-    /// Pre-session behaviour, deliberately unchanged — a key is not a person. Carries which
-    /// key acted, so the hold path can attribute spend to it and enforce its spend limit.
+    /// A consumption credential: spends for one customer and reads its own records.
+    /// Account administration requires a personal session or business capability.
     Key(KeyPrincipal),
     /// A person: the user, the organization they act as, and their role in it.
     Session(SessionPrincipal),
@@ -98,12 +97,11 @@ impl Principal {
 
     /// What the principal may do with the organization's keys (docs/product.md, "Roles").
     ///
-    /// Roles constrain sessions, not keys: a key keeps acting as the whole organization,
-    /// while a user acts with the authority their role grants them.
+    /// Keys see their own metadata; sessions carry the user's current role scope.
     #[must_use]
     pub fn key_scope(&self) -> KeyScope {
         match self {
-            Self::Key(_) => KeyScope::Organization,
+            Self::Key(key) => KeyScope::Key(key.key.key_id),
             Self::Session(session) => match session.role {
                 Role::Owner | Role::Admin => KeyScope::All,
                 Role::Member => KeyScope::Own(session.user.id),
@@ -113,8 +111,7 @@ impl Principal {
 
     /// Who manages the organization's memberships, if this credential may at all.
     ///
-    /// The one place a key does *not* act with the organization's full authority: managing
-    /// members is a person's action, and a key is not a person and names no role. A session
+    /// Managing members is a person's action, and a key names no role. A session
     /// carries the person and their role, and the rules in `crates/core/src/orgs.rs` refuse a
     /// member; a key is refused here, before any rule is reached (docs/decisions.md,
     /// "membership management is a person's action").
@@ -140,7 +137,9 @@ impl Principal {
 /// How much of an organization's key inventory a principal may see and touch.
 #[derive(Debug, Clone, Copy)]
 pub enum KeyScope {
-    /// The organization itself (an API key acting as it): every key, as before sessions.
+    /// A consumption credential may read only its own metadata; no mutations.
+    Key(Uuid),
+    /// Trusted provisioning/maintenance code: every key, never issued to a credential.
     Organization,
     /// An owner or admin: every key of the organization.
     All,
@@ -173,7 +172,9 @@ pub struct Session {
 /// A session plus its token, returned exactly once: at login.
 #[derive(Debug, Clone)]
 pub struct CreatedSession {
-    pub principal: SessionPrincipal,
+    pub principal: Option<SessionPrincipal>,
+    pub user: User,
+    pub session: Session,
     pub token: String,
 }
 
@@ -225,15 +226,31 @@ impl Db {
         if verify_password(password, &password_hash).is_err() {
             return Err(WalletError::InvalidCredentials);
         }
-        // A confirmed second factor withholds the session behind a challenge
-        // rather than minting it off the password alone.
-        if self.totp_enabled(user.id).await? {
-            let challenge_token = self.mint_totp_challenge(user.id).await?;
-            return Ok(crate::totp::LoginOutcome::TotpRequired { challenge_token });
+        let mut tx = self.pool().begin().await?;
+        crate::business_staff::lock_business(&mut tx).await?;
+        let current: bool =
+            sqlx::query_scalar("SELECT password_hash=$2 FROM oxsum.users WHERE user_id=$1")
+                .bind(user.id)
+                .bind(&password_hash)
+                .fetch_one(&mut *tx)
+                .await?;
+        if !current {
+            return Err(WalletError::InvalidCredentials);
         }
-        Ok(crate::totp::LoginOutcome::Session(Box::new(
-            self.session_for(user.id).await?,
-        )))
+        let enabled: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM oxsum.user_totp WHERE user_id=$1 AND confirmed_at IS NOT NULL)")
+            .bind(user.id).fetch_one(&mut *tx).await?;
+        let outcome = if enabled {
+            let challenge_token = self
+                .mint_totp_challenge_in_transaction(&mut tx, user.id)
+                .await?;
+            crate::totp::LoginOutcome::TotpRequired { challenge_token }
+        } else {
+            crate::totp::LoginOutcome::Session(Box::new(
+                self.session_for_in_transaction(&mut tx, user.id).await?,
+            ))
+        };
+        tx.commit().await?;
+        Ok(outcome)
     }
 
     /// Mints a session for a user whose credential was already checked — the
@@ -241,20 +258,33 @@ impl Db {
     /// (issue #152).
     ///
     /// The organization the session acts as is the user's oldest membership.
-    /// A user with no membership cannot produce this state through any flow,
-    /// so `InvalidCredentials` stands in — no better answer exists for it.
+    /// A user with no customer membership receives an identity-only session.
+    /// It has no customer authority, and business authority requires an explicit
+    /// context selection plus a current staff membership.
     ///
     /// # Errors
     ///
-    /// `WalletError::InvalidCredentials` for a memberless user; storage failures
-    /// surface as `WalletError`.
+    /// Storage failures surface as `WalletError`. Customer authority still
+    /// requires a live membership when the session is used.
     pub(crate) async fn session_for(&self, user_id: Uuid) -> Result<CreatedSession, WalletError> {
+        let mut tx = self.pool().begin().await?;
+        crate::business_staff::lock_business(&mut tx).await?;
+        let session = self.session_for_in_transaction(&mut tx, user_id).await?;
+        tx.commit().await?;
+        Ok(session)
+    }
+
+    pub(crate) async fn session_for_in_transaction(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        user_id: Uuid,
+    ) -> Result<CreatedSession, WalletError> {
         let row = sqlx::query(
             "SELECT email, (email_verified_at IS NOT NULL) AS email_verified \
-             FROM oxsum.users WHERE user_id = $1",
+             FROM oxsum.users WHERE user_id = $1 AND password_hash <> '!deleted'",
         )
         .bind(user_id)
-        .fetch_one(self.pool())
+        .fetch_one(&mut **tx)
         .await?;
         let user = User {
             id: user_id,
@@ -268,11 +298,16 @@ impl Db {
              WHERE m.user_id = $1 ORDER BY m.created_at, m.organization_id LIMIT 1",
         )
         .bind(user.id)
-        .fetch_optional(self.pool())
-        .await?
-        .ok_or(WalletError::InvalidCredentials)?;
-        let role = Role::parse(&row.try_get::<String, _>("role")?)?;
-        let organization = orgs::organization_from_row(&row)?;
+        .fetch_optional(&mut **tx)
+        .await?;
+        let membership = row
+            .map(|row| -> Result<_, WalletError> {
+                Ok((
+                    orgs::organization_from_row(&row)?,
+                    Role::parse(&row.try_get::<String, _>("role")?)?,
+                ))
+            })
+            .transpose()?;
 
         let token = generate_token();
         let session_id = Uuid::new_v4();
@@ -285,10 +320,10 @@ impl Db {
         )
         .bind(session_id)
         .bind(user.id)
-        .bind(organization.id)
+        .bind(membership.as_ref().map(|(organization, _)| organization.id))
         .bind(hash_token(&token).as_slice())
         .bind(expires_at)
-        .fetch_one(self.pool())
+        .fetch_one(&mut **tx)
         .await?;
         let session = Session {
             id: session_id,
@@ -297,12 +332,14 @@ impl Db {
             last_used_at: row.try_get("last_used_at")?,
         };
         Ok(CreatedSession {
-            principal: SessionPrincipal {
-                session,
-                user,
+            principal: membership.map(|(organization, role)| SessionPrincipal {
+                session: session.clone(),
+                user: user.clone(),
                 organization,
                 role,
-            },
+            }),
+            session,
+            user,
             token,
         })
     }
@@ -327,7 +364,7 @@ impl Db {
                ON m.user_id = s.user_id AND m.organization_id = s.organization_id \
              JOIN oxsum.users u ON u.user_id = s.user_id \
              JOIN oxsum.organizations o ON o.organization_id = s.organization_id \
-             WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now()",
+             WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now() AND s.context = 'customer'",
         )
         .bind(hash.as_slice())
         .fetch_optional(self.pool())
@@ -414,7 +451,7 @@ impl Db {
         let organization = orgs::organization_from_row(&row)?;
         let role = Role::parse(&row.try_get::<String, _>("role")?)?;
         sqlx::query(
-            "UPDATE oxsum.sessions SET organization_id = $1              WHERE session_id = $2 AND user_id = $3 AND revoked_at IS NULL",
+            "UPDATE oxsum.sessions SET organization_id = $1              WHERE session_id = $2 AND user_id = $3 AND revoked_at IS NULL AND expires_at > now() AND context = 'customer'",
         )
         .bind(organization_id)
         .bind(session_id)

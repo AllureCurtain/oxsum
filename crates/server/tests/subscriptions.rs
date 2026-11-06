@@ -92,6 +92,7 @@ struct World {
     pool: PgPool,
     organization_id: String,
     key: String,
+    session: String,
     model: String,
 }
 
@@ -103,15 +104,26 @@ async fn world(database_url: &str) -> World {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
 
     let suffix = Uuid::new_v4().simple().to_string()[..8].to_owned();
     let channel = format!("subs-{suffix}");
     let model = format!("ok-{suffix}");
     let secret = SecretKey::from_bytes([7; 32]);
     let (base_url, _seen) = start_upstream().await;
-    db.set_channel(&channel, &base_url, "upstream-secret", "openai", &secret)
-        .await
-        .expect("the channel is written");
+    db.set_channel_pool_policy(
+        &channel,
+        &base_url,
+        Some(&["upstream-secret".to_owned()]),
+        "openai",
+        &secret,
+        Some(&oxsum_core::ProviderDestinationPolicy {
+            network: oxsum_core::ProviderNetwork::Internal,
+            allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+        }),
+    )
+    .await
+    .expect("the channel is written");
     db.append_price(
         &channel,
         &model,
@@ -154,6 +166,7 @@ async fn world(database_url: &str) -> World {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "registration failed: {body}");
+    let session = support::login(&app, &email, "correct horse battery").await;
     let key = body["data"]["apiKey"]["secret"]
         .as_str()
         .expect("registration returns a key")
@@ -177,6 +190,7 @@ async fn world(database_url: &str) -> World {
         pool,
         organization_id,
         key,
+        session,
         model,
     }
 }
@@ -195,7 +209,7 @@ async fn call(
         request = request.header("content-type", "application/json");
     }
     if let Some(key) = key {
-        request = request.header("authorization", format!("Bearer {key}"));
+        request = support::credential(request, key);
     }
     let response = app
         .clone()
@@ -398,7 +412,7 @@ async fn binding_and_cancelling_a_subscription_moves_the_org_reads() {
         "GET",
         "/api/v1/org/subscription",
         None,
-        Some(&world.key),
+        Some(&world.session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -416,7 +430,7 @@ async fn binding_and_cancelling_a_subscription_moves_the_org_reads() {
         "GET",
         "/api/v1/org/subscription",
         None,
-        Some(&world.key),
+        Some(&world.session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -429,7 +443,7 @@ async fn binding_and_cancelling_a_subscription_moves_the_org_reads() {
         "GET",
         "/api/v1/org/subscription/periods",
         None,
-        Some(&world.key),
+        Some(&world.session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -454,7 +468,7 @@ async fn binding_and_cancelling_a_subscription_moves_the_org_reads() {
         "GET",
         "/api/v1/org/subscription",
         None,
-        Some(&world.key),
+        Some(&world.session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");

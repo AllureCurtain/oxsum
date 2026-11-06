@@ -18,6 +18,8 @@ pub enum BillingEvent {
     #[serde(rename_all = "camelCase")]
     TurnStarted {
         tenant_id: String,
+        #[serde(skip)]
+        key_id: uuid::Uuid,
         request_id: String,
         model: String,
         channel: String,
@@ -27,6 +29,8 @@ pub enum BillingEvent {
     #[serde(rename_all = "camelCase")]
     TurnProgress {
         tenant_id: String,
+        #[serde(skip)]
+        key_id: uuid::Uuid,
         request_id: String,
         output_chars: usize,
     },
@@ -34,6 +38,8 @@ pub enum BillingEvent {
     #[serde(rename_all = "camelCase")]
     TurnSettled {
         tenant_id: String,
+        #[serde(skip)]
+        key_id: uuid::Uuid,
         request_id: String,
         charged_minor: i64,
         kind: SettlementKind,
@@ -43,6 +49,14 @@ pub enum BillingEvent {
 }
 
 impl BillingEvent {
+    #[must_use]
+    pub fn key_id(&self) -> uuid::Uuid {
+        match self {
+            Self::TurnStarted { key_id, .. }
+            | Self::TurnProgress { key_id, .. }
+            | Self::TurnSettled { key_id, .. } => *key_id,
+        }
+    }
     /// The organization this event belongs to: the WebSocket filters on it, so one
     /// organization's turns are never pushed to another's dashboard.
     #[must_use]

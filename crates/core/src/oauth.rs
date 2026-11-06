@@ -164,8 +164,8 @@ impl Db {
     ///
     /// `WalletError::Forbidden` when the identity names no account and `create`
     /// is false (an `invite`-mode deployment); `WalletError::InvalidCredentials`
-    /// when the resolved user holds no membership to act through (the same
-    /// corner `login` cannot produce either). Storage failures surface as
+    /// when the resolved credential is invalid. A user with no customer
+    /// membership receives an identity-only session. Storage failures surface as
     /// `WalletError`.
     pub async fn oauth_login(
         &self,
@@ -246,6 +246,7 @@ impl Db {
         let user_id = Uuid::new_v4();
         let organization_id = Uuid::new_v4();
         let mut tx = self.pool().begin().await?;
+        crate::business_staff::require_open_registration(&mut tx).await?;
         sqlx::query(
             "INSERT INTO oxsum.users \
                  (user_id, email, email_normalized, password_hash, email_verified_at) \

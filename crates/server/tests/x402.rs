@@ -12,6 +12,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod support;
+
 use axum::Router;
 use axum::body::Body;
 use axum::extract::State;
@@ -49,6 +51,7 @@ async fn world() -> Option<(Router, Db)> {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool);
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let verifying = SigningKey::from_bytes(&PAYER_SEED).verifying_key();
     let config =
         Config::new(Signup::Open, None).with_x402(oxsum_core::Ed25519RailVerifier::new(verifying));
@@ -68,7 +71,7 @@ async fn call(
         req = req.header("content-type", "application/json");
     }
     if let Some(key) = key {
-        req = req.header("authorization", format!("Bearer {key}"));
+        req = support::credential(req, key);
     }
     let req = req
         .body(body.map_or_else(Body::empty, |b| Body::from(b.to_string())))
@@ -83,7 +86,7 @@ async fn call(
 }
 
 /// A registered organization; returns its API key secret.
-async fn register(app: &Router) -> String {
+async fn register_session(app: &Router) -> String {
     let email = format!(
         "x402_{}@example.com",
         &Uuid::new_v4().simple().to_string()[..8]
@@ -97,10 +100,7 @@ async fn register(app: &Router) -> String {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "registration failed: {body}");
-    body["data"]["apiKey"]["secret"]
-        .as_str()
-        .expect("registration answers an API key")
-        .to_owned()
+    support::login(app, &email, "correct horse battery").await
 }
 
 /// The org's ledger balance, read back through the API.
@@ -165,7 +165,7 @@ async fn a_signed_authorization_credits_the_pool() {
     let Some((app, _db)) = world().await else {
         return;
     };
-    let key = register(&app).await;
+    let key = register_session(&app).await;
     let before = balance(&app, &key).await;
 
     let signing = SigningKey::from_bytes(&PAYER_SEED);
@@ -191,7 +191,7 @@ async fn a_replayed_authorization_credits_once() {
     let Some((app, _db)) = world().await else {
         return;
     };
-    let key = register(&app).await;
+    let key = register_session(&app).await;
     let before = balance(&app, &key).await;
 
     let signing = SigningKey::from_bytes(&PAYER_SEED);
@@ -223,7 +223,7 @@ async fn a_wrong_signature_is_refused() {
     let Some((app, _db)) = world().await else {
         return;
     };
-    let key = register(&app).await;
+    let key = register_session(&app).await;
     let before = balance(&app, &key).await;
 
     let impostor = SigningKey::from_bytes(&[9; 32]);
@@ -247,7 +247,7 @@ async fn a_malformed_payload_is_refused() {
     let Some((app, _db)) = world().await else {
         return;
     };
-    let key = register(&app).await;
+    let key = register_session(&app).await;
     let (status, _body) = call(
         &app,
         "POST",
@@ -267,7 +267,7 @@ async fn a_foreign_scheme_network_or_asset_is_refused() {
     let Some((app, _db)) = world().await else {
         return;
     };
-    let key = register(&app).await;
+    let key = register_session(&app).await;
     let before = balance(&app, &key).await;
     let signing = SigningKey::from_bytes(&PAYER_SEED);
 
@@ -316,8 +316,9 @@ async fn an_unconfigured_deployment_refuses_cleanly() {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool);
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let app = oxsum_server::app(db, Config::new(Signup::Open, None));
-    let key = register(&app).await;
+    let key = register_session(&app).await;
 
     let (status, _body) = call(
         &app,
@@ -404,6 +405,7 @@ async fn facilitator_world() -> Option<(Router, Db, FacilitatorStub)> {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool);
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let (base_url, stub) = stub_facilitator().await;
     *stub.verify.lock().unwrap() = (true, Some("0xPAYER".to_owned()), None);
     *stub.settle.lock().unwrap() = (true, Some("0xTXHASH".to_owned()), None);
@@ -437,7 +439,7 @@ async fn a_facilitator_payment_settles_and_credits() {
     let Some((app, db, stub)) = facilitator_world().await else {
         return;
     };
-    let key = register(&app).await;
+    let key = register_session(&app).await;
     let before = balance(&app, &key).await;
 
     let payment = x402_payload("nonce-f1", "5000000");
@@ -479,7 +481,7 @@ async fn a_replayed_facilitator_payment_settles_once() {
     let Some((app, _db, stub)) = facilitator_world().await else {
         return;
     };
-    let key = register(&app).await;
+    let key = register_session(&app).await;
     let payment = x402_payload("nonce-f2", "3000000");
     for expected_new in [true, false] {
         let (status, body) = call(
@@ -508,7 +510,7 @@ async fn a_facilitator_refusal_is_forbidden() {
         return;
     };
     *stub.verify.lock().unwrap() = (false, None, Some("invalid signature".to_owned()));
-    let key = register(&app).await;
+    let key = register_session(&app).await;
     let payment = x402_payload("nonce-f3", "2000000");
     let (status, _body) = call(
         &app,
@@ -530,7 +532,7 @@ async fn an_unsettled_payment_is_refused() {
         return;
     };
     *stub.settle.lock().unwrap() = (false, None, Some("insufficient funds".to_owned()));
-    let key = register(&app).await;
+    let key = register_session(&app).await;
     let before = balance(&app, &key).await;
     let payment = x402_payload("nonce-f4", "2000000");
     let (status, _body) = call(
@@ -565,7 +567,7 @@ async fn a_foreign_network_is_refused_before_the_facilitator() {
     let Some((app, _db, stub)) = facilitator_world().await else {
         return;
     };
-    let key = register(&app).await;
+    let key = register_session(&app).await;
     let payment = BASE64URL.encode(
         "{\"x402Version\":1,\"scheme\":\"exact\",\"network\":\"eip155:1\",\
          \"payload\":{\"signature\":\"0x\",\"authorization\":{\"from\":\"0xA\",\

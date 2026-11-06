@@ -113,6 +113,7 @@ struct World {
     tenants: oxsum_core::Tenants,
     tenant_id: String,
     key: String,
+    session: String,
     key_id: String,
     model: String,
     channel: String,
@@ -127,15 +128,26 @@ async fn world(database_url: &str) -> World {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
 
     let suffix = Uuid::new_v4().simple().to_string()[..8].to_owned();
     let channel = format!("gr-{suffix}");
     let model = format!("ok-{suffix}");
     let secret = SecretKey::from_bytes([7; 32]);
     let (base_url, seen) = start_upstream().await;
-    db.set_channel(&channel, &base_url, "upstream-secret", "openai", &secret)
-        .await
-        .expect("the channel is written");
+    db.set_channel_pool_policy(
+        &channel,
+        &base_url,
+        Some(&["upstream-secret".to_owned()]),
+        "openai",
+        &secret,
+        Some(&oxsum_core::ProviderDestinationPolicy {
+            network: oxsum_core::ProviderNetwork::Internal,
+            allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+        }),
+    )
+    .await
+    .expect("the channel is written");
     db.append_price(
         &channel,
         &model,
@@ -177,6 +189,7 @@ async fn world(database_url: &str) -> World {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "registration failed: {body}");
+    let session = support::login(&app, &email, "correct horse battery").await;
     let key = body["data"]["apiKey"]["secret"]
         .as_str()
         .expect("registration returns a key")
@@ -205,6 +218,7 @@ async fn world(database_url: &str) -> World {
         tenants,
         tenant_id,
         key,
+        session,
         key_id,
         model,
         channel,
@@ -226,7 +240,7 @@ async fn call(
         request = request.header("content-type", "application/json");
     }
     if let Some(key) = key {
-        request = request.header("authorization", format!("Bearer {key}"));
+        request = support::credential(request, key);
     }
     let response = app
         .clone()
@@ -545,7 +559,7 @@ async fn a_mandate_cannot_demand_a_policy_its_key_lacks() {
             "notAfter": "2099-01-01T00:00:00Z",
             "requiredPolicies": ["gr-key-only"],
         })),
-        Some(&world.key),
+        Some(&world.session),
     )
     .await;
     assert_eq!(
@@ -561,7 +575,7 @@ async fn a_mandate_cannot_demand_a_policy_its_key_lacks() {
         "PATCH",
         &format!("/api/v1/org/keys/{}", world.key_id),
         Some(json!({"requiredPolicies": ["gr-key-only"]})),
-        Some(&world.key),
+        Some(&world.session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -574,7 +588,7 @@ async fn a_mandate_cannot_demand_a_policy_its_key_lacks() {
             "notAfter": "2099-01-01T00:00:00Z",
             "requiredPolicies": ["gr-key-only"],
         })),
-        Some(&world.key),
+        Some(&world.session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "the narrowed mandate mints: {body}");
@@ -592,7 +606,7 @@ async fn a_required_policy_that_does_not_exist_is_refused() {
         "PATCH",
         &format!("/api/v1/org/keys/{}", world.key_id),
         Some(json!({"requiredPolicies": ["no-such-policy"]})),
-        Some(&world.key),
+        Some(&world.session),
     )
     .await;
     assert_eq!(

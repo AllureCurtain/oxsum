@@ -12,9 +12,14 @@ mod anomaly;
 mod audit;
 mod billing;
 mod business;
+mod business_providers;
+mod business_setup;
+mod business_staff;
 mod cache;
 mod channels;
 mod credit_notes;
+mod customer_authority;
+mod customers;
 mod db;
 mod deposits;
 mod device;
@@ -29,16 +34,19 @@ mod guardrail;
 mod heads;
 mod holds;
 mod idempotency;
+mod integration_credentials;
 mod invitations;
 mod jobs;
 mod keys;
 mod mandates;
 mod manual_receipts;
+mod merchants;
 mod metering;
 mod oauth;
 mod orgs;
 mod pools;
 mod proof;
+mod provider_destination;
 mod ratelimit;
 mod reconcile;
 mod report_links;
@@ -46,6 +54,7 @@ mod request_log;
 mod routing;
 mod seed;
 mod service_credentials;
+mod serving_access;
 mod sessions;
 mod statement_pdf;
 mod statements;
@@ -81,12 +90,32 @@ pub use billing::{
 pub use business::{
     Business, BusinessMigration, BusinessMigrationPreview, BusinessOwnership, CustomerProfile,
 };
+pub use business_providers::{
+    BusinessChannelPage, ProviderAliasInput, ProviderBillKeyInput, ProviderCacheInput,
+    ProviderChange, ProviderCheckStart, ProviderConnection, ProviderConnectionCheck,
+    ProviderCredentialInput, ProviderFallbackInput, ProviderMutationResult, ProviderPriceInput,
+    ProviderRemoveInput, ProviderRequest, ProviderStatusInput,
+};
+pub use business_setup::{
+    BusinessSetupRegistrationRequest, BusinessSetupRequest, BusinessSetupResult,
+    BusinessSetupToken, BusinessSetupTokenRequest, SetupAuthority,
+};
+pub use business_staff::{
+    BusinessCapability, BusinessMutationResult, BusinessOwnershipRequest, BusinessPrincipal,
+    BusinessRegistrationRequest, BusinessRole, BusinessStaff, BusinessStaffRequest,
+    BusinessStaffRevokeRequest, RegistrationMode, SessionContext, SessionContextInfo,
+    SessionContextRequest,
+};
 pub use cache::{CachePolicy, CacheStore, CachedAnswer, PromptPart, prompt_digest};
 pub use channels::{
     CatalogModel, Channel, MAX_WEIGHT, ModelAlias, ModelPrice, ProbeChannel, SecretKey, Serving,
-    event_price, price_row, route_order, route_order_stats,
+    price_row, route_order, route_order_stats,
 };
 pub use credit_notes::CreditNote;
+pub use customers::{
+    BusinessCustomer, BusinessCustomerLifecycle, BusinessCustomerPage, BusinessCustomerSuspension,
+    BusinessCustomerUpdate, CustomerState,
+};
 pub use db::{Db, SCHEMA};
 pub use deposits::{
     AdminDeposit, CodeBatch, HyperswitchRefundTarget, MAX_BATCH, RAIL_HYPERSWITCH, Redemption,
@@ -124,8 +153,15 @@ pub use holds::{
     DEAD_AFTER_SWEEP_ATTEMPTS, DEFAULT_HOLD_TIMEOUT, InFlightHold, OpenHold, SWEEP_INTERVAL,
     SweepReport, sweep_stale_holds,
 };
-pub use idempotency::{Claim, fingerprint};
-pub use invitations::CreatedInvitation;
+pub use idempotency::{Claim, credential_fingerprint, fingerprint};
+pub use integration_credentials::{
+    ActingService, CreatedIntegrationCredential, IntegrationCredential, IntegrationCredentialPage,
+    IntegrationCredentialRequest, IntegrationCredentialRevokeRequest, IntegrationScope,
+};
+pub use invitations::{
+    CreatedInvitation, CustomerInvitationRequest, InvitationAcceptRequest, InvitationAcceptance,
+    InvitationPreview, InvitationRevokeRequest, TeamInvitationRequest,
+};
 pub use jobs::{
     CLAIM_LEASE_SECS, DEAD_RESCHEDULE, Job, JobOutcome, MAX_ATTEMPTS, Retention, RetentionReport,
     StatementReport, kinds, leader_lock_key, next_run, requires_leader,
@@ -135,6 +171,11 @@ pub use keys::{
 };
 pub use mandates::{CreatedMandate, Mandate, PresentedMandate, VerifiedMandate, parse_presented};
 pub use manual_receipts::{FundingAuthority, ManualReceiptRequest};
+pub use merchants::{
+    Merchant, MerchantCreateRequest, MerchantMode, MerchantMutationResult, MerchantPage,
+    MerchantRail, MerchantSigningContext, MerchantStatusRequest, MerchantVersion,
+    MerchantVersionInput, MerchantVersionPage, MerchantVersionRequest,
+};
 pub use metering::{MeteredEvent, MeteredHold, MeteredOutcome};
 pub use oauth::{ConsumedState, OAuthIdentity};
 pub use orgs::{
@@ -145,13 +186,17 @@ pub use pools::{
     Affinity, CREDENTIAL_COOLDOWN, ChannelCredential, PoolCredential, order as credential_order,
 };
 pub use proof::{ChargeCheck, ProofBundle, verify_bundle, verify_charge};
+pub use provider_destination::{
+    DESTINATION_POLICY_KEY, ProviderDestinationPolicy, ProviderNetwork, public_address,
+};
 pub use ratelimit::{PostgresRateLimiter, RateAllowance, RateLimited, RateLimiter, SlidingWindow};
 pub use reconcile::{DriftClass, DriftKind, DriftSample, Reconciliation};
 pub use report_links::{LinkScope, MintedReportLink, ReportLink, ResolvedReportLink};
 pub use request_log::{RequestLogFilter, RequestLogPage, RequestLogRow};
 pub use routing::{ChannelStats, RouteStats, SharedRouteStats};
 pub use seed::{DEMO_EMAIL, DEMO_ORGANIZATION, DEMO_PASSWORD, MEMBER_EMAIL, SeedReport};
-pub use service_credentials::{ActingService, CreatedServiceCredential, ServiceCredential};
+pub use service_credentials::ServiceCredential;
+pub use serving_access::ServingAccess;
 pub use sessions::{
     CreatedSession, KeyPrincipal, KeyScope, Principal, SESSION_COOKIE, SESSION_LIFETIME, Session,
     SessionPrincipal,
@@ -166,7 +211,7 @@ pub use subscriptions::{
 };
 pub use tasks::{
     NewTask, TASK_FAILED, TASK_SUCCEEDED, Task, TaskKind, TaskOutcome, TaskPollTarget,
-    TaskSettlement, TaskState, settle_task,
+    TaskProviderEndpoint, TaskSettlement, TaskState, settle_task,
 };
 pub use teams::Team;
 pub use tenants::Tenants;
@@ -202,3 +247,5 @@ pub use x402::{
     ASSET_CREDIT, Ed25519RailVerifier, NETWORK_ED25519, RAIL_X402, RailSettlement, RailVerifier,
     SCHEME_EXACT, SettleRefusal, VerifiedPayment,
 };
+
+pub use customer_authority::{CustomerCapability, CustomerRecordScope};

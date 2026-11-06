@@ -203,6 +203,7 @@ async fn build_world(url: &str) -> World {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
 
     let suffix = uuid::Uuid::new_v4().simple().to_string()[..8].to_owned();
     let channel = format!("cache-{suffix}");
@@ -210,9 +211,19 @@ async fn build_world(url: &str) -> World {
     let secret = oxsum_core::SecretKey::from_bytes([7; 32]);
     let script = Script::default();
     let base_url = start_upstream(script.clone()).await;
-    db.set_channel(&channel, &base_url, "upstream-secret", "openai", &secret)
-        .await
-        .expect("the channel is written");
+    db.set_channel_pool_policy(
+        &channel,
+        &base_url,
+        Some(&["upstream-secret".to_owned()]),
+        "openai",
+        &secret,
+        Some(&oxsum_core::ProviderDestinationPolicy {
+            network: oxsum_core::ProviderNetwork::Internal,
+            allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+        }),
+    )
+    .await
+    .expect("the channel is written");
     // 1 credit a token fresh, a tenth of that on the cached-read dimension —
     // the hit's bill reads plainly against the miss's.
     let book = oxsum_core::PriceBook::from_json(
@@ -656,4 +667,53 @@ async fn a_stream_is_never_cached() {
     .await
     .expect("the count reads");
     assert_eq!(rows, 0, "a streamed answer is not stored");
+}
+
+#[tokio::test]
+async fn cached_response_does_not_cross_sibling_keys_or_legacy_digests() {
+    let world = world!();
+    world.semantic_cache(json!({"enabled": true})).await;
+    let (status, _, _) = chat(&world.app, &world.key, ask(&world.model, "private answer")).await;
+    assert_eq!(status, StatusCode::OK);
+    let _ = row_within(&world.pool, &world.organization_id).await;
+    let db = Db::from_pool(world.pool.clone());
+    let sibling = db
+        .create_key(
+            world.organization_id.parse().unwrap(),
+            None,
+            None,
+            None,
+            Default::default(),
+        )
+        .await
+        .unwrap();
+    let (status, headers, _) = chat(
+        &world.app,
+        &sibling.secret,
+        ask(&world.model, "private answer"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(headers.get("x-oxsum-cache").is_none());
+    assert_eq!(world.script.seen().len(), 2);
+    let (_, headers, _) = chat(&world.app, &world.key, ask(&world.model, "private answer")).await;
+    assert_eq!(headers["x-oxsum-cache"], "hit");
+    // A pre-upgrade row has the old prompt-only digest, so no credential may hit it.
+    let legacy = oxsum_core::prompt_digest(
+        "openai",
+        &world.model,
+        &[oxsum_core::PromptPart {
+            role: "user",
+            text: "legacy answer".into(),
+        }],
+        false,
+    )
+    .unwrap();
+    sqlx::query("UPDATE oxsum.cached_responses SET prompt_digest=$2 WHERE cache_id=(SELECT cache_id FROM oxsum.cached_responses WHERE organization_id=$1 LIMIT 1)")
+        .bind(world.organization_id.parse::<uuid::Uuid>().unwrap()).bind(legacy).execute(&world.pool).await.unwrap();
+    let (status, headers, _) =
+        chat(&world.app, &world.key, ask(&world.model, "legacy answer")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(headers.get("x-oxsum-cache").is_none());
+    assert_eq!(world.script.seen().len(), 3);
 }

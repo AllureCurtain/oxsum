@@ -45,6 +45,7 @@ mod subscriptions;
 pub fn router(state: AppState) -> Router<AppState> {
     Router::new()
         .route("/business", get(business::ownership))
+        .route("/business/setup-tokens", post(business::setup_token))
         .route(
             "/business/customers/{organization_id}",
             get(business::customer),

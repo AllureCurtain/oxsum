@@ -17,6 +17,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod support;
+
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -80,6 +82,7 @@ async fn online_app(url: &str) -> (Router, PgPool) {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     (oxsum_server::app(db, Config::new(Signup::Open, None)), pool)
 }
 
@@ -117,7 +120,7 @@ async fn raw_call(
         request = request.header("content-type", content_type);
     }
     if let Some(token) = token {
-        request = request.header("authorization", format!("Bearer {token}"));
+        request = support::credential(request, token);
     }
     let request = request
         .body(Body::from(body.to_owned()))
@@ -164,7 +167,7 @@ async fn assert_envelope_rejection(
     }
 }
 
-/// Registers a fresh organization and returns its first key's secret.
+/// Registers an account and logs in for the body-validation management tests.
 async fn register(app: &Router) -> String {
     let email = format!(
         "rejections_{}@example.com",
@@ -181,10 +184,7 @@ async fn register(app: &Router) -> String {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "registration failed: {value}");
-    value["data"]["apiKey"]["secret"]
-        .as_str()
-        .unwrap()
-        .to_owned()
+    support::login(app, &email, "correct horse battery").await
 }
 
 #[tokio::test]

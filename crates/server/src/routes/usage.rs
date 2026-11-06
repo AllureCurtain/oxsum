@@ -20,39 +20,15 @@ pub(crate) struct UsageQuery {
     to: Option<String>,
 }
 
-/// The keys this principal may attribute usage to: an API key or an owner/admin
-/// session sees every key of the organization, a member only their own — the
-/// dashboard's `key_scope` rule applied to the REST surface.
+/// One record policy for keys, member sessions and customer administrators.
 pub(super) async fn scoped_key_ids(
     state: &AppState,
     principal: &Principal,
-) -> Result<Option<Vec<String>>, ApiError> {
-    let scope = principal.key_scope();
-    if matches!(
-        scope,
-        oxsum_core::KeyScope::Organization | oxsum_core::KeyScope::All
-    ) {
-        return Ok(None);
-    }
-    let keys = state
-        .db
-        .list_keys(principal.organization().id, scope)
-        .await?;
-    Ok(Some(
-        keys.iter()
-            .map(|key| key.id.as_simple().to_string())
-            .collect(),
-    ))
+) -> Result<oxsum_core::CustomerRecordScope, ApiError> {
+    Ok(state.db.customer_record_scope(principal).await?)
 }
-
-/// A row's attribution visible to the principal: unattributed rows are
-/// organization history everyone reads, a key outside the scope drops the row.
-pub(super) fn in_scope(key_id: Option<&str>, scoped: &Option<Vec<String>>) -> bool {
-    match (key_id, scoped) {
-        (None, _) => true,
-        (Some(_), None) => true,
-        (Some(id), Some(keys)) => keys.iter().any(|key| key == id),
-    }
+pub(super) fn in_scope(key_id: Option<&str>, scope: &oxsum_core::CustomerRecordScope) -> bool {
+    scope.allows(key_id)
 }
 pub(crate) async fn usage(
     State(state): State<AppState>,
@@ -261,14 +237,10 @@ pub(crate) async fn billing_records(
         )));
     }
     let w = wallet(&state.tenants, principal.organization()).await?;
-    let page = w.requests_page(query.before, limit).await?;
     let scoped = scoped_key_ids(&state, &principal).await?;
+    let page = w.scoped_requests_page(query.before, limit, &scoped).await?;
     ok(RecordsRes {
-        rows: page
-            .rows
-            .into_iter()
-            .filter(|row| in_scope(row.key_id.as_deref(), &scoped))
-            .collect(),
+        rows: page.rows,
         next_cursor: page.next_cursor,
     })
 }
@@ -310,18 +282,25 @@ pub(crate) struct EstimateRes {
 /// hold would take (issue #168). `version` names the route that priced it.
 pub(crate) async fn estimate_price(
     State(state): State<AppState>,
-    Extension(_principal): Extension<Principal>,
+    Extension(principal): Extension<Principal>,
     ApiJson(r): ApiJson<EstimateReq>,
 ) -> ApiResult<EstimateRes> {
     // Only the mode's own routes price the shape: an embeddings estimate reads
     // `embeddings` prices, a chat estimate `chat` ones (issue #170).
     let mode = r.mode.unwrap_or_default();
+    let access = state
+        .db
+        .serving_access(
+            principal.organization().id,
+            principal.acting_key().map(|key| key.key_id),
+        )
+        .await?;
     let routes: Vec<_> = state
         .db
-        .routes(&r.model)
+        .catalog_for_access(&access)
         .await?
         .into_iter()
-        .filter(|route| route.price.mode == mode)
+        .filter(|route| route.model == r.model && route.price.mode == mode)
         .collect();
     if routes.is_empty() {
         return Err(ApiError::Validation(format!(
@@ -349,14 +328,21 @@ pub(crate) async fn estimate_price(
     })
 }
 
-/// The public catalog: every model's current price version. The query never
-/// selects channel credentials, so there is nothing to withhold here.
+/// The customer-authorized catalog, filtered before any row is returned.
+/// Personal sessions use customer tiers; keys also apply their own grants.
 pub(crate) async fn pricing(
     State(state): State<AppState>,
-    Extension(_principal): Extension<Principal>,
+    Extension(principal): Extension<Principal>,
 ) -> ApiResult<PricingRes> {
+    let access = state
+        .db
+        .serving_access(
+            principal.organization().id,
+            principal.acting_key().map(|key| key.key_id),
+        )
+        .await?;
     ok(PricingRes {
-        models: state.db.catalog().await?,
+        models: state.db.catalog_for_access(&access).await?,
     })
 }
 

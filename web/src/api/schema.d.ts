@@ -175,7 +175,7 @@ export interface paths {
         put?: never;
         /**
          * Register a user, its personal organization and the first API key
-         * @description Refused with `FORBIDDEN` unless the deployment allows self-service signup (`OXSUM_SIGNUP=open`).
+         * @description Refused with `FORBIDDEN` unless the initialized business owner has enabled self-registration. `OXSUM_SIGNUP` cannot override this policy.
          *     The API key secret is returned once, here, and is never retrievable again.
          */
         post: {
@@ -225,13 +225,13 @@ export interface paths {
         put?: never;
         /**
          * Register through an invitation link
-         * @description The one registration an `invite`-mode deployment allows — the link is the
-         *     credential, so no other authentication applies, whatever `OXSUM_SIGNUP` is.
-         *     The token names one live invitation: usable once, valid seven days from minting,
-         *     and unknown, spent and expired tokens are all `404 NOT_FOUND` — which is wrong
-         *     is the holder's business. The new account joins the invitation's organization as
-         *     a `member`, with the first API key minted for that organization; no personal
-         *     organization is created — that is what `auth/register` is for.
+         * @description The token authorizes registration even with invite-only business policy.
+         *     A team invitation joins the existing customer as member; a business invitation
+         *     creates its reserved customer and initial customer owner. A bound email must
+         *     match. Registration, membership, first key, consumption and audit are atomic.
+         *     No staff authority or promotional funding is granted. Unknown, spent, revoked,
+         *     expired and wrong-email tokens return 404. Existing accounts must log in and
+         *     explicitly accept instead. The spent token cannot retrieve the first key again.
          */
         post: {
             parameters: {
@@ -269,6 +269,276 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/invitations/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Inspect the offered customer membership before consenting
+         * @description The invitation token is the credential. Returns only the target name, identity, offered role and expiry. Unknown, spent, revoked and expired links return 404.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        token: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description The offered membership */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["InvitationPreview"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/invitations/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Consent to a customer or team invitation as an existing user
+         * @description Requires a live personal session and the invitation token. A bound email must
+         *     match the signed-in account. Creates only the offered customer membership,
+         *     never staff authority, and does not switch session context or mint a key.
+         *     Repeating acceptance by the same person returns the original receipt without
+         *     restoring a subsequently removed membership. Other spent, revoked, expired
+         *     or unknown tokens return 404. A confirmed second factor must be satisfied.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        token: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Consent receipt */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["InvitationAcceptance"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/org/invitations/{invitationId}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                invitationId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revoke an unaccepted invitation in the selected customer account
+         * @description Current owner/admin session required. Accepted links cannot be revoked; remove the membership separately.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    invitationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["InvitationRevokeRequest"];
+                };
+            };
+            responses: {
+                /** @description Immutable mutation receipt */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["BusinessMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/customer-invitations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Invite the first owner of a new customer account
+         * @description Business customersWrite capability (owner/admin), reason and idempotency key
+         *     required. Reserves a customer UUID and stable external ID for seven days.
+         *     The intended email holder must register or explicitly accept while signed in
+         *     before the customer account, owner membership and profile are created together.
+         *     No staff role or funding is granted. Live pending invitations and existing
+         *     customers cannot share an external ID. Revocation/expiry releases the reservation.
+         *     Returns the token once; identical retries return the same ID with token null.
+         *     Changed-body retries conflict. This endpoint does not send email.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CustomerInvitationRequest"];
+                };
+            };
+            responses: {
+                /** @description Invitation and reserved customer identity */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["CreatedInvitation"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/customer-invitations/{invitationId}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                invitationId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revoke a business customer invitation
+         * @description Business customersWrite capability required. Accepted invitations conflict; archive or manage the resulting customer separately.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    invitationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["InvitationRevokeRequest"];
+                };
+            };
+            responses: {
+                /** @description Immutable mutation receipt */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["BusinessMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/login": {
         parameters: {
             query?: never;
@@ -291,9 +561,9 @@ export interface paths {
          *
          *     An unknown email and a wrong password answer the same 401 with the same message, and the
          *     unknown-email path still pays for one password-hash verification, so neither timing nor
-         *     wording reveals whether an account exists. The session acts as the user's organization, in
-         *     their role; it expires thirty days after login and stops authenticating the moment the
-         *     user's membership in that organization is gone.
+         *     wording reveals whether an account exists. The session starts in customer context. Customer authority requires a current membership.
+         *     A user with none receives an identity-only session and can explicitly select a current
+         *     staff context. Sessions expire thirty days after login.
          */
         post: {
             parameters: {
@@ -317,8 +587,8 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            /** @description `SessionInfo` on a password-only login; `TotpRequired` when the account's second factor must be satisfied first */
-                            data: components["schemas"]["SessionInfo"] | components["schemas"]["TotpRequired"];
+                            /** @description SessionInfo for a customer membership; SessionContextInfo with null organizationId when none remains; TotpRequired when the second factor must be satisfied first */
+                            data: components["schemas"]["SessionInfo"] | components["schemas"]["SessionContextInfo"] | components["schemas"]["TotpRequired"];
                         };
                     };
                 };
@@ -703,7 +973,7 @@ export interface paths {
          *     exchange (issue #504). The account resolves by the **verified** email
          *     the provider reports: a linked `oauth_accounts` row first, then an
          *     email match that links the identity, and otherwise a registration when
-         *     `OXSUM_SIGNUP=open` (an `invite` deployment refuses new accounts here).
+         *     the initialized business policy is `open` (an invite-only business refuses new accounts here).
          *     Success mints a session and answers `303` to `/app` with the session
          *     `Set-Cookie`; every failure answers `303` back to `/app/login?error=oauth`,
          *     because the caller is a browser mid-redirect, not an API client.
@@ -789,7 +1059,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            data: components["schemas"]["SessionInfo"];
+                            data: components["schemas"]["SessionInfo"] | components["schemas"]["SessionContextInfo"];
                         };
                     };
                 };
@@ -817,7 +1087,8 @@ export interface paths {
         put?: never;
         /**
          * Begin TOTP enrollment
-         * @description Mints a fresh shared secret for the session user, sealed at rest under
+         * @description Accepts a live personal session in either context, even without a customer membership. An explicit bearer credential is refused.
+         *     Mints a fresh shared secret for the session user, sealed at rest under
          *     `OXSUM_SECRET_KEY` the way an upstream credential is, and answers it
          *     once as base32 plus the `otpauthUrl` the client renders a QR from. The
          *     secret is unconfirmed — it gates nothing — until `confirm` proves a
@@ -850,6 +1121,7 @@ export interface paths {
                 };
                 401: components["responses"]["Error"];
                 403: components["responses"]["Error"];
+                409: components["responses"]["Error"];
                 500: components["responses"]["Error"];
                 503: components["responses"]["Error"];
             };
@@ -871,7 +1143,8 @@ export interface paths {
         put?: never;
         /**
          * Confirm TOTP enrollment on a live code
-         * @description Proves the authenticator scanned the pending secret: on a live code the
+         * @description Accepts a live personal session in either context, even without a customer membership. An explicit bearer credential is refused.
+         *     Proves the authenticator scanned the pending secret: on a live code the
          *     enrollment confirms — the factor now gates every password login — and
          *     the answer carries ten single-use backup codes, shown exactly once and
          *     stored only as hashes. A wrong code answers 401 like any failed
@@ -925,7 +1198,8 @@ export interface paths {
         put?: never;
         /**
          * Disable the second factor on a live code
-         * @description Removes the user's confirmed factor — itself second-factored: the
+         * @description Accepts a live personal session in either context, even without a customer membership. An explicit bearer credential is refused.
+         *     Removes the user's confirmed factor — itself second-factored: the
          *     request carries a live code, so a hijacked session alone cannot strip
          *     the protection. An empty answer follows the `LogoutResponse` shape.
          */
@@ -977,7 +1251,8 @@ export interface paths {
         put?: never;
         /**
          * Mail the session user's verification link
-         * @description Mints a single-use email token (seven-day life, stored as its SHA-256 hash) and
+         * @description Accepts a live personal session in either context, even without a customer membership. An explicit bearer credential is refused.
+         *     Mints a single-use email token (seven-day life, stored as its SHA-256 hash) and
          *     mails the verification link to the session user's address. The session is the
          *     credential: an API key names no user and is `FORBIDDEN` here.
          *
@@ -1186,7 +1461,7 @@ export interface paths {
         /**
          * The current session
          * @description Who is logged in, as which organization, in which role. Takes the session cookie; a bearer
-         *     key names no session and answers 404.
+         *     key names no personal session and answers 403.
          */
         get: {
             parameters: {
@@ -1209,6 +1484,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -1288,7 +1564,8 @@ export interface paths {
         post?: never;
         /**
          * Delete the session user's account (pseudonymization)
-         * @description Irreversible. The account's identity is erased while the books keep their history:
+         * @description Accepts a live personal session in either context, even without a customer membership. An explicit bearer credential is refused.
+         *     Irreversible. The account's identity is erased while the books keep their history:
          *     the user row's `email` is tombstoned to `deleted-<userId>@deleted.invalid`, the
          *     password hash is blanked so no login can ever succeed, `emailVerified` is cleared,
          *     every session the user holds is revoked, and every API key they minted is revoked.
@@ -1528,8 +1805,8 @@ export interface paths {
         /**
          * List the organization's API keys
          * @description Metadata only. Neither a secret nor a hash is ever returned. Members see only the keys they
-         *     created; owners and admins see every key of the organization. An API key acting as the
-         *     organization sees all of them, as before sessions.
+         *     created; owners and admins see every key of the organization. A consumption key
+         *     sees only its own metadata, including constraints and expiry, never sibling keys.
          */
         get: {
             parameters: {
@@ -1558,12 +1835,11 @@ export interface paths {
         put?: never;
         /**
          * Create an API key
-         * @description Returns the secret once. A key minted through a session records who minted it (`createdBy`),
-         *     for the per-member role rules; a key minted with an API key records no creator, because no
-         *     person acts there.
-         *     Creation, constraints and group assignment commit atomically. A grouped bearer cannot
-         *     mint keys. Only an owner/admin session or an ungrouped organization key may assign
-         *     `groupId`; a member session may create an ungrouped key.
+         * @description Requires a live personal customer session. Returns the secret once and records
+         *     the session user as `createdBy`. Members create their own ungrouped keys;
+         *     current owner/admin sessions may assign `groupId`. Creation, current-session/role
+         *     checks, constraints and group assignment commit atomically. Consumption keys
+         *     cannot mint credentials, regardless of group assignment.
          */
         post: {
             parameters: {
@@ -1641,6 +1917,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -1655,9 +1932,8 @@ export interface paths {
          *     field left out or null clears it.
          *
          *     `groupId` differs: omission preserves its assignment; explicit null ungroups the key.
-         *     Only an owner/admin session or an ungrouped organization key may change it.
-         *     A grouped bearer cannot patch keys, including its own. Authorization, constraints
-         *     and assignment commit atomically.
+         *     Only a current owner/admin session may change it. Consumption keys cannot patch
+         *     keys, including their own. Authorization, constraints and assignment commit atomically.
          *
          *     `spendLimitMinor` caps what the key may have committed — settled charges plus
          *     outstanding holds attributed to it, in minor units. `budgetDuration` makes
@@ -1691,8 +1967,8 @@ export interface paths {
          *     cannot exceed it. A replayed hold answers its own receipt before any of
          *     these checks run: retrying one request never consumes the key's windows
          *     twice. The scope rules are the revoke's: a member may change only the keys
-         *     they created — any other key id answers 404 and the key is untouched; owners, admins
-         *     and API keys acting as the organization may change any key of the organization. A key
+         *     they created — any other key id answers 404 and the key is untouched; current owner/admin
+         *     sessions may change any key of the organization. Consumption keys receive 403. A key
          *     id belonging to another organization is `NOT_FOUND`.
          */
         patch: {
@@ -1767,6 +2043,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -1781,8 +2058,10 @@ export interface paths {
          *     path does. A mandate can only narrow the key's own constraints: `capMinor` and
          *     `models` must sit inside the key's, and `notAfter` bounds how long it lives. Every
          *     mandate carries a `nonce` for uniqueness, so two identical requests mint two
-         *     different mandates. Minting needs the key itself (`Authorization: Bearer oxs-…`) or
-         *     an owner/admin session — holding the credential is what authorizes delegation.
+         *     different mandates. Minting requires a current personal session: members may mint
+         *     only for their own keys, owner/admin sessions for any key in this customer.
+         *     Consumption keys cannot mint or list mandates. Using a mandate on the gateway
+         *     still requires the corresponding consumption key.
          */
         post: {
             parameters: {
@@ -1812,6 +2091,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -1859,10 +2139,10 @@ export interface paths {
          *     request may spend the headroom between the answer and the call, which
          *     is exactly what the atomic admission checks exist for.
          *
-         *     The scope rules are the revoke's: a member reads only the keys they
-         *     created, owners, admins and API keys acting as the organization read
-         *     any key of it, and a key id of another organization — or, for a
-         *     member, a key they did not create — is `NOT_FOUND`. The entitlement
+         *     A consumption key reads only its own ID. A member session reads only keys
+         *     they created; owner/admin sessions read any key in this customer. Every
+         *     out-of-scope key ID is `NOT_FOUND`. Headroom is the effective key/member/team
+         *     admission limit; it never reports the customer's wallet balance. The entitlement
          *     check itself is free: it consumes nothing and is never rate-limited.
          */
         get: {
@@ -1917,17 +2197,15 @@ export interface paths {
         put?: never;
         /**
          * Mint an invitation link
-         * @description A link into this organization: `/app/invite?token=<token>` in the dashboard, or
-         *     `POST /api/v1/invitations/redeem` with the token, an email and a password. The
-         *     token is answered exactly once, here; the database keeps only its hash. An
-         *     invitation is valid seven days and works once. Owners and admins mint links;
-         *     a member is refused, and a person's action means a bearer API key is refused
-         *     too — a key is not a person.
-         *
-         *     An optional `email` mails the link instead of leaving it for the operator to
-         *     pass along. A deployment without a mailer refuses an address rather than
-         *     minting a link nobody receives; a send that fails answers `delivery: failed`
-         *     and the token is still in the answer.
+         * @description A seven-day invitation into the selected customer account. Requires a current
+         *     owner/admin personal session and idempotencyKey. New users register through
+         *     /invitations/redeem; existing users explicitly consent through /invitations/accept.
+         *     Only member authority is granted. The original customer/ledger/key IDs stay fixed.
+         *     The optional intendedEmail binds acceptance without sending mail. Optional email
+         *     both binds the recipient and requests delivery; when both are present they must
+         *     match. No mailer refuses delivery before minting. A failed send leaves a usable link.
+         *     Identical retries return the original ID with token null and do not resend mail;
+         *     changed terms conflict. The token is stored only as a hash and is shown once.
          */
         post: {
             parameters: {
@@ -1936,7 +2214,7 @@ export interface paths {
                 path?: never;
                 cookie?: never;
             };
-            requestBody?: {
+            requestBody: {
                 content: {
                     "application/json": components["schemas"]["CreateInvitationRequest"];
                 };
@@ -1956,6 +2234,7 @@ export interface paths {
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
                 403: components["responses"]["Error"];
+                409: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -2001,26 +2280,16 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
         put?: never;
         /**
-         * Add an existing account to the organization as a member
-         * @description The email names an account that already exists, and that account becomes a member.
-         *     Someone who has no account yet comes in through an invitation link instead:
-         *     `POST /api/v1/org/invitations` mints one and `POST /api/v1/invitations/redeem`
-         *     registers through it. An unknown email here is `NOT_FOUND`, never a stored
-         *     invitation.
-         *
-         *     Only an owner or an admin may manage memberships, and only a logged-in person: an API key is
-         *     not a person and names no role, so it is refused here too (docs/decisions.md, "membership
-         *     management is a person's action"). A member is refused. A new membership's role is always
-         *     `member`; ownership is never granted here, and only `POST /api/v1/org/ownership` can move
-         *     the owner seat.
-         *
-         *     Adding the second person to a personal organization flips its kind to `team`; the ledger
-         *     does not move. An account that is already a member is `CONFLICT`.
+         * Retired direct membership addition
+         * @deprecated
+         * @description Authenticated callers receive 403 before body parsing. Use /org/invitations
+         *     and explicit recipient acceptance; knowing an email cannot grant membership.
          */
         post: {
             parameters: {
@@ -2029,29 +2298,10 @@ export interface paths {
                 path?: never;
                 cookie?: never;
             };
-            requestBody: {
-                content: {
-                    "application/json": components["schemas"]["AddMemberRequest"];
-                };
-            };
+            requestBody?: never;
             responses: {
-                /** @description The new membership */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": {
-                            data: components["schemas"]["Member"];
-                        };
-                    };
-                };
-                400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
                 403: components["responses"]["Error"];
-                404: components["responses"]["Error"];
-                409: components["responses"]["Error"];
-                500: components["responses"]["Error"];
             };
         };
         delete?: never;
@@ -2216,6 +2466,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -2393,6 +2644,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -2417,7 +2669,9 @@ export interface paths {
         get?: never;
         /**
          * Create or replace an experiment
-         * @description Creates the named experiment or replaces its whole variant set atomically —
+         * @description Every variant must be visible in the current customer-authorized catalog.
+         *     Runtime key/group and alias-target restrictions are checked again at admission.
+         *     Creates the named experiment or replaces its whole variant set atomically —
          *     config, not ledger, so the write is a `PUT` of the full
          *     `{variants: [{model, weight}]}` rather than an append. Every variant's `model`
          *     must resolve to a served model or an alias (400 `VALIDATION` otherwise — a
@@ -2564,6 +2818,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -2673,6 +2928,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -2738,6 +2994,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
                 503: components["responses"]["Error"];
@@ -2787,6 +3044,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -2832,6 +3090,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -2883,6 +3142,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -2931,6 +3191,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -2977,6 +3238,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -3133,6 +3395,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
                 503: components["responses"]["Error"];
             };
@@ -3204,6 +3467,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
                 503: components["responses"]["Error"];
             };
@@ -3450,6 +3714,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
                 503: components["responses"]["Error"];
             };
@@ -3561,6 +3826,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 409: components["responses"]["Error"];
                 500: components["responses"]["Error"];
@@ -3771,6 +4037,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -3820,6 +4087,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -3875,6 +4143,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -3927,6 +4196,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -3999,6 +4269,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -4080,7 +4351,7 @@ export interface paths {
          *     the key's `budgetDuration` when it has one. `consumedPercent` floors
          *     `committed * 100 / limit` and is null where no numeric limit exists. Three
          *     scopes: `organization` carries the credit line beside the wallet balances,
-         *     `member` the acting member's own `budgetLimitMinor` (null for a key and for a
+         *     `member` the acting member's own `budgetLimitMinor` (null for a
          *     seat with no limit), `keys` every live key the principal's scope reaches with
          *     its `spendLimitMinor`, `budgetDuration` and `windowStart`.
          */
@@ -4105,6 +4376,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
             };
         };
         put?: never;
@@ -4190,7 +4462,9 @@ export interface paths {
          *     charge, with `entryId` naming the settlement entry when the turn
          *     reached one. This is the search surface `usage_records` cannot answer:
          *     "every request this key made to this model in this window". A member's
-         *     read is scoped to their own organization; the operator's twin is
+         *     read includes only their own keys plus unattributed records. A consumption key
+         *     reads only its own attributed rows; query filters cannot widen this scope.
+         *     Owner/admin sessions see the customer-wide log; the operator's twin is
          *     `GET /api/v1/admin/requests`. Rows write post-settlement — a logging
          *     failure never fails a request — so a very recent turn may lag its
          *     settlement by a moment. A refused admission logs a row too
@@ -4290,6 +4564,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -4369,6 +4644,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -4417,6 +4693,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -4479,6 +4756,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -4526,6 +4804,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -4564,6 +4843,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -4613,6 +4893,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -4634,11 +4915,14 @@ export interface paths {
         /**
          * Price a declared token shape
          * @description The number the gateway would freeze for a request with this shape: the dearest
-         *     applicable price set over the declared input tokens and the output ceiling
+         *     permitted price set over the declared input tokens and the output ceiling
          *     (`outputTokens` clamped to the model's `maxOutputTokens`). Nothing is held or
          *     charged — the answer is the upper bound a real request could cost, and a real
          *     settle never exceeds it. An unknown model answers `VALIDATION`; a shape the
-         *     model's price cannot express answers the same.
+         *     model's price cannot express answers the same. Customer tier limits apply;
+         *     consumption keys additionally restrict model names and group channels. Aliases
+         *     require both the public and resolved model name to be allowed. Unavailable or
+         *     forbidden names return the same validation error, without hidden route details.
          */
         post: {
             parameters: {
@@ -4695,14 +4979,18 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * The public price catalog
-         * @description Every route the operator sells — a model may be served by several
+         * The customer-authorized price catalog
+         * @description Every route this customer may use — a model may be served by several
          *     channels, and each `(model, channel)` pair lists its own row with the
          *     current price version and the route's `weight`, the relative preference
          *     for leading a request. These are the same rows `POST
          *     /v1/chat/completions` is priced by, without the channel's credential. A
          *     caller that wants a version's full rule set reads the flattened price on
-         *     each row; estimate-price answers what one shape costs.
+         *     each row; estimate-price answers what one shape costs. The customer tier filters
+         *     model names, and consumption keys also apply their own model and request-group
+         *     channel restrictions. Alias names and their resolved targets must both be allowed.
+         *     Customer sessions see the tier-authorized catalog, without a key-specific grant.
+         *     Alias prices use the alias version when present, otherwise the target version.
          */
         get: {
             parameters: {
@@ -4980,7 +5268,9 @@ export interface paths {
         };
         /**
          * A channel-model price row, signed by the operator
-         * @description The signed checkpoint of one `(channel, model)` price row — `version`'s exact
+         * @description Current customer/key model and channel grants filter this direct price read.
+         *     Historical proof bundles already exported remain independently verifiable.
+         *     The signed checkpoint of one `(channel, model)` price row — `version`'s exact
          *     row, or the latest when `version` is omitted — as a C2SP signed-note under the
          *     same Ed25519 key that signs tree heads (issue #204). The body reuses the
          *     tlog-checkpoint shape: `origin` is the catalog `oxsum/price-catalog/<channel>`,
@@ -5281,6 +5571,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 409: components["responses"]["Error"];
                 500: components["responses"]["Error"];
@@ -5331,6 +5622,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 409: components["responses"]["Error"];
                 500: components["responses"]["Error"];
@@ -5388,6 +5680,1476 @@ export interface paths {
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
                 402: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/session/context": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the selected session context
+         * @description A personal session only. Customer membership never implies business authority.
+         */
+        get: operations["sessionContext"];
+        put?: never;
+        /**
+         * Select customer or business authority
+         * @description A live session selects its own context. Business selection requires current staff membership. An explicit bearer credential is refused. Context selection never changes customer membership.
+         */
+        post: operations["switchSessionContext"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the active business context
+         * @description Requires a personal session explicitly selected into business context. Rechecks current staff role on each call.
+         */
+        get: operations["businessContext"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/customers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List business customers
+         * @description Staff customersRead or an integration customersRead grant. Keyset pagination filters to the selected business and explicit integration customer allowlist before choosing the page.
+         */
+        get: operations["listBusinessCustomers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/customers/{organizationId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read a business customer
+         * @description Staff customersRead or integration customersRead for this selected customer. Unknown, unselected or foreign customer is 404.
+         */
+        get: operations["getBusinessCustomer"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update a customer profile
+         * @description Current customersWrite capability. Name/contact changes do not move identity or history. ExternalId is assigned once by creation or migration and is immutable. Same-key changed terms conflict.
+         */
+        patch: operations["updateBusinessCustomer"];
+        trace?: never;
+    };
+    "/api/v1/business/customers/{organizationId}/lifecycle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Archive or restore a customer
+         * @description Current customersWrite capability. Archive blocks new admission and preserves ledger, keys, debt, settlements and recovery. Restoring does not clear manual or dunning suspension.
+         */
+        post: operations["setCustomerLifecycle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/customers/{organizationId}/suspension": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set the manual customer suspension
+         * @description Current customersSuspend capability. Clearing manual suspension never clears dunning or archive state. Audit and state change commit together.
+         */
+        post: operations["setCustomerSuspension"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/merchants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List business merchant settings
+         * @description Current business staff with report-read capability. Account identity, test/live mode, immutable current version and checkout enablement are explicit. Hyperswitch with Stripe is the primary rail; direct Stripe and Airwallex are compatibility rails. Saves validate locally and do not certify credentials or make provider calls.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    after?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Authorized merchant result; no credential or ciphertext fields */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["MerchantPage"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Create an encrypted merchant configuration
+         * @description Current business owner only. Creates a disabled merchant and its first immutable version. Account identity, rail, mode and name cannot change; credential rotation appends a version. Mutation, replay receipt and redacted audit commit atomically.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["MerchantCreateRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized merchant result; no credential or ciphertext fields */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["MerchantMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/merchants/{merchantId}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List immutable merchant versions
+         * @description Current business staff with report-read capability. Versions remain available for pinned orders and historical callback verification after rotation or checkout disablement. No secrets or ciphertexts are returned.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    after?: number;
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    merchantId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Authorized merchant result; no credential or ciphertext fields */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["MerchantVersionPage"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Rotate a merchant configuration
+         * @description Current business owner only. Appends a complete immutable version and selects it for future checkouts; existing references retain their original version. All credentials must be resupplied. Keeps the merchant current checkout enablement. Exact retry returns its original version even after a later rotation.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    merchantId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["MerchantVersionRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized merchant result; no credential or ciphertext fields */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["MerchantMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/merchants/{merchantId}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set merchant checkout enablement
+         * @description Current business owner only. Disabling refuses future checkouts without invalidating pinned versions or historical callbacks. This is configuration enablement; it does not certify provider credentials or activate customer checkout before T15/T16.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    merchantId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["MerchantStatusRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized merchant result; no credential or ciphertext fields */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["MerchantMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/channels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List business provider channels
+         * @description Current owner/admin in business context. Ownership filters apply before pagination or child lookup. No secret material is returned.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    after?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["BusinessChannelPage"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Set an owned provider connection
+         * @description Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner only. apiKeys absent preserves the existing pool; a new channel needs a nonempty pool. Changing destination or protocol requires freshly supplied keys and clears an existing billing credential to prevent implicit credential forwarding.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessChannelRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ProviderMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/channels/{channelName}/connection-check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Explicitly check an owned provider connection without inference
+         * @description Current business owner only. Commits intent and audit before one HEAD request to the configured base URL with the channel credential and destination policy. Does not generate tokens. Exact replay returns the saved result and never repeats the network request; pending means interrupted or still running, so a deliberate new check needs a new key. No provider body, redirect target or transport error detail is exposed.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    channelName: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessProviderRemoveRequest"];
+                };
+            };
+            responses: {
+                /** @description Durable connection-check result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ProviderConnectionCheck"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/channels/{channelName}/credentials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add an owned provider credential
+         * @description Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner only.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    channelName: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessProviderCredentialRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ProviderMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/channels/{channelName}/billing-credential": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set or clear the provider billing credential
+         * @description Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner only; null clears.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    channelName: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessProviderBillKeyRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ProviderMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/channels/{channelName}/cache": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Configure an owned channel cache
+         * @description Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner/admin; null clears.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    channelName: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessProviderCacheRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ProviderMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/channels/{channelName}/prices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read owned channel prices
+         * @description Current owner/admin in business context. Ownership filters apply before pagination or child lookup. No secret material is returned.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    channelName: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ModelPrice"][];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Append an owned model price version
+         * @description Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner/admin. Published historical versions remain unchanged.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    channelName: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessProviderPriceRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ProviderMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/channels/{channelName}/aliases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read owned channel aliases
+         * @description Current owner/admin in business context. Ownership filters apply before pagination or child lookup. No secret material is returned.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    channelName: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ModelAlias"][];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Claim an owned model alias
+         * @description Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner/admin. Target must be a served model on this channel.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    channelName: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessProviderAliasRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ProviderMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/channels/{channelName}/credentials/{credentialId}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set provider credential status
+         * @description Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner only; credential ID must belong to this channel.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    channelName: string;
+                    credentialId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessProviderStatusRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ProviderMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/channels/{channelName}/credentials/{credentialId}/remove": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Remove a provider credential
+         * @description Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner only; credential ID must belong to this channel. The last active credential cannot be removed; disable it explicitly to stop serving.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    channelName: string;
+                    credentialId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessProviderRemoveRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ProviderMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/channels/{channelName}/aliases/{alias}/remove": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Remove an owned model alias
+         * @description Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner/admin.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    channelName: string;
+                    alias: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessProviderRemoveRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ProviderMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/model-fallbacks/{model}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read owned model fallbacks
+         * @description Current owner/admin in business context. Ownership filters apply before pagination or child lookup. No secret material is returned.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    model: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ModelFallbackChain"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        /**
+         * Set owned model fallbacks
+         * @description Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner/admin. Every model must resolve inside this business; distinct ordered names, no self fallback, at most 16. Empty clears.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    model: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessProviderFallbackRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ProviderMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/integration-credentials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List scoped integration credentials
+         * @description Current business owner in business context. Metadata only; never secret or hash.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    after?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Credential page */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["IntegrationCredentialPage"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Issue a scoped integration credential
+         * @description Current business owner in business context, with current TOTP. Secret returned once, null on exact replay. Terms, receipt and immutable audit commit atomically. Customer IDs and scopes must be distinct and explicit. Expiry must be in the future, within 365 days. No all-customer wildcard or unsupported scope.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["IntegrationCredentialRequest"];
+                };
+            };
+            responses: {
+                /** @description Credential and first-use secret */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["CreatedIntegrationCredential"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/integration-credentials/{credentialId}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revoke a scoped integration credential
+         * @description Current business owner. Revocation, immutable receipt and audit commit together. Committed metering authorizations may finish after revocation; later API calls and captured principals are rejected. History and outstanding recovery remain intact.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    credentialId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["IntegrationCredentialRevokeRequest"];
+                };
+            };
+            responses: {
+                /** @description Mutation receipt */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["BusinessMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/staff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List business staff
+         * @description Owner only. Customer keys and customer sessions have no staff authority.
+         */
+        get: operations["businessStaff"];
+        put?: never;
+        /**
+         * Appoint or change an existing staff member
+         * @description Owner only, audited and idempotent. Existing registered user by userId. The owner role cannot be assigned here; use ownership transfer. Cannot demote an owner.
+         */
+        post: operations["setBusinessStaff"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/staff/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revoke staff authority
+         * @description Owner only. Cannot revoke an owner. Personal customer access is retained. All subsequent business calls recheck the revoked membership.
+         */
+        post: operations["revokeBusinessStaff"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/ownership": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Transfer ownership to an existing staff member
+         * @description Owner only. Atomically promotes the selected current staff member and demotes the actor to admin. Last-owner deletion is refused. Replays recheck current owner permission.
+         */
+        post: operations["transferBusinessOwnership"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/registration": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Select customer registration policy
+         * @description Owner only. Fresh and upgraded installations remain invite-only until this audited change. Password, GitHub and OIDC new-account paths enforce the saved policy in their creation transaction.
+         */
+        post: operations["setBusinessRegistration"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/business/setup-tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Authorize an expiring owner setup invitation
+         * @description One business per deployment. Deployment authority binds a 30-minute, one-use
+         *     setup token to the intended owner's email. The owner supplies their own session
+         *     or creates a new account with that email. Initialization, owner membership,
+         *     token consumption and redacted audit commit together. An initialized business
+         *     cannot be claimed again. A token is returned only once; an identical mint retry
+         *     returns its metadata with token null. Unknown/expired/wrong-owner tokens are 404
+         *     before initialization; initialized businesses answer 409 on any further setup.
+         *     The setup policy is invite-only; staff sessions and registration policy enforcement
+         *     are a separate dependent change. No provider/payment call is made.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessSetupTokenRequest"];
+                };
+            };
+            responses: {
+                /** @description Setup authorization or initialized business (registration includes the initial customer key) */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["BusinessSetupToken"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Accept business ownership as the invited logged-in user
+         * @description One business per deployment. Deployment authority binds a 30-minute, one-use
+         *     setup token to the intended owner's email. The owner supplies their own session
+         *     or creates a new account with that email. Initialization, owner membership,
+         *     token consumption and redacted audit commit together. An initialized business
+         *     cannot be claimed again. A token is returned only once; an identical mint retry
+         *     returns its metadata with token null. Unknown/expired/wrong-owner tokens are 404
+         *     before initialization; initialized businesses answer 409 on any further setup.
+         *     The setup policy is invite-only; staff sessions and registration policy enforcement
+         *     are a separate dependent change. No provider/payment call is made.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessSetupRequest"];
+                };
+            };
+            responses: {
+                /** @description Setup authorization or initialized business (registration includes the initial customer key) */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["BusinessSetupResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/setup/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Register the invited initial owner and initialize the business
+         * @description One business per deployment. Deployment authority binds a 30-minute, one-use
+         *     setup token to the intended owner's email. The owner supplies their own session
+         *     or creates a new account with that email. Initialization, owner membership,
+         *     token consumption and redacted audit commit together. An initialized business
+         *     cannot be claimed again. A token is returned only once; an identical mint retry
+         *     returns its metadata with token null. Unknown/expired/wrong-owner tokens are 404
+         *     before initialization; initialized businesses answer 409 on any further setup.
+         *     The setup policy is invite-only; staff sessions and registration policy enforcement
+         *     are a separate dependent change. No provider/payment call is made.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessSetupRegistrationRequest"];
+                };
+            };
+            responses: {
+                /** @description Setup authorization or initialized business (registration includes the initial customer key) */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["BusinessSetupResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
                 403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 409: components["responses"]["Error"];
@@ -6984,6 +8746,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -8419,7 +10182,7 @@ export interface paths {
         };
         /**
          * List the metering service credentials
-         * @description Every service credential, newest first — metadata only: the secret exists once, at mint. The list answers `prefix`, `createdAt` and `revokedAt`, so a deployment can name which of its services may still meter.
+         * @description Every service credential, newest first — metadata only: the secret exists once, at mint. The list answers `prefix`, `createdAt` and `revokedAt`, so a deployment can inspect legacy credentials. All legacy credentials are disabled at upgrade; metadata remains available for recovery audits.
          */
         get: {
             parameters: {
@@ -8447,8 +10210,9 @@ export interface paths {
         };
         put?: never;
         /**
-         * Mint a metering service credential
-         * @description The secret is answered exactly once, in this response — the database keeps only its hash, like an API key's. `name` is what the settlement description records as the reporting service, so name it for the service that will hold it. The mint lands in the admin audit log.
+         * Retired global service credential issuance
+         * @deprecated
+         * @description Returns 403 before body parsing. The current business owner must issue scoped credentials through /business/integration-credentials.
          */
         post: {
             parameters: {
@@ -8457,26 +10221,10 @@ export interface paths {
                 path?: never;
                 cookie?: never;
             };
-            requestBody: {
-                content: {
-                    "application/json": components["schemas"]["ServiceCredentialRequest"];
-                };
-            };
+            requestBody?: never;
             responses: {
-                /** @description The credential, with its secret — the only answer that carries it */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": {
-                            data: components["schemas"]["CreatedServiceCredential"];
-                        };
-                    };
-                };
-                400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
-                500: components["responses"]["Error"];
+                403: components["responses"]["Error"];
             };
         };
         delete?: never;
@@ -8542,11 +10290,15 @@ export interface paths {
          * List the served models, in OpenAI's shape
          * @description Only models with a relayable price are listed: a model the gateway cannot price cannot be
          *     frozen, so it cannot be served — and a `mode: event` price is a billable code for
-         *     `/api/v1/metering`, not a model any `/v1` surface relays, so it is not listed either.
+         *     `/api/v1/metering`, so it is omitted unless the channel uses the generic `tasks`
+         *     protocol. Task entries identify the generic task adapter, not certified media support.
          *     `owned_by` is the channel that serves the model, and `created` is when the version in force
          *     was written. Model aliases are listed beside the direct names (issue
          *     #286): a caller writes the public name and the channel relays the
-         *     upstream model it renames.
+         *     upstream model it renames. Only the authenticated customer's business channels,
+         *     tier-authorized models, key-authorized models and request-group channels appear.
+         *     Both public alias and resolved target must be allowed; denied or unpriced aliases
+         *     are omitted. Catalog reads never open provider credentials.
          */
         get: {
             parameters: {
@@ -8620,8 +10372,8 @@ export interface paths {
          *     24 hours after it was first claimed.
          *
          *     Every answer that took the hold — a completion or an upstream refusal — carries
-         *     `x-oxsum-freeze-minor` (the reserved bound) and `x-oxsum-balance-minor` (the
-         *     spendable balance left after it) on the response head. The settled charge rides as
+         *     `x-oxsum-freeze-minor` (the reserved bound) on the response head. Customer-wide
+         *     balances are not disclosed to consumption keys. The settled charge rides as
          *     `x-oxsum-charged-minor`: a header on a non-streamed answer and on a refusal that
          *     settled `Charge::Nothing`, and — because the head goes out before a streamed turn
          *     settles — an HTTP trailer on a streamed answer, announced by `Trailer`.
@@ -8649,7 +10401,6 @@ export interface paths {
                     headers: {
                         "x-oxsum-request-id": components["headers"]["RequestId"];
                         "x-oxsum-freeze-minor": components["headers"]["FreezeMinor"];
-                        "x-oxsum-balance-minor": components["headers"]["BalanceMinor"];
                         "x-oxsum-charged-minor": components["headers"]["ChargedMinor"];
                         "x-oxsum-cache": components["headers"]["CacheStatus"];
                         /** @description on a streamed answer, announces the settled charge arrives as a trailer */
@@ -8740,7 +10491,6 @@ export interface paths {
                     headers: {
                         "x-oxsum-request-id": components["headers"]["RequestId"];
                         "x-oxsum-freeze-minor": components["headers"]["FreezeMinor"];
-                        "x-oxsum-balance-minor": components["headers"]["BalanceMinor"];
                         "x-oxsum-charged-minor": components["headers"]["ChargedMinor"];
                         /** @description on a streamed answer, announces the settled charge arrives as a trailer */
                         Trailer?: string;
@@ -8783,7 +10533,10 @@ export interface paths {
          *     minutes — an image render, a video generation, a batch — where neither
          *     side wants a socket held open. The surface serves only channels whose
          *     `protocol` is `tasks`; upstream is called at `{baseUrl}/tasks` with the
-         *     channel credential as `Authorization: Bearer`.
+         *     channel credential as `Authorization: Bearer`. Customer tier, consumption-key
+         *     model and group-channel restrictions apply. Public aliases and signed spend
+         *     mandates are not supported by this generic task adapter and are refused
+         *     before provider contact. Use a permitted direct task model.
          *
          *     Submission freezes the request's declared upper bound (`maxCostMinor`,
          *     or the channel price's own bound when the request names none), relays
@@ -8834,7 +10587,6 @@ export interface paths {
                     headers: {
                         "x-oxsum-request-id": components["headers"]["RequestId"];
                         "x-oxsum-freeze-minor": components["headers"]["FreezeMinor"];
-                        "x-oxsum-balance-minor": components["headers"]["BalanceMinor"];
                         [name: string]: unknown;
                     };
                     content: {
@@ -8873,9 +10625,9 @@ export interface paths {
          *     `failed` or `cancelled` once terminal — the terminal transition is
          *     also the settlement, so a terminal state means the bill is written.
          *     `result` carries upstream's answer body on success, `error` the
-         *     reported failure. The caller's API key must belong to the
-         *     organization that submitted the task — a foreign key reads 404, not
-         *     403, so a task's existence is not an oracle.
+         *     reported failure. Only the exact consumption key that submitted the task
+         *     may read or cancel it. Unknown, foreign-customer and sibling-key task
+         *     IDs all return 404 without contacting upstream or changing funds.
          */
         get: {
             parameters: {
@@ -8919,7 +10671,8 @@ export interface paths {
         put?: never;
         /**
          * Best-effort cancel — releases the hold and asks upstream to stop the job
-         * @description Asks upstream to cancel the external task
+         * @description Only the exact submitting key may cancel; every out-of-scope ID is 404.
+         *     Asks upstream to cancel the external task
          *     (`POST {baseUrl}/tasks/{externalTaskId}/cancel`), then releases the
          *     hold at zero whether upstream accepted or not: the billing side ends
          *     because the caller said the work is no longer wanted. A task already
@@ -8996,8 +10749,8 @@ export interface paths {
          *     turn is `metadata.user_id`, which lands on the usage record's `endUser`.
          *
          *     A `stream: true` response relays Anthropic's event stream unchanged and ends with
-         *     `message_stop`. The cost headers are the same three: `x-oxsum-freeze-minor` and
-         *     `x-oxsum-balance-minor` on the head, `x-oxsum-charged-minor` on a non-streamed head
+         *     `message_stop`. The cost headers are `x-oxsum-freeze-minor` on the head
+         *     and `x-oxsum-charged-minor` on a non-streamed head
          *     or a streamed trailer. `Idempotency-Key` behaves exactly as it does on
          *     `/v1/chat/completions`.
          */
@@ -9028,7 +10781,6 @@ export interface paths {
                     headers: {
                         "x-oxsum-request-id": components["headers"]["RequestId"];
                         "x-oxsum-freeze-minor": components["headers"]["FreezeMinor"];
-                        "x-oxsum-balance-minor": components["headers"]["BalanceMinor"];
                         "x-oxsum-charged-minor": components["headers"]["ChargedMinor"];
                         /** @description on a streamed answer, announces the settled charge arrives as a trailer */
                         Trailer?: string;
@@ -9075,8 +10827,9 @@ export interface paths {
          *
          *     There is no output side: `stream` is refused, and no `max_tokens` is injected into the
          *     forwarded body. The failover, bounded `Retry-After`, `Idempotency-Key` and
-         *     cost-header contract is the shared pipeline's — `x-oxsum-freeze-minor` and
-         *     `x-oxsum-balance-minor` on the head, `x-oxsum-charged-minor` once the turn settled.
+         *     cost-header contract is the shared pipeline's — `x-oxsum-freeze-minor` on the
+         *     head and `x-oxsum-charged-minor` once the turn settles. Customer balance is
+         *     never returned to a gateway caller.
          *
          *     Upstream is called at `{baseUrl}/embeddings` with the channel credential as
          *     `Authorization: Bearer`. A response without a usage report settles `estimated`,
@@ -9105,7 +10858,6 @@ export interface paths {
                     headers: {
                         "x-oxsum-request-id": components["headers"]["RequestId"];
                         "x-oxsum-freeze-minor": components["headers"]["FreezeMinor"];
-                        "x-oxsum-balance-minor": components["headers"]["BalanceMinor"];
                         "x-oxsum-charged-minor": components["headers"]["ChargedMinor"];
                         [name: string]: unknown;
                     };
@@ -9174,7 +10926,6 @@ export interface paths {
                     headers: {
                         "x-oxsum-request-id": components["headers"]["RequestId"];
                         "x-oxsum-freeze-minor": components["headers"]["FreezeMinor"];
-                        "x-oxsum-balance-minor": components["headers"]["BalanceMinor"];
                         "x-oxsum-charged-minor": components["headers"]["ChargedMinor"];
                         [name: string]: unknown;
                     };
@@ -9226,9 +10977,10 @@ export interface paths {
          *     `toolUsePromptTokenCount` sits outside `promptTokenCount` (so the billed input
          *     adds it in).
          *
-         *     The cost headers are the same three: `x-oxsum-freeze-minor` and
-         *     `x-oxsum-balance-minor` on the head, `x-oxsum-charged-minor` on a non-streamed
-         *     head. `Idempotency-Key` behaves exactly as it does on `/v1/chat/completions`.
+         *     The cost headers are the same two: `x-oxsum-freeze-minor` on the head and
+         *     `x-oxsum-charged-minor` on a non-streamed head. Customer balance is never
+         *     returned to a gateway caller. `Idempotency-Key` behaves exactly as it does on
+         *     `/v1/chat/completions`.
          *     `labels` maps onto the turn's usage tags, like OpenAI's `metadata` — strings
          *     only, ten entries, 64 characters a side.
          */
@@ -9258,7 +11010,6 @@ export interface paths {
                     headers: {
                         "x-oxsum-request-id": components["headers"]["RequestId"];
                         "x-oxsum-freeze-minor": components["headers"]["FreezeMinor"];
-                        "x-oxsum-balance-minor": components["headers"]["BalanceMinor"];
                         "x-oxsum-charged-minor": components["headers"]["ChargedMinor"];
                         [name: string]: unknown;
                     };
@@ -9328,7 +11079,6 @@ export interface paths {
                     headers: {
                         "x-oxsum-request-id": components["headers"]["RequestId"];
                         "x-oxsum-freeze-minor": components["headers"]["FreezeMinor"];
-                        "x-oxsum-balance-minor": components["headers"]["BalanceMinor"];
                         /** @description announces the settled charge arrives as a trailer */
                         Trailer?: string;
                         [name: string]: unknown;
@@ -9358,6 +11108,156 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        BusinessCustomer: {
+            /** Format: uuid */
+            organizationId: string;
+            /** Format: uuid */
+            businessId: string;
+            /** @description Immutable business-scoped customer reference. Legacy and public signup accounts use their organization UUID. */
+            externalId: string;
+            name: string;
+            /** Format: email */
+            contactEmail: string | null;
+            /** @enum {string} */
+            state: "active" | "archived";
+            /** Format: date-time */
+            manualSuspendedAt: string | null;
+            /** Format: date-time */
+            dunningSuspendedAt: string | null;
+            /** @description True if manually suspended */
+            suspended: boolean;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        BusinessCustomerPage: {
+            customers: components["schemas"]["BusinessCustomer"][];
+            /** Format: uuid */
+            nextCursor: string | null;
+        };
+        BusinessCustomerUpdate: {
+            idempotencyKey: string;
+            name: string;
+            /** Format: email */
+            contactEmail: string | null;
+            reason: string;
+        };
+        BusinessCustomerLifecycle: {
+            idempotencyKey: string;
+            /** @enum {string} */
+            state: "active" | "archived";
+            reason: string;
+        };
+        BusinessCustomerSuspension: {
+            idempotencyKey: string;
+            suspended: boolean;
+            reason: string;
+        };
+        /** @enum {string} */
+        BusinessRole: "owner" | "admin" | "finance" | "support" | "viewer";
+        /** @enum {string} */
+        BusinessCapability: "overviewRead" | "customersRead" | "customersWrite" | "customersSuspend" | "requestsRead" | "catalogWrite" | "routingWrite" | "providerSecretsWrite" | "commercialWrite" | "fundsWrite" | "refundsWrite" | "reportsRead" | "merchantSecretsWrite" | "staffManage" | "ownershipTransfer" | "registrationWrite" | "integrationsManage";
+        BusinessPrincipal: {
+            /** Format: uuid */
+            businessId: string;
+            /** Format: uuid */
+            userId: string;
+            role: components["schemas"]["BusinessRole"];
+            capabilities: components["schemas"]["BusinessCapability"][];
+        };
+        SessionContextInfo: {
+            /** @enum {string} */
+            context: "customer" | "business";
+            user: components["schemas"]["User"];
+            /**
+             * Format: uuid
+             * @description Null in business context or when the user has no remaining customer membership.
+             */
+            organizationId: string | null;
+            business: components["schemas"]["BusinessPrincipal"] | null;
+        };
+        SessionContextRequest: {
+            idempotencyKey: string;
+            /** @enum {string} */
+            context: "customer" | "business";
+            /**
+             * Format: uuid
+             * @description Customer membership to select; omitted retains the existing customer selection. Forbidden for business context.
+             */
+            organizationId?: string | null;
+        };
+        BusinessStaff: {
+            /** Format: uuid */
+            userId: string;
+            /** Format: email */
+            email: string;
+            role: components["schemas"]["BusinessRole"];
+        };
+        BusinessStaffList: components["schemas"]["BusinessStaff"][];
+        BusinessMutationResult: {
+            /**
+             * Format: uuid
+             * @description Stable mutation receipt ID
+             */
+            id: string;
+        };
+        BusinessStaffRequest: {
+            idempotencyKey: string;
+            /** Format: uuid */
+            userId: string;
+            /** @enum {string} */
+            role: "admin" | "finance" | "support" | "viewer";
+            reason: string;
+        };
+        BusinessStaffRevokeRequest: {
+            idempotencyKey: string;
+            /** Format: uuid */
+            userId: string;
+            reason: string;
+        };
+        BusinessOwnershipRequest: {
+            idempotencyKey: string;
+            /** Format: uuid */
+            userId: string;
+            reason: string;
+        };
+        BusinessRegistrationRequest: {
+            idempotencyKey: string;
+            /** @enum {string} */
+            mode: "invite" | "open";
+            reason: string;
+        };
+        BusinessSetupTokenRequest: {
+            idempotencyKey: string;
+            /** Format: email */
+            ownerEmail: string;
+        };
+        BusinessSetupToken: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            businessId: string;
+            /** Format: email */
+            ownerEmail: string;
+            /** @description Shown only at first mint; never stored in plaintext. */
+            token: string | null;
+            /** Format: date-time */
+            expiresAt: string;
+        };
+        BusinessSetupRequest: {
+            token: string;
+            businessName: string;
+        };
+        BusinessSetupRegistrationRequest: {
+            token: string;
+            businessName: string;
+            /** Format: email */
+            email: string;
+            password: string;
+        };
+        BusinessSetupResult: {
+            ownership: components["schemas"]["BusinessOwnership"];
+            registration: components["schemas"]["Registration"] | null;
+        };
         BusinessOwnership: {
             business: {
                 /** Format: uuid */
@@ -9404,25 +11304,65 @@ export interface components {
         CreatedInvitation: {
             /** Format: uuid */
             id: string;
-            /** @description `oxi-` plus 32 random bytes — answered once; only its hash is stored */
-            token: string;
             /**
-             * Format: date-time
-             * @description seven days from minting
+             * Format: uuid
+             * @description Existing or reserved customer identity
              */
+            organizationId: string;
+            /** @description Random oxi- secret shown on first creation only; null on idempotent replay */
+            token: string | null;
+            /** Format: date-time */
             expiresAt: string;
             /**
-             * @description present only when the request named an email: `sent` when the mailer accepted the message, `failed` when it did not — the token above is still valid for hand delivery
+             * @description Present only for an attempted email delivery
              * @enum {string}
              */
             delivery?: "sent" | "failed";
         };
         CreateInvitationRequest: {
+            idempotencyKey: string;
+            /** Format: email */
+            intendedEmail?: string | null;
             /**
              * Format: email
-             * @description an optional recipient; with it the link is mailed, without it the token is only answered
+             * @description Bind and mail the invitation
              */
-            email?: string;
+            email?: string | null;
+        };
+        CustomerInvitationRequest: {
+            idempotencyKey: string;
+            /** Format: email */
+            email: string;
+            name: string;
+            externalId: string;
+            reason: string;
+        };
+        InvitationRevokeRequest: {
+            idempotencyKey: string;
+            reason: string;
+        };
+        InvitationPreview: {
+            /** Format: uuid */
+            organizationId: string;
+            name: string;
+            /** @enum {string} */
+            role: "owner" | "member";
+            /** Format: date-time */
+            expiresAt: string;
+        };
+        InvitationAcceptance: {
+            /**
+             * Format: uuid
+             * @description Invitation ID, a stable acceptance receipt
+             */
+            id: string;
+            /** Format: uuid */
+            organizationId: string;
+            /**
+             * @description Originally accepted customer role, not current authorization
+             * @enum {string}
+             */
+            role: "owner" | "member";
         };
         RedeemInvitationRequest: {
             /** @description the invitation link's token */
@@ -9953,15 +11893,6 @@ export interface components {
              */
             joinedAt: string;
         };
-        AddMemberRequest: {
-            /**
-             * @description the email of an account that already exists; the comparison is case-insensitive. An
-             *     email no account holds is `NOT_FOUND` — a person without an account is invited by link
-             *     (`POST /api/v1/org/invitations`) — and one that is already a member of this organization
-             *     is `CONFLICT`.
-             */
-            email: string;
-        };
         Experiment: {
             /**
              * Format: uuid
@@ -10190,6 +12121,7 @@ export interface components {
              * @enum {string}
              */
             protocol?: "openai" | "anthropic" | "gemini";
+            destinationPolicy?: components["schemas"]["ProviderDestinationPolicy"];
             /** @description the channel's semantic response cache policy (issue #497): `{enabled, ttlSeconds?, excludeSystem?}` — `enabled` gates the whole feature; `ttlSeconds` bounds a stored answer's lifetime (absent means no expiry); `excludeSystem` drops the system/instructions share from the prompt digest so two asks differing only there still hit. Omit to leave the stored policy untouched; explicit null clears `settings.semanticCache`; a non-object or a malformed policy is VALIDATION_ERROR. */
             semanticCache?: ({
                 enabled?: boolean;
@@ -10241,7 +12173,7 @@ export interface components {
             credentials: components["schemas"]["ChannelCredential"][];
             /** @description the last four characters of the admin billing credential (issue #283), and nothing more of it; null when the channel carries none */
             billKeyLast4: string | null;
-            /** @description the channel's free-form settings (issue #497): `semanticCache` and any future channel-scoped knobs, exactly as written through `ChannelRequest.semanticCache` — `{}` when nothing was ever set */
+            /** @description the channel's free-form settings (issue #497): `semanticCache` and `destinationPolicy` configuration — `{}` when nothing was ever set */
             settings: Record<string, never>;
             /** Format: date-time */
             createdAt: string;
@@ -10950,8 +12882,8 @@ export interface components {
              *     organization's new holds refuse — 403 on `/v1` —
              *     while its in-flight holds still settle and money-in still lands; suspending enqueues
              *     `org.suspended` to its subscribed webhook endpoints. A manual suspension is
-             *     never the dunning sweep's to lift — reinstating here also clears any marker a
-             *     sweep-set suspension left.
+             *     never the dunning sweep's to lift. Reinstating here clears only manual
+             *     suspension; an overdue or archived customer remains blocked.
              */
             suspended?: boolean;
             /**
@@ -11879,7 +13811,7 @@ export interface components {
             usageDetails?: Record<string, never>;
         };
         MeteringHoldRequest: {
-            /** @description UTF-8 idempotency key; the hold entry's key is `metering:<key>:hold` */
+            /** @description UTF-8 idempotency key, scoped to the credential and customer; the returned opaque holdKey binds both */
             idempotencyKey: string;
             /**
              * Format: uuid
@@ -11890,7 +13822,7 @@ export interface components {
             channel: string;
             /** @description what is being billed — the price book's model name on that channel */
             billableCode: string;
-            /** @description the service's own identifier for the event, recorded as the usage row's request id; defaults to the hold key */
+            /** @description the service's own event label, recorded in settlement evidence; the usage projection uses the credential/customer-bound hold key to avoid global label collisions; defaults to the hold key */
             eventId?: string;
             usage: components["schemas"]["EventUsage"];
         };
@@ -11950,9 +13882,261 @@ export interface components {
              */
             settlementId?: string;
         };
-        ServiceCredentialRequest: {
-            /** @description which service holds this credential — the name settlement descriptions record as the reporter */
-            name?: string;
+        /** @enum {string} */
+        MerchantRail: "hyperswitch" | "stripe" | "airwallex";
+        /** @enum {string} */
+        MerchantMode: "test" | "live";
+        /** @description Complete configuration for one immutable version. Hyperswitch requires publishableKey and sdkUrl; Airwallex requires clientId and checkoutUrl. Fields belonging only to another rail are rejected. API destination rules are shared with provider connections; browser SDK/checkout URLs must be public HTTPS URLs without user info, query or fragment. Secrets are encrypted together and never returned. */
+        MerchantVersionInput: {
+            /** Format: uri */
+            apiUrl: string;
+            apiKey: string;
+            webhookSecret: string;
+            clientId?: string | null;
+            publishableKey?: string | null;
+            /** Format: uri */
+            sdkUrl?: string | null;
+            /** Format: uri */
+            checkoutUrl?: string | null;
+            destinationPolicy?: components["schemas"]["ProviderDestinationPolicy"];
+        };
+        MerchantCreateRequest: {
+            idempotencyKey: string;
+            reason: string;
+            name: string;
+            rail: components["schemas"]["MerchantRail"];
+            mode: components["schemas"]["MerchantMode"];
+            /** @description Stable provider merchant/account identifier; unique per business */
+            accountId: string;
+            config: components["schemas"]["MerchantVersionInput"];
+        };
+        MerchantVersionRequest: {
+            idempotencyKey: string;
+            reason: string;
+            config: components["schemas"]["MerchantVersionInput"];
+        };
+        MerchantStatusRequest: {
+            idempotencyKey: string;
+            reason: string;
+            enabled: boolean;
+        };
+        MerchantMutationResult: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            merchantId: string;
+            /** Format: uuid */
+            versionId: string;
+            /** Format: int64 */
+            revision: number;
+            enabled: boolean;
+        };
+        MerchantVersion: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            merchantId: string;
+            /** Format: int64 */
+            revision: number;
+            /** Format: uri */
+            apiUrl: string;
+            publishableKey: string | null;
+            /** Format: uri */
+            sdkUrl: string | null;
+            /** Format: uri */
+            checkoutUrl: string | null;
+            destinationPolicy: components["schemas"]["ProviderDestinationPolicy"];
+            /** @enum {string} */
+            source: "owner" | "environment";
+            /**
+             * @description Shape and destination syntax validated; external credentials and payments remain uncertified.
+             * @enum {string}
+             */
+            validationStatus: "locallyValidated";
+            /** Format: date-time */
+            createdAt: string;
+        };
+        Merchant: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            businessId: string;
+            name: string;
+            rail: components["schemas"]["MerchantRail"];
+            mode: components["schemas"]["MerchantMode"];
+            accountId: string;
+            /** @enum {string} */
+            connector: "stripe" | "direct";
+            /** @enum {string} */
+            supportStatus: "primary" | "compatibility";
+            enabled: boolean;
+            currentVersion: components["schemas"]["MerchantVersion"];
+        };
+        MerchantPage: {
+            merchants: components["schemas"]["Merchant"][];
+            /** Format: uuid */
+            nextCursor: string | null;
+        };
+        MerchantVersionPage: {
+            versions: components["schemas"]["MerchantVersion"][];
+            /** Format: int64 */
+            nextCursor: number | null;
+        };
+        ProviderMutationResult: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            resourceId: string | null;
+            /** Format: int64 */
+            version: number | null;
+        };
+        BusinessChannelPage: {
+            channels: components["schemas"]["Channel"][];
+            /** Format: uuid */
+            nextCursor: string | null;
+        };
+        /** @description Public requires HTTPS and globally routable IPs. Internal permits HTTP(S) only to the exact allowedIps explicitly approved by the business owner or deployment recovery authority. All DNS answers must satisfy policy, and the transport uses those addresses without a second resolution. Metadata/link-local, unspecified, multicast and reserved destinations are always refused. Redirects and environment proxies are disabled. Existing channels default to public until explicitly reauthorized. */
+        ProviderDestinationPolicy: {
+            /** @enum {string} */
+            network: "public" | "internal";
+            /** @description Required and nonempty for internal; absent or empty for public. Exact IPv4/IPv6 literals, never hostnames or CIDRs. */
+            allowedIps?: string[];
+        };
+        ProviderConnectionCheck: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            channelId: string;
+            /** @enum {string} */
+            state: "pending" | "reachable" | "authenticationFailed" | "httpError" | "blocked" | "unreachable";
+            httpStatus: number | null;
+        };
+        BusinessChannelRequest: {
+            idempotencyKey: string;
+            reason: string;
+            config: {
+                name: string;
+                /**
+                 * Format: uri
+                 * @description HTTPS public by default; HTTP(S) for explicitly approved internal endpoints. No user info, query or fragment; no network call on save
+                 */
+                baseUrl: string;
+                /** @enum {string} */
+                protocol: "openai" | "anthropic" | "gemini" | "tasks";
+                apiKeys?: string[] | null;
+                /** @description Omitted preserves policy only at the same endpoint/protocol; new or changed connections default to public. Internal approval must be resupplied when repointing. */
+                destinationPolicy?: components["schemas"]["ProviderDestinationPolicy"];
+            };
+        };
+        BusinessProviderCredentialRequest: {
+            idempotencyKey: string;
+            reason: string;
+            config: {
+                apiKey: string;
+            };
+        };
+        BusinessProviderBillKeyRequest: {
+            idempotencyKey: string;
+            reason: string;
+            config: {
+                apiKey: string | null;
+            };
+        };
+        BusinessProviderStatusRequest: {
+            idempotencyKey: string;
+            reason: string;
+            config: {
+                /** @enum {string} */
+                status: "active" | "disabled";
+            };
+        };
+        BusinessProviderCacheRequest: {
+            idempotencyKey: string;
+            reason: string;
+            config: {
+                policy: {
+                    enabled: boolean;
+                    /** Format: int64 */
+                    ttlSeconds?: number | null;
+                    excludeSystem?: boolean;
+                } | null;
+            };
+        };
+        BusinessProviderAliasRequest: {
+            idempotencyKey: string;
+            reason: string;
+            config: {
+                alias: string;
+                upstreamModel: string;
+            };
+        };
+        BusinessProviderPriceRequest: {
+            idempotencyKey: string;
+            reason: string;
+            config: {
+                model: string;
+                price: components["schemas"]["PriceSet"] & {
+                    /**
+                     * @default chat
+                     * @enum {string}
+                     */
+                    mode: "chat" | "embeddings" | "rerank" | "event";
+                    rules?: components["schemas"]["PriceRule"][];
+                };
+                weight: number;
+            };
+        };
+        BusinessProviderFallbackRequest: {
+            idempotencyKey: string;
+            reason: string;
+            config: {
+                fallbacks: string[];
+            };
+        };
+        BusinessProviderRemoveRequest: {
+            idempotencyKey: string;
+            reason: string;
+            config: Record<string, never>;
+        };
+        /** @enum {string} */
+        IntegrationScope: "customersRead" | "meteringWrite";
+        IntegrationCredentialRequest: {
+            idempotencyKey: string;
+            name?: string | null;
+            scopes: components["schemas"]["IntegrationScope"][];
+            customerIds: string[];
+            /** Format: date-time */
+            expiresAt: string;
+            reason: string;
+        };
+        IntegrationCredentialRevokeRequest: {
+            idempotencyKey: string;
+            reason: string;
+        };
+        IntegrationCredential: {
+            /** Format: uuid */
+            credentialId: string;
+            /** Format: uuid */
+            businessId: string;
+            name: string | null;
+            prefix: string;
+            scopes: components["schemas"]["IntegrationScope"][];
+            customerIds: string[];
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            expiresAt: string;
+            /** Format: date-time */
+            revokedAt: string | null;
+        };
+        CreatedIntegrationCredential: components["schemas"]["IntegrationCredential"] & {
+            /** @description oxs-int- plus 64 random hexadecimal characters; returned once, null on replay */
+            secret: string | null;
+        };
+        IntegrationCredentialPage: {
+            credentials: components["schemas"]["IntegrationCredential"][];
+            /** Format: uuid */
+            nextCursor: string | null;
         };
         ServiceCredential: {
             /** Format: uuid */
@@ -11964,10 +14148,6 @@ export interface components {
             createdAt: string;
             /** Format: date-time */
             revokedAt?: string | null;
-        };
-        CreatedServiceCredential: components["schemas"]["ServiceCredential"] & {
-            /** @description `oxs-svc-` plus 64 hex characters — answered once, never stored readable */
-            secret: string;
         };
         RedeemRequest: {
             /** @description the redemption code as minted, `oxr-` plus 64 hex characters */
@@ -12735,7 +14915,10 @@ export interface components {
         RequestId: string;
         /** @description minor units this request froze — the most it can cost */
         FreezeMinor: number;
-        /** @description the organization's spendable balance after this request's reservation */
+        /**
+         * @deprecated
+         * @description Retired in 0.105.0: consumption credentials do not disclose the customer's balance. This header is omitted.
+         */
         BalanceMinor: number;
         /** @description minor units the settled turn actually charged — a header on non-streamed answers and post-hold refusals, a trailer on streamed ones */
         ChargedMinor: number;
@@ -12745,4 +14928,399 @@ export interface components {
     pathItems: never;
 }
 export type $defs = Record<string, never>;
-export type operations = Record<string, never>;
+export interface operations {
+    sessionContext: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["SessionContextInfo"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    switchSessionContext: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SessionContextRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["SessionContextInfo"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    businessContext: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessPrincipal"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    listBusinessCustomers: {
+        parameters: {
+            query?: {
+                after?: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessCustomerPage"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    getBusinessCustomer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessCustomer"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    updateBusinessCustomer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BusinessCustomerUpdate"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessMutationResult"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    setCustomerLifecycle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BusinessCustomerLifecycle"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessMutationResult"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    setCustomerSuspension: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BusinessCustomerSuspension"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessMutationResult"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    businessStaff: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessStaffList"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    setBusinessStaff: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BusinessStaffRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessMutationResult"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    revokeBusinessStaff: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BusinessStaffRevokeRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessMutationResult"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    transferBusinessOwnership: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BusinessOwnershipRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessMutationResult"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    setBusinessRegistration: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BusinessRegistrationRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessMutationResult"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+}

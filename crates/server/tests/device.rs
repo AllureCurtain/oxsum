@@ -25,6 +25,7 @@ async fn online_app(url: &str) -> (Router, PgPool) {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     (oxsum_server::app(db, Config::new(Signup::Open, None)), pool)
 }
 
@@ -218,8 +219,8 @@ async fn the_full_grant_loop() {
     let secret = data["apiKey"]["secret"].as_str().expect("a key secret");
     assert!(secret.starts_with("oxs-"));
 
-    // The delivered key works — a balance read against it authenticates.
-    let res = call(&app, "GET", "/api/v1/balance", None, None, Some(secret)).await;
+    // The delivered consumption key authenticates for safe organization metadata.
+    let res = call(&app, "GET", "/api/v1/org", None, None, Some(secret)).await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
 
     cool_down(&user_code).await;

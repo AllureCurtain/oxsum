@@ -73,6 +73,7 @@ async fn online_app(
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let mut config = Config::new(Signup::Open, None);
     if let Some(turnstile) = turnstile {
         config = config.with_turnstile(turnstile);
@@ -126,12 +127,6 @@ struct Res {
 
 async fn post(app: &Router, path: &str, body: Value, cookie: Option<&str>) -> Res {
     send(app, path, Some(body), cookie).await
-}
-
-/// A POST that sends no body at all — the spelling the optional-body endpoints
-/// expect, where a literal `null` is still a body and fails deserialization.
-async fn post_bare(app: &Router, path: &str, cookie: Option<&str>) -> Res {
-    send(app, path, None, cookie).await
 }
 
 async fn send(app: &Router, path: &str, body: Option<Value>, cookie: Option<&str>) -> Res {
@@ -273,7 +268,13 @@ async fn redemption_requires_the_check_when_configured() {
         .next()
         .unwrap()
         .to_owned();
-    let res = post_bare(&app, "/api/v1/org/invitations", Some(&cookie)).await;
+    let res = post(
+        &app,
+        "/api/v1/org/invitations",
+        json!({"idempotencyKey":"invite"}),
+        Some(&cookie),
+    )
+    .await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
     let token = res.body["data"]["token"]
         .as_str()

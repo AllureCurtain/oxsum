@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuthMethods, useLogin, useTotpLogin } from "../../api/hooks";
 import { Button, Field, TextInput } from "../../components/ui";
 import { AuthCard, ErrorText } from "./shared";
@@ -11,6 +11,9 @@ export function Login() {
   const totp = useTotpLogin();
   const methods = useAuthMethods();
   const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const offeredReturn = params.get("returnTo") ?? "";
+  const returnTo = offeredReturn.startsWith("/invite?token=") ? offeredReturn : "/";
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   // When the first leg answers `requiresTotp`, the page swaps the password
@@ -28,7 +31,7 @@ export function Login() {
           if ("requiresTotp" in data && data.requiresTotp) {
             setChallengeToken(data.challengeToken);
           } else {
-            navigate("/", { replace: true });
+            navigate(returnTo, { replace: true });
           }
         },
       },
@@ -40,7 +43,7 @@ export function Login() {
     if (!challengeToken) return;
     totp.mutate(
       { challengeToken, code: code.trim() },
-      { onSuccess: () => navigate("/", { replace: true }) },
+      { onSuccess: () => navigate(returnTo, { replace: true }) },
     );
   }
 

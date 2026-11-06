@@ -14,9 +14,10 @@ use axum::extract::{
     FromRequestParts, State,
     ws::{Message, WebSocket, WebSocketUpgrade},
 };
-use axum::http::HeaderMap;
 use axum::http::request::Parts;
 use axum::response::Response;
+use futures_util::SinkExt;
+use oxsum_core::{CustomerRecordScope, Principal};
 use serde::Serialize;
 
 use crate::AppState;
@@ -31,11 +32,15 @@ pub async fn billing_ws(
     State(state): State<AppState>,
     mut parts: Parts,
 ) -> Result<Response, ApiError> {
-    let tenant_id = session_tenant(&state, &parts.headers).await?;
+    if crate::auth::has_machine_credential(&parts.headers) {
+        return Err(ApiError::Unauthorized);
+    }
+    let token = session_cookie_value(&parts.headers).ok_or(ApiError::Unauthorized)?;
+    let principal = session_principal(&state, &token).await?;
     let ws = WebSocketUpgrade::from_request_parts(&mut parts, &state)
         .await
         .map_err(|_| ApiError::Validation("not a WebSocket upgrade request".to_owned()))?;
-    Ok(ws.on_upgrade(move |socket| push_billing(state, tenant_id, socket)))
+    Ok(ws.on_upgrade(move |socket| push_billing(state, token, principal, socket)))
 }
 
 /// The tenant id of the session the cookie names, or a refusal.
@@ -43,26 +48,56 @@ pub async fn billing_ws(
 /// Every failure looks the same — missing, malformed, unknown, revoked, expired — the
 /// way the auth middleware treats them: a probe cannot tell a live session from a dead
 /// one.
-async fn session_tenant(state: &AppState, headers: &HeaderMap) -> Result<String, ApiError> {
-    let token = session_cookie_value(headers).ok_or(ApiError::Unauthorized)?;
+async fn session_principal(
+    state: &AppState,
+    token: &str,
+) -> Result<oxsum_core::SessionPrincipal, ApiError> {
     // `authenticate_session` takes a session token only: a Bearer key can never pass
     // this check, so the dashboard surface stays the session's.
-    let principal = state
+    state
         .db
-        .authenticate_session(&token)
-        .await
-        .ok()
-        .flatten()
-        .ok_or(ApiError::Unauthorized)?;
-    Ok(principal.organization.tenant_id.clone())
+        .authenticate_session(token)
+        .await?
+        .ok_or(ApiError::Unauthorized)
+}
+
+async fn current_scope(
+    state: &AppState,
+    token: &str,
+    organization_id: uuid::Uuid,
+) -> Result<CustomerRecordScope, ApiError> {
+    let principal = session_principal(state, token).await?;
+    if principal.organization.id != organization_id {
+        return Err(ApiError::Unauthorized);
+    }
+    Ok(state
+        .db
+        .customer_record_scope(&Principal::Session(principal))
+        .await?)
 }
 
 /// Pushes the snapshot, then the organization's events until either side goes away.
-async fn push_billing(state: AppState, tenant_id: String, mut socket: WebSocket) {
+async fn push_billing(
+    state: AppState,
+    token: String,
+    principal: oxsum_core::SessionPrincipal,
+    mut socket: WebSocket,
+) {
+    let organization_id = principal.organization.id;
+    let tenant_id = principal.organization.tenant_id;
     let mut events = state.billing.subscribe();
+    let Ok(scope) = current_scope(&state, &token, organization_id).await else {
+        return;
+    };
     // The snapshot first: a fresh page sees the holds already in flight.
     match state.db.open_holds_for_tenant(&tenant_id).await {
         Ok(holds) => {
+            let holds: Vec<_> = holds
+                .into_iter()
+                .filter(|hold| {
+                    scope.allows(hold.key_id.map(|id| id.simple().to_string()).as_deref())
+                })
+                .collect();
             if !send_json(&mut socket, &Snapshot::new(&holds)).await {
                 return;
             }
@@ -72,12 +107,25 @@ async fn push_billing(state: AppState, tenant_id: String, mut socket: WebSocket)
             return;
         }
     }
+    let mut validity = tokio::time::interval(std::time::Duration::from_secs(30));
+    validity.tick().await;
     loop {
         tokio::select! {
+            _ = validity.tick() => {
+                if current_scope(&state, &token, organization_id).await.is_err() {
+                    break;
+                }
+            }
             event = events.recv() => {
                 // The sender is gone only when the process is shutting down.
                 let Ok(event) = event else { break };
                 if event.tenant_id() != tenant_id {
+                    continue;
+                }
+                // Re-read membership before every delivery: removing a member,
+                // demoting an admin or switching context cannot retain old access.
+                let Ok(scope) = current_scope(&state, &token, organization_id).await else { break };
+                if !scope.allows(Some(&event.key_id().simple().to_string())) {
                     continue;
                 }
                 if !send_json(&mut socket, &event).await {
@@ -94,6 +142,7 @@ async fn push_billing(state: AppState, tenant_id: String, mut socket: WebSocket)
             }
         }
     }
+    let _ = socket.close().await;
 }
 
 /// The first message on a fresh socket: the holds currently in flight.

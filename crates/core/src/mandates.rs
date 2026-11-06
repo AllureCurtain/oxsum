@@ -284,14 +284,79 @@ impl Db {
         not_after: OffsetDateTime,
         secret: &crate::channels::SecretKey,
     ) -> Result<Option<CreatedMandate>, WalletError> {
+        self.create_mandate_authorized(
+            organization_id,
+            key_id,
+            scope,
+            cap_minor,
+            models,
+            required_policies,
+            not_before,
+            not_after,
+            secret,
+            None,
+        )
+        .await
+    }
+
+    /// A personal session may delegate only the keys its current role manages.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_mandate_as(
+        &self,
+        principal: &crate::Principal,
+        key_id: Uuid,
+        cap_minor: i64,
+        models: Option<Vec<String>>,
+        required_policies: Option<Vec<String>>,
+        not_before: Option<OffsetDateTime>,
+        not_after: OffsetDateTime,
+        secret: &crate::channels::SecretKey,
+    ) -> Result<Option<CreatedMandate>, WalletError> {
+        self.create_mandate_authorized(
+            principal.organization().id,
+            key_id,
+            principal.key_scope(),
+            cap_minor,
+            models,
+            required_policies,
+            not_before,
+            not_after,
+            secret,
+            Some(principal),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn create_mandate_authorized(
+        &self,
+        organization_id: Uuid,
+        key_id: Uuid,
+        scope: KeyScope,
+        cap_minor: i64,
+        models: Option<Vec<String>>,
+        required_policies: Option<Vec<String>>,
+        not_before: Option<OffsetDateTime>,
+        not_after: OffsetDateTime,
+        secret: &crate::channels::SecretKey,
+        principal: Option<&crate::Principal>,
+    ) -> Result<Option<CreatedMandate>, WalletError> {
         // One transaction for the whole mint: the seed is lazily written under
         // the key row's lock, so two racing mints cannot both see NULL and
         // produce mandates signed under different seeds — the second waits for
         // the first's commit and reads its seed.
         let mut tx = self.pool().begin().await?;
+        if let Some(principal) = principal {
+            crate::keys::require_key_management(&mut tx, principal, false).await?;
+        }
         // The key row, scoped like the constraint write: a member delegates only
         // the keys they created, so a key id outside the scope is not found.
         let key = match scope {
+            KeyScope::Key(_) => {
+                return Err(WalletError::Forbidden(
+                    "mandates require a personal session".into(),
+                ));
+            }
             KeyScope::Own(user_id) => {
                 sqlx::query(
                     "SELECT spend_limit_minor, model_allowlist, mandate_signing_seed, \
@@ -464,6 +529,11 @@ impl Db {
         scope: KeyScope,
     ) -> Result<Vec<Mandate>, WalletError> {
         let rows = match scope {
+            KeyScope::Key(_) => {
+                return Err(WalletError::Forbidden(
+                    "mandates require a personal session".into(),
+                ));
+            }
             KeyScope::Own(user_id) => {
                 sqlx::query(
                     "SELECT m.mandate_id, m.key_id, m.organization_id, m.cap_minor, \

@@ -217,17 +217,26 @@ fn task_from_row(row: &sqlx::postgres::PgRow) -> Result<Task, WalletError> {
     })
 }
 
-/// What the poll pass reads to reach the channel: the channel's base URL and
-/// the pool's lead credential join the task row, so the pass makes no second
-/// directory trip per task.
+/// What the poll pass reads: the original endpoint and credential snapshot.
 pub struct TaskPollTarget {
     /// The task row.
     pub task: Task,
-    /// The channel's upstream base.
+    pub endpoint: Option<TaskProviderEndpoint>,
+}
+
+/// Immutable connection captured with the selected credential at submission.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskProviderEndpoint {
     pub base_url: String,
-    /// The sealed upstream credential for the poll's `Authorization` — `None`
-    /// when the channel's pool is empty or every credential is cooled.
+    pub protocol: String,
+    pub destination_policy: crate::ProviderDestinationPolicy,
     pub api_key_sealed: Option<String>,
+}
+impl std::fmt::Debug for TaskProviderEndpoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TaskProviderEndpoint([redacted])")
+    }
 }
 
 /// The `task.succeeded` webhook event type.
@@ -244,11 +253,27 @@ impl Db {
     ///
     /// Storage failures surface as [`WalletError`].
     pub async fn insert_task(&self, task: &NewTask) -> Result<Task, WalletError> {
+        let endpoint: Option<serde_json::Value> = sqlx::query_scalar(
+            "SELECT jsonb_build_object('baseUrl',c.base_url,'protocol',c.protocol,'destinationPolicy',COALESCE(c.settings->'destinationPolicy','{\"network\":\"public\",\"allowedIps\":[]}'::jsonb),'apiKeySealed',(SELECT cr.api_key_sealed FROM oxsum.channel_credentials cr WHERE cr.channel_id=c.channel_id AND cr.status='active' ORDER BY cr.position LIMIT 1)) FROM oxsum.channels c WHERE channel_id=$1"
+        ).bind(task.channel_id).fetch_optional(self.pool()).await?;
+        let endpoint: Option<TaskProviderEndpoint> = endpoint
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| WalletError::Misconfigured("invalid stored provider endpoint".into()))?;
+        self.insert_task_with_endpoint(task, endpoint.as_ref())
+            .await
+    }
+
+    pub async fn insert_task_with_endpoint(
+        &self,
+        task: &NewTask,
+        endpoint: Option<&TaskProviderEndpoint>,
+    ) -> Result<Task, WalletError> {
         sqlx::query(
             "INSERT INTO oxsum.tasks \
              (task_id, organization_id, key_id, channel_id, external_task_id, \
-              kind, state, hold_key, freeze_minor, model) \
-             VALUES ($1, $2, $3, $4, $5, $6, 'submitted', $7, $8, $9)",
+              kind, state, hold_key, freeze_minor, model, provider_endpoint) \
+             VALUES ($1, $2, $3, $4, $5, $6, 'submitted', $7, $8, $9, $10)",
         )
         .bind(task.task_id)
         .bind(task.organization_id)
@@ -259,6 +284,12 @@ impl Db {
         .bind(&task.hold_key)
         .bind(task.freeze_minor)
         .bind(&task.model)
+        .bind(
+            endpoint
+                .map(serde_json::to_value)
+                .transpose()
+                .map_err(|_| WalletError::Misconfigured("invalid provider endpoint".into()))?,
+        )
         .execute(self.pool())
         .await?;
         self.task(task.organization_id, task.task_id)
@@ -289,9 +320,26 @@ impl Db {
         row.map(|row| task_from_row(&row)).transpose()
     }
 
-    /// The still-open tasks the poll pass asks upstream about, with the
-    /// channel reach they need — base URL and the pool's lead sealed
-    /// credential joined, so the pass makes no second trip per task.
+    /// Only the submitting consumption key can poll or cancel its task.
+    pub async fn task_for_key(
+        &self,
+        organization_id: Uuid,
+        key_id: Uuid,
+        task_id: Uuid,
+    ) -> Result<Option<Task>, WalletError> {
+        let row = sqlx::query(&format!(
+            "SELECT {TASK_COLS} {TASK_JOIN} \
+             WHERE t.task_id = $1 AND t.organization_id = $2 AND t.key_id = $3"
+        ))
+        .bind(task_id)
+        .bind(organization_id)
+        .bind(key_id)
+        .fetch_optional(self.pool())
+        .await?;
+        row.map(|row| task_from_row(&row)).transpose()
+    }
+
+    /// Open tasks with their original endpoint, policy and sealed credential.
     ///
     /// # Errors
     ///
@@ -301,10 +349,7 @@ impl Db {
         limit: i64,
     ) -> Result<Vec<TaskPollTarget>, WalletError> {
         let rows = sqlx::query(&format!(
-            "SELECT {TASK_COLS}, c.base_url, \
-                    (SELECT cr.api_key_sealed FROM oxsum.channel_credentials cr \
-                     WHERE cr.channel_id = t.channel_id AND cr.status = 'active' \
-                     ORDER BY cr.position LIMIT 1) AS api_key_sealed \
+            "SELECT {TASK_COLS}, t.provider_endpoint \
              {TASK_JOIN} \
              WHERE t.state IN ('submitted', 'running') \
              ORDER BY t.submitted_at LIMIT $1"
@@ -316,50 +361,32 @@ impl Db {
         for row in &rows {
             targets.push(TaskPollTarget {
                 task: task_from_row(row)?,
-                base_url: row.try_get("base_url")?,
-                api_key_sealed: row.try_get("api_key_sealed")?,
+                endpoint: row
+                    .try_get::<Option<serde_json::Value>, _>("provider_endpoint")?
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|_| {
+                        WalletError::Misconfigured("invalid stored task endpoint".into())
+                    })?,
             });
         }
         Ok(targets)
     }
 
-    /// The channel's upstream base URL — read at use time so a poll or cancel
-    /// never carries a stale directory entry the row was written with.
-    ///
-    /// # Errors
-    ///
-    /// Storage failures surface as [`WalletError`].
-    pub async fn channel_base(&self, channel_id: Uuid) -> Result<String, WalletError> {
-        sqlx::query_scalar("SELECT base_url FROM oxsum.channels WHERE channel_id = $1")
-            .bind(channel_id)
-            .fetch_optional(self.pool())
-            .await?
-            .ok_or_else(|| WalletError::InvalidInput("no such channel".into()))
-    }
-
-    /// One healthy credential for the task's channel, opened under the
-    /// deployment secret — the poll and the cancel share the pick: the pool's
-    /// first active credential in position order.
-    ///
-    /// # Errors
-    ///
-    /// [`WalletError::Misconfigured`] when the sealed credential cannot open;
-    /// storage failures surface as [`WalletError`].
-    pub async fn task_channel_key(
+    pub async fn task_provider_endpoint(
         &self,
-        channel_id: Uuid,
-        secret: &crate::channels::SecretKey,
-    ) -> Result<Option<String>, WalletError> {
-        let sealed: Option<String> = sqlx::query_scalar(
-            "SELECT api_key_sealed FROM oxsum.channel_credentials \
-             WHERE channel_id = $1 AND status = 'active' \
-             ORDER BY position LIMIT 1",
-        )
-        .bind(channel_id)
-        .fetch_optional(self.pool())
-        .await?
-        .flatten();
-        sealed.map(|sealed| secret.open(&sealed)).transpose()
+        task_id: Uuid,
+    ) -> Result<Option<TaskProviderEndpoint>, WalletError> {
+        let stored: Option<serde_json::Value> =
+            sqlx::query_scalar("SELECT provider_endpoint FROM oxsum.tasks WHERE task_id=$1")
+                .bind(task_id)
+                .fetch_optional(self.pool())
+                .await?
+                .flatten();
+        stored
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| WalletError::Misconfigured("invalid stored task endpoint".into()))
     }
 
     /// The tenant a hold's watch row names — the task-submit failure path's

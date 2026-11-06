@@ -334,3 +334,47 @@ async fn the_suspension_webhooks_like_the_operators() {
     assert_eq!(payload["type"], "org.suspended");
     assert_eq!(payload["data"]["reason"], "dunning");
 }
+
+#[tokio::test]
+async fn manual_and_dunning_reasons_lift_independently() {
+    let f = fixture(&db_or_skip!(), "independent").await;
+    f.db.set_dunning_grace(f.org.id, Some(0)).await.unwrap();
+    owing_statement(&f, 3 * ONE, 30).await;
+    let sweep_day = today() + Duration::days(1);
+    f.db.set_suspended(f.org.id, true).await.unwrap();
+    assert_eq!(f.db.sweep_dunning(sweep_day).await.unwrap(), (1, 0));
+    f.db.set_suspended(f.org.id, false).await.unwrap();
+    assert!(
+        f.db.organization_by_id(f.org.id)
+            .await
+            .unwrap()
+            .suspended_at
+            .is_some()
+    );
+    assert!(
+        f.wallet
+            .hold("still-overdue", "", ONE, sweep_day)
+            .await
+            .is_err()
+    );
+    f.db.set_suspended(f.org.id, true).await.unwrap();
+    f.wallet.top_up("pay", 3 * ONE, today()).await.unwrap();
+    f.db.reconcile_statements(f.org.id, &f.wallet, sweep_day)
+        .await
+        .unwrap();
+    assert_eq!(f.db.sweep_dunning(sweep_day).await.unwrap(), (0, 1));
+    let org = f.db.organization_by_id(f.org.id).await.unwrap();
+    assert!(org.dunning_suspended_at.is_none());
+    assert!(org.suspended_at.is_some());
+    assert!(
+        f.wallet
+            .hold("still-manual", "", ONE, sweep_day)
+            .await
+            .is_err()
+    );
+    f.db.set_suspended(f.org.id, false).await.unwrap();
+    f.wallet
+        .hold("both-clear", "", ONE, sweep_day)
+        .await
+        .unwrap();
+}

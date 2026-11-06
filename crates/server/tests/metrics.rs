@@ -36,6 +36,7 @@ async fn online_app(url: &str) -> (Router, PgPool) {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let secret = oxsum_core::SecretKey::from_bytes([7; 32]);
     (
         support::app(
@@ -79,7 +80,7 @@ async fn call(
         request = request.header("content-type", "application/json");
     }
     if let Some(key) = key {
-        request = request.header("authorization", format!("Bearer {key}"));
+        request = support::credential(request, key);
     }
     let request = request
         .body(body.map_or_else(Body::empty, |value| Body::from(value.to_string())))
@@ -106,7 +107,7 @@ async fn call(
 async fn scrape(app: &Router, token: Option<&str>) -> (StatusCode, String) {
     let mut request = Request::builder().method("GET").uri("/metrics");
     if let Some(token) = token {
-        request = request.header("authorization", format!("Bearer {token}"));
+        request = support::credential(request, token);
     }
     let response = app
         .clone()
@@ -142,7 +143,7 @@ fn value(line: &str) -> f64 {
 }
 
 /// Registers an organization and answers its first key's secret.
-async fn register(app: &Router) -> String {
+async fn register(app: &Router) -> (String, String) {
     let email = format!(
         "metrics_{}@example.com",
         &uuid::Uuid::new_v4().simple().to_string()[..8]
@@ -156,10 +157,13 @@ async fn register(app: &Router) -> String {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "registration failed: {body}");
-    body["data"]["apiKey"]["secret"]
-        .as_str()
-        .expect("registration returns a key")
-        .to_owned()
+    (
+        body["data"]["apiKey"]["secret"]
+            .as_str()
+            .expect("registration returns a key")
+            .to_owned(),
+        support::login(app, &email, "correct horse battery").await,
+    )
 }
 
 /// Funds an organization through the manual rail, so its holds have something to freeze.
@@ -206,7 +210,7 @@ async fn a_scrape_counts_requests_and_reports_the_pool() {
         1,
     )
     .await;
-    let key = register(&app).await;
+    let (key, _session) = register(&app).await;
     top_up(&app, &key, 100).await;
 
     // The health probe and a real gateway turn count under their route patterns.
@@ -262,7 +266,7 @@ async fn rate_limit_rejections_are_counted_by_surface() {
         1,
     )
     .await;
-    let key = register(&app).await;
+    let (key, session) = register(&app).await;
     top_up(&app, &key, 100).await;
 
     // A key capped at one request a minute: the second gateway turn is refused.
@@ -271,7 +275,7 @@ async fn rate_limit_rejections_are_counted_by_surface() {
         "POST",
         "/api/v1/org/keys",
         Some(json!({"name": "metered", "requestsPerMinute": 1})),
-        Some(&key),
+        Some(&session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{created}");

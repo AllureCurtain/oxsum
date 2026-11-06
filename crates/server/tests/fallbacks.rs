@@ -137,6 +137,7 @@ struct World {
     tenants: Tenants,
     tenant_id: String,
     key: String,
+    session: String,
     /// The key's id, for minting a mandate on it.
     key_id: String,
     script: Script,
@@ -243,6 +244,7 @@ async fn world_for(url: &str, top_up: i64) -> World {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
 
     let suffix = uuid::Uuid::new_v4().simple().to_string()[..8].to_owned();
     let channel = format!("mock-{suffix}");
@@ -251,9 +253,19 @@ async fn world_for(url: &str, top_up: i64) -> World {
     let base_url = start_upstream(script.clone()).await;
     let book = oxsum_core::PriceBook::from_json(&channel, &price_list(&suffix))
         .expect("the test's own prices parse");
-    db.set_channel(&channel, &base_url, "upstream-secret", "openai", &secret)
-        .await
-        .expect("the channel is written");
+    db.set_channel_pool_policy(
+        &channel,
+        &base_url,
+        Some(&["upstream-secret".to_owned()]),
+        "openai",
+        &secret,
+        Some(&oxsum_core::ProviderDestinationPolicy {
+            network: oxsum_core::ProviderNetwork::Internal,
+            allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+        }),
+    )
+    .await
+    .expect("the channel is written");
     for (model, price) in book.models() {
         db.append_price(&channel, model, price.clone(), 100)
             .await
@@ -269,6 +281,12 @@ async fn world_for(url: &str, top_up: i64) -> World {
     let tenants = Tenants::new(pool.clone());
 
     let (registration, key) = register(&app).await;
+    let session = support::login(
+        &app,
+        registration["user"]["email"].as_str().unwrap(),
+        "correct horse battery",
+    )
+    .await;
     let tenant_id = registration["organization"]["tenantId"]
         .as_str()
         .expect("registration names a tenant")
@@ -293,6 +311,7 @@ async fn world_for(url: &str, top_up: i64) -> World {
         tenants,
         tenant_id,
         key,
+        session,
         key_id,
         script,
         channel,
@@ -349,7 +368,7 @@ async fn call(
         request = request.header("content-type", "application/json");
     }
     if let Some(key) = key {
-        request = request.header("authorization", format!("Bearer {key}"));
+        request = support::credential(request, key);
     }
     if let Some(mandate) = mandate {
         request = request.header("x-oxsum-mandate", mandate);
@@ -513,7 +532,7 @@ async fn a_mandate_denied_fallback_is_skipped_not_served() {
                 time::OffsetDateTime::now_utc() + time::Duration::hours(1)
             ),
         })),
-        Some(&world.key),
+        Some(&world.session),
         None,
     )
     .await;
@@ -619,4 +638,79 @@ async fn a_clean_serve_records_the_served_model() {
 fn rfc3339(t: time::OffsetDateTime) -> String {
     t.format(&time::format_description::well_known::Rfc3339)
         .expect("the timestamp formats")
+}
+
+#[tokio::test]
+async fn a_fallback_alias_cannot_widen_the_keys_model_grant() {
+    let world = world!(10_000_000);
+    let requested = world.model("req");
+    let target = world.model("fall-a");
+    let alias = world.model("fallback-alias");
+    let db = Db::from_pool(world.pool.clone());
+    db.create_alias(&world.channel, &alias, &target)
+        .await
+        .unwrap();
+    world.answers(
+        "req",
+        Answer::Refuse {
+            status: 502,
+            body: json!({"error":{"message":"unavailable"}}),
+        },
+    );
+    world.answers(
+        "fall-a",
+        Answer::Completion {
+            usage: Some((5, 3)),
+        },
+    );
+    assert_eq!(
+        set_fallbacks(&world, &requested, &[&alias]).await,
+        StatusCode::OK
+    );
+    let (org, acting) = db.authenticate(&world.key).await.unwrap().unwrap();
+    db.update_key_constraints(
+        org.id,
+        acting.key_id,
+        oxsum_core::KeyScope::Organization,
+        oxsum_core::KeyConstraints {
+            model_allowlist: Some(vec![requested.clone(), alias.clone()]),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let response = chat(&world.app, &world.key, None, simple(&requested)).await;
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let _ = response.into_body().collect().await.unwrap();
+    assert_eq!(world.script.seen(), vec![requested.clone()]);
+    // The first upstream 502 cooled this fixture's shared credential. Advance
+    // that cooldown before the independent allowed-path admission below.
+    sqlx::query("UPDATE oxsum.channel_credentials SET cooldown_until=now()-interval '1 second' WHERE channel_id=(SELECT channel_id FROM oxsum.channels WHERE name=$1)")
+        .bind(&world.channel)
+        .execute(&world.pool)
+        .await
+        .unwrap();
+    db.update_key_constraints(
+        org.id,
+        acting.key_id,
+        oxsum_core::KeyScope::Organization,
+        oxsum_core::KeyConstraints {
+            model_allowlist: Some(vec![requested.clone(), alias.clone(), target.clone()]),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let response = chat(&world.app, &world.key, None, simple(&requested)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let id = request_id(&response);
+    let _ = response.into_body().collect().await.unwrap();
+    assert_eq!(
+        world.script.seen(),
+        vec![requested.clone(), requested.clone(), target.clone()]
+    );
+    let record = world.settlement_within(&id).await;
+    assert_eq!(record["requestedModel"], requested);
+    assert_eq!(record["servedModel"], alias);
+    assert_eq!(record["upstreamModel"], target);
 }

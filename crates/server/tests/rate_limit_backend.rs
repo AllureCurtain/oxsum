@@ -82,6 +82,7 @@ struct World {
     app: Router,
     pool: PgPool,
     key: String,
+    session: String,
     key_id: String,
     model: String,
     seen: Arc<Mutex<Vec<Value>>>,
@@ -95,15 +96,26 @@ async fn world(database_url: &str) -> World {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
 
     let suffix = Uuid::new_v4().simple().to_string()[..8].to_owned();
     let channel = format!("rl-{suffix}");
     let model = format!("ok-{suffix}");
     let secret = SecretKey::from_bytes([7; 32]);
     let (base_url, seen) = start_upstream().await;
-    db.set_channel(&channel, &base_url, "upstream-secret", "openai", &secret)
-        .await
-        .expect("the channel is written");
+    db.set_channel_pool_policy(
+        &channel,
+        &base_url,
+        Some(&["upstream-secret".to_owned()]),
+        "openai",
+        &secret,
+        Some(&oxsum_core::ProviderDestinationPolicy {
+            network: oxsum_core::ProviderNetwork::Internal,
+            allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+        }),
+    )
+    .await
+    .expect("the channel is written");
     db.append_price(
         &channel,
         &model,
@@ -147,6 +159,7 @@ async fn world(database_url: &str) -> World {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "registration failed: {body}");
+    let session = support::login(&app, &email, "correct horse battery").await;
     let key = body["data"]["apiKey"]["secret"]
         .as_str()
         .expect("registration returns a key")
@@ -169,6 +182,7 @@ async fn world(database_url: &str) -> World {
         app,
         pool,
         key,
+        session,
         key_id,
         model,
         seen,
@@ -188,7 +202,7 @@ async fn call(
         request = request.header("content-type", "application/json");
     }
     if let Some(key) = key {
-        request = request.header("authorization", format!("Bearer {key}"));
+        request = support::credential(request, key);
     }
     let response = app
         .clone()
@@ -244,7 +258,7 @@ async fn the_postgres_backend_refuses_the_second_request_in_the_minute() {
         "PATCH",
         &format!("/api/v1/org/keys/{}", world.key_id),
         Some(json!({"requestsPerMinute": 1})),
-        Some(&world.key),
+        Some(&world.session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");

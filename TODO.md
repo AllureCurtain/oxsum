@@ -13,18 +13,30 @@ The accepted contract and evidence live in [docs/roadmap/self-hosted-v1](docs/ro
 - [x] [#624](https://github.com/AllureCurtain/oxsum/issues/624) — Prevent customer self-credit and audit manual receipts (T01.a): integrated in PR #626.
 - [x] [#625](https://github.com/AllureCurtain/oxsum/issues/625) — Remove customer raw hold and settlement authority (T01.b): integrated in PR #628.
 - [ ] [#593](https://github.com/AllureCurtain/oxsum/issues/593) — Add business and customer ownership without moving ledgers (T02): PR #627; source review complete, merging current main preserves both prerequisite migrations; integration CI pending.
-- [ ] [#594](https://github.com/AllureCurtain/oxsum/issues/594) — Business staff, setup and session contexts (T03): locally validated in PRs #631/#632; integration follows T02.
-- [ ] [#595](https://github.com/AllureCurtain/oxsum/issues/595) — Customer profile and team lifecycle (T04): pending.
-- [ ] [#596](https://github.com/AllureCurtain/oxsum/issues/596) — Scoped consumption and integration credentials (T05): pending.
-- [ ] [#597](https://github.com/AllureCurtain/oxsum/issues/597) — Business-owned provider configuration (T06): pending.
-- [ ] [#598](https://github.com/AllureCurtain/oxsum/issues/598) — Model catalog and private serving context (T07): pending.
+- [ ] [#594](https://github.com/AllureCurtain/oxsum/issues/594) — Business staff, setup and session contexts (T03): in progress on combined T01/T02 prerequisites; integration pending their reviews.
+- [ ] [#629](https://github.com/AllureCurtain/oxsum/issues/629) — Initialize the business through expiring owner consent (T03.a): locally validated; PR review pending.
+- [ ] [#630](https://github.com/AllureCurtain/oxsum/issues/630) — Business staff capabilities and session contexts (T03.b): PR #632; locally validated, CI/review pending.
+- [ ] [#595](https://github.com/AllureCurtain/oxsum/issues/595) — Customer profile and team lifecycle (T04): in progress; profile/lifecycle #633 and invitation consent #634 both required; software validated, integration pending.
+- [ ] [#633](https://github.com/AllureCurtain/oxsum/issues/633) — Customer profiles and independent admission restrictions (T04.a): in review, PR #635 at `f92bd63`.
+- [ ] [#634](https://github.com/AllureCurtain/oxsum/issues/634) — Customer and team invitation consent (T04.b): in review, PR #636 at `f82d89e`.
+- [ ] [#596](https://github.com/AllureCurtain/oxsum/issues/596) — Scoped consumption and integration credentials (T05): in progress; #637 and #638 both required.
+- [ ] [#637](https://github.com/AllureCurtain/oxsum/issues/637) — Consumption key and evidence scope (T05.a): PR #639; locally validated, CI/review pending.
+- [ ] [#638](https://github.com/AllureCurtain/oxsum/issues/638) — Scoped business integration/metering credentials (T05.b): PR #640; locally validated, CI/independent review pending.
+- [ ] [#597](https://github.com/AllureCurtain/oxsum/issues/597) — Business-owned provider configuration (T06): in progress; #641 and #642 both required.
+- [ ] [#641](https://github.com/AllureCurtain/oxsum/issues/641) — Business provider authority and atomic configuration (T06.a): PR #643; locally validated, review/integration pending.
+- [ ] [#642](https://github.com/AllureCurtain/oxsum/issues/642) — Provider destination policy and explicit probes (T06.b): PR #646; source `9548212` locally validated: 1,541 runtime, 22 targeted, 26 shared-process, 29 doctest and 29 engine checks pass; normal review/integration pending.
+- [ ] [#598](https://github.com/AllureCurtain/oxsum/issues/598) — Model catalog and private serving context (T07): in progress; #644 and #645 both required.
+- [ ] [#644](https://github.com/AllureCurtain/oxsum/issues/644) — Customer catalog and serving permissions (T07.a): PR #647; locally validated at `0a2b087` with 1,547 workspace, 26 shared-process, 29 doctest and Clippy/frontend checks passing; independent review and prerequisite integration pending.
+- [ ] [#645](https://github.com/AllureCurtain/oxsum/issues/645) — Complete response-cache context (T07.b): pending T07.a.
 - [ ] [#599](https://github.com/AllureCurtain/oxsum/issues/599) — Versioned customer sale books (T08): pending.
 - [ ] [#600](https://github.com/AllureCurtain/oxsum/issues/600) — Bind sale terms into evidence (T09): pending.
 - [ ] [#601](https://github.com/AllureCurtain/oxsum/issues/601) — Durable request operation (T10): pending.
 - [ ] [#602](https://github.com/AllureCurtain/oxsum/issues/602) — Transaction-aware ledger effects and zero-cost receipts (T11): pending.
 - [ ] [#603](https://github.com/AllureCurtain/oxsum/issues/603) — Coordinated customer admission and settlement (T12): pending.
 - [ ] [#604](https://github.com/AllureCurtain/oxsum/issues/604) — Cover every serving and metering path (T13): pending.
-- [ ] [#605](https://github.com/AllureCurtain/oxsum/issues/605) — Merchant settings and scoped event intake (T14): pending.
+- [ ] [#605](https://github.com/AllureCurtain/oxsum/issues/605) — Merchant settings and scoped event intake (T14): in progress; configuration #648 and scoped intake #649 both required.
+- [ ] [#648](https://github.com/AllureCurtain/oxsum/issues/648) — Versioned encrypted merchant configuration (T14.a): locally validated; focused PR review pending.
+- [ ] [#649](https://github.com/AllureCurtain/oxsum/issues/649) — Scoped merchant events and payment expectations (T14.b): pending configuration foundation.
 - [ ] [#606](https://github.com/AllureCurtain/oxsum/issues/606) — Payment orders and durable fulfillment (T15): pending.
 - [ ] [#607](https://github.com/AllureCurtain/oxsum/issues/607) — Customer checkout and purchased funding (T16): pending.
 - [ ] [#608](https://github.com/AllureCurtain/oxsum/issues/608) — Corrections, partial refunds and disputes (T17): pending.

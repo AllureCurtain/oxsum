@@ -31,6 +31,7 @@ async fn online_app(url: &str) -> (Router, Db, broadcast::Sender<BillingEvent>) 
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let config = Config::new(Signup::Open, None);
     let (app, billing, _metrics) = oxsum_server::app_with_billing(db.clone(), config);
     (app, db, billing)
@@ -232,6 +233,7 @@ async fn billing_socket_sends_a_snapshot_then_live_events() {
     // A live event for this organization is forwarded.
     billing
         .send(BillingEvent::TurnProgress {
+            key_id: uuid::Uuid::new_v4(),
             tenant_id: tenant_id.clone(),
             request_id: "snapshot-1".to_owned(),
             output_chars: 2048,
@@ -246,6 +248,7 @@ async fn billing_socket_sends_a_snapshot_then_live_events() {
     // Another organization's event never reaches this socket.
     billing
         .send(BillingEvent::TurnStarted {
+            key_id: uuid::Uuid::new_v4(),
             tenant_id: "someone-else".to_owned(),
             request_id: "other-1".to_owned(),
             model: "mock-model".to_owned(),

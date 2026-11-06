@@ -59,6 +59,7 @@ async fn admin_app(database_url: &str) -> (Router, PgPool) {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let config = Config::new(Signup::Open, None)
         .with_secret(secret())
         .with_admin_token(TOKEN);
@@ -82,7 +83,7 @@ async fn call_with(
 ) -> (StatusCode, Value) {
     let mut request = Request::builder().method(method).uri(path);
     if let Some(token) = token {
-        request = request.header("authorization", format!("Bearer {token}"));
+        request = support::credential(request, token);
     }
     let request = request
         .header("content-type", "application/json")
@@ -114,9 +115,8 @@ async fn call(app: &Router, method: &str, path: &str, body: Option<Value>) -> (S
     call_with(app, method, path, body, Some(TOKEN)).await
 }
 
-/// Registers an account; answers the organization id and the API key the signup
-/// minted.
-async fn register(app: &Router, name: &str) -> (String, String) {
+/// Registers an account; returns its ID and a real owner session for financial reads.
+async fn register_session(app: &Router, name: &str) -> (String, String) {
     let (status, body) = call_with(
         app,
         "POST",
@@ -134,10 +134,12 @@ async fn register(app: &Router, name: &str) -> (String, String) {
             .as_str()
             .expect("an organization id")
             .to_owned(),
-        body["data"]["apiKey"]["secret"]
-            .as_str()
-            .expect("the minted key")
-            .to_owned(),
+        support::login(
+            app,
+            body["data"]["user"]["email"].as_str().unwrap(),
+            "correct horse battery",
+        )
+        .await,
     )
 }
 
@@ -225,7 +227,7 @@ async fn grant_credit(app: &Router, org: &str, limit: i64, key_suffix: &str) {
 #[tokio::test]
 async fn a_statement_generates_finalizes_and_is_paid() {
     let (app, pool) = app_or_skip!();
-    let (org, key) = register(&app, "stmt").await;
+    let (org, key) = register_session(&app, "stmt").await;
     let tenant = tenant_of(&pool, &org).await;
     let db = Db::from_pool(pool.clone());
 
@@ -470,7 +472,7 @@ async fn a_statement_generates_finalizes_and_is_paid() {
 #[tokio::test]
 async fn a_self_serve_topup_pays_the_oldest_statement_first() {
     let (app, pool) = app_or_skip!();
-    let (org, key) = register(&app, "stmtfifo").await;
+    let (org, key) = register_session(&app, "stmtfifo").await;
     let tenant = tenant_of(&pool, &org).await;
     let db = Db::from_pool(pool.clone());
 
@@ -560,8 +562,8 @@ async fn a_self_serve_topup_pays_the_oldest_statement_first() {
 #[tokio::test]
 async fn statements_are_scoped_to_their_organization() {
     let (app, pool) = app_or_skip!();
-    let (org, _key) = register(&app, "stmts").await;
-    let (_other, other_key) = register(&app, "stmts_other").await;
+    let (org, _key) = register_session(&app, "stmts").await;
+    let (_other, other_key) = register_session(&app, "stmts_other").await;
     let tenant = tenant_of(&pool, &org).await;
     let db = Db::from_pool(pool.clone());
 
@@ -645,7 +647,7 @@ async fn call_bytes(
 ) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
     let mut request = Request::builder().method("GET").uri(path);
     if let Some(token) = token {
-        request = request.header("authorization", format!("Bearer {token}"));
+        request = support::credential(request, token);
     }
     let response = app
         .clone()
@@ -667,7 +669,7 @@ async fn call_bytes(
 /// Generates, finalizes and returns a statement id for a fresh organization —
 /// the precondition every export test shares. Two billed September turns.
 async fn a_finalized_statement(app: &Router, pool: &PgPool, name: &str) -> (String, String) {
-    let (org, key) = register(app, name).await;
+    let (org, key) = register_session(app, name).await;
     let tenant = tenant_of(pool, &org).await;
     let db = Db::from_pool(pool.clone());
     grant_credit(app, &org, 20_000_000, &org).await;
@@ -766,7 +768,7 @@ async fn a_finalized_statement_exports_as_a_pdf() {
 #[tokio::test]
 async fn a_draft_statement_does_not_export() {
     let (app, pool) = app_or_skip!();
-    let (org, key) = register(&app, "pdf-draft").await;
+    let (org, key) = register_session(&app, "pdf-draft").await;
     let tenant = tenant_of(&pool, &org).await;
     let db = Db::from_pool(pool.clone());
     grant_credit(&app, &org, 20_000_000, &org).await;
@@ -819,7 +821,7 @@ async fn the_export_reads_only_the_callers_own_statements() {
 
     // A second organization registered after the first's statement exists:
     // its key cannot name another org's document.
-    let (_other_org, other_key) = register(&app, "pdf-other").await;
+    let (_other_org, other_key) = register_session(&app, "pdf-other").await;
     let (status, _, _) = call_bytes(
         &app,
         &format!("/api/v1/statements/{statement_id}/export.pdf"),
@@ -996,6 +998,7 @@ async fn a_signed_anchor_verifies_the_head_that_follows_it() {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool2.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let config = Config::new(Signup::Open, None)
         .with_secret(secret())
         .with_admin_token(TOKEN)
@@ -1096,6 +1099,7 @@ async fn the_proof_bundle_verifies_off_its_own_answer() {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let config = Config::new(Signup::Open, None)
         .with_secret(secret())
         .with_admin_token(TOKEN)
@@ -1185,7 +1189,7 @@ async fn the_proof_bundle_reads_only_the_callers_own_statements() {
     let (app, pool) = app_or_skip!();
     let (statement_id, _key) = a_finalized_statement(&app, &pool, "proof-scope").await;
 
-    let (_other, other_key) = register(&app, "proof-other").await;
+    let (_other, other_key) = register_session(&app, "proof-other").await;
     let (status, _) = call_with(
         &app,
         "GET",
@@ -1206,7 +1210,7 @@ async fn the_proof_bundle_reads_only_the_callers_own_statements() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     // A draft never proofs.
-    let (org, key) = register(&app, "proof-draft").await;
+    let (org, key) = register_session(&app, "proof-draft").await;
     let tenant = tenant_of(&pool, &org).await;
     let db = Db::from_pool(pool.clone());
     grant_credit(&app, &org, 20_000_000, &org).await;
@@ -1261,7 +1265,7 @@ async fn admin_organization(app: &Router, org: &str) -> Value {
 #[tokio::test]
 async fn the_statement_lifecycle_suspends_and_reinstates() {
     let (app, pool) = app_or_skip!();
-    let (org, key) = register(&app, "dunning").await;
+    let (org, key) = register_session(&app, "dunning").await;
     let tenant = tenant_of(&pool, &org).await;
     let db = Db::from_pool(pool.clone());
 
@@ -1378,4 +1382,66 @@ async fn the_statement_lifecycle_suspends_and_reinstates() {
         organization["suspendedAt"].is_null(),
         "the suspension was lifted: {organization}"
     );
+}
+
+#[tokio::test]
+async fn a_member_cannot_read_account_document_markers_through_generic_evidence() {
+    let (app, pool) = app_or_skip!();
+    let (statement_id, owner) = a_finalized_statement(&app, &pool, "private-anchor").await;
+    let db = Db::from_pool(pool.clone());
+    let organization = db
+        .authenticate_session(&owner)
+        .await
+        .unwrap()
+        .unwrap()
+        .organization;
+    let (_, detail) = call_with(
+        &app,
+        "GET",
+        &format!("/api/v1/statements/{statement_id}"),
+        None,
+        Some(&owner),
+    )
+    .await;
+    let anchor = detail["data"]["anchor"]["entryId"].as_str().unwrap();
+    let (_, member) = register_session(&app, "member-anchor").await;
+    let identity = db.authenticate_session(&member).await.unwrap().unwrap();
+    sqlx::query(
+        "INSERT INTO oxsum.memberships (organization_id,user_id,role) VALUES ($1,$2,'member')",
+    )
+    .bind(organization.id)
+    .bind(identity.user.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    db.switch_organization(identity.session.id, identity.user.id, organization.id)
+        .await
+        .unwrap();
+    let (status, _) = call_with(
+        &app,
+        "GET",
+        &format!("/api/v1/entries/{anchor}/proof"),
+        None,
+        Some(&member),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = call_with(
+        &app,
+        "GET",
+        &format!("/api/v1/entries/{anchor}/proof"),
+        None,
+        Some(&owner),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    for path in [
+        "/api/v1/entries",
+        "/api/v1/bills",
+        "/dashboard/bills/export.json",
+    ] {
+        let (status, body) = call_with(&app, "GET", path, None, Some(&member)).await;
+        assert_eq!(status, StatusCode::OK, "{path}: {body}");
+        assert!(!body.to_string().contains(anchor), "{path}: {body}");
+    }
 }

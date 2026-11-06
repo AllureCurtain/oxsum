@@ -69,11 +69,14 @@ async fn login_mints_a_session_that_authenticates() {
     let db = db(&url).await;
     let registration = register(&db, "login").await;
 
-    let CreatedSession { principal, token } = db
+    let CreatedSession {
+        principal, token, ..
+    } = db
         .login(&registration.user.email, PASSWORD)
         .await
         .unwrap()
         .into_session();
+    let principal = principal.unwrap();
     assert!(token.starts_with("oxsess-"), "token is {token}");
     assert_eq!(principal.user.id, registration.user.id);
     assert_eq!(principal.organization.id, registration.organization.id);
@@ -96,7 +99,7 @@ async fn login_mints_a_session_that_authenticates() {
     assert_eq!(resolved.organization.id, registration.organization.id);
     assert_eq!(resolved.role, oxsum_core::Role::Owner);
 
-    // A key principal keeps acting as the whole organization: no user, full scope.
+    // A consumption key represents only itself and carries no personal authority.
     let key_principal = Principal::Key(KeyPrincipal {
         organization: registration.organization.clone(),
         key: ActingKey {
@@ -109,7 +112,7 @@ async fn login_mints_a_session_that_authenticates() {
         },
     });
     assert_eq!(key_principal.user_id(), None);
-    assert!(matches!(key_principal.key_scope(), KeyScope::Organization));
+    assert!(matches!(key_principal.key_scope(), KeyScope::Key(_)));
 }
 
 #[tokio::test]
@@ -161,7 +164,7 @@ async fn the_plaintext_token_is_nowhere_in_the_database() {
                 last_used_at::text AS g, revoked_at::text AS h \
          FROM oxsum.sessions WHERE session_id = $1",
     )
-    .bind(created.principal.session.id)
+    .bind(created.session.id)
     .fetch_one(db.pool())
     .await
     .unwrap();
@@ -177,7 +180,7 @@ async fn the_plaintext_token_is_nowhere_in_the_database() {
     // token, and the token cannot be read back out of it.
     let hash: Vec<u8> =
         sqlx::query_scalar("SELECT token_hash FROM oxsum.sessions WHERE session_id = $1")
-            .bind(created.principal.session.id)
+            .bind(created.session.id)
             .fetch_one(db.pool())
             .await
             .unwrap();
@@ -189,7 +192,7 @@ async fn the_plaintext_token_is_nowhere_in_the_database() {
     let dumped: String = sqlx::query_scalar(
         "SELECT encode(token_hash, 'hex') FROM oxsum.sessions WHERE session_id = $1",
     )
-    .bind(created.principal.session.id)
+    .bind(created.session.id)
     .fetch_one(db.pool())
     .await
     .unwrap();
@@ -225,14 +228,14 @@ async fn logout_revokes_and_is_idempotent() {
     // Logging out twice is not an error, and does not move the timestamp.
     let first: Option<time::OffsetDateTime> =
         sqlx::query_scalar("SELECT revoked_at FROM oxsum.sessions WHERE session_id = $1")
-            .bind(created.principal.session.id)
+            .bind(created.session.id)
             .fetch_one(db.pool())
             .await
             .unwrap();
     db.logout(&created.token).await.unwrap();
     let second: Option<time::OffsetDateTime> =
         sqlx::query_scalar("SELECT revoked_at FROM oxsum.sessions WHERE session_id = $1")
-            .bind(created.principal.session.id)
+            .bind(created.session.id)
             .fetch_one(db.pool())
             .await
             .unwrap();
@@ -266,7 +269,7 @@ async fn an_expired_session_stops_authenticating() {
         "UPDATE oxsum.sessions SET expires_at = now() - interval '1 minute' \
          WHERE session_id = $1",
     )
-    .bind(created.principal.session.id)
+    .bind(created.session.id)
     .execute(db.pool())
     .await
     .unwrap();
@@ -337,8 +340,14 @@ async fn login_acts_as_the_oldest_membership() {
         .await
         .unwrap()
         .into_session();
-    assert_eq!(created.principal.organization.id, first.organization.id);
-    assert_eq!(created.principal.role, oxsum_core::Role::Member);
+    assert_eq!(
+        created.principal.as_ref().unwrap().organization.id,
+        first.organization.id
+    );
+    assert_eq!(
+        created.principal.as_ref().unwrap().role,
+        oxsum_core::Role::Member
+    );
 }
 
 #[tokio::test]
@@ -364,7 +373,8 @@ async fn role_scopes_constrain_key_listing_and_revocation() {
             .await
             .unwrap()
             .into_session()
-            .principal,
+            .principal
+            .unwrap(),
     );
 
     let owner_key = db
@@ -401,7 +411,8 @@ async fn role_scopes_constrain_key_listing_and_revocation() {
             .await
             .unwrap()
             .into_session()
-            .principal,
+            .principal
+            .unwrap(),
     );
     assert!(matches!(owner_principal.key_scope(), KeyScope::All));
     let all = db

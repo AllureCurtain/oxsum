@@ -129,8 +129,7 @@ pub(crate) async fn create_key(
             },
         )
         .map_err(ApiError::from)?;
-    // A key minted through a session records who minted it, for product.md's per-member
-    // rules; a key minted with an API key records no creator, because no person acts there.
+    // A personal session mints the key and records its creator for member scope.
     let created = state
         .db
         .create_key_as(&principal, name, expires_at, constraints)
@@ -155,11 +154,7 @@ pub(crate) async fn revoke_key(
 ) -> ApiResult<ApiKey> {
     // A key id of another organization — or, for a member, a key they did not create — is
     // not found, not forbidden: an id should not be probeable for existence.
-    match state
-        .db
-        .revoke_key(principal.organization().id, key_id, principal.key_scope())
-        .await?
-    {
+    match state.db.revoke_key_as(&principal, key_id).await? {
         Some(key) => ok(key),
         None => Err(ApiError::not_found()),
     }
@@ -206,10 +201,9 @@ pub(crate) async fn create_mandate(
         .ok_or_else(|| ApiError::ServiceUnavailable("mandate signing is not configured".into()))?;
     match state
         .db
-        .create_mandate(
-            principal.organization().id,
+        .create_mandate_as(
+            &principal,
             key_id,
-            principal.key_scope(),
             r.cap_minor,
             r.models,
             r.required_policies,

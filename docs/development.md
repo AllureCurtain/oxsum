@@ -303,7 +303,7 @@ Copy `.env.example` to `.env` and the server and the tests pick it up automatica
 | Variable | Notes |
 | --- | --- |
 | `DATABASE_URL` | Each organization gets a `ledger_<tenant_id>` schema in this database, plus the shared `oxsum` schema for users, organizations and keys. Tests read it too; without it, oxsum's database tests skip automatically |
-| `OXSUM_SIGNUP` | Optional; `invite` (default) or `open`. `invite` refuses `POST /api/v1/auth/register` with 403 — an invitation link (`POST /api/v1/org/invitations` → `/app/invite?token=…`) is the way in — so a public instance cannot be signed up by whoever arrives first; `open` is what a demo or a private instance wants |
+| `OXSUM_SIGNUP` | Legacy parsed `invite`/`open` value retained for configuration compatibility. It never overrides business policy. Fresh/upgraded installations are invite-only until the initialized owner sets `open` through `/api/v1/business/registration`. |
 | `OXSUM_SIGNUP_BONUS_MINOR` | Optional; credits a new organization's wallet starts with, in minor units, default 0. Booked at self-registration as an adjustment carrying "signup bonus" as its reason; an invited account joins an existing organization and is granted nothing |
 | `OXSUM_DB_MAX_CONNECTIONS` | Optional; size of the one pool every tenant shares (default 20). Each connection is a PostgreSQL backend process, so this is the process's whole budget rather than a per-tenant allowance. Stay below the database's own `max_connections` (PostgreSQL's default is 100); size it at roughly twice the expected number of concurrent gateway requests, floor 10 — saturation answers 429 `POOL_BUSY` with `Retry-After`, never a 500 |
 | `OXSUM_ADDR` | Optional listen address; defaults to `127.0.0.1:3000` |
@@ -368,7 +368,7 @@ against a real provider, set the variables below and point an OpenAI SDK at
 `http://127.0.0.1:3000/v1`:
 
 ```bash
-OXSUM_SIGNUP=open OXSUM_UPSTREAM_BASE_URL=https://api.deepseek.com/v1 \
+OXSUM_UPSTREAM_BASE_URL=https://api.deepseek.com/v1 \
   OXSUM_UPSTREAM_API_KEY=sk-... \
   OXSUM_SECRET_KEY="$(openssl rand -base64 32)" \
   OXSUM_ADMIN_TOKEN="$(openssl rand -hex 24)" \
@@ -744,7 +744,7 @@ traffic — the dump before the upgrade is the answer to that.
 | `OXSUM_SECRET_KEY` | **Not a restart** | It seals the upstream credentials in `oxsum.channel_credentials` and the webhook signing secrets in `oxsum.webhook_endpoints`; a new value cannot open them. Rotate by re-entering every channel's upstream keys and recreating the webhook endpoints, *then* restart with the new value — or lose the ability to read what was sealed |
 | Database credentials | PostgreSQL's own role/password machinery | Update `DATABASE_URL` and restart |
 | Organization API keys | `DELETE`/`POST /api/v1/org/keys` | Per-organization, self-service, no restart |
-| Service credentials | `DELETE`/`POST /api/v1/admin/service-credentials` | Mint a new one, deploy it to the service, revoke the old one — metered calls fail `UNAUTHORIZED` between revoke and redeploy |
+| Integration credentials | Owner `POST /api/v1/business/integration-credentials`, then `POST /api/v1/business/integration-credentials/{credentialId}/revoke` | Issue a replacement with explicit scopes/customers/expiry and save its secret once. Finish old holds before revocation where possible; the replacement cannot close them. Trusted recovery handles orphaned holds. Legacy global service credentials are disabled and cannot be reissued. |
 
 Two of these are the expensive ones by design: `OXSUM_SECRET_KEY` is the root of
 what the database holds sealed, and the head-signing seed is the root of what
@@ -953,3 +953,59 @@ checked long before the release is cut.
 Before starting an upgraded server, back up the database and encryption/signing keys using the deployment runbook. Run the candidate binary with `oxsum ownership-preview` against the intended database to inspect customer, channel, plan and ledger-schema counts. This subcommand executes before `Db::migrate` and provider preparation; it changes no schema or ownership and makes no provider call. It handles a fresh database (zero counts) and the legacy schema. Normal server startup applies additive migration 0072 and records the mapped counts once.
 
 Inspect `GET /api/v1/admin/business` with deployment authority after startup. `initializedAt: null` and an empty business_staff table are intentional: existing customers are never silently promoted. The authenticated setup flow is delivered in T03. New orgs map automatically; their ledgers remain lazy. A schema downgrade is unsupported: restoring the matching database/key backup is the rollback route. Do not dispatch the live Deploy workflow to rehearse migration; use an isolated database and candidate binary.
+
+## Initial business owner setup (#629)
+
+After inspecting the ownership preview/receipt, use the deployment token to POST `/api/v1/admin/business/setup-tokens` with a unique `idempotencyKey` and the intended `ownerEmail`. Deliver its returned secret directly to that person; do not log it or append it to a URL. It expires after 30 minutes. An existing account logs in and POSTs `/api/v1/business/setup` with `{token, businessName}` using the session cookie. A fresh install uses `/api/v1/business/setup/register` with the same fields plus the invited email and a password of at least 12 characters, then logs in through the normal route. Store the returned initial customer API key securely; it is not business authority.
+
+Check `/api/v1/admin/business`: initialization should be non-null and the migration receipt remains unchanged. A process restart never reopens setup. If the mint response was lost, its retry reveals metadata only; mint a new key. If acceptance timed out, inspect initialized status before retrying. Invalid/expired tokens change nothing; initialized businesses require the separate ownership-transfer/recovery workflow, not another public setup. This API stage does not add a setup UI or complete staff role/policy enforcement (T03.b/T24). Use an isolated database for rehearsal; Deploy is not a test command.
+
+### Business authority validation (#630)
+
+Use `cargo nextest run -p oxsum-core -p oxsum-server -E 'binary(business_staff) or binary(business_setup) or binary(oidc) or binary(oauth) or binary(totp)'` for setup, context, policy and second-factor boundaries. These suites create isolated PostgreSQL databases and use real setup/session APIs. Legacy HTTP suites call the scratch-only `oxsum_testkit::set_registration_fixture` when their purpose assumes open registration; it refuses databases outside the test prefix and is never linked into production policy handling. New installs must complete owner setup and set registration policy before following public signup examples.
+
+
+### Customer lifecycle validation (#633)
+
+Focused checks: `cargo nextest run -p oxsum-core --test customer_lifecycle --test customer_upgrade --test dunning --test suspension` and `cargo nextest run -p oxsum-server --test customer_lifecycle --test suspension`. Customer tests exercise real setup and session authority, archive/admission races, independent reasons, audit rollback and historical proof preservation in isolated PostgreSQL. The HTTP suite sends actual gateway calls to a loopback provider before/after restoration; no paid call is required.
+
+### Customer invitation upgrade and checks (#634)
+
+Migration 0076 extends existing links without changing their IDs, hashes or expiry. It adds nullable pending-customer terms and business ownership, then keeps the original organization/profile identity trigger compatible with signup/team/demo paths. Existing links remain single-use; the current API requires idempotency keys for new links and direct member POSTs return 403. No new environment setting is required. Run core `invitation_consent` and `invitation_upgrade`, server `invitation_consent` and the existing invitations/members/email/antibot suites against testkit scratch databases. The new creation/revoke endpoints send no mail unless the team request explicitly supplies `email`; tests use a local SMTP stub.
+
+
+### Scoped integration smoke client (#638)
+
+`python3 examples/scoped-integration/client.py --help` documents the standard-library
+client. `OXSUM_INTEGRATION_SECRET` is an example-only environment variable containing
+an owner-issued oxs-int- secret; it is not read by the server. The client reads only
+a selected customer unless the explicit `meter --confirm-metering` command is used.
+Run it against isolated test funds first. The production-router test
+`cargo nextest run -p oxsum-server --test integration_credentials` launches this
+client against loopback PostgreSQL-backed fixtures and checks replay/isolation.
+See the [example runbook](../examples/scoped-integration/README.md) for issuance,
+required event prices and exact negative cases. No paid provider is called.
+
+
+### Business provider authority tests (#641)
+
+`cargo nextest run -p oxsum-core --test business_providers --test provider_upgrade --test channels -p oxsum-server --test business_providers --test admin` exercises real setup/session authority, atomic audit faults, replay/rotation, pool concurrency across business and recovery paths, foreign configuration and pre-0078 provider preservation. Use isolated PostgreSQL 17 testkit databases. No provider call is made on configuration save. The focused command does not replace cross-crate workspace/shared-process gates or T06.b destination-policy tests.
+
+
+### Provider destination policy (#642)
+
+New/legacy channels default to public HTTPS. Approve an internal service through the owner connection API (or authenticated deployment recovery) with `destinationPolicy: {"network":"internal","allowedIps":["10.0.0.10"]}`. The allowlist is exact, at most 16 addresses, and changes require owner authority. DNS answering an unapproved address refuses the request. Use network DNS/firewall configuration that matches these explicit addresses; environment HTTP proxy variables do not affect provider requests. Redirects are never followed. A TLS certificate must still match the configured hostname. Link-local metadata and special infrastructure addresses remain forbidden even with an internal approval.
+
+The bootstrap environment accepts `OXSUM_UPSTREAM_DESTINATION_POLICY` as the same JSON object; default is public. It is used only when seeding an empty channel directory, never to overwrite a running deployment's settings. Existing HTTP/internal channels must be reviewed and reauthorized before traffic resumes; migration preserves their secrets and history but does not infer approval. Use the explicit owner connection check for a non-inference HEAD, then independently test supported model behavior with separate billable-call authorization.
+
+Migration 0079 snapshots upgrade-time coordinates for old task rows. Stop admission and drain old tasks before upgrading whenever possible: earlier versions did not retain the submitting endpoint/credential, so the upgrade cannot recover a route already changed before it ran. New tasks retain their original sealed credential and destination policy until terminal. Preserve the sealing key for these snapshots in backups/restore; changing a channel key or endpoint does not revoke an already admitted task. Cancel/drain old tasks and revoke the provider credential upstream when required. No new cross-customer ledger or proof identity is introduced.
+
+Focused checks: `cargo nextest run -p oxsum-core --test provider_destination_upgrade --test business_providers -p oxsum-server --test provider_destinations --test tasks --test gateway`. The policy/DNS/redirect matrix is in the core and integrations lib tests. All test providers are loopback stubs with explicit internal approval; no paid call is part of the gate.
+
+### Customer serving permissions (#644)
+
+Run `cargo nextest run -p oxsum-core --test serving_access -p oxsum-server --test serving_catalog --test gateway --test fallbacks --test experiments --test tasks --test groups --test heads --test apis --no-fail-fast` with the isolated local test database. Core checks verify key/customer/channel intersections, permission snapshots, denied credential opening and fail-closed unknown/revoked/expired keys. HTTP regressions check catalog/estimate/checkpoint filtering, original experiment names, fallback aliases and task recovery after permission edits. The [protocol matrix](roadmap/self-hosted-v1/PROTOCOL-MATRIX.md) records current adapter limits; full cross-crate validation remains required.
+
+### Merchant encryption startup check
+
+Business merchant versions use the existing `OXSUM_SECRET_KEY` AES-GCM key. The server refuses startup when any current or historical merchant credential cannot open, or when merchant rows exist without the key. Preserve this key with database backups: rotated historical signing contexts still need it. Merchant settings saves validate structure and destination syntax locally and make no external request. Core and router regression tests are `cargo nextest run -p oxsum-core -p oxsum-server --test merchants`; they use isolated scratch databases and no real merchant credentials or payment calls.

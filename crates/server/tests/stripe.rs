@@ -5,6 +5,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod support;
+
 use std::sync::{Arc, Mutex};
 
 use axum::Router;
@@ -85,6 +87,7 @@ async fn world() -> Option<(Router, Db, StripeStub)> {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool);
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let (api_url, stub) = stub_stripe().await;
     *stub.answer_id.lock().unwrap() = "cs_test_123".to_owned();
     *stub.answer_url.lock().unwrap() = "https://checkout.stripe.com/pay/cs_test_123".to_owned();
@@ -112,7 +115,7 @@ async fn call(
         req = req.header("content-type", "application/json");
     }
     if let Some(key) = key {
-        req = req.header("authorization", format!("Bearer {key}"));
+        req = support::credential(req, key);
     }
     let req = req
         .body(body.map_or_else(Body::empty, |b| Body::from(b.to_string())))
@@ -146,7 +149,7 @@ fn signed_webhook(secret: &str, body: &str) -> (HeaderMap, String) {
     (headers, body.to_owned())
 }
 
-async fn register(app: &Router) -> String {
+async fn register_session(app: &Router) -> String {
     let email = format!(
         "stripe_{}@example.com",
         &Uuid::new_v4().simple().to_string()[..8]
@@ -160,10 +163,7 @@ async fn register(app: &Router) -> String {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "registration failed: {body}");
-    body["data"]["apiKey"]["secret"]
-        .as_str()
-        .unwrap()
-        .to_owned()
+    support::login(app, &email, "correct horse battery").await
 }
 
 /// The org's ledger balance, read back through the API.
@@ -179,7 +179,7 @@ async fn the_intent_opens_a_pending_deposit_and_answers_the_url() {
     let Some((app, _db, stub)) = world().await else {
         return;
     };
-    let key = register(&app).await;
+    let key = register_session(&app).await;
 
     let (status, body) = call(
         &app,
@@ -207,7 +207,7 @@ async fn a_replayed_intent_answers_the_same_url() {
     let Some((app, _db, stub)) = world().await else {
         return;
     };
-    let key = register(&app).await;
+    let key = register_session(&app).await;
 
     let (status, body) = call(
         &app,
@@ -241,7 +241,7 @@ async fn the_full_flow_credits_the_purchased_pool() {
     let Some((app, _db, _stub)) = world().await else {
         return;
     };
-    let key = register(&app).await;
+    let key = register_session(&app).await;
     let before = balance(&app, &key).await;
 
     let (status, body) = call(
@@ -288,7 +288,7 @@ async fn a_replayed_webhook_credits_once() {
     let Some((app, _db, _stub)) = world().await else {
         return;
     };
-    let key = register(&app).await;
+    let key = register_session(&app).await;
     let before = balance(&app, &key).await;
 
     let (status, _body) = call(
@@ -328,7 +328,7 @@ async fn a_tampered_signature_is_refused() {
     let Some((app, _db, _stub)) = world().await else {
         return;
     };
-    let key = register(&app).await;
+    let key = register_session(&app).await;
 
     let (status, _body) = call(
         &app,
@@ -389,9 +389,10 @@ async fn an_unconfigured_deployment_refuses_cleanly() {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool);
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let config = Config::new(Signup::Open, None).with_secret(sealing_key());
     let (app, _events, _metrics) = oxsum_server::app_with_billing(db.clone(), config);
-    let key = register(&app).await;
+    let key = register_session(&app).await;
 
     let (status, _body) = call(
         &app,
@@ -425,7 +426,7 @@ async fn an_expired_session_credits_nothing() {
     let Some((app, _db, _stub)) = world().await else {
         return;
     };
-    let key = register(&app).await;
+    let key = register_session(&app).await;
     let before = balance(&app, &key).await;
 
     let (status, _body) = call(

@@ -32,6 +32,7 @@ async fn online_app(url: &str) -> (Router, Db) {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     (
         support::app(db.clone(), Config::new(Signup::Open, None)),
         db,
@@ -68,7 +69,7 @@ async fn call(
         req = req.header("content-type", "application/json");
     }
     if let Some(key) = key {
-        req = req.header("authorization", format!("Bearer {key}"));
+        req = support::credential(req, key);
     }
     let req = req
         .body(body.map_or_else(Body::empty, |b| Body::from(b.to_string())))
@@ -84,7 +85,7 @@ async fn call(
 
 /// A fresh organization: its tenant id for seeding and its first key's secret
 /// for calling the API.
-async fn register(app: &Router, name: &str) -> (String, String, Uuid) {
+async fn register(app: &Router, name: &str) -> (String, String, Uuid, String) {
     let email = format!(
         "{name}_{}@example.com",
         &Uuid::new_v4().simple().to_string()[..8]
@@ -112,6 +113,7 @@ async fn register(app: &Router, name: &str) -> (String, String, Uuid) {
             .unwrap()
             .parse()
             .unwrap(),
+        support::login(app, &email, "correct horse battery").await,
     )
 }
 
@@ -279,8 +281,8 @@ async fn settle_request(
 async fn the_usage_api_answers_the_rollup() {
     let (app, db) = app_or_skip!();
     let tenants = Tenants::new(db.pool().clone());
-    let (tenant, key, key_id) = register(&app, "usage-api").await;
-    let (other_tenant, other_key, other_key_id) = register(&app, "usage-api-other").await;
+    let (tenant, key, key_id, _session) = register(&app, "usage-api").await;
+    let (other_tenant, other_key, other_key_id, _session) = register(&app, "usage-api-other").await;
     top_up(&app, &key, 50_000_000).await;
     top_up(&app, &other_key, 50_000_000).await;
 
@@ -317,7 +319,7 @@ async fn the_usage_api_answers_the_rollup() {
 #[tokio::test]
 async fn the_usage_window_is_validated() {
     let (app, _db) = app_or_skip!();
-    let (_tenant, key, _key_id) = register(&app, "usage-bounds").await;
+    let (_tenant, key, _key_id, _session) = register(&app, "usage-bounds").await;
 
     for path in [
         "/api/v1/usage?from=not-a-date",
@@ -344,7 +346,7 @@ async fn the_usage_window_is_validated() {
 async fn budget_snapshot_scopes() {
     let (app, db) = app_or_skip!();
     let tenants = Tenants::new(db.pool().clone());
-    let (tenant, key, key_id) = register(&app, "budget").await;
+    let (tenant, key, key_id, session) = register(&app, "budget").await;
     top_up(&app, &key, 50_000_000).await;
 
     // A daily-limited second key with a third of its budget burned.
@@ -353,7 +355,7 @@ async fn budget_snapshot_scopes() {
         "POST",
         "/api/v1/org/keys",
         Some(json!({"name": "burner", "spendLimitMinor": 30_000, "budgetDuration": "daily"})),
-        Some(&key),
+        Some(&session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{minted}");
@@ -369,7 +371,7 @@ async fn budget_snapshot_scopes() {
     )
     .await;
 
-    let (status, body) = call(&app, "GET", "/api/v1/budget", None, Some(&key)).await;
+    let (status, body) = call(&app, "GET", "/api/v1/budget", None, Some(&session)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let data = &body["data"];
     assert!(data["member"].is_null(), "a key names no member: {data}");
@@ -403,8 +405,8 @@ async fn budget_snapshot_scopes() {
 async fn billing_records_page_in_order() {
     let (app, db) = app_or_skip!();
     let tenants = Tenants::new(db.pool().clone());
-    let (tenant, key, key_id) = register(&app, "records").await;
-    let (other_tenant, other, other_key_id) = register(&app, "records-other").await;
+    let (tenant, key, key_id, _session) = register(&app, "records").await;
+    let (other_tenant, other, other_key_id, _session) = register(&app, "records-other").await;
     top_up(&app, &key, 50_000_000).await;
     top_up(&app, &other, 50_000_000).await;
 
@@ -492,7 +494,7 @@ async fn billing_records_page_in_order() {
 #[tokio::test]
 async fn the_records_limit_is_bounded() {
     let (app, _db) = app_or_skip!();
-    let (_tenant, key, _key_id) = register(&app, "records-limit").await;
+    let (_tenant, key, _key_id, _session) = register(&app, "records-limit").await;
     for path in [
         "/api/v1/billing-records?limit=0",
         "/api/v1/billing-records?limit=201",
@@ -523,7 +525,7 @@ async fn estimate_price_is_the_freeze() {
         json!({"inputPricePerMillion": 1_000_000, "outputPricePerMillion": 2_000_000, "maxOutputTokens": 4_000}),
     )
     .await;
-    let (_tenant, key, _key_id) = register(&app, "estimate").await;
+    let (_tenant, key, _key_id, _session) = register(&app, "estimate").await;
 
     let (status, body) = call(
         &app,
@@ -591,7 +593,7 @@ async fn estimate_price_respects_the_billing_mode() {
         json!({"inputPricePerMillion": 1_000_000, "mode": "embeddings"}),
     )
     .await;
-    let (_tenant, key, _key_id) = register(&app, "estimate-mode").await;
+    let (_tenant, key, _key_id, _session) = register(&app, "estimate-mode").await;
 
     // The mode's own shape: input alone prices the turn, an `outputTokens` a
     // caller sent anyway is simply not a dimension the mode prices.
@@ -641,7 +643,7 @@ async fn the_catalog_carries_no_credentials() {
         json!({"inputPricePerMillion": 5, "outputPricePerMillion": 9, "maxOutputTokens": 2_000}),
     )
     .await;
-    let (_tenant, key, _key_id) = register(&app, "catalog").await;
+    let (_tenant, key, _key_id, _session) = register(&app, "catalog").await;
 
     let (status, body) = call(&app, "GET", "/api/v1/pricing", None, Some(&key)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -698,11 +700,18 @@ async fn the_catalog_carries_no_credentials() {
 async fn the_dashboard_reads_page_the_ledger() {
     let (app, db) = app_or_skip!();
     let tenants = Tenants::new(db.pool().clone());
-    let (tenant, key, key_id) = register(&app, "dash").await;
+    let (tenant, key, key_id, session) = register(&app, "dash").await;
     top_up(&app, &key, 50_000_000).await;
     settle_request(&db, &tenants, &tenant, Some(key_id), "dash-1", "m1", 7_000).await;
 
-    let (status, entries) = call(&app, "GET", "/api/v1/entries?limit=100", None, Some(&key)).await;
+    let (status, entries) = call(
+        &app,
+        "GET",
+        "/api/v1/entries?limit=100",
+        None,
+        Some(&session),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{entries}");
     let rows = entries["data"]["rows"].as_array().expect("rows");
     assert!(
@@ -715,7 +724,7 @@ async fn the_dashboard_reads_page_the_ledger() {
             .all(|row| row["id"].is_string() && row["contentHash"].is_string())
     );
 
-    let (status, bills) = call(&app, "GET", "/api/v1/bills", None, Some(&key)).await;
+    let (status, bills) = call(&app, "GET", "/api/v1/bills", None, Some(&session)).await;
     assert_eq!(status, StatusCode::OK, "{bills}");
     let rows = bills["data"]["rows"].as_array().expect("rows");
     // The top-up and the settlement: the bare hold never bills.
@@ -726,7 +735,7 @@ async fn the_dashboard_reads_page_the_ledger() {
     assert_eq!(rows[1]["amountMinor"], 50_000_000, "{bills}");
     assert!(rows[0]["entryId"].is_string(), "{bills}");
 
-    let (status, holds) = call(&app, "GET", "/api/v1/holds", None, Some(&key)).await;
+    let (status, holds) = call(&app, "GET", "/api/v1/holds", None, Some(&session)).await;
     assert_eq!(status, StatusCode::OK, "{holds}");
     assert_eq!(
         holds["data"]["holds"].as_array().unwrap().len(),
@@ -740,7 +749,7 @@ async fn the_dashboard_reads_page_the_ledger() {
 async fn the_balance_carries_reserved_and_month_spend() {
     let (app, db) = app_or_skip!();
     let tenants = Tenants::new(db.pool().clone());
-    let (tenant, key, key_id) = register(&app, "bal-dash").await;
+    let (tenant, key, key_id, session) = register(&app, "bal-dash").await;
     top_up(&app, &key, 50_000_000).await;
     settle_request(
         &db,
@@ -753,7 +762,7 @@ async fn the_balance_carries_reserved_and_month_spend() {
     )
     .await;
 
-    let (status, body) = call(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    let (status, body) = call(&app, "GET", "/api/v1/balance", None, Some(&session)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let data = &body["data"];
     assert_eq!(data["reservedMinor"], 0, "{data}");
@@ -766,10 +775,10 @@ async fn the_balance_carries_reserved_and_month_spend() {
 async fn the_members_list_reads() {
     let (app, db) = app_or_skip!();
     let tenants = Tenants::new(db.pool().clone());
-    let (_tenant, key, _key_id) = register(&app, "members-list").await;
+    let (_tenant, _key, _key_id, session) = register(&app, "members-list").await;
     let _ = (db, tenants);
 
-    let (status, body) = call(&app, "GET", "/api/v1/org/members", None, Some(&key)).await;
+    let (status, body) = call(&app, "GET", "/api/v1/org/members", None, Some(&session)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let members = body["data"]["members"].as_array().expect("members");
     assert_eq!(members.len(), 1, "{body}");

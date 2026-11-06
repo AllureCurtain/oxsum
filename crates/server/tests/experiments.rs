@@ -237,6 +237,7 @@ async fn world_for(url: &str, top_up: i64) -> World {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
 
     let suffix = uuid::Uuid::new_v4().simple().to_string()[..8].to_owned();
     let channel = format!("mock-{suffix}");
@@ -245,9 +246,19 @@ async fn world_for(url: &str, top_up: i64) -> World {
     let base_url = start_upstream(script.clone()).await;
     let book = oxsum_core::PriceBook::from_json(&channel, &price_list(&suffix))
         .expect("the test's own prices parse");
-    db.set_channel(&channel, &base_url, "upstream-secret", "openai", &secret)
-        .await
-        .expect("the channel is written");
+    db.set_channel_pool_policy(
+        &channel,
+        &base_url,
+        Some(&["upstream-secret".to_owned()]),
+        "openai",
+        &secret,
+        Some(&oxsum_core::ProviderDestinationPolicy {
+            network: oxsum_core::ProviderNetwork::Internal,
+            allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+        }),
+    )
+    .await
+    .expect("the channel is written");
     for (model, price) in book.models() {
         db.append_price(&channel, model, price.clone(), 100)
             .await
@@ -603,8 +614,8 @@ async fn the_results_read_groups_spend_by_variant() {
         "GET",
         &format!("/api/v1/org/experiments/{experiment_id}/results"),
         None,
-        Some(&world.key),
         None,
+        Some(&world.cookie),
         None,
     )
     .await;
@@ -625,8 +636,8 @@ async fn the_results_read_groups_spend_by_variant() {
         "GET",
         &format!("/api/v1/org/experiments/{}/results", Uuid::new_v4()),
         None,
-        Some(&world.key),
         None,
+        Some(&world.cookie),
         None,
     )
     .await;
@@ -634,8 +645,7 @@ async fn the_results_read_groups_spend_by_variant() {
 }
 
 /// The role gate the writes keep: a member's session and an API key are both
-/// refused `PUT` and `end`; the reads stay open to any member — and to the
-/// organization's key, which acts with the organization's authority.
+/// refused account-wide reads and writes.
 #[tokio::test]
 async fn the_writes_are_owner_admin_only() {
     let world = world!(0);
@@ -660,7 +670,7 @@ async fn the_writes_are_owner_admin_only() {
     let res = put_experiment(&world, "ab", variants.clone()).await;
     assert_eq!(res.status, StatusCode::OK, "the owner writes");
 
-    // A member's session reads but cannot write: seed a second person into the
+    // A member's session cannot manage account-wide experiments: seed a person into the
     // owner's organization as a member.
     let member_email = format!(
         "exp_member_{}@example.com",
@@ -708,7 +718,7 @@ async fn the_writes_are_owner_admin_only() {
         .expect("the member's session cookie")
         .to_owned();
 
-    // The member reads the list.
+    // The member cannot read the account-wide list.
     let res = call(
         &world.app,
         "GET",
@@ -719,8 +729,11 @@ async fn the_writes_are_owner_admin_only() {
         None,
     )
     .await;
-    assert_eq!(res.status, StatusCode::OK, "a member reads the list");
-    assert_eq!(res.body["data"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        res.status,
+        StatusCode::FORBIDDEN,
+        "account-wide experiment reads require owner/admin"
+    );
 
     // The member cannot write or end.
     let res = call(
@@ -777,4 +790,57 @@ async fn an_unserved_variant_or_a_bad_weight_is_a_400() {
     );
     let res = put_experiment(&world, "ab", json!([])).await;
     assert_eq!(res.status, StatusCode::BAD_REQUEST, "an empty set is a 400");
+}
+
+#[tokio::test]
+async fn an_experiment_cannot_replace_a_denied_original_or_land_on_a_denied_variant() {
+    let world = world!(10_000_000);
+    let db = Db::from_pool(world.pool.clone());
+    let (_, acting) = db.authenticate(&world.key).await.unwrap().unwrap();
+    let plain = world.model("plain");
+    let variant = world.model("var-a");
+    assert_eq!(
+        put_experiment(&world, "permission", json!([{"model":variant,"weight":1}]))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    world.answers("var-a");
+    for allowed in [&plain, &variant] {
+        db.update_key_constraints(
+            world.organization_id,
+            acting.key_id,
+            oxsum_core::KeyScope::Organization,
+            oxsum_core::KeyConstraints {
+                model_allowlist: Some(vec![allowed.clone()]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let response =
+            chat_keeping_headers(&world.app, &world.key, Some("permission"), simple(&plain)).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let _ = response.into_body().collect().await.unwrap();
+        assert!(world.script.seen().is_empty());
+    }
+    db.update_key_constraints(
+        world.organization_id,
+        acting.key_id,
+        oxsum_core::KeyScope::Organization,
+        oxsum_core::KeyConstraints {
+            model_allowlist: Some(vec![plain.clone(), variant.clone()]),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let response =
+        chat_keeping_headers(&world.app, &world.key, Some("permission"), simple(&plain)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let id = request_id(&response);
+    let _ = response.into_body().collect().await.unwrap();
+    let record = world.settlement_within(&id).await;
+    assert_eq!(record["requestedModel"], plain);
+    assert_eq!(record["servedModel"], variant);
 }

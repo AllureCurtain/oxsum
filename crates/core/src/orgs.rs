@@ -54,8 +54,8 @@ impl Kind {
 ///
 /// Stored from the first membership so product.md's rules ("members manage their own keys,
 /// admins manage all") need no migration when sessions make a user the acting principal.
-/// Roles constrain sessions, not API keys: a key acts as the organization, while a user
-/// acts with the authority their role grants them (see [`crate::Principal::key_scope`]).
+/// Roles constrain personal sessions; consumption keys carry only their own scope
+/// (see [`crate::Principal::key_scope`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
@@ -116,8 +116,8 @@ pub struct AdminOrganization {
     /// The tier profile assigned (issue #158): a capability package — limits and
     /// allowlists — never a pricing input. `None` when it carries none.
     pub tier: Option<String>,
-    /// When the platform suspended the organization's spend (issue #162);
-    /// `None` while it runs normally.
+    /// An applicable manual, dunning or archive timestamp. This compatibility
+    /// projection is `None` only when all admission restrictions are clear.
     pub suspended_at: Option<OffsetDateTime>,
     /// Days past a finalized statement's due date before the dunning sweep
     /// suspends the organization's spend (issue #258); `None` disables the
@@ -261,7 +261,7 @@ impl Db {
     /// Storage failures surface as [`WalletError`].
     pub async fn organizations(&self) -> Result<Vec<AdminOrganization>, WalletError> {
         let rows = sqlx::query(
-            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, o.payment_terms_days, o.tier, o.suspended_at, \
+            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, o.payment_terms_days, o.tier, COALESCE(o.suspended_at,o.dunning_suspended_at,(SELECT c.archived_at FROM oxsum.customer_profiles c WHERE c.organization_id=o.organization_id AND c.state='archived')) AS suspended_at, \
              o.dunning_grace_days, o.dunning_suspended_at, o.display_currency, o.display_rate_per_credit, \
              count(m.user_id) AS members \
              FROM oxsum.organizations o LEFT JOIN oxsum.memberships m USING (organization_id) \
@@ -299,7 +299,7 @@ impl Db {
         let (created_at, id) = after.unzip();
         let wanted = limit.clamp(1, 100) as i64;
         let rows = sqlx::query(
-            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, o.payment_terms_days, o.tier, o.suspended_at, \
+            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, o.payment_terms_days, o.tier, COALESCE(o.suspended_at,o.dunning_suspended_at,(SELECT c.archived_at FROM oxsum.customer_profiles c WHERE c.organization_id=o.organization_id AND c.state='archived')) AS suspended_at, \
              o.dunning_grace_days, o.dunning_suspended_at, o.display_currency, o.display_rate_per_credit, \
              count(m.user_id) AS members \
              FROM oxsum.organizations o LEFT JOIN oxsum.memberships m USING (organization_id) \
@@ -328,10 +328,9 @@ impl Db {
     /// The tenant id of the organization carrying `name`, or `None` when none does.
     ///
     /// Names are not unique — two organizations may share one — so the read
-    /// answers the *first* matching tenant id in creation order, which is all a
-    /// caller that only wants "the seeded demo organization" needs (issue #489:
-    /// `/verify?sample` draws its bundle from that one). Anything stronger
-    /// belongs on the id-keyed lookups above.
+    /// answers the *first* matching tenant id in creation order. This is a
+    /// convenience lookup for trusted code, never an authorization identity.
+    /// Public evidence uses a fixed fixture; customer reads use IDs and scope.
     ///
     /// # Errors
     ///
@@ -356,7 +355,7 @@ impl Db {
     /// failures surface as [`WalletError`].
     pub async fn organization_by_id(&self, id: Uuid) -> Result<AdminOrganization, WalletError> {
         let row = sqlx::query(
-            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, o.payment_terms_days, o.tier, o.suspended_at, o.dunning_grace_days, o.dunning_suspended_at,              o.display_currency, o.display_rate_per_credit,              count(m.user_id) AS members              FROM oxsum.organizations o LEFT JOIN oxsum.memberships m USING (organization_id)              WHERE o.organization_id = $1 GROUP BY o.organization_id",
+            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, o.payment_terms_days, o.tier, COALESCE(o.suspended_at,o.dunning_suspended_at,(SELECT c.archived_at FROM oxsum.customer_profiles c WHERE c.organization_id=o.organization_id AND c.state='archived')) AS suspended_at, o.dunning_grace_days, o.dunning_suspended_at,              o.display_currency, o.display_rate_per_credit,              count(m.user_id) AS members              FROM oxsum.organizations o LEFT JOIN oxsum.memberships m USING (organization_id)              WHERE o.organization_id = $1 GROUP BY o.organization_id",
         )
         .bind(id)
         .fetch_optional(self.pool())
@@ -473,23 +472,9 @@ impl Db {
         Ok(members)
     }
 
-    /// Adds an existing account, named by its email, to the organization as a member.
-    ///
-    /// "Invite" means exactly this: the account must already exist. Pending invitations for
-    /// people who have none — invite links, tokens, email — are issue #59, so an email no
-    /// account holds is [`WalletError::NotFound`] and no invitation is stored. The new role is
-    /// always [`Role::Member`]: this call cannot grant a role, so it cannot grant ownership.
-    ///
-    /// Adding the second person to a `personal` organization flips its kind to `team`
-    /// (`oxsum.organizations.kind`), which is what the migration comment promises. The flip is
-    /// one-way: the ledger does not move, and removing a member does not move it back.
-    ///
-    /// # Errors
-    ///
-    /// [`WalletError::Forbidden`] for a member; [`WalletError::InvalidInput`] for an email that
-    /// is not one; [`WalletError::NotFound`] for an unknown account; [`WalletError::Conflict`]
-    /// when the account is already a member.
-    pub async fn add_member(
+    /// Trusted demo provisioning only. Production membership enrollment uses
+    /// invitations and recipient consent; this helper is not public API.
+    pub(crate) async fn provision_member(
         &self,
         organization_id: Uuid,
         acting: MembershipActor,
@@ -500,6 +485,7 @@ impl Db {
         let normalized = email.to_lowercase();
         let mut tx = self.pool().begin().await?;
         lock_organization(&mut tx, organization_id).await?;
+        current_manager(&mut tx, organization_id, acting.user_id).await?;
         let row = sqlx::query("SELECT user_id, email FROM oxsum.users WHERE email_normalized = $1")
             .bind(&normalized)
             .fetch_optional(&mut *tx)
@@ -552,6 +538,7 @@ impl Db {
         let acting = acting.authorized()?;
         let mut tx = self.pool().begin().await?;
         lock_organization(&mut tx, organization_id).await?;
+        let acting = current_manager(&mut tx, organization_id, acting.user_id).await?;
         let target = locked_member(&mut tx, organization_id, user_id)
             .await?
             .ok_or_else(not_a_member)?;
@@ -633,6 +620,7 @@ impl Db {
         }
         let mut tx = self.pool().begin().await?;
         lock_organization(&mut tx, organization_id).await?;
+        let acting = current_manager(&mut tx, organization_id, acting.user_id).await?;
         let mut target = locked_member(&mut tx, organization_id, user_id)
             .await?
             .ok_or_else(not_a_member)?;
@@ -717,7 +705,8 @@ impl Db {
 
     /// Suspends or reinstates an organization's spend (issue #162).
     ///
-    /// Suspension stamps `suspended_at`; reinstatement clears it. A suspended
+    /// Manual suspension stamps `suspended_at`; reinstatement clears only it.
+    /// Dunning and archive reasons are independent. A suspended
     /// organization's new holds refuse while its in-flight holds still settle,
     /// and money-in still lands so the line can be repaid — the flag gates
     /// admission, not the ledger. Answers whether the state actually changed:
@@ -826,27 +815,6 @@ impl Db {
         Ok(())
     }
 
-    /// Drops the dunning sweep's ownership marker without touching `suspended_at`
-    /// (issue #258). An operator's manual suspend or reinstate through the PATCH
-    /// endpoint calls it after `set_suspended`: whoever manages the flag by hand
-    /// takes the sweep's marker off, so a later pass never "reinstates" a
-    /// suspension the operator owns now — or keeps the marker standing on an
-    /// organization the operator already reinstated.
-    ///
-    /// # Errors
-    ///
-    /// Storage failures surface as [`WalletError`].
-    pub async fn clear_dunning_suspension(&self, organization_id: Uuid) -> Result<(), WalletError> {
-        sqlx::query(
-            "UPDATE oxsum.organizations SET dunning_suspended_at = NULL \
-             WHERE organization_id = $1",
-        )
-        .bind(organization_id)
-        .execute(self.pool())
-        .await?;
-        Ok(())
-    }
-
     /// Transfers ownership: the named member becomes the owner and the acting owner becomes
     /// an admin, in one transaction, so the organization has exactly one owner before and
     /// after.
@@ -925,7 +893,7 @@ impl Db {
 /// The rules count owners and change two rows together, so they need one writer at a time:
 /// the organization row is the lock, taken for the whole transaction. A concurrent transfer
 /// and removal therefore cannot both see the same owner count and both act on it.
-async fn lock_organization(
+pub(crate) async fn lock_organization(
     tx: &mut Transaction<'_, Postgres>,
     organization_id: Uuid,
 ) -> Result<(), WalletError> {
@@ -937,6 +905,28 @@ async fn lock_organization(
     .await?
     .ok_or_else(|| WalletError::NotFound("no such organization".into()))?;
     Ok(())
+}
+
+/// Membership role snapshots supplied by a caller are never write authority.
+async fn current_manager(
+    tx: &mut Transaction<'_, Postgres>,
+    org: Uuid,
+    user: Uuid,
+) -> Result<MembershipActor, WalletError> {
+    let role: Option<String> = sqlx::query_scalar(
+        "SELECT role FROM oxsum.memberships WHERE organization_id=$1 AND user_id=$2",
+    )
+    .bind(org)
+    .bind(user)
+    .fetch_optional(&mut **tx)
+    .await?;
+    MembershipActor {
+        user_id: user,
+        role: Role::parse(&role.ok_or_else(|| {
+            WalletError::Forbidden("current customer membership is required".into())
+        })?)?,
+    }
+    .authorized()
 }
 
 /// The owners of an organization: what makes "the last owner" decidable.
@@ -1042,7 +1032,7 @@ pub(crate) async fn insert(
 /// Inserts a membership and returns when it was created.
 ///
 /// The one insert path, shared by signup (which ignores the timestamp) and by
-/// [`Db::add_member`] (which answers with it). A duplicate membership is a conflict rather
+/// [`Db::provision_member`] (which answers with it). A duplicate membership is a conflict rather
 /// than a storage failure, because the only way to reach it is naming an account that is
 /// already in the organization.
 pub(crate) async fn add_member(

@@ -23,10 +23,13 @@ use crate::error::ApiError;
 
 mod auth;
 pub(crate) mod billing;
+mod business;
+mod business_providers;
 mod device;
 mod experiments;
 mod keys;
 mod log;
+mod merchants;
 mod org;
 mod report_links;
 pub(crate) mod requests;
@@ -71,7 +74,6 @@ pub fn router(state: AppState) -> Router {
             get(keys::list_mandates).post(keys::create_mandate),
         )
         .route("/org/keys/{key_id}/entitlement", get(keys::key_entitlement))
-        .route("/org/invitations", post(org::create_invitation))
         .route("/org/members", get(org::list_members).post(org::add_member))
         .route(
             "/org/members/{user_id}",
@@ -82,8 +84,7 @@ pub fn router(state: AppState) -> Router {
             "/org/teams/{team_id}",
             patch(org::update_team).delete(org::delete_team),
         )
-        // A/B experiments (issue #509): the list and the results any member
-        // reads, the writes owner/admin-only inside the handlers.
+        // Account-wide experiments require a current owner/admin session.
         .route("/org/experiments", get(experiments::list_experiments))
         .route("/org/experiments/{name}", put(experiments::put_experiment))
         .route(
@@ -112,18 +113,6 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/session", get(org::session))
         .route("/session/organization", post(org::switch_organization))
-        // Deleting the account is a person's action — the handler refuses an
-        // API key, which names no user (issue #202).
-        .route("/users/me", delete(org::delete_account))
-        // Requesting a verification mail is the session user's own action; the
-        // handler refuses an API key, which names no user.
-        .route("/auth/verify/request", post(auth::request_verification))
-        // The second factor's enrollment and removal are the session user's own
-        // actions — the handlers refuse an API key, which names no user (issue
-        // #504). The login's second leg is the open `/auth/totp` above.
-        .route("/auth/totp/enroll", post(auth::totp_enroll))
-        .route("/auth/totp/confirm", post(auth::totp_confirm))
-        .route("/auth/totp/disable", post(auth::totp_disable))
         // The device grant's user leg — a person's verdict, so the handlers
         // refuse an API key, which names no user (issue #156).
         .route("/device/request", get(device::device_request))
@@ -185,8 +174,105 @@ pub fn router(state: AppState) -> Router {
     // No credential: signup while the deployment allows it, and the login/logout pair.
     // Logout sits outside the auth middleware on purpose: logging out twice is not an
     // error, so it must answer 200 with no session at all.
+    // Personal account handlers authenticate their own session in either context.
     let open = Router::new()
+        .route("/auth/totp/disable", post(auth::totp_disable))
+        .route("/auth/totp/confirm", post(auth::totp_confirm))
+        .route("/auth/totp/enroll", post(auth::totp_enroll))
+        .route("/auth/verify/request", post(auth::request_verification))
+        .route("/users/me", delete(org::delete_account))
         .route("/auth/register", post(auth::register))
+        .route(
+            "/session/context",
+            get(business::context).post(business::select_context),
+        )
+        .route("/business", get(business::business))
+        .route(
+            "/business/merchants",
+            get(merchants::list).post(merchants::create),
+        )
+        .route(
+            "/business/merchants/{merchant}/versions",
+            get(merchants::versions).post(merchants::rotate),
+        )
+        .route(
+            "/business/merchants/{merchant}/status",
+            post(merchants::status),
+        )
+        .route(
+            "/business/channels/{channel}/connection-check",
+            post(business_providers::connection_check),
+        )
+        .route(
+            "/business/channels",
+            get(business_providers::channels).post(business_providers::set_channel),
+        )
+        .route(
+            "/business/channels/{channel}/prices",
+            get(business_providers::prices).post(business_providers::append_price),
+        )
+        .route(
+            "/business/channels/{channel}/aliases",
+            get(business_providers::aliases).post(business_providers::set_alias),
+        )
+        .route(
+            "/business/channels/{channel}/aliases/{alias}/remove",
+            post(business_providers::remove_alias),
+        )
+        .route(
+            "/business/channels/{channel}/credentials",
+            post(business_providers::add_credential),
+        )
+        .route(
+            "/business/channels/{channel}/credentials/{credential}/status",
+            post(business_providers::credential_status),
+        )
+        .route(
+            "/business/channels/{channel}/credentials/{credential}/remove",
+            post(business_providers::remove_credential),
+        )
+        .route(
+            "/business/channels/{channel}/billing-credential",
+            post(business_providers::bill_key),
+        )
+        .route(
+            "/business/channels/{channel}/cache",
+            post(business_providers::cache),
+        )
+        .route(
+            "/business/model-fallbacks/{model}",
+            get(business_providers::fallbacks).put(business_providers::set_fallbacks),
+        )
+        .route(
+            "/business/integration-credentials",
+            get(business::integration_credentials).post(business::create_integration_credential),
+        )
+        .route(
+            "/business/integration-credentials/{credential_id}/revoke",
+            post(business::revoke_integration_credential),
+        )
+        .route("/business/customers", get(business::customers))
+        .route(
+            "/business/customers/{organization_id}",
+            get(business::customer).patch(business::update_customer),
+        )
+        .route(
+            "/business/customers/{organization_id}/lifecycle",
+            post(business::customer_lifecycle),
+        )
+        .route(
+            "/business/customers/{organization_id}/suspension",
+            post(business::customer_suspension),
+        )
+        .route(
+            "/business/staff",
+            get(business::staff).post(business::set_staff),
+        )
+        .route("/business/staff/revoke", post(business::revoke_staff))
+        .route("/business/ownership", post(business::transfer_ownership))
+        .route("/business/registration", post(business::registration))
+        .route("/business/setup", post(business::accept_setup))
+        .route("/business/setup/register", post(business::register_owner))
         .route("/auth/login", post(auth::login))
         .route("/auth/logout", post(auth::logout))
         // The login's second factor (issue #504): enrollment needs a session,
@@ -210,6 +296,21 @@ pub fn router(state: AppState) -> Router {
         // Registration through an invitation link: the token is the credential, so it
         // stays open in invite mode too — that mode exists for this.
         .route("/invitations/redeem", post(org::redeem_invitation))
+        .route("/invitations/accept", post(org::accept_invitation))
+        .route("/invitations/preview", post(org::preview_invitation))
+        .route("/org/invitations", post(org::create_invitation))
+        .route(
+            "/org/invitations/{invitationId}/revoke",
+            post(org::revoke_invitation),
+        )
+        .route(
+            "/business/customer-invitations",
+            post(business::invite_customer),
+        )
+        .route(
+            "/business/customer-invitations/{invitationId}/revoke",
+            post(business::revoke_customer_invitation),
+        )
         // The device grant's tool leg: the device code is the credential, so
         // both endpoints stay open in every signup mode (issue #156).
         .route("/device/code", post(device::device_code))

@@ -707,6 +707,7 @@ struct World {
     /// The registered organization's id — what the admin surface addresses it by.
     organization_id: String,
     key: String,
+    session: String,
     /// The first key's id, for the key-management endpoints.
     key_id: String,
     script: Script,
@@ -851,6 +852,7 @@ async fn world_on_pool(url: &str, top_up: i64, protocol: &str, connections: u32)
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
 
     let suffix = uuid::Uuid::new_v4().simple().to_string()[..8].to_owned();
     let channel = format!("mock-{suffix}");
@@ -861,9 +863,19 @@ async fn world_on_pool(url: &str, top_up: i64, protocol: &str, connections: u32)
         .expect("the test's own prices parse");
     // The channel and its prices are rows, the way an operator's would be: the gateway reads the
     // database, and the environment is only what a brand-new deployment seeds its first channel with.
-    db.set_channel(&channel, &base_url, "upstream-secret", protocol, &secret)
-        .await
-        .expect("the channel is written");
+    db.set_channel_pool_policy(
+        &channel,
+        &base_url,
+        Some(&["upstream-secret".to_owned()]),
+        protocol,
+        &secret,
+        Some(&oxsum_core::ProviderDestinationPolicy {
+            network: oxsum_core::ProviderNetwork::Internal,
+            allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+        }),
+    )
+    .await
+    .expect("the channel is written");
     for (model, price) in book.models() {
         db.append_price(&channel, model, price.clone(), 100)
             .await
@@ -881,6 +893,12 @@ async fn world_on_pool(url: &str, top_up: i64, protocol: &str, connections: u32)
     let tenants = Tenants::new(pool.clone());
 
     let (registration, key) = register(&app).await;
+    let session = support::login(
+        &app,
+        registration["user"]["email"].as_str().unwrap(),
+        "correct horse battery",
+    )
+    .await;
     let tenant_id = registration["organization"]["tenantId"]
         .as_str()
         .expect("registration names a tenant")
@@ -909,6 +927,7 @@ async fn world_on_pool(url: &str, top_up: i64, protocol: &str, connections: u32)
         tenant_id,
         organization_id,
         key,
+        session,
         key_id,
         script,
         channel,
@@ -962,7 +981,7 @@ async fn call(
         request = request.header("content-type", "application/json");
     }
     if let Some(key) = key {
-        request = request.header("authorization", format!("Bearer {key}"));
+        request = support::credential(request, key);
     }
     let request = request
         .body(body.map_or_else(Body::empty, |value| Body::from(value.to_string())))
@@ -1145,9 +1164,19 @@ async fn aux_route(
     let channel = format!("aux-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
     let script = Script::default();
     let base_url = start_upstream(script.clone()).await;
-    db.set_channel(&channel, &base_url, "aux-secret", "openai", &secret)
-        .await
-        .expect("the auxiliary channel is written");
+    db.set_channel_pool_policy(
+        &channel,
+        &base_url,
+        Some(&["aux-secret".to_owned()]),
+        "openai",
+        &secret,
+        Some(&oxsum_core::ProviderDestinationPolicy {
+            network: oxsum_core::ProviderNetwork::Internal,
+            allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+        }),
+    )
+    .await
+    .expect("the auxiliary channel is written");
     let price: oxsum_core::Price = serde_json::from_value(json!({
         "inputPricePerMillion": 1_000_000,
         "mode": mode,
@@ -1748,7 +1777,7 @@ async fn a_missing_usage_report_settles_under_the_degraded_policy() {
         "POST",
         "/api/v1/webhooks",
         Some(json!({"url": "https://receiver.example/hook", "events": ["anomaly.detected"]})),
-        Some(&world.key),
+        Some(&world.session),
     )
     .await;
     assert_eq!(hook_status, StatusCode::OK, "{hook}");
@@ -2005,9 +2034,19 @@ async fn an_unreachable_upstream_charges_nothing() {
     // that is what changing a channel's connection does, and the prices are untouched by it.
     let secret = oxsum_core::SecretKey::from_bytes([7; 32]);
     let db = Db::from_pool(world.pool.clone());
-    db.set_channel(&world.channel, &dead, "upstream-secret", "openai", &secret)
-        .await
-        .expect("the channel is repointed");
+    db.set_channel_pool_policy(
+        &world.channel,
+        &dead,
+        Some(&["upstream-secret".to_owned()]),
+        "openai",
+        &secret,
+        Some(&oxsum_core::ProviderDestinationPolicy {
+            network: oxsum_core::ProviderNetwork::Internal,
+            allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+        }),
+    )
+    .await
+    .expect("the channel is repointed");
     let config = Config::new(Signup::Open, None).with_secret(secret);
     let app = support::app(db, config);
 
@@ -2056,13 +2095,13 @@ async fn a_freeze_beyond_the_balance_is_refused_before_upstream_is_contacted() {
     assert_eq!(status, StatusCode::PAYMENT_REQUIRED);
     assert_eq!(body["error"]["type"], "insufficient_quota");
     assert_eq!(body["error"]["code"], "INSUFFICIENT_FUNDS");
-    // The message states the price, what is there, and what the caller can do about it.
+    // The message states the requested bound and remedy without the account balance.
     let message = body["error"]["message"].as_str().unwrap();
     assert!(
         message.contains(&expected_freeze(None).to_string()),
         "{message}"
     );
-    assert!(message.contains("500"), "{message}");
+    assert!(!message.contains("500"), "{message}");
     assert!(message.contains("max_tokens"), "{message}");
     // Nothing was frozen, and upstream never heard about it.
     assert!(world.script.seen().is_empty());
@@ -2835,7 +2874,7 @@ async fn a_key_spend_limit_is_refused_before_upstream_is_contacted() {
         "PATCH",
         &format!("/api/v1/org/keys/{}", world.key_id),
         Some(json!({"spendLimitMinor": 100})),
-        Some(&world.key),
+        Some(&world.session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -2879,7 +2918,7 @@ async fn a_model_allowlist_gates_the_gateway() {
         "PATCH",
         &format!("/api/v1/org/keys/{}", world.key_id),
         Some(json!({"modelAllowlist": [world.model("ok")]})),
-        Some(&world.key),
+        Some(&world.session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -2917,7 +2956,7 @@ async fn a_model_allowlist_gates_the_gateway() {
         "PATCH",
         &format!("/api/v1/org/keys/{}", world.key_id),
         Some(json!({"modelAllowlist": null})),
-        Some(&world.key),
+        Some(&world.session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -2945,7 +2984,7 @@ async fn a_requests_per_minute_cap_refuses_the_next_request() {
         "PATCH",
         &format!("/api/v1/org/keys/{}", world.key_id),
         Some(json!({"requestsPerMinute": 1})),
-        Some(&world.key),
+        Some(&world.session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -2988,7 +3027,7 @@ async fn a_max_concurrent_holds_cap_refuses_the_extra_turn() {
         "PATCH",
         &format!("/api/v1/org/keys/{}", world.key_id),
         Some(json!({"maxConcurrentHolds": 1})),
-        Some(&world.key),
+        Some(&world.session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -3086,7 +3125,7 @@ async fn a_tokens_per_minute_cap_refuses_the_request_over_estimate() {
         "PATCH",
         &format!("/api/v1/org/keys/{}", world.key_id),
         Some(json!({"tokensPerMinute": 1_000_000})),
-        Some(&world.key),
+        Some(&world.session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -3138,7 +3177,7 @@ async fn the_token_window_ages_out_and_admits_again() {
         "PATCH",
         &format!("/api/v1/org/keys/{}", world.key_id),
         Some(json!({"tokensPerMinute": 1500})),
-        Some(&world.key),
+        Some(&world.session),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -3186,7 +3225,7 @@ async fn rpm_and_tpm_compose_without_leaking() {
         "PATCH",
         &format!("/api/v1/org/keys/{}", world.key_id),
         Some(json!({"requestsPerMinute": 1, "tokensPerMinute": 1_000_000})),
-        Some(&world.key),
+        Some(&world.session),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -3261,7 +3300,7 @@ async fn an_each_scope_refuses_only_the_capped_value() {
         Some(json!({
             "tokensPerMinuteScopes": {"team": {"each": 1500}}
         })),
-        Some(&world.key),
+        Some(&world.session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -3350,7 +3389,7 @@ async fn a_concrete_scope_counts_only_the_pinned_value() {
         Some(json!({
             "tokensPerMinuteScopes": {"tier": {"concrete": "free", "tokensPerMinute": 1500}}
         })),
-        Some(&world.key),
+        Some(&world.session),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -3399,7 +3438,7 @@ async fn a_total_scope_aggregates_every_value() {
         Some(json!({
             "tokensPerMinuteScopes": {"region": {"total": 1500}}
         })),
-        Some(&world.key),
+        Some(&world.session),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -3462,7 +3501,7 @@ async fn an_untagged_turn_ignores_the_scopes() {
         Some(json!({
             "tokensPerMinuteScopes": {"team": {"each": 1500}}
         })),
-        Some(&world.key),
+        Some(&world.session),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -3746,7 +3785,7 @@ async fn a_scrape_counts_the_settled_turn() {
 /// answer also stamps the settled charge, because the settlement lands before
 /// the answer goes out.
 #[tokio::test]
-async fn the_answer_says_what_it_cost_and_what_is_left() {
+async fn the_answer_says_what_it_cost_without_customer_balance() {
     let world = world!(1_000_000);
     world.answers(
         "ok",
@@ -3768,8 +3807,7 @@ async fn the_answer_says_what_it_cost_and_what_is_left() {
     };
     let freeze = expected_freeze(None);
     assert_eq!(header("x-oxsum-freeze-minor"), freeze);
-    // The runway is the spendable balance measured right after the hold landed.
-    assert_eq!(header("x-oxsum-balance-minor"), 1_000_000 - freeze);
+    assert!(response.headers().get("x-oxsum-balance-minor").is_none());
     assert_eq!(header("x-oxsum-charged-minor"), 12);
     let (status, _) = json_of(response).await;
     assert_eq!(status, StatusCode::OK);
@@ -3814,7 +3852,7 @@ async fn a_streamed_answer_reports_its_charge_in_a_trailer() {
             .get("x-oxsum-balance-minor")
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.parse::<i64>().ok()),
-        Some(1_000_000 - freeze)
+        None
     );
     // The settled charge is announced as a trailer, not stamped on the head.
     assert_eq!(
@@ -4568,12 +4606,16 @@ async fn second_route(world: &World, model: &str, protocol: &str, weight: i64) -
     let channel = format!("backup-{}", world.suffix);
     let script = Script::default();
     let base_url = start_upstream(script.clone()).await;
-    db.set_channel(
+    db.set_channel_pool_policy(
         &channel,
         &base_url,
-        "upstream-secret-backup",
+        Some(&["upstream-secret-backup".to_owned()]),
         protocol,
         &secret,
+        Some(&oxsum_core::ProviderDestinationPolicy {
+            network: oxsum_core::ProviderNetwork::Internal,
+            allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+        }),
     )
     .await
     .expect("the second channel is written");

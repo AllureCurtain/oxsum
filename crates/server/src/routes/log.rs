@@ -23,8 +23,13 @@ pub(crate) async fn proof(
         .map(signing_key)
         .transpose()
         .map_err(|_| ApiError::Internal)?;
+    let scope = state.db.customer_record_scope(&principal).await?;
     match w
-        .receipt_proof(oxsum_core::EntryId::from_uuid(entry_id), key.as_ref())
+        .scoped_receipt_proof(
+            oxsum_core::EntryId::from_uuid(entry_id),
+            key.as_ref(),
+            &scope,
+        )
         .await?
     {
         Some(bundle) => ok(bundle),
@@ -311,10 +316,26 @@ pub(crate) struct PriceHeadQuery {
 /// exists to drift.
 pub(crate) async fn log_price_head(
     State(state): State<AppState>,
-    Extension(_principal): Extension<Principal>,
+    Extension(principal): Extension<Principal>,
     ApiQuery(q): ApiQuery<PriceHeadQuery>,
 ) -> ApiResult<SignedPriceHeadRes> {
     let key = head_signing_key(&state)?;
+    let access = state
+        .db
+        .serving_access(
+            principal.organization().id,
+            principal.acting_key().map(|key| key.key_id),
+        )
+        .await?;
+    if !state
+        .db
+        .catalog_for_access(&access)
+        .await?
+        .iter()
+        .any(|route| route.channel == q.channel && route.model == q.model)
+    {
+        return Err(ApiError::not_found());
+    }
     let Some(row) = oxsum_core::price_row(state.db.pool(), &q.channel, &q.model, q.version).await?
     else {
         return Err(ApiError::not_found());
@@ -375,7 +396,10 @@ pub(crate) async fn entries(
         return Err(ApiError::Validation("limit must be 1 to 100".into()));
     }
     let w = wallet(&state.tenants, principal.organization()).await?;
-    let page = w.entries_page(query.before, limit as usize).await?;
+    let scope = state.db.customer_record_scope(&principal).await?;
+    let page = w
+        .scoped_entries_page(query.before, limit as usize, &scope)
+        .await?;
     ok(EntriesRes {
         rows: page
             .rows

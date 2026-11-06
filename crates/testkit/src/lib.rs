@@ -264,6 +264,24 @@ fn replace_database(url: &str, new_db: &str) -> Option<String> {
     }
 }
 
+/// Explicit registration-policy fixture for isolated legacy HTTP suites. These
+/// tests exercise other resources and are not evidence of owner/setup authority.
+/// Production signup always reads the saved business policy; no production bypass.
+#[allow(clippy::expect_used)]
+pub async fn set_registration_fixture(pool: &sqlx::PgPool, open: bool) {
+    let database: String = sqlx::query_scalar("SELECT current_database()")
+        .fetch_one(pool)
+        .await
+        .expect("isolated test database");
+    assert!(
+        database.starts_with("oxsum_test_"),
+        "registration fixture requires a scratch database"
+    );
+    sqlx::query("UPDATE oxsum.businesses SET initialized_at=COALESCE(initialized_at,now()),registration_mode=$1 WHERE singleton")
+        .bind(if open { "open" } else { "invite" })
+        .execute(pool).await.expect("explicit test registration policy");
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

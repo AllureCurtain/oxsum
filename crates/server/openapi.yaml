@@ -1,9 +1,52 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.100.0
+  version: 0.110.0
+  x-consumption-cache: Cached responses are bound to the exact consumption key as well as customer, channel, model and prompt. Pre-upgrade cache digests are misses.
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
+
+    0.104.0 requires customer/team invitation consent: direct member addition is retired,
+    invitation creation is idempotent, bound recipients can register or authenticate and
+    accept, pending links are revocable, and business invitations reserve new customer IDs.
+
+    0.105.0 limits consumption keys to gateway access and their own attributed
+    evidence/status. Keys cannot administer credentials, members, payment initiation,
+    webhooks, reports, statements or read customer-wide balances/budgets. Customer
+    member sessions retain their own key-attributed records and shared unattributed
+    history except account-wide document markers; owner/admin sessions retain complete
+    customer history. Raw entries,
+    proofs, requests, holds and WebSocket use the same record scope. Task poll/cancel
+    requires the submitting key. Gateway/task replay fingerprints bind the key and
+    protocol: legacy unbound idempotency records conflict until their 24-hour expiry.
+    Gateway responses retain request/freeze/charge headers but no longer disclose
+    customer-wide balance in headers or insufficient-funds errors. Explicit machine
+    credential headers never fall through to a browser cookie, even if malformed.
+
+    0.106.0 adds owner-issued business integration credentials with explicit
+    customersRead/meteringWrite scopes, selected customer IDs, mandatory expiry,
+    revocation and one-time secrets. Legacy global service credentials are disabled;
+    deployment-token issuance is retired. Metering binds the credential, customer,
+    original request and finalization body before any financial effect.
+
+    0.109.0 filters customer catalogs, estimates and serving routes by business,
+    customer tier, current consumption key model grants and request-group channels.
+    Alias public names and resolved targets must both be allowed. Experiments and
+    fallbacks never widen these permissions, and retain the original requested name.
+    Tasks use the same admission rules; status/cancel remain bound to their original key.
+
+    0.108.0 enforces destination policy on channel gateway, task, catalog and billing requests.
+    Public endpoints require HTTPS and public DNS addresses. Internal endpoints
+    require owner-approved exact IP addresses. Resolution is pinned for the connection;
+    proxies and redirects are disabled. Saved credentials never follow redirects.
+    Connection checks are explicit, audited HEAD requests with durable replay results.
+
+    0.107.0 adds business provider configuration. Current business sessions and
+    capabilities are checked with each configuration/audit/idempotency transaction.
+    Only owners can change connection destinations, protocols and provider secrets.
+    Owner/admin can manage catalog, cache and fallback configuration. Provider reads
+    are owner/admin only and never expose plaintext or sealed secrets. Saves do not
+    make provider calls. Destination connection checks are a separate explicit action.
 
     Three surfaces, deliberately different:
 
@@ -125,9 +168,8 @@ info:
     pool. The scrape carries the same operator bearer token as the admin
     surface; a deployment without one answers 401 there too.
     0.31.0 answers what a gateway request cost without a second call:
-    `x-oxsum-freeze-minor` and `x-oxsum-balance-minor` on the response
-    head of every answer that took the hold — the reserved bound and the
-    spendable balance left after it — and `x-oxsum-charged-minor` once
+    `x-oxsum-freeze-minor` on the response head of every answer that took
+    the hold, and `x-oxsum-charged-minor` once
     the turn settled, a header on non-streamed answers and on refusals
     that happened after the hold, and an HTTP trailer on streamed ones.
     0.32.0 dead-letters a hold watch after ten failed sweeps: the row
@@ -264,7 +306,7 @@ info:
 
     0.46.0 adds the metering surface (issue #172): the deployer's own services report billable
     events under `/api/v1/metering` — `holds`, `settle`, `release` and one-shot `settlements`
-    — authenticated by a service credential (`oxs-svc-…`) the admin mints, never by an
+    — originally authenticated by a global service credential (retired by 0.106.0), never by an
     organization's key or a session. A service names the `organizationId` it meters for, a
     `channel` and a `billableCode`, which resolve to the channel's `mode: event` price version;
     the declared `usage` is a UsageRecord in the code's own units, and every call carries an
@@ -730,8 +772,7 @@ info:
     reports which variant served, it does not judge outputs or pick a winner.
     An open request names no experiment (a missing or unknown or ended name
     leaves the request's `model` untouched). The list and the results reads
-    answer any member; the writes are owner/admin actions the membership role
-    gates, the same rule `teams` keeps.
+    require current owner/admin sessions for both reads and writes since 0.105.0.
 
     0.97.0 delivers invitation links (issue #567): `POST /api/v1/org/invitations`
     accepts an optional `{email}`. With an address and a configured mailer the
@@ -741,7 +782,10 @@ info:
     deployment without a mailer is refused with a validation error, and a
     request sending no body keeps answering the link alone.
 
-    Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
+    Customer consumption reads accept a key or customer session with the record scope
+    described above. Personal management and checkout require a session; account-wide
+    statements, reports, experiments and webhooks require owner/admin. See
+    docs/customer-capabilities.md for the complete route inventory. The
     endpoints that take no credential at all are the ones whose credential is in the body or
     whose job precedes authentication: `/api/v1/auth/login`, `/api/v1/auth/logout`,
     `/api/v1/auth/register`, `/api/v1/auth/totp`, `/api/v1/auth/oauth/{provider}`,
@@ -751,7 +795,8 @@ info:
     `/api/v1/device/token`, `/api/v1/log/key`, `/api/v1/webhooks/stripe`,
     `/api/v1/webhooks/airwallex` and `/api/v1/webhooks/hyperswitch`. The cookie is never
     accepted on `/v1`: the gateway takes an API key only — `Authorization: Bearer` or
-    `x-api-key`.
+    `x-api-key` or `x-goog-api-key`. Explicit machine headers, including malformed
+    values, never inherit a browser cookie's authority.
 servers:
   - url: http://localhost:3000
 security:
@@ -769,6 +814,7 @@ paths:
               schema: { type: string, example: ok }
   /metrics:
     get:
+      security: [{ adminToken: [] }]
       summary: Prometheus metrics
       description: |
         The process's telemetry in Prometheus exposition format (`text/plain;
@@ -789,6 +835,7 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
   /add-checkpoint:
     post:
+      security: []
       summary: Offer a head to this deployment's tlog-witness (issue #260)
       description: |
         The [C2SP `tlog-witness`](https://c2sp.org/tlog-witness) endpoint: a
@@ -842,7 +889,7 @@ paths:
     post:
       summary: Register a user, its personal organization and the first API key
       description: |
-        Refused with `FORBIDDEN` unless the deployment allows self-service signup (`OXSUM_SIGNUP=open`).
+        Refused with `FORBIDDEN` unless the initialized business owner has enabled self-registration. `OXSUM_SIGNUP` cannot override this policy.
         The API key secret is returned once, here, and is never retrievable again.
       security: []
       requestBody:
@@ -868,13 +915,13 @@ paths:
     post:
       summary: Register through an invitation link
       description: |
-        The one registration an `invite`-mode deployment allows — the link is the
-        credential, so no other authentication applies, whatever `OXSUM_SIGNUP` is.
-        The token names one live invitation: usable once, valid seven days from minting,
-        and unknown, spent and expired tokens are all `404 NOT_FOUND` — which is wrong
-        is the holder's business. The new account joins the invitation's organization as
-        a `member`, with the first API key minted for that organization; no personal
-        organization is created — that is what `auth/register` is for.
+        The token authorizes registration even with invite-only business policy.
+        A team invitation joins the existing customer as member; a business invitation
+        creates its reserved customer and initial customer owner. A bound email must
+        match. Registration, membership, first key, consumption and audit are atomic.
+        No staff authority or promotional funding is granted. Unknown, spent, revoked,
+        expired and wrong-email tokens return 404. Existing accounts must log in and
+        explicitly accept instead. The spent token cannot retrieve the first key again.
       security: []
       requestBody:
         required: true
@@ -895,6 +942,156 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/invitations/preview:
+    post:
+      summary: Inspect the offered customer membership before consenting
+      description: The invitation token is the credential. Returns only the target name, identity, offered role and expiry. Unknown, spent, revoked and expired links return 404.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        "200":
+          description: The offered membership
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/InvitationPreview" }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /api/v1/invitations/accept:
+    post:
+      summary: Consent to a customer or team invitation as an existing user
+      description: |
+        Requires a live personal session and the invitation token. A bound email must
+        match the signed-in account. Creates only the offered customer membership,
+        never staff authority, and does not switch session context or mint a key.
+        Repeating acceptance by the same person returns the original receipt without
+        restoring a subsequently removed membership. Other spent, revoked, expired
+        or unknown tokens return 404. A confirmed second factor must be satisfied.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        "200":
+          description: Consent receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/InvitationAcceptance" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/org/invitations/{invitationId}/revoke:
+    parameters:
+      - { in: path, name: invitationId, required: true, schema: { type: string, format: uuid } }
+    post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
+      summary: Revoke an unaccepted invitation in the selected customer account
+      description: Current owner/admin session required. Accepted links cannot be revoked; remove the membership separately.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InvitationRevokeRequest" }
+      responses:
+        "200":
+          description: Immutable mutation receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/customer-invitations:
+    post:
+      summary: Invite the first owner of a new customer account
+      description: |
+        Business customersWrite capability (owner/admin), reason and idempotency key
+        required. Reserves a customer UUID and stable external ID for seven days.
+        The intended email holder must register or explicitly accept while signed in
+        before the customer account, owner membership and profile are created together.
+        No staff role or funding is granted. Live pending invitations and existing
+        customers cannot share an external ID. Revocation/expiry releases the reservation.
+        Returns the token once; identical retries return the same ID with token null.
+        Changed-body retries conflict. This endpoint does not send email.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CustomerInvitationRequest" }
+      responses:
+        "200":
+          description: Invitation and reserved customer identity
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/CreatedInvitation" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/customer-invitations/{invitationId}/revoke:
+    parameters:
+      - { in: path, name: invitationId, required: true, schema: { type: string, format: uuid } }
+    post:
+      summary: Revoke a business customer invitation
+      description: Business customersWrite capability required. Accepted invitations conflict; archive or manage the resulting customer separately.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InvitationRevokeRequest" }
+      responses:
+        "200":
+          description: Immutable mutation receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /api/v1/auth/login:
     post:
       summary: Log in with email and password
@@ -910,9 +1107,9 @@ paths:
 
         An unknown email and a wrong password answer the same 401 with the same message, and the
         unknown-email path still pays for one password-hash verification, so neither timing nor
-        wording reveals whether an account exists. The session acts as the user's organization, in
-        their role; it expires thirty days after login and stops authenticating the moment the
-        user's membership in that organization is gone.
+        wording reveals whether an account exists. The session starts in customer context. Customer authority requires a current membership.
+        A user with none receives an identity-only session and can explicitly select a current
+        staff context. Sessions expire thirty days after login.
       security: []
       requestBody:
         required: true
@@ -935,8 +1132,9 @@ paths:
                   data:
                     oneOf:
                       - $ref: "#/components/schemas/SessionInfo"
+                      - $ref: "#/components/schemas/SessionContextInfo"
                       - $ref: "#/components/schemas/TotpRequired"
-                    description: "`SessionInfo` on a password-only login; `TotpRequired` when the account's second factor must be satisfied first"
+                    description: "SessionInfo for a customer membership; SessionContextInfo with null organizationId when none remains; TotpRequired when the second factor must be satisfied first"
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
@@ -1008,6 +1206,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/device/request:
     get:
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
       summary: Read a pending device request
       description: |
         What the approval page reads before showing the decision: the request
@@ -1033,6 +1233,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/device/authorize:
     post:
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
       summary: Approve or deny a device request
       description: |
         The signed-in user's verdict on the request the `userCode` names.
@@ -1137,7 +1339,7 @@ paths:
         exchange (issue #504). The account resolves by the **verified** email
         the provider reports: a linked `oauth_accounts` row first, then an
         email match that links the identity, and otherwise a registration when
-        `OXSUM_SIGNUP=open` (an `invite` deployment refuses new accounts here).
+        the initialized business policy is `open` (an invite-only business refuses new accounts here).
         Success mints a session and answers `303` to `/app` with the session
         `Set-Cookie`; every failure answers `303` back to `/app/login?error=oauth`,
         because the caller is a browser mid-redirect, not an API client.
@@ -1200,7 +1402,10 @@ paths:
                 type: object
                 required: [data]
                 properties:
-                  data: { $ref: "#/components/schemas/SessionInfo" }
+                  data:
+                    oneOf:
+                      - $ref: "#/components/schemas/SessionInfo"
+                      - $ref: "#/components/schemas/SessionContextInfo"
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
@@ -1208,8 +1413,11 @@ paths:
         "503": { $ref: "#/components/responses/Error" }
   /api/v1/auth/totp/enroll:
     post:
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
       summary: Begin TOTP enrollment
       description: |
+        Accepts a live personal session in either context, even without a customer membership. An explicit bearer credential is refused.
         Mints a fresh shared secret for the session user, sealed at rest under
         `OXSUM_SECRET_KEY` the way an upstream credential is, and answers it
         once as base32 plus the `otpauthUrl` the client renders a QR from. The
@@ -1231,10 +1439,14 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /api/v1/auth/totp/confirm:
     post:
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
       summary: Confirm TOTP enrollment on a live code
       description: |
+        Accepts a live personal session in either context, even without a customer membership. An explicit bearer credential is refused.
         Proves the authenticator scanned the pending secret: on a live code the
         enrollment confirms — the factor now gates every password login — and
         the answer carries ten single-use backup codes, shown exactly once and
@@ -1262,8 +1474,11 @@ paths:
         "503": { $ref: "#/components/responses/Error" }
   /api/v1/auth/totp/disable:
     post:
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
       summary: Disable the second factor on a live code
       description: |
+        Accepts a live personal session in either context, even without a customer membership. An explicit bearer credential is refused.
         Removes the user's confirmed factor — itself second-factored: the
         request carries a live code, so a hijacked session alone cannot strip
         the protection. An empty answer follows the `LogoutResponse` shape.
@@ -1291,6 +1506,7 @@ paths:
     post:
       summary: Mail the session user's verification link
       description: |
+        Accepts a live personal session in either context, even without a customer membership. An explicit bearer credential is refused.
         Mints a single-use email token (seven-day life, stored as its SHA-256 hash) and
         mails the verification link to the session user's address. The session is the
         credential: an API key names no user and is `FORBIDDEN` here.
@@ -1408,14 +1624,14 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/session:
     get:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: The current session
       description: |
         Who is logged in, as which organization, in which role. Takes the session cookie; a bearer
-        key names no session and answers 404.
-      security:
-        - bearer: []
-        - sessionCookie: []
+        key names no personal session and answers 403.
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The session, the user, the organization and the role
           content:
@@ -1430,6 +1646,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/session/organization:
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Switch the organization the session acts as
       description: |
         Carries the session's acting organization — the choice the dashboard's switcher makes.
@@ -1438,8 +1656,6 @@ paths:
         probed. The session row is updated, so the choice survives reloads and new tabs alike, and
         every organization-scoped read follows it. A person's action: an API key already *is* an
         organization and cannot act as another, so it is refused (403).
-      security:
-        - sessionCookie: []
       requestBody:
         required: true
         content:
@@ -1462,8 +1678,11 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/users/me:
     delete:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Delete the session user's account (pseudonymization)
       description: |
+        Accepts a live personal session in either context, even without a customer membership. An explicit bearer credential is refused.
         Irreversible. The account's identity is erased while the books keep their history:
         the user row's `email` is tombstoned to `deleted-<userId>@deleted.invalid`, the
         password hash is blanked so no login can ever succeed, `emailVerified` is cleared,
@@ -1486,8 +1705,6 @@ paths:
         must set a real one through the reset flow before it can confirm this call. The
         answer names what was removed. The session dies in the same commit, so a
         second call can never reach the handler — its cookie is already dead.
-      security:
-        - sessionCookie: []
       requestBody:
         required: true
         content:
@@ -1516,13 +1733,13 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/orgs:
     get:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: The organizations the session's user belongs to
       description: |
         Every organization the logged-in user is a member of, oldest membership first, each with
         the role the user holds in it — the list the organization switcher offers. A person's list:
         an API key belongs to one organization and names no member, so it is refused (403).
-      security:
-        - sessionCookie: []
       responses:
         "200":
           description: The user's organizations with their roles
@@ -1539,6 +1756,8 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Create a team organization
       description: |
         Creates a `team` organization — its own ledger, its own keys, its own balance — and makes
@@ -1546,8 +1765,6 @@ paths:
         organization is exactly what signup makes. A person's action: an API key has no user to own
         the new organization, so it is refused (403). The session keeps acting as the organization
         it had; switching to the new one is `POST /api/v1/session/organization`.
-      security:
-        - sessionCookie: []
       requestBody:
         required: true
         content:
@@ -1569,6 +1786,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: The authenticated organization
       description: The organization the presented credential belongs to.
       responses:
@@ -1584,6 +1803,8 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
     patch:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Set the organization's display currency
       description: |
         Sets the fiat unit the organization renders its balances, bills and
@@ -1596,8 +1817,6 @@ paths:
         A session in the owner or admin role writes it; a member's session and
         an API key are refused — the display is the organization's own setting,
         and a credential that is not a person cannot speak for it.
-      security:
-        - sessionCookie: []
       requestBody:
         required: true
         content:
@@ -1619,11 +1838,13 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/keys:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: List the organization's API keys
       description: |
         Metadata only. Neither a secret nor a hash is ever returned. Members see only the keys they
-        created; owners and admins see every key of the organization. An API key acting as the
-        organization sees all of them, as before sessions.
+        created; owners and admins see every key of the organization. A consumption key
+        sees only its own metadata, including constraints and expiry, never sibling keys.
       responses:
         "200":
           description: The organization's keys, newest first
@@ -1639,14 +1860,15 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Create an API key
       description: |
-        Returns the secret once. A key minted through a session records who minted it (`createdBy`),
-        for the per-member role rules; a key minted with an API key records no creator, because no
-        person acts there.
-        Creation, constraints and group assignment commit atomically. A grouped bearer cannot
-        mint keys. Only an owner/admin session or an ungrouped organization key may assign
-        `groupId`; a member session may create an ungrouped key.
+        Requires a live personal customer session. Returns the secret once and records
+        the session user as `createdBy`. Members create their own ungrouped keys;
+        current owner/admin sessions may assign `groupId`. Creation, current-session/role
+        checks, constraints and group assignment commit atomically. Consumption keys
+        cannot mint credentials, regardless of group assignment.
       requestBody:
         required: false
         content:
@@ -1668,6 +1890,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/keys/{keyId}:
     patch:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Set an API key's constraints
       description: |
         Replaces the key's whole constraint set — each of `spendLimitMinor`,
@@ -1676,9 +1900,8 @@ paths:
         field left out or null clears it.
 
         `groupId` differs: omission preserves its assignment; explicit null ungroups the key.
-        Only an owner/admin session or an ungrouped organization key may change it.
-        A grouped bearer cannot patch keys, including its own. Authorization, constraints
-        and assignment commit atomically.
+        Only a current owner/admin session may change it. Consumption keys cannot patch
+        keys, including their own. Authorization, constraints and assignment commit atomically.
 
         `spendLimitMinor` caps what the key may have committed — settled charges plus
         outstanding holds attributed to it, in minor units. `budgetDuration` makes
@@ -1712,8 +1935,8 @@ paths:
         cannot exceed it. A replayed hold answers its own receipt before any of
         these checks run: retrying one request never consumes the key's windows
         twice. The scope rules are the revoke's: a member may change only the keys
-        they created — any other key id answers 404 and the key is untouched; owners, admins
-        and API keys acting as the organization may change any key of the organization. A key
+        they created — any other key id answers 404 and the key is untouched; current owner/admin
+        sessions may change any key of the organization. Consumption keys receive 403. A key
         id belonging to another organization is `NOT_FOUND`.
       parameters: [{ $ref: "#/components/parameters/KeyId" }]
       requestBody:
@@ -1737,6 +1960,8 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
     delete:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Revoke an API key
       description: |
         Permanent and idempotent. A member may revoke only the keys they created — revoking any
@@ -1744,6 +1969,7 @@ paths:
         belonging to another organization is `NOT_FOUND`.
       parameters: [{ $ref: "#/components/parameters/KeyId" }]
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The revoked key
           content:
@@ -1759,6 +1985,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/keys/{keyId}/mandates:
     get:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: List a key's mandates
       description: |
         Every mandate minted for the key, newest first — metadata only: `mandate` is the
@@ -1767,6 +1995,7 @@ paths:
         any other key id answers 404.
       parameters: [{ $ref: "#/components/parameters/KeyId" }]
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The key's mandates, newest first
           content:
@@ -1782,6 +2011,8 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Mint a spend mandate for a key
       description: |
         Delegates a strictly narrower slice of the key's authority to a bearer who does not
@@ -1791,8 +2022,10 @@ paths:
         path does. A mandate can only narrow the key's own constraints: `capMinor` and
         `models` must sit inside the key's, and `notAfter` bounds how long it lives. Every
         mandate carries a `nonce` for uniqueness, so two identical requests mint two
-        different mandates. Minting needs the key itself (`Authorization: Bearer oxs-…`) or
-        an owner/admin session — holding the credential is what authorizes delegation.
+        different mandates. Minting requires a current personal session: members may mint
+        only for their own keys, owner/admin sessions for any key in this customer.
+        Consumption keys cannot mint or list mandates. Using a mandate on the gateway
+        still requires the corresponding consumption key.
       parameters: [{ $ref: "#/components/parameters/KeyId" }]
       requestBody:
         required: true
@@ -1800,6 +2033,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/CreateMandateRequest" }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The minted mandate — `mandate` is the signed blob the delegate carries
           content:
@@ -1815,6 +2049,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/keys/{keyId}/entitlement:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: May this key call now? A read-only admission preview
       description: |
         The "can I" surface (issue #501): the same checks the gateway's
@@ -1845,10 +2081,10 @@ paths:
         request may spend the headroom between the answer and the call, which
         is exactly what the atomic admission checks exist for.
 
-        The scope rules are the revoke's: a member reads only the keys they
-        created, owners, admins and API keys acting as the organization read
-        any key of it, and a key id of another organization — or, for a
-        member, a key they did not create — is `NOT_FOUND`. The entitlement
+        A consumption key reads only its own ID. A member session reads only keys
+        they created; owner/admin sessions read any key in this customer. Every
+        out-of-scope key ID is `NOT_FOUND`. Headroom is the effective key/member/team
+        admission limit; it never reports the customer's wallet balance. The entitlement
         check itself is free: it consumes nothing and is never rate-limited.
       parameters:
         - { $ref: "#/components/parameters/KeyId" }
@@ -1878,23 +2114,21 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/invitations:
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Mint an invitation link
       description: |
-        A link into this organization: `/app/invite?token=<token>` in the dashboard, or
-        `POST /api/v1/invitations/redeem` with the token, an email and a password. The
-        token is answered exactly once, here; the database keeps only its hash. An
-        invitation is valid seven days and works once. Owners and admins mint links;
-        a member is refused, and a person's action means a bearer API key is refused
-        too — a key is not a person.
-
-        An optional `email` mails the link instead of leaving it for the operator to
-        pass along. A deployment without a mailer refuses an address rather than
-        minting a link nobody receives; a send that fails answers `delivery: failed`
-        and the token is still in the answer.
-      security:
-        - sessionCookie: []
+        A seven-day invitation into the selected customer account. Requires a current
+        owner/admin personal session and idempotencyKey. New users register through
+        /invitations/redeem; existing users explicitly consent through /invitations/accept.
+        Only member authority is granted. The original customer/ledger/key IDs stay fixed.
+        The optional intendedEmail binds acceptance without sending mail. Optional email
+        both binds the recipient and requests delivery; when both are present they must
+        match. No mailer refuses delivery before minting. A failed send leaves a usable link.
+        Identical retries return the original ID with token null and do not resend mail;
+        changed terms conflict. The token is stored only as a hash and is shown once.
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema: { $ref: "#/components/schemas/CreateInvitationRequest" }
@@ -1911,15 +2145,19 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/members:
     get:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: List the organization's members
       description: |
         The members the session's organization carries, with each member's role and
         budget cap — the dashboard's members page. Reading is any member's right;
         the writes beside this path are an owner or admin's.
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The members
           content:
@@ -1938,46 +2176,21 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
     post:
-      summary: Add an existing account to the organization as a member
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
+      summary: Retired direct membership addition
+      deprecated: true
       description: |
-        The email names an account that already exists, and that account becomes a member.
-        Someone who has no account yet comes in through an invitation link instead:
-        `POST /api/v1/org/invitations` mints one and `POST /api/v1/invitations/redeem`
-        registers through it. An unknown email here is `NOT_FOUND`, never a stored
-        invitation.
-
-        Only an owner or an admin may manage memberships, and only a logged-in person: an API key is
-        not a person and names no role, so it is refused here too (docs/decisions.md, "membership
-        management is a person's action"). A member is refused. A new membership's role is always
-        `member`; ownership is never granted here, and only `POST /api/v1/org/ownership` can move
-        the owner seat.
-
-        Adding the second person to a personal organization flips its kind to `team`; the ledger
-        does not move. An account that is already a member is `CONFLICT`.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/AddMemberRequest" }
+        Authenticated callers receive 403 before body parsing. Use /org/invitations
+        and explicit recipient acceptance; knowing an email cannot grant membership.
       responses:
-        "200":
-          description: The new membership
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [data]
-                properties:
-                  data: { $ref: "#/components/schemas/Member" }
-        "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
-        "404": { $ref: "#/components/responses/Error" }
-        "409": { $ref: "#/components/responses/Error" }
-        "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/members/{userId}:
     parameters: [{ $ref: "#/components/parameters/UserId" }]
     patch:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Change a member's role or budget
       description: |
         `role` is `admin` or `member`, and there is deliberately no `owner` value: ownership is a
@@ -2024,6 +2237,8 @@ paths:
         "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
     delete:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Remove a member from the organization
       description: |
         The membership row is deleted; the user and their personal organization are untouched. Only
@@ -2052,6 +2267,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/teams:
     get:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: List the organization's teams
       description: |
         The teams the organization carries (issue #440), oldest first — the budget
@@ -2059,6 +2276,7 @@ paths:
         Reading the organization's own structure is any member's right; the writes
         beside it are owner/admin-gated.
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The teams
           content:
@@ -2077,6 +2295,8 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Create a team
       description: |
         Creates a named subgroup under the organization with an optional
@@ -2106,6 +2326,8 @@ paths:
   /api/v1/org/teams/{teamId}:
     parameters: [{ $ref: "#/components/parameters/TeamId" }]
     patch:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Change a team's name or budget cap
       description: |
         `name` renames the subgroup (unique per organization); `budgetLimitMinor`
@@ -2135,6 +2357,8 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
     delete:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Dissolve a team
       description: |
         Removes the team; every membership it grouped keeps its seat with `teamId`
@@ -2156,12 +2380,16 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/experiments:
     get:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: List the organization's experiments
       description: |
         The A/B variant sets the organization carries (issue #509), oldest first — open
         and ended. Reading the organization's own config is any member's right; the
         writes beside it are owner/admin-gated.
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The experiments
           content:
@@ -2178,8 +2406,13 @@ paths:
   /api/v1/org/experiments/{name}:
     parameters: [{ $ref: "#/components/parameters/ExperimentName" }]
     put:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Create or replace an experiment
       description: |
+        Every variant must be visible in the current customer-authorized catalog.
+        Runtime key/group and alias-target restrictions are checked again at admission.
         Creates the named experiment or replaces its whole variant set atomically —
         config, not ledger, so the write is a `PUT` of the full
         `{variants: [{model, weight}]}` rather than an append. Every variant's `model`
@@ -2209,6 +2442,9 @@ paths:
   /api/v1/org/experiments/{name}/end:
     parameters: [{ $ref: "#/components/parameters/ExperimentName" }]
     post:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: End an experiment
       description: |
         Flips the named experiment to `ended`: a later request carrying
@@ -2233,6 +2469,9 @@ paths:
   /api/v1/org/experiments/{experimentId}/results:
     parameters: [{ $ref: "#/components/parameters/ExperimentId" }]
     get:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Group the experiment's recorded usage by variant
       description: |
         The usage the experiment served, grouped by variant: turns, token and
@@ -2243,6 +2482,7 @@ paths:
         stays offline — oxsum reports which variant served; it does not judge
         outputs or promote a winner.
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The variant groups
           content:
@@ -2259,6 +2499,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/ownership:
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Transfer ownership of the organization
       description: |
         The one way to become the owner, and the only way an owner stops being one: the named member
@@ -2293,6 +2535,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/subscription:
     get:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: The organization's active subscription
       description: |
         The subscription currently metering the organization's gateway
@@ -2303,6 +2547,7 @@ paths:
         `active` row is ever returned here — a cancelled or expired binding
         leaves the organization unsubscribed.
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The active subscription, or `null`
           content:
@@ -2319,6 +2564,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/subscription/checkout:
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Open a Stripe checkout for a subscription plan
       description: |
         Starts a Stripe Checkout session in `subscription` mode for the named
@@ -2335,6 +2582,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/SubscriptionCheckoutRequest" }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The checkout URL and the plan it buys
           content:
@@ -2359,6 +2607,8 @@ paths:
         "503": { $ref: "#/components/responses/Error" }
   /api/v1/org/subscription/periods:
     get:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: The organization's subscription period history
       description: |
         Every period a binding has ever metered for the organization, newest
@@ -2369,6 +2619,7 @@ paths:
         these rows — one row opens with each binding or rollover and closes
         with an outcome.
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The organization's periods, newest first
           content:
@@ -2384,12 +2635,16 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/webhooks:
     get:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: List the organization's webhook endpoints
       description: |
         Every endpoint the caller's organization registered, newest first. A listing
         never carries a signing secret — only `secretLast4`; the full secret is
         returned once, at creation.
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The organization's endpoints
           content:
@@ -2404,6 +2659,9 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
     post:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Register a webhook endpoint
       description: |
         `url` is the HTTPS (or HTTP, for a receiver on localhost) address oxsum posts
@@ -2430,6 +2688,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/CreateWebhookRequest" }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The endpoint and its secret, shown only here
           content:
@@ -2444,12 +2703,16 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/webhooks/{endpointId}:
     delete:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Delete a webhook endpoint
       description: |
         Permanent. Undelivered deliveries of the endpoint go with it. An endpoint
         belonging to another organization is `NOT_FOUND`.
       parameters: [{ $ref: "#/components/parameters/EndpointId" }]
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The deleted endpoint
           content:
@@ -2464,6 +2727,9 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/webhooks/{endpointId}/deliveries:
     get:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: List an endpoint's recent deliveries
       description: |
         The fifty most recent attempts, newest first: each delivery's status, its
@@ -2471,6 +2737,7 @@ paths:
         endpoint belonging to another organization is `NOT_FOUND`.
       parameters: [{ $ref: "#/components/parameters/EndpointId" }]
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The endpoint's deliveries, newest first
           content:
@@ -2487,6 +2754,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/topups:
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Retired customer manual top-up
       deprecated: true
       description: |
@@ -2535,6 +2804,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/topups/stripe:
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Open a Stripe checkout to top up
       description: |
         The `stripe` deposit rail: opens a `pending` deposit (`payment_ref` =
@@ -2549,6 +2820,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/AmountRequest" }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The checkout URL and the deposit id it credits
           content:
@@ -2569,6 +2841,8 @@ paths:
         "503": { $ref: "#/components/responses/Error" }
   /api/v1/topups/airwallex:
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Open an Airwallex payment page to top up
       description: |
         The `airwallex` deposit rail (issue #285): opens a `pending` deposit
@@ -2585,6 +2859,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/AmountRequest" }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The hosted-page URL, the intent identity and the deposit it credits
           content:
@@ -2607,6 +2882,8 @@ paths:
         "503": { $ref: "#/components/responses/Error" }
   /api/v1/topups/x402:
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Credit a signed x402 payment authorization
       description: |
         The `x402` deposit rail (issues #264, #282): the caller presents a
@@ -2707,6 +2984,8 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
   /api/v1/topups/hyperswitch:
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Create a Hyperswitch payment to top up
       description: |
         The `hyperswitch` deposit rail (issue #319): opens a `pending` deposit
@@ -2726,6 +3005,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/AmountRequest" }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The payment identity, the browser secret and the deposit it credits
           content:
@@ -2778,6 +3058,8 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
   /api/v1/redemptions:
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Redeem a code into the acting organization's wallet
       description: |
         The `redemption` deposit rail: a code the operator minted (`POST
@@ -2795,6 +3077,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/RedeemRequest" }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The receipt of the credit, with the amount the code carried
           content:
@@ -2811,6 +3094,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/holds:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: The organization's in-flight holds
       description: |
         The holds the ledger still reserves for this organization — the
@@ -2836,6 +3121,8 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       deprecated: true
       summary: Customer raw holds are forbidden
       description: |
@@ -2848,6 +3135,8 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
   /api/v1/settlements:
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       deprecated: true
       summary: Customer raw settlements are forbidden
       description: |
@@ -2859,6 +3148,8 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
   /api/v1/bills:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: The organization's transactions, newest first
       description: |
         Every ledger entry that moved money — top-ups, adjustments, settled
@@ -2896,6 +3187,9 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/statements:
     get:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: The organization's finalized statements
       description: |
         The monthly billing documents the operator has finalized, newest period
@@ -2907,6 +3201,7 @@ paths:
         unpaid; a top-up repays the line and counts against the oldest open
         statement first.
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The finalized statements, newest period first
           content:
@@ -2922,6 +3217,9 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/statements/{statementId}:
     get:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: One finalized statement, with its lines
       description: |
         The statement and its itemized lines — settled usage aggregated per
@@ -2935,6 +3233,7 @@ paths:
           required: true
           schema: { type: string, format: uuid }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The statement and its lines
           content:
@@ -2949,6 +3248,9 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/statements/{statementId}/proof:
     get:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: The statement's self-contained proof bundle
       description: |
         Everything `verify_statement_anchor` needs in one GET (issue #479):
@@ -2967,6 +3269,7 @@ paths:
           required: true
           schema: { type: string, format: uuid }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The statement and the pieces its anchor check folds
           content:
@@ -2981,6 +3284,9 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/statements/{statementId}/export.pdf:
     get:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: A finalized statement as a PDF
       description: |
         The rendered document (issue #205): the organization and period, the
@@ -2998,6 +3304,7 @@ paths:
           required: true
           schema: { type: string, format: uuid }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The statement as a PDF document
           content:
@@ -3008,6 +3315,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/balance:
     get:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Available balance (settled minus unsettled holds)
       description: |
         `availableMinor` is everything the organization can still reserve: its own
@@ -3017,6 +3326,7 @@ paths:
         drawn or held against right now. What the organization holds of its own
         money is `availableMinor - (creditLimitMinor - creditUsedMinor)`.
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The balance
           content:
@@ -3054,6 +3364,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/usage:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: Daily usage rollup
       description: |
         The `oxsum.usage_daily` rows the dashboard sums, answered as data: one row per
@@ -3091,6 +3403,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/budget:
     get:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Budget-consumption snapshot
       description: |
         Every budget scope the caller can read, with the committed figure and the
@@ -3099,10 +3413,11 @@ paths:
         the key's `budgetDuration` when it has one. `consumedPercent` floors
         `committed * 100 / limit` and is null where no numeric limit exists. Three
         scopes: `organization` carries the credit line beside the wallet balances,
-        `member` the acting member's own `budgetLimitMinor` (null for a key and for a
+        `member` the acting member's own `budgetLimitMinor` (null for a
         seat with no limit), `keys` every live key the principal's scope reaches with
         its `spendLimitMinor`, `budgetDuration` and `windowStart`.
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The budget snapshot
           content:
@@ -3115,6 +3430,8 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
   /api/v1/billing-records:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: Settled turns, newest first
       description: |
         The same page the dashboard's requests view reads: every settled gateway turn,
@@ -3156,6 +3473,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/requests:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: Search the organization's request log (issue #505)
       description: |
         The per-request operational record, newest first: one row per gateway
@@ -3164,7 +3483,9 @@ paths:
         charge, with `entryId` naming the settlement entry when the turn
         reached one. This is the search surface `usage_records` cannot answer:
         "every request this key made to this model in this window". A member's
-        read is scoped to their own organization; the operator's twin is
+        read includes only their own keys plus unattributed records. A consumption key
+        reads only its own attributed rows; query filters cannot widen this scope.
+        Owner/admin sessions see the customer-wide log; the operator's twin is
         `GET /api/v1/admin/requests`. Rows write post-settlement — a logging
         failure never fails a request — so a very recent turn may lag its
         settlement by a moment. A refused admission logs a row too
@@ -3231,6 +3552,9 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/usage-reports:
     get:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: List the organization's minted usage reports (issue #261)
       description: |
         Every usage report the organization has minted, newest first — the
@@ -3238,6 +3562,7 @@ paths:
         proofs: a mint is rare, so the descriptor alone is enough to pick the
         report whose bundle `GET .../usage-reports/{reportId}` then serves.
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The minted reports, newest first
           content:
@@ -3256,6 +3581,9 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
     post:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Mint a signed usage report for one end-user over a period (issue #261)
       description: |
         An organization bills its own downstream customers out of the same
@@ -3313,6 +3641,7 @@ paths:
                   format: date
                   description: last UTC day of the span, inclusive — must be fully ended
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The report bundle — descriptor, marker proof, per-entry proofs, signed head
           content:
@@ -3327,6 +3656,9 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/usage-reports/{reportId}:
     get:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Re-fetch a minted usage report (issue #261)
       description: |
         `reportId` is the marker entry's own id — the same id the `POST` answers
@@ -3340,6 +3672,7 @@ paths:
           required: true
           schema: { type: string, format: uuid }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The report bundle
           content:
@@ -3355,6 +3688,9 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/usage-reports/{reportId}/links:
     post:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Mint a share link to one usage report (issue #300)
       description: |
         A downstream customer holds no account, so the link is the capability:
@@ -3378,6 +3714,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/CreateReportLinkRequest" }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The link descriptor and its one-time token
           content:
@@ -3393,6 +3730,9 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/usage-reports/links:
     get:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: List the organization's report share links (issue #300)
       description: |
         Every link the organization minted, newest first — descriptors only,
@@ -3400,6 +3740,7 @@ paths:
         opened the bill; `revokedAt` and `expiresAt` are the two ways a link
         stops resolving.
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The organization's links, newest first
           content:
@@ -3418,6 +3759,9 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
     post:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Mint a share link to one downstream customer's reports (issue #300)
       description: |
         The `end_user` scope: one link that lists every report the organization
@@ -3431,6 +3775,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/CreateEndUserLinkRequest" }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The link descriptor and its one-time token
           content:
@@ -3446,6 +3791,9 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/usage-reports/links/{linkId}:
     delete:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Revoke a report share link (issue #300)
       description: |
         Idempotent: revoking an already-revoked link answers the same descriptor.
@@ -3457,6 +3805,7 @@ paths:
           required: true
           schema: { type: string, format: uuid }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The revoked link descriptor
           content:
@@ -3471,14 +3820,19 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/estimate-price:
     post:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: Price a declared token shape
       description: |
         The number the gateway would freeze for a request with this shape: the dearest
-        applicable price set over the declared input tokens and the output ceiling
+        permitted price set over the declared input tokens and the output ceiling
         (`outputTokens` clamped to the model's `maxOutputTokens`). Nothing is held or
         charged — the answer is the upper bound a real request could cost, and a real
         settle never exceeds it. An unknown model answers `VALIDATION`; a shape the
-        model's price cannot express answers the same.
+        model's price cannot express answers the same. Customer tier limits apply;
+        consumption keys additionally restrict model names and group channels. Aliases
+        require both the public and resolved model name to be allowed. Unavailable or
+        forbidden names return the same validation error, without hidden route details.
       requestBody:
         required: true
         content:
@@ -3511,15 +3865,21 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/pricing:
     get:
-      summary: The public price catalog
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
+      summary: The customer-authorized price catalog
       description: |
-        Every route the operator sells — a model may be served by several
+        Every route this customer may use — a model may be served by several
         channels, and each `(model, channel)` pair lists its own row with the
         current price version and the route's `weight`, the relative preference
         for leading a request. These are the same rows `POST
         /v1/chat/completions` is priced by, without the channel's credential. A
         caller that wants a version's full rule set reads the flattened price on
-        each row; estimate-price answers what one shape costs.
+        each row; estimate-price answers what one shape costs. The customer tier filters
+        model names, and consumption keys also apply their own model and request-group
+        channel restrictions. Alias names and their resolved targets must both be allowed.
+        Customer sessions see the tier-authorized catalog, without a key-specific grant.
+        Alias prices use the alias version when present, otherwise the target version.
       responses:
         "200":
           description: The catalog, one row per route
@@ -3540,6 +3900,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/entries/{entryId}/proof:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: "Bill proof bundle: entry source + inclusion proof + tree head"
       parameters:
         - name: entryId
@@ -3576,6 +3938,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/entries:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: The ledger's entries, newest first
       description: |
         Every entry the organization's append-only log carries — holds,
@@ -3617,6 +3981,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/log/head:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: "The current tree head of the organization's ledger, signed by the operator"
       description: |
         The head of the append-only Merkle log this organization's ledger lives in, as a C2SP
@@ -3643,6 +4009,8 @@ paths:
         "503": { $ref: "#/components/responses/Error" }
   /api/v1/log/consistency:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: "Prove the current head extends a head the caller already holds"
       description: |
         For a user holding an old head: the current head as a signed note, the old head the log
@@ -3686,8 +4054,12 @@ paths:
         "503": { $ref: "#/components/responses/Error" }
   /api/v1/log/price-head:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: "A channel-model price row, signed by the operator"
       description: |
+        Current customer/key model and channel grants filter this direct price read.
+        Historical proof bundles already exported remain independently verifiable.
         The signed checkpoint of one `(channel, model)` price row — `version`'s exact
         row, or the latest when `version` is omitted — as a C2SP signed-note under the
         same Ed25519 key that signs tree heads (issue #204). The body reuses the
@@ -3735,6 +4107,7 @@ paths:
         "503": { $ref: "#/components/responses/Error" }
   /api/v1/log/key:
     get:
+      x-consumption-key-access: public
       summary: "The operator's tree-head verifying key"
       description: |
         The public half of the key that signs tree heads. No credential: this is a public key.
@@ -3756,6 +4129,8 @@ paths:
         "503": { $ref: "#/components/responses/Error" }
   /api/v1/log/checkpoint:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: "Latest externally anchored checkpoint with witness cosignatures"
       description: |
         The head the `witness-checkpoints` pass last published to the witnesses
@@ -3814,6 +4189,7 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/metering/holds:
     post:
+      x-integration-scope: meteringWrite
       summary: Freeze credit for a billable event a service will settle later
       description: |
         A service credential reports an event bound: the `billableCode` resolves to
@@ -3828,8 +4204,9 @@ paths:
         `402`, like every hold. The hold is watched by the sweeper: a hold that never
         settles releases at zero with kind `swept`. Replay of the same
         `idempotencyKey` answers the original hold.
+      x-authorization: Current meteringWrite credential, selected customer and exact credential ownership of the hold are checked in core before any side effect. Foreign or sibling hold IDs return 404. Same idempotency key with changed terms, including operation or finalization body, returns 409; exact replay returns the original result. endUser is attribution only.
       security:
-        - serviceCredential: []
+        - integrationCredential: []
       requestBody:
         required: true
         content:
@@ -3854,6 +4231,7 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/metering/settle:
     post:
+      x-integration-scope: meteringWrite
       summary: Settle a metering hold against the event's actual usage
       description: |
         The service reports what the event consumed; the charge is that usage itemized
@@ -3863,8 +4241,9 @@ paths:
         is derived from the hold's, so the hold settles at most once: a retry of the
         same body replays, a settled hold is 409, a hold that is not outstanding — of
         this organization — is 404.
+      x-authorization: Current meteringWrite credential, selected customer and exact credential ownership of the hold are checked in core before any side effect. Foreign or sibling hold IDs return 404. Same idempotency key with changed terms, including operation or finalization body, returns 409; exact replay returns the original result. endUser is attribution only.
       security:
-        - serviceCredential: []
+        - integrationCredential: []
       requestBody:
         required: true
         content:
@@ -3882,19 +4261,22 @@ paths:
                   data: { $ref: "#/components/schemas/MeteringSettlement" }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/metering/release:
     post:
+      x-integration-scope: meteringWrite
       summary: Release a metering hold the event will never settle
       description: >-
         The work the hold froze for is not billing — it was abandoned or refunded — so
         the hold settles at zero with kind `released`: deliberate, distinct from the
         sweeper's `swept`. Naming a hold that is not outstanding in this
         organization's ledger is 404; one already settled is 409.
+      x-authorization: Current meteringWrite credential, selected customer and exact credential ownership of the hold are checked in core before any side effect. Foreign or sibling hold IDs return 404. Same idempotency key with changed terms, including operation or finalization body, returns 409; exact replay returns the original result. endUser is attribution only.
       security:
-        - serviceCredential: []
+        - integrationCredential: []
       requestBody:
         required: true
         content:
@@ -3912,11 +4294,13 @@ paths:
                   data: { $ref: "#/components/schemas/MeteringSettlement" }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/metering/settlements:
     post:
+      x-integration-scope: meteringWrite
       summary: Bill a completed event in one call
       description: |
         For an event that already ran there is nothing to freeze against — the
@@ -3926,8 +4310,9 @@ paths:
         never spend what was not there. Every other refusal is `holds`'s: unknown
         organization, channel or code, unpriced usage, suspended organization. A
         replay of the `idempotencyKey` answers the original settlement.
+      x-authorization: Current meteringWrite credential, selected customer and exact credential ownership of the hold are checked in core before any side effect. Foreign or sibling hold IDs return 404. Same idempotency key with changed terms, including operation or finalization body, returns 409; exact replay returns the original result. endUser is attribution only.
       security:
-        - serviceCredential: []
+        - integrationCredential: []
       requestBody:
         required: true
         content:
@@ -3946,6 +4331,1055 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "402": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/session/context:
+    get:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
+      operationId: sessionContext
+      summary: Read the selected session context
+      description: A personal session only. Customer membership never implies business authority.
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/SessionContextInfo" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+    post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
+      operationId: switchSessionContext
+      summary: Select customer or business authority
+      description: A live session selects its own context. Business selection requires current staff membership. An explicit bearer credential is refused. Context selection never changes customer membership.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SessionContextRequest" }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/SessionContextInfo" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business:
+    get:
+      operationId: businessContext
+      summary: Read the active business context
+      description: Requires a personal session explicitly selected into business context. Rechecks current staff role on each call.
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessPrincipal" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/customers:
+    get:
+      x-integration-scope: customersRead
+      operationId: listBusinessCustomers
+      summary: List business customers
+      description: Staff customersRead or an integration customersRead grant. Keyset pagination filters to the selected business and explicit integration customer allowlist before choosing the page.
+      security: [{ sessionCookie: [] }, { integrationCredential: [] }]
+      parameters:
+        - name: after
+          in: query
+          schema: { type: string, format: uuid }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessCustomerPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/customers/{organizationId}:
+    get:
+      x-integration-scope: customersRead
+      operationId: getBusinessCustomer
+      summary: Read a business customer
+      description: Staff customersRead or integration customersRead for this selected customer. Unknown, unselected or foreign customer is 404.
+      security: [{ sessionCookie: [] }, { integrationCredential: [] }]
+      parameters:
+        - name: organizationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessCustomer" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+    patch:
+      operationId: updateBusinessCustomer
+      summary: Update a customer profile
+      description: Current customersWrite capability. Name/contact changes do not move identity or history. ExternalId is assigned once by creation or migration and is immutable. Same-key changed terms conflict.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - name: organizationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessCustomerUpdate" }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/customers/{organizationId}/lifecycle:
+    post:
+      operationId: setCustomerLifecycle
+      summary: Archive or restore a customer
+      description: Current customersWrite capability. Archive blocks new admission and preserves ledger, keys, debt, settlements and recovery. Restoring does not clear manual or dunning suspension.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - name: organizationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessCustomerLifecycle" }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/customers/{organizationId}/suspension:
+    post:
+      operationId: setCustomerSuspension
+      summary: Set the manual customer suspension
+      description: Current customersSuspend capability. Clearing manual suspension never clears dunning or archive state. Audit and state change commit together.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - name: organizationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessCustomerSuspension" }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/merchants:
+    get:
+      summary: List business merchant settings
+      description: Current business staff with report-read capability. Account identity, test/live mode, immutable current version and checkout enablement are explicit. Hyperswitch with Stripe is the primary rail; direct Stripe and Airwallex are compatibility rails. Saves validate locally and do not certify credentials or make provider calls.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: after, in: query, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200":
+          description: Authorized merchant result; no credential or ciphertext fields
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/MerchantPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Create an encrypted merchant configuration
+      description: Current business owner only. Creates a disabled merchant and its first immutable version. Account identity, rail, mode and name cannot change; credential rotation appends a version. Mutation, replay receipt and redacted audit commit atomically.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MerchantCreateRequest" }
+      responses:
+        "200":
+          description: Authorized merchant result; no credential or ciphertext fields
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/MerchantMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/business/merchants/{merchantId}/versions:
+    get:
+      summary: List immutable merchant versions
+      description: Current business staff with report-read capability. Versions remain available for pinned orders and historical callback verification after rotation or checkout disablement. No secrets or ciphertexts are returned.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: merchantId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: after, in: query, schema: { type: integer, format: int64, minimum: 0 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200":
+          description: Authorized merchant result; no credential or ciphertext fields
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/MerchantVersionPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Rotate a merchant configuration
+      description: Current business owner only. Appends a complete immutable version and selects it for future checkouts; existing references retain their original version. All credentials must be resupplied. Keeps the merchant current checkout enablement. Exact retry returns its original version even after a later rotation.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: merchantId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MerchantVersionRequest" }
+      responses:
+        "200":
+          description: Authorized merchant result; no credential or ciphertext fields
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/MerchantMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/business/merchants/{merchantId}/status:
+    post:
+      summary: Set merchant checkout enablement
+      description: Current business owner only. Disabling refuses future checkouts without invalidating pinned versions or historical callbacks. This is configuration enablement; it does not certify provider credentials or activate customer checkout before T15/T16.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: merchantId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MerchantStatusRequest" }
+      responses:
+        "200":
+          description: Authorized merchant result; no credential or ciphertext fields
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/MerchantMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/business/channels:
+    get:
+      summary: List business provider channels
+      description: Current owner/admin in business context. Ownership filters apply before pagination or child lookup. No secret material is returned.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: after, in: query, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessChannelPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Set an owned provider connection
+      description: Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner only. apiKeys absent preserves the existing pool; a new channel needs a nonempty pool. Changing destination or protocol requires freshly supplied keys and clears an existing billing credential to prevent implicit credential forwarding.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessChannelRequest" }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ProviderMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/channels/{channelName}/connection-check:
+    post:
+      summary: Explicitly check an owned provider connection without inference
+      description: Current business owner only. Commits intent and audit before one HEAD request to the configured base URL with the channel credential and destination policy. Does not generate tokens. Exact replay returns the saved result and never repeats the network request; pending means interrupted or still running, so a deliberate new check needs a new key. No provider body, redirect target or transport error detail is exposed.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: channelName, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessProviderRemoveRequest" }
+      responses:
+        "200":
+          description: Durable connection-check result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ProviderConnectionCheck" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/channels/{channelName}/credentials:
+    post:
+      summary: Add an owned provider credential
+      description: Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner only.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: channelName, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessProviderCredentialRequest" }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ProviderMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/channels/{channelName}/billing-credential:
+    post:
+      summary: Set or clear the provider billing credential
+      description: Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner only; null clears.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: channelName, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessProviderBillKeyRequest" }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ProviderMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/channels/{channelName}/cache:
+    post:
+      summary: Configure an owned channel cache
+      description: Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner/admin; null clears.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: channelName, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessProviderCacheRequest" }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ProviderMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/channels/{channelName}/prices:
+    post:
+      summary: Append an owned model price version
+      description: Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner/admin. Published historical versions remain unchanged.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: channelName, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessProviderPriceRequest" }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ProviderMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    get:
+      summary: Read owned channel prices
+      description: Current owner/admin in business context. Ownership filters apply before pagination or child lookup. No secret material is returned.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: channelName, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/ModelPrice" } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/channels/{channelName}/aliases:
+    post:
+      summary: Claim an owned model alias
+      description: Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner/admin. Target must be a served model on this channel.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: channelName, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessProviderAliasRequest" }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ProviderMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    get:
+      summary: Read owned channel aliases
+      description: Current owner/admin in business context. Ownership filters apply before pagination or child lookup. No secret material is returned.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: channelName, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/ModelAlias" } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/channels/{channelName}/credentials/{credentialId}/status:
+    post:
+      summary: Set provider credential status
+      description: Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner only; credential ID must belong to this channel.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: channelName, in: path, required: true, schema: { type: string } }
+        - { name: credentialId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessProviderStatusRequest" }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ProviderMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/channels/{channelName}/credentials/{credentialId}/remove:
+    post:
+      summary: Remove a provider credential
+      description: Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner only; credential ID must belong to this channel. The last active credential cannot be removed; disable it explicitly to stop serving.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: channelName, in: path, required: true, schema: { type: string } }
+        - { name: credentialId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessProviderRemoveRequest" }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ProviderMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/channels/{channelName}/aliases/{alias}/remove:
+    post:
+      summary: Remove an owned model alias
+      description: Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner/admin.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: channelName, in: path, required: true, schema: { type: string } }
+        - { name: alias, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessProviderRemoveRequest" }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ProviderMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/model-fallbacks/{model}:
+    get:
+      summary: Read owned model fallbacks
+      description: Current owner/admin in business context. Ownership filters apply before pagination or child lookup. No secret material is returned.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: model, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ModelFallbackChain" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    put:
+      summary: Set owned model fallbacks
+      description: Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner/admin. Every model must resolve inside this business; distinct ordered names, no self fallback, at most 16. Empty clears.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: model, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessProviderFallbackRequest" }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ProviderMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/integration-credentials:
+    get:
+      summary: List scoped integration credentials
+      description: Current business owner in business context. Metadata only; never secret or hash.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: after, in: query, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200":
+          description: Credential page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/IntegrationCredentialPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Issue a scoped integration credential
+      description: Current business owner in business context, with current TOTP. Secret returned once, null on exact replay. Terms, receipt and immutable audit commit atomically. Customer IDs and scopes must be distinct and explicit. Expiry must be in the future, within 365 days. No all-customer wildcard or unsupported scope.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IntegrationCredentialRequest" }
+      responses:
+        "200":
+          description: Credential and first-use secret
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/CreatedIntegrationCredential" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/integration-credentials/{credentialId}/revoke:
+    post:
+      summary: Revoke a scoped integration credential
+      description: Current business owner. Revocation, immutable receipt and audit commit together. Committed metering authorizations may finish after revocation; later API calls and captured principals are rejected. History and outstanding recovery remain intact.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: credentialId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IntegrationCredentialRevokeRequest" }
+      responses:
+        "200":
+          description: Mutation receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/staff:
+    get:
+      operationId: businessStaff
+      summary: List business staff
+      description: Owner only. Customer keys and customer sessions have no staff authority.
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessStaffList" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+    post:
+      operationId: setBusinessStaff
+      summary: Appoint or change an existing staff member
+      description: Owner only, audited and idempotent. Existing registered user by userId. The owner role cannot be assigned here; use ownership transfer. Cannot demote an owner.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessStaffRequest" }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/staff/revoke:
+    post:
+      operationId: revokeBusinessStaff
+      summary: Revoke staff authority
+      description: Owner only. Cannot revoke an owner. Personal customer access is retained. All subsequent business calls recheck the revoked membership.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessStaffRevokeRequest" }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/ownership:
+    post:
+      operationId: transferBusinessOwnership
+      summary: Transfer ownership to an existing staff member
+      description: Owner only. Atomically promotes the selected current staff member and demotes the actor to admin. Last-owner deletion is refused. Replays recheck current owner permission.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessOwnershipRequest" }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/registration:
+    post:
+      operationId: setBusinessRegistration
+      summary: Select customer registration policy
+      description: Owner only. Fresh and upgraded installations remain invite-only until this audited change. Password, GitHub and OIDC new-account paths enforce the saved policy in their creation transaction.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessRegistrationRequest" }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/business/setup-tokens:
+    post:
+      summary: Authorize an expiring owner setup invitation
+      description: |
+        One business per deployment. Deployment authority binds a 30-minute, one-use
+        setup token to the intended owner's email. The owner supplies their own session
+        or creates a new account with that email. Initialization, owner membership,
+        token consumption and redacted audit commit together. An initialized business
+        cannot be claimed again. A token is returned only once; an identical mint retry
+        returns its metadata with token null. Unknown/expired/wrong-owner tokens are 404
+        before initialization; initialized businesses answer 409 on any further setup.
+        The setup policy is invite-only; staff sessions and registration policy enforcement
+        are a separate dependent change. No provider/payment call is made.
+      security: [{ adminToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessSetupTokenRequest" }
+      responses:
+        "200":
+          description: Setup authorization or initialized business (registration includes the initial customer key)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessSetupToken" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/setup:
+    post:
+      summary: Accept business ownership as the invited logged-in user
+      description: |
+        One business per deployment. Deployment authority binds a 30-minute, one-use
+        setup token to the intended owner's email. The owner supplies their own session
+        or creates a new account with that email. Initialization, owner membership,
+        token consumption and redacted audit commit together. An initialized business
+        cannot be claimed again. A token is returned only once; an identical mint retry
+        returns its metadata with token null. Unknown/expired/wrong-owner tokens are 404
+        before initialization; initialized businesses answer 409 on any further setup.
+        The setup policy is invite-only; staff sessions and registration policy enforcement
+        are a separate dependent change. No provider/payment call is made.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessSetupRequest" }
+      responses:
+        "200":
+          description: Setup authorization or initialized business (registration includes the initial customer key)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessSetupResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/setup/register:
+    post:
+      summary: Register the invited initial owner and initialize the business
+      description: |
+        One business per deployment. Deployment authority binds a 30-minute, one-use
+        setup token to the intended owner's email. The owner supplies their own session
+        or creates a new account with that email. Initialization, owner membership,
+        token consumption and redacted audit commit together. An initialized business
+        cannot be claimed again. A token is returned only once; an identical mint retry
+        returns its metadata with token null. Unknown/expired/wrong-owner tokens are 404
+        before initialization; initialized businesses answer 409 on any further setup.
+        The setup policy is invite-only; staff sessions and registration policy enforcement
+        are a separate dependent change. No provider/payment call is made.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessSetupRegistrationRequest" }
+      responses:
+        "200":
+          description: Setup authorization or initialized business (registration includes the initial customer key)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessSetupResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
@@ -5016,6 +6450,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/groups:
     get:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: List the current organization's request groups
       description: |
         Read-only access for organization credentials and members. Each group
@@ -5025,10 +6461,8 @@ paths:
         owner/admin session or an ungrouped organization key. A grouped bearer
         cannot create or change keys, including clearing its own restriction.
         Groups restrict bearer access; they do not isolate trusted member sessions.
-      security:
-        - bearer: []
-        - sessionCookie: []
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The organization's groups
           content:
@@ -5997,7 +7431,7 @@ paths:
       description: >-
         Every service credential, newest first — metadata only: the secret exists
         once, at mint. The list answers `prefix`, `createdAt` and `revokedAt`, so a
-        deployment can name which of its services may still meter.
+        deployment can inspect legacy credentials. All legacy credentials are disabled at upgrade; metadata remains available for recovery audits.
       security:
         - adminToken: []
       responses:
@@ -6015,32 +7449,13 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
     post:
-      summary: Mint a metering service credential
-      description: >-
-        The secret is answered exactly once, in this response — the database keeps
-        only its hash, like an API key's. `name` is what the settlement description
-        records as the reporting service, so name it for the service that will hold
-        it. The mint lands in the admin audit log.
-      security:
-        - adminToken: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/ServiceCredentialRequest" }
+      summary: Retired global service credential issuance
+      description: Returns 403 before body parsing. The current business owner must issue scoped credentials through /business/integration-credentials.
+      deprecated: true
+      security: [{ adminToken: [] }]
       responses:
-        "200":
-          description: The credential, with its secret — the only answer that carries it
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [data]
-                properties:
-                  data: { $ref: "#/components/schemas/CreatedServiceCredential" }
-        "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
-        "500": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
   /api/v1/admin/service-credentials/{credentialId}:
     delete:
       summary: Revoke a service credential
@@ -6070,15 +7485,20 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /v1/models:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }]
       summary: List the served models, in OpenAI's shape
       description: |
         Only models with a relayable price are listed: a model the gateway cannot price cannot be
         frozen, so it cannot be served — and a `mode: event` price is a billable code for
-        `/api/v1/metering`, not a model any `/v1` surface relays, so it is not listed either.
+        `/api/v1/metering`, so it is omitted unless the channel uses the generic `tasks`
+        protocol. Task entries identify the generic task adapter, not certified media support.
         `owned_by` is the channel that serves the model, and `created` is when the version in force
         was written. Model aliases are listed beside the direct names (issue
         #286): a caller writes the public name and the channel relays the
-        upstream model it renames.
+        upstream model it renames. Only the authenticated customer's business channels,
+        tier-authorized models, key-authorized models and request-group channels appear.
+        Both public alias and resolved target must be allowed; denied or unpriced aliases
+        are omitted. Catalog reads never open provider credentials.
       responses:
         "200":
           description: The model list
@@ -6089,6 +7509,7 @@ paths:
         "500": { $ref: "#/components/responses/GatewayError" }
   /v1/chat/completions:
     post:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }]
       summary: Chat completion, billed by freezing credit first and settling against upstream usage
       description: |
         The gateway computes the most the request could cost, freezes that much, and only then
@@ -6122,8 +7543,8 @@ paths:
         24 hours after it was first claimed.
 
         Every answer that took the hold — a completion or an upstream refusal — carries
-        `x-oxsum-freeze-minor` (the reserved bound) and `x-oxsum-balance-minor` (the
-        spendable balance left after it) on the response head. The settled charge rides as
+        `x-oxsum-freeze-minor` (the reserved bound) on the response head. Customer-wide
+        balances are not disclosed to consumption keys. The settled charge rides as
         `x-oxsum-charged-minor`: a header on a non-streamed answer and on a refusal that
         settled `Charge::Nothing`, and — because the head goes out before a streamed turn
         settles — an HTTP trailer on a streamed answer, announced by `Trailer`.
@@ -6144,7 +7565,6 @@ paths:
           headers:
             x-oxsum-request-id: { $ref: "#/components/headers/RequestId" }
             x-oxsum-freeze-minor: { $ref: "#/components/headers/FreezeMinor" }
-            x-oxsum-balance-minor: { $ref: "#/components/headers/BalanceMinor" }
             x-oxsum-charged-minor: { $ref: "#/components/headers/ChargedMinor" }
             x-oxsum-cache: { $ref: "#/components/headers/CacheStatus" }
             Trailer: { schema: { type: string, example: "x-oxsum-charged-minor" }, description: "on a streamed answer, announces the settled charge arrives as a trailer" }
@@ -6166,6 +7586,7 @@ paths:
         "502": { $ref: "#/components/responses/GatewayError" }
   /v1/responses:
     post:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }]
       summary: Responses turn, billed by freezing credit first and settling against upstream usage
       description: |
         The same freeze-then-settle contract as `/v1/chat/completions`, in OpenAI's
@@ -6212,7 +7633,6 @@ paths:
           headers:
             x-oxsum-request-id: { $ref: "#/components/headers/RequestId" }
             x-oxsum-freeze-minor: { $ref: "#/components/headers/FreezeMinor" }
-            x-oxsum-balance-minor: { $ref: "#/components/headers/BalanceMinor" }
             x-oxsum-charged-minor: { $ref: "#/components/headers/ChargedMinor" }
             Trailer: { schema: { type: string, example: "x-oxsum-charged-minor" }, description: "on a streamed answer, announces the settled charge arrives as a trailer" }
           content:
@@ -6233,13 +7653,17 @@ paths:
         "502": { $ref: "#/components/responses/GatewayError" }
   /v1/tasks:
     post:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }]
       summary: Submit a long-running upstream task, billed by a frozen bound that settles on terminal state
       description: |
         The task relay (issue #503): a turn whose upstream work runs for
         minutes — an image render, a video generation, a batch — where neither
         side wants a socket held open. The surface serves only channels whose
         `protocol` is `tasks`; upstream is called at `{baseUrl}/tasks` with the
-        channel credential as `Authorization: Bearer`.
+        channel credential as `Authorization: Bearer`. Customer tier, consumption-key
+        model and group-channel restrictions apply. Public aliases and signed spend
+        mandates are not supported by this generic task adapter and are refused
+        before provider contact. Use a permitted direct task model.
 
         Submission freezes the request's declared upper bound (`maxCostMinor`,
         or the channel price's own bound when the request names none), relays
@@ -6280,7 +7704,6 @@ paths:
           headers:
             x-oxsum-request-id: { $ref: "#/components/headers/RequestId" }
             x-oxsum-freeze-minor: { $ref: "#/components/headers/FreezeMinor" }
-            x-oxsum-balance-minor: { $ref: "#/components/headers/BalanceMinor" }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Task" }
@@ -6295,6 +7718,7 @@ paths:
         "502": { $ref: "#/components/responses/GatewayError" }
   /v1/tasks/{taskId}:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }]
       summary: Read a task's state — the caller's poll is a database read, never a second upstream call
       description: |
         The task row as the last `poll-tasks` pass (or the submit, or the
@@ -6303,9 +7727,9 @@ paths:
         `failed` or `cancelled` once terminal — the terminal transition is
         also the settlement, so a terminal state means the bill is written.
         `result` carries upstream's answer body on success, `error` the
-        reported failure. The caller's API key must belong to the
-        organization that submitted the task — a foreign key reads 404, not
-        403, so a task's existence is not an oracle.
+        reported failure. Only the exact consumption key that submitted the task
+        may read or cancel it. Unknown, foreign-customer and sibling-key task
+        IDs all return 404 without contacting upstream or changing funds.
       responses:
         "200":
           description: The task row
@@ -6317,8 +7741,10 @@ paths:
         "500": { $ref: "#/components/responses/GatewayError" }
   /v1/tasks/{taskId}/cancel:
     post:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }]
       summary: Best-effort cancel — releases the hold and asks upstream to stop the job
       description: |
+        Only the exact submitting key may cancel; every out-of-scope ID is 404.
         Asks upstream to cancel the external task
         (`POST {baseUrl}/tasks/{externalTaskId}/cancel`), then releases the
         hold at zero whether upstream accepted or not: the billing side ends
@@ -6368,11 +7794,11 @@ paths:
         turn is `metadata.user_id`, which lands on the usage record's `endUser`.
 
         A `stream: true` response relays Anthropic's event stream unchanged and ends with
-        `message_stop`. The cost headers are the same three: `x-oxsum-freeze-minor` and
-        `x-oxsum-balance-minor` on the head, `x-oxsum-charged-minor` on a non-streamed head
+        `message_stop`. The cost headers are `x-oxsum-freeze-minor` on the head
+        and `x-oxsum-charged-minor` on a non-streamed head
         or a streamed trailer. `Idempotency-Key` behaves exactly as it does on
         `/v1/chat/completions`.
-      security: [{ bearer: [] }, { apiKeyHeader: [] }]
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }]
       parameters:
         - { $ref: "#/components/parameters/IdempotencyKey" }
         - { $ref: "#/components/parameters/Mandate" }
@@ -6400,7 +7826,6 @@ paths:
           headers:
             x-oxsum-request-id: { $ref: "#/components/headers/RequestId" }
             x-oxsum-freeze-minor: { $ref: "#/components/headers/FreezeMinor" }
-            x-oxsum-balance-minor: { $ref: "#/components/headers/BalanceMinor" }
             x-oxsum-charged-minor: { $ref: "#/components/headers/ChargedMinor" }
             Trailer: { schema: { type: string, example: "x-oxsum-charged-minor" }, description: "on a streamed answer, announces the settled charge arrives as a trailer" }
           content:
@@ -6421,6 +7846,7 @@ paths:
         "502": { $ref: "#/components/responses/AnthropicError" }
   /v1/embeddings:
     post:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }]
       summary: Embeddings, billed by freezing the input bound first and settling against upstream usage
       description: |
         The input-only half of the gateway (issue #170), in OpenAI's request and response
@@ -6431,8 +7857,9 @@ paths:
 
         There is no output side: `stream` is refused, and no `max_tokens` is injected into the
         forwarded body. The failover, bounded `Retry-After`, `Idempotency-Key` and
-        cost-header contract is the shared pipeline's — `x-oxsum-freeze-minor` and
-        `x-oxsum-balance-minor` on the head, `x-oxsum-charged-minor` once the turn settled.
+        cost-header contract is the shared pipeline's — `x-oxsum-freeze-minor` on the
+        head and `x-oxsum-charged-minor` once the turn settles. Customer balance is
+        never returned to a gateway caller.
 
         Upstream is called at `{baseUrl}/embeddings` with the channel credential as
         `Authorization: Bearer`. A response without a usage report settles `estimated`,
@@ -6454,7 +7881,6 @@ paths:
           headers:
             x-oxsum-request-id: { $ref: "#/components/headers/RequestId" }
             x-oxsum-freeze-minor: { $ref: "#/components/headers/FreezeMinor" }
-            x-oxsum-balance-minor: { $ref: "#/components/headers/BalanceMinor" }
             x-oxsum-charged-minor: { $ref: "#/components/headers/ChargedMinor" }
           content:
             application/json:
@@ -6470,6 +7896,7 @@ paths:
         "502": { $ref: "#/components/responses/GatewayError" }
   /v1/rerank:
     post:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }]
       summary: Rerank, billed by freezing the input bound first and settling against upstream usage
       description: |
         The second input-only surface (issue #170), in the shape Jina and Cohere speak:
@@ -6498,7 +7925,6 @@ paths:
           headers:
             x-oxsum-request-id: { $ref: "#/components/headers/RequestId" }
             x-oxsum-freeze-minor: { $ref: "#/components/headers/FreezeMinor" }
-            x-oxsum-balance-minor: { $ref: "#/components/headers/BalanceMinor" }
             x-oxsum-charged-minor: { $ref: "#/components/headers/ChargedMinor" }
           content:
             application/json:
@@ -6532,12 +7958,13 @@ paths:
         `toolUsePromptTokenCount` sits outside `promptTokenCount` (so the billed input
         adds it in).
 
-        The cost headers are the same three: `x-oxsum-freeze-minor` and
-        `x-oxsum-balance-minor` on the head, `x-oxsum-charged-minor` on a non-streamed
-        head. `Idempotency-Key` behaves exactly as it does on `/v1/chat/completions`.
+        The cost headers are the same two: `x-oxsum-freeze-minor` on the head and
+        `x-oxsum-charged-minor` on a non-streamed head. Customer balance is never
+        returned to a gateway caller. `Idempotency-Key` behaves exactly as it does on
+        `/v1/chat/completions`.
         `labels` maps onto the turn's usage tags, like OpenAI's `metadata` — strings
         only, ten entries, 64 characters a side.
-      security: [{ bearer: [] }, { apiKeyHeader: [] }]
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }]
       parameters:
         - { $ref: "#/components/parameters/IdempotencyKey" }
         - { $ref: "#/components/parameters/Mandate" }
@@ -6560,7 +7987,6 @@ paths:
           headers:
             x-oxsum-request-id: { $ref: "#/components/headers/RequestId" }
             x-oxsum-freeze-minor: { $ref: "#/components/headers/FreezeMinor" }
-            x-oxsum-balance-minor: { $ref: "#/components/headers/BalanceMinor" }
             x-oxsum-charged-minor: { $ref: "#/components/headers/ChargedMinor" }
           content:
             application/json:
@@ -6585,7 +8011,7 @@ paths:
         carries a candidate `finishReason`, and the socket close is the close —
         there is no `[DONE]` sentinel on this protocol. The settled charge still
         arrives as the `x-oxsum-charged-minor` trailer the other surfaces use.
-      security: [{ bearer: [] }, { apiKeyHeader: [] }]
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }]
       parameters:
         - { $ref: "#/components/parameters/IdempotencyKey" }
         - { $ref: "#/components/parameters/Mandate" }
@@ -6605,7 +8031,6 @@ paths:
           headers:
             x-oxsum-request-id: { $ref: "#/components/headers/RequestId" }
             x-oxsum-freeze-minor: { $ref: "#/components/headers/FreezeMinor" }
-            x-oxsum-balance-minor: { $ref: "#/components/headers/BalanceMinor" }
             Trailer: { schema: { type: string, example: "x-oxsum-charged-minor" }, description: "announces the settled charge arrives as a trailer" }
           content:
             text/event-stream:
@@ -6634,14 +8059,15 @@ components:
         The operator token from `OXSUM_ADMIN_TOKEN`, at least 16 characters, compared in constant time.
         It is not an API key and belongs to no organization: it is whoever deploys oxsum. A deployment
         that sets no token has no admin surface at all.
-    serviceCredential:
+    integrationCredential:
       type: http
       scheme: bearer
       description: |
-        A metering service credential: `oxs-svc-` followed by 32 random bytes, shown once when
-        the admin mints it. It authenticates `/api/v1/metering/*` and nothing else — an
-        organization's key and a session are refused there, because an organization can never
-        report its own usage (issue #172).
+        Owner-issued oxs-int- secret with selected customer IDs and explicit scopes.
+        customersRead grants only business customer list/detail; meteringWrite grants
+        only metering for the selected customers. No gateway, personal, deployment,
+        funds-crediting or staff authority. Expired/revoked/legacy credentials fail
+        authentication. Explicit Authorization never falls back to cookies.
     sessionCookie:
       type: apiKey
       in: cookie
@@ -6650,15 +8076,24 @@ components:
         A web session from `POST /api/v1/auth/login`: `oxsess-` followed by 32 random bytes, carried
         in the `oxsum_session` cookie (`HttpOnly`, `SameSite=Lax`, `Path=/`, plus `Secure` when the
         deployment sets `OXSUM_SESSION_COOKIE_SECURE`). The database keeps only its SHA-256 hash.
-        Accepted on `/api/v1` wherever a bearer key is; never accepted on `/v1`, where the gateway
-        takes an API key only.
+        Accepted only where the operation declares `sessionCookie`; customer context and
+        current membership are required for customer routes. Never accepted on `/v1` or
+        `/v1beta`, where the gateway takes a consumption key only.
     apiKeyHeader:
       type: apiKey
       in: header
       name: x-api-key
       description: >-
-        The same organization API key as `bearer`, in the spelling an Anthropic SDK sends.
-        Accepted on `/v1`; an explicitly presented bearer token wins over it.
+        The same consumption key as `bearer`, in the spelling an Anthropic SDK sends.
+        Accepted by the gateway and scoped customer reads. An explicit Authorization
+        header takes precedence, even when malformed.
+    googApiKeyHeader:
+      type: apiKey
+      in: header
+      name: x-goog-api-key
+      description: >-
+        The same consumption key in the spelling a Gemini SDK sends. An explicit
+        Authorization or x-api-key header takes precedence, even when malformed.
   parameters:
     KeyId:
       name: keyId
@@ -6729,7 +8164,8 @@ components:
       description: "minor units this request froze — the most it can cost"
       schema: { type: integer }
     BalanceMinor:
-      description: "the organization's spendable balance after this request's reservation"
+      description: "Retired in 0.105.0: consumption credentials do not disclose the customer's balance. This header is omitted."
+      deprecated: true
       schema: { type: integer }
     ChargedMinor:
       description: "minor units the settled turn actually charged — a header on non-streamed answers and post-hold refusals, a trailer on streamed ones"
@@ -6738,6 +8174,177 @@ components:
       description: "`hit` when the semantic cache answered instead of upstream (issue #497): the stored body re-served, billed at the cache-read rate, the settlement's v10 `cache` block naming the original turn's entry. Absent on a miss, a stream, or a channel that never opted in."
       schema: { type: string, enum: [hit] }
   schemas:
+    BusinessCustomer:
+      type: object
+      required: [organizationId, businessId, externalId, name, contactEmail, state, manualSuspendedAt, dunningSuspendedAt, suspended, createdAt]
+      properties:
+        organizationId: { type: string, format: uuid }
+        businessId: { type: string, format: uuid }
+        externalId: { type: string, description: Immutable business-scoped customer reference. Legacy and public signup accounts use their organization UUID. }
+        name: { type: string }
+        contactEmail: { type: [string, "null"], format: email }
+        state: { type: string, enum: [active, archived] }
+        manualSuspendedAt: { type: [string, "null"], format: date-time }
+        dunningSuspendedAt: { type: [string, "null"], format: date-time }
+        suspended: { type: boolean, description: True if manually suspended, dunning-suspended or archived. }
+        createdAt: { type: string, format: date-time }
+    BusinessCustomerPage:
+      type: object
+      required: [customers, nextCursor]
+      properties:
+        customers:
+          type: array
+          items: { $ref: "#/components/schemas/BusinessCustomer" }
+        nextCursor: { type: [string, "null"], format: uuid }
+    BusinessCustomerUpdate:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, name, contactEmail, reason]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        name: { type: string, minLength: 1, maxLength: 80 }
+        contactEmail: { type: [string, "null"], format: email }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    BusinessCustomerLifecycle:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, state, reason]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        state: { type: string, enum: [active, archived] }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    BusinessCustomerSuspension:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, suspended, reason]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        suspended: { type: boolean }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    BusinessRole:
+      type: string
+      enum: [owner, admin, finance, support, viewer]
+    BusinessCapability:
+      type: string
+      enum: [overviewRead, customersRead, customersWrite, customersSuspend, requestsRead, catalogWrite, routingWrite, providerSecretsWrite, commercialWrite, fundsWrite, refundsWrite, reportsRead, merchantSecretsWrite, staffManage, ownershipTransfer, registrationWrite, integrationsManage]
+    BusinessPrincipal:
+      type: object
+      required: [businessId, userId, role, capabilities]
+      properties:
+        businessId: { type: string, format: uuid }
+        userId: { type: string, format: uuid }
+        role: { $ref: "#/components/schemas/BusinessRole" }
+        capabilities:
+          type: array
+          items: { $ref: "#/components/schemas/BusinessCapability" }
+    SessionContextInfo:
+      type: object
+      required: [context, user, organizationId, business]
+      properties:
+        context: { type: string, enum: [customer, business] }
+        user: { $ref: "#/components/schemas/User" }
+        organizationId: { type: [string, "null"], format: uuid, description: Null in business context or when the user has no remaining customer membership. }
+        business:
+          oneOf:
+            - $ref: "#/components/schemas/BusinessPrincipal"
+            - type: "null"
+    SessionContextRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, context]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        context: { type: string, enum: [customer, business] }
+        organizationId: { type: [string, "null"], format: uuid, description: Customer membership to select; omitted retains the existing customer selection. Forbidden for business context. }
+    BusinessStaff:
+      type: object
+      required: [userId, email, role]
+      properties:
+        userId: { type: string, format: uuid }
+        email: { type: string, format: email }
+        role: { $ref: "#/components/schemas/BusinessRole" }
+    BusinessStaffList:
+      type: array
+      items: { $ref: "#/components/schemas/BusinessStaff" }
+    BusinessMutationResult:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string, format: uuid, description: Stable mutation receipt ID, also the audit idempotency identity. }
+    BusinessStaffRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, userId, role, reason]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        userId: { type: string, format: uuid }
+        role: { type: string, enum: [admin, finance, support, viewer] }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    BusinessStaffRevokeRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, userId, reason]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        userId: { type: string, format: uuid }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    BusinessOwnershipRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, userId, reason]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        userId: { type: string, format: uuid }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    BusinessRegistrationRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, mode, reason]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        mode: { type: string, enum: [invite, open] }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    BusinessSetupTokenRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, ownerEmail]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        ownerEmail: { type: string, format: email }
+    BusinessSetupToken:
+      type: object
+      required: [id, businessId, ownerEmail, token, expiresAt]
+      properties:
+        id: { type: string, format: uuid }
+        businessId: { type: string, format: uuid }
+        ownerEmail: { type: string, format: email }
+        token: { type: [string, "null"], description: "Shown only at first mint; never stored in plaintext." }
+        expiresAt: { type: string, format: date-time }
+    BusinessSetupRequest:
+      type: object
+      additionalProperties: false
+      required: [token, businessName]
+      properties:
+        token: { type: string }
+        businessName: { type: string, minLength: 1, maxLength: 120 }
+    BusinessSetupRegistrationRequest:
+      type: object
+      additionalProperties: false
+      required: [token, businessName, email, password]
+      properties:
+        token: { type: string }
+        businessName: { type: string, minLength: 1, maxLength: 120 }
+        email: { type: string, format: email }
+        password: { type: string, minLength: 12, maxLength: 256, writeOnly: true }
+    BusinessSetupResult:
+      type: object
+      required: [ownership, registration]
+      properties:
+        ownership: { $ref: "#/components/schemas/BusinessOwnership" }
+        registration:
+          oneOf:
+            - { $ref: "#/components/schemas/Registration" }
+            - { type: "null" }
     BusinessOwnership:
       type: object
       required: [business, migration]
@@ -6774,25 +8381,53 @@ components:
         tenantId: { type: string, description: "Unchanged customer ledger identity." }
     CreatedInvitation:
       type: object
-      required: [id, token, expiresAt]
+      required: [id, token, organizationId, expiresAt]
       properties:
         id: { type: string, format: uuid }
-        token:
-          type: string
-          description: "`oxi-` plus 32 random bytes — answered once; only its hash is stored"
-        expiresAt: { type: string, format: date-time, description: seven days from minting }
-        delivery:
-          type: string
-          enum: [sent, failed]
-          description: "present only when the request named an email: `sent` when the mailer accepted the message, `failed` when it did not — the token above is still valid for hand delivery"
+        organizationId: { type: string, format: uuid, description: "Existing or reserved customer identity" }
+        token: { type: string, nullable: true, description: "Random oxi- secret shown on first creation only; null on idempotent replay" }
+        expiresAt: { type: string, format: date-time }
+        delivery: { type: string, enum: [sent, failed], description: "Present only for an attempted email delivery" }
     CreateInvitationRequest:
       type: object
+      additionalProperties: false
+      required: [idempotencyKey]
       properties:
-        email:
-          type: string
-          format: email
-          maxLength: 254
-          description: "an optional recipient; with it the link is mailed, without it the token is only answered"
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        intendedEmail: { type: string, format: email, nullable: true, maxLength: 320 }
+        email: { type: string, format: email, nullable: true, maxLength: 254, description: "Bind and mail the invitation" }
+    CustomerInvitationRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, email, name, externalId, reason]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        email: { type: string, format: email, maxLength: 320 }
+        name: { type: string, minLength: 1, maxLength: 80 }
+        externalId: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    InvitationRevokeRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    InvitationPreview:
+      type: object
+      required: [organizationId, name, role, expiresAt]
+      properties:
+        organizationId: { type: string, format: uuid }
+        name: { type: string }
+        role: { type: string, enum: [owner, member] }
+        expiresAt: { type: string, format: date-time }
+    InvitationAcceptance:
+      type: object
+      required: [id, organizationId, role]
+      properties:
+        id: { type: string, format: uuid, description: "Invitation ID, a stable acceptance receipt" }
+        organizationId: { type: string, format: uuid }
+        role: { type: string, enum: [owner, member], description: "Originally accepted customer role, not current authorization" }
     RedeemInvitationRequest:
       type: object
       required: [token, email, password]
@@ -7222,18 +8857,6 @@ components:
           nullable: true
           description: "the team the member belongs to (issue #440); null means unassigned — no team cap applies to the member's keys"
         joinedAt: { type: string, format: date-time, description: when the membership was created }
-    AddMemberRequest:
-      type: object
-      required: [email]
-      properties:
-        email:
-          type: string
-          maxLength: 320
-          description: |
-            the email of an account that already exists; the comparison is case-insensitive. An
-            email no account holds is `NOT_FOUND` — a person without an account is invited by link
-            (`POST /api/v1/org/invitations`) — and one that is already a member of this organization
-            is `CONFLICT`.
     Experiment:
       type: object
       required: [id, name, variants, status, createdAt]
@@ -7471,6 +9094,7 @@ components:
           description: "the channel's credential pool (issue #444): the whole ordered set of upstream keys — a `set` re-credentials the channel wholesale, so every key the pool should hold goes here. Absent leaves the stored pool untouched; a present empty array is VALIDATION_ERROR — a channel with no key cannot serve. One of `apiKey`/`apiKeys` is required when creating a channel."
         billKey: { type: string, minLength: 1, nullable: true, description: "the admin billing credential the upstream-bill-sync pass reads the provider's cost API under (issue #283) — sealed beside the metering keys, deliberately separate so a relay credential never reads the org's bill. Omit to leave any stored billing key untouched; explicit null clears it." }
         protocol: { type: string, enum: [openai, anthropic, gemini], description: "the upstream protocol the channel speaks, which selects the usage adapter its reports are normalized by and which surface serves its models: `/v1/*` for `openai` and `anthropic`, `/v1beta/*` for `gemini`; defaults to `openai` — any other name is VALIDATION_ERROR" }
+        destinationPolicy: { $ref: "#/components/schemas/ProviderDestinationPolicy" }
         semanticCache:
           type: object
           nullable: true
@@ -7505,7 +9129,7 @@ components:
           description: "the channel's credential pool (issue #444): one entry per upstream key, ordered by position, each showing only its last four plus the health state the pick reads"
           items: { $ref: "#/components/schemas/ChannelCredential" }
         billKeyLast4: { type: string, nullable: true, description: "the last four characters of the admin billing credential (issue #283), and nothing more of it; null when the channel carries none" }
-        settings: { type: object, description: "the channel's free-form settings (issue #497): `semanticCache` and any future channel-scoped knobs, exactly as written through `ChannelRequest.semanticCache` — `{}` when nothing was ever set" }
+        settings: { type: object, description: "the channel's free-form settings (issue #497): `semanticCache` and `destinationPolicy` configuration — `{}` when nothing was ever set" }
         createdAt: { type: string, format: date-time }
         models:
           type: array
@@ -8188,8 +9812,8 @@ components:
             organization's new holds refuse — 403 on `/v1` —
             while its in-flight holds still settle and money-in still lands; suspending enqueues
             `org.suspended` to its subscribed webhook endpoints. A manual suspension is
-            never the dunning sweep's to lift — reinstating here also clears any marker a
-            sweep-set suspension left.
+            never the dunning sweep's to lift. Reinstating here clears only manual
+            suspension; an overdue or archived customer remains blocked.
         dunningGraceDays:
           type: integer
           format: int32
@@ -8970,11 +10594,11 @@ components:
       type: object
       required: [idempotencyKey, organizationId, channel, billableCode, usage]
       properties:
-        idempotencyKey: { type: string, minLength: 1, maxLength: 128, description: "UTF-8 idempotency key; the hold entry's key is `metering:<key>:hold`" }
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200, description: "UTF-8 idempotency key, scoped to the credential and customer; the returned opaque holdKey binds both" }
         organizationId: { type: string, format: uuid, description: whose wallet freezes }
         channel: { type: string, description: "the channel whose `mode: event` price version for the code applies" }
         billableCode: { type: string, minLength: 1, maxLength: 200, description: "what is being billed — the price book's model name on that channel" }
-        eventId: { type: string, maxLength: 128, description: "the service's own identifier for the event, recorded as the usage row's request id; defaults to the hold key" }
+        eventId: { type: string, maxLength: 128, description: "the service's own event label, recorded in settlement evidence; the usage projection uses the credential/customer-bound hold key to avoid global label collisions; defaults to the hold key" }
         usage: { $ref: "#/components/schemas/EventUsage" }
     MeteringSettleRequest:
       type: object
@@ -8994,7 +10618,7 @@ components:
       type: object
       required: [idempotencyKey, organizationId, channel, billableCode, usage]
       properties:
-        idempotencyKey: { type: string, minLength: 1, maxLength: 128 }
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
         organizationId: { type: string, format: uuid, description: whose wallet pays }
         channel: { type: string }
         billableCode: { type: string, minLength: 1, maxLength: 200 }
@@ -9018,10 +10642,322 @@ components:
           description: "`usage` when the declared usage priced inside the freeze, `capped` when it priced above and the freeze was charged, `released` when the hold was let go at zero"
         priceVersion: { type: integer, minimum: 1, description: the price version the usage priced at — the hold's pin on `settle`/`release`, the latest on a one-shot }
         settlementId: { type: string, format: uuid, description: the settlement ledger entry's id — derivable as `entry_id_for(settlement_key_for(holdKey))` }
-    ServiceCredentialRequest:
+    MerchantRail:
+      type: string
+      enum: [hyperswitch, stripe, airwallex]
+    MerchantMode:
+      type: string
+      enum: [test, live]
+    MerchantVersionInput:
       type: object
+      additionalProperties: false
+      required: [apiUrl, apiKey, webhookSecret]
+      description: Complete configuration for one immutable version. Hyperswitch requires publishableKey and sdkUrl; Airwallex requires clientId and checkoutUrl. Fields belonging only to another rail are rejected. API destination rules are shared with provider connections; browser SDK/checkout URLs must be public HTTPS URLs without user info, query or fragment. Secrets are encrypted together and never returned.
       properties:
-        name: { type: string, maxLength: 80, description: "which service holds this credential — the name settlement descriptions record as the reporter" }
+        apiUrl: { type: string, format: uri }
+        apiKey: { type: string, minLength: 8, maxLength: 8192, writeOnly: true }
+        webhookSecret: { type: string, minLength: 8, maxLength: 8192, writeOnly: true }
+        clientId: { type: [string, "null"], minLength: 1, maxLength: 200, writeOnly: true }
+        publishableKey: { type: [string, "null"], minLength: 1, maxLength: 200 }
+        sdkUrl: { type: [string, "null"], format: uri }
+        checkoutUrl: { type: [string, "null"], format: uri }
+        destinationPolicy: { $ref: "#/components/schemas/ProviderDestinationPolicy" }
+    MerchantCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, name, rail, mode, accountId, config]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        name: { type: string, minLength: 1, maxLength: 80, pattern: "^[a-z0-9]+(-[a-z0-9]+)*$" }
+        rail: { $ref: "#/components/schemas/MerchantRail" }
+        mode: { $ref: "#/components/schemas/MerchantMode" }
+        accountId: { type: string, minLength: 1, maxLength: 200, description: Stable provider merchant/account identifier; unique per business, rail and mode. }
+        config: { $ref: "#/components/schemas/MerchantVersionInput" }
+    MerchantVersionRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, config]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        config: { $ref: "#/components/schemas/MerchantVersionInput" }
+    MerchantStatusRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, enabled]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        enabled: { type: boolean }
+    MerchantMutationResult:
+      type: object
+      required: [id, merchantId, versionId, revision, enabled]
+      properties:
+        id: { type: string, format: uuid }
+        merchantId: { type: string, format: uuid }
+        versionId: { type: string, format: uuid }
+        revision: { type: integer, format: int64, minimum: 1 }
+        enabled: { type: boolean }
+    MerchantVersion:
+      type: object
+      required: [id, merchantId, revision, apiUrl, publishableKey, sdkUrl, checkoutUrl, destinationPolicy, source, validationStatus, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        merchantId: { type: string, format: uuid }
+        revision: { type: integer, format: int64, minimum: 1 }
+        apiUrl: { type: string, format: uri }
+        publishableKey: { type: [string, "null"] }
+        sdkUrl: { type: [string, "null"], format: uri }
+        checkoutUrl: { type: [string, "null"], format: uri }
+        destinationPolicy: { $ref: "#/components/schemas/ProviderDestinationPolicy" }
+        source: { type: string, enum: [owner, environment] }
+        validationStatus: { type: string, enum: [locallyValidated], description: Shape and destination syntax validated; external credentials and payments remain uncertified. }
+        createdAt: { type: string, format: date-time }
+    Merchant:
+      type: object
+      required: [id, businessId, name, rail, mode, accountId, connector, supportStatus, enabled, currentVersion]
+      properties:
+        id: { type: string, format: uuid }
+        businessId: { type: string, format: uuid }
+        name: { type: string }
+        rail: { $ref: "#/components/schemas/MerchantRail" }
+        mode: { $ref: "#/components/schemas/MerchantMode" }
+        accountId: { type: string }
+        connector: { type: string, enum: [stripe, direct] }
+        supportStatus: { type: string, enum: [primary, compatibility] }
+        enabled: { type: boolean }
+        currentVersion: { $ref: "#/components/schemas/MerchantVersion" }
+    MerchantPage:
+      type: object
+      required: [merchants, nextCursor]
+      properties:
+        merchants: { type: array, items: { $ref: "#/components/schemas/Merchant" } }
+        nextCursor: { type: [string, "null"], format: uuid }
+    MerchantVersionPage:
+      type: object
+      required: [versions, nextCursor]
+      properties:
+        versions: { type: array, items: { $ref: "#/components/schemas/MerchantVersion" } }
+        nextCursor: { type: [integer, "null"], format: int64 }
+    ProviderMutationResult:
+      type: object
+      required: [id, resourceId, version]
+      properties:
+        id: { type: string, format: uuid }
+        resourceId: { type: [string, "null"], format: uuid }
+        version: { type: [integer, "null"], format: int64 }
+    BusinessChannelPage:
+      type: object
+      required: [channels, nextCursor]
+      properties:
+        channels: { type: array, items: { $ref: "#/components/schemas/Channel" } }
+        nextCursor: { type: [string, "null"], format: uuid }
+    ProviderDestinationPolicy:
+      type: object
+      additionalProperties: false
+      required: [network]
+      description: Public requires HTTPS and globally routable IPs. Internal permits HTTP(S) only to the exact allowedIps explicitly approved by the business owner or deployment recovery authority. All DNS answers must satisfy policy, and the transport uses those addresses without a second resolution. Metadata/link-local, unspecified, multicast and reserved destinations are always refused. Redirects and environment proxies are disabled. Existing channels default to public until explicitly reauthorized.
+      properties:
+        network: { type: string, enum: [public, internal] }
+        allowedIps:
+          type: array
+          maxItems: 16
+          uniqueItems: true
+          description: Required and nonempty for internal; absent or empty for public. Exact IPv4/IPv6 literals, never hostnames or CIDRs.
+          items: { type: string }
+    ProviderConnectionCheck:
+      type: object
+      required: [id, channelId, state, httpStatus]
+      properties:
+        id: { type: string, format: uuid }
+        channelId: { type: string, format: uuid }
+        state: { type: string, enum: [pending, reachable, authenticationFailed, httpError, blocked, unreachable] }
+        httpStatus: { type: [integer, "null"], minimum: 100, maximum: 599 }
+    BusinessChannelRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, config]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        config:
+          type: object
+          additionalProperties: false
+          required: [name, baseUrl, protocol]
+          properties:
+            name: { type: string, minLength: 1, maxLength: 40, pattern: "^[A-Za-z0-9._-]+$" }
+            baseUrl: { type: string, format: uri, description: "HTTPS public by default; HTTP(S) for explicitly approved internal endpoints. No user info, query or fragment; no network call on save" }
+            protocol: { type: string, enum: [openai, anthropic, gemini, tasks] }
+            apiKeys: { type: [array, "null"], minItems: 1, maxItems: 100, items: { type: string, minLength: 8, maxLength: 8192 } }
+            destinationPolicy:
+              allOf: [{ $ref: "#/components/schemas/ProviderDestinationPolicy" }]
+              description: Omitted preserves policy only at the same endpoint/protocol; new or changed connections default to public. Internal approval must be resupplied when repointing.
+    BusinessProviderCredentialRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, config]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        config:
+          type: object
+          additionalProperties: false
+          required: [apiKey]
+          properties:
+            apiKey: { type: string, minLength: 8, maxLength: 8192 }
+    BusinessProviderBillKeyRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, config]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        config:
+          type: object
+          additionalProperties: false
+          required: [apiKey]
+          properties:
+            apiKey: { type: [string, "null"], minLength: 8, maxLength: 8192 }
+    BusinessProviderStatusRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, config]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        config:
+          type: object
+          additionalProperties: false
+          required: [status]
+          properties:
+            status: { type: string, enum: [active, disabled] }
+    BusinessProviderCacheRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, config]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        config:
+          type: object
+          additionalProperties: false
+          required: [policy]
+          properties:
+            policy:
+              type: [object, "null"]
+              additionalProperties: false
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+                ttlSeconds: { type: [integer, "null"], minimum: 1, format: int64 }
+                excludeSystem: { type: boolean }
+    BusinessProviderAliasRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, config]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        config:
+          type: object
+          additionalProperties: false
+          required: [alias, upstreamModel]
+          properties:
+            alias: { type: string, minLength: 1, maxLength: 200 }
+            upstreamModel: { type: string, minLength: 1, maxLength: 200 }
+    BusinessProviderPriceRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, config]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        config:
+          type: object
+          additionalProperties: false
+          required: [model, price, weight]
+          properties:
+            model: { type: string, minLength: 1, maxLength: 200 }
+            price:
+              allOf:
+                - { $ref: "#/components/schemas/PriceSet" }
+                - type: object
+                  required: [inputPricePerMillion, outputPricePerMillion, maxOutputTokens]
+                  properties:
+                    mode: { type: string, enum: [chat, embeddings, rerank, event], default: chat }
+                    rules: { type: array, items: { $ref: "#/components/schemas/PriceRule" } }
+            weight: { type: integer, minimum: 1, maximum: 1000 }
+    BusinessProviderFallbackRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, config]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        config:
+          type: object
+          additionalProperties: false
+          required: [fallbacks]
+          properties:
+            fallbacks: { type: array, maxItems: 16, uniqueItems: true, items: { type: string, minLength: 1, maxLength: 200 } }
+    BusinessProviderRemoveRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, config]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        config:
+          type: object
+          additionalProperties: false
+    IntegrationScope:
+      type: string
+      enum: [customersRead, meteringWrite]
+    IntegrationCredentialRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, scopes, customerIds, expiresAt, reason]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        name: { type: [string, "null"], maxLength: 80 }
+        scopes: { type: array, minItems: 1, maxItems: 2, uniqueItems: true, items: { $ref: "#/components/schemas/IntegrationScope" } }
+        customerIds: { type: array, minItems: 1, maxItems: 1000, uniqueItems: true, items: { type: string, format: uuid } }
+        expiresAt: { type: string, format: date-time }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    IntegrationCredentialRevokeRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    IntegrationCredential:
+      type: object
+      required: [credentialId, businessId, name, prefix, scopes, customerIds, createdAt, expiresAt, revokedAt]
+      properties:
+        credentialId: { type: string, format: uuid }
+        businessId: { type: string, format: uuid }
+        name: { type: [string, "null"] }
+        prefix: { type: string }
+        scopes: { type: array, items: { $ref: "#/components/schemas/IntegrationScope" } }
+        customerIds: { type: array, items: { type: string, format: uuid } }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        revokedAt: { type: [string, "null"], format: date-time }
+    CreatedIntegrationCredential:
+      allOf:
+        - $ref: "#/components/schemas/IntegrationCredential"
+        - type: object
+          required: [secret]
+          properties:
+            secret: { type: [string, "null"], description: "oxs-int- plus 64 random hexadecimal characters; returned once, null on replay" }
+    IntegrationCredentialPage:
+      type: object
+      required: [credentials, nextCursor]
+      properties:
+        credentials: { type: array, items: { $ref: "#/components/schemas/IntegrationCredential" } }
+        nextCursor: { type: [string, "null"], format: uuid }
     ServiceCredential:
       type: object
       required: [credentialId, prefix, createdAt]
@@ -9031,13 +10967,6 @@ components:
         prefix: { type: string, description: "the secret's leading characters, for recognizing it in a list" }
         createdAt: { type: string, format: date-time }
         revokedAt: { type: [string, "null"], format: date-time }
-    CreatedServiceCredential:
-      allOf:
-        - $ref: "#/components/schemas/ServiceCredential"
-        - type: object
-          required: [secret]
-          properties:
-            secret: { type: string, description: "`oxs-svc-` plus 64 hex characters — answered once, never stored readable" }
     RedeemRequest:
       type: object
       required: [code]

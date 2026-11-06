@@ -81,6 +81,7 @@ struct World {
     app: Router,
     pool: PgPool,
     key: String,
+    session: String,
     key_id: String,
     model: String,
 }
@@ -93,15 +94,26 @@ async fn world(database_url: &str) -> World {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
 
     let suffix = Uuid::new_v4().simple().to_string()[..8].to_owned();
     let channel = format!("ent-{suffix}");
     let model = format!("ok-{suffix}");
     let secret = SecretKey::from_bytes([7; 32]);
     let base_url = start_upstream().await;
-    db.set_channel(&channel, &base_url, "upstream-secret", "openai", &secret)
-        .await
-        .expect("the channel is written");
+    db.set_channel_pool_policy(
+        &channel,
+        &base_url,
+        Some(&["upstream-secret".to_owned()]),
+        "openai",
+        &secret,
+        Some(&oxsum_core::ProviderDestinationPolicy {
+            network: oxsum_core::ProviderNetwork::Internal,
+            allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+        }),
+    )
+    .await
+    .expect("the channel is written");
     db.append_price(
         &channel,
         &model,
@@ -142,6 +154,7 @@ async fn world(database_url: &str) -> World {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "registration failed: {body}");
+    let session = support::login(&app, &email, "correct horse battery").await;
     let key = body["data"]["apiKey"]["secret"]
         .as_str()
         .expect("registration returns a key")
@@ -165,6 +178,7 @@ async fn world(database_url: &str) -> World {
         app,
         pool,
         key,
+        session,
         key_id,
         model,
     }
@@ -185,7 +199,7 @@ async fn call(
         request = request.header("content-type", "application/json");
     }
     if let Some(key) = key {
-        request = request.header("authorization", format!("Bearer {key}"));
+        request = support::credential(request, key);
     }
     for (name, value) in headers {
         request = request.header(*name, *value);
@@ -246,7 +260,7 @@ async fn patch_key(world: &World, body: Value) -> (StatusCode, Value) {
         "PATCH",
         &format!("/api/v1/org/keys/{}", world.key_id),
         Some(body),
-        Some(&world.key),
+        Some(&world.session),
         &[],
     )
     .await
@@ -466,7 +480,7 @@ async fn a_presented_mandate_gets_its_own_verdicts() {
         "POST",
         &format!("/api/v1/org/keys/{}/mandates", world.key_id),
         Some(json!({"capMinor": 5_000_000, "notAfter": "2030-01-01T00:00:00Z"})),
-        Some(&world.key),
+        Some(&world.session),
         &[],
     )
     .await;

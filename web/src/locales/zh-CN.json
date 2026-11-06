@@ -414,7 +414,7 @@
     "title": "成员",
     "budgetsGlance": "预算一览",
     "readError": "成员读取失败。",
-    "addMember": "添加成员",
+    "addMember": "邀请成员",
     "email": "邮箱",
     "owner": "所有者",
     "uncapped": "无上限",
@@ -432,17 +432,19 @@
     "remove": "移除",
     "makeOwner": "设为所有者",
     "noMembers": "暂无成员 —— 在下方添加。",
-    "addExisting": "通过邮箱添加已有账户。",
+    "addExisting": "接收人明确接受后才会成为成员。已有账户需先登录。",
     "inviteNoAccount": "邀请没有账户的人",
     "createInvite": "创建邀请链接",
     "add": "添加",
-    "inviteEmail": "邮箱（可选）",
-    "inviteEmailHint": "填写邮箱会直接发送邀请链接；留空则只生成链接，由你自行转交。",
+    "inviteEmail": "接收人邮箱",
+    "inviteEmailHint": "仅此邮箱可接受邀请，适用于新账户和已有账户。",
     "inviteEmailPlaceholder": "teammate@example.com",
     "inviteAndMail": "生成链接并发送邮件",
     "inviteSent": "邀请邮件已发送至 {{email}}。",
     "inviteFailed": "无法向 {{email}} 发送邀请邮件，请手动转交链接。",
-    "inviteOnce": "请立即复制 —— 链接只显示这一次。"
+    "inviteOnce": "链接在七天后过期，仅可接受一次。",
+    "mailInvitation": "通过邮件发送链接（需要配置邮件服务）",
+    "inviteReplay": "邀请已存在。密钥仅显示一次，请使用已保存的链接或创建新邀请。"
   },
   "webhooks": {
     "title": "Webhook",
@@ -758,7 +760,16 @@
     "joinOrgTitle": "加入组织",
     "registerIntoOrg": "注册并加入组织",
     "backToSignInLink": "返回登录",
-    "signInLink": "登录"
+    "signInLink": "登录",
+    "invitationAccepted": "已接受邀请",
+    "invitationAcceptedHint": "成员身份已保存。请从账户菜单中选择该客户账户。",
+    "invitationContinue": "继续",
+    "invitationOffer": "以客户 {{role}} 身份加入 {{name}}。接受后可访问该客户账户。",
+    "invitationMissing": "缺少邀请令牌，请打开完整的邀请链接。",
+    "invitationLoading": "正在检查登录状态…",
+    "invitationAs": "以 {{email}} 接受",
+    "invitationAccept": "接受邀请",
+    "invitationSignIn": "已有账户？登录后接受邀请"
   },
   "admin": {
     "console": "管理控制台",
@@ -910,7 +921,11 @@
       "colPrefix": "前缀",
       "colCreated": "创建时间",
       "revoked": "已吊销",
-      "revoke": "吊销"
+      "revoke": "吊销",
+      "retired": "旧服务凭据已停用。请向业务所有者申请具有所需权限、指定客户范围和到期时间的集成凭据。",
+      "disabled": "已停用",
+      "empty": "暂无旧服务凭据。",
+      "retry": "重试"
     },
     "deposits": {
       "organization": "组织",
@@ -1005,9 +1020,9 @@
       "note": "供应商账单是上游向该渠道收取的费用，由上游账单同步按天汇总；“未对账”表示该同步尚未为该渠道入账，而非账单为零。合计中每个渠道只计一次 —— API 会在每个模型行上重复渠道级数字。未跟踪轮次是已结算但无上游成本记录的轮次（未跟踪的价格、被清扫的冻结或历史数据），缺口拉大时最先体现在这里。"
     },
     "metering": {
-      "credentialTitle": "服务凭证",
+      "credentialTitle": "集成凭据",
       "credential": "凭证",
-      "credentialHint": "在“凭证”页签发的服务凭证 —— 用作 /api/v1/metering/* 的 bearer",
+      "credentialHint": "由业务所有者签发，具有此客户计量权限的集成凭据。",
       "credentialSaved": "凭证已保存到此浏览器",
       "eventContext": "事件上下文",
       "organizationId": "组织 id",

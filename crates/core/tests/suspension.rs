@@ -356,17 +356,20 @@ async fn member_budget_validates_and_clears() {
         })
         .await
         .unwrap();
-    let other = world
-        .db
-        .add_member(org, owner(&world), &other.user.email)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO oxsum.memberships (organization_id,user_id,role) VALUES ($1,$2,'member')",
+    )
+    .bind(org)
+    .bind(other.user.id)
+    .execute(world.db.pool())
+    .await
+    .unwrap();
     let member = world
         .db
         .update_member(
             org,
             owner(&world),
-            other.user_id,
+            other.user.id,
             Some(Role::Admin),
             Some(Some(2 * ONE)),
             None,

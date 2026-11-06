@@ -102,6 +102,7 @@ async fn world_for(url: &str) -> World {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
 
     // One model at one minor unit per token, on this world's own channel: the
     // database is shared between tests, and a model belongs to exactly one channel.
@@ -119,9 +120,19 @@ async fn world_for(url: &str) -> World {
     prices.insert(model.clone(), price);
     let book = oxsum_core::PriceBook::from_json(&channel, &Value::Object(prices).to_string())
         .expect("prices parse");
-    db.set_channel(&channel, &base_url, "upstream-secret", "openai", &secret)
-        .await
-        .expect("the channel is written");
+    db.set_channel_pool_policy(
+        &channel,
+        &base_url,
+        Some(&["upstream-secret".to_owned()]),
+        "openai",
+        &secret,
+        Some(&oxsum_core::ProviderDestinationPolicy {
+            network: oxsum_core::ProviderNetwork::Internal,
+            allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+        }),
+    )
+    .await
+    .expect("the channel is written");
     for (model, price) in book.models() {
         db.append_price(&channel, model, price.clone(), 100)
             .await

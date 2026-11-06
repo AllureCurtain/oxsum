@@ -28,6 +28,7 @@ async fn online_app(url: &str, secure_cookie: bool) -> (Router, PgPool) {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let config = Config::new(Signup::Open, None).with_session_cookie_secure(secure_cookie);
     (support::app(db, config), pool)
 }
@@ -254,10 +255,10 @@ async fn the_cookie_authenticates_the_session_and_the_ledger_endpoints() {
         assert_eq!(res.body["error"]["code"], "UNAUTHORIZED", "{path}");
     }
 
-    // The key still works everywhere, unchanged.
+    // A consumption key cannot inspect a personal session.
     let res = call(&app, "GET", "/api/v1/session", None, Some(&key), None).await;
-    assert_eq!(res.status, StatusCode::NOT_FOUND, "{}", res.body);
-    assert_eq!(res.body["error"]["code"], "NOT_FOUND");
+    assert_eq!(res.status, StatusCode::FORBIDDEN, "{}", res.body);
+    assert_eq!(res.body["error"]["code"], "FORBIDDEN");
 }
 
 #[tokio::test]
@@ -446,7 +447,7 @@ async fn members_manage_only_their_own_keys() {
     assert_eq!(res.body["data"]["createdBy"], member_uid);
     let member_key = res.body["data"]["id"].as_str().unwrap().to_owned();
 
-    // A key minted with an API key records no creator.
+    // A consumption key cannot mint another credential.
     let res = call(
         &app,
         "POST",
@@ -456,8 +457,7 @@ async fn members_manage_only_their_own_keys() {
         None,
     )
     .await;
-    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
-    assert!(res.body["data"]["createdBy"].is_null());
+    assert_eq!(res.status, StatusCode::FORBIDDEN, "{}", res.body);
 
     // The member lists only the key they created.
     let res = call(
@@ -489,7 +489,7 @@ async fn members_manage_only_their_own_keys() {
     )
     .await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
-    assert_eq!(res.body["data"].as_array().unwrap().len(), 4);
+    assert_eq!(res.body["data"].as_array().unwrap().len(), 3);
 
     // A member revoking a key they did not create gets 404, and the key stays live.
     let res = call(
@@ -542,14 +542,16 @@ async fn a_session_cannot_bypass_billing_authority_with_a_raw_hold() {
     .await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
 
+    let cookie = session_cookie(&login(&app, &email, PASSWORD).await);
+
     // Cap the key at one credit: the key itself could not hold two.
     let res = call(
         &app,
         "POST",
         "/api/v1/org/keys",
         Some(json!({"name": "capped", "spendLimitMinor": 1_000_000})),
-        Some(&key),
         None,
+        Some(&cookie),
     )
     .await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);

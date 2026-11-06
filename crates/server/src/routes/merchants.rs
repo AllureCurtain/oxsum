@@ -1,0 +1,94 @@
+//! Merchant transport; current authority and atomic configuration live in core.
+use super::business::personal_token;
+use crate::{
+    AppState,
+    error::{ApiError, ApiJson, ApiQuery},
+    routes::{ApiResult, ok},
+};
+use axum::{
+    extract::{Path, State},
+    http::HeaderMap,
+};
+use oxsum_core::{
+    MerchantCreateRequest, MerchantMutationResult, MerchantPage, MerchantStatusRequest,
+    MerchantVersionPage, MerchantVersionRequest,
+};
+use serde::Deserialize;
+use uuid::Uuid;
+#[derive(Deserialize)]
+pub(crate) struct Page {
+    after: Option<Uuid>,
+    limit: Option<i64>,
+}
+#[derive(Deserialize)]
+pub(crate) struct Versions {
+    after: Option<i64>,
+    limit: Option<i64>,
+}
+pub(crate) async fn list(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    ApiQuery(page): ApiQuery<Page>,
+) -> ApiResult<MerchantPage> {
+    ok(state
+        .db
+        .business_merchants(
+            &personal_token(&headers)?,
+            page.after,
+            page.limit.unwrap_or(50),
+        )
+        .await?)
+}
+pub(crate) async fn create(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<MerchantCreateRequest>,
+) -> ApiResult<MerchantMutationResult> {
+    let token = personal_token(&headers)?;
+    let secret = state.config.secret().ok_or_else(|| {
+        ApiError::ServiceUnavailable("merchant encryption is not configured".into())
+    })?;
+    ok(state.db.create_merchant(&token, &request, secret).await?)
+}
+pub(crate) async fn versions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(merchant): Path<Uuid>,
+    ApiQuery(page): ApiQuery<Versions>,
+) -> ApiResult<MerchantVersionPage> {
+    ok(state
+        .db
+        .business_merchant_versions(
+            &personal_token(&headers)?,
+            merchant,
+            page.after,
+            page.limit.unwrap_or(50),
+        )
+        .await?)
+}
+pub(crate) async fn rotate(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(merchant): Path<Uuid>,
+    ApiJson(request): ApiJson<MerchantVersionRequest>,
+) -> ApiResult<MerchantMutationResult> {
+    let token = personal_token(&headers)?;
+    let secret = state.config.secret().ok_or_else(|| {
+        ApiError::ServiceUnavailable("merchant encryption is not configured".into())
+    })?;
+    ok(state
+        .db
+        .rotate_merchant(&token, merchant, &request, secret)
+        .await?)
+}
+pub(crate) async fn status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(merchant): Path<Uuid>,
+    ApiJson(request): ApiJson<MerchantStatusRequest>,
+) -> ApiResult<MerchantMutationResult> {
+    ok(state
+        .db
+        .set_merchant_enabled(&personal_token(&headers)?, merchant, &request)
+        .await?)
+}

@@ -159,6 +159,24 @@ impl Db {
         after: Option<(OffsetDateTime, String)>,
         limit: usize,
     ) -> Result<RequestLogPage, WalletError> {
+        self.scoped_request_log_page(
+            filter,
+            after,
+            limit,
+            &crate::CustomerRecordScope {
+                key_ids: None,
+                include_unattributed: true,
+            },
+        )
+        .await
+    }
+    pub async fn scoped_request_log_page(
+        &self,
+        filter: &RequestLogFilter,
+        after: Option<(OffsetDateTime, String)>,
+        limit: usize,
+        scope: &crate::CustomerRecordScope,
+    ) -> Result<RequestLogPage, WalletError> {
         // One row over the page size is the "there is more" signal — the
         // cursor names the page's last row, not the peeked one.
         let limit = limit.clamp(1, 200) as i64;
@@ -181,6 +199,7 @@ impl Db {
                AND ($8::text IS NULL OR status = $8) \
                AND ($9::bigint IS NULL OR charge_minor >= $9) \
                AND ($10::timestamptz IS NULL OR (created_at, request_id) < ($10, $11)) \
+               AND ($13::text[] IS NULL OR replace(key_id::text,'-','')=ANY($13) OR (key_id IS NULL AND $14)) \
              ORDER BY created_at DESC, request_id DESC \
              LIMIT $12",
         )
@@ -196,6 +215,8 @@ impl Db {
         .bind(after_at)
         .bind(after_id)
         .bind(limit + 1)
+        .bind(&scope.key_ids)
+        .bind(scope.include_unattributed)
         .fetch_all(self.pool())
         .await?;
         let more = rows.len() as i64 > limit;

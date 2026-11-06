@@ -201,6 +201,7 @@ struct World {
     tenant_id: String,
     organization_id: Uuid,
     key: String,
+    session: String,
     script: Script,
     channel: String,
     /// The broadcast sender — unused here, kept so `app_with_billing`'s wiring
@@ -214,6 +215,7 @@ async fn world(url: &str, top_up: i64) -> World {
     let pool = PgPool::connect(url).await.expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let suffix = Uuid::new_v4().simple().to_string()[..8].to_owned();
     let channel = format!("tasks-{suffix}");
     let secret = SecretKey::from_bytes([7; 32]);
@@ -221,9 +223,19 @@ async fn world(url: &str, top_up: i64) -> World {
     let base_url = start_upstream(script.clone()).await;
     // One channel under the `tasks` protocol, priced flat at 500 minor per
     // request — a task's bound is a declared amount, not a token estimate.
-    db.set_channel(&channel, &base_url, "upstream-secret", "tasks", &secret)
-        .await
-        .expect("the channel is written");
+    db.set_channel_pool_policy(
+        &channel,
+        &base_url,
+        Some(&["upstream-secret".to_owned()]),
+        "tasks",
+        &secret,
+        Some(&oxsum_core::ProviderDestinationPolicy {
+            network: oxsum_core::ProviderNetwork::Internal,
+            allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+        }),
+    )
+    .await
+    .expect("the channel is written");
     db.append_price(
         &channel,
         "task-model",
@@ -254,6 +266,12 @@ async fn world(url: &str, top_up: i64) -> World {
     let tenants = Tenants::new(pool.clone());
 
     let (registration, key) = register(&app).await;
+    let session = support::login(
+        &app,
+        registration["user"]["email"].as_str().unwrap(),
+        "correct horse battery",
+    )
+    .await;
     let tenant_id = registration["organization"]["tenantId"]
         .as_str()
         .expect("registration names a tenant")
@@ -281,6 +299,7 @@ async fn world(url: &str, top_up: i64) -> World {
         tenant_id,
         organization_id,
         key,
+        session,
         script,
         channel,
         billing,
@@ -336,7 +355,7 @@ async fn call(
         request = request.header("content-type", "application/json");
     }
     if let Some(key) = key {
-        request = request.header("authorization", format!("Bearer {key}"));
+        request = support::credential(request, key);
     }
     let request = request
         .body(body.map_or_else(Body::empty, |value| Body::from(value.to_string())))
@@ -703,7 +722,7 @@ async fn foreign_key_cannot_read() {
         &format!("/v1/tasks/{task_id}"),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 /// A task submission uses the same channel boundary as synchronous inference:
@@ -738,7 +757,14 @@ async fn grouped_task_submission_cannot_use_a_forbidden_channel() {
             .await
             .unwrap();
     assert_eq!(count, 0);
-    let (_, balance) = call(&world.app, "GET", "/api/v1/balance", None, Some(&world.key)).await;
+    let (_, balance) = call(
+        &world.app,
+        "GET",
+        "/api/v1/balance",
+        None,
+        Some(&world.session),
+    )
+    .await;
     assert_eq!(balance["data"]["availableMinor"], 1_000_000);
     assert_eq!(balance["data"]["reservedMinor"], 0);
 
@@ -762,4 +788,294 @@ async fn grouped_task_submission_cannot_use_a_forbidden_channel() {
     let response = submit_task(&world.app, &world.key, simple_submit()).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(world.script.seen_submits.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn sibling_key_cannot_poll_cancel_or_replay_a_task() {
+    let Some(url) = url() else { return };
+    let world = world(&url, 10_000).await;
+    world.script.submit(
+        "task-model",
+        SubmitAnswer::Accept {
+            task_id: "isolated-task".into(),
+        },
+    );
+    let principal = oxsum_core::Principal::Session(
+        world
+            .db
+            .authenticate_session(&world.session)
+            .await
+            .unwrap()
+            .unwrap(),
+    );
+    let sibling = world
+        .db
+        .create_key_as(&principal, None, None, Default::default())
+        .await
+        .unwrap();
+    async fn submit(app: &Router, key: &str, body: Value) -> (StatusCode, Value) {
+        let res = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/tasks")
+                    .header("authorization", format!("Bearer {key}"))
+                    .header("idempotency-key", "private-task")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = res.status();
+        let body =
+            serde_json::from_slice(&res.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        (status, body)
+    }
+    let (status, original) = submit(&world.app, &world.key, simple_submit()).await;
+    assert_eq!(status, StatusCode::OK, "{original}");
+    let task_id = original["taskId"].as_str().unwrap();
+    let wallet = world.tenants.get(&world.tenant_id).await.unwrap();
+    let before = (
+        wallet.log_size().await.unwrap(),
+        wallet.available().await.unwrap(),
+        wallet.reserved().await.unwrap(),
+    );
+    for (method, path) in [
+        ("GET", format!("/v1/tasks/{task_id}")),
+        ("POST", format!("/v1/tasks/{task_id}/cancel")),
+    ] {
+        let (status, body) = task_call(&world.app, &sibling.secret, method, &path).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert_eq!(body["error"]["code"], "NOT_FOUND");
+    }
+    let (status, _) = submit(&world.app, &sibling.secret, simple_submit()).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let mut changed = simple_submit();
+    changed["input"]["prompt"] = json!("changed");
+    assert_eq!(
+        submit(&world.app, &world.key, changed).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    for _ in 0..3 {
+        let (status, replay) = submit(&world.app, &world.key, simple_submit()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(replay, original);
+    }
+    assert_eq!(world.script.seen_submits.lock().unwrap().len(), 1);
+    assert!(world.script.seen_cancels.lock().unwrap().is_empty());
+    assert_eq!(
+        (
+            wallet.log_size().await.unwrap(),
+            wallet.available().await.unwrap(),
+            wallet.reserved().await.unwrap()
+        ),
+        before
+    );
+    assert_eq!(
+        task_call(
+            &world.app,
+            &world.key,
+            "GET",
+            &format!("/v1/tasks/{task_id}")
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn task_poll_and_cancel_retain_submission_endpoint_after_channel_repoint() {
+    let Some(url) = url() else { return };
+    let world = world(&url, 10000).await;
+    world.script.submit(
+        "task-model",
+        SubmitAnswer::Accept {
+            task_id: "old-provider-job".into(),
+        },
+    );
+    let (status, submitted) = call(
+        &world.app,
+        "POST",
+        "/v1/tasks",
+        Some(json!({"model":"task-model","kind":"custom","input":{},"maxCostMinor":500})),
+        Some(&world.key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{submitted}");
+    let task_id = submitted["taskId"].as_str().unwrap();
+    let replacement = Script::default();
+    let base = start_upstream(replacement.clone()).await;
+    world
+        .db
+        .set_channel_pool_policy(
+            &world.channel,
+            &base,
+            Some(&["replacement-key".into()]),
+            "tasks",
+            &SecretKey::from_bytes([7; 32]),
+            Some(&oxsum_core::ProviderDestinationPolicy {
+                network: oxsum_core::ProviderNetwork::Internal,
+                allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+            }),
+        )
+        .await
+        .unwrap();
+    let target = world
+        .db
+        .open_task_poll_targets(100)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|t| t.task.task_id.to_string() == task_id)
+        .unwrap();
+    let endpoint = target.endpoint.unwrap();
+    assert_ne!(endpoint.base_url, base);
+    assert_eq!(
+        SecretKey::from_bytes([7; 32])
+            .open(endpoint.api_key_sealed.as_deref().unwrap())
+            .unwrap(),
+        "upstream-secret"
+    );
+    enqueue_poll(&world.db).await;
+    run_due(&world.db, &ctx()).await;
+    assert!(
+        world
+            .script
+            .seen_polls
+            .lock()
+            .unwrap()
+            .contains(&"old-provider-job".into())
+    );
+    assert!(replacement.seen_polls.lock().unwrap().is_empty());
+    let (status, _) = call(
+        &world.app,
+        "POST",
+        &format!("/v1/tasks/{task_id}/cancel"),
+        None,
+        Some(&world.key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        *world.script.seen_cancels.lock().unwrap(),
+        vec!["old-provider-job"]
+    );
+    assert!(replacement.seen_cancels.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn task_admission_honors_customer_models_and_refuses_unsupported_aliases_and_mandates() {
+    let Some(url) = url() else {
+        return;
+    };
+    let world = world(&url, 10_000).await;
+    world
+        .db
+        .set_tier("task-limited", None, Some(vec!["other".into()]))
+        .await
+        .unwrap();
+    world
+        .db
+        .set_organization_tier(world.organization_id, Some("task-limited"))
+        .await
+        .unwrap();
+    let response = submit_task(&world.app, &world.key, simple_submit()).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(world.script.seen_submits.lock().unwrap().is_empty());
+    world
+        .db
+        .set_organization_tier(world.organization_id, None)
+        .await
+        .unwrap();
+    world
+        .db
+        .create_alias(&world.channel, "task-alias", "task-model")
+        .await
+        .unwrap();
+    let mut aliased = simple_submit();
+    aliased["model"] = json!("task-alias");
+    assert_eq!(
+        submit_task(&world.app, &world.key, aliased).await.status(),
+        StatusCode::BAD_REQUEST
+    );
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/tasks")
+        .header("authorization", format!("Bearer {}", world.key))
+        .header("content-type", "application/json")
+        .header("x-oxsum-mandate", "a-mandate-must-not-be-ignored")
+        .body(Body::from(simple_submit().to_string()))
+        .unwrap();
+    assert_eq!(
+        world.app.clone().oneshot(request).await.unwrap().status(),
+        StatusCode::FORBIDDEN
+    );
+    assert!(world.script.seen_submits.lock().unwrap().is_empty());
+    assert_eq!(
+        world
+            .tenants
+            .get(&world.tenant_id)
+            .await
+            .unwrap()
+            .reserved()
+            .await
+            .unwrap(),
+        0
+    );
+    let (_, list) = call(&world.app, "GET", "/v1/models", None, Some(&world.key)).await;
+    let listed = list["data"].as_array().unwrap();
+    assert!(listed.iter().any(|m| m["id"] == "task-model"));
+    assert!(listed.iter().all(|m| m["id"] != "task-alias"));
+    world.script.submit(
+        "task-model",
+        SubmitAnswer::Accept {
+            task_id: "permission-snapshot-task".into(),
+        },
+    );
+    let response = submit_task(&world.app, &world.key, simple_submit()).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let task_id = body["taskId"].as_str().unwrap();
+    world
+        .db
+        .set_organization_tier(world.organization_id, Some("task-limited"))
+        .await
+        .unwrap();
+    assert_eq!(
+        call(
+            &world.app,
+            "GET",
+            &format!("/v1/tasks/{task_id}"),
+            None,
+            Some(&world.key)
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &world.app,
+            "POST",
+            &format!("/v1/tasks/{task_id}/cancel"),
+            Some(json!({})),
+            Some(&world.key)
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        world
+            .tenants
+            .get(&world.tenant_id)
+            .await
+            .unwrap()
+            .reserved()
+            .await
+            .unwrap(),
+        0
+    );
 }
