@@ -350,12 +350,16 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../migrations/0088_payment_orders.sql"),
     ),
     (
-        "0089_manual_payment_orders",
-        include_str!("../migrations/0089_manual_payment_orders.sql"),
+        "0089_usage_cost_basis",
+        include_str!("../migrations/0089_usage_cost_basis.sql"),
     ),
     (
         "0090_sold_plans",
         include_str!("../migrations/0090_sold_plans.sql"),
+    ),
+    (
+        "0091_manual_payment_orders",
+        include_str!("../migrations/0091_manual_payment_orders.sql"),
     ),
 ];
 

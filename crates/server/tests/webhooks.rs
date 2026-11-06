@@ -178,6 +178,7 @@ fn usage_row(request_id: &str, tenant: &str) -> UsageRow {
         charged_minor: 12,
         freeze_minor: 100,
         upstream_cost_minor: None,
+        cost_basis: oxsum_core::CostBasis::Missing,
         upstream_attempts: 1,
     }
 }

@@ -356,6 +356,7 @@ async fn the_retention_pass_ages_out_each_rule_once() {
         charged_minor: 12,
         freeze_minor: 100,
         upstream_cost_minor: None,
+        cost_basis: oxsum_core::CostBasis::Missing,
         upstream_attempts: 1,
     })
     .await

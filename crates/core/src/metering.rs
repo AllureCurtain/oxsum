@@ -392,7 +392,110 @@ async fn watched(
     }
 }
 
+/// The lease owner a metered event's operation binds and settles under (issue
+/// #604): fixed rather than an instance id, like the sweeper's — a metered
+/// hold is short-lived and never streamed, so its lease is a claim the settle
+/// makes, not a heartbeat a worker keeps.
+const METERING_OWNER: &str = "metering";
+
 impl Db {
+    /// Writes the metered event's operation row and binds it to the hold the
+    /// intake just took (issue #604): `surface` `metering`, `fingerprint` the
+    /// `hold_key` so the settle names the same row, `hold_key` bound at once
+    /// because the hold already exists. `ON CONFLICT` on the fingerprint makes
+    /// a replayed `holds` idempotent — the existing row comes back, and its
+    /// `bind_hold` is a `created`-only CAS the replay loses cleanly. A failed
+    /// write is logged, never a failed hold: the ledger entry is the bill.
+    async fn note_metered_operation(
+        &self,
+        organization_id: Uuid,
+        hold_key: &str,
+        billable_code: &str,
+        channel: &str,
+        freeze: i64,
+        version: i64,
+    ) {
+        let inserted = self
+            .insert_operation(&crate::operations::NewOperation {
+                operation_id: Uuid::new_v4(),
+                organization_id,
+                key_id: None,
+                surface: crate::operations::METERING_SURFACE.to_owned(),
+                fingerprint: hold_key.to_owned(),
+                bound_minor: freeze,
+                model: billable_code.to_owned(),
+                channel: Some(channel.to_owned()),
+                customer_id: None,
+                terms_version: Some(version),
+            })
+            .await;
+        let operation = match inserted {
+            Ok((operation, _fresh)) => operation,
+            Err(error) => {
+                tracing::error!(%error, hold_key,
+                    "writing the metered event's operation row failed");
+                return;
+            }
+        };
+        if let Err(error) = self
+            .bind_hold(operation.operation_id, hold_key, METERING_OWNER)
+            .await
+        {
+            tracing::error!(%error, hold_key,
+                "binding the metered operation's hold failed");
+        }
+    }
+
+    /// Closes the metered event's operation under the `metered` outcome (issue
+    /// #604): the settle names the row the hold wrote by its `hold_key`
+    /// fingerprint, so a cost-allocation read over `request_operations` never
+    /// confuses a privileged internal event with customer-billable usage. A
+    /// missing or raced row is logged, never the settle's failure — the ledger
+    /// entry already decided the event's money.
+    async fn settle_metered_operation(
+        &self,
+        organization_id: Uuid,
+        hold_key: &str,
+        state: crate::operations::OperationState,
+        charged: i64,
+    ) {
+        let operation = match self
+            .operation_by_fingerprint(organization_id, hold_key)
+            .await
+        {
+            Ok(Some(operation)) => operation,
+            Ok(None) => {
+                tracing::warn!(hold_key, "no metered operation row to settle");
+                return;
+            }
+            Err(error) => {
+                tracing::error!(%error, hold_key, "reading the metered operation failed");
+                return;
+            }
+        };
+        match self
+            .settle_operation(
+                operation.operation_id,
+                METERING_OWNER,
+                state,
+                charged,
+                crate::operations::METERED_OUTCOME,
+            )
+            .await
+        {
+            Ok(crate::operations::OperationSettle::Settled) => {}
+            Ok(crate::operations::OperationSettle::AlreadySettled) => {
+                tracing::info!(hold_key, "the metered operation was already terminal");
+            }
+            Ok(crate::operations::OperationSettle::LeaseLost) => {
+                tracing::warn!(hold_key, "the metered operation's lease was lost");
+            }
+            Err(error) => {
+                tracing::error!(%error, hold_key, "settling the metered operation failed");
+            }
+        }
+    }
+
     /// Freezes `event`'s declared usage — the bound — as a hold in the named
     /// organization's wallet, attributed to the reporting credential.
     ///
@@ -471,6 +574,24 @@ impl Db {
             }
             return Err(error);
         }
+        // The metered event's operation row (issue #604): the privileged
+        // service-credential intake produces a durable operation like every
+        // customer surface, marked `metering` and keyed by `hold_key` as its
+        // fingerprint so the settle names the same row — and so a replayed
+        // `holds` call under the same idempotency key re-binds rather than
+        // writing a second operation. `key_id` stays NULL: the caller is a
+        // service credential, not a consumption key. Best-effort like the
+        // usage record — a failed write is a thinner recovery trail, never a
+        // failed hold.
+        self.note_metered_operation(
+            organization_id,
+            &hold_key,
+            &event.billable_code,
+            &event.channel,
+            freeze,
+            admission.version,
+        )
+        .await;
         // The version the answer names is the hold's pin, not the version just
         // resolved: on a replay the price book may have moved on. The watch row
         // carries it while the hold is open; once it settled, the committed
@@ -610,9 +731,24 @@ impl Db {
                 charged_minor: charged,
                 freeze_minor: watch.freeze_minor,
                 upstream_cost_minor: upstream_cost,
+                // The reporting service attested real consumption (issue
+                // #604): `real_attempt` when the price priced it, `missing`
+                // when it carried no `upstream` block.
+                cost_basis: if upstream_cost.is_some() {
+                    crate::usage::CostBasis::RealAttempt
+                } else {
+                    crate::usage::CostBasis::Missing
+                },
                 upstream_attempts: 0,
             },
             hold_key,
+        )
+        .await;
+        self.settle_metered_operation(
+            organization_id,
+            hold_key,
+            crate::operations::OperationState::Succeeded,
+            charged,
         )
         .await;
         Ok(MeteredOutcome {
@@ -718,10 +854,23 @@ impl Db {
                 },
                 charged_minor: 0,
                 freeze_minor: watch.freeze_minor,
-                upstream_cost_minor: Some(0),
+                // A released hold ran no billable work: the platform's cost is
+                // untracked, not a fabricated zero (issue #604).
+                upstream_cost_minor: None,
+                cost_basis: crate::usage::CostBasis::Missing,
                 upstream_attempts: 0,
             },
             hold_key,
+        )
+        .await;
+        // A released hold ends the operation without serving: `failed`, the
+        // same terminal a released customer hold takes, so the metering row
+        // reads like a customer turn that billed nothing (issue #604).
+        self.settle_metered_operation(
+            organization_id,
+            hold_key,
+            crate::operations::OperationState::Failed,
+            0,
         )
         .await;
         Ok(MeteredOutcome {
@@ -818,6 +967,19 @@ impl Db {
             }
             return Err(error);
         }
+        // The one-shot event's operation row (issue #604): written between the
+        // hold and the settle, bound under the same `metered` marking a held
+        // event's carries, so the single-call path produces the same durable
+        // parent the two-call path does.
+        self.note_metered_operation(
+            organization_id,
+            &hold_key,
+            &event.billable_code,
+            &event.channel,
+            charged,
+            admission.version,
+        )
+        .await;
         let description = MeteredSettlement {
             request: &request_id,
             service: &service_name(service),
@@ -872,9 +1034,24 @@ impl Db {
                 charged_minor: charged,
                 freeze_minor: charged,
                 upstream_cost_minor: upstream_cost,
+                // The reporting service attested real consumption (issue
+                // #604): `real_attempt` when the price priced it, `missing`
+                // when it carried no `upstream` block.
+                cost_basis: if upstream_cost.is_some() {
+                    crate::usage::CostBasis::RealAttempt
+                } else {
+                    crate::usage::CostBasis::Missing
+                },
                 upstream_attempts: 0,
             },
             &hold_key,
+        )
+        .await;
+        self.settle_metered_operation(
+            organization_id,
+            &hold_key,
+            crate::operations::OperationState::Succeeded,
+            charged,
         )
         .await;
         Ok(MeteredOutcome {

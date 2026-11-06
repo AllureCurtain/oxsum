@@ -131,6 +131,7 @@ async fn turn(
         charged_minor: 100_000,
         freeze_minor: 1_000_000,
         upstream_cost_minor: None,
+        cost_basis: oxsum_core::CostBasis::Missing,
         upstream_attempts: 1,
     };
     f.db.record_usage(&row)
@@ -205,6 +206,7 @@ async fn the_window_counts_the_normalized_totals() {
         charged_minor: 100_000,
         freeze_minor: 1_000_000,
         upstream_cost_minor: None,
+        cost_basis: oxsum_core::CostBasis::Missing,
         upstream_attempts: 1,
     })
     .await
@@ -368,6 +370,7 @@ async fn tagged_turn(f: &Fixture, request: &str, tag: &str, value: &str, tokens:
         charged_minor: 100_000,
         freeze_minor: 1_000_000,
         upstream_cost_minor: None,
+        cost_basis: oxsum_core::CostBasis::Missing,
         upstream_attempts: 1,
     })
     .await
@@ -436,6 +439,7 @@ async fn a_tagged_settle_accrues_its_scoped_bucket() {
         charged_minor: 100_000,
         freeze_minor: 1_000_000,
         upstream_cost_minor: None,
+        cost_basis: oxsum_core::CostBasis::Missing,
         upstream_attempts: 1,
     })
     .await
