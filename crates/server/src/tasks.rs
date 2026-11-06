@@ -219,6 +219,29 @@ async fn submit_inner(
         .first()
         .ok_or_else(|| GatewayError::model_not_served(model))?;
 
+    let credential = primary.credentials.first();
+    let Some(credential) = credential else {
+        return Err(GatewayError::upstream(
+            StatusCode::BAD_GATEWAY,
+            "every upstream credential is cooling or disabled".to_owned(),
+            None,
+        ));
+    };
+    let endpoint = oxsum_core::TaskProviderEndpoint {
+        base_url: primary.base_url.clone(),
+        protocol: primary.protocol.clone(),
+        destination_policy: oxsum_core::ProviderDestinationPolicy::from_settings(
+            &primary.settings,
+        )?,
+        api_key_sealed: Some(
+            state
+                .config
+                .secret()
+                .ok_or(GatewayError::Internal)?
+                .seal(&credential.api_key)?,
+        ),
+    };
+
     // The freeze: the caller's declared bound when it names one (`maxCostMinor`),
     // else the channel price's flat `cost_per_request` — a task's bound is a
     // fixed figure, not a token estimate, because upstream's units are not yet
@@ -305,29 +328,39 @@ async fn submit_inner(
         "input": body.get("input").cloned().unwrap_or(Value::Null),
         "params": body.get("params").cloned().unwrap_or(Value::Null),
     });
-    let credential = primary.credentials.first();
-    let Some(credential) = credential else {
-        release_task_hold(state, &hold_key).await;
-        return Err(GatewayError::upstream(
-            StatusCode::BAD_GATEWAY,
-            "every upstream credential is cooling or disabled".to_owned(),
-            None,
-        ));
-    };
-    let upstream = match state
-        .http
-        .post(format!("{}/tasks", primary.base_url))
-        .bearer_auth(&credential.api_key)
-        .json(&forwarded)
-        .send()
+    let call = match state
+        .provider_http
+        .request(
+            reqwest::Method::POST,
+            &endpoint.base_url,
+            &endpoint.destination_policy,
+            &["tasks"],
+        )
         .await
     {
-        Ok(response) => response,
+        Ok(call) => call,
         Err(error) => {
             release_task_hold(state, &hold_key).await;
             return Err(GatewayError::upstream(
                 StatusCode::BAD_GATEWAY,
-                format!("upstream is unreachable: {error}"),
+                error.to_string(),
+                None,
+            ));
+        }
+    };
+    let upstream = match call
+        .bearer_auth(&credential.api_key)
+        .json(&forwarded)
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(_) => {
+            release_task_hold(state, &hold_key).await;
+            return Err(GatewayError::upstream(
+                StatusCode::BAD_GATEWAY,
+                "upstream is unreachable".into(),
                 None,
             ));
         }
@@ -367,18 +400,21 @@ async fn submit_inner(
 
     let task = state
         .db
-        .insert_task(&NewTask {
-            task_id,
-            organization_id: organization.id,
-            key_id: Some(key.key_id),
-            channel_id: primary.channel_id,
-            channel: primary.channel.clone(),
-            external_task_id,
-            kind,
-            hold_key: hold_key.clone(),
-            freeze_minor: freeze,
-            model: model.to_owned(),
-        })
+        .insert_task_with_endpoint(
+            &NewTask {
+                task_id,
+                organization_id: organization.id,
+                key_id: Some(key.key_id),
+                channel_id: primary.channel_id,
+                channel: primary.channel.clone(),
+                external_task_id,
+                kind,
+                hold_key: hold_key.clone(),
+                freeze_minor: freeze,
+                model: model.to_owned(),
+            },
+            Some(&endpoint),
+        )
         .await?;
 
     Ok((
@@ -443,22 +479,22 @@ async fn cancel(
         Some(secret) => secret,
         None => return GatewayError::Internal.into_response(),
     };
-    let api_key = match task_credentials(&state, &task, secret).await {
-        Ok(key) => key,
-        Err(error) => {
-            tracing::warn!(%error, %task_id, "the task's credential would not open; cancelling without upstream");
-            None
-        }
-    };
-    if let Some(api_key) = api_key {
-        let _ = state
-            .http
-            .post(format!(
-                "{}/tasks/{}/cancel",
-                task_base(&state, &task).await,
-                task.external_task_id
-            ))
+    if let Ok(Some(endpoint)) = state.db.task_provider_endpoint(task_id).await
+        && let Some(sealed) = &endpoint.api_key_sealed
+        && let Ok(api_key) = secret.open(sealed)
+        && let Ok(call) = state
+            .provider_http
+            .request(
+                reqwest::Method::POST,
+                &endpoint.base_url,
+                &endpoint.destination_policy,
+                &["tasks", &task.external_task_id, "cancel"],
+            )
+            .await
+    {
+        let _ = call
             .bearer_auth(api_key)
+            .timeout(std::time::Duration::from_secs(10))
             .send()
             .await;
     }
@@ -496,26 +532,6 @@ async fn cancel(
         Ok(Some(task)) => task_response(&task, &task_id.to_string(), None),
         _ => GatewayError::Internal.into_response(),
     }
-}
-
-/// The task's channel's upstream base — read at use time so a poll or cancel
-/// never carries a stale directory entry the row was written with.
-async fn task_base(state: &AppState, task: &Task) -> String {
-    state
-        .db
-        .channel_base(task.channel_id)
-        .await
-        .unwrap_or_default()
-}
-
-/// One healthy credential for the task's channel, opened under the deployment
-/// secret — the poll and the cancel share it.
-async fn task_credentials(
-    state: &AppState,
-    task: &Task,
-    secret: &oxsum_core::SecretKey,
-) -> Result<Option<String>, oxsum_core::WalletError> {
-    state.db.task_channel_key(task.channel_id, secret).await
 }
 
 /// Releases a task's hold when the submission itself fails before upstream

@@ -246,9 +246,19 @@ async fn world_for(url: &str, top_up: i64) -> World {
     let base_url = start_upstream(script.clone()).await;
     let book = oxsum_core::PriceBook::from_json(&channel, &price_list(&suffix))
         .expect("the test's own prices parse");
-    db.set_channel(&channel, &base_url, "upstream-secret", "openai", &secret)
-        .await
-        .expect("the channel is written");
+    db.set_channel_pool_policy(
+        &channel,
+        &base_url,
+        Some(&["upstream-secret".to_owned()]),
+        "openai",
+        &secret,
+        Some(&oxsum_core::ProviderDestinationPolicy {
+            network: oxsum_core::ProviderNetwork::Internal,
+            allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+        }),
+    )
+    .await
+    .expect("the channel is written");
     for (model, price) in book.models() {
         db.append_price(&channel, model, price.clone(), 100)
             .await

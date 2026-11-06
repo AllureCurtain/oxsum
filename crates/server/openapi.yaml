@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.107.0
+  version: 0.108.0
   x-consumption-cache: Cached responses are bound to the exact consumption key as well as customer, channel, model and prompt. Pre-upgrade cache digests are misses.
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
@@ -28,6 +28,12 @@ info:
     revocation and one-time secrets. Legacy global service credentials are disabled;
     deployment-token issuance is retired. Metering binds the credential, customer,
     original request and finalization body before any financial effect.
+
+    0.108.0 enforces destination policy on channel gateway, task, catalog and billing requests.
+    Public endpoints require HTTPS and public DNS addresses. Internal endpoints
+    require owner-approved exact IP addresses. Resolution is pinned for the connection;
+    proxies and redirects are disabled. Saved credentials never follow redirects.
+    Connection checks are explicit, audited HEAD requests with durable replay results.
 
     0.107.0 adds business provider configuration. Current business sessions and
     capabilities are checked with each configuration/audit/idempotency transaction.
@@ -4578,6 +4584,33 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/channels/{channelName}/connection-check:
+    post:
+      summary: Explicitly check an owned provider connection without inference
+      description: Current business owner only. Commits intent and audit before one HEAD request to the configured base URL with the channel credential and destination policy. Does not generate tokens. Exact replay returns the saved result and never repeats the network request; pending means interrupted or still running, so a deliberate new check needs a new key. No provider body, redirect target or transport error detail is exposed.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: channelName, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessProviderRemoveRequest" }
+      responses:
+        "200":
+          description: Durable connection-check result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ProviderConnectionCheck" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /api/v1/business/channels/{channelName}/credentials:
     post:
       summary: Add an owned provider credential
@@ -8903,6 +8936,7 @@ components:
           description: "the channel's credential pool (issue #444): the whole ordered set of upstream keys — a `set` re-credentials the channel wholesale, so every key the pool should hold goes here. Absent leaves the stored pool untouched; a present empty array is VALIDATION_ERROR — a channel with no key cannot serve. One of `apiKey`/`apiKeys` is required when creating a channel."
         billKey: { type: string, minLength: 1, nullable: true, description: "the admin billing credential the upstream-bill-sync pass reads the provider's cost API under (issue #283) — sealed beside the metering keys, deliberately separate so a relay credential never reads the org's bill. Omit to leave any stored billing key untouched; explicit null clears it." }
         protocol: { type: string, enum: [openai, anthropic, gemini], description: "the upstream protocol the channel speaks, which selects the usage adapter its reports are normalized by and which surface serves its models: `/v1/*` for `openai` and `anthropic`, `/v1beta/*` for `gemini`; defaults to `openai` — any other name is VALIDATION_ERROR" }
+        destinationPolicy: { $ref: "#/components/schemas/ProviderDestinationPolicy" }
         semanticCache:
           type: object
           nullable: true
@@ -8937,7 +8971,7 @@ components:
           description: "the channel's credential pool (issue #444): one entry per upstream key, ordered by position, each showing only its last four plus the health state the pick reads"
           items: { $ref: "#/components/schemas/ChannelCredential" }
         billKeyLast4: { type: string, nullable: true, description: "the last four characters of the admin billing credential (issue #283), and nothing more of it; null when the channel carries none" }
-        settings: { type: object, description: "the channel's free-form settings (issue #497): `semanticCache` and any future channel-scoped knobs, exactly as written through `ChannelRequest.semanticCache` — `{}` when nothing was ever set" }
+        settings: { type: object, description: "the channel's free-form settings (issue #497): `semanticCache` and `destinationPolicy` configuration — `{}` when nothing was ever set" }
         createdAt: { type: string, format: date-time }
         models:
           type: array
@@ -10463,6 +10497,27 @@ components:
       properties:
         channels: { type: array, items: { $ref: "#/components/schemas/Channel" } }
         nextCursor: { type: [string, "null"], format: uuid }
+    ProviderDestinationPolicy:
+      type: object
+      additionalProperties: false
+      required: [network]
+      description: Public requires HTTPS and globally routable IPs. Internal permits HTTP(S) only to the exact allowedIps explicitly approved by the business owner or deployment recovery authority. All DNS answers must satisfy policy, and the transport uses those addresses without a second resolution. Metadata/link-local, unspecified, multicast and reserved destinations are always refused. Redirects and environment proxies are disabled. Existing channels default to public until explicitly reauthorized.
+      properties:
+        network: { type: string, enum: [public, internal] }
+        allowedIps:
+          type: array
+          maxItems: 16
+          uniqueItems: true
+          description: Required and nonempty for internal; absent or empty for public. Exact IPv4/IPv6 literals, never hostnames or CIDRs.
+          items: { type: string }
+    ProviderConnectionCheck:
+      type: object
+      required: [id, channelId, state, httpStatus]
+      properties:
+        id: { type: string, format: uuid }
+        channelId: { type: string, format: uuid }
+        state: { type: string, enum: [pending, reachable, authenticationFailed, httpError, blocked, unreachable] }
+        httpStatus: { type: [integer, "null"], minimum: 100, maximum: 599 }
     BusinessChannelRequest:
       type: object
       additionalProperties: false
@@ -10476,9 +10531,12 @@ components:
           required: [name, baseUrl, protocol]
           properties:
             name: { type: string, minLength: 1, maxLength: 40, pattern: "^[A-Za-z0-9._-]+$" }
-            baseUrl: { type: string, format: uri, description: "HTTP(S) address without user info, query or fragment; no network call on save" }
+            baseUrl: { type: string, format: uri, description: "HTTPS public by default; HTTP(S) for explicitly approved internal endpoints. No user info, query or fragment; no network call on save" }
             protocol: { type: string, enum: [openai, anthropic, gemini, tasks] }
             apiKeys: { type: [array, "null"], minItems: 1, maxItems: 100, items: { type: string, minLength: 8, maxLength: 8192 } }
+            destinationPolicy:
+              allOf: [{ $ref: "#/components/schemas/ProviderDestinationPolicy" }]
+              description: Omitted preserves policy only at the same endpoint/protocol; new or changed connections default to public. Internal approval must be resupplied when repointing.
     BusinessProviderCredentialRequest:
       type: object
       additionalProperties: false

@@ -20,15 +20,12 @@ use time::Date;
 
 use oxsum_core::{ChannelBilling, DailyBill, UpstreamBillProvider};
 
-/// The admin costs endpoint's path under a channel's `base_url`.
-const COSTS_PATH: &str = "/organization/costs";
-
 /// The client over `OXSUM_*`-independent coordinates — a base URL and the HTTP
 /// stack the caller already holds, so a test can stand a stub at the URL. The
 /// billing credential arrives per-call on the [`ChannelBilling`], not held here.
 #[derive(Debug)]
 pub struct OpenAiBillProvider {
-    http: reqwest::Client,
+    http: crate::provider_http::ProviderHttp,
 }
 
 /// One day's bucket as the Costs API answers it. `results` aggregates whatever
@@ -74,7 +71,7 @@ struct CostsPage {
 impl OpenAiBillProvider {
     /// Builds the provider around the shared HTTP client the job carries.
     #[must_use]
-    pub fn new(http: reqwest::Client) -> Self {
+    pub fn new(http: crate::provider_http::ProviderHttp) -> Self {
         Self { http }
     }
 
@@ -87,16 +84,21 @@ impl OpenAiBillProvider {
         let start = date.midnight().assume_utc().unix_timestamp();
         // end_time = next midnight — the API's window is [start, end).
         let end = start + 86_400;
-        let url = format!(
-            "{}{}?start_time={}&end_time={}&bucket_width=1d",
-            channel.base_url.trim_end_matches('/'),
-            COSTS_PATH,
-            start,
-            end
-        );
         let res = self
             .http
-            .get(&url)
+            .request(
+                reqwest::Method::GET,
+                &channel.base_url,
+                &channel.destination_policy,
+                &["organization", "costs"],
+            )
+            .await
+            .ok()?
+            .query(&[
+                ("start_time", start.to_string()),
+                ("end_time", end.to_string()),
+                ("bucket_width", "1d".into()),
+            ])
             .bearer_auth(key)
             .timeout(std::time::Duration::from_secs(30))
             .send()
@@ -187,5 +189,72 @@ mod tests {
         assert_eq!(parse_minor("not-a-number"), None);
         assert_eq!(parse_minor(""), None);
         assert_eq!(parse_minor("12."), None);
+    }
+}
+
+#[cfg(test)]
+mod destination_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+    use axum::{
+        Json, Router,
+        http::{HeaderMap, StatusCode},
+        routing::get,
+    };
+    use std::sync::{Arc, Mutex};
+    #[tokio::test]
+    async fn openai_bills_use_the_approved_endpoint_and_do_not_follow_redirects() {
+        let seen = Arc::new(Mutex::new(Vec::<HeaderMap>::new()));
+        let capture = seen.clone();
+        let app=Router::new().route("/v1/organization/costs",get(move |headers:HeaderMap| {let seen=capture.clone();async move {
+            seen.lock().unwrap().push(headers);
+            Json(serde_json::json!({"buckets":[{"start_time":0,"results":[{"amount":{"value":"0.25","currency":"usd"}}]}],"has_more":false}))
+        }}));
+        let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/v1", socket.local_addr().unwrap());
+        let handle = tokio::spawn(async move {
+            axum::serve(socket, app).await.unwrap();
+        });
+        let mut channel = ChannelBilling {
+            channel_id: uuid::Uuid::new_v4(),
+            name: "fixture".into(),
+            protocol: "openai".into(),
+            base_url: base.clone(),
+            bill_key: Some("billing-only-secret".into()),
+            destination_policy: oxsum_core::ProviderDestinationPolicy {
+                network: oxsum_core::ProviderNetwork::Internal,
+                allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+            },
+        };
+        let provider = OpenAiBillProvider::new(crate::provider_http::ProviderHttp::default());
+        let date = time::macros::date!(2026 - 11 - 06);
+        assert_eq!(
+            provider
+                .daily_cost(&channel, date)
+                .await
+                .unwrap()
+                .provider_billed_minor,
+            250_000
+        );
+        assert_eq!(
+            seen.lock().unwrap()[0]["authorization"],
+            "Bearer billing-only-secret"
+        );
+        let redirect_to = format!("{base}/organization/costs");
+        let redirect = Router::new().fallback(get(move || {
+            let url = redirect_to.clone();
+            async move { (StatusCode::TEMPORARY_REDIRECT, [("location", url)]) }
+        }));
+        let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        channel.base_url = format!("http://{}", socket.local_addr().unwrap());
+        let redirect_handle = tokio::spawn(async move {
+            axum::serve(socket, redirect).await.unwrap();
+        });
+        assert!(provider.daily_cost(&channel, date).await.is_none());
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        channel.destination_policy = Default::default();
+        assert!(provider.daily_cost(&channel, date).await.is_none());
+        handle.abort();
+        redirect_handle.abort();
     }
 }

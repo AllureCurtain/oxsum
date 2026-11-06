@@ -187,6 +187,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/business", get(business::business))
         .route(
+            "/business/channels/{channel}/connection-check",
+            post(business_providers::connection_check),
+        )
+        .route(
             "/business/channels",
             get(business_providers::channels).post(business_providers::set_channel),
         )

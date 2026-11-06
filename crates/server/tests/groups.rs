@@ -168,12 +168,32 @@ async fn world_for(url: &str) -> World {
         .expect("channel B's shared book parses");
     let book_b2 = oxsum_core::PriceBook::from_json(&chan_b, &price_list(&model_b))
         .expect("channel B's private book parses");
-    db.set_channel(&chan_a, &base_a, "upstream-secret", "openai", &secret)
-        .await
-        .expect("channel A written");
-    db.set_channel(&chan_b, &base_b, "upstream-secret", "openai", &secret)
-        .await
-        .expect("channel B written");
+    db.set_channel_pool_policy(
+        &chan_a,
+        &base_a,
+        Some(&["upstream-secret".to_owned()]),
+        "openai",
+        &secret,
+        Some(&oxsum_core::ProviderDestinationPolicy {
+            network: oxsum_core::ProviderNetwork::Internal,
+            allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+        }),
+    )
+    .await
+    .expect("channel A written");
+    db.set_channel_pool_policy(
+        &chan_b,
+        &base_b,
+        Some(&["upstream-secret".to_owned()]),
+        "openai",
+        &secret,
+        Some(&oxsum_core::ProviderDestinationPolicy {
+            network: oxsum_core::ProviderNetwork::Internal,
+            allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+        }),
+    )
+    .await
+    .expect("channel B written");
     for (m, price) in book_a.models() {
         db.append_price(&chan_a, m, price.clone(), 100)
             .await

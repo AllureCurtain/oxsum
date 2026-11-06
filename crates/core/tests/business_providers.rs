@@ -23,6 +23,7 @@ fn name() -> String {
 fn connection(name: &str, keys: Option<Vec<String>>) -> ProviderChange {
     ProviderChange::Connection {
         config: ProviderConnection {
+            destination_policy: None,
             name: name.into(),
             base_url: "https://provider.example/v1".into(),
             protocol: "openai".into(),
@@ -266,6 +267,7 @@ async fn encrypted_secret_replay_rotation_and_old_serving_snapshot() {
     .await;
     let changed = ProviderChange::Connection {
         config: ProviderConnection {
+            destination_policy: None,
             name: n.clone(),
             base_url: "https://new-provider.example/v1".into(),
             protocol: "openai".into(),
@@ -282,6 +284,7 @@ async fn encrypted_secret_replay_rotation_and_old_serving_snapshot() {
         &owner,
         ProviderChange::Connection {
             config: ProviderConnection {
+                destination_policy: None,
                 name: n.clone(),
                 base_url: "https://new-provider.example/v1".into(),
                 protocol: "openai".into(),
@@ -612,6 +615,7 @@ async fn aliases_fallbacks_scope_and_unknown_destinations_are_refused() {
                 "invalid endpoint",
                 &ProviderChange::Connection {
                     config: ProviderConnection {
+                        destination_policy: None,
                         name: name(),
                         base_url: url.into(),
                         protocol: "openai".into(),
@@ -752,6 +756,7 @@ async fn rotation_never_mixes_endpoint_and_credentials_during_route_resolution()
     let alias = name();
     let update = |generation| ProviderChange::Connection {
         config: ProviderConnection {
+            destination_policy: None,
             name: n.clone(),
             base_url: format!("https://provider-{generation}.example/v1"),
             protocol: "openai".into(),
@@ -806,4 +811,101 @@ async fn rotation_never_mixes_endpoint_and_credentials_during_route_resolution()
         }
     };
     tokio::join!(write, read);
+}
+
+#[tokio::test]
+async fn internal_approval_is_owner_only_and_not_carried_to_a_new_endpoint() {
+    let Some((db, owner)) = fixture().await else {
+        return;
+    };
+    let channel = name();
+    let policy = ProviderDestinationPolicy {
+        network: ProviderNetwork::Internal,
+        allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+    };
+    let mut config = ProviderConnection {
+        name: channel.clone(),
+        base_url: "http://127.0.0.1:1111/v1".into(),
+        protocol: "openai".into(),
+        api_keys: Some(vec!["network-provider-secret".into()]),
+        destination_policy: Some(policy.clone()),
+    };
+    let (admin, _) = staff(&db, &owner, BusinessRole::Admin).await;
+    assert!(matches!(
+        db.change_business_provider(
+            &admin,
+            "internal-grant",
+            "fixture",
+            &ProviderChange::Connection {
+                config: serde_json::from_value(json!(config)).unwrap()
+            },
+            &secret()
+        )
+        .await,
+        Err(WalletError::Forbidden(_))
+    ));
+    change(
+        &db,
+        &owner,
+        ProviderChange::Connection {
+            config: serde_json::from_value(json!(config)).unwrap(),
+        },
+    )
+    .await;
+    config.destination_policy = None;
+    config.api_keys = None;
+    change(
+        &db,
+        &owner,
+        ProviderChange::Connection {
+            config: serde_json::from_value(json!(config)).unwrap(),
+        },
+    )
+    .await;
+    let settings: serde_json::Value =
+        sqlx::query_scalar("SELECT settings FROM oxsum.channels WHERE name=$1")
+            .bind(&channel)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        ProviderDestinationPolicy::from_settings(&settings).unwrap(),
+        policy
+    );
+    config.base_url = "http://127.0.0.1:2222/v1".into();
+    config.api_keys = Some(vec!["new-destination-secret".into()]);
+    assert!(
+        db.change_business_provider(
+            &owner,
+            "change-target",
+            "fixture",
+            &ProviderChange::Connection {
+                config: serde_json::from_value(json!(config)).unwrap()
+            },
+            &secret()
+        )
+        .await
+        .is_err()
+    );
+    config.destination_policy = Some(policy);
+    change(&db, &owner, ProviderChange::Connection { config }).await;
+    db.set_channel(
+        &channel,
+        "https://public.example/v1",
+        "new-public-secret",
+        "openai",
+        &secret(),
+    )
+    .await
+    .unwrap();
+    let settings: serde_json::Value =
+        sqlx::query_scalar("SELECT settings FROM oxsum.channels WHERE name=$1")
+            .bind(&channel)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        ProviderDestinationPolicy::from_settings(&settings).unwrap(),
+        ProviderDestinationPolicy::default()
+    );
 }

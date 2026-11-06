@@ -258,6 +258,7 @@ pub struct ProbeChannel {
     pub name: String,
     /// The upstream protocol the channel speaks.
     pub protocol: String,
+    pub destination_policy: crate::ProviderDestinationPolicy,
     /// The base URL `{baseUrl}/api/v1/pricing` is appended to.
     pub base_url: String,
     /// The pool's first active credential, still sealed under
@@ -360,8 +361,8 @@ impl Db {
     /// is the channel's credential pool — `Some` replaces it wholesale (a
     /// connection change re-credentials the channel, and a key that is no
     /// longer configured should not serve), `None` leaves the stored pool
-    /// alone so an admin updating only `baseUrl` does not have to resend keys
-    /// it cannot see.
+    /// alone at the same destination/protocol. Repointing requires newly
+    /// supplied keys and resets internal permission and billing credentials.
     ///
     /// # Errors
     ///
@@ -375,8 +376,27 @@ impl Db {
         protocol: &str,
         key: &SecretKey,
     ) -> Result<(), WalletError> {
+        self.set_channel_pool_policy(name, base_url, api_keys, protocol, key, None)
+            .await
+    }
+
+    /// Deployment recovery entry point with explicit internal destination
+    /// approval. Omitting policy never carries permission to a new endpoint.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn set_channel_pool_policy(
+        &self,
+        name: &str,
+        base_url: &str,
+        api_keys: Option<&[String]>,
+        protocol: &str,
+        key: &SecretKey,
+        policy: Option<&crate::ProviderDestinationPolicy>,
+    ) -> Result<(), WalletError> {
         let name = channel_name(name)?;
         let base_url = base_url_of(base_url)?;
+        if let Some(policy) = policy {
+            policy.endpoint(&base_url)?;
+        }
         if let Some(keys) = api_keys {
             if keys.is_empty() {
                 return Err(WalletError::InvalidInput(
@@ -390,6 +410,19 @@ impl Db {
         crate::adapters::known_protocol(protocol)?;
         let mut tx = self.pool().begin().await?;
         lock_configuration(&mut tx).await?;
+        let old: Option<(String, String)> =
+            sqlx::query_as("SELECT base_url,protocol FROM oxsum.channels WHERE name=$1 FOR UPDATE")
+                .bind(name)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let changed = old
+            .as_ref()
+            .is_some_and(|(base, p)| base != &base_url || p != protocol);
+        if changed && api_keys.is_none() {
+            return Err(WalletError::InvalidInput(
+                "a destination or protocol change requires freshly supplied apiKeys".into(),
+            ));
+        }
         let channel_id: Uuid = sqlx::query_scalar(
             "INSERT INTO oxsum.channels \
              (channel_id, name, base_url, protocol) \
@@ -402,10 +435,18 @@ impl Db {
         )
         .bind(Uuid::new_v4())
         .bind(name)
-        .bind(base_url)
+        .bind(&base_url)
         .bind(protocol)
         .fetch_one(&mut *tx)
         .await?;
+        if changed {
+            sqlx::query("UPDATE oxsum.channels SET settings=settings-'destinationPolicy',bill_key_sealed=NULL,bill_key_last4=NULL WHERE channel_id=$1")
+                .bind(channel_id).execute(&mut *tx).await?;
+        }
+        if let Some(policy) = policy {
+            sqlx::query("UPDATE oxsum.channels SET settings=jsonb_set(settings,'{destinationPolicy}',$2,true) WHERE channel_id=$1")
+                .bind(channel_id).bind(serde_json::json!(policy)).execute(&mut *tx).await?;
+        }
         if let Some(keys) = api_keys {
             sqlx::query("DELETE FROM oxsum.channel_credentials WHERE channel_id = $1")
                 .bind(channel_id)
@@ -1186,7 +1227,7 @@ impl Db {
     /// skipping the channel silently.
     pub async fn probe_channels(&self) -> Result<Vec<ProbeChannel>, WalletError> {
         let rows = sqlx::query(
-            "SELECT c.name, c.protocol, c.base_url, \
+            "SELECT c.name, c.protocol, c.base_url, c.settings, \
                     (SELECT cr.api_key_sealed FROM oxsum.channel_credentials cr \
                      WHERE cr.channel_id = c.channel_id AND cr.status = 'active' \
                      ORDER BY cr.position, cr.created_at LIMIT 1) AS api_key_sealed \
@@ -1200,6 +1241,9 @@ impl Db {
                     name: row.try_get("name")?,
                     protocol: row.try_get("protocol")?,
                     base_url: row.try_get("base_url")?,
+                    destination_policy: crate::ProviderDestinationPolicy::from_settings(
+                        &row.try_get::<serde_json::Value, _>("settings")?,
+                    )?,
                     api_key_sealed: row.try_get("api_key_sealed")?,
                 })
             })
@@ -1242,6 +1286,22 @@ impl Db {
         protocol: &str,
         key: &SecretKey,
     ) -> Result<bool, WalletError> {
+        self.seed_channel_as_policy(book, base_url, api_key, protocol, key, None)
+            .await
+    }
+
+    pub async fn seed_channel_as_policy(
+        &self,
+        book: &PriceBook,
+        base_url: &str,
+        api_key: &str,
+        protocol: &str,
+        key: &SecretKey,
+        policy: Option<&crate::ProviderDestinationPolicy>,
+    ) -> Result<bool, WalletError> {
+        if let Some(policy) = policy {
+            policy.endpoint(base_url)?;
+        }
         crate::adapters::known_protocol(protocol)?;
         let mut tx = self.pool().begin().await?;
         lock_configuration(&mut tx).await?;
@@ -1278,6 +1338,10 @@ impl Db {
         // The seed's one credential joins the pool like any other: the same
         // sealed shape, position 1, so the channel serves from its first
         // request rather than starting empty.
+        if let Some(policy) = policy {
+            sqlx::query("UPDATE oxsum.channels SET settings=jsonb_set(settings,'{destinationPolicy}',$2,true) WHERE channel_id=$1")
+                .bind(channel_id).bind(serde_json::json!(policy)).execute(&mut *tx).await?;
+        }
         sqlx::query(
             "INSERT INTO oxsum.channel_credentials \
                  (credential_id, channel_id, api_key_sealed, api_key_last4, position) \

@@ -18,6 +18,78 @@ pub(crate) struct Page {
     after: Option<Uuid>,
     limit: Option<i64>,
 }
+pub(crate) async fn connection_check(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(channel): Path<String>,
+    ApiJson(request): ApiJson<ProviderRequest<ProviderRemoveInput>>,
+) -> ApiResult<ProviderConnectionCheck> {
+    let token = personal_token(&headers)?;
+    let secret = state.config.secret().ok_or_else(|| {
+        ApiError::ServiceUnavailable("provider encryption is not configured".into())
+    })?;
+    let started = state
+        .db
+        .begin_provider_check(&token, &channel, &request.idempotency_key, &request.reason)
+        .await?;
+    let Some(endpoint) = started.endpoint else {
+        return ok(started.result);
+    };
+    let result = async {
+        let Some(sealed) = endpoint.api_key_sealed.as_deref() else {
+            return ("authenticationFailed", None);
+        };
+        let Ok(key) = secret.open(sealed) else {
+            return ("authenticationFailed", None);
+        };
+        let call = state
+            .provider_http
+            .request(
+                reqwest::Method::HEAD,
+                &endpoint.base_url,
+                &endpoint.destination_policy,
+                &[],
+            )
+            .await;
+        let call = match call {
+            Ok(call) => call,
+            Err(oxsum_integrations::provider_http::ProviderHttpError::Blocked) => {
+                return ("blocked", None);
+            }
+            Err(_) => return ("unreachable", None),
+        };
+        let call = match endpoint.protocol.as_str() {
+            "anthropic" => call
+                .header("x-api-key", key)
+                .header("anthropic-version", "2023-06-01"),
+            "gemini" => call.header("x-goog-api-key", key),
+            _ => call.bearer_auth(key),
+        };
+        match call
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+        {
+            Ok(response) => {
+                let status = response.status();
+                let category = if status.is_success() || status.as_u16() == 405 {
+                    "reachable"
+                } else if status.as_u16() == 401 || status.as_u16() == 403 {
+                    "authenticationFailed"
+                } else {
+                    "httpError"
+                };
+                (category, Some(status.as_u16()))
+            }
+            Err(_) => ("unreachable", None),
+        }
+    }
+    .await;
+    ok(state
+        .db
+        .finish_provider_check(started.result.id, result.0, result.1)
+        .await?)
+}
 pub(crate) async fn channels(
     State(state): State<AppState>,
     headers: HeaderMap,

@@ -101,9 +101,19 @@ async fn world(database_url: &str) -> World {
     let model = format!("ok-{suffix}");
     let secret = SecretKey::from_bytes([7; 32]);
     let base_url = start_upstream().await;
-    db.set_channel(&channel, &base_url, "upstream-secret", "openai", &secret)
-        .await
-        .expect("the channel is written");
+    db.set_channel_pool_policy(
+        &channel,
+        &base_url,
+        Some(&["upstream-secret".to_owned()]),
+        "openai",
+        &secret,
+        Some(&oxsum_core::ProviderDestinationPolicy {
+            network: oxsum_core::ProviderNetwork::Internal,
+            allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+        }),
+    )
+    .await
+    .expect("the channel is written");
     db.append_price(
         &channel,
         &model,

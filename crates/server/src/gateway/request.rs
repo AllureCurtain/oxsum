@@ -82,13 +82,15 @@ impl Surface {
     /// The upstream path this exact request takes: a model-named protocol
     /// spells the model — and, on Gemini, the action — into the path itself
     /// (issue #494). Every other surface's path is fixed.
-    pub fn upstream_target(self, model: &str) -> String {
+    pub fn upstream_segments(self, model: &str) -> Vec<String> {
         match self {
             Self::Gemini { streamed: true } => {
-                format!("models/{model}:streamGenerateContent?alt=sse")
+                vec!["models".into(), format!("{model}:streamGenerateContent")]
             }
-            Self::Gemini { streamed: false } => format!("models/{model}:generateContent"),
-            _ => self.upstream_path().to_owned(),
+            Self::Gemini { streamed: false } => {
+                vec!["models".into(), format!("{model}:generateContent")]
+            }
+            _ => self.upstream_path().split('/').map(str::to_owned).collect(),
         }
     }
 

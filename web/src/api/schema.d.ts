@@ -5894,6 +5894,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/business/channels/{channelName}/connection-check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Explicitly check an owned provider connection without inference
+         * @description Current business owner only. Commits intent and audit before one HEAD request to the configured base URL with the channel credential and destination policy. Does not generate tokens. Exact replay returns the saved result and never repeats the network request; pending means interrupted or still running, so a deliberate new check needs a new key. No provider body, redirect target or transport error detail is exposed.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    channelName: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessProviderRemoveRequest"];
+                };
+            };
+            responses: {
+                /** @description Durable connection-check result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ProviderConnectionCheck"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/business/channels/{channelName}/credentials": {
         parameters: {
             query?: never;
@@ -11819,6 +11871,7 @@ export interface components {
              * @enum {string}
              */
             protocol?: "openai" | "anthropic" | "gemini";
+            destinationPolicy?: components["schemas"]["ProviderDestinationPolicy"];
             /** @description the channel's semantic response cache policy (issue #497): `{enabled, ttlSeconds?, excludeSystem?}` — `enabled` gates the whole feature; `ttlSeconds` bounds a stored answer's lifetime (absent means no expiry); `excludeSystem` drops the system/instructions share from the prompt digest so two asks differing only there still hit. Omit to leave the stored policy untouched; explicit null clears `settings.semanticCache`; a non-object or a malformed policy is VALIDATION_ERROR. */
             semanticCache?: ({
                 enabled?: boolean;
@@ -11870,7 +11923,7 @@ export interface components {
             credentials: components["schemas"]["ChannelCredential"][];
             /** @description the last four characters of the admin billing credential (issue #283), and nothing more of it; null when the channel carries none */
             billKeyLast4: string | null;
-            /** @description the channel's free-form settings (issue #497): `semanticCache` and any future channel-scoped knobs, exactly as written through `ChannelRequest.semanticCache` — `{}` when nothing was ever set */
+            /** @description the channel's free-form settings (issue #497): `semanticCache` and `destinationPolicy` configuration — `{}` when nothing was ever set */
             settings: Record<string, never>;
             /** Format: date-time */
             createdAt: string;
@@ -13592,6 +13645,22 @@ export interface components {
             /** Format: uuid */
             nextCursor: string | null;
         };
+        /** @description Public requires HTTPS and globally routable IPs. Internal permits HTTP(S) only to the exact allowedIps explicitly approved by the business owner or deployment recovery authority. All DNS answers must satisfy policy, and the transport uses those addresses without a second resolution. Metadata/link-local, unspecified, multicast and reserved destinations are always refused. Redirects and environment proxies are disabled. Existing channels default to public until explicitly reauthorized. */
+        ProviderDestinationPolicy: {
+            /** @enum {string} */
+            network: "public" | "internal";
+            /** @description Required and nonempty for internal; absent or empty for public. Exact IPv4/IPv6 literals, never hostnames or CIDRs. */
+            allowedIps?: string[];
+        };
+        ProviderConnectionCheck: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            channelId: string;
+            /** @enum {string} */
+            state: "pending" | "reachable" | "authenticationFailed" | "httpError" | "blocked" | "unreachable";
+            httpStatus: number | null;
+        };
         BusinessChannelRequest: {
             idempotencyKey: string;
             reason: string;
@@ -13599,12 +13668,14 @@ export interface components {
                 name: string;
                 /**
                  * Format: uri
-                 * @description HTTP(S) address without user info, query or fragment; no network call on save
+                 * @description HTTPS public by default; HTTP(S) for explicitly approved internal endpoints. No user info, query or fragment; no network call on save
                  */
                 baseUrl: string;
                 /** @enum {string} */
                 protocol: "openai" | "anthropic" | "gemini" | "tasks";
                 apiKeys?: string[] | null;
+                /** @description Omitted preserves policy only at the same endpoint/protocol; new or changed connections default to public. Internal approval must be resupplied when repointing. */
+                destinationPolicy?: components["schemas"]["ProviderDestinationPolicy"];
             };
         };
         BusinessProviderCredentialRequest: {

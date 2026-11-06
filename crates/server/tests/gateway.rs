@@ -863,9 +863,19 @@ async fn world_on_pool(url: &str, top_up: i64, protocol: &str, connections: u32)
         .expect("the test's own prices parse");
     // The channel and its prices are rows, the way an operator's would be: the gateway reads the
     // database, and the environment is only what a brand-new deployment seeds its first channel with.
-    db.set_channel(&channel, &base_url, "upstream-secret", protocol, &secret)
-        .await
-        .expect("the channel is written");
+    db.set_channel_pool_policy(
+        &channel,
+        &base_url,
+        Some(&["upstream-secret".to_owned()]),
+        protocol,
+        &secret,
+        Some(&oxsum_core::ProviderDestinationPolicy {
+            network: oxsum_core::ProviderNetwork::Internal,
+            allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+        }),
+    )
+    .await
+    .expect("the channel is written");
     for (model, price) in book.models() {
         db.append_price(&channel, model, price.clone(), 100)
             .await
@@ -1154,9 +1164,19 @@ async fn aux_route(
     let channel = format!("aux-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
     let script = Script::default();
     let base_url = start_upstream(script.clone()).await;
-    db.set_channel(&channel, &base_url, "aux-secret", "openai", &secret)
-        .await
-        .expect("the auxiliary channel is written");
+    db.set_channel_pool_policy(
+        &channel,
+        &base_url,
+        Some(&["aux-secret".to_owned()]),
+        "openai",
+        &secret,
+        Some(&oxsum_core::ProviderDestinationPolicy {
+            network: oxsum_core::ProviderNetwork::Internal,
+            allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+        }),
+    )
+    .await
+    .expect("the auxiliary channel is written");
     let price: oxsum_core::Price = serde_json::from_value(json!({
         "inputPricePerMillion": 1_000_000,
         "mode": mode,
@@ -2014,9 +2034,19 @@ async fn an_unreachable_upstream_charges_nothing() {
     // that is what changing a channel's connection does, and the prices are untouched by it.
     let secret = oxsum_core::SecretKey::from_bytes([7; 32]);
     let db = Db::from_pool(world.pool.clone());
-    db.set_channel(&world.channel, &dead, "upstream-secret", "openai", &secret)
-        .await
-        .expect("the channel is repointed");
+    db.set_channel_pool_policy(
+        &world.channel,
+        &dead,
+        Some(&["upstream-secret".to_owned()]),
+        "openai",
+        &secret,
+        Some(&oxsum_core::ProviderDestinationPolicy {
+            network: oxsum_core::ProviderNetwork::Internal,
+            allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+        }),
+    )
+    .await
+    .expect("the channel is repointed");
     let config = Config::new(Signup::Open, None).with_secret(secret);
     let app = support::app(db, config);
 
@@ -4576,12 +4606,16 @@ async fn second_route(world: &World, model: &str, protocol: &str, weight: i64) -
     let channel = format!("backup-{}", world.suffix);
     let script = Script::default();
     let base_url = start_upstream(script.clone()).await;
-    db.set_channel(
+    db.set_channel_pool_policy(
         &channel,
         &base_url,
-        "upstream-secret-backup",
+        Some(&["upstream-secret-backup".to_owned()]),
         protocol,
         &secret,
+        Some(&oxsum_core::ProviderDestinationPolicy {
+            network: oxsum_core::ProviderNetwork::Internal,
+            allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+        }),
     )
     .await
     .expect("the second channel is written");
