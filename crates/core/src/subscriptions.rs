@@ -575,6 +575,81 @@ impl Db {
         let mut consumed: i64 = subscription.try_get("consumed_minor")?;
         let period_end: Option<OffsetDateTime> = subscription.try_get("current_period_end")?;
         let subscription_id: Uuid = subscription.try_get("subscription_id")?;
+        // A plan-bound subscription's window is driven by `plan_periods`
+        // authorizations, never by the timer (issue #610, D06): the delegated
+        // rollover either finds an authorized next period already opened by
+        // `activate_plan_period`, or holds the subscription in its ended window
+        // (past-due) rather than issuing unpaid entitlement.
+        if let Some(end) = period_end
+            && end <= OffsetDateTime::now_utc()
+            && crate::plans::plan_bound_subscription(&mut tx, subscription_id)
+                .await?
+                .is_some()
+        {
+            if Self::plan_rollover_in(&mut tx, subscription_id).await? {
+                // An authorized period was opened by a fulfilled order that
+                // already rolled the window: re-read the fresh counters and
+                // fall through to the draw below.
+                let fresh = sqlx::query(
+                    "SELECT current_period_end, consumed_minor \
+                     FROM oxsum.org_subscriptions WHERE subscription_id = $1",
+                )
+                .bind(subscription_id)
+                .fetch_one(&mut *tx)
+                .await?;
+                consumed = fresh.try_get("consumed_minor")?;
+            }
+            // Past-due: the subscription stays in its ended window — the
+            // period's remaining quota still draws (its counter kept what it
+            // did not spend), and the wallet sees only the overflow the plan
+            // opted into.
+            let remaining = quota.map(|q| (q - consumed).max(0));
+            let drawn = remaining.map_or(minor, |r| r.min(minor));
+            let period_id = open_period_id(&mut tx, subscription_id).await?;
+            let draw_id = Uuid::new_v4();
+            sqlx::query(
+                "INSERT INTO oxsum.subscription_draws \
+                     (draw_id, subscription_id, period_id, hold_key, drawn_minor) \
+                 VALUES ($1, $2, $3, $4, $5)",
+            )
+            .bind(draw_id)
+            .bind(subscription_id)
+            .bind(period_id)
+            .bind(hold_key)
+            .bind(drawn)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "UPDATE oxsum.org_subscriptions \
+                 SET consumed_minor = consumed_minor + $2, updated_at = now() \
+                 WHERE subscription_id = $1",
+            )
+            .bind(subscription_id)
+            .bind(drawn)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "UPDATE oxsum.subscription_periods \
+                 SET consumed_minor = consumed_minor + $2 \
+                 WHERE period_id = $1",
+            )
+            .bind(period_id)
+            .bind(drawn)
+            .execute(&mut *tx)
+            .await?;
+            let allow_overflow: bool = subscription.try_get("allow_wallet_overflow")?;
+            if !allow_overflow && drawn < minor {
+                tx.rollback().await?;
+                return Err(WalletError::InsufficientFunds);
+            }
+            tx.commit().await?;
+            return Ok(SubscriptionAdmission {
+                drawn_minor: drawn,
+                draw_id,
+                period_id,
+                subscription_id,
+            });
+        }
         if let Some(mut end) = period_end
             && end <= OffsetDateTime::now_utc()
         {
@@ -852,6 +927,22 @@ impl Db {
             };
             if end > OffsetDateTime::now_utc() {
                 tx.rollback().await?;
+                continue;
+            }
+            // A plan-bound subscription's boundary is driven by `plan_periods`
+            // authorizations (issue #610, D06): the delegated rollover applies
+            // a fulfilled renewal's period or slips the plan to past_due —
+            // never issuing an unpaid period on the timer alone.
+            if crate::plans::plan_bound_subscription(&mut tx, subscription_id)
+                .await?
+                .is_some()
+            {
+                if Self::plan_rollover_in(&mut tx, subscription_id).await? {
+                    report.rolled += 1;
+                } else {
+                    report.expired += 1;
+                }
+                tx.commit().await?;
                 continue;
             }
             if reset == ResetPeriod::Never {

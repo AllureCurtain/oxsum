@@ -274,9 +274,10 @@ async fn paid_then_fulfilled_grants_only_the_purposes_value() {
     assert_eq!(wallet.available().await.unwrap(), 1_500_000_000);
 }
 
-/// A `plan_period` order's fulfillment activates the subscription quota — and
-/// provably posts no wallet cash: the purpose's arm is `bind_subscription`, not
-/// `top_up`, so quota and wallet cash can never both land.
+/// A `plan_period` order's fulfillment activates the customer plan's period —
+/// and provably posts no wallet cash: the purpose's arm is
+/// `activate_plan_period`, not `top_up`, so quota and wallet cash can never
+/// both land.
 #[tokio::test]
 async fn a_plan_period_order_grants_quota_never_wallet_cash() {
     let Some((db, owner, org, tenant)) = world().await else {
@@ -288,21 +289,37 @@ async fn a_plan_period_order_grants_quota_never_wallet_cash() {
     let wallet = Wallet::open(db.pool().clone(), &tenant).await.unwrap();
     let on = time::OffsetDateTime::now_utc().date();
 
-    let plan = db
-        .set_subscription_plan(
-            &format!("plan-{}", Uuid::new_v4().simple()),
-            Some(9_000_000),
-            ResetPeriod::Monthly,
-            false,
-            Some(210),
-            None,
-            true,
-            1,
+    // The sold version the customer binds, then the pending plan the order
+    // funds — `purpose_ref` names the `customer_plan_id` the order buys.
+    let business = db.default_business().await.unwrap();
+    let sold = db
+        .publish_sold_plan(
+            business,
+            &NewSoldPlan {
+                plan_id: None,
+                name: format!("pro-{}", Uuid::new_v4().simple()),
+                price_minor: 210,
+                currency: "USD".into(),
+                quota_minor: Some(9_000_000),
+                period_kind: PeriodKind::CalendarMonth,
+                overage_enabled: false,
+                sort_order: 0,
+            },
         )
         .await
         .unwrap();
+    let customer_plan = db
+        .bind_customer_plan(
+            org,
+            sold.plan_version_id,
+            PeriodAuthorization::PaymentOrder(Uuid::nil()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(customer_plan.state, CustomerPlanState::PendingPayment);
+
     let mut new = new_order(PaymentOrderPurpose::PlanPeriod, "pp-1", 210);
-    new.purpose_ref = Some(plan.plan_id);
+    new.purpose_ref = Some(customer_plan.customer_plan_id);
     let order = db
         .create_payment_order(&ctx, org, &new, &rate())
         .await
@@ -318,10 +335,13 @@ async fn a_plan_period_order_grants_quota_never_wallet_cash() {
         .await
         .unwrap();
 
-    // The quota is active — and the wallet holds nothing: a plan period never
-    // granted cash.
-    let sub = db.active_subscription(org).await.unwrap().unwrap();
-    assert_eq!(sub.plan_id, plan.plan_id);
+    // The plan is active with period 0 authorized by this order — and the
+    // wallet holds nothing: a plan period never granted cash.
+    let plan = db.customer_plan(org).await.unwrap().unwrap();
+    assert_eq!(plan.state, CustomerPlanState::Active);
+    let periods = db.plan_periods(plan.customer_plan_id).await.unwrap();
+    assert_eq!(periods.len(), 1);
+    assert_eq!(periods[0].authorization_ref, order.order_id);
     assert_eq!(wallet.available().await.unwrap(), 0);
     assert_eq!(wallet.settled().await.unwrap(), 0);
     let f = db
