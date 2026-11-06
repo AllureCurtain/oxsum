@@ -33,6 +33,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .as_deref(),
     )?;
 
+    // `oxsum --check-config` validates the whole environment and exits — the
+    // same parse startup runs, so a bad value fails here with the same named
+    // variable it would fail boot with, before a deployment ever opens the
+    // database. stdout stays JSON so the compose `config` gate can parse it.
+    if std::env::args().nth(1).as_deref() == Some("--check-config") {
+        required_env("DATABASE_URL")?;
+        let config = Config::from_env()?;
+        pool_size()?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "ok": true,
+                "signup": format!("{:?}", config.signup()).to_lowercase(),
+            }))?
+        );
+        return Ok(());
+    }
+
     let database_url = required_env("DATABASE_URL")?;
     let config = Config::from_env()?;
 
@@ -44,6 +62,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = Db::connect(&database_url, max_connections).await?;
     tracing::info!(%max_connections, "database pool ready");
 
+    // `oxsum --migrate-only` brings the schema current and exits — the compose
+    // `oxsum-migrate` service runs this so the serving containers never block on
+    // migrations, and an upgrade can migrate before the new binary rolls out.
+    if std::env::args().nth(1).as_deref() == Some("--migrate-only") {
+        db.migrate().await?;
+        println!(
+            "schema migrated to {}",
+            oxsum_core::Db::latest_schema_version()
+        );
+        return Ok(());
+    }
+
     // oxsum's own tables (users, organizations, memberships, API keys, channels and their prices)
     // before anything else: a registration or a seed that arrives first must find them.
     db.migrate().await?;
@@ -53,6 +83,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // a seeded deployment looks exactly like one the server has been running on.
     match std::env::args().nth(1).as_deref() {
         Some("seed") => {
+            // Demo data is opt-in and only ever lands on a database nothing has
+            // used yet: a deployment that already holds organizations is a
+            // production one, and the seed must refuse to touch it rather than
+            // silently drop demo rows into live books (issue #619).
+            if !demo_seed_enabled() {
+                return Err(
+                    "refusing to seed: OXSUM_DEMO_SEED is not set to true — demo data is \
+                     opt-in, and a production deployment must never carry it"
+                        .into(),
+                );
+            }
+            if db.any_organizations().await? {
+                return Err(
+                    "refusing to seed: the database already holds organizations — demo data \
+                     is for a fresh install only"
+                        .into(),
+                );
+            }
             // Seeding reads only the catalog — channels and prices, never the
             // credentials — except when the database has no catalog at all: then
             // the seed creates the demo channel, which needs the sealing key
@@ -65,7 +113,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some(other) => {
             return Err(
-                format!("unknown argument {other:?}: supported subcommands are `seed` and `ownership-preview`").into(),
+                format!("unknown argument {other:?}: supported subcommands are `seed`, `--migrate-only`, `--check-config` and `ownership-preview`").into(),
             );
         }
         None => {}
@@ -213,6 +261,18 @@ fn pool_size() -> Result<u32, String> {
             }),
         Err(_) => Ok(20),
     }
+}
+
+/// Parses `OXSUM_DEMO_SEED`: the explicit opt-in `oxsum seed` requires before
+/// it writes demo data (issue #619). `true`/`1` opt in; anything else — and
+/// absence — refuses, so a production deployment can never seed by accident.
+fn demo_seed_enabled() -> bool {
+    matches!(
+        std::env::var("OXSUM_DEMO_SEED")
+            .map(|v| v.trim().to_ascii_lowercase())
+            .as_deref(),
+        Ok("true") | Ok("1")
+    )
 }
 
 /// Validates required environment variables at startup and exits rather than running with an empty config.
