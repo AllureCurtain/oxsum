@@ -196,6 +196,8 @@ All project documentation, code comments, and commit messages are written in Eng
 | Refused calls and their exact errors | docs/unsupported.md |
 | Self-hosted install (operator runbook) | docs/self-hosted-install.md |
 | Self-hosted upgrade, rollback and restore | docs/self-hosted-upgrade.md |
+| Release candidate gates and promotion | docs/self-hosted-release.md and docs/roadmap/self-hosted-v1/RELEASE-CHECKLIST.md |
+| Security reports / operator support | SECURITY.md / SUPPORT.md |
 
 ## Doc update rules
 
