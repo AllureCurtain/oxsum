@@ -8907,6 +8907,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/business/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the business finance audit
+         * @description Current business staff with report-read capability; a personal session. One immutable `finance_audit` row per staff financial action — every refund resolution, dispute close, journal void, statement release and reconciliation resolve/waive/repair — newest first. Each row names the actor, the audited action and the reason it carried, and drills to the entity it corrected. `action` narrows to one audited action.
+         */
+        get: operations["businessFinanceAudit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/business/sale-books": {
         parameters: {
             query?: never;
@@ -14546,6 +14566,7 @@ export interface components {
              * @description Null in business context or when the user has no remaining customer membership.
              */
             organizationId: string | null;
+            /** @description The session's staff principal — the role and capability set the membership carries whenever the user is staff, in either context. `context` names which authority the session currently acts under: a `customer` answer carrying a non-null `business` means staff authority is claimable via `POST /session/context`, never that it is selected (every `/business/*` call still requires `context: business`); null means the user holds no staff seat. */
             business: components["schemas"]["BusinessPrincipal"] | null;
         };
         SessionContextRequest: {
@@ -18751,6 +18772,39 @@ export interface components {
             /** Format: uuid */
             nextCursor: string | null;
         };
+        /** @description One immutable `finance_audit` row — the staff financial action's authorization record. Every refund resolution, dispute close, journal void, statement release and reconciliation close/repair lands one, naming the actor, the audited action and the reason it carried. */
+        FinanceAuditEntry: {
+            /** Format: uuid */
+            auditId: string;
+            /**
+             * Format: uuid
+             * @description the staff user who authorized the action
+             */
+            actorUserId: string;
+            /**
+             * @description the audited financial action — the same vocabulary `finance_audit`'s check constraint bounds
+             * @enum {string}
+             */
+            action: "refund.approve" | "refund.decline" | "refund.release" | "dispute.resolve" | "journal.void" | "statement.release" | "reconciliation.resolve" | "reconciliation.waive" | "reconciliation.repair";
+            /** @description the entity the action corrected — a refund */
+            target: string;
+            /** @description the action's safe fields — reason */
+            detail: {
+                [key: string]: unknown;
+            };
+            /**
+             * Format: uuid
+             * @description the credit note a refund approval produced; null on every other action
+             */
+            noteId: string | null;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        FinanceAuditPage: {
+            entries: components["schemas"]["FinanceAuditEntry"][];
+            /** Format: uuid */
+            nextCursor: string | null;
+        };
         ProviderMutationResult: {
             /** Format: uuid */
             id: string;
@@ -20008,6 +20062,37 @@ export interface operations {
             403: components["responses"]["Error"];
             404: components["responses"]["Error"];
             409: components["responses"]["Error"];
+        };
+    };
+    businessFinanceAudit: {
+        parameters: {
+            query?: {
+                after?: string;
+                /** @description narrow to one audited action, e.g. `refund.approve` */
+                action?: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The business's finance-audit page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["FinanceAuditPage"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            500: components["responses"]["Error"];
         };
     };
     businessStaff: {

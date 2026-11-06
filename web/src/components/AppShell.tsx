@@ -7,6 +7,7 @@ import {
   CreditCard,
   FileText,
   KeyRound,
+  Landmark,
   Layers,
   LayoutDashboard,
   LogOut,
@@ -30,6 +31,7 @@ import {
   useLogout,
   useOrganizations,
   useSession,
+  useSessionContext,
   useSwitchOrganization,
 } from "../api/hooks";
 import { ApiError } from "../api/client";
@@ -78,6 +80,7 @@ const NAV_GROUPS = [
 ] as const;
 
 const ADMIN_ITEM = { to: "/admin", labelKey: "nav.admin", Icon: ShieldCheck } as const;
+const BUSINESS_ITEM = { to: "/business", labelKey: "nav.business", Icon: Landmark } as const;
 
 type NavItem = { to: string; labelKey: string; end?: boolean; Icon: LucideIcon };
 
@@ -89,6 +92,7 @@ const NAV_INDEX: Record<string, { labelKey: string; parent?: string }> = Object.
 NAV_INDEX["/device"] = { labelKey: "nav.device" };
 NAV_INDEX["/getting-started"] = { labelKey: "nav.gettingStarted" };
 NAV_INDEX["/admin"] = { labelKey: "nav.admin" };
+NAV_INDEX["/business"] = { labelKey: "nav.business" };
 NAV_INDEX["/statements/:id"] = { labelKey: "nav.statement", parent: "/statements" };
 NAV_INDEX["/orders/new"] = { labelKey: "nav.orderNew", parent: "/orders" };
 NAV_INDEX["/orders/:id"] = { labelKey: "nav.order", parent: "/orders" };
@@ -227,6 +231,7 @@ function NavItems({ onNavigate }: { onNavigate?: () => void }) {
           </div>
         ))}
       </div>
+      <BusinessNavItem navLink={navLink} onNavigate={onNavigate} t={t} />
       <div className="mt-4 border-t border-white/6 pt-3">
         <NavLink to={ADMIN_ITEM.to} className={navLink} onClick={onNavigate}>
           <ADMIN_ITEM.Icon className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} />
@@ -234,6 +239,30 @@ function NavItems({ onNavigate }: { onNavigate?: () => void }) {
         </NavLink>
       </div>
     </>
+  );
+}
+
+/** The staff-console rail entry — only a session carrying business staff
+ * membership sees it (the context read's `business` is the membership marker);
+ * the backend refuses every `/business/*` call for a non-staff session anyway. */
+function BusinessNavItem({
+  navLink,
+  onNavigate,
+  t,
+}: {
+  navLink: (s: { isActive: boolean }) => string;
+  onNavigate?: () => void;
+  t: (k: string) => string;
+}) {
+  const context = useSessionContext();
+  if (context.data?.business == null) return null;
+  return (
+    <div className="mt-4 border-t border-white/6 pt-3">
+      <NavLink to={BUSINESS_ITEM.to} className={navLink} onClick={onNavigate}>
+        <BUSINESS_ITEM.Icon className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} />
+        {t(BUSINESS_ITEM.labelKey)}
+      </NavLink>
+    </div>
   );
 }
 
@@ -443,12 +472,32 @@ function CollapsedNav() {
           <span className="sr-only">{t(labelKey)}</span>
         </NavLink>
       ))}
+      <BusinessCollapsed navLink={navLink} t={t} />
       <div className="mt-4 border-t border-white/6 pt-3">
         <NavLink to={ADMIN_ITEM.to} title={t(ADMIN_ITEM.labelKey)} className={navLink}>
           <ADMIN_ITEM.Icon className="h-[18px] w-[18px]" strokeWidth={1.75} />
           <span className="sr-only">{t(ADMIN_ITEM.labelKey)}</span>
         </NavLink>
       </div>
+    </div>
+  );
+}
+
+function BusinessCollapsed({
+  navLink,
+  t,
+}: {
+  navLink: (s: { isActive: boolean }) => string;
+  t: (k: string) => string;
+}) {
+  const context = useSessionContext();
+  if (context.data?.business == null) return null;
+  return (
+    <div className="mt-4 border-t border-white/6 pt-3">
+      <NavLink to={BUSINESS_ITEM.to} title={t(BUSINESS_ITEM.labelKey)} className={navLink}>
+        <BUSINESS_ITEM.Icon className="h-[18px] w-[18px]" strokeWidth={1.75} />
+        <span className="sr-only">{t(BUSINESS_ITEM.labelKey)}</span>
+      </NavLink>
     </div>
   );
 }
