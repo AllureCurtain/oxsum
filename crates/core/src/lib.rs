@@ -47,6 +47,7 @@ mod oauth;
 mod operations;
 mod orgs;
 mod payment_orders;
+mod plans;
 mod pools;
 mod proof;
 mod provider_destination;
@@ -202,6 +203,10 @@ pub use orgs::{
 pub use payment_orders::{
     NewPaymentOrder, OrderRate, PaymentFulfillment, PaymentOrder, PaymentOrderPage,
     PaymentOrderPurpose, PaymentReconciliation,
+};
+pub use plans::{
+    CustomerPlan, CustomerPlanState, NewSoldPlan, PeriodAuthorization, PeriodKind,
+    PlanAuthorizationKind, PlanPeriod, PlanPeriodState, SoldPlan, period_end_for,
 };
 pub use pools::{
     Affinity, CREDENTIAL_COOLDOWN, ChannelCredential, PoolCredential, order as credential_order,
