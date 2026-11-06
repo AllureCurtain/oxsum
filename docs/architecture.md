@@ -212,16 +212,21 @@ Only relationships; the ledger's table structure is authoritative in `crates/dou
 - Organization 1-to-many API keys; a key holds no balance itself, it is a credential resolving to its organization.
 - Organization 1-to-many invitations (issue #59): a token link that registers a user straight into the inviting organization's memberships.
 - User 1-to-many sessions (web login): built; a session acts as the organization the session row names, switched through `POST /api/v1/session/organization` or the dashboard's org switcher (issue #58).
-- Every ledger has nine fixed accounts:
+- Every ledger's fixed accounts — the original nine plus the five the plan-fee journals added (issue #611):
   - `Liabilities:Wallet`: purchased balance, overdraft forbidden
   - `Equity:Bonus`: granted credit — the signup bonus and admin grants; settlement draws it after promo
   - `Equity:Promo`: promotional credit in live lots (issue #609) — the balance that can expire, so a hold draws it before everything else
   - `Equity:PromoExpiry`: the sink expired or cancelled promo burns to — a net-zero move out of the spendable pool, never a route back to refundable money
   - `Liabilities:CreditLine`: the drawn-down half of an organization's credit limit (issue #122) — its balance is undrawn credit; a hold or charge debits it exactly as it debits the wallet
   - `Assets:CreditFacility`: the commitment memo paired with the credit line — its debit balance is the granted limit, so what the organization owes is `limit − line balance`
-  - `Assets:Cash`: money received from top-ups
+  - `Assets:Cash`: money received from top-ups and plan-fee payments
   - `Income:Usage`: revenue recognized on settlement
   - `Equity:Adjustments`: operator-side money that is neither cash nor usage revenue — admin adjustments and the signup bonus draw on it, so grants and deductions stay out of the income line
+  - `Assets:Receivables`: the open plan-fee balance a posted journal carries — what the customer still owes after the close's accrual
+  - `Income:PlanFees`: the sold version's period fees, recognized at close — separate from usage revenue so a bill never blurs the two
+  - `Income:Discounts`: the contra-revenue a credit-note correction or grant write-off carries
+  - `Liabilities:UnearnedPlanFees`: the `planPeriod` prepay deferred until its period's close reclassifies it into the receivable
+  - `Liabilities:RefundPayable`: what a voided settled journal owes the customer back — the unwind destination when the receivable was already clear
 - The pools a hold can draw are Promo, Bonus, Wallet and CreditLine, each carrying the `FundedReservations` limit, in promo → bonus → wallet → credit order — most-restricted money first. A hold reserves against what each pool carries — a pending debit on each pool it draws, so no pool's reservation exceeds what it holds — and a settlement releases exactly that split and charges in the same order. A deduction draws Bonus first as well. Granting or resizing the credit limit books the delta `debit CreditFacility, credit CreditLine` under a per-tenant advisory lock, and the line's own funding rule refuses a shrink below what is already drawn; a top-up credits the drawn part of the line first and the remainder to the wallet, so paying in repays debt before it adds own funds. What callers see stays one balance: every balance read sums the pools (undrawn credit included in `available`), while `creditLimitMinor`/`creditUsedMinor` report the facility separately. Ledgers written before the split migrate lazily, on their next `Wallet::open`: `reclassify_grants` moves the unspent remainder of historical grants — `clamp(grants - settled wallet outflow, 0, wallet balance)` — with one `debit Wallet, credit Bonus` entry under a fixed idempotency key, which spend reads exclude as a rebalancing rather than a charge.
 - `oxsum.promo_lots` (migration 0092, issue #609) projects the promo pool into per-grant lots — `source` (`admin`/`grant`/`bundle_promo`/`legacy_migration`) and `source_ref` as the idempotency anchor, `remaining_minor` the unreserved fundable part, `expires_at` NULL for never — and `oxsum.promo_draws` pins which lots each hold's promo share took. The `expire-lots` job closes due lots once a minute, burning the unreserved remainder to `Equity:PromoExpiry`; a cancellation does the same for a refund, so promo can never convert back to cash. The bonus pool's aggregate balance migrated lazily into a never-expiring `legacy_migration` lot on the first open under this model, net balances unchanged.
 - One entry has many postings. Each posting sits in the settled or the pending layer, and the entry must balance within each layer.
