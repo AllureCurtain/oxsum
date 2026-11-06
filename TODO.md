@@ -32,7 +32,7 @@ The accepted contract and evidence live in [docs/roadmap/self-hosted-v1](docs/ro
 - [x] [#600](https://github.com/AllureCurtain/oxsum/issues/600) — Bind sale terms into evidence (T09): integrated in PR #657.
 - [ ] [#601](https://github.com/AllureCurtain/oxsum/issues/601) — Durable request operation (T10): PR #656.
 - [ ] [#602](https://github.com/AllureCurtain/oxsum/issues/602) — Transaction-aware ledger effects and zero-cost receipts (T11): pending.
-- [ ] [#603](https://github.com/AllureCurtain/oxsum/issues/603) — Coordinated customer admission and settlement (T12): pending.
+- [ ] [#603](https://github.com/AllureCurtain/oxsum/issues/603) — Coordinated customer admission and settlement (T12): PR #660.
 - [ ] [#604](https://github.com/AllureCurtain/oxsum/issues/604) — Cover every serving and metering path (T13): pending.
 - [ ] [#605](https://github.com/AllureCurtain/oxsum/issues/605) — Merchant settings and scoped event intake (T14): pending.
 - [ ] [#606](https://github.com/AllureCurtain/oxsum/issues/606) — Payment orders and durable fulfillment (T15): pending.
