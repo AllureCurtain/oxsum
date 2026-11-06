@@ -625,7 +625,7 @@ async fn a_clean_serve_records_the_served_model() {
     let _ = response.into_body().collect().await.unwrap().to_bytes();
 
     let record = world.settlement_within(&id).await;
-    assert_eq!(record["v"], 13);
+    assert_eq!(record["v"], 14);
     assert!(
         record.get("requestedModel").is_none(),
         "requestedModel is omitted on a clean serve: {record}"
