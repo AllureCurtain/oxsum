@@ -1,0 +1,16 @@
+{
+  "name": "oxsum-consumption-example",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Customer-journey walkthrough against a live oxsum deployment: invite, redeem, top up, call the gateway, read usage, download and verify the evidence bundle offline.",
+  "type": "module",
+  "engines": {
+    "node": ">=20.16"
+  },
+  "scripts": {
+    "walkthrough": "node consumption.mjs"
+  },
+  "dependencies": {
+    "verify-oxsum-bill": "file:../../web/verify-sdk"
+  }
+}

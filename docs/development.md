@@ -1015,6 +1015,26 @@ See the [example runbook](../examples/scoped-integration/README.md) for issuance
 required event prices and exact negative cases. No paid provider is called.
 
 
+### Developer examples and the fresh-install gate (#617)
+
+`docs/integrations.md` is the supported-surface matrix — every claim cites the
+suite that proves it; `docs/unsupported.md` is the refusal catalog. Runnable
+walkthroughs live beside the existing examples:
+
+- `examples/consumption/` — the full customer journey (invite → redeem →
+  manual-receipt top-up → metered gateway call → usage/bill → evidence bundle
+  → offline verify with `verify-oxsum-bill`).
+- `examples/scoped-management/` — mint a scoped integration credential, read
+  its customer, bill an event, read the operation back.
+- `examples/webhook-tools/` — `sign-and-replay`, `dedup-check` and
+  `retry-storm` against the versioned merchant intake.
+
+`scripts/verify-examples.sh` is the gate: it builds the server, boots a fresh
+scratch database, seeds it, runs every example against the real listener and
+exits non-zero on any assertion failure — the same seam the release candidate
+gate (issue #620) wraps.
+
+
 ### Business provider authority tests (#641)
 
 `cargo nextest run -p oxsum-core --test business_providers --test provider_upgrade --test channels -p oxsum-server --test business_providers --test admin` exercises real setup/session authority, atomic audit faults, replay/rotation, pool concurrency across business and recovery paths, foreign configuration and pre-0078 provider preservation. Use isolated PostgreSQL 17 testkit databases. No provider call is made on configuration save. The focused command does not replace cross-crate workspace/shared-process gates or T06.b destination-policy tests.

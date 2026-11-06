@@ -961,14 +961,23 @@ impl Db {
         // The marker — appended once per scope, like the usage report's. Each
         // kind's companion field is set by construction; a caller that passes
         // one absent is a bug the error names rather than a panic.
+        //
+        // The scope key carries the organization: the marker's deterministic
+        // id doubles as the *global* `oxsum.evidence_bundles` primary key, so
+        // two organizations minting the same period span must not collide
+        // (a bare `period/<from>/<to>` would map both to one row and the
+        // second mint's ON CONFLICT would silently skip, leaving that
+        // organization's download a 404).
         let scope_key = match kind {
             EvidenceKind::Period => format!(
-                "period/{}/{}",
+                "period/{}/{}/{}",
+                organization_id,
                 period_from.ok_or_else(|| invalid("a period kind names its span"))?,
                 period_to.ok_or_else(|| invalid("a period kind names its span"))?
             ),
             EvidenceKind::Statement => format!(
-                "statement/{}",
+                "statement/{}/{}",
+                organization_id,
                 statement_id.ok_or_else(|| invalid("a statement kind names its id"))?
             ),
         };

@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
 import { Admin } from "./pages/Admin";
+import { Business } from "./pages/Business";
 import {
   Device,
   ForgotPassword,
@@ -63,6 +64,7 @@ export function App() {
         <Route path="chat" element={<Chat />} />
         <Route path="device" element={<Device />} />
         <Route path="admin" element={<Admin />} />
+        <Route path="business" element={<Business />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

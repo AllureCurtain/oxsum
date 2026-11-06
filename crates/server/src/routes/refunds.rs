@@ -239,6 +239,32 @@ pub(crate) async fn business_disputes(
         .await?)
 }
 
+/// `GET /api/v1/business/audit`: the business finance audit — one immutable
+/// row per staff financial action, newest first. `ReportsRead`; `action`
+/// narrows to one audited action. The staff console's audit page (T24).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AuditPage {
+    after: Option<Uuid>,
+    action: Option<String>,
+    limit: Option<i64>,
+}
+pub(crate) async fn business_audit(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    ApiQuery(page): ApiQuery<AuditPage>,
+) -> ApiResult<oxsum_core::FinanceAuditPage> {
+    ok(state
+        .db
+        .business_finance_audit(
+            &personal_token(&headers)?,
+            page.after,
+            page.action.as_deref(),
+            page.limit.unwrap_or(50),
+        )
+        .await?)
+}
+
 /// `POST /api/v1/business/disputes/{disputeId}/resolve`: `evidenceDue`,
 /// `won`, `lost` or `closed`. `lost` re-charges the drawn receivable under
 /// the dispute's own ledger key — the audit names the actor and reason.

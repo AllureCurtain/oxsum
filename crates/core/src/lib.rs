@@ -244,9 +244,9 @@ pub use provider_destination::{
 pub use ratelimit::{PostgresRateLimiter, RateAllowance, RateLimited, RateLimiter, SlidingWindow};
 pub use reconcile::{DriftClass, DriftKind, DriftSample, Reconciliation};
 pub use refunds::{
-    DisputeResolution, FinanceAudit, NewRefundRequest, OrderCreditNote, OrderCreditNotePage,
-    OrderDispute, OrderDisputePage, OrderRefund, OrderRefundPage, REFUND_MAX_ATTEMPTS,
-    RefundDecision, RefundRetryTarget,
+    DisputeResolution, FinanceAudit, FinanceAuditEntry, FinanceAuditPage, NewRefundRequest,
+    OrderCreditNote, OrderCreditNotePage, OrderDispute, OrderDisputePage, OrderRefund,
+    OrderRefundPage, REFUND_MAX_ATTEMPTS, RefundDecision, RefundRetryTarget,
 };
 pub use report_links::{LinkScope, MintedReportLink, ReportLink, ResolvedReportLink};
 pub use request_log::{RequestLogFilter, RequestLogPage, RequestLogRow};
