@@ -74,6 +74,12 @@ pub mod kinds {
     /// workers on one refund, so a second pass is a wasted call, never a
     /// second refund.
     pub const REFUND_RETRIES: &str = "refund-retries";
+    /// The plan-statement overdue sweep (issue #612, T21): flips `issued`
+    /// plan statements whose `due_at` passed to `past_due`, and past the
+    /// plan's grace stamps `dunning_suspended_at` so wallet-side admission
+    /// refuses. Leader-required — a second runner would walk the same due
+    /// list at once.
+    pub const STATEMENT_PAST_DUE: &str = "statement-past-due";
 }
 
 /// How long a claimed run may take before another worker's claim assumes the
@@ -128,6 +134,7 @@ pub fn requires_leader(kind: &str) -> bool {
             | USAGE_ANCHORS
             | SUBSCRIPTION_ROLLOVERS
             | EXPIRE_LOTS
+            | STATEMENT_PAST_DUE
             | RECONCILE
     )
 }
@@ -218,6 +225,10 @@ pub fn next_run(kind: &str) -> Option<Duration> {
         // The refund pass rides the row's own `next_retry_at`, so the poll
         // only bounds how late a due retry starts.
         REFUND_RETRIES => Duration::seconds(30),
+        // The receivable marks past-due promptly once its terms lapse: the
+        // scan is one indexed UPDATE bounded per pass, so a minute cadence
+        // costs nothing and a backlog still drains over ticks.
+        STATEMENT_PAST_DUE => Duration::minutes(1),
         _ => return None,
     })
 }

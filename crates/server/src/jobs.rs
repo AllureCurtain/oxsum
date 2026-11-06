@@ -75,6 +75,7 @@ pub fn spawn_worker(db: Db, ctx: JobContext) -> tokio::task::JoinHandle<()> {
             kinds::USAGE_ANCHORS,
             kinds::SUBSCRIPTION_ROLLOVERS,
             kinds::EXPIRE_LOTS,
+            kinds::STATEMENT_PAST_DUE,
         ];
         if ctx.webhook.is_some() {
             periodic.push(kinds::DELIVER_WEBHOOKS);
@@ -413,6 +414,16 @@ async fn run_one(
                 .await?;
             if expired > 0 {
                 info!(expired, "the promo-lot expiry pass burned lapsed lots");
+            }
+        }
+        kinds::STATEMENT_PAST_DUE => {
+            let report = db.run_statement_past_due(200).await?;
+            if report.flipped > 0 || report.suspended > 0 {
+                info!(
+                    flipped = report.flipped,
+                    suspended = report.suspended,
+                    "the statement-past-due pass ran"
+                );
             }
         }
         kinds::RETENTION => {

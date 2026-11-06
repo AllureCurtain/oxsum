@@ -255,6 +255,8 @@ fn customer_route_capability(method: &str, path: &str) -> oxsum_core::CustomerCa
             | "/org/plan"
             | "/org/plan/journals"
             | "/org/plan/journals/{journal_id}"
+            | "/org/statements"
+            | "/org/statements/{statement_id}"
             | "/orders"
             | "/orders/{order_id}"
             | "/orders/{order_id}/fulfillment"

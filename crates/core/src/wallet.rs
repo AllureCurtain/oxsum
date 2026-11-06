@@ -1645,13 +1645,38 @@ impl Wallet {
                 .bind(organization.to_string())
                 .execute(&mut *tx)
                 .await?;
-            let suspended: bool = sqlx::query_scalar(
+            let mut suspended: bool = sqlx::query_scalar(
                 "SELECT (suspended_at IS NOT NULL OR dunning_suspended_at IS NOT NULL OR EXISTS (SELECT 1 FROM oxsum.customer_profiles c WHERE c.organization_id=oxsum.organizations.organization_id AND c.state='archived')) FROM oxsum.organizations \
                  WHERE organization_id = $1",
             )
             .bind(organization)
             .fetch_one(&mut *tx)
             .await?;
+            if !suspended {
+                // A past-due plan statement past its grace also suspends
+                // admission (issue #612, T21): the binding's
+                // `dunning_suspended_at` is the gate the overdue sweep stamps
+                // and the payment reconcile lifts — read under the same
+                // org-admission lock so a settled suspension is observed. The
+                // table-presence check runs first so a pre-`sold_plans`
+                // schema (a legacy baseline fixture) parses no dangling
+                // reference: no `customer_plans` means no plan suspension.
+                let has_plans: bool =
+                    sqlx::query_scalar("SELECT to_regclass('oxsum.customer_plans') IS NOT NULL")
+                        .fetch_one(&mut *tx)
+                        .await?;
+                if has_plans {
+                    suspended = sqlx::query_scalar(
+                        "SELECT COALESCE((SELECT dunning_suspended_at IS NOT NULL FROM oxsum.customer_plans \
+                           WHERE organization_id=$1 \
+                             AND state IN ('pending_payment','active','renewal_pending','past_due') \
+                           LIMIT 1), false)",
+                    )
+                    .bind(organization)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                }
+            }
             drop(tx);
             if suspended {
                 return Err(WalletError::Forbidden(
@@ -2029,6 +2054,34 @@ impl Wallet {
                     return Err(WalletError::Forbidden(
                         "the organization is suspended".into(),
                     ));
+                }
+                // A past-due plan statement past its grace suspends the
+                // wallet-side overage the same way (issue #612, T21): the
+                // binding's `dunning_suspended_at` is the gate the overdue
+                // sweep stamps and the payment reconcile lifts, read under
+                // this same key+admission lock. The table-presence check runs
+                // first so a pre-`sold_plans` schema parses no dangling
+                // reference.
+                let organization: Uuid = constraints.try_get("organization_id")?;
+                let has_plans: bool =
+                    sqlx::query_scalar("SELECT to_regclass('oxsum.customer_plans') IS NOT NULL")
+                        .fetch_one(&mut *tx)
+                        .await?;
+                if has_plans {
+                    let plan_suspended: bool = sqlx::query_scalar(
+                        "SELECT COALESCE((SELECT dunning_suspended_at IS NOT NULL FROM oxsum.customer_plans \
+                           WHERE organization_id=$1 \
+                             AND state IN ('pending_payment','active','renewal_pending','past_due') \
+                           LIMIT 1), false)",
+                    )
+                    .bind(organization)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                    if plan_suspended {
+                        return Err(WalletError::Forbidden(
+                            "the organization is suspended".into(),
+                        ));
+                    }
                 }
             }
             let split = self.pool_split(&mut tx, minor).await?;

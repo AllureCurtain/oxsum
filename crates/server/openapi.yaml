@@ -2857,6 +2857,144 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/statements:
+    get:
+      summary: List the caller's plan statements
+      description: |
+        The customer organization's own plan statements (issue #612, T21),
+        newest first — the customer-visible billing document one plan-period
+        close issues, wrapping the `invoice_journals` receivable in customer
+        vocabulary (`planFee`, `usage`, `discount`, `refundCredit`,
+        `disputeChargeback`, `paymentApplied`). `dueAt` is the payment terms
+        the receivable answers against; `totalMinor − paidMinor` is what is
+        still owed. `issued`/`pastDue` statements are the open receivable.
+      security: [{ sessionCookie: [], apiKey: [] }]
+      parameters:
+        - { name: after, in: query, required: false, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200":
+          description: The organization's plan statements, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/PlanStatementPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/statements/{statementId}:
+    get:
+      summary: One plan statement plus its lines
+      description: |
+        The statement's header and its itemized lines — the bill's charges
+        and credits in customer vocabulary, each naming the fact it came
+        from (`sourceRef`: a journal line, a refund, an order, a dispute).
+        A statement of another organization is `404`.
+      security: [{ sessionCookie: [], apiKey: [] }]
+      parameters:
+        - { name: statementId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The statement and its lines
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/PlanStatementDetail" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/statements:
+    get:
+      summary: List plan statements across customers
+      description: |
+        The staff finance list (issue #612, T21): every customer's plan
+        statements, newest first — `state=pastDue` is the dunning work list
+        of open receivables past their terms. `ReportsRead` capability, a
+        personal session token, never a machine credential.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: state, in: query, required: false, schema: { type: string, enum: [issued, paid, pastDue, void] } }
+        - { name: organizationId, in: query, required: false, schema: { type: string, format: uuid } }
+        - { name: after, in: query, required: false, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200":
+          description: The statements matching the filters, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/PlanStatementPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/statements/{statementId}:
+    get:
+      summary: One plan statement plus its lines
+      description: |
+        The statement and its itemized lines as the staff surface reads
+        them — `ReportsRead` capability.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: statementId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The statement and its lines
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/PlanStatementDetail" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/statements/{statementId}/release-review:
+    post:
+      summary: Run statement release-review
+      description: |
+        The staff release-review (issue #612, T21), under `FundsWrite`:
+        `extendGrace` walks `pastDue → issued` (restores the issued
+        standing, re-opens the grace window and lifts the dunning
+        suspension), `void` cancels the statement with reversing lines so it
+        nets to zero — never an edit, never a delete. A `finance_audit` row
+        records the actor, the reason and the statement. A replayed
+        `idempotencyKey` answers the standing statement.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: statementId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReleaseStatementRequest" }
+      responses:
+        "200":
+          description: The released statement and its full line set
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/PlanStatementDetail" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/plan/journals:
     get:
       summary: List the caller's plan-fee journals
@@ -12416,6 +12554,28 @@ components:
           type: array
           items: { $ref: "#/components/schemas/PlanPeriod" }
           description: every period the plan has authorized, in index order
+        credit:
+          $ref: "#/components/schemas/PlanCreditStanding"
+          nullable: true
+          description: the binding's credit standing beside it (issue #612, T21); null while the customer has no live plan
+    PlanCreditStanding:
+      type: object
+      required: [creditLimitMinor, outstandingMinor, nextDueAt]
+      properties:
+        creditLimitMinor:
+          type: integer
+          format: int64
+          nullable: true
+          description: the binding's wallet-side overage cap; null is unlimited
+        outstandingMinor:
+          type: integer
+          format: int64
+          description: the open statements' remaining plus current holds — what the credit limit's admission check counts
+        nextDueAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: the earliest open statement's due date
     InvoiceJournal:
       type: object
       required: [journalId, customerPlanId, organizationId, planPeriodId, periodIndex, state, totalMinor, settledMinor, currency, paidOrderId, disputedMinor, replacesJournalId, voidReason, postedAt, paidAt, voidedAt, createdAt]
@@ -12524,6 +12684,130 @@ components:
       required: [idempotencyKey, reason]
       properties:
         idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    PlanStatement:
+      type: object
+      required: [statementId, customerPlanId, organizationId, periodIndex, journalId, state, totalMinor, paidMinor, currency, issuedAt, dueAt, paidAt, pastDueAt, voidedAt, voidReason, replacesStatementId, paidOrderId, createdAt]
+      properties:
+        statementId: { type: string, format: uuid }
+        customerPlanId:
+          type: string
+          format: uuid
+          nullable: true
+          description: the binding the statement bills; null on a wallet-only statement a dispute chargeback opened when no plan stands
+        organizationId: { type: string, format: uuid }
+        periodIndex:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: the `(customerPlanId, periodIndex)` pair the wrapped journal keys on
+        journalId:
+          type: string
+          format: uuid
+          nullable: true
+          description: the `invoice_journals` row whose receivable this statement surfaces
+        state:
+          type: string
+          enum: [issued, paid, pastDue, void]
+          description: "`issued` is the open receivable, `pastDue` the receivable past `dueAt`. `open` exists only inside the close transaction and never answers a read."
+        totalMinor:
+          type: integer
+          format: int64
+          description: the lines' sum — what the customer owes
+        paidMinor:
+          type: integer
+          format: int64
+          minimum: 0
+          description: what reconciled payments already covered; `totalMinor − paidMinor` is what is still owed
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+        issuedAt:
+          type: string
+          format: date-time
+          nullable: true
+        dueAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: "`issuedAt + netTerms` — when the receivable falls due"
+        paidAt:
+          type: string
+          format: date-time
+          nullable: true
+        pastDueAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: when the statement first answered past due
+        voidedAt:
+          type: string
+          format: date-time
+          nullable: true
+        voidReason:
+          type: string
+          nullable: true
+        replacesStatementId:
+          type: string
+          format: uuid
+          nullable: true
+          description: the statement this one reissues after a staff void
+        paidOrderId:
+          type: string
+          format: uuid
+          nullable: true
+          description: the order whose payment completed the settlement — the dispute link
+        createdAt: { type: string, format: date-time }
+    PlanStatementLine:
+      type: object
+      required: [lineId, statementId, kind, amountMinor, description, sourceRef, createdAt]
+      properties:
+        lineId: { type: string, format: uuid }
+        statementId: { type: string, format: uuid }
+        kind:
+          type: string
+          enum: [planFee, usage, discount, refundCredit, disputeChargeback, paymentApplied]
+          description: "`planFee` the sold version's price, `usage` the overage, `discount` a credit or grant write-off, `refundCredit` a refund's note, `disputeChargeback` a lost dispute's restored receivable, `paymentApplied` a reconciling payment"
+        amountMinor:
+          type: integer
+          format: int64
+          description: signed — charges positive, credits negative; `totalMinor` is their sum
+        description: { type: string }
+        sourceRef:
+          type: string
+          format: uuid
+          nullable: true
+          description: the fact the line came from — a journal line, a refund, an order, a dispute, or the line a void reversal mirrors
+        createdAt: { type: string, format: date-time }
+    PlanStatementDetail:
+      allOf:
+        - $ref: "#/components/schemas/PlanStatement"
+        - type: object
+          required: [lines]
+          properties:
+            lines:
+              type: array
+              items: { $ref: "#/components/schemas/PlanStatementLine" }
+    PlanStatementPage:
+      type: object
+      required: [statements, nextCursor]
+      properties:
+        statements:
+          type: array
+          items: { $ref: "#/components/schemas/PlanStatement" }
+        nextCursor:
+          type: string
+          format: uuid
+          nullable: true
+    ReleaseStatementRequest:
+      type: object
+      required: [idempotencyKey, action, reason]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        action:
+          type: string
+          enum: [extendGrace, void]
+          description: "`extendGrace` restores `pastDue → issued` and lifts the dunning suspension; `void` cancels the statement with reversing lines"
         reason: { type: string, minLength: 1, maxLength: 500 }
     PublishPlanRequest:
       type: object
