@@ -350,3 +350,46 @@ export async function verifyEvidenceBundle(
     ),
   );
 }
+
+/** One row of a version-2 evidence bundle's committed manifest. */
+export interface BundleManifestRow {
+  /** The artifact class — `usageRecord`, `paymentOrder`, `daySeal`, … */
+  kind: string;
+  /** The artifact's own id inside its kind bucket. */
+  id: string;
+  /** The lowercase-hex digest the manifest committed for this artifact. */
+  digest: string;
+}
+
+/**
+ * Reads a version-2 evidence bundle's manifest — the `(kind, id)`-sorted list
+ * of every artifact the ledger marker committed, each with the digest the
+ * bundle's served bytes must re-digest to. Pure inspection: it parses the
+ * bundle JSON and returns the manifest rows verbatim, so a developer can list
+ * what a bundle attests before or instead of running the full verifier.
+ *
+ * The function never touches `artifacts` or `entries`: a bundle whose
+ * `manifest` is not an array of `{kind, id, digest}` strings is malformed and
+ * throws, matching the verifier's own refusal to guess.
+ *
+ * @param json the bundle `data` object — the same JSON
+ *   `verifyEvidenceBundle` consumes.
+ */
+export function listBundleManifests(json: string): BundleManifestRow[] {
+  const parsed = JSON.parse(json) as { manifest?: unknown };
+  const manifest = parsed.manifest;
+  if (!Array.isArray(manifest)) {
+    throw new Error("evidence bundle carries no manifest array");
+  }
+  return manifest.map((row) => {
+    const { kind, id, digest } = (row ?? {}) as Record<string, unknown>;
+    if (
+      typeof kind !== "string" ||
+      typeof id !== "string" ||
+      typeof digest !== "string"
+    ) {
+      throw new Error("evidence bundle manifest row is not {kind, id, digest}");
+    }
+    return { kind, id, digest };
+  });
+}

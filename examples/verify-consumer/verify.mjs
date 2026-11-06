@@ -33,6 +33,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  listBundleManifests,
   verifyBill,
   verifyConsistency,
   verifyEvidenceBundle,
@@ -180,6 +181,15 @@ async function main() {
     console.log(`bundle ${evidenceManifest.bundleId}`);
     console.log(`organization ${evidenceManifest.organizationId}`);
     console.log(`ledger ${evidenceManifest.origin}`);
+    console.log();
+
+    // What the bundle attests before any check runs: the committed
+    // (kind, id) manifest — pure inspection, no verification.
+    const manifestRows = listBundleManifests(JSON.stringify(evidence));
+    console.log(`manifest: ${manifestRows.length} committed artifact(s)`);
+    for (const row of manifestRows) {
+      console.log(`       ${row.kind}/${row.id}  ${row.digest.slice(0, 16)}…`);
+    }
     console.log();
 
     const evidenceKeyJson = JSON.stringify(evidenceKey);
