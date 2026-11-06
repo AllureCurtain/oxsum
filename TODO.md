@@ -16,13 +16,19 @@ The accepted contract and evidence live in [docs/roadmap/self-hosted-v1](docs/ro
 - [x] [#594](https://github.com/AllureCurtain/oxsum/issues/594) — Business staff, setup and session contexts (T03): both children integrated; final release acceptance remains separately tracked.
 - [x] [#629](https://github.com/AllureCurtain/oxsum/issues/629) — Initialize the business through expiring owner consent (T03.a): integrated in PR #631.
 - [x] [#630](https://github.com/AllureCurtain/oxsum/issues/630) — Business staff capabilities and session contexts (T03.b): integrated in PR #632.
-- [ ] [#595](https://github.com/AllureCurtain/oxsum/issues/595) — Customer profile and team lifecycle (T04): in progress; profile/lifecycle #633 and invitation consent #634 both required; software validated, integration pending.
+- [x] [#595](https://github.com/AllureCurtain/oxsum/issues/595) — Customer profile and team lifecycle (T04): both children integrated; final release acceptance remains separately tracked.
 - [x] [#633](https://github.com/AllureCurtain/oxsum/issues/633) — Customer profiles and independent admission restrictions (T04.a): integrated in PR #635.
-- [ ] [#634](https://github.com/AllureCurtain/oxsum/issues/634) — Customer and team invitation consent (T04.b): reviewed and locally validated; PR #636 integration CI pending.
-- [ ] [#596](https://github.com/AllureCurtain/oxsum/issues/596) — Scoped consumption and integration credentials (T05): pending.
-- [ ] [#597](https://github.com/AllureCurtain/oxsum/issues/597) — Business-owned provider configuration (T06): pending.
-- [ ] [#598](https://github.com/AllureCurtain/oxsum/issues/598) — Model catalog and private serving context (T07): pending.
-- [ ] [#599](https://github.com/AllureCurtain/oxsum/issues/599) — Versioned customer sale books (T08): pending.
+- [x] [#634](https://github.com/AllureCurtain/oxsum/issues/634) — Customer and team invitation consent (T04.b): integrated in PR #636.
+- [x] [#596](https://github.com/AllureCurtain/oxsum/issues/596) — Scoped consumption and integration credentials (T05): both children integrated; final release acceptance remains separately tracked.
+- [x] [#637](https://github.com/AllureCurtain/oxsum/issues/637) — Consumption key and evidence scope (T05.a): integrated in PR #639.
+- [x] [#638](https://github.com/AllureCurtain/oxsum/issues/638) — Scoped business integration/metering credentials (T05.b): integrated in PR #640.
+- [x] [#597](https://github.com/AllureCurtain/oxsum/issues/597) — Business-owned provider configuration (T06): both children integrated; final release acceptance remains separately tracked.
+- [x] [#641](https://github.com/AllureCurtain/oxsum/issues/641) — Atomic business provider configuration (T06.a): integrated in PR #643.
+- [x] [#642](https://github.com/AllureCurtain/oxsum/issues/642) — Provider destination policy and pinned task routes (T06.b): integrated in PR #646.
+- [ ] [#598](https://github.com/AllureCurtain/oxsum/issues/598) — Model catalog and private serving context (T07): in progress; serving permissions and cache context pending.
+- [ ] [#644](https://github.com/AllureCurtain/oxsum/issues/644) — Align customer catalogs and serving permissions (T07.a): PR #647.
+- [ ] [#645](https://github.com/AllureCurtain/oxsum/issues/645) — Complete response cache serving context (T07.b): PR #653.
+- [ ] [#599](https://github.com/AllureCurtain/oxsum/issues/599) — Versioned customer sale books (T08): PR #652.
 - [ ] [#600](https://github.com/AllureCurtain/oxsum/issues/600) — Bind sale terms into evidence (T09): pending.
 - [ ] [#601](https://github.com/AllureCurtain/oxsum/issues/601) — Durable request operation (T10): pending.
 - [ ] [#602](https://github.com/AllureCurtain/oxsum/issues/602) — Transaction-aware ledger effects and zero-cost receipts (T11): pending.
