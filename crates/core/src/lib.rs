@@ -51,6 +51,7 @@ mod reconcile;
 mod report_links;
 mod request_log;
 mod routing;
+mod sale_books;
 mod seed;
 mod service_credentials;
 mod serving_access;
@@ -243,3 +244,9 @@ pub use x402::{
 };
 
 pub use customer_authority::{CustomerCapability, CustomerRecordScope};
+
+pub use sale_books::{
+    SaleBook, SaleBookHistory, SaleBookPage, SaleChange, SaleChangeRequest, SaleDraft,
+    SaleModelMap, SaleMutationResult, SalePreviewRequest, SalePreviewSource, SalePreviewUsage,
+    SalePrice, SalePricePreview, SalePriceSnapshot, SaleSchedule, SaleTerms, SaleVersion,
+};

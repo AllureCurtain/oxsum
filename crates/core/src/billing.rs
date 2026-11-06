@@ -530,12 +530,18 @@ pub struct ItemizedCharge {
 impl ItemizedCharge {
     /// The lines' summed cost before the division — what `total_minor` and the
     /// discount variant divide once.
-    fn numerator(&self) -> i128 {
-        let mut numerator: i128 = 0;
-        for line in &self.lines {
-            numerator += i128::from(line.units) * i128::from(line.price_per_m);
-        }
-        numerator
+    fn numerator(&self) -> Result<i128, WalletError> {
+        self.lines.iter().try_fold(0_i128, |sum, line| {
+            if line.units < 0 || line.price_per_m < 0 {
+                return Err(WalletError::InvalidInput("negative bill line".into()));
+            }
+            sum.checked_add(i128::from(line.units) * i128::from(line.price_per_m))
+                .ok_or_else(Self::overflow)
+        })
+    }
+
+    fn overflow() -> WalletError {
+        WalletError::InvalidInput("the amount does not fit in 64 bits".into())
     }
 
     /// The charge the lines sum to, ceiling-divided as one amount.
@@ -544,7 +550,7 @@ impl ItemizedCharge {
     ///
     /// Refuses a total that does not fit in 64 bits.
     pub fn total_minor(&self) -> Result<i64, WalletError> {
-        Self::ceiling(self.numerator(), i128::from(PER_MILLION))
+        Self::ceiling(self.numerator()?, i128::from(PER_MILLION))
     }
 
     /// The charge after an organization discount (issue #158): the single most
@@ -563,7 +569,9 @@ impl ItemizedCharge {
             ));
         }
         Self::ceiling(
-            self.numerator() * i128::from(100 - percent),
+            self.numerator()?
+                .checked_mul(i128::from(100 - percent))
+                .ok_or_else(Self::overflow)?,
             i128::from(PER_MILLION) * 100,
         )
     }
@@ -571,9 +579,8 @@ impl ItemizedCharge {
     /// One ceiling division, by hand: both sides are non-negative, and
     /// `i128::div_ceil` is still unstable.
     fn ceiling(numerator: i128, denominator: i128) -> Result<i64, WalletError> {
-        let minor = (numerator + denominator - 1) / denominator;
-        i64::try_from(minor)
-            .map_err(|_| WalletError::InvalidInput("the amount does not fit in 64 bits".into()))
+        let minor = numerator / denominator + i128::from(numerator % denominator != 0);
+        i64::try_from(minor).map_err(|_| Self::overflow())
     }
 }
 
