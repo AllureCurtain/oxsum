@@ -29,6 +29,7 @@ mod device;
 mod experiments;
 mod keys;
 mod log;
+mod merchants;
 mod org;
 mod report_links;
 pub(crate) mod requests;
@@ -186,6 +187,18 @@ pub fn router(state: AppState) -> Router {
             get(business::context).post(business::select_context),
         )
         .route("/business", get(business::business))
+        .route(
+            "/business/merchants",
+            get(merchants::list).post(merchants::create),
+        )
+        .route(
+            "/business/merchants/{merchant}/versions",
+            get(merchants::versions).post(merchants::rotate),
+        )
+        .route(
+            "/business/merchants/{merchant}/status",
+            post(merchants::status),
+        )
         .route(
             "/business/channels/{channel}/connection-check",
             post(business_providers::connection_check),
