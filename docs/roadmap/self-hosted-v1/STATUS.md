@@ -1,17 +1,17 @@
 # Release status
 
-Updated: 2026-11-05. Contract issue: [#591](https://github.com/AllureCurtain/oxsum/issues/591).
+Updated: 2026-11-06. Contract issue: [#591](https://github.com/AllureCurtain/oxsum/issues/591).
 
-Implementation: in progress. Release: not ready. T00 is integrated; T01.a and T02 are in review; T01.b is in review (PR #628); T03.a is in review (PR #631); T03.b is in review (PR #632, CI green; Entire requires independent approval). T04.a is in review (PR #635); T04.b #634 is in review as PR #636 at `f82d89e`. T05.a #637 is in review as PR #639; #638 remains pending. No release readiness claimed.
+Implementation: in progress. Release: not ready. T04.b is reviewed and locally validated; PR #636 is awaiting integration CI. Prerequisite integration is recorded below. No release readiness claimed.
 
 | Task | Issue | State | Depends on |
 | --- | --- | --- | --- |
 | T00 — Adopt the release contract and baseline | [#591](https://github.com/AllureCurtain/oxsum/issues/591) | integrated (PR #623) | None |
-| T01 — Restrict financial and metering authority | [#592](https://github.com/AllureCurtain/oxsum/issues/592) | in_progress | T00 |
-| T02 — Add business and customer ownership without moving ledgers | [#593](https://github.com/AllureCurtain/oxsum/issues/593) | in_review (PR #627) | T00 |
-| T03 — Business staff, setup and session contexts | [#594](https://github.com/AllureCurtain/oxsum/issues/594) | in_progress | T01, T02 |
+| T01 — Restrict financial and metering authority | [#592](https://github.com/AllureCurtain/oxsum/issues/592) | integrated (PR #626, PR #628) | T00 |
+| T02 — Add business and customer ownership without moving ledgers | [#593](https://github.com/AllureCurtain/oxsum/issues/593) | integrated (PR #627) | T00 |
+| T03 — Business staff, setup and session contexts | [#594](https://github.com/AllureCurtain/oxsum/issues/594) | integrated (PR #631, PR #632) | T01, T02 |
 | T04 — Customer profile and team lifecycle | [#595](https://github.com/AllureCurtain/oxsum/issues/595) | in_progress | T02, T03 |
-| T05 — Scoped consumption and integration credentials | [#596](https://github.com/AllureCurtain/oxsum/issues/596) | in_progress (#637, #638) | T03, T04 |
+| T05 — Scoped consumption and integration credentials | [#596](https://github.com/AllureCurtain/oxsum/issues/596) | pending | T03, T04 |
 | T06 — Business-owned provider configuration | [#597](https://github.com/AllureCurtain/oxsum/issues/597) | pending | T02, T03 |
 | T07 — Model catalog and private serving context | [#598](https://github.com/AllureCurtain/oxsum/issues/598) | pending | T05, T06 |
 | T08 — Versioned customer sale books | [#599](https://github.com/AllureCurtain/oxsum/issues/599) | pending | T02, T04, T06 |
@@ -39,7 +39,15 @@ Implementation: in progress. Release: not ready. T00 is integrated; T01.a and T0
 | T30 — Final integrated acceptance and launch materials | [#621](https://github.com/AllureCurtain/oxsum/issues/621) | pending | T23, T24, T26, T27, T28, T29 |
 | T31 — External certification and promotion gates | [#622](https://github.com/AllureCurtain/oxsum/issues/622) | pending | T30 |
 
-## Current checkpoint
+## Integration checkpoint — 2026-11-06
+
+Normal merges completed: T01.a PR #626 at `624437b`; T01.b PR #628 at `5cfae3c`; T02 PR #627 at `f51f862`; T03.a PR #631 at `cb594e3`; T03.b PR #632 at `1c53d0a`; T04.a PR #635 at `5f4ae63`. PR #636 merges main `5f4ae63` into its original branch; source, tests, migrations, OpenAPI and generated frontend types remain byte-identical to validated head `f82d89e`. Only progress/evidence documentation differs. Its new head must pass required technical CI before a normal merge. See [current task evidence](evidence/T04-b.md).
+
+Live GitHub protection was inspected on 2026-11-06: required checks are `fmt`, `clippy`, `test`, `wasm` and `frontend`, with no required approval rule or repository ruleset. The optional Entire check reports missing trail approvals; this is not a required merge gate. Source review is performed independently here, normal merges enforce the configured technical checks, and no policy, reviewer identity or bypass flag is changed. The earlier notes treating Entire approval as a mandatory integration blocker are superseded by this verified policy.
+
+The implementation history below records earlier checkpoints. Its pending-integration and Entire-approval statements are superseded by this checkpoint; runtime results and outstanding release acceptance boundaries remain evidence.
+
+## Historical implementation checkpoint
 
 T00 merged through [PR #623](https://github.com/AllureCurtain/oxsum/pull/623), commit `aadde114ca61cf97d5254ae3ea45d0a18e4542ba`. [CI](https://github.com/AllureCurtain/oxsum/actions/runs/41869652216) passed relevant documentation gates; heavy suites were skipped by path policy. Local and GitHub main synchronized.
 
@@ -51,8 +59,6 @@ T02 is independently implemented and locally validated in PR #627 (`d5b3c0f`), w
 T03 development uses `.worktrees/business-setup`, branch `feat/business-setup`, combining T01/T02 locally without merging either into main. Conflicts preserve both migrations and authority changes. The combined prerequisites passed 18 focused checks. T03.a #629 now implements expiring owner consent at `361e8c6`: 1,485 workspace tests, 26 process-shared tests, 29 doctests and 29 PostgreSQL engine tests passed, along with setup race/rollback/HTTP checks. See [evidence](evidence/T03-a.md). T03.a CI is green, with Entire Gates still failing. T03.b #630 implements staff contexts/capabilities, registration policy, last-owner lifecycle and atomic password/TOTP recovery at `ed58c3e` in `.worktrees/business-staff`: 1,489 workspace tests, 26 process-shared tests, 29 doctests, Clippy, format and frontend gates passed. See [evidence](evidence/T03-b.md). Normal integration awaits prerequisite review; business UI remains T24.
 
 T04 split: profile/lifecycle #633 is implemented in `.worktrees/customer-lifecycle`, branch `feat/customer-lifecycle`, based on validated PR #632. Independent manual/dunning/archive admission reasons, business-scoped profile APIs and preservation tests passed 1,493 workspace tests, 26 shared-process tests, 29 doctests, fmt/clippy and frontend at `50c7db4`. See [evidence](evidence/T04-a.md). PR #635 at `f92bd63` has green CI; Entire trail 92 lacks independent approval only. Invitation and existing-team consent #634 is implemented in `.worktrees/customer-invitations` on `feat/customer-invitations`: 1,499 workspace tests, 26 shared-process tests, 29 doctests, format/clippy and frontend passed. Final invitation/upgrade/HTTP checks also cover TOTP and creation/revoke audit rollback. Browser evidence remains pending the missing Ego TaskSpace 24. See [T04.b evidence](evidence/T04-b.md). Both children require integration; parent #595 is not complete.
-
-T05.a #637 is implemented in `.worktrees/consumption-key-scope` on `fix/consumption-key-scope`, based on PR #636. Consumption/account capabilities, key-attributed records/proofs, current-session mutations, WebSocket revocation and credential-bound tasks/cache/replay are covered. The public verification sample now uses a fixed public fixture. The first workspace pass had 1,512 passing tests; 26 shared-process tests, 29 doctests and 70 final focused checks passed, as did format/Clippy/codegen/frontend. Final workspace revalidation after the sample fix passed 1,513 tests (four configured skips) at `56f184c`. PR #639 is open against #636; CI and normal integration remain pending; browser QA remains pending the missing TaskSpace. See [T05.a evidence](evidence/T05-a.md).
 
 ## External gates
 
