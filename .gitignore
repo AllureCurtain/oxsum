@@ -1,6 +1,10 @@
 /target
 .env
 
+# The self-hosted deployment's own env file (live rail + database secrets):
+# deploy/operator.env.example is the template, the copy is never committed.
+deploy/.env
+
 # git worktrees: one per PR, created under .worktrees/, never committed
 .worktrees/
 

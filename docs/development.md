@@ -34,7 +34,7 @@ verifies the path-to-crate mapping with stubbed git output."
 
 ### Demo data
 
-`cargo run -p oxsum-server -- seed` fills a fresh deployment with a believable world and exits
+`OXSUM_DEMO_SEED=true cargo run -p oxsum-server -- seed` fills a fresh deployment with a believable world and exits
 without serving: the `admin@oxsum.local` owner and a second member `dev@oxsum.local` (both under
 the password `admin-password`), the member under a committed-spend budget, three API keys —
 the owner's full key, a `staging` key capped and allowlisted to the first catalog model, and the
@@ -48,7 +48,9 @@ Seeded request ids are deterministic (`seed-<day>-<n>`) so the demo reads the sa
 and the seeded posting dates spread from today back through the whole previous month, which is
 what fills the usage page's rollup and last month's statement. The command is idempotent: a second run finds the
 demo account and prints "already seeded" without writing anything. It needs `DATABASE_URL` and
-nothing else. With `OXSUM_SECRET_KEY` set and no catalog at all, the seed creates the demo channel
+`OXSUM_DEMO_SEED=true` — the explicit opt-in (issue #619) — and it refuses a database that
+already holds organizations: demo data is for a fresh install, never a deployment with real
+books. With `OXSUM_SECRET_KEY` set and no catalog at all, the seed creates the demo channel
 first — `demo`, two priced models (`demo-chat`, `demo-reasoner`) and a deliberately unreachable
 upstream URL, because the demo serves seeded history rather than live traffic — so the turns and
 the statement are written (issue #330). Without the key it seeds against whatever catalog the
@@ -358,6 +360,9 @@ Copy `.env.example` to `.env` and the server and the tests pick it up automatica
 | `OXSUM_DISPLAY_CURRENCY` | Optional; the deployment-wide display unit an organization without its own setting renders credits in — ISO 4217, e.g. `USD`. Set together with `OXSUM_DISPLAY_RATE_PER_CREDIT`, a subset is a startup error. An organization's own `PATCH /api/v1/org` setting wins over this default (issue #257) |
 | `OXSUM_DISPLAY_RATE_PER_CREDIT` | Optional; the decimal literal one credit displays as in `OXSUM_DISPLAY_CURRENCY`, e.g. `0.0014`. Stored and wired as text — money never goes through a float |
 | `OXSUM_DISPLAY_DECIMALS` | Optional; how many decimals the fiat rendering rounds half-up to (0–6). Default 2 |
+| `OXSUM_RAILS` | Optional operator declaration (issue #619); comma-separated deposit rails the deployment intends — `stripe`, `airwallex`, `hyperswitch`, `x402`. Set and the boot refuses either half of a mismatch: a listed rail whose `OXSUM_<RAIL>_*` set is incomplete, or a configured rail the list omits. Unset declares nothing |
+| `OXSUM_CUSTOMER_SELF_REGISTER` | Optional operator declaration (issue #619); `true`/`1` requires the mailer set — a deployment that could never send verification mail refuses to boot. Unset or `false` declares nothing; the business's registration policy is what opens signup |
+| `OXSUM_DEMO_SEED` | Optional; `true`/`1` is the explicit opt-in `oxsum seed` requires (issue #619). Unset, the subcommand refuses — a fresh deployment never carries demo data. The seed still refuses a database that already holds organizations |
 
 #### A witness sidecar beside the deployment
 
@@ -430,9 +435,10 @@ OXSUM_OTLP_ENDPOINT=http://localhost:4318 cargo run -p oxsum-server
 oxsum's own tables are migrated at startup, in the same process that serves requests: `Db::migrate`
 creates the `oxsum` schema and applies the files under `crates/core/migrations/` that have not run
 yet, each in one transaction together with its row in `oxsum._migrations`, under a database-wide
-advisory lock so two starting processes cannot race. A failed migration refuses to boot; there is no
-separate migrate command to remember. Ledger schemas are untouched by it: doubleentry's `migrate`
-creates `ledger_<tenant_id>` on first use.
+advisory lock so two starting processes cannot race. A failed migration refuses to boot.
+`oxsum --migrate-only` runs the same pass and exits — the deploy `oxsum-migrate` step and the
+upgrade runbook's deliberate migrate. Ledger schemas are untouched by either: doubleentry's
+`migrate` creates `ledger_<tenant_id>` on first use.
 
 ## Commands
 
@@ -440,7 +446,9 @@ creates `ledger_<tenant_id>` on first use.
 | --- | --- |
 | Start the database | `docker compose up -d` |
 | Start the server | `cargo run -p oxsum-server` |
-| Seed the demo world | `cargo run -p oxsum-server -- seed` (populates, prints the credentials, exits — see "Demo data") |
+| Migrate only | `cargo run -p oxsum-server -- --migrate-only` (applies pending migrations, prints the schema level, exits — the deploy `oxsum-migrate` step) |
+| Validate the environment | `cargo run -p oxsum-server -- --check-config` (runs the startup config parse and prints a JSON verdict without touching the database — issue #619) |
+| Seed the demo world | `OXSUM_DEMO_SEED=true cargo run -p oxsum-server -- seed` (populates, prints the credentials, exits — see "Demo data") |
 | All tests | `cargo nextest run --workspace` — runs the full suite locally (loads `DATABASE_URL` from `.env` or the shell; `cargo test --workspace` is the fallback and covers doctests). Worth it for cross-crate changes; otherwise CI runs the same coverage on every PR — see "CI" below |
 | Focused while iterating | `cargo nextest run -p oxsum-<crate>` — only the crates the change touched; the local pre-push gate is fmt + clippy + these focused runs, with CI holding the full suite |
 | Run the end-to-end demo | `python3 demo/demo.py` (needs `pip install -r demo/requirements.txt`; starts its own mock upstream and server) |
@@ -571,7 +579,11 @@ on the maintainer's npm credentials and authorization.
 ## Deployment runbook
 
 The deployment is one binary plus one PostgreSQL database; every operational
-procedure below is a property of those two pieces.
+procedure below is a property of those two pieces. For the managed
+self-hosted shape — Compose profiles, initialization, secrets linting,
+operator configuration — `docs/self-hosted-install.md` is the runbook and
+`docs/self-hosted-upgrade.md` the upgrade/rollback/restore half (issue
+#619); what follows here is the same procedures in their development form.
 
 ### Backup
 

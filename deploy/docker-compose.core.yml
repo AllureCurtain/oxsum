@@ -1,0 +1,107 @@
+# oxsum self-hosted core profile (issue #619): PostgreSQL, the one-shot schema
+# migrator and the serving binary. This is everything a deployment needs to
+# serve the wallet — organizations, keys, billing, proofs — without merchant
+# payment rails; `docker-compose.payment.yml` overlays them on.
+#
+# Boot order, the short form (run from the repository root, with the
+# deployment's own .env beside this file — deploy/.env, copied from
+# operator.env.example):
+#   docker compose -f deploy/docker-compose.core.yml up -d postgres
+#   docker compose -f deploy/docker-compose.core.yml run --rm oxsum-migrate
+#   docker compose -f deploy/docker-compose.core.yml up -d oxsum
+#
+# `up -d` alone works too: `oxsum` waits on `oxsum-migrate`, which waits on a
+# healthy `postgres`. The explicit steps are what docs/self-hosted-install.md
+# walks so the operator sees each checkpoint answer before the next runs.
+#
+# The image tag is an environment variable, not a hardcoded `latest`: an
+# upgrade is `OXSUM_IMAGE_TAG=v<new>` in `.env`, a rollback the same line
+# pointing back, and `GET /api/v1/version` reports what actually landed.
+
+name: oxsum-core
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    # A database with thousands of ledger schemas needs a lock per table during
+    # a dump; the stock 64 per transaction answers "out of shared memory"
+    # (scripts/backup.sh, docs/self-hosted-upgrade.md).
+    command: ["postgres", "-c", "max_locks_per_transaction=1024"]
+    environment:
+      # The operator sets these in .env — the file this compose is run with
+      # `--env-file`. POSTGRES_PASSWORD is the only database credential oxsum
+      # holds, and DATABASE_URL carries it again for the server.
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-oxsum}
+    # Not published on the host: the oxsum container reaches it over the
+    # compose network, and an operator who wants psql shells in with
+    # `docker compose exec postgres psql`. Uncomment to bind on loopback.
+    # ports:
+    #   - "127.0.0.1:5432:5432"
+    # Restores build indexes in parallel; stock 64 MB /dev/shm fails with
+    # "could not resize shared memory segment" on a database that has grown.
+    shm_size: 1gb
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 2s
+      retries: 15
+
+  # The one-shot migrator: `oxsum --migrate-only` applies whatever is pending
+  # and exits. The serving container waits on it, so a boot never races a
+  # schema that is not yet current — and on upgrade the migrate step is visible
+  # in `docker compose ps`/`logs` instead of inside a serving boot that might
+  # be holding traffic. `restart: "no"` keeps it a run-to-completion service:
+  # `docker compose ps` shows `Exited (0)` beside the serving container.
+  oxsum-migrate:
+    image: ghcr.io/allurecurtain/oxsum:${OXSUM_IMAGE_TAG:-latest}
+    command: ["--migrate-only"]
+    # deploy/.env — the operator's file beside this compose file, copied from
+    # operator.env.example and linted by scripts/check-secrets.sh. A
+    # repository-root .env is the *developer* database's file; the
+    # self-hosted deployment's secrets live in deploy/.
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-oxsum}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    labels:
+      org.opencontainers.image.version: ${OXSUM_IMAGE_TAG:-latest}
+
+  oxsum:
+    image: ghcr.io/allurecurtain/oxsum:${OXSUM_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-oxsum}
+      OXSUM_ADDR: 0.0.0.0:3000
+    ports:
+      - "${OXSUM_BIND:-127.0.0.1}:${OXSUM_PORT:-3000}:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # Boot waits on the one-shot migrator exiting 0, so the schema is current
+      # before the listener opens. A second `up` re-checks cheaply: migrations
+      # are idempotent and the container exits 0 again when nothing is pending.
+      oxsum-migrate:
+        condition: service_completed_successfully
+    # Readiness, not liveness: "healthy" means the database answers and its
+    # schema is current, so `docker compose ps` (healthy) is a serving state,
+    # not merely a running one. `start_period` covers pool open + first probe.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:3000/readyz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+    labels:
+      org.opencontainers.image.version: ${OXSUM_IMAGE_TAG:-latest}
+      org.opencontainers.image.source: https://github.com/AllureCurtain/oxsum
+
+volumes:
+  pgdata:

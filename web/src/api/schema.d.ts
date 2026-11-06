@@ -11,7 +11,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Health check */
+        /**
+         * Liveness check
+         * @description The process is up and answering. Says nothing about the database —
+         *     `/readyz` is the readiness probe a load balancer or a compose
+         *     `healthcheck` should gate on.
+         */
         get: {
             parameters: {
                 query?: never;
@@ -23,6 +28,64 @@ export interface paths {
             responses: {
                 /** @description ok */
                 200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": string;
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/readyz": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Readiness check (issue #619)
+         * @description Whether the deployment is ready to serve: the database answers **and**
+         *     its `oxsum._migrations` ledger has run to the schema version this
+         *     binary serves. A database nothing has migrated yet answers 503, which
+         *     is what makes the compose `oxsum-migrate` ordering visible —
+         *     `docker compose ps` shows the serving container as `(healthy)` only
+         *     once readiness holds, never merely because the process is up.
+         *
+         *     200 carries the applied schema version as its body; 503 carries a short
+         *     reason (`database unreachable`, or the applied-vs-served versions).
+         *     Unauthenticated: a probe arrives before any account exists and the
+         *     answer reveals nothing a login page would not.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Database reachable, migrations current */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": string;
+                    };
+                };
+                /** @description Database unreachable or schema not current */
+                503: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -158,6 +221,62 @@ export interface paths {
                 409: components["responses"]["Error"];
             };
         };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/version": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The deployment's own identity (issue #619)
+         * @description What this deployment is running: the binary's package version, the
+         *     commit it was built from (`unknown` when the source was a tarball the
+         *     build could not name), and the newest schema version its migration
+         *     runner carries — the same value `/readyz` reports as current.
+         *
+         *     The install and upgrade runbooks read this to confirm a pull or a
+         *     rollback landed the intended build. Unauthenticated and cheap: the
+         *     values say nothing about tenants and reveal nothing the login page
+         *     would not.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The running build's identity */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: {
+                                /** @example 0.1.0 */
+                                version: string;
+                                /** @example e635e8a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7 */
+                                gitSha: string;
+                                /** @example 0095_plan_statements */
+                                schemaVersion: string;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;

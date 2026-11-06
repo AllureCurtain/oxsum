@@ -34,6 +34,7 @@ mod log;
 mod merchant_events;
 mod merchants;
 pub(crate) mod operations;
+mod ops;
 mod orders;
 mod org;
 mod plans;
@@ -222,6 +223,10 @@ pub fn router(state: AppState) -> Router {
     // error, so it must answer 200 with no session at all.
     // Personal account handlers authenticate their own session in either context.
     let open = Router::new()
+        // The deployment's own identity: version, build SHA and the schema the
+        // binary migrates to. Unauthenticated — the upgrade runbook reads it
+        // before any account exists (issue #619).
+        .route("/version", get(ops::version))
         .route("/auth/totp/disable", post(auth::totp_disable))
         .route("/auth/totp/confirm", post(auth::totp_confirm))
         .route("/auth/totp/enroll", post(auth::totp_enroll))
@@ -489,6 +494,11 @@ pub fn router(state: AppState) -> Router {
 
     let router: Router<AppState> = Router::new()
         .route("/healthz", get(|| async { "ok" }))
+        // Readiness, not liveness: 200 only once the database answers and its
+        // migration ledger is current. The compose `healthcheck` gates on this,
+        // so `docker compose ps` shows "healthy" only for a serving deployment
+        // (issue #619).
+        .route("/readyz", get(ops::readyz))
         // The deployment's own tlog-witness (issue #260): a foreign log offers
         // its head at the C2SP path, no org credential — the submitting log is
         // named by the origin inside its note, and the witness's trust roots
