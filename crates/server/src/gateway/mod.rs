@@ -574,6 +574,9 @@ async fn record_refusal(
         charged_minor: 0,
         freeze_minor: 0,
         upstream_cost_minor: None,
+        // A refusal never reached upstream: nothing was priced, so the cost is
+        // untracked rather than a real attempt's figure (issue #604).
+        cost_basis: oxsum_core::CostBasis::Missing,
         upstream_attempts: 0,
     };
     if let Err(row_error) = state.db.record_usage(&row).await {

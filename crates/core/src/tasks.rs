@@ -598,6 +598,28 @@ pub async fn settle_task(
     let settlement_id = *entry_id_for(&settlement_key_for(&task.hold_key)).as_uuid();
     let available = wallet.available().await.ok();
 
+    // The platform's cost for the task's usage (issue #604): a succeeded task
+    // is a real attempt whose usage the price's `upstream` block can price —
+    // never a fabricated zero; a failed or cancelled task ran no billable work,
+    // so its cost is untracked rather than zero.
+    let upstream_cost_minor = match outcome.state {
+        TaskState::Succeeded => priced
+            .price
+            .upstream_cost(&settled_usage, true)
+            .unwrap_or_else(|error| {
+                tracing::error!(%error, task = %task.task_id,
+                    "pricing the task's upstream cost failed; the row records untracked");
+                None
+            }),
+        _ => None,
+    };
+    let cost_basis = match outcome.state {
+        TaskState::Succeeded if upstream_cost_minor.is_some() => {
+            crate::usage::CostBasis::RealAttempt
+        }
+        _ => crate::usage::CostBasis::Missing,
+    };
+
     let row = UsageRow {
         request_id: request_id.clone(),
         tenant_id: tenant_id.clone(),
@@ -626,7 +648,8 @@ pub async fn settle_task(
         },
         charged_minor: charged,
         freeze_minor: task.freeze_minor,
-        upstream_cost_minor: None,
+        upstream_cost_minor,
+        cost_basis,
         upstream_attempts: 0,
     };
     // The ledger settle is committed; the usage row, the task's terminal
