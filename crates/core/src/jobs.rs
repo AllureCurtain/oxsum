@@ -80,6 +80,13 @@ pub mod kinds {
     /// refuses. Leader-required — a second runner would walk the same due
     /// list at once.
     pub const STATEMENT_PAST_DUE: &str = "statement-past-due";
+    /// The financial-facts reconciliation pass (issue #613, T22): diffs the
+    /// eight categories per organization against the journals, statements and
+    /// orders over the period that just closed, writes a `reconciliation_runs`
+    /// row and one `reconciliation_exceptions` per disagreed fact.
+    /// Leader-required — a second runner would re-open the same exceptions
+    /// under a second run id.
+    pub const RECONCILE_FINANCIAL: &str = "reconcile-financial";
 }
 
 /// How long a claimed run may take before another worker's claim assumes the
@@ -136,6 +143,7 @@ pub fn requires_leader(kind: &str) -> bool {
             | EXPIRE_LOTS
             | STATEMENT_PAST_DUE
             | RECONCILE
+            | RECONCILE_FINANCIAL
     )
 }
 
@@ -229,6 +237,10 @@ pub fn next_run(kind: &str) -> Option<Duration> {
         // scan is one indexed UPDATE bounded per pass, so a minute cadence
         // costs nothing and a backlog still drains over ticks.
         STATEMENT_PAST_DUE => Duration::minutes(1),
+        // Hourly: often enough that a just-closed day reconciles before the
+        // next reporting read, rare enough that each pass is a bounded diff
+        // per organization.
+        RECONCILE_FINANCIAL => Duration::hours(1),
         _ => return None,
     })
 }

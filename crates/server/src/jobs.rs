@@ -76,6 +76,7 @@ pub fn spawn_worker(db: Db, ctx: JobContext) -> tokio::task::JoinHandle<()> {
             kinds::SUBSCRIPTION_ROLLOVERS,
             kinds::EXPIRE_LOTS,
             kinds::STATEMENT_PAST_DUE,
+            kinds::RECONCILE_FINANCIAL,
         ];
         if ctx.webhook.is_some() {
             periodic.push(kinds::DELIVER_WEBHOOKS);
@@ -423,6 +424,22 @@ async fn run_one(
                     flipped = report.flipped,
                     suspended = report.suspended,
                     "the statement-past-due pass ran"
+                );
+            }
+        }
+        kinds::RECONCILE_FINANCIAL => {
+            // Yesterday, not today: a still-open day can book usage and orders
+            // the run would flag as unmatched. The `daily` kind keys the run
+            // so a re-pass under the same day replays rather than re-mints.
+            let end = OffsetDateTime::now_utc().date() - time::Duration::days(1);
+            let report = db.run_reconciliation("daily", end, end, None).await?;
+            if report.matched {
+                info!(run_id = %report.run_id, "the financial reconciliation found no drift");
+            } else {
+                warn!(
+                    run_id = %report.run_id,
+                    exceptions = report.exceptions,
+                    "the financial reconciliation flagged exceptions"
                 );
             }
         }
