@@ -390,6 +390,15 @@ Provider destinations default to public HTTPS; only the owner can approve exact 
 
 Model lists and prices reflect the customer's actual tier and the consumption key's model/channel grants. Public aliases must also have permission for their resolved targets. Experiments and fallback chains can choose only authorized paths and keep the original requested name in billing evidence. Catalog reads need no provider decryption. Existing task history remains bound to its submitting customer/key after a later grant change; new tasks apply the current customer/key/group snapshot. Generic task aliases and signed mandates remain unsupported until T13 completes their price and operation binding, and are explicitly refused before send. T07.b completes cache request context.
 
+
+## Customer sale terms (#599)
+
+Business staff can prepare reusable sale books, save immutable draft revisions, publish exact versions and schedule default or customer terms through the API. The reusable book is the commercial price group; an existing consumption request group still only restricts channels. A customer has at most one active book assignment. Each model resolves by customer override, assigned book, then default book, with missing models falling through and explicit zero prices retained. Supplier acquisition costs never appear in a sale term.
+
+Publishing alone does not activate a version. Assignments/defaults pin published versions with nonoverlapping UTC `[from, to)` windows. A replacement ends the old schedule and starts the new one atomically; historical rows and previously resolved snapshots remain intact. One selected percentage discount applies to the full integer price numerator before a single upward rounding to minor units. Staff previews reject unknown/unpriced dimensions rather than promising a partial price. Owner/admin manage book contents/defaults; owner/finance manage individual customer terms. All mutations require a reason and an idempotency key with atomic audit.
+
+This is the T08 configuration and preview foundation. The current gateway still settles its existing channel price snapshots; T09–T13 adopt sale snapshots for evidence and coordinated serving. The business console is T24 work. No provider-price choice or saved sale configuration alone changes the bills already being produced.
+
 ### Business merchant configuration (T14.a, #648)
 
 A merchant belongs to the Business, with stable provider account identity, rail and test/live mode. Hyperswitch using the Stripe connector is the primary payment rail; direct Stripe and Airwallex retain compatibility status. New merchants start disabled. Only the current business owner can create or rotate credentials and change checkout enablement. Owner/admin/finance/viewer can read redacted settings and immutable version history; customer accounts, machine credentials and support roles cannot manage this configuration.

@@ -232,8 +232,10 @@ impl UsageRecord {
         // Cached reads and both cache-write tiers are all part of `inputTokens` —
         // a provider whose writes sit outside the prompt count must fold them in
         // at the adapter, or the charge's input-side lines cannot account for it.
-        if self.cached_tokens + self.cache_write_5m_tokens + self.cache_write_1h_tokens
-            > self.input_tokens
+        if i128::from(self.cached_tokens)
+            + i128::from(self.cache_write_5m_tokens)
+            + i128::from(self.cache_write_1h_tokens)
+            > i128::from(self.input_tokens)
         {
             return Err(WalletError::InvalidInput(
                 "the cached and cache-write tokens together cannot exceed inputTokens".into(),

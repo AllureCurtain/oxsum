@@ -24,6 +24,7 @@ use crate::error::ApiError;
 mod auth;
 pub(crate) mod billing;
 mod business;
+mod business_prices;
 mod business_providers;
 mod device;
 mod experiments;
@@ -187,6 +188,23 @@ pub fn router(state: AppState) -> Router {
             get(business::context).post(business::select_context),
         )
         .route("/business", get(business::business))
+        .route("/business/sale-books", get(business_prices::books))
+        .route(
+            "/business/sale-books/{book_id}",
+            get(business_prices::history),
+        )
+        .route(
+            "/business/sale-books/changes",
+            post(business_prices::change),
+        )
+        .route(
+            "/business/customers/{organization_id}/sale-terms",
+            get(business_prices::customer),
+        )
+        .route(
+            "/business/sale-price-preview",
+            post(business_prices::preview),
+        )
         .route(
             "/business/merchants",
             get(merchants::list).post(merchants::create),
