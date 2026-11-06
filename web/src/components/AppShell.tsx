@@ -15,6 +15,7 @@ import {
   ScrollText,
   Settings,
   ShieldCheck,
+  ShoppingCart,
   Tags,
   Users,
   Wallet,
@@ -43,6 +44,7 @@ const NAV_GROUPS = [
     items: [
       { to: "/", labelKey: "nav.overview", end: true, Icon: LayoutDashboard },
       { to: "/topup", labelKey: "nav.topup", Icon: Wallet },
+      { to: "/orders", labelKey: "nav.orders", Icon: ShoppingCart },
       { to: "/bills", labelKey: "nav.bills", Icon: Receipt },
       { to: "/requests", labelKey: "nav.requests", Icon: ArrowLeftRight },
       { to: "/usage", labelKey: "nav.usage", Icon: ChartColumn },
@@ -82,6 +84,8 @@ NAV_INDEX["/device"] = { labelKey: "nav.device" };
 NAV_INDEX["/getting-started"] = { labelKey: "nav.gettingStarted" };
 NAV_INDEX["/admin"] = { labelKey: "nav.admin" };
 NAV_INDEX["/statements/:id"] = { labelKey: "nav.statement", parent: "/statements" };
+NAV_INDEX["/orders/new"] = { labelKey: "nav.orderNew", parent: "/orders" };
+NAV_INDEX["/orders/:id"] = { labelKey: "nav.order", parent: "/orders" };
 
 /** Pathname (+hash) → breadcrumb trail, e.g. /statements/s_123 → [Statements, s_123]. */
 function breadcrumb(
