@@ -29,6 +29,23 @@ pub fn fingerprint(body: &[u8]) -> String {
     Hash::digest(b"oxsum/idempotency/v1", body).to_hex()
 }
 
+/// Bind replay to the submitting key and protocol/resource. Legacy unbound
+/// fingerprints mismatch rather than disclose another credential's response.
+#[must_use]
+pub fn credential_fingerprint(
+    key: Uuid,
+    surface: &str,
+    resource: Option<&str>,
+    body: &[u8],
+) -> String {
+    let value = serde_json::json!([key, surface, resource, fingerprint(body)]);
+    Hash::digest(
+        b"oxsum/idempotency/credential/v1",
+        value.to_string().as_bytes(),
+    )
+    .to_hex()
+}
+
 /// How long a claimed key is kept, matching the retention the decisions record fixes.
 const CLAIM_TTL: &str = "24 hours";
 

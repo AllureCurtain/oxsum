@@ -280,3 +280,44 @@ fn fixture_response(result: Result<oxsum_core::Receipt, WalletError>) -> (Status
         }
     }
 }
+
+/// Attach the explicitly chosen credential. A consumption key is never upgraded
+/// to a personal session; each fixture must log in when it needs account rights.
+pub fn credential(
+    request: axum::http::request::Builder,
+    token: &str,
+) -> axum::http::request::Builder {
+    if token.starts_with("oxsess-") {
+        request.header("cookie", format!("oxsum_session={token}"))
+    } else {
+        request.header("authorization", format!("Bearer {token}"))
+    }
+}
+
+/// Obtain a real personal session through the production password login route.
+pub async fn login(app: &Router, email: &str, password: &str) -> String {
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"email":email,"password":password}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "fixture login failed");
+    response.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .strip_prefix("oxsum_session=")
+        .unwrap()
+        .to_owned()
+}

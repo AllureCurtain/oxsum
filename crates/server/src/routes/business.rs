@@ -13,7 +13,7 @@ pub(crate) async fn accept_setup(
     ApiJson(request): ApiJson<oxsum_core::BusinessSetupRequest>,
 ) -> ApiResult<oxsum_core::BusinessSetupResult> {
     // A bearer key cannot select a customer user or replace personal consent.
-    if headers.contains_key("authorization") {
+    if crate::auth::has_machine_credential(&headers) {
         return Err(ApiError::Forbidden(
             "setup acceptance requires a personal session".into(),
         ));
@@ -29,7 +29,7 @@ pub(crate) async fn register_owner(
 }
 
 pub(crate) fn personal_token(headers: &HeaderMap) -> Result<String, ApiError> {
-    if headers.contains_key("authorization") {
+    if crate::auth::has_machine_credential(headers) {
         return Err(ApiError::Forbidden(
             "business authority requires a personal session".into(),
         ));

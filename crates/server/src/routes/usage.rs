@@ -20,39 +20,15 @@ pub(crate) struct UsageQuery {
     to: Option<String>,
 }
 
-/// The keys this principal may attribute usage to: an API key or an owner/admin
-/// session sees every key of the organization, a member only their own — the
-/// dashboard's `key_scope` rule applied to the REST surface.
+/// One record policy for keys, member sessions and customer administrators.
 pub(super) async fn scoped_key_ids(
     state: &AppState,
     principal: &Principal,
-) -> Result<Option<Vec<String>>, ApiError> {
-    let scope = principal.key_scope();
-    if matches!(
-        scope,
-        oxsum_core::KeyScope::Organization | oxsum_core::KeyScope::All
-    ) {
-        return Ok(None);
-    }
-    let keys = state
-        .db
-        .list_keys(principal.organization().id, scope)
-        .await?;
-    Ok(Some(
-        keys.iter()
-            .map(|key| key.id.as_simple().to_string())
-            .collect(),
-    ))
+) -> Result<oxsum_core::CustomerRecordScope, ApiError> {
+    Ok(state.db.customer_record_scope(principal).await?)
 }
-
-/// A row's attribution visible to the principal: unattributed rows are
-/// organization history everyone reads, a key outside the scope drops the row.
-pub(super) fn in_scope(key_id: Option<&str>, scoped: &Option<Vec<String>>) -> bool {
-    match (key_id, scoped) {
-        (None, _) => true,
-        (Some(_), None) => true,
-        (Some(id), Some(keys)) => keys.iter().any(|key| key == id),
-    }
+pub(super) fn in_scope(key_id: Option<&str>, scope: &oxsum_core::CustomerRecordScope) -> bool {
+    scope.allows(key_id)
 }
 pub(crate) async fn usage(
     State(state): State<AppState>,
@@ -261,14 +237,10 @@ pub(crate) async fn billing_records(
         )));
     }
     let w = wallet(&state.tenants, principal.organization()).await?;
-    let page = w.requests_page(query.before, limit).await?;
     let scoped = scoped_key_ids(&state, &principal).await?;
+    let page = w.scoped_requests_page(query.before, limit, &scoped).await?;
     ok(RecordsRes {
-        rows: page
-            .rows
-            .into_iter()
-            .filter(|row| in_scope(row.key_id.as_deref(), &scoped))
-            .collect(),
+        rows: page.rows,
         next_cursor: page.next_cursor,
     })
 }

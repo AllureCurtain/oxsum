@@ -84,7 +84,7 @@ async fn call(
         req = req.header("content-type", "application/json");
     }
     if let Some(key) = key {
-        req = req.header("authorization", format!("Bearer {key}"));
+        req = support::credential(req, key);
     }
     if let Some(mandate) = mandate {
         req = req.header("x-oxsum-mandate", mandate);
@@ -102,7 +102,7 @@ async fn call(
 }
 
 /// A fresh organization: its first key's id and secret for calling the API.
-async fn register(app: &Router, name: &str) -> (String, String) {
+async fn register(app: &Router, name: &str) -> (String, String, String) {
     let email = format!(
         "{name}_{}@example.com",
         &Uuid::new_v4().simple().to_string()[..8]
@@ -123,6 +123,12 @@ async fn register(app: &Router, name: &str) -> (String, String) {
             .as_str()
             .unwrap()
             .to_owned(),
+        support::login(
+            app,
+            body["data"]["user"]["email"].as_str().unwrap(),
+            "correct horse battery",
+        )
+        .await,
     )
 }
 
@@ -140,7 +146,7 @@ async fn top_up(app: &Router, key: &str, amount_minor: i64) {
     assert_eq!(status, StatusCode::OK, "top-up failed: {body}");
 }
 
-/// Mints a mandate on `key_id` under `key`'s authority and answers the blob.
+/// Mints a mandate using the explicitly supplied personal session.
 async fn mint(
     app: &Router,
     key: &str,
@@ -172,11 +178,11 @@ fn rfc3339(t: OffsetDateTime) -> String {
 #[tokio::test]
 async fn a_mandate_is_minted_listed_and_honored() {
     let (app, db) = app_or_skip!();
-    let (key_id, key) = register(&app, "mandate").await;
+    let (key_id, key, session) = register(&app, "mandate").await;
     top_up(&app, &key, 50_000_000).await;
 
     let not_after = OffsetDateTime::now_utc() + Duration::hours(1);
-    let (status, created) = mint(&app, &key, &key_id, 5_000_000, not_after).await;
+    let (status, created) = mint(&app, &session, &key_id, 5_000_000, not_after).await;
     assert_eq!(status, StatusCode::OK, "mint failed: {created}");
     let blob = created["data"]["mandateBlob"]
         .as_str()
@@ -192,7 +198,7 @@ async fn a_mandate_is_minted_listed_and_honored() {
         "GET",
         &format!("/api/v1/org/keys/{key_id}/mandates"),
         None,
-        Some(&key),
+        Some(&session),
         None,
     )
     .await;
@@ -222,13 +228,13 @@ async fn a_mandate_is_minted_listed_and_honored() {
 #[tokio::test]
 async fn a_blob_that_does_not_verify_is_refused() {
     let (app, db) = app_or_skip!();
-    let (key_id, key) = register(&app, "badmandate").await;
+    let (key_id, key, session) = register(&app, "badmandate").await;
     top_up(&app, &key, 50_000_000).await;
 
     // A blob for a key that never delegated: no seed, so `invalid_mandate`.
     let (_, created) = mint(
         &app,
-        &key,
+        &session,
         &key_id,
         5_000_000,
         OffsetDateTime::now_utc() + Duration::hours(1),
@@ -272,7 +278,7 @@ async fn a_blob_that_does_not_verify_is_refused() {
 #[tokio::test]
 async fn a_mandate_outside_its_window_is_refused() {
     let (app, db) = app_or_skip!();
-    let (key_id, key) = register(&app, "window").await;
+    let (key_id, key, session) = register(&app, "window").await;
     top_up(&app, &key, 50_000_000).await;
 
     // Not yet valid: notBefore an hour out.
@@ -285,7 +291,7 @@ async fn a_mandate_outside_its_window_is_refused() {
             "notBefore": rfc3339(OffsetDateTime::now_utc() + Duration::hours(1)),
             "notAfter": rfc3339(OffsetDateTime::now_utc() + Duration::hours(3)),
         })),
-        Some(&key),
+        Some(&session),
         None,
     )
     .await;
@@ -313,7 +319,7 @@ async fn a_mandate_outside_its_window_is_refused() {
             "notBefore": rfc3339(OffsetDateTime::now_utc() - Duration::hours(2)),
             "notAfter": rfc3339(OffsetDateTime::now_utc() - Duration::hours(1)),
         })),
-        Some(&key),
+        Some(&session),
         None,
     )
     .await;
@@ -336,13 +342,13 @@ async fn a_mandate_outside_its_window_is_refused() {
 #[tokio::test]
 async fn a_mandate_refuses_spend_past_its_cap() {
     let (app, db) = app_or_skip!();
-    let (key_id, key) = register(&app, "cap").await;
+    let (key_id, key, session) = register(&app, "cap").await;
     top_up(&app, &key, 50_000_000).await;
 
     // The mandate caps at 3 minor units; the key's own limit is far above it.
     let (_, created) = mint(
         &app,
-        &key,
+        &session,
         &key_id,
         3,
         OffsetDateTime::now_utc() + Duration::hours(1),
@@ -380,7 +386,7 @@ async fn a_mandate_refuses_spend_past_its_cap() {
 #[tokio::test]
 async fn a_mint_may_only_narrow_the_key() {
     let (app, _db) = app_or_skip!();
-    let (_key_id, key) = register(&app, "narrow").await;
+    let (_key_id, _key, session) = register(&app, "narrow").await;
     // A constrained key: spend limit 10 and an allowlist of one model.
     let (status, constrained) = call(
         &app,
@@ -390,7 +396,7 @@ async fn a_mint_may_only_narrow_the_key() {
             "spendLimitMinor": 10,
             "modelAllowlist": ["mock-a"],
         })),
-        Some(&key),
+        Some(&session),
         None,
     )
     .await;
@@ -400,7 +406,7 @@ async fn a_mint_may_only_narrow_the_key() {
     // A cap above the key's limit is refused.
     let (status, body) = mint(
         &app,
-        &key,
+        &session,
         &key_id,
         20,
         OffsetDateTime::now_utc() + Duration::hours(1),
@@ -418,7 +424,7 @@ async fn a_mint_may_only_narrow_the_key() {
             "models": ["mock-b"],
             "notAfter": rfc3339(OffsetDateTime::now_utc() + Duration::hours(1)),
         })),
-        Some(&key),
+        Some(&session),
         None,
     )
     .await;
@@ -428,29 +434,26 @@ async fn a_mint_may_only_narrow_the_key() {
 /// A member sees only the mandates on the keys they created: a mandate id of
 /// another member's key is `not found`, never `forbidden` — ids are not probeable.
 #[tokio::test]
-async fn a_members_scope_limits_which_keys_mint_mandates() {
+async fn an_owner_session_can_mint_only_for_its_customer_keys() {
     let (app, _db) = app_or_skip!();
-    let (_key_id, key) = register(&app, "scope-owner").await;
-    // A second key minted through the API — created_by is NULL, so a member's
-    // `Own` scope does not see it.
+    let (_key_id, _key, session) = register(&app, "scope-owner").await;
+    // A second key created by this owner session.
     let (status, other) = call(
         &app,
         "POST",
         "/api/v1/org/keys",
         Some(json!({})),
-        Some(&key),
+        Some(&session),
         None,
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{other}");
     let other_id = other["data"]["id"].as_str().unwrap().to_owned();
 
-    // A member cannot mint on a key they did not create — but the principal
-    // here is an API key, which scopes to `Organization`, so this case is the
-    // positive control: the org's key mints on any of its keys.
+    // The current owner session can mint a mandate on this customer's key.
     let (status, body) = mint(
         &app,
-        &key,
+        &session,
         &other_id,
         5_000_000,
         OffsetDateTime::now_utc() + Duration::hours(1),
@@ -462,7 +465,7 @@ async fn a_members_scope_limits_which_keys_mint_mandates() {
     let missing = Uuid::new_v4();
     let (status, body) = mint(
         &app,
-        &key,
+        &session,
         &missing.to_string(),
         5_000_000,
         OffsetDateTime::now_utc() + Duration::hours(1),

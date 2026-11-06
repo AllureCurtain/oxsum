@@ -16,10 +16,6 @@ pub const REQUEST_ID: &str = "x-oxsum-request-id";
 /// What the request froze — the most it can cost. On the head of every answer that took the hold.
 pub const FREEZE_MINOR: &str = "x-oxsum-freeze-minor";
 
-/// The spendable balance left after this request's reservation — the runway. On the head of
-/// every answer that took the hold.
-pub const BALANCE_MINOR: &str = "x-oxsum-balance-minor";
-
 /// What the settled turn actually charged. A header on a non-streamed answer and on a refusal
 /// that settled after the hold; a trailer on a streamed answer, because the head is already
 /// out when the settlement lands.
@@ -79,6 +75,8 @@ pub enum GatewayError {
         message: String,
         code: &'static str,
     },
+    /// An unknown or out-of-scope resource; both have the same 404 response.
+    NotFound,
     /// No usable credential.
     Unauthorized,
     /// The credential is not allowed to do this. Unreachable until roles arrive; mapped rather
@@ -113,19 +111,14 @@ impl GatewayError {
 
     /// The freeze is more than the wallet holds.
     ///
-    /// The message says what it needs, what is there, and the one thing the caller can change; a
-    /// payment error that does not state its price is a support ticket.
-    pub fn freeze_refused(freeze: i64, available: Option<i64>, asked: Option<i64>) -> Self {
+    /// The caller sees the requested bound but no customer-wide balance.
+    pub fn freeze_refused(freeze: i64, asked: Option<i64>) -> Self {
         let ceiling = match asked {
             Some(asked) => format!(", or ask for fewer than {asked} output tokens"),
             None => ", or set max_tokens".to_owned(),
         };
-        let held = match available {
-            Some(available) => format!("{available} minor units available"),
-            None => "the balance could not be read".to_owned(),
-        };
         Self::InsufficientFunds(format!(
-            "this request freezes {freeze} minor units, and there are {held}: \
+            "this request freezes {freeze} minor units and the account cannot cover it: \
              lower max_tokens{ceiling}"
         ))
     }
@@ -167,6 +160,7 @@ impl GatewayError {
             Self::Upstream { .. }
             | Self::Idempotency { .. }
             | Self::Unauthorized
+            | Self::NotFound
             | Self::Conflict(_)
             // A saturated pool refuses before any hold — nothing to record but
             // the 429 itself; the variant carries no message by design.
@@ -211,6 +205,7 @@ impl GatewayError {
             Self::Idempotency { status, .. } => *status,
             Self::Upstream { status, .. } => *status,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
+            Self::NotFound => StatusCode::NOT_FOUND,
             Self::Conflict(_) => StatusCode::CONFLICT,
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -401,6 +396,13 @@ impl IntoResponse for GatewayError {
                 message,
                 code,
             } => error_response(status, &message, "invalid_request_error", code, None),
+            Self::NotFound => error_response(
+                StatusCode::NOT_FOUND,
+                "resource not found",
+                "invalid_request_error",
+                "NOT_FOUND",
+                None,
+            ),
             Self::Unauthorized => error_response(
                 StatusCode::UNAUTHORIZED,
                 // One message for every way a key can fail: unknown, revoked, expired and missing
@@ -468,6 +470,12 @@ impl GatewayError {
     /// rate-limit headers are unchanged — the shapes differ, the answer does not.
     pub fn into_anthropic_response(self) -> Response {
         let (status, message, kind, code) = match self {
+            Self::NotFound => (
+                StatusCode::NOT_FOUND,
+                "resource not found".to_owned(),
+                "not_found_error",
+                "NOT_FOUND",
+            ),
             Self::Invalid { message, .. } => (
                 StatusCode::BAD_REQUEST,
                 message,
@@ -651,18 +659,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_refused_freeze_states_the_price_and_the_balance() {
-        let (status, body) = body_of(GatewayError::freeze_refused(
-            2_000_000,
-            Some(500_000),
-            Some(4_000),
-        ))
-        .await;
+    async fn a_refused_freeze_states_the_price_without_customer_balance() {
+        let (status, body) = body_of(GatewayError::freeze_refused(2_000_000, Some(4_000))).await;
         assert_eq!(status, StatusCode::PAYMENT_REQUIRED);
         assert_eq!(body["error"]["code"], "INSUFFICIENT_FUNDS");
         let message = body["error"]["message"].as_str().unwrap();
         assert!(message.contains("2000000"), "{message}");
-        assert!(message.contains("500000"), "{message}");
+        assert!(!message.contains("balance"), "{message}");
         assert!(message.contains("max_tokens"), "{message}");
     }
 

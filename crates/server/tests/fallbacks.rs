@@ -137,6 +137,7 @@ struct World {
     tenants: Tenants,
     tenant_id: String,
     key: String,
+    session: String,
     /// The key's id, for minting a mandate on it.
     key_id: String,
     script: Script,
@@ -270,6 +271,12 @@ async fn world_for(url: &str, top_up: i64) -> World {
     let tenants = Tenants::new(pool.clone());
 
     let (registration, key) = register(&app).await;
+    let session = support::login(
+        &app,
+        registration["user"]["email"].as_str().unwrap(),
+        "correct horse battery",
+    )
+    .await;
     let tenant_id = registration["organization"]["tenantId"]
         .as_str()
         .expect("registration names a tenant")
@@ -294,6 +301,7 @@ async fn world_for(url: &str, top_up: i64) -> World {
         tenants,
         tenant_id,
         key,
+        session,
         key_id,
         script,
         channel,
@@ -350,7 +358,7 @@ async fn call(
         request = request.header("content-type", "application/json");
     }
     if let Some(key) = key {
-        request = request.header("authorization", format!("Bearer {key}"));
+        request = support::credential(request, key);
     }
     if let Some(mandate) = mandate {
         request = request.header("x-oxsum-mandate", mandate);
@@ -514,7 +522,7 @@ async fn a_mandate_denied_fallback_is_skipped_not_served() {
                 time::OffsetDateTime::now_utc() + time::Duration::hours(1)
             ),
         })),
-        Some(&world.key),
+        Some(&world.session),
         None,
     )
     .await;

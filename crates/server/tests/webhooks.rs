@@ -65,7 +65,7 @@ async fn call(
         req = req.header("content-type", "application/json");
     }
     if let Some(key) = key {
-        req = req.header("authorization", format!("Bearer {key}"));
+        req = support::credential(req, key);
     }
     let req = req
         .body(body.map_or_else(Body::empty, |b| Body::from(b.to_string())))
@@ -92,7 +92,7 @@ async fn scrape(app: &Router) -> String {
 }
 
 /// Registers an organization and answers its API key secret.
-async fn register(app: &Router) -> String {
+async fn register(app: &Router) -> (String, String) {
     let email = format!(
         "wh_{}@example.com",
         &Uuid::new_v4().simple().to_string()[..8]
@@ -106,10 +106,13 @@ async fn register(app: &Router) -> String {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "registration failed: {body}");
-    body["data"]["apiKey"]["secret"]
-        .as_str()
-        .unwrap()
-        .to_owned()
+    (
+        body["data"]["apiKey"]["secret"]
+            .as_str()
+            .unwrap()
+            .to_owned(),
+        support::login(app, &email, "correct horse battery").await,
+    )
 }
 
 /// A stub receiver on localhost: captures each POST's headers and body, answers
@@ -185,15 +188,15 @@ async fn the_endpoint_crud_is_scoped() {
     let Some((app, _db, _metrics)) = world().await else {
         return;
     };
-    let mine = register(&app).await;
-    let theirs = register(&app).await;
+    let (_mine, mine_session) = register(&app).await;
+    let (_theirs, theirs_session) = register(&app).await;
 
     let (status, body) = call(
         &app,
         "POST",
         "/api/v1/webhooks",
         Some(json!({"url": "https://receiver.example/hook", "events": ["request.settled"]})),
-        Some(&mine),
+        Some(&mine_session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -207,11 +210,11 @@ async fn the_endpoint_crud_is_scoped() {
     assert!(body["data"]["secretLast4"].is_string());
 
     // Listings never carry the secret; another organization sees nothing.
-    let (status, body) = call(&app, "GET", "/api/v1/webhooks", None, Some(&mine)).await;
+    let (status, body) = call(&app, "GET", "/api/v1/webhooks", None, Some(&mine_session)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"].as_array().unwrap().len(), 1);
     assert!(body["data"][0].get("secret").is_none());
-    let (status, body) = call(&app, "GET", "/api/v1/webhooks", None, Some(&theirs)).await;
+    let (status, body) = call(&app, "GET", "/api/v1/webhooks", None, Some(&theirs_session)).await;
     assert_eq!(body["data"].as_array().unwrap().len(), 0);
     assert_eq!(status, StatusCode::OK);
 
@@ -221,7 +224,7 @@ async fn the_endpoint_crud_is_scoped() {
         "DELETE",
         &format!("/api/v1/webhooks/{endpoint_id}"),
         None,
-        Some(&theirs),
+        Some(&theirs_session),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -230,7 +233,7 @@ async fn the_endpoint_crud_is_scoped() {
         "GET",
         &format!("/api/v1/webhooks/{endpoint_id}/deliveries"),
         None,
-        Some(&theirs),
+        Some(&theirs_session),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -240,7 +243,7 @@ async fn the_endpoint_crud_is_scoped() {
         "DELETE",
         &format!("/api/v1/webhooks/{endpoint_id}"),
         None,
-        Some(&mine),
+        Some(&mine_session),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -252,14 +255,15 @@ async fn malformed_registrations_are_refused() {
     let Some((app, _db, _metrics)) = world().await else {
         return;
     };
-    let key = register(&app).await;
+    let (_key, session) = register(&app).await;
     for body in [
         json!({"url": "not a url", "events": ["request.settled"]}),
         json!({"url": "http://receiver.example/hook", "events": ["request.settled"]}),
         json!({"url": "https://receiver.example/hook", "events": []}),
         json!({"url": "https://receiver.example/hook", "events": ["turn.started"]}),
     ] {
-        let (status, body) = call(&app, "POST", "/api/v1/webhooks", Some(body), Some(&key)).await;
+        let (status, body) =
+            call(&app, "POST", "/api/v1/webhooks", Some(body), Some(&session)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
     }
@@ -272,14 +276,14 @@ async fn a_due_delivery_arrives_signed() {
     let Some((app, db, metrics)) = world().await else {
         return;
     };
-    let key = register(&app).await;
+    let (key, session) = register(&app).await;
     let (url, receiver) = stub().await;
     let (status, body) = call(
         &app,
         "POST",
         "/api/v1/webhooks",
         Some(json!({"url": url, "events": ["request.settled"]})),
-        Some(&key),
+        Some(&session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -337,7 +341,7 @@ async fn a_due_delivery_arrives_signed() {
             "GET",
             &format!("/api/v1/webhooks/{endpoint_id}/deliveries"),
             None,
-            Some(&key),
+            Some(&session),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
@@ -364,7 +368,7 @@ async fn a_refusing_receiver_reschedules() {
     let Some((app, db, metrics)) = world().await else {
         return;
     };
-    let key = register(&app).await;
+    let (key, session) = register(&app).await;
     let (url, receiver) = stub().await;
     receiver.answer.store(500, Ordering::Relaxed);
     let (status, body) = call(
@@ -372,7 +376,7 @@ async fn a_refusing_receiver_reschedules() {
         "POST",
         "/api/v1/webhooks",
         Some(json!({"url": url, "events": ["request.settled"]})),
-        Some(&key),
+        Some(&session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -405,7 +409,7 @@ async fn a_refusing_receiver_reschedules() {
             "GET",
             &format!("/api/v1/webhooks/{endpoint_id}/deliveries"),
             None,
-            Some(&key),
+            Some(&session),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -428,14 +432,14 @@ async fn a_refused_hold_on_credit_enqueues_credit_limit_exceeded() {
     let Some((app, db, _metrics)) = world().await else {
         return;
     };
-    let key = register(&app).await;
+    let (key, session) = register(&app).await;
     let (url, _receiver) = stub().await;
     let (status, body) = call(
         &app,
         "POST",
         "/api/v1/webhooks",
         Some(json!({"url": url, "events": ["org.credit_limit_exceeded"]})),
-        Some(&key),
+        Some(&session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");

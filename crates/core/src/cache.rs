@@ -7,9 +7,9 @@
 //! model, so "the same question" is a stable, exact thing rather than a
 //! similarity score. A lookup is org-scoped first and always: one
 //! organization's cached answer is never served to another, which is the
-//! privacy rule the whole feature stands on. Within an org the cache is shared
-//! across its keys — the opposite of bifrost's `disable_identity_scoping`
-//! default, because an organization's own turns paid for the answer.
+//! privacy rule the whole feature stands on. The gateway additionally binds
+//! this digest to the exact consumption key before storing or looking it up;
+//! sibling keys and legacy unbound cache rows cannot share an answer.
 //!
 //! A hit settles like a turn that reported upstream usage: the cached answer's
 //! `usage_json` prices through the same `itemize` path, so a customer pays the

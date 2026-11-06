@@ -17,6 +17,7 @@ mod business_staff;
 mod cache;
 mod channels;
 mod credit_notes;
+mod customer_authority;
 mod customers;
 mod db;
 mod deposits;
@@ -141,7 +142,7 @@ pub use holds::{
     DEAD_AFTER_SWEEP_ATTEMPTS, DEFAULT_HOLD_TIMEOUT, InFlightHold, OpenHold, SWEEP_INTERVAL,
     SweepReport, sweep_stale_holds,
 };
-pub use idempotency::{Claim, fingerprint};
+pub use idempotency::{Claim, credential_fingerprint, fingerprint};
 pub use invitations::{
     CreatedInvitation, CustomerInvitationRequest, InvitationAcceptRequest, InvitationAcceptance,
     InvitationPreview, InvitationRevokeRequest, TeamInvitationRequest,
@@ -222,3 +223,5 @@ pub use x402::{
     ASSET_CREDIT, Ed25519RailVerifier, NETWORK_ED25519, RAIL_X402, RailSettlement, RailVerifier,
     SCHEME_EXACT, SettleRefusal, VerifiedPayment,
 };
+
+pub use customer_authority::{CustomerCapability, CustomerRecordScope};

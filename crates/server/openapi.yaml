@@ -1,13 +1,27 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.104.0
+  version: 0.105.0
+  x-consumption-cache: Cached responses are bound to the exact consumption key as well as customer, channel, model and prompt. Pre-upgrade cache digests are misses.
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
     0.104.0 requires customer/team invitation consent: direct member addition is retired,
     invitation creation is idempotent, bound recipients can register or authenticate and
     accept, pending links are revocable, and business invitations reserve new customer IDs.
+
+    0.105.0 limits consumption keys to gateway access and their own attributed
+    evidence/status. Keys cannot administer credentials, members, payment initiation,
+    webhooks, reports, statements or read customer-wide balances/budgets. Customer
+    member sessions retain their own key-attributed records and shared unattributed
+    history except account-wide document markers; owner/admin sessions retain complete
+    customer history. Raw entries,
+    proofs, requests, holds and WebSocket use the same record scope. Task poll/cancel
+    requires the submitting key. Gateway/task replay fingerprints bind the key and
+    protocol: legacy unbound idempotency records conflict until their 24-hour expiry.
+    Gateway responses retain request/freeze/charge headers but no longer disclose
+    customer-wide balance in headers or insufficient-funds errors. Explicit machine
+    credential headers never fall through to a browser cookie, even if malformed.
 
     Three surfaces, deliberately different:
 
@@ -129,9 +143,8 @@ info:
     pool. The scrape carries the same operator bearer token as the admin
     surface; a deployment without one answers 401 there too.
     0.31.0 answers what a gateway request cost without a second call:
-    `x-oxsum-freeze-minor` and `x-oxsum-balance-minor` on the response
-    head of every answer that took the hold — the reserved bound and the
-    spendable balance left after it — and `x-oxsum-charged-minor` once
+    `x-oxsum-freeze-minor` on the response head of every answer that took
+    the hold, and `x-oxsum-charged-minor` once
     the turn settled, a header on non-streamed answers and on refusals
     that happened after the hold, and an HTTP trailer on streamed ones.
     0.32.0 dead-letters a hold watch after ten failed sweeps: the row
@@ -734,8 +747,7 @@ info:
     reports which variant served, it does not judge outputs or pick a winner.
     An open request names no experiment (a missing or unknown or ended name
     leaves the request's `model` untouched). The list and the results reads
-    answer any member; the writes are owner/admin actions the membership role
-    gates, the same rule `teams` keeps.
+    require current owner/admin sessions for both reads and writes since 0.105.0.
 
     0.97.0 delivers invitation links (issue #567): `POST /api/v1/org/invitations`
     accepts an optional `{email}`. With an address and a configured mailer the
@@ -745,7 +757,10 @@ info:
     deployment without a mailer is refused with a validation error, and a
     request sending no body keeps answering the link alone.
 
-    Every `/api/v1` endpoint that takes a bearer key also accepts the session cookie. The
+    Customer consumption reads accept a key or customer session with the record scope
+    described above. Personal management and checkout require a session; account-wide
+    statements, reports, experiments and webhooks require owner/admin. See
+    docs/customer-capabilities.md for the complete route inventory. The
     endpoints that take no credential at all are the ones whose credential is in the body or
     whose job precedes authentication: `/api/v1/auth/login`, `/api/v1/auth/logout`,
     `/api/v1/auth/register`, `/api/v1/auth/totp`, `/api/v1/auth/oauth/{provider}`,
@@ -755,7 +770,8 @@ info:
     `/api/v1/device/token`, `/api/v1/log/key`, `/api/v1/webhooks/stripe`,
     `/api/v1/webhooks/airwallex` and `/api/v1/webhooks/hyperswitch`. The cookie is never
     accepted on `/v1`: the gateway takes an API key only — `Authorization: Bearer` or
-    `x-api-key`.
+    `x-api-key` or `x-goog-api-key`. Explicit machine headers, including malformed
+    values, never inherit a browser cookie's authority.
 servers:
   - url: http://localhost:3000
 security:
@@ -773,6 +789,7 @@ paths:
               schema: { type: string, example: ok }
   /metrics:
     get:
+      security: [{ adminToken: [] }]
       summary: Prometheus metrics
       description: |
         The process's telemetry in Prometheus exposition format (`text/plain;
@@ -793,6 +810,7 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
   /add-checkpoint:
     post:
+      security: []
       summary: Offer a head to this deployment's tlog-witness (issue #260)
       description: |
         The [C2SP `tlog-witness`](https://c2sp.org/tlog-witness) endpoint: a
@@ -966,9 +984,10 @@ paths:
     parameters:
       - { in: path, name: invitationId, required: true, schema: { type: string, format: uuid } }
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Revoke an unaccepted invitation in the selected customer account
       description: Current owner/admin session required. Accepted links cannot be revoked; remove the membership separately.
-      security: [{ sessionCookie: [] }]
       requestBody:
         required: true
         content:
@@ -1162,6 +1181,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/device/request:
     get:
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
       summary: Read a pending device request
       description: |
         What the approval page reads before showing the decision: the request
@@ -1187,6 +1208,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/device/authorize:
     post:
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
       summary: Approve or deny a device request
       description: |
         The signed-in user's verdict on the request the `userCode` names.
@@ -1365,6 +1388,8 @@ paths:
         "503": { $ref: "#/components/responses/Error" }
   /api/v1/auth/totp/enroll:
     post:
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
       summary: Begin TOTP enrollment
       description: |
         Accepts a live personal session in either context, even without a customer membership. An explicit bearer credential is refused.
@@ -1392,6 +1417,8 @@ paths:
         "409": { $ref: "#/components/responses/Error" }
   /api/v1/auth/totp/confirm:
     post:
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
       summary: Confirm TOTP enrollment on a live code
       description: |
         Accepts a live personal session in either context, even without a customer membership. An explicit bearer credential is refused.
@@ -1422,6 +1449,8 @@ paths:
         "503": { $ref: "#/components/responses/Error" }
   /api/v1/auth/totp/disable:
     post:
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
       summary: Disable the second factor on a live code
       description: |
         Accepts a live personal session in either context, even without a customer membership. An explicit bearer credential is refused.
@@ -1570,14 +1599,14 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/session:
     get:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: The current session
       description: |
         Who is logged in, as which organization, in which role. Takes the session cookie; a bearer
-        key names no session and answers 404.
-      security:
-        - bearer: []
-        - sessionCookie: []
+        key names no personal session and answers 403.
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The session, the user, the organization and the role
           content:
@@ -1592,6 +1621,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/session/organization:
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Switch the organization the session acts as
       description: |
         Carries the session's acting organization — the choice the dashboard's switcher makes.
@@ -1600,8 +1631,6 @@ paths:
         probed. The session row is updated, so the choice survives reloads and new tabs alike, and
         every organization-scoped read follows it. A person's action: an API key already *is* an
         organization and cannot act as another, so it is refused (403).
-      security:
-        - sessionCookie: []
       requestBody:
         required: true
         content:
@@ -1624,6 +1653,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/users/me:
     delete:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Delete the session user's account (pseudonymization)
       description: |
         Accepts a live personal session in either context, even without a customer membership. An explicit bearer credential is refused.
@@ -1649,8 +1680,6 @@ paths:
         must set a real one through the reset flow before it can confirm this call. The
         answer names what was removed. The session dies in the same commit, so a
         second call can never reach the handler — its cookie is already dead.
-      security:
-        - sessionCookie: []
       requestBody:
         required: true
         content:
@@ -1679,13 +1708,13 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/orgs:
     get:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: The organizations the session's user belongs to
       description: |
         Every organization the logged-in user is a member of, oldest membership first, each with
         the role the user holds in it — the list the organization switcher offers. A person's list:
         an API key belongs to one organization and names no member, so it is refused (403).
-      security:
-        - sessionCookie: []
       responses:
         "200":
           description: The user's organizations with their roles
@@ -1702,6 +1731,8 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Create a team organization
       description: |
         Creates a `team` organization — its own ledger, its own keys, its own balance — and makes
@@ -1709,8 +1740,6 @@ paths:
         organization is exactly what signup makes. A person's action: an API key has no user to own
         the new organization, so it is refused (403). The session keeps acting as the organization
         it had; switching to the new one is `POST /api/v1/session/organization`.
-      security:
-        - sessionCookie: []
       requestBody:
         required: true
         content:
@@ -1732,6 +1761,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: The authenticated organization
       description: The organization the presented credential belongs to.
       responses:
@@ -1747,6 +1778,8 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
     patch:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Set the organization's display currency
       description: |
         Sets the fiat unit the organization renders its balances, bills and
@@ -1759,8 +1792,6 @@ paths:
         A session in the owner or admin role writes it; a member's session and
         an API key are refused — the display is the organization's own setting,
         and a credential that is not a person cannot speak for it.
-      security:
-        - sessionCookie: []
       requestBody:
         required: true
         content:
@@ -1782,11 +1813,13 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/keys:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: List the organization's API keys
       description: |
         Metadata only. Neither a secret nor a hash is ever returned. Members see only the keys they
-        created; owners and admins see every key of the organization. An API key acting as the
-        organization sees all of them, as before sessions.
+        created; owners and admins see every key of the organization. A consumption key
+        sees only its own metadata, including constraints and expiry, never sibling keys.
       responses:
         "200":
           description: The organization's keys, newest first
@@ -1802,14 +1835,15 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Create an API key
       description: |
-        Returns the secret once. A key minted through a session records who minted it (`createdBy`),
-        for the per-member role rules; a key minted with an API key records no creator, because no
-        person acts there.
-        Creation, constraints and group assignment commit atomically. A grouped bearer cannot
-        mint keys. Only an owner/admin session or an ungrouped organization key may assign
-        `groupId`; a member session may create an ungrouped key.
+        Requires a live personal customer session. Returns the secret once and records
+        the session user as `createdBy`. Members create their own ungrouped keys;
+        current owner/admin sessions may assign `groupId`. Creation, current-session/role
+        checks, constraints and group assignment commit atomically. Consumption keys
+        cannot mint credentials, regardless of group assignment.
       requestBody:
         required: false
         content:
@@ -1831,6 +1865,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/keys/{keyId}:
     patch:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Set an API key's constraints
       description: |
         Replaces the key's whole constraint set — each of `spendLimitMinor`,
@@ -1839,9 +1875,8 @@ paths:
         field left out or null clears it.
 
         `groupId` differs: omission preserves its assignment; explicit null ungroups the key.
-        Only an owner/admin session or an ungrouped organization key may change it.
-        A grouped bearer cannot patch keys, including its own. Authorization, constraints
-        and assignment commit atomically.
+        Only a current owner/admin session may change it. Consumption keys cannot patch
+        keys, including their own. Authorization, constraints and assignment commit atomically.
 
         `spendLimitMinor` caps what the key may have committed — settled charges plus
         outstanding holds attributed to it, in minor units. `budgetDuration` makes
@@ -1875,8 +1910,8 @@ paths:
         cannot exceed it. A replayed hold answers its own receipt before any of
         these checks run: retrying one request never consumes the key's windows
         twice. The scope rules are the revoke's: a member may change only the keys
-        they created — any other key id answers 404 and the key is untouched; owners, admins
-        and API keys acting as the organization may change any key of the organization. A key
+        they created — any other key id answers 404 and the key is untouched; current owner/admin
+        sessions may change any key of the organization. Consumption keys receive 403. A key
         id belonging to another organization is `NOT_FOUND`.
       parameters: [{ $ref: "#/components/parameters/KeyId" }]
       requestBody:
@@ -1900,6 +1935,8 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
     delete:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Revoke an API key
       description: |
         Permanent and idempotent. A member may revoke only the keys they created — revoking any
@@ -1907,6 +1944,7 @@ paths:
         belonging to another organization is `NOT_FOUND`.
       parameters: [{ $ref: "#/components/parameters/KeyId" }]
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The revoked key
           content:
@@ -1922,6 +1960,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/keys/{keyId}/mandates:
     get:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: List a key's mandates
       description: |
         Every mandate minted for the key, newest first — metadata only: `mandate` is the
@@ -1930,6 +1970,7 @@ paths:
         any other key id answers 404.
       parameters: [{ $ref: "#/components/parameters/KeyId" }]
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The key's mandates, newest first
           content:
@@ -1945,6 +1986,8 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Mint a spend mandate for a key
       description: |
         Delegates a strictly narrower slice of the key's authority to a bearer who does not
@@ -1954,8 +1997,10 @@ paths:
         path does. A mandate can only narrow the key's own constraints: `capMinor` and
         `models` must sit inside the key's, and `notAfter` bounds how long it lives. Every
         mandate carries a `nonce` for uniqueness, so two identical requests mint two
-        different mandates. Minting needs the key itself (`Authorization: Bearer oxs-…`) or
-        an owner/admin session — holding the credential is what authorizes delegation.
+        different mandates. Minting requires a current personal session: members may mint
+        only for their own keys, owner/admin sessions for any key in this customer.
+        Consumption keys cannot mint or list mandates. Using a mandate on the gateway
+        still requires the corresponding consumption key.
       parameters: [{ $ref: "#/components/parameters/KeyId" }]
       requestBody:
         required: true
@@ -1963,6 +2008,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/CreateMandateRequest" }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The minted mandate — `mandate` is the signed blob the delegate carries
           content:
@@ -1978,6 +2024,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/keys/{keyId}/entitlement:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: May this key call now? A read-only admission preview
       description: |
         The "can I" surface (issue #501): the same checks the gateway's
@@ -2008,10 +2056,10 @@ paths:
         request may spend the headroom between the answer and the call, which
         is exactly what the atomic admission checks exist for.
 
-        The scope rules are the revoke's: a member reads only the keys they
-        created, owners, admins and API keys acting as the organization read
-        any key of it, and a key id of another organization — or, for a
-        member, a key they did not create — is `NOT_FOUND`. The entitlement
+        A consumption key reads only its own ID. A member session reads only keys
+        they created; owner/admin sessions read any key in this customer. Every
+        out-of-scope key ID is `NOT_FOUND`. Headroom is the effective key/member/team
+        admission limit; it never reports the customer's wallet balance. The entitlement
         check itself is free: it consumes nothing and is never rate-limited.
       parameters:
         - { $ref: "#/components/parameters/KeyId" }
@@ -2041,6 +2089,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/invitations:
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Mint an invitation link
       description: |
         A seven-day invitation into the selected customer account. Requires a current
@@ -2052,8 +2102,6 @@ paths:
         match. No mailer refuses delivery before minting. A failed send leaves a usable link.
         Identical retries return the original ID with token null and do not resend mail;
         changed terms conflict. The token is stored only as a hash and is shown once.
-      security:
-        - sessionCookie: []
       requestBody:
         required: true
         content:
@@ -2076,12 +2124,15 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/members:
     get:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: List the organization's members
       description: |
         The members the session's organization carries, with each member's role and
         budget cap — the dashboard's members page. Reading is any member's right;
         the writes beside this path are an owner or admin's.
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The members
           content:
@@ -2100,6 +2151,8 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Retired direct membership addition
       deprecated: true
       description: |
@@ -2111,6 +2164,8 @@ paths:
   /api/v1/org/members/{userId}:
     parameters: [{ $ref: "#/components/parameters/UserId" }]
     patch:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Change a member's role or budget
       description: |
         `role` is `admin` or `member`, and there is deliberately no `owner` value: ownership is a
@@ -2157,6 +2212,8 @@ paths:
         "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
     delete:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Remove a member from the organization
       description: |
         The membership row is deleted; the user and their personal organization are untouched. Only
@@ -2185,6 +2242,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/teams:
     get:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: List the organization's teams
       description: |
         The teams the organization carries (issue #440), oldest first — the budget
@@ -2192,6 +2251,7 @@ paths:
         Reading the organization's own structure is any member's right; the writes
         beside it are owner/admin-gated.
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The teams
           content:
@@ -2210,6 +2270,8 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Create a team
       description: |
         Creates a named subgroup under the organization with an optional
@@ -2239,6 +2301,8 @@ paths:
   /api/v1/org/teams/{teamId}:
     parameters: [{ $ref: "#/components/parameters/TeamId" }]
     patch:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Change a team's name or budget cap
       description: |
         `name` renames the subgroup (unique per organization); `budgetLimitMinor`
@@ -2268,6 +2332,8 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
     delete:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Dissolve a team
       description: |
         Removes the team; every membership it grouped keeps its seat with `teamId`
@@ -2289,12 +2355,16 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/experiments:
     get:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: List the organization's experiments
       description: |
         The A/B variant sets the organization carries (issue #509), oldest first — open
         and ended. Reading the organization's own config is any member's right; the
         writes beside it are owner/admin-gated.
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The experiments
           content:
@@ -2311,6 +2381,9 @@ paths:
   /api/v1/org/experiments/{name}:
     parameters: [{ $ref: "#/components/parameters/ExperimentName" }]
     put:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Create or replace an experiment
       description: |
         Creates the named experiment or replaces its whole variant set atomically —
@@ -2342,6 +2415,9 @@ paths:
   /api/v1/org/experiments/{name}/end:
     parameters: [{ $ref: "#/components/parameters/ExperimentName" }]
     post:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: End an experiment
       description: |
         Flips the named experiment to `ended`: a later request carrying
@@ -2366,6 +2442,9 @@ paths:
   /api/v1/org/experiments/{experimentId}/results:
     parameters: [{ $ref: "#/components/parameters/ExperimentId" }]
     get:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Group the experiment's recorded usage by variant
       description: |
         The usage the experiment served, grouped by variant: turns, token and
@@ -2376,6 +2455,7 @@ paths:
         stays offline — oxsum reports which variant served; it does not judge
         outputs or promote a winner.
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The variant groups
           content:
@@ -2392,6 +2472,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/ownership:
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Transfer ownership of the organization
       description: |
         The one way to become the owner, and the only way an owner stops being one: the named member
@@ -2426,6 +2508,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/subscription:
     get:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: The organization's active subscription
       description: |
         The subscription currently metering the organization's gateway
@@ -2436,6 +2520,7 @@ paths:
         `active` row is ever returned here — a cancelled or expired binding
         leaves the organization unsubscribed.
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The active subscription, or `null`
           content:
@@ -2452,6 +2537,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/subscription/checkout:
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Open a Stripe checkout for a subscription plan
       description: |
         Starts a Stripe Checkout session in `subscription` mode for the named
@@ -2468,6 +2555,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/SubscriptionCheckoutRequest" }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The checkout URL and the plan it buys
           content:
@@ -2492,6 +2580,8 @@ paths:
         "503": { $ref: "#/components/responses/Error" }
   /api/v1/org/subscription/periods:
     get:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: The organization's subscription period history
       description: |
         Every period a binding has ever metered for the organization, newest
@@ -2502,6 +2592,7 @@ paths:
         these rows — one row opens with each binding or rollover and closes
         with an outcome.
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The organization's periods, newest first
           content:
@@ -2517,12 +2608,16 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/webhooks:
     get:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: List the organization's webhook endpoints
       description: |
         Every endpoint the caller's organization registered, newest first. A listing
         never carries a signing secret — only `secretLast4`; the full secret is
         returned once, at creation.
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The organization's endpoints
           content:
@@ -2537,6 +2632,9 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
     post:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Register a webhook endpoint
       description: |
         `url` is the HTTPS (or HTTP, for a receiver on localhost) address oxsum posts
@@ -2563,6 +2661,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/CreateWebhookRequest" }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The endpoint and its secret, shown only here
           content:
@@ -2577,12 +2676,16 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/webhooks/{endpointId}:
     delete:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Delete a webhook endpoint
       description: |
         Permanent. Undelivered deliveries of the endpoint go with it. An endpoint
         belonging to another organization is `NOT_FOUND`.
       parameters: [{ $ref: "#/components/parameters/EndpointId" }]
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The deleted endpoint
           content:
@@ -2597,6 +2700,9 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/webhooks/{endpointId}/deliveries:
     get:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: List an endpoint's recent deliveries
       description: |
         The fifty most recent attempts, newest first: each delivery's status, its
@@ -2604,6 +2710,7 @@ paths:
         endpoint belonging to another organization is `NOT_FOUND`.
       parameters: [{ $ref: "#/components/parameters/EndpointId" }]
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The endpoint's deliveries, newest first
           content:
@@ -2620,6 +2727,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/topups:
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Retired customer manual top-up
       deprecated: true
       description: |
@@ -2668,6 +2777,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/topups/stripe:
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Open a Stripe checkout to top up
       description: |
         The `stripe` deposit rail: opens a `pending` deposit (`payment_ref` =
@@ -2682,6 +2793,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/AmountRequest" }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The checkout URL and the deposit id it credits
           content:
@@ -2702,6 +2814,8 @@ paths:
         "503": { $ref: "#/components/responses/Error" }
   /api/v1/topups/airwallex:
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Open an Airwallex payment page to top up
       description: |
         The `airwallex` deposit rail (issue #285): opens a `pending` deposit
@@ -2718,6 +2832,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/AmountRequest" }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The hosted-page URL, the intent identity and the deposit it credits
           content:
@@ -2740,6 +2855,8 @@ paths:
         "503": { $ref: "#/components/responses/Error" }
   /api/v1/topups/x402:
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Credit a signed x402 payment authorization
       description: |
         The `x402` deposit rail (issues #264, #282): the caller presents a
@@ -2840,6 +2957,8 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
   /api/v1/topups/hyperswitch:
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Create a Hyperswitch payment to top up
       description: |
         The `hyperswitch` deposit rail (issue #319): opens a `pending` deposit
@@ -2859,6 +2978,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/AmountRequest" }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The payment identity, the browser secret and the deposit it credits
           content:
@@ -2911,6 +3031,8 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
   /api/v1/redemptions:
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Redeem a code into the acting organization's wallet
       description: |
         The `redemption` deposit rail: a code the operator minted (`POST
@@ -2928,6 +3050,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/RedeemRequest" }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The receipt of the credit, with the amount the code carried
           content:
@@ -2944,6 +3067,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/holds:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: The organization's in-flight holds
       description: |
         The holds the ledger still reserves for this organization — the
@@ -2969,6 +3094,8 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       deprecated: true
       summary: Customer raw holds are forbidden
       description: |
@@ -2981,6 +3108,8 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
   /api/v1/settlements:
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       deprecated: true
       summary: Customer raw settlements are forbidden
       description: |
@@ -2992,6 +3121,8 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
   /api/v1/bills:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: The organization's transactions, newest first
       description: |
         Every ledger entry that moved money — top-ups, adjustments, settled
@@ -3029,6 +3160,9 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/statements:
     get:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: The organization's finalized statements
       description: |
         The monthly billing documents the operator has finalized, newest period
@@ -3040,6 +3174,7 @@ paths:
         unpaid; a top-up repays the line and counts against the oldest open
         statement first.
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The finalized statements, newest period first
           content:
@@ -3055,6 +3190,9 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/statements/{statementId}:
     get:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: One finalized statement, with its lines
       description: |
         The statement and its itemized lines — settled usage aggregated per
@@ -3068,6 +3206,7 @@ paths:
           required: true
           schema: { type: string, format: uuid }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The statement and its lines
           content:
@@ -3082,6 +3221,9 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/statements/{statementId}/proof:
     get:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: The statement's self-contained proof bundle
       description: |
         Everything `verify_statement_anchor` needs in one GET (issue #479):
@@ -3100,6 +3242,7 @@ paths:
           required: true
           schema: { type: string, format: uuid }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The statement and the pieces its anchor check folds
           content:
@@ -3114,6 +3257,9 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/statements/{statementId}/export.pdf:
     get:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: A finalized statement as a PDF
       description: |
         The rendered document (issue #205): the organization and period, the
@@ -3131,6 +3277,7 @@ paths:
           required: true
           schema: { type: string, format: uuid }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The statement as a PDF document
           content:
@@ -3141,6 +3288,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/balance:
     get:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Available balance (settled minus unsettled holds)
       description: |
         `availableMinor` is everything the organization can still reserve: its own
@@ -3150,6 +3299,7 @@ paths:
         drawn or held against right now. What the organization holds of its own
         money is `availableMinor - (creditLimitMinor - creditUsedMinor)`.
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The balance
           content:
@@ -3187,6 +3337,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/usage:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: Daily usage rollup
       description: |
         The `oxsum.usage_daily` rows the dashboard sums, answered as data: one row per
@@ -3224,6 +3376,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/budget:
     get:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Budget-consumption snapshot
       description: |
         Every budget scope the caller can read, with the committed figure and the
@@ -3232,10 +3386,11 @@ paths:
         the key's `budgetDuration` when it has one. `consumedPercent` floors
         `committed * 100 / limit` and is null where no numeric limit exists. Three
         scopes: `organization` carries the credit line beside the wallet balances,
-        `member` the acting member's own `budgetLimitMinor` (null for a key and for a
+        `member` the acting member's own `budgetLimitMinor` (null for a
         seat with no limit), `keys` every live key the principal's scope reaches with
         its `spendLimitMinor`, `budgetDuration` and `windowStart`.
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The budget snapshot
           content:
@@ -3248,6 +3403,8 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
   /api/v1/billing-records:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: Settled turns, newest first
       description: |
         The same page the dashboard's requests view reads: every settled gateway turn,
@@ -3289,6 +3446,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/requests:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: Search the organization's request log (issue #505)
       description: |
         The per-request operational record, newest first: one row per gateway
@@ -3297,7 +3456,9 @@ paths:
         charge, with `entryId` naming the settlement entry when the turn
         reached one. This is the search surface `usage_records` cannot answer:
         "every request this key made to this model in this window". A member's
-        read is scoped to their own organization; the operator's twin is
+        read includes only their own keys plus unattributed records. A consumption key
+        reads only its own attributed rows; query filters cannot widen this scope.
+        Owner/admin sessions see the customer-wide log; the operator's twin is
         `GET /api/v1/admin/requests`. Rows write post-settlement — a logging
         failure never fails a request — so a very recent turn may lag its
         settlement by a moment. A refused admission logs a row too
@@ -3364,6 +3525,9 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/usage-reports:
     get:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: List the organization's minted usage reports (issue #261)
       description: |
         Every usage report the organization has minted, newest first — the
@@ -3371,6 +3535,7 @@ paths:
         proofs: a mint is rare, so the descriptor alone is enough to pick the
         report whose bundle `GET .../usage-reports/{reportId}` then serves.
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The minted reports, newest first
           content:
@@ -3389,6 +3554,9 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
     post:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Mint a signed usage report for one end-user over a period (issue #261)
       description: |
         An organization bills its own downstream customers out of the same
@@ -3446,6 +3614,7 @@ paths:
                   format: date
                   description: last UTC day of the span, inclusive — must be fully ended
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The report bundle — descriptor, marker proof, per-entry proofs, signed head
           content:
@@ -3460,6 +3629,9 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/usage-reports/{reportId}:
     get:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Re-fetch a minted usage report (issue #261)
       description: |
         `reportId` is the marker entry's own id — the same id the `POST` answers
@@ -3473,6 +3645,7 @@ paths:
           required: true
           schema: { type: string, format: uuid }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The report bundle
           content:
@@ -3488,6 +3661,9 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/usage-reports/{reportId}/links:
     post:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Mint a share link to one usage report (issue #300)
       description: |
         A downstream customer holds no account, so the link is the capability:
@@ -3511,6 +3687,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/CreateReportLinkRequest" }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The link descriptor and its one-time token
           content:
@@ -3526,6 +3703,9 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/usage-reports/links:
     get:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: List the organization's report share links (issue #300)
       description: |
         Every link the organization minted, newest first — descriptors only,
@@ -3533,6 +3713,7 @@ paths:
         opened the bill; `revokedAt` and `expiresAt` are the two ways a link
         stops resolving.
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The organization's links, newest first
           content:
@@ -3551,6 +3732,9 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
     post:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Mint a share link to one downstream customer's reports (issue #300)
       description: |
         The `end_user` scope: one link that lists every report the organization
@@ -3564,6 +3748,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/CreateEndUserLinkRequest" }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The link descriptor and its one-time token
           content:
@@ -3579,6 +3764,9 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/usage-reports/links/{linkId}:
     delete:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: Revoke a report share link (issue #300)
       description: |
         Idempotent: revoking an already-revoked link answers the same descriptor.
@@ -3590,6 +3778,7 @@ paths:
           required: true
           schema: { type: string, format: uuid }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The revoked link descriptor
           content:
@@ -3604,6 +3793,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/estimate-price:
     post:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: Price a declared token shape
       description: |
         The number the gateway would freeze for a request with this shape: the dearest
@@ -3644,6 +3835,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/pricing:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: The public price catalog
       description: |
         Every route the operator sells — a model may be served by several
@@ -3673,6 +3866,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/entries/{entryId}/proof:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: "Bill proof bundle: entry source + inclusion proof + tree head"
       parameters:
         - name: entryId
@@ -3709,6 +3904,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/entries:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: The ledger's entries, newest first
       description: |
         Every entry the organization's append-only log carries — holds,
@@ -3750,6 +3947,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/log/head:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: "The current tree head of the organization's ledger, signed by the operator"
       description: |
         The head of the append-only Merkle log this organization's ledger lives in, as a C2SP
@@ -3776,6 +3975,8 @@ paths:
         "503": { $ref: "#/components/responses/Error" }
   /api/v1/log/consistency:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: "Prove the current head extends a head the caller already holds"
       description: |
         For a user holding an old head: the current head as a signed note, the old head the log
@@ -3819,6 +4020,8 @@ paths:
         "503": { $ref: "#/components/responses/Error" }
   /api/v1/log/price-head:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: "A channel-model price row, signed by the operator"
       description: |
         The signed checkpoint of one `(channel, model)` price row — `version`'s exact
@@ -3868,6 +4071,7 @@ paths:
         "503": { $ref: "#/components/responses/Error" }
   /api/v1/log/key:
     get:
+      x-consumption-key-access: public
       summary: "The operator's tree-head verifying key"
       description: |
         The public half of the key that signs tree heads. No credential: this is a public key.
@@ -3889,6 +4093,8 @@ paths:
         "503": { $ref: "#/components/responses/Error" }
   /api/v1/log/checkpoint:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
       summary: "Latest externally anchored checkpoint with witness cosignatures"
       description: |
         The head the `witness-checkpoints` pass last published to the witnesses
@@ -4085,10 +4291,11 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/session/context:
     get:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       operationId: sessionContext
       summary: Read the selected session context
       description: A personal session only. Customer membership never implies business authority.
-      security: [{ sessionCookie: [] }]
       responses:
         "200":
           description: Success
@@ -4105,10 +4312,11 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
     post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       operationId: switchSessionContext
       summary: Select customer or business authority
       description: A live session selects its own context. Business selection requires current staff membership. An explicit bearer credential is refused. Context selection never changes customer membership.
-      security: [{ sessionCookie: [] }]
       requestBody:
         required: true
         content:
@@ -5591,6 +5799,8 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/groups:
     get:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       summary: List the current organization's request groups
       description: |
         Read-only access for organization credentials and members. Each group
@@ -5600,10 +5810,8 @@ paths:
         owner/admin session or an ungrouped organization key. A grouped bearer
         cannot create or change keys, including clearing its own restriction.
         Groups restrict bearer access; they do not isolate trusted member sessions.
-      security:
-        - bearer: []
-        - sessionCookie: []
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The organization's groups
           content:
@@ -6645,6 +6853,7 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
   /v1/models:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }]
       summary: List the served models, in OpenAI's shape
       description: |
         Only models with a relayable price are listed: a model the gateway cannot price cannot be
@@ -6664,6 +6873,7 @@ paths:
         "500": { $ref: "#/components/responses/GatewayError" }
   /v1/chat/completions:
     post:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }]
       summary: Chat completion, billed by freezing credit first and settling against upstream usage
       description: |
         The gateway computes the most the request could cost, freezes that much, and only then
@@ -6697,8 +6907,8 @@ paths:
         24 hours after it was first claimed.
 
         Every answer that took the hold — a completion or an upstream refusal — carries
-        `x-oxsum-freeze-minor` (the reserved bound) and `x-oxsum-balance-minor` (the
-        spendable balance left after it) on the response head. The settled charge rides as
+        `x-oxsum-freeze-minor` (the reserved bound) on the response head. Customer-wide
+        balances are not disclosed to consumption keys. The settled charge rides as
         `x-oxsum-charged-minor`: a header on a non-streamed answer and on a refusal that
         settled `Charge::Nothing`, and — because the head goes out before a streamed turn
         settles — an HTTP trailer on a streamed answer, announced by `Trailer`.
@@ -6719,7 +6929,6 @@ paths:
           headers:
             x-oxsum-request-id: { $ref: "#/components/headers/RequestId" }
             x-oxsum-freeze-minor: { $ref: "#/components/headers/FreezeMinor" }
-            x-oxsum-balance-minor: { $ref: "#/components/headers/BalanceMinor" }
             x-oxsum-charged-minor: { $ref: "#/components/headers/ChargedMinor" }
             x-oxsum-cache: { $ref: "#/components/headers/CacheStatus" }
             Trailer: { schema: { type: string, example: "x-oxsum-charged-minor" }, description: "on a streamed answer, announces the settled charge arrives as a trailer" }
@@ -6741,6 +6950,7 @@ paths:
         "502": { $ref: "#/components/responses/GatewayError" }
   /v1/responses:
     post:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }]
       summary: Responses turn, billed by freezing credit first and settling against upstream usage
       description: |
         The same freeze-then-settle contract as `/v1/chat/completions`, in OpenAI's
@@ -6787,7 +6997,6 @@ paths:
           headers:
             x-oxsum-request-id: { $ref: "#/components/headers/RequestId" }
             x-oxsum-freeze-minor: { $ref: "#/components/headers/FreezeMinor" }
-            x-oxsum-balance-minor: { $ref: "#/components/headers/BalanceMinor" }
             x-oxsum-charged-minor: { $ref: "#/components/headers/ChargedMinor" }
             Trailer: { schema: { type: string, example: "x-oxsum-charged-minor" }, description: "on a streamed answer, announces the settled charge arrives as a trailer" }
           content:
@@ -6808,6 +7017,7 @@ paths:
         "502": { $ref: "#/components/responses/GatewayError" }
   /v1/tasks:
     post:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }]
       summary: Submit a long-running upstream task, billed by a frozen bound that settles on terminal state
       description: |
         The task relay (issue #503): a turn whose upstream work runs for
@@ -6855,7 +7065,6 @@ paths:
           headers:
             x-oxsum-request-id: { $ref: "#/components/headers/RequestId" }
             x-oxsum-freeze-minor: { $ref: "#/components/headers/FreezeMinor" }
-            x-oxsum-balance-minor: { $ref: "#/components/headers/BalanceMinor" }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Task" }
@@ -6870,6 +7079,7 @@ paths:
         "502": { $ref: "#/components/responses/GatewayError" }
   /v1/tasks/{taskId}:
     get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }]
       summary: Read a task's state — the caller's poll is a database read, never a second upstream call
       description: |
         The task row as the last `poll-tasks` pass (or the submit, or the
@@ -6878,9 +7088,9 @@ paths:
         `failed` or `cancelled` once terminal — the terminal transition is
         also the settlement, so a terminal state means the bill is written.
         `result` carries upstream's answer body on success, `error` the
-        reported failure. The caller's API key must belong to the
-        organization that submitted the task — a foreign key reads 404, not
-        403, so a task's existence is not an oracle.
+        reported failure. Only the exact consumption key that submitted the task
+        may read or cancel it. Unknown, foreign-customer and sibling-key task
+        IDs all return 404 without contacting upstream or changing funds.
       responses:
         "200":
           description: The task row
@@ -6892,8 +7102,10 @@ paths:
         "500": { $ref: "#/components/responses/GatewayError" }
   /v1/tasks/{taskId}/cancel:
     post:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }]
       summary: Best-effort cancel — releases the hold and asks upstream to stop the job
       description: |
+        Only the exact submitting key may cancel; every out-of-scope ID is 404.
         Asks upstream to cancel the external task
         (`POST {baseUrl}/tasks/{externalTaskId}/cancel`), then releases the
         hold at zero whether upstream accepted or not: the billing side ends
@@ -6943,11 +7155,11 @@ paths:
         turn is `metadata.user_id`, which lands on the usage record's `endUser`.
 
         A `stream: true` response relays Anthropic's event stream unchanged and ends with
-        `message_stop`. The cost headers are the same three: `x-oxsum-freeze-minor` and
-        `x-oxsum-balance-minor` on the head, `x-oxsum-charged-minor` on a non-streamed head
+        `message_stop`. The cost headers are `x-oxsum-freeze-minor` on the head
+        and `x-oxsum-charged-minor` on a non-streamed head
         or a streamed trailer. `Idempotency-Key` behaves exactly as it does on
         `/v1/chat/completions`.
-      security: [{ bearer: [] }, { apiKeyHeader: [] }]
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }]
       parameters:
         - { $ref: "#/components/parameters/IdempotencyKey" }
         - { $ref: "#/components/parameters/Mandate" }
@@ -6975,7 +7187,6 @@ paths:
           headers:
             x-oxsum-request-id: { $ref: "#/components/headers/RequestId" }
             x-oxsum-freeze-minor: { $ref: "#/components/headers/FreezeMinor" }
-            x-oxsum-balance-minor: { $ref: "#/components/headers/BalanceMinor" }
             x-oxsum-charged-minor: { $ref: "#/components/headers/ChargedMinor" }
             Trailer: { schema: { type: string, example: "x-oxsum-charged-minor" }, description: "on a streamed answer, announces the settled charge arrives as a trailer" }
           content:
@@ -6996,6 +7207,7 @@ paths:
         "502": { $ref: "#/components/responses/AnthropicError" }
   /v1/embeddings:
     post:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }]
       summary: Embeddings, billed by freezing the input bound first and settling against upstream usage
       description: |
         The input-only half of the gateway (issue #170), in OpenAI's request and response
@@ -7006,8 +7218,9 @@ paths:
 
         There is no output side: `stream` is refused, and no `max_tokens` is injected into the
         forwarded body. The failover, bounded `Retry-After`, `Idempotency-Key` and
-        cost-header contract is the shared pipeline's — `x-oxsum-freeze-minor` and
-        `x-oxsum-balance-minor` on the head, `x-oxsum-charged-minor` once the turn settled.
+        cost-header contract is the shared pipeline's — `x-oxsum-freeze-minor` on the
+        head and `x-oxsum-charged-minor` once the turn settles. Customer balance is
+        never returned to a gateway caller.
 
         Upstream is called at `{baseUrl}/embeddings` with the channel credential as
         `Authorization: Bearer`. A response without a usage report settles `estimated`,
@@ -7029,7 +7242,6 @@ paths:
           headers:
             x-oxsum-request-id: { $ref: "#/components/headers/RequestId" }
             x-oxsum-freeze-minor: { $ref: "#/components/headers/FreezeMinor" }
-            x-oxsum-balance-minor: { $ref: "#/components/headers/BalanceMinor" }
             x-oxsum-charged-minor: { $ref: "#/components/headers/ChargedMinor" }
           content:
             application/json:
@@ -7045,6 +7257,7 @@ paths:
         "502": { $ref: "#/components/responses/GatewayError" }
   /v1/rerank:
     post:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }]
       summary: Rerank, billed by freezing the input bound first and settling against upstream usage
       description: |
         The second input-only surface (issue #170), in the shape Jina and Cohere speak:
@@ -7073,7 +7286,6 @@ paths:
           headers:
             x-oxsum-request-id: { $ref: "#/components/headers/RequestId" }
             x-oxsum-freeze-minor: { $ref: "#/components/headers/FreezeMinor" }
-            x-oxsum-balance-minor: { $ref: "#/components/headers/BalanceMinor" }
             x-oxsum-charged-minor: { $ref: "#/components/headers/ChargedMinor" }
           content:
             application/json:
@@ -7107,12 +7319,13 @@ paths:
         `toolUsePromptTokenCount` sits outside `promptTokenCount` (so the billed input
         adds it in).
 
-        The cost headers are the same three: `x-oxsum-freeze-minor` and
-        `x-oxsum-balance-minor` on the head, `x-oxsum-charged-minor` on a non-streamed
-        head. `Idempotency-Key` behaves exactly as it does on `/v1/chat/completions`.
+        The cost headers are the same two: `x-oxsum-freeze-minor` on the head and
+        `x-oxsum-charged-minor` on a non-streamed head. Customer balance is never
+        returned to a gateway caller. `Idempotency-Key` behaves exactly as it does on
+        `/v1/chat/completions`.
         `labels` maps onto the turn's usage tags, like OpenAI's `metadata` — strings
         only, ten entries, 64 characters a side.
-      security: [{ bearer: [] }, { apiKeyHeader: [] }]
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }]
       parameters:
         - { $ref: "#/components/parameters/IdempotencyKey" }
         - { $ref: "#/components/parameters/Mandate" }
@@ -7135,7 +7348,6 @@ paths:
           headers:
             x-oxsum-request-id: { $ref: "#/components/headers/RequestId" }
             x-oxsum-freeze-minor: { $ref: "#/components/headers/FreezeMinor" }
-            x-oxsum-balance-minor: { $ref: "#/components/headers/BalanceMinor" }
             x-oxsum-charged-minor: { $ref: "#/components/headers/ChargedMinor" }
           content:
             application/json:
@@ -7160,7 +7372,7 @@ paths:
         carries a candidate `finishReason`, and the socket close is the close —
         there is no `[DONE]` sentinel on this protocol. The settled charge still
         arrives as the `x-oxsum-charged-minor` trailer the other surfaces use.
-      security: [{ bearer: [] }, { apiKeyHeader: [] }]
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }]
       parameters:
         - { $ref: "#/components/parameters/IdempotencyKey" }
         - { $ref: "#/components/parameters/Mandate" }
@@ -7180,7 +7392,6 @@ paths:
           headers:
             x-oxsum-request-id: { $ref: "#/components/headers/RequestId" }
             x-oxsum-freeze-minor: { $ref: "#/components/headers/FreezeMinor" }
-            x-oxsum-balance-minor: { $ref: "#/components/headers/BalanceMinor" }
             Trailer: { schema: { type: string, example: "x-oxsum-charged-minor" }, description: "announces the settled charge arrives as a trailer" }
           content:
             text/event-stream:
@@ -7225,15 +7436,24 @@ components:
         A web session from `POST /api/v1/auth/login`: `oxsess-` followed by 32 random bytes, carried
         in the `oxsum_session` cookie (`HttpOnly`, `SameSite=Lax`, `Path=/`, plus `Secure` when the
         deployment sets `OXSUM_SESSION_COOKIE_SECURE`). The database keeps only its SHA-256 hash.
-        Accepted on `/api/v1` wherever a bearer key is; never accepted on `/v1`, where the gateway
-        takes an API key only.
+        Accepted only where the operation declares `sessionCookie`; customer context and
+        current membership are required for customer routes. Never accepted on `/v1` or
+        `/v1beta`, where the gateway takes a consumption key only.
     apiKeyHeader:
       type: apiKey
       in: header
       name: x-api-key
       description: >-
-        The same organization API key as `bearer`, in the spelling an Anthropic SDK sends.
-        Accepted on `/v1`; an explicitly presented bearer token wins over it.
+        The same consumption key as `bearer`, in the spelling an Anthropic SDK sends.
+        Accepted by the gateway and scoped customer reads. An explicit Authorization
+        header takes precedence, even when malformed.
+    googApiKeyHeader:
+      type: apiKey
+      in: header
+      name: x-goog-api-key
+      description: >-
+        The same consumption key in the spelling a Gemini SDK sends. An explicit
+        Authorization or x-api-key header takes precedence, even when malformed.
   parameters:
     KeyId:
       name: keyId
@@ -7304,7 +7524,8 @@ components:
       description: "minor units this request froze — the most it can cost"
       schema: { type: integer }
     BalanceMinor:
-      description: "the organization's spendable balance after this request's reservation"
+      description: "Retired in 0.105.0: consumption credentials do not disclose the customer's balance. This header is omitted."
+      deprecated: true
       schema: { type: integer }
     ChargedMinor:
       description: "minor units the settled turn actually charged — a header on non-streamed answers and post-hold refusals, a trailer on streamed ones"

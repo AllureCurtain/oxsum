@@ -185,3 +185,46 @@ async fn a_settled_usage_row_completes_the_claim() {
     assert_eq!(body["object"], "oxsum.receipt");
     assert_eq!(body["chargedMinor"], 12);
 }
+
+#[tokio::test]
+async fn legacy_and_other_credentials_cannot_replay_a_private_response() {
+    let url = db_or_skip!();
+    let (db, org) = world(&url).await;
+    let key = Uuid::new_v4();
+    let body = br#"{"model":"private"}"#;
+    let fp = oxsum_core::credential_fingerprint(key, "chat", None, body);
+    db.claim_request(org, "bound", &fp, "original")
+        .await
+        .unwrap();
+    db.complete_request(org, "bound", 200, &json!({"secret":"response"}))
+        .await
+        .unwrap();
+    for other in [
+        oxsum_core::credential_fingerprint(Uuid::new_v4(), "chat", None, body),
+        oxsum_core::credential_fingerprint(key, "responses", None, body),
+        oxsum_core::credential_fingerprint(key, "chat", Some("other-model"), body),
+        oxsum_core::credential_fingerprint(key, "chat", None, b"changed"),
+        fingerprint(body),
+    ] {
+        assert!(matches!(
+            db.claim_request(org, "bound", &other, "retry")
+                .await
+                .unwrap(),
+            Claim::Mismatch
+        ));
+    }
+    assert!(matches!(
+        db.claim_request(org, "bound", &fp, "retry").await.unwrap(),
+        Claim::Replay { .. }
+    ));
+    db.claim_request(org, "legacy", &fingerprint(body), "legacy")
+        .await
+        .unwrap();
+    db.complete_request(org, "legacy", 200, &json!({"secret":"legacy"}))
+        .await
+        .unwrap();
+    assert!(matches!(
+        db.claim_request(org, "legacy", &fp, "retry").await.unwrap(),
+        Claim::Mismatch
+    ));
+}

@@ -90,7 +90,7 @@ async fn call_with(
 ) -> (StatusCode, Value) {
     let mut request = Request::builder().method(method).uri(path);
     if let Some(token) = token {
-        request = request.header("authorization", format!("Bearer {token}"));
+        request = support::credential(request, token);
     }
     let request = request
         .header("content-type", "application/json")
@@ -584,9 +584,8 @@ async fn the_admin_pages_redirect_to_the_app() {
 }
 
 /// Registers an account so a personal organization exists to list; answers its id and
-/// the API key the signup minted, which is a credential of the organization — never of
-/// the platform.
-async fn register(app: &Router, name: &str) -> (String, String) {
+/// the consumption key and a real personal session. Neither grants operator authority.
+async fn register(app: &Router, name: &str) -> (String, String, String) {
     let (status, body) = call_with(
         app,
         "POST",
@@ -608,6 +607,12 @@ async fn register(app: &Router, name: &str) -> (String, String) {
             .as_str()
             .expect("the minted key")
             .to_owned(),
+        support::login(
+            app,
+            body["data"]["user"]["email"].as_str().unwrap(),
+            "correct horse battery",
+        )
+        .await,
     )
 }
 
@@ -617,10 +622,9 @@ async fn register(app: &Router, name: &str) -> (String, String) {
 #[tokio::test]
 async fn the_organizations_list_shows_every_organization_with_its_balance() {
     let (app, _pool) = app_or_skip!();
-    let (id, key) = register(&app, "orgview").await;
+    let (id, key, _session) = register(&app, "orgview").await;
 
-    // The organization tops itself up through its own credential, the way the chat
-    // page does — an admin's way into another organization's money is an adjustment.
+    // Seed purchased credit through the explicit test-only funding fixture.
     let (status, body) = call_with(
         &app,
         "POST",
@@ -736,7 +740,7 @@ async fn the_organizations_list_paginates_oldest_first() {
 #[tokio::test]
 async fn the_holds_list_shows_what_the_platform_is_reserving() {
     let (app, pool) = app_or_skip!();
-    let (id, _key) = register(&app, "inflight").await;
+    let (id, _key, _session) = register(&app, "inflight").await;
 
     // The tenant id the ledger knows the organization by, and a hold watched for it —
     // the gateway's own write path, done by hand.
@@ -825,7 +829,7 @@ async fn the_holds_list_shows_what_the_platform_is_reserving() {
 #[tokio::test]
 async fn the_anomalies_list_shows_the_turns_that_did_not_price_cleanly() {
     let (app, pool) = app_or_skip!();
-    let (id, key) = register(&app, "anomaly").await;
+    let (id, key, _session) = register(&app, "anomaly").await;
     let tenant_id: String =
         sqlx::query_scalar("SELECT tenant_id FROM oxsum.organizations WHERE organization_id = $1")
             .bind(uuid::Uuid::parse_str(&id).expect("a uuid"))
@@ -966,7 +970,7 @@ async fn the_anomalies_list_shows_the_turns_that_did_not_price_cleanly() {
 #[tokio::test]
 async fn anomalies_carry_a_score_and_filter_by_severity() {
     let (app, pool) = app_or_skip!();
-    let (id, _key) = register(&app, "score").await;
+    let (id, _key, _session) = register(&app, "score").await;
     let tenant_id: String =
         sqlx::query_scalar("SELECT tenant_id FROM oxsum.organizations WHERE organization_id = $1")
             .bind(uuid::Uuid::parse_str(&id).expect("a uuid"))
@@ -1156,7 +1160,7 @@ async fn the_margin_view_sums_charges_against_upstream_costs() {
 #[tokio::test]
 async fn closing_a_month_seals_it_everywhere() {
     let (app, pool) = app_or_skip!();
-    let (id, key) = register(&app, "closing").await;
+    let (id, key, _session) = register(&app, "closing").await;
 
     // The organization has something in its ledger to close over.
     let (status, body) = call_with(
@@ -1301,7 +1305,7 @@ async fn closing_a_month_seals_it_everywhere() {
 #[tokio::test]
 async fn an_adjustment_grants_and_deducts_with_a_reason() {
     let (app, _pool) = app_or_skip!();
-    let (org, key) = register(&app, "adjust").await;
+    let (org, _key, session) = register(&app, "adjust").await;
     let path = format!("/api/v1/admin/organizations/{org}/adjustments");
 
     // Grant.
@@ -1360,7 +1364,7 @@ async fn an_adjustment_grants_and_deducts_with_a_reason() {
     assert_eq!(body["error"]["code"], "INSUFFICIENT_FUNDS");
 
     // The organization's own read agrees.
-    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&session)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["availableMinor"], 3_000_000);
 }
@@ -1370,7 +1374,7 @@ async fn an_adjustment_grants_and_deducts_with_a_reason() {
 #[tokio::test]
 async fn the_deposits_view_lists_money_in() {
     let (app, _pool) = app_or_skip!();
-    let (org, key) = register(&app, "deposits").await;
+    let (org, key, _session) = register(&app, "deposits").await;
 
     // A top-up through the manual rail: one deposit row, credited.
     let (status, body) = call_with(
@@ -1411,7 +1415,7 @@ async fn the_deposits_view_lists_money_in() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"].as_array().unwrap().len(), 1);
-    let (other, _) = register(&app, "deposits-other").await;
+    let (other, _, _session) = register(&app, "deposits-other").await;
     let (status, body) = call(
         &app,
         "GET",
@@ -1445,7 +1449,7 @@ async fn the_deposits_view_lists_money_in() {
 #[tokio::test]
 async fn a_credited_deposit_reverses_once() {
     let (app, pool) = app_or_skip!();
-    let (org, key) = register(&app, "deposit-reverse").await;
+    let (org, key, session) = register(&app, "deposit-reverse").await;
 
     // Two top-ups through the manual rail: one to reverse, one to prove it
     // stands untouched.
@@ -1518,7 +1522,7 @@ async fn a_credited_deposit_reverses_once() {
     );
 
     // The balance dropped by the credited amount: 7M less the 5M reversed.
-    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&session)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["availableMinor"], 2_000_000);
 
@@ -1554,7 +1558,7 @@ async fn a_credited_deposit_reverses_once() {
         body["data"]["reversalEntryId"].as_str(),
         Some(reversal_entry.as_str())
     );
-    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&session)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["availableMinor"], 2_000_000, "no second debit");
     let other: (String,) = sqlx::query_as(
@@ -1586,7 +1590,7 @@ async fn a_credited_deposit_reverses_once() {
 #[tokio::test]
 async fn a_deposit_reversal_the_wallet_cannot_cover_is_refused() {
     let (app, pool) = app_or_skip!();
-    let (org, key) = register(&app, "deposit-reverse-short").await;
+    let (org, key, session) = register(&app, "deposit-reverse-short").await;
 
     let (status, body) = call_with(
         &app,
@@ -1632,7 +1636,7 @@ async fn a_deposit_reversal_the_wallet_cannot_cover_is_refused() {
     assert_eq!(body["error"]["code"], "INSUFFICIENT_FUNDS");
 
     // Nothing moved: the deposit stays credited and the balance holds.
-    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&session)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["availableMinor"], 2_000_000);
 }
@@ -1642,7 +1646,7 @@ async fn a_deposit_reversal_the_wallet_cannot_cover_is_refused() {
 #[tokio::test]
 async fn a_non_credited_deposit_cannot_reverse() {
     let (app, pool) = app_or_skip!();
-    let (org, _key) = register(&app, "deposit-reverse-pending").await;
+    let (org, _key, _session) = register(&app, "deposit-reverse-pending").await;
 
     // A pending deposit, the state every rail opens in before its webhook
     // confirms payment — planted directly because the manual rail lands
@@ -1677,7 +1681,7 @@ async fn a_non_credited_deposit_cannot_reverse() {
 #[tokio::test]
 async fn a_credit_note_credits_with_a_reason_once() {
     let (app, _pool) = app_or_skip!();
-    let (org, key) = register(&app, "credit-note").await;
+    let (org, _key, session) = register(&app, "credit-note").await;
     let path = format!("/api/v1/admin/organizations/{org}/credit-notes");
 
     let (status, body) = call(
@@ -1708,7 +1712,7 @@ async fn a_credit_note_credits_with_a_reason_once() {
         .to_owned();
 
     // The organization's own balance agrees.
-    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&session)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["availableMinor"], 2_500_000);
 
@@ -1729,7 +1733,7 @@ async fn a_credit_note_credits_with_a_reason_once() {
         body["data"]["creditNoteId"].as_str(),
         Some(note_id.as_str())
     );
-    let (_, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    let (_, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&session)).await;
     assert_eq!(
         body["data"]["availableMinor"], 2_500_000,
         "not credited twice"
@@ -1791,7 +1795,7 @@ async fn a_credit_note_credits_with_a_reason_once() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    let (other, _) = register(&app, "credit-note-other").await;
+    let (other, _, _session) = register(&app, "credit-note-other").await;
     let (status, body) = call(
         &app,
         "GET",
@@ -1811,7 +1815,7 @@ async fn a_credit_note_credits_with_a_reason_once() {
 #[tokio::test]
 async fn grants_and_topups_share_one_balance_across_pools() {
     let (app, _pool) = app_or_skip!();
-    let (org, key) = register(&app, "pools").await;
+    let (org, key, session) = register(&app, "pools").await;
 
     // Granted credit, booked by the operator.
     let (status, body) = call(
@@ -1837,7 +1841,7 @@ async fn grants_and_topups_share_one_balance_across_pools() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&session)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["availableMinor"], 8_000_000);
 
@@ -1851,7 +1855,7 @@ async fn grants_and_topups_share_one_balance_across_pools() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&session)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["availableMinor"], 2_000_000);
 
@@ -1866,7 +1870,7 @@ async fn grants_and_topups_share_one_balance_across_pools() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&session)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["availableMinor"], 3_000_000);
 }
@@ -1876,7 +1880,7 @@ async fn grants_and_topups_share_one_balance_across_pools() {
 #[tokio::test]
 async fn an_adjustment_needs_a_reason_a_nonzero_amount_and_a_real_organization() {
     let (app, _pool) = app_or_skip!();
-    let (org, _key) = register(&app, "adjustbad").await;
+    let (org, _key, _session) = register(&app, "adjustbad").await;
     let path = format!("/api/v1/admin/organizations/{org}/adjustments");
 
     for body in [
@@ -1907,7 +1911,7 @@ async fn an_adjustment_needs_a_reason_a_nonzero_amount_and_a_real_organization()
 #[tokio::test]
 async fn an_adjustment_replays_and_refuses_every_credential_but_the_operators() {
     let (app, _pool) = app_or_skip!();
-    let (org, key) = register(&app, "adjustidem").await;
+    let (org, key, _session) = register(&app, "adjustidem").await;
     let path = format!("/api/v1/admin/organizations/{org}/adjustments");
     let request = json!({
         "amountMinor": 1_000_000,
@@ -1956,8 +1960,8 @@ async fn the_signup_bonus_credits_a_new_organization_at_registration() {
         .expect("the deployment is prepared");
     let app = support::app(db, config);
 
-    let (_org, key) = register(&app, "bonus").await;
-    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    let (_org, _key, session) = register(&app, "bonus").await;
+    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&session)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
         body["data"]["availableMinor"], 2_000_000,
@@ -2013,7 +2017,7 @@ async fn a_password_reset_changes_the_password_and_kills_the_sessions() {
 
     // The organization's own key — a credential with all of the organization's
     // authority — is not the platform's.
-    let (_, key) = register(&app, "pwreset-nope").await;
+    let (_, key, _session) = register(&app, "pwreset-nope").await;
     let (status, _) = call_with(
         &app,
         "POST",
@@ -2085,8 +2089,8 @@ async fn a_password_reset_changes_the_password_and_kills_the_sessions() {
 #[tokio::test]
 async fn a_minted_code_redeems_once_into_the_purchased_pool() {
     let (app, pool) = app_or_skip!();
-    let (_org, key) = register(&app, "redeem").await;
-    let (_other, other_key) = register(&app, "redeem2").await;
+    let (_org, _key, session) = register(&app, "redeem").await;
+    let (_other, _other_key, other_session) = register(&app, "redeem2").await;
 
     // Mint three codes worth 2 credits each.
     let (status, body) = call(
@@ -2134,13 +2138,13 @@ async fn a_minted_code_redeems_once_into_the_purchased_pool() {
         "POST",
         "/api/v1/redemptions",
         Some(json!({"code": codes[0]})),
-        Some(&key),
+        Some(&session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["amountMinor"], 2_000_000);
     let entry_id = body["data"]["entryId"].as_str().unwrap().to_owned();
-    let (_status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    let (_status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&session)).await;
     assert_eq!(body["data"]["availableMinor"], 2_000_000);
 
     // The deposit row closed as credited, named by the entry that moved the money.
@@ -2162,7 +2166,7 @@ async fn a_minted_code_redeems_once_into_the_purchased_pool() {
         "POST",
         "/api/v1/redemptions",
         Some(json!({"code": codes[0]})),
-        Some(&key),
+        Some(&session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -2175,7 +2179,7 @@ async fn a_minted_code_redeems_once_into_the_purchased_pool() {
         "POST",
         "/api/v1/redemptions",
         Some(json!({"code": codes[0]})),
-        Some(&other_key),
+        Some(&other_session),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
@@ -2193,7 +2197,7 @@ async fn a_minted_code_redeems_once_into_the_purchased_pool() {
             "POST",
             "/api/v1/redemptions",
             Some(json!({"code": code})),
-            Some(&key),
+            Some(&session),
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{code}: {body}");
@@ -2205,12 +2209,12 @@ async fn a_minted_code_redeems_once_into_the_purchased_pool() {
         "POST",
         "/api/v1/redemptions",
         Some(json!({"code": codes[1]})),
-        Some(&key),
+        Some(&session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["isNew"], true);
-    let (_status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    let (_status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&session)).await;
     assert_eq!(body["data"]["availableMinor"], 4_000_000);
 }
 
@@ -2219,7 +2223,7 @@ async fn a_minted_code_redeems_once_into_the_purchased_pool() {
 #[tokio::test]
 async fn codes_validate_their_mint_and_their_expiry() {
     let (app, _pool) = app_or_skip!();
-    let (_org, key) = register(&app, "redeemexp").await;
+    let (_org, key, session) = register(&app, "redeemexp").await;
 
     // An already-past expiry and a bad count are validation failures.
     for body_json in [
@@ -2260,7 +2264,7 @@ async fn codes_validate_their_mint_and_their_expiry() {
         "POST",
         "/api/v1/redemptions",
         Some(json!({"code": code})),
-        Some(&key),
+        Some(&session),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
@@ -2283,7 +2287,7 @@ async fn codes_validate_their_mint_and_their_expiry() {
 #[tokio::test]
 async fn a_topup_records_its_manual_deposit() {
     let (app, pool) = app_or_skip!();
-    let (org, key) = register(&app, "manualrail").await;
+    let (org, key, _session) = register(&app, "manualrail").await;
     let idem = format!("topup-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
 
     let (status, body) = call_with(
@@ -2336,7 +2340,7 @@ async fn a_topup_records_its_manual_deposit() {
 #[tokio::test]
 async fn a_credit_limit_is_granted_drawn_and_repaid() {
     let (app, _pool) = app_or_skip!();
-    let (org, key) = register(&app, "creditline").await;
+    let (org, key, session) = register(&app, "creditline").await;
 
     // Grant 10 credits of credit — a platform action, so the organization's own
     // key is not a credential for it.
@@ -2363,7 +2367,7 @@ async fn a_credit_limit_is_granted_drawn_and_repaid() {
     assert_eq!(body["data"]["creditUsedMinor"], 0);
 
     // The organization's balance answers the line: nothing of it drawn yet.
-    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&session)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["creditLimitMinor"], 10_000_000);
     assert_eq!(body["data"]["creditUsedMinor"], 0);
@@ -2407,7 +2411,7 @@ async fn a_credit_limit_is_granted_drawn_and_repaid() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&session)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["creditUsedMinor"], 7_000_000);
     assert_eq!(body["data"]["availableMinor"], 3_000_000);
@@ -2462,7 +2466,7 @@ async fn a_credit_limit_is_granted_drawn_and_repaid() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
+    let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&session)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["creditUsedMinor"], 0);
     assert_eq!(body["data"]["availableMinor"], 9_000_000);
@@ -2484,7 +2488,7 @@ async fn a_credit_limit_is_granted_drawn_and_repaid() {
 #[tokio::test]
 async fn the_reconciliation_report_names_the_drift() {
     let (app, pool) = app_or_skip!();
-    let (org_id, _) = register(&app, "recon").await;
+    let (org_id, _, _session) = register(&app, "recon").await;
 
     // Plant the drift a crash would leave: credited, no entry behind it.
     let payment_ref = format!(
@@ -2530,7 +2534,7 @@ async fn the_reconciliation_report_names_the_drift() {
     );
 
     // An organization's own credential is not the operator's.
-    let (_, key) = register(&app, "recon-key").await;
+    let (_, key, _session) = register(&app, "recon-key").await;
     let (status, _) = call_with(
         &app,
         "GET",

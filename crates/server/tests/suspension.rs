@@ -440,8 +440,8 @@ async fn org_suspended_is_a_subscribable_event() {
         "POST",
         "/api/v1/webhooks",
         Some(json!({"url": "https://receiver.example/x", "events": ["org.suspended"]})),
-        Some(&account.key),
         None,
+        Some(&account.cookie),
     )
     .await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
@@ -459,8 +459,8 @@ async fn org_suspended_is_a_subscribable_event() {
         "GET",
         &format!("/api/v1/webhooks/{endpoint_id}/deliveries"),
         None,
-        Some(&account.key),
         None,
+        Some(&account.cookie),
     )
     .await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);

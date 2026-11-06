@@ -99,7 +99,7 @@ async fn login_mints_a_session_that_authenticates() {
     assert_eq!(resolved.organization.id, registration.organization.id);
     assert_eq!(resolved.role, oxsum_core::Role::Owner);
 
-    // A key principal keeps acting as the whole organization: no user, full scope.
+    // A consumption key represents only itself and carries no personal authority.
     let key_principal = Principal::Key(KeyPrincipal {
         organization: registration.organization.clone(),
         key: ActingKey {
@@ -112,7 +112,7 @@ async fn login_mints_a_session_that_authenticates() {
         },
     });
     assert_eq!(key_principal.user_id(), None);
-    assert!(matches!(key_principal.key_scope(), KeyScope::Organization));
+    assert!(matches!(key_principal.key_scope(), KeyScope::Key(_)));
 }
 
 #[tokio::test]

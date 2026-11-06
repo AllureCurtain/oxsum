@@ -92,6 +92,7 @@ struct World {
     pool: PgPool,
     organization_id: String,
     key: String,
+    session: String,
     model: String,
 }
 
@@ -155,6 +156,7 @@ async fn world(database_url: &str) -> World {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "registration failed: {body}");
+    let session = support::login(&app, &email, "correct horse battery").await;
     let key = body["data"]["apiKey"]["secret"]
         .as_str()
         .expect("registration returns a key")
@@ -178,6 +180,7 @@ async fn world(database_url: &str) -> World {
         pool,
         organization_id,
         key,
+        session,
         model,
     }
 }
@@ -196,7 +199,7 @@ async fn call(
         request = request.header("content-type", "application/json");
     }
     if let Some(key) = key {
-        request = request.header("authorization", format!("Bearer {key}"));
+        request = support::credential(request, key);
     }
     let response = app
         .clone()
@@ -399,7 +402,7 @@ async fn binding_and_cancelling_a_subscription_moves_the_org_reads() {
         "GET",
         "/api/v1/org/subscription",
         None,
-        Some(&world.key),
+        Some(&world.session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -417,7 +420,7 @@ async fn binding_and_cancelling_a_subscription_moves_the_org_reads() {
         "GET",
         "/api/v1/org/subscription",
         None,
-        Some(&world.key),
+        Some(&world.session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -430,7 +433,7 @@ async fn binding_and_cancelling_a_subscription_moves_the_org_reads() {
         "GET",
         "/api/v1/org/subscription/periods",
         None,
-        Some(&world.key),
+        Some(&world.session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -455,7 +458,7 @@ async fn binding_and_cancelling_a_subscription_moves_the_org_reads() {
         "GET",
         "/api/v1/org/subscription",
         None,
-        Some(&world.key),
+        Some(&world.session),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");

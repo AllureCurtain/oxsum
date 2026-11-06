@@ -510,6 +510,7 @@ impl Turn {
         if output_chars >= plan.progress_chars + PROGRESS_EVERY_CHARS {
             plan.progress_chars = output_chars;
             let _ = plan.billing.send(BillingEvent::TurnProgress {
+                key_id: plan.key_id,
                 tenant_id: plan.tenant_id.clone(),
                 request_id: plan.request.clone(),
                 output_chars,
@@ -1037,6 +1038,7 @@ impl Plan {
         // The turn is over however the write went: the dashboard stops showing it live.
         // Best-effort, like the progress ticks — the ledger, not this event, is the bill.
         let _ = self.billing.send(BillingEvent::TurnSettled {
+            key_id: self.key_id,
             tenant_id: self.tenant_id.clone(),
             request_id: self.request.clone(),
             charged_minor: charged,

@@ -622,6 +622,11 @@ impl Db {
         // Like revoke: the scope is part of the lookup, not a check after it, so a member
         // naming a key they did not create gets the same answer as a key that does not exist.
         let row = match scope {
+            KeyScope::Key(_) => {
+                return Err(WalletError::Forbidden(
+                    "consumption keys cannot manage credentials".into(),
+                ));
+            }
             KeyScope::Own(user_id) => {
                 sqlx::query(&format!(
                     "UPDATE oxsum.api_keys \
@@ -696,36 +701,44 @@ impl Db {
 
     /// Every key of an organization the principal may see, newest first. Metadata only.
     ///
-    /// A member sees only the keys they created; an owner, an admin, or an API key acting
-    /// as the organization sees every key of the organization.
+    /// A member sees only keys they created; a consumption key sees its own metadata.
+    /// Owner/admin sessions see every customer key.
     pub async fn list_keys(
         &self,
         organization_id: Uuid,
         scope: KeyScope,
     ) -> Result<Vec<ApiKey>, WalletError> {
-        let rows = match scope {
-            KeyScope::Own(user_id) => {
-                sqlx::query(&format!(
-                    "SELECT {KEY_COLS} FROM oxsum.api_keys \
+        let rows =
+            match scope {
+                KeyScope::Key(id) => sqlx::query(&format!(
+                    "SELECT {KEY_COLS} FROM oxsum.api_keys WHERE organization_id=$1 AND key_id=$2"
+                ))
+                .bind(organization_id)
+                .bind(id)
+                .fetch_all(self.pool())
+                .await?,
+                KeyScope::Own(user_id) => {
+                    sqlx::query(&format!(
+                        "SELECT {KEY_COLS} FROM oxsum.api_keys \
                  WHERE organization_id = $1 AND created_by = $2 \
                  ORDER BY created_at DESC, key_id"
-                ))
-                .bind(organization_id)
-                .bind(user_id)
-                .fetch_all(self.pool())
-                .await?
-            }
-            KeyScope::Organization | KeyScope::All => {
-                sqlx::query(&format!(
-                    "SELECT {KEY_COLS} FROM oxsum.api_keys \
+                    ))
+                    .bind(organization_id)
+                    .bind(user_id)
+                    .fetch_all(self.pool())
+                    .await?
+                }
+                KeyScope::Organization | KeyScope::All => {
+                    sqlx::query(&format!(
+                        "SELECT {KEY_COLS} FROM oxsum.api_keys \
                  WHERE organization_id = $1 \
                  ORDER BY created_at DESC, key_id"
-                ))
-                .bind(organization_id)
-                .fetch_all(self.pool())
-                .await?
-            }
-        };
+                    ))
+                    .bind(organization_id)
+                    .fetch_all(self.pool())
+                    .await?
+                }
+            };
         rows.iter().map(key_from_row).collect()
     }
 
@@ -754,6 +767,8 @@ impl Db {
         // The keys this caller may see, constrained like `list_keys`: the scope is part
         // of the lookup, so a member reads only their own keys' forecasts.
         let keys: Vec<(Uuid, i64, String)> = match scope {
+            KeyScope::Key(id) => sqlx::query_as("SELECT key_id,spend_limit_minor,budget_duration FROM oxsum.api_keys WHERE organization_id=$1 AND key_id=$2 AND spend_limit_minor IS NOT NULL AND budget_duration IS NOT NULL AND revoked_at IS NULL")
+                .bind(organization_id).bind(id).fetch_all(self.pool()).await?,
             KeyScope::Own(user_id) => {
                 sqlx::query_as(
                     "SELECT key_id, spend_limit_minor, budget_duration FROM oxsum.api_keys \
@@ -856,10 +871,45 @@ impl Db {
         key_id: Uuid,
         scope: KeyScope,
     ) -> Result<Option<ApiKey>, WalletError> {
+        self.revoke_key_authorized(organization_id, key_id, scope, None)
+            .await
+    }
+
+    /// Rechecks session and membership under the same locks as the revocation.
+    pub async fn revoke_key_as(
+        &self,
+        principal: &Principal,
+        key_id: Uuid,
+    ) -> Result<Option<ApiKey>, WalletError> {
+        self.revoke_key_authorized(
+            principal.organization().id,
+            key_id,
+            principal.key_scope(),
+            Some(principal),
+        )
+        .await
+    }
+
+    async fn revoke_key_authorized(
+        &self,
+        organization_id: Uuid,
+        key_id: Uuid,
+        scope: KeyScope,
+        principal: Option<&Principal>,
+    ) -> Result<Option<ApiKey>, WalletError> {
+        let mut tx = self.pool().begin().await?;
+        if let Some(principal) = principal {
+            require_key_management(&mut tx, principal, false).await?;
+        }
         // A member revoking a key they did not create gets the same answer as a key that
         // does not exist — the key stays live — because the scope is part of the lookup,
         // not a check after it.
         let row = match scope {
+            KeyScope::Key(_) => {
+                return Err(WalletError::Forbidden(
+                    "consumption keys cannot manage credentials".into(),
+                ));
+            }
             KeyScope::Own(user_id) => {
                 sqlx::query(&format!(
                     "UPDATE oxsum.api_keys SET revoked_at = COALESCE(revoked_at, now()) \
@@ -869,7 +919,7 @@ impl Db {
                 .bind(organization_id)
                 .bind(key_id)
                 .bind(user_id)
-                .fetch_optional(self.pool())
+                .fetch_optional(&mut *tx)
                 .await?
             }
             KeyScope::Organization | KeyScope::All => {
@@ -880,11 +930,13 @@ impl Db {
                 ))
                 .bind(organization_id)
                 .bind(key_id)
-                .fetch_optional(self.pool())
+                .fetch_optional(&mut *tx)
                 .await?
             }
         };
-        row.as_ref().map(key_from_row).transpose()
+        let key = row.as_ref().map(key_from_row).transpose()?;
+        tx.commit().await?;
+        Ok(key)
     }
 }
 
@@ -1051,36 +1103,54 @@ pub(crate) fn conflict_or_storage(
     }
 }
 
-/// Lock the acting key so a concurrent assignment cannot race an unrestricted
-/// key-management write. Session members manage their own keys but cannot change
-/// operator-owned access policy; owner/admin sessions are trusted administrators.
-async fn require_key_management(
+/// Current personal membership and session are required for key mutations.
+pub(crate) async fn require_key_management(
     tx: &mut Transaction<'_, Postgres>,
     principal: &Principal,
     changing_group: bool,
 ) -> Result<(), WalletError> {
-    match principal {
-        Principal::Key(actor) => {
-            let group: Option<Option<Uuid>> = sqlx::query_scalar(
-                "SELECT group_id FROM oxsum.api_keys WHERE key_id = $1 AND organization_id = $2 \
-                 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now()) FOR UPDATE",
-            )
-            .bind(actor.key.key_id)
-            .bind(actor.organization.id)
-            .fetch_optional(&mut **tx)
-            .await?;
-            if group != Some(None) {
-                return Err(WalletError::Forbidden(
-                    "a grouped key cannot create or change keys; use an owner/admin session".into(),
-                ));
-            }
-        }
-        Principal::Session(session) if changing_group && session.role == crate::Role::Member => {
-            return Err(WalletError::Forbidden(
-                "changing groupId requires an owner or admin".into(),
-            ));
-        }
-        Principal::Session(_) => {}
+    let Principal::Session(session) = principal else {
+        return Err(WalletError::Forbidden(
+            "consumption keys cannot create or change credentials".into(),
+        ));
+    };
+    // Account deletion/reset and invitation changes lock the business before
+    // sessions. Keep that order so revocation and key mutation serialize.
+    crate::business_staff::lock_business(tx).await?;
+    let live: Option<bool> = sqlx::query_scalar(
+        "SELECT s.totp_verified_at IS NOT NULL OR NOT EXISTS (\
+             SELECT 1 FROM oxsum.user_totp t \
+             WHERE t.user_id=s.user_id AND t.confirmed_at IS NOT NULL) \
+         FROM oxsum.sessions s \
+         WHERE s.session_id=$1 AND s.user_id=$2 AND s.organization_id=$3 \
+           AND s.context='customer' AND s.revoked_at IS NULL \
+           AND s.expires_at>clock_timestamp() FOR SHARE OF s",
+    )
+    .bind(session.session.id)
+    .bind(session.user.id)
+    .bind(session.organization.id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if live != Some(true) {
+        return Err(WalletError::Forbidden(
+            "a current personal login with its required second factor is required".into(),
+        ));
+    }
+    crate::orgs::lock_organization(tx, session.organization.id).await?;
+    let role: Option<String> = sqlx::query_scalar(
+        "SELECT role FROM oxsum.memberships WHERE user_id=$1 AND organization_id=$2",
+    )
+    .bind(session.user.id)
+    .bind(session.organization.id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let role = role.ok_or(WalletError::InvalidCredentials)?;
+    if (changing_group || matches!(session.role, crate::Role::Owner | crate::Role::Admin))
+        && role == "member"
+    {
+        return Err(WalletError::Forbidden(
+            "current owner/admin membership is required for this key scope".into(),
+        ));
     }
     Ok(())
 }
