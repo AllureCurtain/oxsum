@@ -451,7 +451,11 @@ pub async fn sweep_stale_holds(
     // terminal.
     for operation in db.operations_past_lease(64).await? {
         if !db
-            .claim_operation(operation.operation_id, crate::operations::SWEEPER_OWNER, 300)
+            .claim_operation(
+                operation.operation_id,
+                crate::operations::SWEEPER_OWNER,
+                300,
+            )
             .await?
         {
             continue;

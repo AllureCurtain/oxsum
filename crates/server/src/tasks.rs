@@ -512,12 +512,7 @@ async fn submit_inner(
             Ok(attempt_id) => {
                 if let Err(error) = state
                     .db
-                    .complete_attempt(
-                        attempt_id,
-                        oxsum_core::AttemptStatus::Answered,
-                        None,
-                        None,
-                    )
+                    .complete_attempt(attempt_id, oxsum_core::AttemptStatus::Answered, None, None)
                     .await
                 {
                     tracing::warn!(%error, %task_id, "completing the submit attempt failed");

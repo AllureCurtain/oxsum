@@ -407,9 +407,12 @@ impl Db {
     }
 
     /// One organization's operations, newest first — the member list and the
-    /// admin's filtered read share it. `after` is the keyset `(created_at,
-    /// operation_id)` the previous page ended at, the same codec the
-    /// request-log page uses.
+    /// admin's filtered read share it. `organization_id` is the scope:
+    /// `Some` narrows to one org, `None` reads every org (the admin
+    /// endpoint). `key_id` narrows to one key's own operations — the
+    /// consumption credential's scoped read; `state` filters the lifecycle.
+    /// `after` is the keyset `(created_at, operation_id)` the previous page
+    /// ended at, the same codec the request-log page uses.
     ///
     /// # Errors
     ///
@@ -417,6 +420,8 @@ impl Db {
     pub async fn list_operations(
         &self,
         organization_id: Option<Uuid>,
+        key_id: Option<Uuid>,
+        state: Option<&str>,
         limit: i64,
         after: Option<(OffsetDateTime, Uuid)>,
     ) -> Result<Vec<RequestOperation>, WalletError> {
@@ -426,6 +431,8 @@ impl Db {
         let rows = sqlx::query(&format!(
             "SELECT {OPERATION_COLS} FROM oxsum.request_operations \
              WHERE ($1::uuid IS NULL OR organization_id = $1) \
+               AND ($5::uuid IS NULL OR key_id = $5) \
+               AND ($6::text IS NULL OR state = $6) \
                AND ($2::timestamptz IS NULL OR (created_at, operation_id) < ($2, $3)) \
              ORDER BY created_at DESC, operation_id DESC \
              LIMIT $4"
@@ -434,6 +441,8 @@ impl Db {
         .bind(after_at)
         .bind(after_id)
         .bind(limit)
+        .bind(key_id)
+        .bind(state)
         .fetch_all(self.pool())
         .await?;
         rows.iter().map(operation_from_row).collect()
