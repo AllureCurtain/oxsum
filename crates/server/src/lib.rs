@@ -36,7 +36,7 @@ use tokio::sync::broadcast;
 
 pub use billing::BillingEvent;
 pub use config::{
-    Config, Gateway, RateLimitBackend, Signup, WitnessKey, WitnessServe, WitnessTrust,
+    Branding, Config, Gateway, RateLimitBackend, Signup, WitnessKey, WitnessServe, WitnessTrust,
 };
 pub use metrics::Metrics;
 pub use oxsum_integrations::mail::Mailer;

@@ -8,7 +8,9 @@ import {
   useDisplay,
   useOrder,
   useOrderFulfillment,
+  useOrderRefunds,
   useOrders,
+  useRequestRefund,
   type OrderCheckoutSession,
   type PaymentOrder,
 } from "../api/hooks";
@@ -470,6 +472,130 @@ function FulfillmentBlock({ order }: { order: PaymentOrder }) {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// The refund card on a paid/fulfilled order (T23): the customer asks for
+// review — never grants itself money. The ask reads the refundable remainder
+// the server computes; a `requested` refund's state shows as it resolves.
+// ---------------------------------------------------------------------------
+
+function refundStateBadge(state: string) {
+  switch (state) {
+    case "succeeded":
+      return <Badge tone="success">succeeded</Badge>;
+    case "requested":
+      return <Badge tone="secondary">requested</Badge>;
+    case "declined":
+      return <Badge tone="danger">declined</Badge>;
+    case "failed":
+      return <Badge tone="danger">failed</Badge>;
+    case "provider_pending":
+      return <Badge tone="secondary">provider pending</Badge>;
+    case "released":
+      return <Badge tone="secondary">released</Badge>;
+    default:
+      return <Badge tone="secondary">{state}</Badge>;
+  }
+}
+
+function RefundCard({ order }: { order: PaymentOrder }) {
+  const { t } = useTranslation();
+  const display = useDisplay();
+  const refunds = useOrderRefunds(order.orderId);
+  const request = useRequestRefund(order.orderId);
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
+
+  const refundable = refunds.data?.refundableMinor ?? null;
+  const list = refunds.data?.refunds ?? [];
+  const eligible =
+    (order.status === "paid" || order.status === "fulfilled") &&
+    refundable !== null &&
+    refundable > 0;
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    request.mutate(
+      { reason: reason.trim() },
+      {
+        onSuccess: () => {
+          setOpen(false);
+          setReason("");
+        },
+      },
+    );
+  };
+
+  return (
+    <Card
+      title={t("orders.refunds")}
+      actions={
+        eligible ? (
+          <Button tone="ghost" onClick={() => setOpen((v) => !v)}>
+            {t("orders.requestRefund")}
+          </Button>
+        ) : null
+      }
+    >
+      <div className="flex flex-col gap-4">
+        {refundable !== null ? (
+          <p className="text-sm text-muted">
+            {t("orders.refundableRemainder")}{" "}
+            <span className="tabular-nums">
+              <Cr minor={refundable} currency={display} />
+            </span>
+          </p>
+        ) : null}
+        {list.length === 0 && !refunds.isLoading ? (
+          <p className="text-sm text-muted">{t("orders.noRefunds")}</p>
+        ) : null}
+        {list.length > 0 ? (
+          <ul className="flex flex-col gap-2">
+            {list.map((r) => (
+              <li
+                key={r.refundId}
+                className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-line px-3 py-2"
+              >
+                <div className="flex items-center gap-3">
+                  {refundStateBadge(r.state)}
+                  <span className="tabular-nums text-sm">
+                    <Cr minor={r.amountMinor} currency={display} />
+                  </span>
+                  <span className="text-xs text-muted">{r.reason}</span>
+                </div>
+                <span className="text-xs text-muted">{r.createdAt.slice(0, 10)}</span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {open && eligible ? (
+          <form className="flex flex-col gap-2 border-t border-line pt-3" onSubmit={submit}>
+            <Field label={t("orders.refundReason")} hint={t("orders.refundReasonHint")}>
+              <TextInput
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                required
+                minLength={1}
+                maxLength={500}
+              />
+            </Field>
+            <div className="flex items-center gap-2">
+              <Button type="submit" isLoading={request.isPending} loadingText={t("orders.requesting")}>
+                {t("orders.refundSubmit")}
+              </Button>
+              <Button type="button" tone="ghost" onClick={() => setOpen(false)}>
+                {t("common.cancel")}
+              </Button>
+            </div>
+            {request.error instanceof ApiError ? (
+              <Banner tone="error">{request.error.message}</Banner>
+            ) : null}
+          </form>
+        ) : null}
+      </div>
+    </Card>
+  );
+}
+
 export function OrderDetail() {
   const { t } = useTranslation();
   const { id } = useParams<{ id: string }>();
@@ -580,6 +706,7 @@ export function OrderDetail() {
         </Card>
       ) : null}
       {session.isError ? <Banner tone="error">{t("orders.sessionError")}</Banner> : null}
+      {o.status === "paid" || o.status === "fulfilled" ? <RefundCard order={o} /> : null}
       <div>
         <Link to="/orders" className="text-sm text-muted hover:text-ink">
           ← {t("orders.backToList")}

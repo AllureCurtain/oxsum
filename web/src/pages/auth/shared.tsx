@@ -1,15 +1,22 @@
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { ApiError } from "../../api/client";
+import { useBranding } from "../../api/hooks";
 import { SURFACE } from "../../components/ui";
+import { applyBranding } from "../../lib/branding";
 
 /**
  * The centered card every session page shares, on a quiet cobalt substrate.
  * The animated dot grid that used to run behind it is gone — a continuous
  * canvas is brand-page grammar on a form (and a CPU/prefers-reduced-motion
- * liability the audit flagged P0). What's left is a static radial tint: the
- * brand cue without the motion or the reflex blue-600.
+ * liability the audit flagged P0). What's left is a static radial tint plus
+ * the seller's wordmark — the brand cues without the motion, drawn before any
+ * session exists (T23: branding is a public read).
  */
 export function AuthCard(props: { title: string; children: ReactNode }) {
+  const branding = useBranding();
+  useEffect(() => {
+    applyBranding(branding.data);
+  }, [branding.data]);
   return (
     <main className="relative flex min-h-screen items-start justify-center overflow-hidden bg-canvas">
       {/* static substrate — one soft cobalt bloom, no canvas, no rAF loop */}
@@ -23,6 +30,15 @@ export function AuthCard(props: { title: string; children: ReactNode }) {
         }}
       />
       <div className="relative z-10 mt-24 w-full max-w-sm px-4">
+        {branding.data ? (
+          <p className="mb-4 text-center text-2xl font-bold tracking-tight text-ink">
+            {branding.data.logoUrl ? (
+              <img src={branding.data.logoUrl} alt={branding.data.name} className="mx-auto h-9" />
+            ) : (
+              branding.data.name
+            )}
+          </p>
+        ) : null}
         <div className={`${SURFACE} p-6`}>
           <h1 className="text-xl font-semibold">{props.title}</h1>
           <div className="mt-4">{props.children}</div>
