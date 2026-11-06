@@ -84,6 +84,54 @@ impl Display {
             format!("{sign}{whole}.{:0width$}", frac, width = scale as usize)
         }
     }
+
+    /// The inverse of [`Self::render`], used for charging rather than display:
+    /// the credit-minor amount a `display_minor` payment buys at this rate,
+    /// rounded half-up at the credit's own minor precision.
+    ///
+    /// `render` converts a credit figure for a person to read; this converts a
+    /// paid fiat amount into the credit figure a payment order books. The math
+    /// inverts the same single rate and stays integer throughout:
+    ///   credit = display_minor × 10^SCALE × 10^rate_scale / (mantissa × 10^decimals)
+    /// so a display's own rounding never feeds a charge, and no float touches
+    /// the conversion. `None` when the amount is not positive or the result
+    /// would overflow `i64` — the caller turns both into a validation refusal.
+    ///
+    /// The rate the figure came from is recoverable through
+    /// [`Self::rate_mantissa`]/[`Self::rate_scale`], which is what an order pins
+    /// so a later re-rate cannot rewrite what the customer agreed to.
+    #[must_use]
+    pub fn to_credit_minor(&self, display_minor: i64) -> Option<i64> {
+        if display_minor <= 0 {
+            return None;
+        }
+        // display_minor / 10^decimals major × (1/rate) credits/major × 10^SCALE minor/credit
+        //   = display_minor × 10^SCALE × 10^rate_scale / (mantissa × 10^decimals)
+        let numerator = (display_minor as i128)
+            .checked_mul(pow10(SCALE as u32))?
+            .checked_mul(pow10(self.scale))?;
+        let denominator = self
+            .mantissa
+            .checked_mul(pow10(self.currency.decimals as u32))?;
+        if denominator <= 0 {
+            return None;
+        }
+        let rounded = (numerator + denominator / 2) / denominator;
+        i64::try_from(rounded).ok()
+    }
+
+    /// The conversion's pinned numerator — `rate_per_credit` as `mantissa /
+    /// 10^scale`. Stored on a payment order beside the amounts it produced.
+    #[must_use]
+    pub fn rate_mantissa(&self) -> i128 {
+        self.mantissa
+    }
+
+    /// The conversion's pinned denominator exponent.
+    #[must_use]
+    pub fn rate_scale(&self) -> u32 {
+        self.scale
+    }
 }
 
 /// `10^n` as `i128` — the scales involved are small enough that a lookup beats
