@@ -40,6 +40,7 @@ mod jobs;
 mod keys;
 mod mandates;
 mod manual_receipts;
+mod merchant_events;
 mod merchants;
 mod metering;
 mod oauth;
@@ -178,9 +179,13 @@ pub use keys::{
 };
 pub use mandates::{CreatedMandate, Mandate, PresentedMandate, VerifiedMandate, parse_presented};
 pub use manual_receipts::{FundingAuthority, ManualReceiptRequest};
+pub use merchant_events::{
+    LegacyMerchantCheckout, MerchantEventKind, MerchantEventPage, MerchantEventReceipt,
+    MerchantPaymentBinding, MerchantPaymentPurpose, VerifiedMerchantEvent,
+};
 pub use merchants::{
-    Merchant, MerchantCreateRequest, MerchantMode, MerchantMutationResult, MerchantPage,
-    MerchantRail, MerchantSigningContext, MerchantStatusRequest, MerchantVersion,
+    Merchant, MerchantBootstrap, MerchantCreateRequest, MerchantMode, MerchantMutationResult,
+    MerchantPage, MerchantRail, MerchantSigningContext, MerchantStatusRequest, MerchantVersion,
     MerchantVersionInput, MerchantVersionPage, MerchantVersionRequest,
 };
 pub use metering::{MeteredEvent, MeteredHold, MeteredOutcome};

@@ -420,6 +420,16 @@ top-up page, which watches the balance until the switch's webhook credits it;
 cancelling returns the same way and credits nothing. Programmatic callers use
 the same handles with the SDK of their choice.
 
+On a deployment that promotes a rail's environment credentials to an explicit
+merchant (`OXSUM_<RAIL>_MERCHANT_ACCOUNT_ID` + `OXSUM_<RAIL>_MERCHANT_MODE`), the
+checkout and its signed webhook run through scoped intake instead (issue #649):
+the expected payment is pinned before the provider call, the callback verifies
+under the path's merchant/version before the body is read, and an event only
+credits when it exactly matches the pinned amount, currency and customer — a
+mismatch is held for review rather than applied, and a replayed or out-of-order
+delivery never credits twice. A rail without the bootstrap keeps its ordinary
+unscoped behavior.
+
 On a deployment running the real rail (`OXSUM_X402_FACILITATOR_*` — an x402-rs
 facilitator sidecar verifies the authorization on-chain, settles it, and the
 chain transaction hash lands on the deposit row) or pinning a stand-in payer key

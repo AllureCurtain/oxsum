@@ -3,7 +3,6 @@ use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use uuid::Uuid;
 
 use oxsum_core::{Principal, SignedHead, WalletError, signing_key};
@@ -220,6 +219,8 @@ pub(crate) async fn x402_topup(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct SubscriptionCheckoutReq {
+    // Accepted for contract compatibility; the versioned order flow supersedes it.
+    #[expect(dead_code)]
     plan_id: Uuid,
 }
 
@@ -239,40 +240,10 @@ pub(crate) async fn subscription_checkout(
     Extension(principal): Extension<Principal>,
     ApiJson(r): ApiJson<SubscriptionCheckoutReq>,
 ) -> ApiResult<serde_json::Value> {
-    let stripe = state
-        .config
-        .stripe()
-        .ok_or_else(|| ApiError::ServiceUnavailable("stripe is not configured".into()))?;
-    let plan = state
-        .db
-        .subscription_plan(r.plan_id)
-        .await?
-        .ok_or_else(|| ApiError::Validation("no such plan".into()))?;
-    if !plan.enabled {
-        return Err(ApiError::Validation(
-            "the plan is not accepting subscriptions".into(),
-        ));
-    }
-    let stripe_price_id = plan
-        .stripe_price_id
-        .as_deref()
-        .ok_or_else(|| ApiError::Validation("the plan is not sold on stripe".into()))?;
-    let session = stripe
-        .create_subscription_session(
-            &state.http,
-            principal.organization().id,
-            plan.plan_id,
-            stripe_price_id,
-        )
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e.0, "stripe subscription session failed");
-            ApiError::Internal
-        })?;
-    ok(json!({
-        "checkoutUrl": session.url,
-        "planId": plan.plan_id,
-    }))
+    let _ = (state, principal, r);
+    Err(ApiError::ServiceUnavailable(
+        "paid plan checkout requires the versioned payment-order flow".into(),
+    ))
 }
 
 /// The body of `POST /api/v1/topups/stripe`: the amount to charge and the
@@ -297,49 +268,14 @@ pub(crate) async fn stripe_topup(
     Extension(principal): Extension<Principal>,
     ApiJson(r): ApiJson<StripeTopupReq>,
 ) -> ApiResult<serde_json::Value> {
-    let stripe = state
-        .config
-        .stripe()
-        .ok_or_else(|| ApiError::ServiceUnavailable("stripe is not configured".into()))?;
-    let deposit_id = Uuid::new_v4();
-    let inserted = state
-        .db
-        .open_stripe_deposit(
-            principal.organization().id,
-            deposit_id,
-            &r.idempotency_key,
-            r.amount_minor,
-        )
-        .await?;
-    if !inserted {
-        // A replayed intent: the deposit the key opened already carries its
-        // checkout URL in `meta` — answer it again rather than mint a second
-        // Stripe session.
-        let existing = state
-            .db
-            .find_stripe_deposit(principal.organization().id, &r.idempotency_key)
-            .await?
-            .ok_or_else(|| ApiError::Validation("deposit already resolved".into()))?;
-        return ok(json!({
-            "checkoutUrl": existing.1.unwrap_or_default(),
-            "depositId": existing.0,
-        }));
-    }
-    let session = stripe
-        .create_checkout_session(&state.http, deposit_id, r.amount_minor)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e.0, "stripe checkout session failed");
-            ApiError::Internal
-        })?;
-    state
-        .db
-        .stripe_session_id(deposit_id, &session.session_id, &session.url)
-        .await?;
-    ok(json!({
-        "checkoutUrl": session.url,
-        "depositId": deposit_id,
-    }))
+    ok(crate::merchant_payments::checkout(
+        &state,
+        principal.organization().id,
+        oxsum_core::MerchantRail::Stripe,
+        &r.idempotency_key,
+        r.amount_minor,
+    )
+    .await?)
 }
 
 /// Stripe's inbound webhook: verifies `Stripe-Signature`, then walks the
@@ -356,114 +292,22 @@ pub(crate) async fn stripe_webhook(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<StatusCode, ApiError> {
-    let stripe = state.config.stripe().ok_or_else(ApiError::not_found)?;
-    let signature = headers
-        .get("stripe-signature")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    if !stripe.verify_signature(signature, &body) {
-        return Err(ApiError::Unauthorized);
+    if let Some(secret) = state.config.secret()
+        && state
+            .db
+            .environment_merchant(oxsum_core::MerchantRail::Stripe, secret)
+            .await?
+            .is_some()
+    {
+        return super::merchant_events::environment(
+            &state,
+            oxsum_core::MerchantRail::Stripe,
+            &headers,
+            &body,
+        )
+        .await;
     }
-    #[derive(Deserialize)]
-    struct Event {
-        #[serde(rename = "type")]
-        kind: String,
-        data: EventData,
-    }
-    #[derive(Deserialize)]
-    struct EventData {
-        object: serde_json::Value,
-    }
-    let event: Event = serde_json::from_slice(&body)
-        .map_err(|e| ApiError::Validation(format!("unreadable event: {e}")))?;
-    match event.kind.as_str() {
-        "checkout.session.completed" => {
-            let session_id = event.data.object["id"]
-                .as_str()
-                .ok_or_else(|| ApiError::Validation("no session id".into()))?;
-            let amount = event.data.object["amount_total"].as_i64();
-            // A subscription-mode session's object carries `subscription` — a
-            // top-up's does not, so the field decides which flow opened it.
-            if let Some(subscription_id) = event.data.object["subscription"].as_str()
-                && !subscription_id.is_empty()
-            {
-                // The subscription's opening: bind the organization the
-                // session named to the plan the session's line item priced.
-                // `metadata` is what the org user cannot fake — the session
-                // is Stripe's own record of what was sold.
-                let org = event.data.object["client_reference_id"]
-                    .as_str()
-                    .and_then(|id| uuid::Uuid::parse_str(id).ok())
-                    .ok_or_else(|| ApiError::Validation("no client reference".into()))?;
-                let price_id = event.data.object["metadata"]["oxsum_plan_id"]
-                    .as_str()
-                    .and_then(|id| uuid::Uuid::parse_str(id).ok())
-                    .ok_or_else(|| ApiError::Validation("no plan id".into()))?;
-                state
-                    .db
-                    .bind_subscription(org, price_id, "stripe", Some(subscription_id))
-                    .await?;
-            } else {
-                // Find the deposit this session opened, then confirm + credit it.
-                // Only a `pending` deposit moves, so a replayed or raced webhook
-                // does nothing twice.
-                if let Some((deposit_id, organization_id, tenant_id)) =
-                    state.db.find_stripe_by_session(session_id).await?
-                    && state.db.confirm_stripe_deposit(deposit_id).await?
-                {
-                    let w = state
-                        .tenants
-                        .get(&tenant_id)
-                        .await
-                        .map_err(ApiError::from)?;
-                    state
-                        .db
-                        .credit_stripe_deposit(&w, deposit_id, session_id, amount, today())
-                        .await?;
-                    // Whatever the deposit repaid counts against the statement book.
-                    state
-                        .db
-                        .reconcile_statements(organization_id, &w, today())
-                        .await?;
-                }
-            }
-        }
-        "checkout.session.expired" => {
-            let session_id = event.data.object["id"]
-                .as_str()
-                .ok_or_else(|| ApiError::Validation("no session id".into()))?;
-            if let Some((deposit_id, _, _)) = state.db.find_stripe_by_session(session_id).await? {
-                state.db.expire_stripe_deposit(deposit_id).await?;
-            }
-        }
-        // A subscription renewal: the invoice Stripe settled rolls the
-        // subscription's period forward to the boundary the invoice opened.
-        "invoice.paid" => {
-            let subscription_id = event.data.object["subscription"]
-                .as_str()
-                .ok_or_else(|| ApiError::Validation("no subscription id".into()))?;
-            let period_end = event.data.object["lines"]["data"][0]["period"]["end"]
-                .as_i64()
-                .map(time::OffsetDateTime::from_unix_timestamp)
-                .transpose()
-                .map_err(|_| ApiError::Validation("bad period end".into()))?
-                .ok_or_else(|| ApiError::Validation("no period end".into()))?;
-            state
-                .db
-                .renew_stripe_subscription(subscription_id, period_end)
-                .await?;
-        }
-        // The rail's cancel: Stripe ended the subscription — the period
-        // closes, and the wallet takes over from the next hold.
-        "customer.subscription.deleted" => {
-            let subscription_id = event.data.object["id"]
-                .as_str()
-                .ok_or_else(|| ApiError::Validation("no subscription id".into()))?;
-            state.db.cancel_stripe_subscription(subscription_id).await?;
-        }
-        _ => {}
-    }
-    Ok(StatusCode::OK)
+    stripe_legacy_webhook(State(state), headers, body).await
 }
 
 /// The body of `POST /api/v1/topups/airwallex`: the amount to charge and the
@@ -489,58 +333,14 @@ pub(crate) async fn airwallex_topup(
     Extension(principal): Extension<Principal>,
     ApiJson(r): ApiJson<AirwallexTopupReq>,
 ) -> ApiResult<serde_json::Value> {
-    let airwallex = state
-        .config
-        .airwallex()
-        .ok_or_else(|| ApiError::ServiceUnavailable("airwallex is not configured".into()))?;
-    let deposit_id = Uuid::new_v4();
-    let inserted = state
-        .db
-        .open_airwallex_deposit(
-            principal.organization().id,
-            deposit_id,
-            &r.idempotency_key,
-            r.amount_minor,
-        )
-        .await?;
-    if !inserted {
-        // A replayed intent: the deposit the key opened already carries its
-        // checkout URL and client secret in `meta` — answer them again rather
-        // than mint a second PaymentIntent.
-        let existing = state
-            .db
-            .find_airwallex_deposit(principal.organization().id, &r.idempotency_key)
-            .await?
-            .ok_or_else(|| ApiError::Validation("deposit already resolved".into()))?;
-        return ok(json!({
-            "checkoutUrl": existing.3.unwrap_or_default(),
-            "intentId": existing.1.unwrap_or_default(),
-            "clientSecret": existing.2.unwrap_or_default(),
-            "depositId": existing.0,
-        }));
-    }
-    let intent = airwallex
-        .create_payment_intent(deposit_id, r.amount_minor)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e.0, "airwallex payment intent failed");
-            ApiError::Internal
-        })?;
-    state
-        .db
-        .airwallex_intent(
-            deposit_id,
-            &intent.intent_id,
-            &intent.client_secret,
-            &intent.redirect_url,
-        )
-        .await?;
-    ok(json!({
-        "checkoutUrl": intent.redirect_url,
-        "intentId": intent.intent_id,
-        "clientSecret": intent.client_secret,
-        "depositId": deposit_id,
-    }))
+    ok(crate::merchant_payments::checkout(
+        &state,
+        principal.organization().id,
+        oxsum_core::MerchantRail::Airwallex,
+        &r.idempotency_key,
+        r.amount_minor,
+    )
+    .await?)
 }
 
 /// Airwallex's inbound webhook: verifies `x-timestamp` + `x-signature`, then
@@ -557,73 +357,22 @@ pub(crate) async fn airwallex_webhook(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<StatusCode, ApiError> {
-    let airwallex = state.config.airwallex().ok_or_else(ApiError::not_found)?;
-    let timestamp = headers
-        .get("x-timestamp")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    let signature = headers
-        .get("x-signature")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    if !airwallex.verify_signature(timestamp, signature, &body) {
-        return Err(ApiError::Unauthorized);
+    if let Some(secret) = state.config.secret()
+        && state
+            .db
+            .environment_merchant(oxsum_core::MerchantRail::Airwallex, secret)
+            .await?
+            .is_some()
+    {
+        return super::merchant_events::environment(
+            &state,
+            oxsum_core::MerchantRail::Airwallex,
+            &headers,
+            &body,
+        )
+        .await;
     }
-    #[derive(Deserialize)]
-    struct Event {
-        name: Option<String>,
-        data: EventData,
-    }
-    #[derive(Deserialize)]
-    struct EventData {
-        object: serde_json::Value,
-    }
-    let event: Event = serde_json::from_slice(&body)
-        .map_err(|e| ApiError::Validation(format!("unreadable event: {e}")))?;
-    match event.name.as_deref() {
-        Some("payment_intent.succeeded") => {
-            let intent_id = event.data.object["id"]
-                .as_str()
-                .ok_or_else(|| ApiError::Validation("no intent id".into()))?;
-            // The intent reports `amount` in decimal major units; the deposit
-            // records `received_minor` in cents, like every rail.
-            let amount = event.data.object["amount"]
-                .as_f64()
-                .map(|major| (major * 100.0).round() as i64);
-            // Find the deposit this intent opened, then confirm + credit it.
-            // Only a `pending` deposit moves, so a replayed or raced webhook
-            // does nothing twice.
-            if let Some((deposit_id, organization_id, tenant_id)) =
-                state.db.find_airwallex_by_intent(intent_id).await?
-                && state.db.confirm_airwallex_deposit(deposit_id).await?
-            {
-                let w = state
-                    .tenants
-                    .get(&tenant_id)
-                    .await
-                    .map_err(ApiError::from)?;
-                state
-                    .db
-                    .credit_airwallex_deposit(&w, deposit_id, intent_id, amount, today())
-                    .await?;
-                // Whatever the deposit repaid counts against the statement book.
-                state
-                    .db
-                    .reconcile_statements(organization_id, &w, today())
-                    .await?;
-            }
-        }
-        Some("payment_intent.cancelled") | Some("payment_intent.expired") => {
-            let intent_id = event.data.object["id"]
-                .as_str()
-                .ok_or_else(|| ApiError::Validation("no intent id".into()))?;
-            if let Some((deposit_id, _, _)) = state.db.find_airwallex_by_intent(intent_id).await? {
-                state.db.expire_airwallex_deposit(deposit_id).await?;
-            }
-        }
-        _ => {}
-    }
-    Ok(StatusCode::OK)
+    airwallex_legacy_webhook(State(state), headers, body).await
 }
 
 /// The body of `POST /api/v1/topups/hyperswitch`: the amount and the
@@ -649,55 +398,14 @@ pub(crate) async fn hyperswitch_topup(
     Extension(principal): Extension<Principal>,
     ApiJson(r): ApiJson<HyperswitchTopupReq>,
 ) -> ApiResult<serde_json::Value> {
-    let switch = state
-        .config
-        .hyperswitch()
-        .ok_or_else(|| ApiError::ServiceUnavailable("hyperswitch is not configured".into()))?;
-    let deposit_id = Uuid::new_v4();
-    let inserted = state
-        .db
-        .open_hyperswitch_deposit(
-            principal.organization().id,
-            deposit_id,
-            &r.idempotency_key,
-            r.amount_minor,
-        )
-        .await?;
-    if !inserted {
-        // A replayed intent: the deposit the key opened already carries its
-        // payment id and client secret in `meta` — answer them again rather
-        // than create a second switch payment.
-        let existing = state
-            .db
-            .find_hyperswitch_deposit(principal.organization().id, &r.idempotency_key)
-            .await?
-            .ok_or_else(|| ApiError::Validation("deposit already resolved".into()))?;
-        return ok(json!({
-            "depositId": existing.0,
-            "paymentId": existing.1.unwrap_or_default(),
-            "clientSecret": existing.2.unwrap_or_default(),
-            "publishableKey": switch.publishable_key(),
-            "sdkUrl": switch.sdk_url(),
-        }));
-    }
-    let payment = switch
-        .create_payment(&state.http, deposit_id, r.amount_minor, "USD")
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e.0, "hyperswitch payment failed");
-            ApiError::Internal
-        })?;
-    state
-        .db
-        .hyperswitch_payment(deposit_id, &payment.payment_id, &payment.client_secret)
-        .await?;
-    ok(json!({
-        "depositId": deposit_id,
-        "paymentId": payment.payment_id,
-        "clientSecret": payment.client_secret,
-        "publishableKey": switch.publishable_key(),
-        "sdkUrl": switch.sdk_url(),
-    }))
+    ok(crate::merchant_payments::checkout(
+        &state,
+        principal.organization().id,
+        oxsum_core::MerchantRail::Hyperswitch,
+        &r.idempotency_key,
+        r.amount_minor,
+    )
+    .await?)
 }
 
 /// The switch's outgoing webhook (issue #319): verifies
@@ -717,126 +425,22 @@ pub(crate) async fn hyperswitch_webhook(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<StatusCode, ApiError> {
-    let switch = state.config.hyperswitch().ok_or_else(ApiError::not_found)?;
-    let signature = headers
-        .get("x-webhook-signature-512")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    if !switch.verify_signature(signature, &body) {
-        return Err(ApiError::Unauthorized);
-    }
-    let event: crate::hyperswitch::WebhookEvent = serde_json::from_slice(&body)
-        .map_err(|e| ApiError::Validation(format!("unreadable event: {e}")))?;
-    let payload: serde_json::Value = serde_json::from_slice(&body)
-        .map_err(|e| ApiError::Validation(format!("unreadable event: {e}")))?;
-    // The event id is the idempotency anchor: a delivery that was already
-    // processed is acknowledged without acting again.
-    if !state
-        .db
-        .record_payment_event(
-            &event.event_id,
-            oxsum_core::RAIL_HYPERSWITCH,
-            &event.event_type,
-            &payload,
-        )
-        .await?
+    if let Some(secret) = state.config.secret()
+        && state
+            .db
+            .environment_merchant(oxsum_core::MerchantRail::Hyperswitch, secret)
+            .await?
+            .is_some()
     {
-        return Ok(StatusCode::OK);
+        return super::merchant_events::environment(
+            &state,
+            oxsum_core::MerchantRail::Hyperswitch,
+            &headers,
+            &body,
+        )
+        .await;
     }
-    let payment_id = event.content.object["payment_id"].as_str();
-    match event.event_type.as_str() {
-        "payment_succeeded" => {
-            let payment_id =
-                payment_id.ok_or_else(|| ApiError::Validation("no payment id".into()))?;
-            // The switch reports the amount in minor units, like the deposit.
-            let received = event.content.object["amount"].as_i64();
-            // Find the deposit this payment opened, then confirm + credit it.
-            // Only a `pending` deposit moves, so a replayed or raced webhook
-            // does nothing twice.
-            if let Some((deposit_id, organization_id, tenant_id)) =
-                state.db.find_hyperswitch_by_payment(payment_id).await?
-                && state.db.confirm_hyperswitch_deposit(deposit_id).await?
-            {
-                let w = state
-                    .tenants
-                    .get(&tenant_id)
-                    .await
-                    .map_err(ApiError::from)?;
-                state
-                    .db
-                    .credit_hyperswitch_deposit(&w, deposit_id, payment_id, received, today())
-                    .await?;
-                // Whatever the deposit repaid counts against the statement book.
-                state
-                    .db
-                    .reconcile_statements(organization_id, &w, today())
-                    .await?;
-            }
-        }
-        "payment_cancelled" | "payment_expired" => {
-            if let Some(payment_id) = payment_id
-                && let Some((deposit_id, _, _)) =
-                    state.db.find_hyperswitch_by_payment(payment_id).await?
-            {
-                state.db.expire_hyperswitch_deposit(deposit_id).await?;
-            }
-        }
-        // Refund and dispute events (issue #360): the content object is the
-        // refund or dispute resource — the refund names its own id plus the
-        // payment it refunds, the dispute names only the payment. The deposit
-        // is found by the refund id the reversal recorded, or by the payment
-        // id as a fallback for an event that outran the record.
-        "refund_succeeded" | "refund_failed" => {
-            let object = &event.content.object;
-            let refund_id = object["refund_id"].as_str().unwrap_or_default();
-            let refund_status = object["status"].as_str().unwrap_or_default();
-            let status = if event.event_type == "refund_succeeded" {
-                "succeeded"
-            } else {
-                "failed"
-            };
-            // The webhook's own status wins when it names one; the event type
-            // is the fallback for a payload that leaves it ambiguous.
-            let status = if refund_status.is_empty() {
-                status
-            } else {
-                refund_status
-            };
-            if let Some(payment_id) = payment_id
-                && let Some((deposit_id, _, _)) = state
-                    .db
-                    .find_hyperswitch_by_refund_or_payment(
-                        if refund_id.is_empty() {
-                            None
-                        } else {
-                            Some(refund_id)
-                        },
-                        payment_id,
-                    )
-                    .await?
-            {
-                state
-                    .db
-                    .settle_hyperswitch_refund(deposit_id, refund_id, status)
-                    .await?;
-            }
-        }
-        "dispute_opened" => {
-            if let Some(payment_id) = payment_id
-                && let Some((deposit_id, organization_id, _)) = state
-                    .db
-                    .find_hyperswitch_by_refund_or_payment(None, payment_id)
-                    .await?
-            {
-                state
-                    .db
-                    .record_dispute(deposit_id, organization_id, &event.content.object)
-                    .await?;
-            }
-        }
-        _ => {}
-    }
-    Ok(StatusCode::OK)
+    hyperswitch_legacy_webhook(State(state), headers, body).await
 }
 
 pub(crate) async fn redeem(
@@ -1137,4 +741,320 @@ pub(crate) async fn balance(
         reserved_minor: w.reserved().await?,
         spent_this_month_minor: w.month_spend().await?,
     })
+}
+
+pub(crate) async fn stripe_legacy_webhook(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, ApiError> {
+    let stripe = state.config.stripe().ok_or_else(ApiError::not_found)?;
+    let signature = headers
+        .get("stripe-signature")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !stripe.verify_signature(signature, &body) {
+        return Err(ApiError::Unauthorized);
+    }
+    #[derive(Deserialize)]
+    struct Event {
+        #[serde(rename = "type")]
+        kind: String,
+        data: EventData,
+    }
+    #[derive(Deserialize)]
+    struct EventData {
+        object: serde_json::Value,
+    }
+    let event: Event = serde_json::from_slice(&body)
+        .map_err(|e| ApiError::Validation(format!("unreadable event: {e}")))?;
+    match event.kind.as_str() {
+        "checkout.session.completed" => {
+            let session_id = event.data.object["id"]
+                .as_str()
+                .ok_or_else(|| ApiError::Validation("no session id".into()))?;
+            let amount = event.data.object["amount_total"].as_i64();
+            // A subscription-mode session's object carries `subscription` — a
+            // top-up's does not, so the field decides which flow opened it.
+            if let Some(subscription_id) = event.data.object["subscription"].as_str()
+                && !subscription_id.is_empty()
+            {
+                // The subscription's opening: bind the organization the
+                // session named to the plan the session's line item priced.
+                // `metadata` is what the org user cannot fake — the session
+                // is Stripe's own record of what was sold.
+                let org = event.data.object["client_reference_id"]
+                    .as_str()
+                    .and_then(|id| uuid::Uuid::parse_str(id).ok())
+                    .ok_or_else(|| ApiError::Validation("no client reference".into()))?;
+                let price_id = event.data.object["metadata"]["oxsum_plan_id"]
+                    .as_str()
+                    .and_then(|id| uuid::Uuid::parse_str(id).ok())
+                    .ok_or_else(|| ApiError::Validation("no plan id".into()))?;
+                state
+                    .db
+                    .bind_subscription(org, price_id, "stripe", Some(subscription_id))
+                    .await?;
+            } else {
+                // Find the deposit this session opened, then confirm + credit it.
+                // Only a `pending` deposit moves, so a replayed or raced webhook
+                // does nothing twice.
+                if let Some((deposit_id, organization_id, tenant_id)) =
+                    state.db.find_stripe_by_session(session_id).await?
+                    && state.db.confirm_stripe_deposit(deposit_id).await?
+                {
+                    let w = state
+                        .tenants
+                        .get(&tenant_id)
+                        .await
+                        .map_err(ApiError::from)?;
+                    state
+                        .db
+                        .credit_stripe_deposit(&w, deposit_id, session_id, amount, today())
+                        .await?;
+                    // Whatever the deposit repaid counts against the statement book.
+                    state
+                        .db
+                        .reconcile_statements(organization_id, &w, today())
+                        .await?;
+                }
+            }
+        }
+        "checkout.session.expired" => {
+            let session_id = event.data.object["id"]
+                .as_str()
+                .ok_or_else(|| ApiError::Validation("no session id".into()))?;
+            if let Some((deposit_id, _, _)) = state.db.find_stripe_by_session(session_id).await? {
+                state.db.expire_stripe_deposit(deposit_id).await?;
+            }
+        }
+        // A subscription renewal: the invoice Stripe settled rolls the
+        // subscription's period forward to the boundary the invoice opened.
+        "invoice.paid" => {
+            let subscription_id = event.data.object["subscription"]
+                .as_str()
+                .ok_or_else(|| ApiError::Validation("no subscription id".into()))?;
+            let period_end = event.data.object["lines"]["data"][0]["period"]["end"]
+                .as_i64()
+                .map(time::OffsetDateTime::from_unix_timestamp)
+                .transpose()
+                .map_err(|_| ApiError::Validation("bad period end".into()))?
+                .ok_or_else(|| ApiError::Validation("no period end".into()))?;
+            state
+                .db
+                .renew_stripe_subscription(subscription_id, period_end)
+                .await?;
+        }
+        // The rail's cancel: Stripe ended the subscription — the period
+        // closes, and the wallet takes over from the next hold.
+        "customer.subscription.deleted" => {
+            let subscription_id = event.data.object["id"]
+                .as_str()
+                .ok_or_else(|| ApiError::Validation("no subscription id".into()))?;
+            state.db.cancel_stripe_subscription(subscription_id).await?;
+        }
+        _ => {}
+    }
+    Ok(StatusCode::OK)
+}
+
+pub(crate) async fn airwallex_legacy_webhook(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, ApiError> {
+    let airwallex = state.config.airwallex().ok_or_else(ApiError::not_found)?;
+    let timestamp = headers
+        .get("x-timestamp")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let signature = headers
+        .get("x-signature")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !airwallex.verify_signature(timestamp, signature, &body) {
+        return Err(ApiError::Unauthorized);
+    }
+    #[derive(Deserialize)]
+    struct Event {
+        name: Option<String>,
+        data: EventData,
+    }
+    #[derive(Deserialize)]
+    struct EventData {
+        object: serde_json::Value,
+    }
+    let event: Event = serde_json::from_slice(&body)
+        .map_err(|e| ApiError::Validation(format!("unreadable event: {e}")))?;
+    match event.name.as_deref() {
+        Some("payment_intent.succeeded") => {
+            let intent_id = event.data.object["id"]
+                .as_str()
+                .ok_or_else(|| ApiError::Validation("no intent id".into()))?;
+            // The intent reports `amount` in decimal major units; the deposit
+            // records `received_minor` in cents, like every rail.
+            let amount = event.data.object["amount"]
+                .as_f64()
+                .map(|major| (major * 100.0).round() as i64);
+            // Find the deposit this intent opened, then confirm + credit it.
+            // Only a `pending` deposit moves, so a replayed or raced webhook
+            // does nothing twice.
+            if let Some((deposit_id, organization_id, tenant_id)) =
+                state.db.find_airwallex_by_intent(intent_id).await?
+                && state.db.confirm_airwallex_deposit(deposit_id).await?
+            {
+                let w = state
+                    .tenants
+                    .get(&tenant_id)
+                    .await
+                    .map_err(ApiError::from)?;
+                state
+                    .db
+                    .credit_airwallex_deposit(&w, deposit_id, intent_id, amount, today())
+                    .await?;
+                // Whatever the deposit repaid counts against the statement book.
+                state
+                    .db
+                    .reconcile_statements(organization_id, &w, today())
+                    .await?;
+            }
+        }
+        Some("payment_intent.cancelled") | Some("payment_intent.expired") => {
+            let intent_id = event.data.object["id"]
+                .as_str()
+                .ok_or_else(|| ApiError::Validation("no intent id".into()))?;
+            if let Some((deposit_id, _, _)) = state.db.find_airwallex_by_intent(intent_id).await? {
+                state.db.expire_airwallex_deposit(deposit_id).await?;
+            }
+        }
+        _ => {}
+    }
+    Ok(StatusCode::OK)
+}
+
+pub(crate) async fn hyperswitch_legacy_webhook(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, ApiError> {
+    let switch = state.config.hyperswitch().ok_or_else(ApiError::not_found)?;
+    let signature = headers
+        .get("x-webhook-signature-512")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !switch.verify_signature(signature, &body) {
+        return Err(ApiError::Unauthorized);
+    }
+    let event: crate::hyperswitch::WebhookEvent = serde_json::from_slice(&body)
+        .map_err(|e| ApiError::Validation(format!("unreadable event: {e}")))?;
+    let payload: serde_json::Value = serde_json::from_slice(&body)
+        .map_err(|e| ApiError::Validation(format!("unreadable event: {e}")))?;
+    // The event id is the idempotency anchor: a delivery that was already
+    // processed is acknowledged without acting again.
+    if !state
+        .db
+        .record_payment_event(
+            &event.event_id,
+            oxsum_core::RAIL_HYPERSWITCH,
+            &event.event_type,
+            &payload,
+        )
+        .await?
+    {
+        return Ok(StatusCode::OK);
+    }
+    let payment_id = event.content.object["payment_id"].as_str();
+    match event.event_type.as_str() {
+        "payment_succeeded" => {
+            let payment_id =
+                payment_id.ok_or_else(|| ApiError::Validation("no payment id".into()))?;
+            // The switch reports the amount in minor units, like the deposit.
+            let received = event.content.object["amount"].as_i64();
+            // Find the deposit this payment opened, then confirm + credit it.
+            // Only a `pending` deposit moves, so a replayed or raced webhook
+            // does nothing twice.
+            if let Some((deposit_id, organization_id, tenant_id)) =
+                state.db.find_hyperswitch_by_payment(payment_id).await?
+                && state.db.confirm_hyperswitch_deposit(deposit_id).await?
+            {
+                let w = state
+                    .tenants
+                    .get(&tenant_id)
+                    .await
+                    .map_err(ApiError::from)?;
+                state
+                    .db
+                    .credit_hyperswitch_deposit(&w, deposit_id, payment_id, received, today())
+                    .await?;
+                // Whatever the deposit repaid counts against the statement book.
+                state
+                    .db
+                    .reconcile_statements(organization_id, &w, today())
+                    .await?;
+            }
+        }
+        "payment_cancelled" | "payment_expired" => {
+            if let Some(payment_id) = payment_id
+                && let Some((deposit_id, _, _)) =
+                    state.db.find_hyperswitch_by_payment(payment_id).await?
+            {
+                state.db.expire_hyperswitch_deposit(deposit_id).await?;
+            }
+        }
+        // Refund and dispute events (issue #360): the content object is the
+        // refund or dispute resource — the refund names its own id plus the
+        // payment it refunds, the dispute names only the payment. The deposit
+        // is found by the refund id the reversal recorded, or by the payment
+        // id as a fallback for an event that outran the record.
+        "refund_succeeded" | "refund_failed" => {
+            let object = &event.content.object;
+            let refund_id = object["refund_id"].as_str().unwrap_or_default();
+            let refund_status = object["status"].as_str().unwrap_or_default();
+            let status = if event.event_type == "refund_succeeded" {
+                "succeeded"
+            } else {
+                "failed"
+            };
+            // The webhook's own status wins when it names one; the event type
+            // is the fallback for a payload that leaves it ambiguous.
+            let status = if refund_status.is_empty() {
+                status
+            } else {
+                refund_status
+            };
+            if let Some(payment_id) = payment_id
+                && let Some((deposit_id, _, _)) = state
+                    .db
+                    .find_hyperswitch_by_refund_or_payment(
+                        if refund_id.is_empty() {
+                            None
+                        } else {
+                            Some(refund_id)
+                        },
+                        payment_id,
+                    )
+                    .await?
+            {
+                state
+                    .db
+                    .settle_hyperswitch_refund(deposit_id, refund_id, status)
+                    .await?;
+            }
+        }
+        "dispute_opened" => {
+            if let Some(payment_id) = payment_id
+                && let Some((deposit_id, organization_id, _)) = state
+                    .db
+                    .find_hyperswitch_by_refund_or_payment(None, payment_id)
+                    .await?
+            {
+                state
+                    .db
+                    .record_dispute(deposit_id, organization_id, &event.content.object)
+                    .await?;
+            }
+        }
+        _ => {}
+    }
+    Ok(StatusCode::OK)
 }

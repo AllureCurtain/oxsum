@@ -95,17 +95,30 @@ async fn world() -> Option<(Router, Db, AirwallexStub)> {
     let (api_url, stub) = stub_airwallex().await;
     *stub.answer_id.lock().unwrap() = "int_test_123".to_owned();
     *stub.answer_secret.lock().unwrap() = "int_test_123_client_secret".to_owned();
+    let rail = oxsum_server::airwallex::Airwallex::new(
+        "awx-client-id".to_owned(),
+        "awx-api-key".to_owned(),
+        WEBHOOK_SECRET.to_owned(),
+        api_url,
+        "https://checkout.airwallex.com".to_owned(),
+        "http://localhost:3000".to_owned(),
+        reqwest::Client::new(),
+    );
     let config = Config::new(Signup::Open, None)
         .with_secret(sealing_key())
-        .with_airwallex(oxsum_server::airwallex::Airwallex::new(
-            "awx-client-id".to_owned(),
-            "awx-api-key".to_owned(),
-            WEBHOOK_SECRET.to_owned(),
-            api_url,
-            "https://checkout.airwallex.com".to_owned(),
-            "http://localhost:3000".to_owned(),
-            reqwest::Client::new(),
-        ));
+        .with_public_url("http://localhost:3000")
+        .with_merchant_bootstrap(rail.merchant_bootstrap(
+            "awx-merchant-account".to_owned(),
+            oxsum_core::MerchantMode::Test,
+            oxsum_core::ProviderDestinationPolicy {
+                network: oxsum_core::ProviderNetwork::Internal,
+                allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+            },
+        ))
+        .with_airwallex(rail);
+    oxsum_server::prepare(&db, &config)
+        .await
+        .expect("the deployment is prepared");
     let (app, _events, _metrics) = oxsum_server::app_with_billing(db.clone(), config);
     Some((app, db, stub))
 }
@@ -198,7 +211,7 @@ async fn the_intent_opens_a_pending_deposit_and_answers_the_url() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
         body["data"]["checkoutUrl"].as_str().unwrap(),
-        "https://checkout.airwallex.com?intent_id=int_test_123"
+        "https://checkout.airwallex.com/?intent_id=int_test_123"
     );
     assert_eq!(body["data"]["intentId"].as_str().unwrap(), "int_test_123");
     assert_eq!(
@@ -322,8 +335,9 @@ async fn a_replayed_webhook_credits_once() {
     assert_eq!(status, StatusCode::OK);
 
     let event = json!({
+        "id": "evt_replay_1",
         "name": "payment_intent.succeeded",
-        "data": { "object": { "id": "int_test_123", "amount": 30.0 } }
+        "data": { "object": { "id": "int_test_123", "amount": 30.0, "currency": "USD" } }
     });
     for _ in 0..3 {
         let (headers, b) = signed_webhook(WEBHOOK_SECRET, &event.to_string());
@@ -460,6 +474,7 @@ async fn a_cancelled_intent_credits_nothing() {
     assert_eq!(status, StatusCode::OK);
 
     let event = json!({
+        "id": "evt_cancel_1",
         "name": "payment_intent.cancelled",
         "data": { "object": { "id": "int_test_123" } }
     });

@@ -9,6 +9,7 @@ mod error;
 mod gateway;
 mod guardrail;
 pub mod jobs;
+mod merchant_payments;
 mod metering;
 mod metrics;
 mod routes;
@@ -171,7 +172,10 @@ pub async fn prepare(db: &Db, config: &Config) -> Result<(), WalletError> {
     let Some(secret) = config.secret() else {
         // Stored provider and merchant credentials require the original encryption key,
         // including historical merchant versions pinned by in-flight payments.
-        return if db.has_channels().await? || db.has_merchants().await? {
+        return if db.has_channels().await?
+            || db.has_merchants().await?
+            || !config.merchant_bootstraps().is_empty()
+        {
             Err(WalletError::Misconfigured(
                 "the database holds channels or merchants, but OXSUM_SECRET_KEY is not set, so their \
                  credentials cannot be opened"
@@ -200,6 +204,9 @@ pub async fn prepare(db: &Db, config: &Config) -> Result<(), WalletError> {
                 "seeded the first channel from the environment"
             );
         }
+    }
+    for bootstrap in config.merchant_bootstraps() {
+        db.bootstrap_merchant(bootstrap, secret).await?;
     }
     // Every credential must open: the alternative is finding out one request at a time.
     db.check_sealed_keys(secret).await?;
