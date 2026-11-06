@@ -193,8 +193,8 @@ struct Plan {
     /// settlement's `sale` block commits. `None` on a wholesale-priced turn —
     /// the common case until a customer's schedule names the model.
     sale: Option<SalePricing>,
-    /// Whether the wallet holds a pending reservation under `hold_key` (issue
-    /// #603): `false` on a fully entitlement-funded turn — the subscription
+    /// Whether the wallet holds a pending reservation under `hold_key` (issues
+    /// #602, #603): `false` on a fully entitlement-funded turn — the subscription
     /// draw covered the whole freeze, so no wallet hold was taken and the
     /// settlement writes the typed zero-cost receipt instead of a
     /// release-and-charge entry.
@@ -990,47 +990,21 @@ impl Plan {
         } else {
             (kind, cost)
         };
-        // The subscription's share of the charge is settled against its draw
-        // before the wallet's entry is written: the consumed part of the draw
-        // is `min(charged, drawn_minor)`, the released part returns to the
-        // period's counter. A settled draw's description carries which
-        // subscription period paid, so the bill proves the entitlement the
-        // same way it proves the figure (issue #496). A turn that drew
-        // nothing — no binding, or an exhausted quota — carries no
+        // The subscription's share of the charge: `min(charged, drawn_minor)`
+        // settles against the draw inside the settlement transaction below,
+        // the released part returning to the period's counter. The description
+        // carries which subscription period paid, so the bill proves the
+        // entitlement the same way it proves the figure (issue #496). A turn
+        // that drew nothing — no binding, or an exhausted quota — carries no
         // `subscription` field at all, never a zero-draw marker.
         let subscription_charge = self.subscription.drawn_minor.min(charged);
-        let subscription_ref = if self.subscription.drawn_minor > 0 {
-            let settled_draw = self
-                .db
-                .settle_subscription_draw(&self.hold_key, subscription_charge)
-                .await;
-            match settled_draw {
-                Ok(_) => Some(oxsum_core::SettlementSubscription {
-                    subscription_id: &self.subscription.subscription_id,
-                    period_id: &self.subscription.period_id,
-                    drawn_minor: self.subscription.drawn_minor,
-                    charged_minor: subscription_charge,
-                }),
-                // A settled-draw write that fails is a race the ledger's own
-                // idempotency decides — the settlement still writes the
-                // subscription field the draw admitted, so the bill stays
-                // honest about which entitlement window covered it. The draw
-                // row staying open is the leak the sweeper's own settle
-                // returns (issue #496).
-                Err(error) => {
-                    tracing::error!(%error, request = %self.request,
-                        "settling the turn's subscription draw failed; the draw stays open for the sweeper");
-                    Some(oxsum_core::SettlementSubscription {
-                        subscription_id: &self.subscription.subscription_id,
-                        period_id: &self.subscription.period_id,
-                        drawn_minor: self.subscription.drawn_minor,
-                        charged_minor: subscription_charge,
-                    })
-                }
-            }
-        } else {
-            None
-        };
+        let subscription_ref =
+            (self.subscription.drawn_minor > 0).then_some(oxsum_core::SettlementSubscription {
+                subscription_id: &self.subscription.subscription_id,
+                period_id: &self.subscription.period_id,
+                drawn_minor: self.subscription.drawn_minor,
+                charged_minor: subscription_charge,
+            });
         // The guardrail verdicts serialize through their borrowed view — the
         // owned notes live on the plan, the description reads them as references.
         let guardrail_notes: Vec<oxsum_core::SettlementGuardrail<'_>> =
@@ -1093,33 +1067,173 @@ impl Plan {
         // `subscription` block names what the entitlement paid instead
         // (issue #496).
         let wallet_charge = charged - subscription_charge;
-        let outcome = if self.wallet_held {
-            self.wallet
-                .settle(&self.hold_key, &description, wallet_charge, today())
-                .await
-        } else {
-            // A fully entitlement-funded turn took no wallet hold (issue
-            // #603): the typed zero-cost receipt records the turn — its
-            // usage, its subscription block, `charged: 0` on the wallet side —
-            // under the same derived key a wallet settle would take, so a
-            // replay and a raced settle still conflict on one entry.
-            // `wallet_charge` is zero by construction here.
-            debug_assert_eq!(wallet_charge, 0);
-            let actor = self.key_id.as_simple().to_string();
-            let correlation = self
-                .mandate
-                .as_ref()
-                .map(|m| m.verified.mandate_id.as_simple().to_string());
-            self.wallet
-                .usage_receipt(
-                    &self.hold_key,
-                    &description,
-                    Some(&actor),
-                    correlation.as_deref(),
-                    today(),
-                )
-                .await
+        // The settle is one transaction (issue #602, D05): the subscription
+        // draw's consumption, the ledger entry — the release-and-charge for a
+        // held turn, the typed zero-cost receipt for a fully-funded one — the
+        // winning attempt's usage, the operation's terminal row, the usage
+        // record and the watch-row clear all commit or roll back together. A
+        // crash mid-settle can no longer leave money moved without the
+        // operation that explains it, nor an operation closed over a charge
+        // the ledger never took.
+        let actor = self.key_id.as_simple().to_string();
+        let correlation = self
+            .mandate
+            .as_ref()
+            .map(|m| m.verified.mandate_id.as_simple().to_string());
+        let operation_state = match kind {
+            SettlementKind::Usage
+            | SettlementKind::Estimated
+            | SettlementKind::Capped
+            | SettlementKind::Unpriced => oxsum_core::OperationState::Succeeded,
+            SettlementKind::ClientCancelled => oxsum_core::OperationState::Cancelled,
+            SettlementKind::UpstreamError
+            | SettlementKind::UpstreamUnreachable
+            | SettlementKind::Swept
+            | SettlementKind::Released
+            | SettlementKind::Refused => oxsum_core::OperationState::Failed,
         };
+        // The turn's usage row rides inside the settlement transaction it
+        // describes: `ON CONFLICT (request_id)` keeps a raced replay a no-op.
+        let usage_row = UsageRow {
+            request_id: self.request.clone(),
+            tenant_id: self.tenant_id.clone(),
+            key_id: Some(self.key_id),
+            mandate_id: self.mandate.as_ref().map(|m| m.verified.mandate_id),
+            model: self.model.clone(),
+            channel: self.channel.clone(),
+            price_version: self.version,
+            kind,
+            entry_id: *entry_id_for(&settlement_key_for(&self.hold_key)).as_uuid(),
+            usage: usage.clone(),
+            status: kind.status().to_owned(),
+            failure_reason: reason.clone(),
+            counts,
+            charged_minor: charged,
+            freeze_minor: self.freeze,
+            // The platform's own cost for the same usage, under the set the
+            // turn priced with — `None` when it carries no `upstream`
+            // block, which is untracked rather than free (issue #112).
+            upstream_cost_minor: self.price.upstream_cost(&usage, billable).unwrap_or_else(
+                |error| {
+                    tracing::error!(%error, request = %self.request,
+                        "pricing upstream's cost failed; the row records untracked");
+                    None
+                },
+            ),
+            upstream_attempts: self.upstream_attempts,
+        };
+        let usage_json = answered
+            .then(|| serde_json::to_value(&usage).ok())
+            .flatten();
+        // What the settlement transaction answered: the ledger write's
+        // outcome, or the operation CAS that lost — the arms below read it.
+        enum Outcome {
+            /// The whole settle committed.
+            Settled,
+            /// The ledger's idempotency refused — the sweeper's settle or a
+            /// raced copy of this one landed first. Its record stands; this
+            /// turn writes nothing of its own.
+            Replay,
+        }
+        let outcome: Result<Outcome, WalletError> = async {
+            let mut tx = self.db.pool().begin().await?;
+            // The subscription draw settles first: its consumption and the
+            // released share's return ride the same commit as the charge.
+            if self.subscription.drawn_minor > 0 {
+                self.db
+                    .settle_subscription_draw_in(&mut tx, &self.hold_key, subscription_charge)
+                    .await?;
+            }
+            // The ledger effect. A turn with a wallet hold settles it — the
+            // release plus the charge; a fully entitlement-funded turn writes
+            // the typed zero-cost receipt instead — the turn is recorded, the
+            // usage is proven, and no money ever moved (issue #602).
+            let outcome = if self.wallet_held {
+                self.wallet
+                    .settle_in(
+                        &mut tx,
+                        &self.hold_key,
+                        &description,
+                        wallet_charge,
+                        today(),
+                    )
+                    .await
+            } else {
+                self.wallet
+                    .usage_receipt_in(
+                        &mut tx,
+                        &self.hold_key,
+                        &description,
+                        Some(&actor),
+                        correlation.as_deref(),
+                        today(),
+                    )
+                    .await
+            };
+            if let Err(error) = outcome {
+                let replay = matches!(
+                    error,
+                    WalletError::Conflict(_) | WalletError::HoldNotFound(_)
+                );
+                tx.rollback().await?;
+                return if replay {
+                    Ok(Outcome::Replay)
+                } else {
+                    Err(error)
+                };
+            }
+            // The winning attempt's usage — the figure the settle priced
+            // from — then the operation's terminal row. `AlreadySettled` and
+            // `LeaseLost` stay what the non-atomic path made them: logged, not
+            // fatal — the ledger write already decided this turn's money, and
+            // the row's terminal state is the recovery record.
+            if let Some(operation) = &self.operation {
+                if let Some(attempt_id) = self.winning_attempt {
+                    self.db
+                        .complete_attempt_in(
+                            &mut tx,
+                            attempt_id,
+                            oxsum_core::AttemptStatus::Answered,
+                            usage_json.as_ref(),
+                            reason.as_deref(),
+                        )
+                        .await?;
+                }
+                match self
+                    .db
+                    .settle_operation_in(
+                        &mut tx,
+                        operation.operation_id,
+                        &operation.lease_owner,
+                        operation_state,
+                        charged,
+                        kind.as_str(),
+                    )
+                    .await?
+                {
+                    oxsum_core::OperationSettle::Settled => {}
+                    oxsum_core::OperationSettle::AlreadySettled => {
+                        tracing::info!(request = %self.request,
+                            "the operation was already terminal — a raced settle lost the CAS");
+                    }
+                    oxsum_core::OperationSettle::LeaseLost => {
+                        tracing::warn!(request = %self.request,
+                            "the operation's lease was lost before the settle could write it");
+                    }
+                }
+            }
+            // The post-settle balance feeds `balance.low`, read on the
+            // transaction's own connection so it already counts the
+            // uncommitted settlement.
+            let available = self.wallet.available_in(&mut tx).await.ok();
+            self.db
+                .record_usage_in(&mut tx, &usage_row, available)
+                .await?;
+            self.db.clear_open_hold_in(&mut tx, &self.hold_key).await?;
+            tx.commit().await?;
+            Ok(Outcome::Settled)
+        }
+        .await;
         // The ledger write is the turn's last phase boundary: hold-taken → this
         // event is the relay, this → span end is the settlement write itself
         // (issue #224). The event lands whether or not the write succeeded —
@@ -1131,188 +1245,63 @@ impl Plan {
                 "settle written"
             );
         });
-        match &outcome {
-            Ok(_) => {
-                // The operation's terminal write (issue #601): the ledger
-                // settlement committed, so the durable parent goes terminal
-                // under the same outcome — `succeeded` for every billed kind,
-                // `cancelled` for a client cut, `failed` for an upstream
-                // failure or a release. The CAS makes a raced second settle
-                // `AlreadySettled`, not an error: `Drop`-settles-once stays
-                // honest because the row's terminal state, not the process's
-                // memory, decides. A failed write is logged like the usage
-                // row's — the operation is the recovery record, never the
-                // billing path.
-                if let Some(operation) = &self.operation {
-                    let operation_state = match kind {
-                        SettlementKind::Usage
-                        | SettlementKind::Estimated
-                        | SettlementKind::Capped
-                        | SettlementKind::Unpriced => oxsum_core::OperationState::Succeeded,
-                        SettlementKind::ClientCancelled => oxsum_core::OperationState::Cancelled,
-                        SettlementKind::UpstreamError
-                        | SettlementKind::UpstreamUnreachable
-                        | SettlementKind::Swept
-                        | SettlementKind::Released
-                        | SettlementKind::Refused => oxsum_core::OperationState::Failed,
-                    };
-                    // The winning attempt completes first, carrying the usage
-                    // the settle priced from — the `usage` object's verbatim
-                    // report when upstream gave one, the estimate block when
-                    // the degraded path priced it instead. A `Nothing` charge
-                    // completes the attempt with no usage: upstream answered
-                    // but reported nothing the bill could price.
-                    if let Some(attempt_id) = self.winning_attempt {
-                        // `usage` is the settled record — upstream's verbatim
-                        // report when it gave one, the estimate block the
-                        // degraded path priced instead — so the attempt's
-                        // `usage_json` is the same figure the bill proves.
-                        let usage_json = answered
-                            .then(|| serde_json::to_value(&usage).ok())
-                            .flatten();
-                        if let Err(error) = self
-                            .db
-                            .complete_attempt(
-                                attempt_id,
-                                oxsum_core::AttemptStatus::Answered,
-                                usage_json.as_ref(),
-                                reason.as_deref(),
-                            )
-                            .await
-                        {
-                            tracing::warn!(%error, request = %self.request,
-                                "completing the operation's winning attempt failed");
-                        }
-                    }
-                    match self
-                        .db
-                        .settle_operation(
-                            operation.operation_id,
-                            &operation.lease_owner,
-                            operation_state,
-                            charged,
-                            kind.as_str(),
-                        )
-                        .await
-                    {
-                        Ok(oxsum_core::OperationSettle::Settled) => {}
-                        Ok(oxsum_core::OperationSettle::AlreadySettled) => {
-                            tracing::info!(request = %self.request,
-                                "the operation was already terminal — a raced settle lost the CAS");
-                        }
-                        Ok(oxsum_core::OperationSettle::LeaseLost) => {
-                            tracing::warn!(request = %self.request,
-                                "the operation's lease was lost before the settle could write it");
-                        }
-                        Err(error) => {
-                            tracing::error!(%error, request = %self.request,
-                                "the operation's terminal write failed");
-                        }
-                    }
-                }
-                // The turn's usage row rides beside the settlement it describes: the ledger
-                // entry is the source of truth, and a failed write is drift for the
-                // reconciler to report, not a reason to retry the charge.
-                let row = UsageRow {
-                    request_id: self.request.clone(),
-                    tenant_id: self.tenant_id.clone(),
-                    key_id: Some(self.key_id),
-                    mandate_id: self.mandate.as_ref().map(|m| m.verified.mandate_id),
-                    model: self.model.clone(),
-                    channel: self.channel.clone(),
-                    price_version: self.version,
-                    kind,
-                    entry_id: *entry_id_for(&settlement_key_for(&self.hold_key)).as_uuid(),
-                    usage: usage.clone(),
-                    status: kind.status().to_owned(),
-                    failure_reason: reason.clone(),
-                    counts,
-                    charged_minor: charged,
-                    freeze_minor: self.freeze,
-                    // The platform's own cost for the same usage, under the set the
-                    // turn priced with — `None` when it carries no `upstream`
-                    // block, which is untracked rather than free (issue #112).
-                    upstream_cost_minor: self.price.upstream_cost(&usage, billable).unwrap_or_else(
-                        |error| {
-                            tracing::error!(%error, request = %self.request,
-                                "pricing upstream's cost failed; the row records untracked");
-                            None
-                        },
-                    ),
-                    upstream_attempts: self.upstream_attempts,
-                };
-                // The post-settle balance feeds `balance.low`; a read that
-                // fails skips the check rather than blocking the record.
-                let available = self.wallet.available().await.ok();
-                // The two writes are independent — the usage row and the watch-row
-                // delete touch different tables — so they go out concurrently
-                // instead of as two serial round trips. Either failing alone
-                // only logs: a missing usage row is what the reconciliation
-                // report's drift classes exist to catch, and a left-behind
-                // watch row is what the sweeper reaps.
-                let (usage_outcome, hold_outcome) = tokio::join!(
-                    self.db.record_usage_balanced(&row, available),
-                    self.db.clear_open_hold(&self.hold_key),
-                );
-                if let Err(error) = usage_outcome {
-                    tracing::error!(%error, request = %self.request,
-                        "recording the settled turn's usage row failed");
-                }
-                if let Err(error) = hold_outcome {
-                    tracing::error!(%error, request = %self.request,
-                        "clearing the settled hold's watch row failed");
-                }
-                // The request-log row (issue #505): the operational record a
-                // billing dispute reads. Post-settlement and non-blocking — a
-                // logging failure is traced and dropped, never a failed
-                // request, so it rides beside the settle but outside its
-                // transaction.
-                let log_row = oxsum_core::RequestLogRow {
-                    request_id: self.request.clone(),
-                    tenant_id: self.tenant_id.clone(),
-                    organization_id: self.organization_id,
-                    entry_id: Some(*entry_id_for(&settlement_key_for(&self.hold_key)).as_uuid()),
-                    key_id: Some(self.key_id),
-                    model_requested: self.requested_model.clone(),
-                    model_served: self.model.clone(),
-                    channel: self.channel.clone(),
-                    admission_outcome: "admitted".to_owned(),
-                    status: kind.status().to_owned(),
-                    ttft_ms: self
-                        .first_byte
-                        .map(|at| at.duration_since(self.started).as_millis() as i64),
-                    total_ms: Some(self.started.elapsed().as_millis() as i64),
-                    input_tokens: usage.input_tokens,
-                    output_tokens: usage.output_tokens,
-                    cached_tokens: usage.cached_tokens,
-                    charge_minor: charged,
-                    upstream_attempts: self.upstream_attempts,
-                    error_kind: if kind == SettlementKind::Usage {
-                        None
-                    } else {
-                        Some(kind.as_str().to_owned())
-                    },
-                    http_status: Some(200),
-                    created_at: time::OffsetDateTime::now_utc(),
-                };
-                if let Err(error) = self.db.record_request_log(&log_row).await {
-                    tracing::warn!(%error, request = %self.request,
-                        "the settled turn's request-log row did not write");
-                }
-            }
-            // The conflict arm is the race the derived settlement key decides: the sweeper
-            // settled it first and wrote its own record, so this turn must not write one.
-            // `HoldNotFound` is the hold being gone another way. Either way there is nothing
-            // left to watch.
-            Err(WalletError::Conflict(_)) | Err(WalletError::HoldNotFound(_)) => {
+        let settled = match &outcome {
+            Ok(Outcome::Settled) => true,
+            Ok(Outcome::Replay) => {
+                // The race the derived settlement key decides: the sweeper's
+                // settle or a raced copy of this turn's landed first, and its
+                // record stands — there is nothing left to watch, and this
+                // turn must not write a second usage row or operation close.
                 if let Err(error) = self.db.clear_open_hold(&self.hold_key).await {
                     tracing::error!(%error, request = %self.request,
                         "clearing the settled hold's watch row failed");
                 }
+                false
             }
-            // Any other failure leaves the row watched: the settlement did not land, and the
-            // sweeper retries what the turn could not finish.
-            Err(_) => {}
+            Err(error) => {
+                tracing::error!(%error, request = %self.request,
+                    "the settlement transaction rolled back; the sweeper owns the hold now");
+                false
+            }
+        };
+        if settled {
+            // The request-log row (issue #505): the operational record a
+            // billing dispute reads. Post-settlement and non-blocking — a
+            // logging failure is traced and dropped, never a failed
+            // request, so it rides beside the settle but outside its
+            // transaction.
+            let log_row = oxsum_core::RequestLogRow {
+                request_id: self.request.clone(),
+                tenant_id: self.tenant_id.clone(),
+                organization_id: self.organization_id,
+                entry_id: Some(*entry_id_for(&settlement_key_for(&self.hold_key)).as_uuid()),
+                key_id: Some(self.key_id),
+                model_requested: self.requested_model.clone(),
+                model_served: self.model.clone(),
+                channel: self.channel.clone(),
+                admission_outcome: "admitted".to_owned(),
+                status: kind.status().to_owned(),
+                ttft_ms: self
+                    .first_byte
+                    .map(|at| at.duration_since(self.started).as_millis() as i64),
+                total_ms: Some(self.started.elapsed().as_millis() as i64),
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                cached_tokens: usage.cached_tokens,
+                charge_minor: charged,
+                upstream_attempts: self.upstream_attempts,
+                error_kind: if kind == SettlementKind::Usage {
+                    None
+                } else {
+                    Some(kind.as_str().to_owned())
+                },
+                http_status: Some(200),
+                created_at: time::OffsetDateTime::now_utc(),
+            };
+            if let Err(error) = self.db.record_request_log(&log_row).await {
+                tracing::warn!(%error, request = %self.request,
+                    "the settled turn's request-log row did not write");
+            }
         }
         // The settlement counters record here, at the one place every kind of settle
         // passes through — including the Drop path a hung-up client triggers.
@@ -1335,7 +1324,11 @@ impl Plan {
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
         });
-        outcome.map(|_| charged)
+        match outcome {
+            Ok(Outcome::Settled) => Ok(charged),
+            Ok(Outcome::Replay) => Err(WalletError::Conflict("hold already settled".into())),
+            Err(error) => Err(error),
+        }
     }
 }
 

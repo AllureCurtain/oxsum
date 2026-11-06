@@ -1499,14 +1499,12 @@ async fn run(
         }
     };
     let wallet_minor = freeze - subscription.drawn_minor;
-    // A fully entitlement-funded turn takes no wallet hold (issue #603, D05):
-    // the subscription draw and the durable operation row are its whole
-    // reservation — a fabricated 1-minor hold would refuse a turn the plan
-    // already pays for when the wallet is empty, which A13 forbids. The
-    // settlement writes the typed zero-cost receipt instead of a
-    // release-and-charge, and the sweeper recovers it through the operation's
-    // lease like any other turn — the watch row still lists it so a crashed
-    // worker's turn is visible.
+    // A fully entitlement-funded turn takes no wallet hold (issues #602, #603):
+    // the durable operation row plus the subscription draw are the reservation's
+    // authority — a fabricated 1-minor hold would refuse a turn the plan already
+    // pays for when the wallet is empty, which A13 forbids. The settlement writes
+    // the typed zero-cost receipt instead of a release-and-charge entry, and the
+    // sweeper recovers it through the operation's lease like any other turn.
     let wallet_held = wallet_minor > 0;
     if wallet_held
         && let Err(error) = wallet
@@ -2288,9 +2286,10 @@ async fn serve_cache_hit(
         }
     };
     let wallet_minor = freeze - subscription.drawn_minor;
-    // A hit the entitlement fully covers takes no wallet hold either (issue
-    // #603): like the fresh-turn path, the draw and the operation row are the
-    // reservation, and the settle writes the zero-cost receipt.
+    // Same rule as a fresh turn (issues #602, #603): a cache hit the
+    // subscription fully covers takes no wallet hold; the draw and the
+    // operation row are the reservation, and the settle writes the zero-cost
+    // usage receipt.
     let wallet_held = wallet_minor > 0;
     if wallet_held
         && let Err(error) = wallet
