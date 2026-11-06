@@ -15280,7 +15280,6 @@ export interface components {
             /** Format: uuid */
             nextCursor: string | null;
         };
-<<<<<<< HEAD
         /**
          * @description The one fulfillment arm the order may take. `walletTopup` credits wallet cash only; `bundle` posts purchased credit plus a separate promo lot; `planPeriod` activates quota only; `invoiceRepayment` repays a drawn receivable only. No purpose both grants quota and wallet cash.
          * @enum {string}
@@ -15406,8 +15405,6 @@ export interface components {
             /** @description the paid orders the recovery sweep still owes a fulfillment */
             paidUnfulfilled: string[];
         };
-=======
->>>>>>> origin/main
         ProviderMutationResult: {
             /** Format: uuid */
             id: string;

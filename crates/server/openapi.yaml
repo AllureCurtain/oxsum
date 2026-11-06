@@ -11809,8 +11809,6 @@ components:
         failed: { type: integer, format: int64 }
         needsAttention: { type: integer, format: int64 }
         paidUnfulfilled: { type: array, items: { type: string, format: uuid }, description: the paid orders the recovery sweep still owes a fulfillment }
-=======
->>>>>>> origin/main
     ProviderMutationResult:
       type: object
       required: [id, resourceId, version]
