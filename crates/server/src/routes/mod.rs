@@ -40,6 +40,7 @@ mod plans;
 mod refunds;
 mod report_links;
 pub(crate) mod requests;
+mod statements;
 pub(crate) mod usage;
 mod usage_reports;
 mod webhooks;
@@ -119,6 +120,12 @@ pub fn router(state: AppState) -> Router {
         // The caller's plan-fee journals (issue #611, T20).
         .route("/org/plan/journals", get(journals::my_journals))
         .route("/org/plan/journals/{journal_id}", get(journals::my_journal))
+        // The caller's plan statements (issue #612, T21).
+        .route("/org/statements", get(statements::my_statements))
+        .route(
+            "/org/statements/{statement_id}",
+            get(statements::my_statement),
+        )
         .route(
             "/webhooks",
             get(webhooks::list_webhooks).post(webhooks::create_webhook),
@@ -375,6 +382,16 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/business/journals/{journal_id}/void",
             post(journals::void_journal),
+        )
+        // The staff plan-statement read and release-review (issue #612, T21).
+        .route("/business/statements", get(statements::business_statements))
+        .route(
+            "/business/statements/{statement_id}",
+            get(statements::business_statement),
+        )
+        .route(
+            "/business/statements/{statement_id}/release-review",
+            post(statements::release_review),
         )
         .route(
             "/business/customers/{organization_id}/lifecycle",

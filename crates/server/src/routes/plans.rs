@@ -66,7 +66,11 @@ pub(crate) async fn my_plan(
         Some(p) => state.db.plan_periods(p.customer_plan_id).await?,
         None => Vec::new(),
     };
-    ok(serde_json::json!({ "plan": plan, "periods": periods }))
+    // The credit standing beside the binding (issue #612, T21): the cap, what
+    // the open statements still owe plus current holds, and the nearest due
+    // date — the customer's own credit read next to its plan.
+    let credit = state.db.plan_credit_standing(organization.id).await?;
+    ok(serde_json::json!({ "plan": plan, "periods": periods, "credit": credit }))
 }
 
 /// `POST /api/v1/org/plan/cancel`: mark `cancelAtPeriodEnd` — the paid period
