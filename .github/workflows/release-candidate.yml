@@ -178,7 +178,10 @@ jobs:
           # wasm-bindgen can disappear (0.2.129's did when the repo moved to
           # wasm-bindgen/wasm-bindgen), while `cargo install --locked` builds
           # the exact lockfile version from a source that cannot be deleted.
-          cargo install wasm-bindgen-cli --version "$version" --locked --root /usr/local
+          cargo install wasm-bindgen-cli --version "$version" --locked --root "$HOME/.cargo"
+          # `--root $HOME/.cargo` puts the binary on the default PATH; an explicit
+          # /usr/local root fails on a runner whose cargo home is not writable as
+          # root-owned (the first dispatch hit `/usr/local/.crates.toml` denied).
       - run: bash scripts/build-verify-wasm.sh
       - uses: actions/upload-artifact@v7
         with:
@@ -239,7 +242,10 @@ jobs:
           # wasm-bindgen can disappear (0.2.129's did when the repo moved to
           # wasm-bindgen/wasm-bindgen), while `cargo install --locked` builds
           # the exact lockfile version from a source that cannot be deleted.
-          cargo install wasm-bindgen-cli --version "$version" --locked --root /usr/local
+          cargo install wasm-bindgen-cli --version "$version" --locked --root "$HOME/.cargo"
+          # `--root $HOME/.cargo` puts the binary on the default PATH; an explicit
+          # /usr/local root fails on a runner whose cargo home is not writable as
+          # root-owned (the first dispatch hit `/usr/local/.crates.toml` denied).
       - name: Pack the tarball and run the clean consumer
         run: bash scripts/check-verify-consumer.sh
       - name: Keep the exact tarball the consumer verified
@@ -302,7 +308,10 @@ jobs:
           # wasm-bindgen can disappear (0.2.129's did when the repo moved to
           # wasm-bindgen/wasm-bindgen), while `cargo install --locked` builds
           # the exact lockfile version from a source that cannot be deleted.
-          cargo install wasm-bindgen-cli --version "$version" --locked --root /usr/local
+          cargo install wasm-bindgen-cli --version "$version" --locked --root "$HOME/.cargo"
+          # `--root $HOME/.cargo` puts the binary on the default PATH; an explicit
+          # /usr/local root fails on a runner whose cargo home is not writable as
+          # root-owned (the first dispatch hit `/usr/local/.crates.toml` denied).
       - run: rustup target add wasm32-unknown-unknown
       - run: bash scripts/verify-examples.sh
 
