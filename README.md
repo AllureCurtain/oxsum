@@ -95,7 +95,7 @@ docker run --rm -p 3000:3000 \
 
 ## Status
 
-Under active development. The multi-tenant wallet core (top-up, hold/settle, inclusion proofs, tamper detection), organization-scoped API key authentication, the OpenAI- and Anthropic-compatible gateway (freeze before the call, settle against upstream usage), the React dashboard at `/app`, the server-rendered `/verify` page (which runs the verifier in the browser when the wasm bundle is present), monthly statements with dunning, and the multi-rail deposit abstraction are implemented and covered by the test suite. The P1–P8 roadmap, the Q1–Q4 verifiability phase and the next-phase gap plan are closed; the remaining work is tracked as issues.
+Under active development; the self-hosted release program (T00–T30) is software-complete and accepted against its scenario matrix — see [docs/roadmap/self-hosted-v1/ACCEPTANCE-RESULTS.md](docs/roadmap/self-hosted-v1/ACCEPTANCE-RESULTS.md). On top of the core (top-up, hold/settle, inclusion proofs, tamper detection, the OpenAI/Anthropic-compatible gateway, `/app` dashboard, browser `/verify`), the release adds: multi-tenant businesses with a staff console at `/app/business`, a customer portal with plans/billing/self-service, versioned sale books and paid plans with journals + statements + receivables, payment orders across Stripe/Hyperswitch/Airwallex/x402 rails with refunds and disputes, promotional lots, financial-facts reporting with reconciliation, v2 evidence bundles customers can verify offline, runnable developer examples, and the compose-based self-hosted install/upgrade/restore path in [docs/self-hosted-install.md](docs/self-hosted-install.md). What remains is external: merchant/provider certification, independent pilots and publication authorization — the exact list lives in [docs/roadmap/self-hosted-v1/RELEASE-CHECKLIST.md](docs/roadmap/self-hosted-v1/RELEASE-CHECKLIST.md). No production-ready label is claimed yet.
 
 ## Documentation
 
@@ -106,9 +106,13 @@ Under active development. The multi-tenant wallet core (top-up, hold/settle, inc
 - Verifying a bill (for the customer): docs/verify-your-bill.md
 - What each proof covers (the surface map): docs/proofs.md
 - What each payment rail has actually been exercised to: docs/rails.md
+- Supported integrations and what the server refuses: docs/integrations.md and docs/unsupported.md
+- Self-hosted install/upgrade/restore: docs/self-hosted-install.md and docs/self-hosted-upgrade.md
+- Release candidate → promotion runbook: docs/self-hosted-release.md
 - Development guide: docs/development.md
 - Architecture: docs/architecture.md
 - Technical decisions: docs/decisions.md
+- Security reports: SECURITY.md — operator support: SUPPORT.md
 
 ## License
 
