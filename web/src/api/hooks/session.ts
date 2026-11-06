@@ -116,3 +116,17 @@ export function useHealth() {
     retry: false,
   });
 }
+
+/** The seller branding (issue #614, T23): a public read — the login and
+ * register pages brand themselves before a session exists, so it never waits
+ * on one. A deployment that configures nothing answers the compiled-in
+ * default, which the callers render as the stock chrome. */
+export function useBranding() {
+  return useQuery({
+    queryKey: ["branding"],
+    queryFn: () =>
+      api<{ name: string; logoUrl: string | null; accentColor: string | null }>("/branding"),
+    staleTime: 300_000,
+    retry: false,
+  });
+}
