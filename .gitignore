@@ -15,3 +15,6 @@ local-notes/
 
 # infra/hyperswitch/.repo — the hyperswitch clone the migration_runner mounts.
 infra/hyperswitch/.repo/
+
+# macOS Finder metadata
+.DS_Store
