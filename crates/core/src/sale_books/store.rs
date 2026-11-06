@@ -369,7 +369,7 @@ impl Db {
                 let mut next = new_schedule("override", *effective_from, *effective_until, now)?;
                 next.organization_id = Some(*organization_id);
                 next.model = Some(model.clone());
-                next.terms = Some(terms.clone());
+                next.terms = Some((**terms).clone());
                 (
                     add_schedule(&mut tx, business, next, *replaces, now).await?,
                     None,

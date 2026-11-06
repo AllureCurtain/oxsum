@@ -109,7 +109,7 @@ fn override_model(
     SaleChange::OverrideModel {
         organization_id: org,
         model: model.into(),
-        terms: terms(rate, 0),
+        terms: Box::new(terms(rate, 0)),
         effective_from: start,
         effective_until: until,
         replaces,

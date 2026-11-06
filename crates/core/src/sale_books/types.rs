@@ -133,7 +133,7 @@ pub enum SaleChange {
     OverrideModel {
         organization_id: Uuid,
         model: String,
-        terms: SaleTerms,
+        terms: Box<SaleTerms>,
         #[serde(default, with = "time::serde::rfc3339::option")]
         effective_from: Option<OffsetDateTime>,
         #[serde(default, with = "time::serde::rfc3339::option")]
