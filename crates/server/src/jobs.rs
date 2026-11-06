@@ -81,6 +81,9 @@ pub fn spawn_worker(db: Db, ctx: JobContext) -> tokio::task::JoinHandle<()> {
             // The task relay's poll pass reuses the same pair — the client to
             // reach the channel, the secret to open its credential (issue #503).
             periodic.push(kinds::POLL_TASKS);
+            // The refund retry pass reuses the pair too: the secret unseals
+            // the merchant credentials its PSP calls sign under (issue #608).
+            periodic.push(kinds::REFUND_RETRIES);
         }
         if ctx.webhook.is_some() && ctx.upstream_price_sync {
             periodic.push(kinds::SYNC_UPSTREAM_PRICES);
@@ -280,6 +283,30 @@ async fn run_one(
                 ));
             };
             crate::webhooks::deliver_due(db, http, secret, &ctx.metrics, None).await;
+        }
+        kinds::REFUND_RETRIES => {
+            let Some((_http, secret)) = &ctx.webhook else {
+                return Err(oxsum_core::WalletError::Misconfigured(
+                    "refund-retries has no sealing key configured".into(),
+                ));
+            };
+            let report = retry_due_refunds(db, secret).await;
+            match report {
+                Ok(report) => {
+                    if report.retried > 0 || report.released > 0 {
+                        info!(
+                            due = report.due,
+                            retried = report.retried,
+                            released = report.released,
+                            "the refund-retry pass ran"
+                        );
+                    }
+                }
+                Err(error) => {
+                    warn!(%error, "the refund-retry pass failed");
+                    return Err(error);
+                }
+            }
         }
         kinds::SYNC_UPSTREAM_PRICES => {
             let Some((_http, secret)) = &ctx.webhook else {
@@ -959,6 +986,98 @@ async fn poll_open_tasks(
             Err(error) => {
                 error!(%error, task = %task.task_id, "the task settle failed");
                 report.still_open += 1;
+            }
+        }
+    }
+    Ok(report)
+}
+
+/// What one `refund-retries` pass did.
+#[derive(Debug, Default)]
+struct RefundRetryReport {
+    /// `provider_pending` refunds whose `next_retry_at` was due.
+    due: usize,
+    /// Refunds the pass re-issued a provider call for.
+    retried: usize,
+    /// Reservations the pass released — the attempt budget ran out or the
+    /// provider refused outright.
+    released: usize,
+}
+
+/// The `refund-retries` pass (issue #608): for each due `provider_pending`
+/// refund, re-issue the PSP call — the refund id is the provider's
+/// idempotency key, so a re-issue can never mint a second refund — then
+/// record the handle it answered, reschedule a transient failure on the
+/// backoff, or release the reservation when the attempt budget ran out. A
+/// signed `refund_*` event landing between calls settles the row; the
+/// retry's own re-read respects it.
+///
+/// Unleadered like `poll-tasks`: the provider idempotency key serializes two
+/// workers on one refund, so a duplicated pass is a wasted call, never a
+/// second refund. The batch is bounded per pass so a backlog drains over
+/// ticks.
+async fn retry_due_refunds(
+    db: &Db,
+    secret: &SecretKey,
+) -> Result<RefundRetryReport, oxsum_core::WalletError> {
+    let http = oxsum_integrations::provider_http::ProviderHttp::default();
+    let due = db.due_refund_retries(64).await?;
+    let mut report = RefundRetryReport {
+        due: due.len(),
+        ..RefundRetryReport::default()
+    };
+    for refund in due {
+        let Some(target) = db.refund_retry_target(refund.refund_id).await? else {
+            continue;
+        };
+        let Some(context) = db
+            .merchant_signing_context(target.merchant_id, target.merchant_version_id, secret)
+            .await?
+        else {
+            // A merchant that vanished mid-flight leaves the reservation
+            // forever pending — release it as a definite failure.
+            db.fail_order_refund(refund.refund_id, "merchant is gone")
+                .await?;
+            report.released += 1;
+            continue;
+        };
+        let Some(provider_payment) = target.provider_payment_id.as_deref() else {
+            db.fail_order_refund(refund.refund_id, "no provider payment bound")
+                .await?;
+            report.released += 1;
+            continue;
+        };
+        match oxsum_integrations::merchant_checkout::create_refund(
+            &context,
+            refund.refund_id,
+            provider_payment,
+            refund.display_amount_minor,
+            &refund.display_currency,
+            &refund.reason,
+            &http,
+        )
+        .await
+        {
+            Ok(handle) => {
+                db.note_refund_provider(refund.refund_id, &handle.provider_refund_id)
+                    .await?;
+                // A synchronous `succeeded` answer still waits for the signed
+                // event — the webhook is the only terminal truth — but the
+                // reservation no longer needs retries: push the next attempt
+                // out to the sweep's own cadence via a long backoff, from
+                // which a missing event eventually releases it.
+                db.retry_order_refund(refund.refund_id).await?;
+                report.retried += 1;
+            }
+            Err(_) => {
+                let standing = db
+                    .fail_order_refund(refund.refund_id, "provider refund call failed")
+                    .await?;
+                if standing.state == "released" {
+                    report.released += 1;
+                } else {
+                    report.retried += 1;
+                }
             }
         }
     }

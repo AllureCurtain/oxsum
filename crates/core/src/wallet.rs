@@ -995,6 +995,82 @@ impl Wallet {
         .await
     }
 
+    /// Takes back wallet credit a payment-order refund returned in cash
+    /// (issue #608): one ledger entry that mirrors the funding leg —
+    /// `debit Wallet, credit Cash` — so the purchased pool shrinks by exactly
+    /// what the PSP gave back. The refund's own credit note records the
+    /// correction beside it; nothing is rewritten.
+    ///
+    /// The draw is on the purchased pool alone: granted credit never stood
+    /// behind a rail payment, and drawn credit-line debt is the dispute
+    /// re-charge's to restore, not a refund's. `FundedReservations` is what
+    /// refuses a take-back the pool cannot carry — the customer already spent
+    /// the refunded credit — surfacing [`WalletError::InsufficientFunds`]
+    /// enforced inside the append, so the bound holds under a consume racing
+    /// the refund, never as a read-then-write check.
+    ///
+    /// `pub(crate)`: only [`crate::Db::settle_order_refund`] calls it, under a
+    /// key derived from the refund id — a retried or recovered settlement
+    /// replays the standing entry rather than debiting twice.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::InvalidInput`] for a non-positive amount, an empty
+    /// reason, or a malformed key; [`WalletError::InsufficientFunds`] when
+    /// the purchased pool cannot cover the debit.
+    pub(crate) async fn refund_debit(
+        &self,
+        idempotency_key: &str,
+        reason: &str,
+        minor: i64,
+        on: Date,
+    ) -> Result<Receipt, WalletError> {
+        if reason.trim().is_empty() {
+            return Err(WalletError::InvalidInput(
+                "a refund take-back needs a reason".into(),
+            ));
+        }
+        let amt = positive(minor)?;
+        let key = format!("order-refund/{idempotency_key}");
+        self.append(
+            Entry::<Draft, SCALE>::new(entry_id_for(&key), idem(&key)?, on)
+                .with_description(description_of(reason)?)
+                .debit(self.wallet, amt, currency())
+                .credit(self.cash, amt, currency()),
+        )
+        .await
+    }
+
+    /// Re-charges a drawn receivable a lost dispute restored (issue #608):
+    /// the same `debit Cash, credit CreditLine` shape
+    /// [`Self::repay_credit`] posts — the platform's cash goes back out to the
+    /// card network and the line the customer drew is owed again — but under
+    /// the dispute's own ledger key, `dispute-recharge/<dispute_id>`, so the
+    /// customer-visible ledger reads a contested-charge restoration, never a
+    /// voluntary repayment, and a retried settle replays the standing entry.
+    ///
+    /// Like `repay_credit` the amount is capped at what is drawn: a dispute
+    /// lost over money the line no longer carries has nothing to restore, and
+    /// the refusal surfaces rather than booking into a pool the outcome
+    /// forbids.
+    ///
+    /// `pub(crate)`: only [`crate::Db::resolve_order_dispute`] calls it.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::InvalidInput`] for a non-positive amount or one over
+    /// the drawn debt; [`WalletError::Conflict`] when the key is taken by a
+    /// different entry; storage failures surface as [`WalletError`].
+    pub(crate) async fn dispute_recharge(
+        &self,
+        dispute_id: &uuid::Uuid,
+        minor: i64,
+        on: Date,
+    ) -> Result<Receipt, WalletError> {
+        self.repay_credit(&format!("dispute-recharge/{dispute_id}"), minor, on)
+            .await
+    }
+
     /// Answers for a key that already has a committed deduction entry: the
     /// stored entry's receipt when it drew the amount asked for, under the
     /// same reason — whatever its pool split (balances move after a

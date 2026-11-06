@@ -228,6 +228,166 @@ impl ReturnUrls {
     }
 }
 
+/// What issuing a refund returns: the provider's own refund id — what the
+/// `refund_*` webhooks name — and the status the provider answered (`pending`
+/// is the norm; a provider that refunds synchronously may answer
+/// `succeeded`, which the signed event still confirms).
+pub struct RefundHandle {
+    pub provider_refund_id: String,
+    pub status: String,
+}
+
+/// Issues a refund against a payment order's provider payment (issue #608):
+/// the cash half of a correction, requested only after the durable
+/// `provider_pending` reservation commits — a crash between the reservation
+/// and this call leaves a retryable row, never a lost refund.
+///
+/// `refund_id` is the `oxsum.refunds` row's UUID, used as the provider's
+/// idempotency key: a retried or recovered call can never mint a second
+/// refund. `provider_payment_id` is the payment the order was charged under;
+/// `amount_minor`/`currency` are the fiat terms the refund carries (the
+/// display figure the order pinned — the credit take-back is a separate
+/// ledger fact the provider never sees). The refund's own `metadata.refund_id`
+/// points back so the `refund_*`/`dispute_*` events walk to the row without
+/// trusting the payment id alone.
+///
+/// # Errors
+///
+/// `MerchantCheckoutError` on a transport failure, a non-2xx answer, or a
+/// body with no recognizable refund id — the caller records it as a retryable
+/// `provider_pending`, never silent.
+pub async fn create_refund(
+    context: &MerchantSigningContext,
+    refund_id: uuid::Uuid,
+    provider_payment_id: &str,
+    amount_minor: i64,
+    currency: &str,
+    reason: &str,
+    http: &ProviderHttp,
+) -> Result<RefundHandle, MerchantCheckoutError> {
+    let metadata = json!({"refund_id":refund_id,"order_id":refund_id});
+    let base = &context.version.api_url;
+    let policy = &context.version.destination_policy;
+    let result = match context.rail {
+        MerchantRail::Hyperswitch => {
+            let response = http
+                .request(Method::POST, base, policy, &["refunds"])
+                .await
+                .map_err(|_| MerchantCheckoutError)?
+                .header("api-key", context.api_key())
+                .header("idempotency-key", refund_id.to_string())
+                .json(&json!({
+                    "payment_id": provider_payment_id,
+                    "amount": amount_minor,
+                    "reason": reason,
+                    "metadata": metadata,
+                }))
+                .send()
+                .await
+                .map_err(|_| MerchantCheckoutError)?;
+            if !response.status().is_success() {
+                return Err(MerchantCheckoutError);
+            }
+            let result: Value = response.json().await.map_err(|_| MerchantCheckoutError)?;
+            RefundHandle {
+                provider_refund_id: field(&result, "refund_id")?,
+                status: result["status"].as_str().unwrap_or("pending").to_owned(),
+            }
+        }
+        MerchantRail::Stripe => {
+            let response = http
+                .request(Method::POST, base, policy, &["v1", "refunds"])
+                .await
+                .map_err(|_| MerchantCheckoutError)?
+                .bearer_auth(context.api_key())
+                .header("idempotency-key", refund_id.to_string())
+                .form(&[
+                    ("payment_intent", provider_payment_id.to_string()),
+                    ("amount", amount_minor.to_string()),
+                    ("metadata[refund_id]", refund_id.to_string()),
+                ])
+                .send()
+                .await
+                .map_err(|_| MerchantCheckoutError)?;
+            if !response.status().is_success() {
+                return Err(MerchantCheckoutError);
+            }
+            let result: Value = response.json().await.map_err(|_| MerchantCheckoutError)?;
+            RefundHandle {
+                provider_refund_id: field(&result, "id")?,
+                status: result["status"].as_str().unwrap_or("pending").to_owned(),
+            }
+        }
+        MerchantRail::Airwallex => {
+            let login = http
+                .request(
+                    Method::POST,
+                    base,
+                    policy,
+                    &["api", "v1", "authentication", "login"],
+                )
+                .await
+                .map_err(|_| MerchantCheckoutError)?
+                .header(
+                    "x-client-id",
+                    context.client_id().ok_or(MerchantCheckoutError)?,
+                )
+                .header("x-api-key", context.api_key())
+                .send()
+                .await
+                .map_err(|_| MerchantCheckoutError)?;
+            if !login.status().is_success() {
+                return Err(MerchantCheckoutError);
+            }
+            let login: Value = login.json().await.map_err(|_| MerchantCheckoutError)?;
+            let token = field(&login, "token")?;
+            let amount = serde_json::value::RawValue::from_string(decimal(amount_minor))
+                .map_err(|_| MerchantCheckoutError)?;
+            #[derive(serde::Serialize)]
+            struct Body<'a> {
+                request_id: String,
+                payment_intent_id: String,
+                amount: &'a serde_json::value::RawValue,
+                currency: &'a str,
+                reason: &'a str,
+                metadata: Value,
+            }
+            let body = Body {
+                request_id: refund_id.to_string(),
+                payment_intent_id: provider_payment_id.to_string(),
+                amount: &amount,
+                currency,
+                reason,
+                metadata,
+            };
+            let response = http
+                .request(
+                    Method::POST,
+                    base,
+                    policy,
+                    &["api", "v1", "pa", "refunds", "create"],
+                )
+                .await
+                .map_err(|_| MerchantCheckoutError)?
+                .bearer_auth(token)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|_| MerchantCheckoutError)?;
+            if !response.status().is_success() {
+                return Err(MerchantCheckoutError);
+            }
+            let result: Value = response.json().await.map_err(|_| MerchantCheckoutError)?;
+            RefundHandle {
+                provider_refund_id: field(&result, "id")
+                    .or_else(|_| field(&result, "refund_id"))?,
+                status: result["status"].as_str().unwrap_or("pending").to_owned(),
+            }
+        }
+    };
+    Ok(result)
+}
+
 /// A purpose-scoped order checkout (issue #606): like [`create`], but the
 /// charged amount/currency are the order's display terms, which may be any
 /// ISO-4217 fiat — the binding pins what the provider charges, and the credit

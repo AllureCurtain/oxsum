@@ -7245,6 +7245,405 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/orders/{orderId}/refund-request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Request a refund review on an order
+         * @description The customer asks for review — it can never grant itself money. `amountMinor` names the credit amount asked back in ledger minor units; absent names the order's whole refundable remainder (`amountMinor` of the order minus what live refunds already reserve or returned — the promo leg of a bundle is never refundable cash). The amount is bounded by the refundable remainder, so no wallet is ever driven negative by refunding. The answer is a `requested` refund — the durable review record; a replayed `idempotencyKey` returns the standing request. Only `paid` or `fulfilled` orders may be asked on. Staff alone resolves it through `POST /api/v1/business/refunds/{refundId}/resolve`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    orderId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["RefundRequestBody"];
+                };
+            };
+            responses: {
+                /** @description The recorded refund request */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["OrderRefund"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/orders/{orderId}/refunds": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List refunds on one order
+         * @description The caller's refunds on one order it owns plus the refundable remainder it may still ask back. Another organization's order is a not-found.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    orderId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The order's refunds and refundable remainder */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["OrderRefundList"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/refunds": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the business's refunds
+         * @description Current business staff with report-read capability; a personal session, never a machine credential. The finance surface's refund list — every request, reservation and outcome, newest pages by cursor.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    after?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The business's refund page */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["OrderRefundPage"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/refunds/{refundId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read one refund
+         * @description Current business staff with report-read capability. One refund the business owns — its state, the provider reference once issued, and the credit note an approval produced.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    refundId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The refund */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["OrderRefund"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/refunds/{refundId}/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve or decline a refund request
+         * @description Current business staff with refunds-write capability; a personal session, never a machine credential. `approve` commits the durable `providerPending` reservation and issues the order-linked credit note in one transaction with its finance audit — the PSP call goes out only after that commits, so a crash mid-call leaves a retryable reservation, never a lost refund — then issues the provider refund under the refund id as the provider's idempotency key. `decline` lands `declined` with the same audit. The answer is the refund's standing state — never a promise the provider refunded: the signed `refund_succeeded`/`refund_failed` webhook is the only terminal truth.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    refundId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["RefundResolveBody"];
+                };
+            };
+            responses: {
+                /** @description The refund after the decision */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["OrderRefund"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/credit-notes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List order-linked credit notes
+         * @description Current business staff with report-read capability. The corrections the refund flow issues — each names the order it corrects, the refund it was issued under, the ledger entry once applied, and the note's state (`issued` → `applied`, `reversed` when the refund released without applying).
+         */
+        get: {
+            parameters: {
+                query?: {
+                    after?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The business's credit-note page */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["OrderCreditNotePage"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/disputes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List contested charges
+         * @description Current business staff with report-read capability. Disputes are deliberately not refunds — the provider's signed `dispute_*` events open the record, and its lifecycle ends `won`, `lost` or `closed`. A `lost` dispute re-charges the drawn receivable under its own ledger key, never granted credit.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    after?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The business's dispute page */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["OrderDisputePage"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/disputes/{disputeId}/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resolve an open dispute
+         * @description Current business staff with refunds-write capability; a personal session. `evidenceDue` moves the dispute to the contesting state, `won` or `closed` end the record, and `lost` re-charges the drawn receivable through the dispute's own ledger entry — `dispute-recharge/<dispute_id>` — so the customer-visible ledger reads a contested-charge restoration, never a granted refund. Every resolution writes its finance audit naming the actor and reason.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    disputeId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["DisputeResolveBody"];
+                };
+            };
+            responses: {
+                /** @description The dispute after the resolution */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["OrderDispute"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/business/sale-books": {
         parameters: {
             query?: never;
@@ -16552,6 +16951,137 @@ export interface components {
             needsAttention: number;
             /** @description the paid orders the recovery sweep still owes a fulfillment */
             paidUnfulfilled: string[];
+        };
+        RefundRequestBody: {
+            /** @description the request's idempotency anchor — a replay returns the standing refund */
+            idempotencyKey: string;
+            /**
+             * Format: int64
+             * @description the credit amount asked back
+             */
+            amountMinor?: number | null;
+            reason: string;
+        };
+        RefundResolveBody: {
+            idempotencyKey: string;
+            /** @enum {string} */
+            decision: "approve" | "decline";
+            reason?: string | null;
+        };
+        DisputeResolveBody: {
+            idempotencyKey: string;
+            /** @enum {string} */
+            resolution: "evidenceDue" | "won" | "lost" | "closed";
+            reason?: string | null;
+        };
+        OrderRefund: {
+            /** Format: uuid */
+            refundId: string;
+            /** Format: uuid */
+            orderId: string;
+            /** Format: uuid */
+            organizationId: string;
+            /**
+             * Format: int64
+             * @description the credit amount asked back
+             */
+            amountMinor: number;
+            /**
+             * Format: int64
+             * @description the fiat figure the provider is asked to return
+             */
+            displayAmountMinor: number;
+            displayCurrency: string;
+            reason: string;
+            /** @enum {string} */
+            state: "requested" | "declined" | "provider_pending" | "succeeded" | "failed" | "released";
+            /** @description the provider's refund id once issued — the dedup the refund_* events name */
+            providerRefundId: string | null;
+            /** @description provider attempts so far */
+            retryCount: number;
+            /** Format: date-time */
+            nextRetryAt: string | null;
+            /**
+             * Format: uuid
+             * @description the credit note an approval issued
+             */
+            noteId: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        OrderRefundPage: {
+            refunds: components["schemas"]["OrderRefund"][];
+            /** Format: uuid */
+            nextCursor: string | null;
+        };
+        OrderRefundList: {
+            refunds: components["schemas"]["OrderRefund"][];
+            /**
+             * Format: int64
+             * @description the credit-minor still refundable on the order; null for an order with nothing refundable
+             */
+            refundableMinor: number | null;
+        };
+        OrderCreditNote: {
+            /** Format: uuid */
+            creditNoteId: string;
+            /** Format: uuid */
+            organizationId: string;
+            /** Format: uuid */
+            orderId: string;
+            /** Format: uuid */
+            refundId: string;
+            /**
+             * Format: uuid
+             * @description the wallet take-back entry once applied; null while issued-unapplied
+             */
+            entryId: string | null;
+            /** Format: int64 */
+            amountMinor: number;
+            reason: string;
+            /** @enum {string} */
+            state: "issued" | "applied" | "reversed";
+            /** Format: date-time */
+            createdAt: string;
+        };
+        OrderCreditNotePage: {
+            notes: components["schemas"]["OrderCreditNote"][];
+            /** Format: uuid */
+            nextCursor: string | null;
+        };
+        OrderDispute: {
+            /** Format: uuid */
+            disputeId: string;
+            /** Format: uuid */
+            orderId: string;
+            /** Format: uuid */
+            organizationId: string;
+            /** @description the provider's case identifier */
+            providerDisputeId: string;
+            /**
+             * Format: int64
+             * @description the fiat figure contested
+             */
+            amountMinor: number;
+            currency: string;
+            /** @enum {string} */
+            state: "opened" | "evidence_due" | "won" | "lost" | "closed";
+            /**
+             * Format: uuid
+             * @description the ledger entry a lost dispute re-charged under
+             */
+            rechargeEntryId: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        OrderDisputePage: {
+            disputes: components["schemas"]["OrderDispute"][];
+            /** Format: uuid */
+            nextCursor: string | null;
         };
         ProviderMutationResult: {
             /** Format: uuid */

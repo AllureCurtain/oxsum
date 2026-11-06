@@ -67,6 +67,13 @@ pub mod kinds {
     /// `FOR UPDATE` makes the overlap harmless, one pass is the honest
     /// cadence.
     pub const EXPIRE_LOTS: &str = "expire-lots";
+    /// The refund retry pass (issue #608): re-issue `provider_pending`
+    /// refunds whose `next_retry_at` is due, releasing the reservation when
+    /// the attempt budget runs out. Unleadered — the refund row's own lock
+    /// and the provider idempotency key (the refund id) serialize two
+    /// workers on one refund, so a second pass is a wasted call, never a
+    /// second refund.
+    pub const REFUND_RETRIES: &str = "refund-retries";
 }
 
 /// How long a claimed run may take before another worker's claim assumes the
@@ -208,6 +215,9 @@ pub fn next_run(kind: &str) -> Option<Duration> {
         // `expires_at`, because a hold admitted just before the deadline may
         // still pin it — the pass is one indexed UPDATE per due lot, cheap.
         EXPIRE_LOTS => Duration::minutes(1),
+        // The refund pass rides the row's own `next_retry_at`, so the poll
+        // only bounds how late a due retry starts.
+        REFUND_RETRIES => Duration::seconds(30),
         _ => return None,
     })
 }

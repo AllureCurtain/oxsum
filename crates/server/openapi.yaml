@@ -1,10 +1,27 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.117.0
+  version: 0.118.0
   x-consumption-cache: Response cache v2 binds the exact complete request, concrete endpoint and semantic headers, customer/key permissions, selected experiment/mandate, alias targets, and every admitted route's price, destination, settings and credential configuration. A primary route without an available credential cannot serve a cache hit. Text case and whitespace are significant; old digests miss. Legacy excludeSystem is accepted but ignored.
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
+
+    0.118.0 adds corrections, partial refunds and disputes on payment orders
+    (issue #608): `POST /api/v1/orders/{id}/refund-request` is the customer's
+    ask for review — never a self-grant — bounded by the order's refundable
+    remainder; staff resolves through
+    `POST /api/v1/business/refunds/{id}/resolve`, which commits a durable
+    `providerPending` reservation plus an order-linked credit note *before*
+    the PSP call and issues the provider refund under the refund id as the
+    provider idempotency key. The signed `refund_*`/`dispute_*` events are the
+    only terminal truth: success books the wallet take-back (`debit Wallet,
+    credit Cash`), failure releases the reservation, and a `dispute` opens a
+    contested record that is deliberately not a refund — a `lost` dispute
+    re-charges the drawn receivable under its own ledger key. The
+    `refund-retries` job re-issues due reservations inside a bounded attempt
+    budget. `GET /api/v1/business/refunds{,/{id}}`,
+    `GET /api/v1/business/credit-notes` and
+    `GET /api/v1/business/disputes` are the finance surfaces.
 
     0.117.0 adds promotional lots (issue #609): a promo lot is granted credit
     with a provenance and an optional expiry, spending before every other pool
@@ -5448,6 +5465,203 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/orders/{orderId}/refund-request:
+    post:
+      summary: Request a refund review on an order
+      description: |
+        The customer asks for review — it can never grant itself money. `amountMinor` names the credit amount asked back in ledger minor units; absent names the order's whole refundable remainder (`amountMinor` of the order minus what live refunds already reserve or returned — the promo leg of a bundle is never refundable cash). The amount is bounded by the refundable remainder, so no wallet is ever driven negative by refunding. The answer is a `requested` refund — the durable review record; a replayed `idempotencyKey` returns the standing request. Only `paid` or `fulfilled` orders may be asked on. Staff alone resolves it through `POST /api/v1/business/refunds/{refundId}/resolve`.
+      security: [{ sessionCookie: [], apiKey: [] }]
+      parameters:
+        - { name: orderId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RefundRequestBody" }
+      responses:
+        "200":
+          description: The recorded refund request
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/OrderRefund" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/orders/{orderId}/refunds:
+    get:
+      summary: List refunds on one order
+      description: The caller's refunds on one order it owns plus the refundable remainder it may still ask back. Another organization's order is a not-found.
+      security: [{ sessionCookie: [], apiKey: [] }]
+      parameters:
+        - { name: orderId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The order's refunds and refundable remainder
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/OrderRefundList" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/refunds:
+    get:
+      summary: List the business's refunds
+      description: Current business staff with report-read capability; a personal session, never a machine credential. The finance surface's refund list — every request, reservation and outcome, newest pages by cursor.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: after, in: query, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200":
+          description: The business's refund page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/OrderRefundPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/refunds/{refundId}:
+    get:
+      summary: Read one refund
+      description: Current business staff with report-read capability. One refund the business owns — its state, the provider reference once issued, and the credit note an approval produced.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: refundId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The refund
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/OrderRefund" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/refunds/{refundId}/resolve:
+    post:
+      summary: Approve or decline a refund request
+      description: |
+        Current business staff with refunds-write capability; a personal session, never a machine credential. `approve` commits the durable `providerPending` reservation and issues the order-linked credit note in one transaction with its finance audit — the PSP call goes out only after that commits, so a crash mid-call leaves a retryable reservation, never a lost refund — then issues the provider refund under the refund id as the provider's idempotency key. `decline` lands `declined` with the same audit. The answer is the refund's standing state — never a promise the provider refunded: the signed `refund_succeeded`/`refund_failed` webhook is the only terminal truth.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: refundId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RefundResolveBody" }
+      responses:
+        "200":
+          description: The refund after the decision
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/OrderRefund" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/credit-notes:
+    get:
+      summary: List order-linked credit notes
+      description: Current business staff with report-read capability. The corrections the refund flow issues — each names the order it corrects, the refund it was issued under, the ledger entry once applied, and the note's state (`issued` → `applied`, `reversed` when the refund released without applying).
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: after, in: query, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200":
+          description: The business's credit-note page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/OrderCreditNotePage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/disputes:
+    get:
+      summary: List contested charges
+      description: Current business staff with report-read capability. Disputes are deliberately not refunds — the provider's signed `dispute_*` events open the record, and its lifecycle ends `won`, `lost` or `closed`. A `lost` dispute re-charges the drawn receivable under its own ledger key, never granted credit.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: after, in: query, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200":
+          description: The business's dispute page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/OrderDisputePage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/disputes/{disputeId}/resolve:
+    post:
+      summary: Resolve an open dispute
+      description: |
+        Current business staff with refunds-write capability; a personal session. `evidenceDue` moves the dispute to the contesting state, `won` or `closed` end the record, and `lost` re-charges the drawn receivable through the dispute's own ledger entry — `dispute-recharge/<dispute_id>` — so the customer-visible ledger reads a contested-charge restoration, never a granted refund. Every resolution writes its finance audit naming the actor and reason.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: disputeId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DisputeResolveBody" }
+      responses:
+        "200":
+          description: The dispute after the resolution
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/OrderDispute" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/business/sale-books:
     get:
@@ -12647,6 +12861,99 @@ components:
         failed: { type: integer, format: int64 }
         needsAttention: { type: integer, format: int64 }
         paidUnfulfilled: { type: array, items: { type: string, format: uuid }, description: the paid orders the recovery sweep still owes a fulfillment }
+    RefundRequestBody:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200, description: the request's idempotency anchor — a replay returns the standing refund }
+        amountMinor: { type: [integer, "null"], format: int64, description: the credit amount asked back, ledger minor units; absent names the whole refundable remainder }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    RefundResolveBody:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, decision]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        decision: { type: string, enum: [approve, decline] }
+        reason: { type: [string, "null"], maxLength: 500 }
+    DisputeResolveBody:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, resolution]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        resolution: { type: string, enum: [evidenceDue, won, lost, closed] }
+        reason: { type: [string, "null"], maxLength: 500 }
+    OrderRefund:
+      type: object
+      required: [refundId, orderId, organizationId, amountMinor, displayAmountMinor, displayCurrency, reason, state, providerRefundId, retryCount, nextRetryAt, noteId, createdAt, updatedAt]
+      properties:
+        refundId: { type: string, format: uuid }
+        orderId: { type: string, format: uuid }
+        organizationId: { type: string, format: uuid }
+        amountMinor: { type: integer, format: int64, description: the credit amount asked back, ledger minor units }
+        displayAmountMinor: { type: integer, format: int64, description: the fiat figure the provider is asked to return, converted at the order's pinned rate }
+        displayCurrency: { type: string }
+        reason: { type: string }
+        state: { type: string, enum: [requested, declined, provider_pending, succeeded, failed, released] }
+        providerRefundId: { type: [string, "null"], description: the provider's refund id once issued — the dedup the refund_* events name }
+        retryCount: { type: integer, description: provider attempts so far }
+        nextRetryAt: { type: [string, "null"], format: date-time }
+        noteId: { type: [string, "null"], format: uuid, description: the credit note an approval issued }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    OrderRefundPage:
+      type: object
+      required: [refunds, nextCursor]
+      properties:
+        refunds: { type: array, items: { $ref: "#/components/schemas/OrderRefund" } }
+        nextCursor: { type: [string, "null"], format: uuid }
+    OrderRefundList:
+      type: object
+      required: [refunds, refundableMinor]
+      properties:
+        refunds: { type: array, items: { $ref: "#/components/schemas/OrderRefund" } }
+        refundableMinor: { type: [integer, "null"], format: int64, description: the credit-minor still refundable on the order; null for an order with nothing refundable }
+    OrderCreditNote:
+      type: object
+      required: [creditNoteId, organizationId, orderId, refundId, entryId, amountMinor, reason, state, createdAt]
+      properties:
+        creditNoteId: { type: string, format: uuid }
+        organizationId: { type: string, format: uuid }
+        orderId: { type: string, format: uuid }
+        refundId: { type: string, format: uuid }
+        entryId: { type: [string, "null"], format: uuid, description: the wallet take-back entry once applied; null while issued-unapplied }
+        amountMinor: { type: integer, format: int64 }
+        reason: { type: string }
+        state: { type: string, enum: [issued, applied, reversed] }
+        createdAt: { type: string, format: date-time }
+    OrderCreditNotePage:
+      type: object
+      required: [notes, nextCursor]
+      properties:
+        notes: { type: array, items: { $ref: "#/components/schemas/OrderCreditNote" } }
+        nextCursor: { type: [string, "null"], format: uuid }
+    OrderDispute:
+      type: object
+      required: [disputeId, orderId, organizationId, providerDisputeId, amountMinor, currency, state, rechargeEntryId, createdAt, updatedAt]
+      properties:
+        disputeId: { type: string, format: uuid }
+        orderId: { type: string, format: uuid }
+        organizationId: { type: string, format: uuid }
+        providerDisputeId: { type: string, description: the provider's case identifier }
+        amountMinor: { type: integer, format: int64, description: the fiat figure contested }
+        currency: { type: string }
+        state: { type: string, enum: [opened, evidence_due, won, lost, closed] }
+        rechargeEntryId: { type: [string, "null"], format: uuid, description: the ledger entry a lost dispute re-charged under }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    OrderDisputePage:
+      type: object
+      required: [disputes, nextCursor]
+      properties:
+        disputes: { type: array, items: { $ref: "#/components/schemas/OrderDispute" } }
+        nextCursor: { type: [string, "null"], format: uuid }
     ProviderMutationResult:
       type: object
       required: [id, resourceId, version]

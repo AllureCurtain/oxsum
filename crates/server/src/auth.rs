@@ -257,6 +257,7 @@ fn customer_route_capability(method: &str, path: &str) -> oxsum_core::CustomerCa
             | "/orders/{order_id}"
             | "/orders/{order_id}/fulfillment"
             | "/orders/{order_id}/checkout-session"
+            | "/orders/{order_id}/refunds"
             | "/session"
             | "/device/request"
             | "/balance"
@@ -280,6 +281,7 @@ fn customer_route_capability(method: &str, path: &str) -> oxsum_core::CustomerCa
             | "/topups/hyperswitch"
             | "/topups/x402"
             | "/orders"
+            | "/orders/{order_id}/refund-request"
             | "/redemptions",
         ) => C::Personal,
         (

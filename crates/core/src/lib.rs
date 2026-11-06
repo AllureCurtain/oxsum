@@ -54,6 +54,7 @@ mod proof;
 mod provider_destination;
 mod ratelimit;
 mod reconcile;
+mod refunds;
 mod report_links;
 mod request_log;
 mod routing;
@@ -219,6 +220,11 @@ pub use provider_destination::{
 };
 pub use ratelimit::{PostgresRateLimiter, RateAllowance, RateLimited, RateLimiter, SlidingWindow};
 pub use reconcile::{DriftClass, DriftKind, DriftSample, Reconciliation};
+pub use refunds::{
+    DisputeResolution, FinanceAudit, NewRefundRequest, OrderCreditNote, OrderCreditNotePage,
+    OrderDispute, OrderDisputePage, OrderRefund, OrderRefundPage, REFUND_MAX_ATTEMPTS,
+    RefundDecision, RefundRetryTarget,
+};
 pub use report_links::{LinkScope, MintedReportLink, ReportLink, ResolvedReportLink};
 pub use request_log::{RequestLogFilter, RequestLogPage, RequestLogRow};
 pub use routing::{ChannelStats, RouteStats, SharedRouteStats};

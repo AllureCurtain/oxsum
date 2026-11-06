@@ -56,7 +56,9 @@ impl PaymentOrderPurpose {
             Self::InvoiceRepayment => "invoice_repayment",
         }
     }
-    fn parse(value: &str) -> Result<Self, WalletError> {
+    /// `pub(crate)` so `refunds.rs` reads the same stored spelling rather
+    /// than duplicating the parse.
+    pub(crate) fn parse(value: &str) -> Result<Self, WalletError> {
         match value {
             "wallet_topup" => Ok(Self::WalletTopup),
             "bundle" => Ok(Self::Bundle),
@@ -824,8 +826,9 @@ impl Db {
                 .execute(&mut *tx)
                 .await?;
             }
-            // Refunds, disputes and unsupported kinds carry no order transition:
-            // they remain authenticated intake for a later purpose's own terms.
+            // Refunds, disputes and unsupported kinds carry no order
+            // transition: `apply_refund_event` owns the refund/dispute arms,
+            // and an unsupported kind is intake only.
             _ => {}
         }
         self.mark_merchant_event_applied(receipt.id).await?;
