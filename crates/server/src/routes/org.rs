@@ -151,14 +151,12 @@ pub(crate) struct DeleteAccountReq {
 /// commit, so the answer is the last thing the credential ever receives.
 pub(crate) async fn delete_account(
     State(state): State<AppState>,
-    Extension(principal): Extension<Principal>,
+    headers: axum::http::HeaderMap,
     ApiJson(request): ApiJson<DeleteAccountReq>,
 ) -> ApiResult<oxsum_core::AccountDeletion> {
-    let principal = person(principal)?;
-    let deletion = state
-        .db
-        .delete_account(principal.user.id, &request.password)
-        .await?;
+    let token = super::business::personal_token(&headers)?;
+    let user = state.db.session_user(&token).await?;
+    let deletion = state.db.delete_account(user.id, &request.password).await?;
     ok(deletion)
 }
 

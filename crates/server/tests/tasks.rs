@@ -214,6 +214,7 @@ async fn world(url: &str, top_up: i64) -> World {
     let pool = PgPool::connect(url).await.expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let suffix = Uuid::new_v4().simple().to_string()[..8].to_owned();
     let channel = format!("tasks-{suffix}");
     let secret = SecretKey::from_bytes([7; 32]);

@@ -43,6 +43,12 @@ pub struct AuditEntry {
 /// The action names the admin surface writes under. Dotted and bounded — a
 /// typo'd name is a 400, not a row that says nothing recognizable.
 pub mod action {
+    pub const SESSION_CONTEXT: &str = "session.context";
+    pub const BUSINESS_STAFF_SET: &str = "business.staff.set";
+    pub const BUSINESS_STAFF_REVOKE: &str = "business.staff.revoke";
+    pub const BUSINESS_STAFF_ACCOUNT_DELETED: &str = "business.staff.account_deleted";
+    pub const BUSINESS_OWNERSHIP_TRANSFER: &str = "business.ownership.transfer";
+    pub const BUSINESS_REGISTRATION_SET: &str = "business.registration.set";
     pub const BUSINESS_INITIALIZED: &str = "business.initialized";
     pub const BUSINESS_SETUP_AUTHORIZED: &str = "business.setup.authorized";
     pub const CHANNEL_SET: &str = "channel.set";
@@ -84,6 +90,12 @@ pub mod action {
 
     /// Every action the surface writes — the `action` filter's vocabulary.
     pub const ALL: &[&str] = &[
+        SESSION_CONTEXT,
+        BUSINESS_STAFF_SET,
+        BUSINESS_STAFF_REVOKE,
+        BUSINESS_STAFF_ACCOUNT_DELETED,
+        BUSINESS_OWNERSHIP_TRANSFER,
+        BUSINESS_REGISTRATION_SET,
         BUSINESS_INITIALIZED,
         BUSINESS_SETUP_AUTHORIZED,
         CHANNEL_SET,

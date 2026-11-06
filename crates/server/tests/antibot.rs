@@ -73,6 +73,7 @@ async fn online_app(
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let mut config = Config::new(Signup::Open, None);
     if let Some(turnstile) = turnstile {
         config = config.with_turnstile(turnstile);

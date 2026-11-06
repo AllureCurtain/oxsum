@@ -113,18 +113,6 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/session", get(org::session))
         .route("/session/organization", post(org::switch_organization))
-        // Deleting the account is a person's action — the handler refuses an
-        // API key, which names no user (issue #202).
-        .route("/users/me", delete(org::delete_account))
-        // Requesting a verification mail is the session user's own action; the
-        // handler refuses an API key, which names no user.
-        .route("/auth/verify/request", post(auth::request_verification))
-        // The second factor's enrollment and removal are the session user's own
-        // actions — the handlers refuse an API key, which names no user (issue
-        // #504). The login's second leg is the open `/auth/totp` above.
-        .route("/auth/totp/enroll", post(auth::totp_enroll))
-        .route("/auth/totp/confirm", post(auth::totp_confirm))
-        .route("/auth/totp/disable", post(auth::totp_disable))
         // The device grant's user leg — a person's verdict, so the handlers
         // refuse an API key, which names no user (issue #156).
         .route("/device/request", get(device::device_request))
@@ -186,8 +174,26 @@ pub fn router(state: AppState) -> Router {
     // No credential: signup while the deployment allows it, and the login/logout pair.
     // Logout sits outside the auth middleware on purpose: logging out twice is not an
     // error, so it must answer 200 with no session at all.
+    // Personal account handlers authenticate their own session in either context.
     let open = Router::new()
+        .route("/auth/totp/disable", post(auth::totp_disable))
+        .route("/auth/totp/confirm", post(auth::totp_confirm))
+        .route("/auth/totp/enroll", post(auth::totp_enroll))
+        .route("/auth/verify/request", post(auth::request_verification))
+        .route("/users/me", delete(org::delete_account))
         .route("/auth/register", post(auth::register))
+        .route(
+            "/session/context",
+            get(business::context).post(business::select_context),
+        )
+        .route("/business", get(business::business))
+        .route(
+            "/business/staff",
+            get(business::staff).post(business::set_staff),
+        )
+        .route("/business/staff/revoke", post(business::revoke_staff))
+        .route("/business/ownership", post(business::transfer_ownership))
+        .route("/business/registration", post(business::registration))
         .route("/business/setup", post(business::accept_setup))
         .route("/business/setup/register", post(business::register_owner))
         .route("/auth/login", post(auth::login))

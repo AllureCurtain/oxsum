@@ -61,6 +61,7 @@ async fn online_app_with(
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let mut config = Config::new(Signup::Open, None).with_witness_keys(witness_keys);
     if let Some(seed) = seed {
         config = config.with_head_signing_seed(seed);

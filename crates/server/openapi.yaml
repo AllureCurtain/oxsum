@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.101.0
+  version: 0.102.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -842,7 +842,7 @@ paths:
     post:
       summary: Register a user, its personal organization and the first API key
       description: |
-        Refused with `FORBIDDEN` unless the deployment allows self-service signup (`OXSUM_SIGNUP=open`).
+        Refused with `FORBIDDEN` unless the initialized business owner has enabled self-registration. `OXSUM_SIGNUP` cannot override this policy.
         The API key secret is returned once, here, and is never retrievable again.
       security: []
       requestBody:
@@ -910,9 +910,9 @@ paths:
 
         An unknown email and a wrong password answer the same 401 with the same message, and the
         unknown-email path still pays for one password-hash verification, so neither timing nor
-        wording reveals whether an account exists. The session acts as the user's organization, in
-        their role; it expires thirty days after login and stops authenticating the moment the
-        user's membership in that organization is gone.
+        wording reveals whether an account exists. The session starts in customer context. Customer authority requires a current membership.
+        A user with none receives an identity-only session and can explicitly select a current
+        staff context. Sessions expire thirty days after login.
       security: []
       requestBody:
         required: true
@@ -935,8 +935,9 @@ paths:
                   data:
                     oneOf:
                       - $ref: "#/components/schemas/SessionInfo"
+                      - $ref: "#/components/schemas/SessionContextInfo"
                       - $ref: "#/components/schemas/TotpRequired"
-                    description: "`SessionInfo` on a password-only login; `TotpRequired` when the account's second factor must be satisfied first"
+                    description: "SessionInfo for a customer membership; SessionContextInfo with null organizationId when none remains; TotpRequired when the second factor must be satisfied first"
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
@@ -1137,7 +1138,7 @@ paths:
         exchange (issue #504). The account resolves by the **verified** email
         the provider reports: a linked `oauth_accounts` row first, then an
         email match that links the identity, and otherwise a registration when
-        `OXSUM_SIGNUP=open` (an `invite` deployment refuses new accounts here).
+        the initialized business policy is `open` (an invite-only business refuses new accounts here).
         Success mints a session and answers `303` to `/app` with the session
         `Set-Cookie`; every failure answers `303` back to `/app/login?error=oauth`,
         because the caller is a browser mid-redirect, not an API client.
@@ -1200,7 +1201,10 @@ paths:
                 type: object
                 required: [data]
                 properties:
-                  data: { $ref: "#/components/schemas/SessionInfo" }
+                  data:
+                    oneOf:
+                      - $ref: "#/components/schemas/SessionInfo"
+                      - $ref: "#/components/schemas/SessionContextInfo"
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
@@ -1210,6 +1214,7 @@ paths:
     post:
       summary: Begin TOTP enrollment
       description: |
+        Accepts a live personal session in either context, even without a customer membership. An explicit bearer credential is refused.
         Mints a fresh shared secret for the session user, sealed at rest under
         `OXSUM_SECRET_KEY` the way an upstream credential is, and answers it
         once as base32 plus the `otpauthUrl` the client renders a QR from. The
@@ -1231,10 +1236,12 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /api/v1/auth/totp/confirm:
     post:
       summary: Confirm TOTP enrollment on a live code
       description: |
+        Accepts a live personal session in either context, even without a customer membership. An explicit bearer credential is refused.
         Proves the authenticator scanned the pending secret: on a live code the
         enrollment confirms — the factor now gates every password login — and
         the answer carries ten single-use backup codes, shown exactly once and
@@ -1264,6 +1271,7 @@ paths:
     post:
       summary: Disable the second factor on a live code
       description: |
+        Accepts a live personal session in either context, even without a customer membership. An explicit bearer credential is refused.
         Removes the user's confirmed factor — itself second-factored: the
         request carries a live code, so a hijacked session alone cannot strip
         the protection. An empty answer follows the `LogoutResponse` shape.
@@ -1291,6 +1299,7 @@ paths:
     post:
       summary: Mail the session user's verification link
       description: |
+        Accepts a live personal session in either context, even without a customer membership. An explicit bearer credential is refused.
         Mints a single-use email token (seven-day life, stored as its SHA-256 hash) and
         mails the verification link to the session user's address. The session is the
         credential: an API key names no user and is `FORBIDDEN` here.
@@ -1464,6 +1473,7 @@ paths:
     delete:
       summary: Delete the session user's account (pseudonymization)
       description: |
+        Accepts a live personal session in either context, even without a customer membership. An explicit bearer credential is refused.
         Irreversible. The account's identity is erased while the books keep their history:
         the user row's `email` is tombstoned to `deleted-<userId>@deleted.invalid`, the
         password hash is blanked so no login can ever succeed, `emailVerified` is cleared,
@@ -3950,6 +3960,197 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/session/context:
+    get:
+      operationId: sessionContext
+      summary: Read the selected session context
+      description: A personal session only. Customer membership never implies business authority.
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/SessionContextInfo" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+    post:
+      operationId: switchSessionContext
+      summary: Select customer or business authority
+      description: A live session selects its own context. Business selection requires current staff membership. An explicit bearer credential is refused. Context selection never changes customer membership.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SessionContextRequest" }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/SessionContextInfo" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business:
+    get:
+      operationId: businessContext
+      summary: Read the active business context
+      description: Requires a personal session explicitly selected into business context. Rechecks current staff role on each call.
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessPrincipal" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/staff:
+    get:
+      operationId: businessStaff
+      summary: List business staff
+      description: Owner only. Customer keys and customer sessions have no staff authority.
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessStaffList" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+    post:
+      operationId: setBusinessStaff
+      summary: Appoint or change an existing staff member
+      description: Owner only, audited and idempotent. Existing registered user by userId. The owner role cannot be assigned here; use ownership transfer. Cannot demote an owner.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessStaffRequest" }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/staff/revoke:
+    post:
+      operationId: revokeBusinessStaff
+      summary: Revoke staff authority
+      description: Owner only. Cannot revoke an owner. Personal customer access is retained. All subsequent business calls recheck the revoked membership.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessStaffRevokeRequest" }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/ownership:
+    post:
+      operationId: transferBusinessOwnership
+      summary: Transfer ownership to an existing staff member
+      description: Owner only. Atomically promotes the selected current staff member and demotes the actor to admin. Last-owner deletion is refused. Replays recheck current owner permission.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessOwnershipRequest" }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/registration:
+    post:
+      operationId: setBusinessRegistration
+      summary: Select customer registration policy
+      description: Owner only. Fresh and upgraded installations remain invite-only until this audited change. Password, GitHub and OIDC new-account paths enforce the saved policy in their creation transaction.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessRegistrationRequest" }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /api/v1/admin/business/setup-tokens:
     post:
       summary: Authorize an expiring owner setup invitation
@@ -6843,6 +7044,89 @@ components:
       description: "`hit` when the semantic cache answered instead of upstream (issue #497): the stored body re-served, billed at the cache-read rate, the settlement's v10 `cache` block naming the original turn's entry. Absent on a miss, a stream, or a channel that never opted in."
       schema: { type: string, enum: [hit] }
   schemas:
+    BusinessRole:
+      type: string
+      enum: [owner, admin, finance, support, viewer]
+    BusinessCapability:
+      type: string
+      enum: [overviewRead, customersRead, customersWrite, customersSuspend, requestsRead, catalogWrite, routingWrite, providerSecretsWrite, commercialWrite, fundsWrite, refundsWrite, reportsRead, merchantSecretsWrite, staffManage, ownershipTransfer, registrationWrite, integrationsManage]
+    BusinessPrincipal:
+      type: object
+      required: [businessId, userId, role, capabilities]
+      properties:
+        businessId: { type: string, format: uuid }
+        userId: { type: string, format: uuid }
+        role: { $ref: "#/components/schemas/BusinessRole" }
+        capabilities:
+          type: array
+          items: { $ref: "#/components/schemas/BusinessCapability" }
+    SessionContextInfo:
+      type: object
+      required: [context, user, organizationId, business]
+      properties:
+        context: { type: string, enum: [customer, business] }
+        user: { $ref: "#/components/schemas/User" }
+        organizationId: { type: [string, "null"], format: uuid, description: Null in business context or when the user has no remaining customer membership. }
+        business:
+          oneOf:
+            - $ref: "#/components/schemas/BusinessPrincipal"
+            - type: "null"
+    SessionContextRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, context]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        context: { type: string, enum: [customer, business] }
+        organizationId: { type: [string, "null"], format: uuid, description: Customer membership to select; omitted retains the existing customer selection. Forbidden for business context. }
+    BusinessStaff:
+      type: object
+      required: [userId, email, role]
+      properties:
+        userId: { type: string, format: uuid }
+        email: { type: string, format: email }
+        role: { $ref: "#/components/schemas/BusinessRole" }
+    BusinessStaffList:
+      type: array
+      items: { $ref: "#/components/schemas/BusinessStaff" }
+    BusinessMutationResult:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string, format: uuid, description: Stable mutation receipt ID, also the audit idempotency identity. }
+    BusinessStaffRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, userId, role, reason]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        userId: { type: string, format: uuid }
+        role: { type: string, enum: [admin, finance, support, viewer] }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    BusinessStaffRevokeRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, userId, reason]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        userId: { type: string, format: uuid }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    BusinessOwnershipRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, userId, reason]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        userId: { type: string, format: uuid }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    BusinessRegistrationRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, mode, reason]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        mode: { type: string, enum: [invite, open] }
+        reason: { type: string, minLength: 1, maxLength: 500 }
     BusinessSetupTokenRequest:
       type: object
       additionalProperties: false

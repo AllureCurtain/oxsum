@@ -122,6 +122,7 @@ async fn online_app(url: &str, mailer: Option<Mailer>) -> (Router, PgPool) {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let mut config = Config::new(Signup::Open, None);
     if let Some(mailer) = mailer {
         config = config.with_mailer(mailer);

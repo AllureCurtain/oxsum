@@ -49,6 +49,7 @@ async fn world() -> Option<(Router, Db)> {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool);
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let verifying = SigningKey::from_bytes(&PAYER_SEED).verifying_key();
     let config =
         Config::new(Signup::Open, None).with_x402(oxsum_core::Ed25519RailVerifier::new(verifying));
@@ -316,6 +317,7 @@ async fn an_unconfigured_deployment_refuses_cleanly() {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool);
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let app = oxsum_server::app(db, Config::new(Signup::Open, None));
     let key = register(&app).await;
 
@@ -404,6 +406,7 @@ async fn facilitator_world() -> Option<(Router, Db, FacilitatorStub)> {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool);
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let (base_url, stub) = stub_facilitator().await;
     *stub.verify.lock().unwrap() = (true, Some("0xPAYER".to_owned()), None);
     *stub.settle.lock().unwrap() = (true, Some("0xTXHASH".to_owned()), None);

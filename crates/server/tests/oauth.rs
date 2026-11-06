@@ -124,6 +124,7 @@ async fn online_app(
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), signup == Signup::Open).await;
     let mut config = Config::new(signup, None);
     if let Some(github) = github {
         config = config.with_github(github);

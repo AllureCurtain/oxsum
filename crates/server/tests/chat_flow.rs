@@ -102,6 +102,7 @@ async fn world_for(url: &str) -> World {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
 
     // One model at one minor unit per token, on this world's own channel: the
     // database is shared between tests, and a model belongs to exactly one channel.

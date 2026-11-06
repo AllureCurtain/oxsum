@@ -105,6 +105,7 @@ async fn fixture(world: &World) -> Fixture {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
 
     // A channel name unique to this run, pointing at the real provider over
     // the Anthropic protocol. Prices are the deployment's choice; the model

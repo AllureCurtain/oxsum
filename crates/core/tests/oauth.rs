@@ -37,6 +37,7 @@ async fn world(url: &str) -> (Db, PgPool) {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     (db, pool)
 }
 
@@ -117,9 +118,9 @@ async fn a_linked_identity_logs_in_again() {
 
     // Same account both times — the provider id is the link, and the session
     // belongs to it rather than minting a second user.
-    let first_id = first.principal.user.id;
-    assert_eq!(second.principal.user.id, first_id);
-    assert_eq!(second.principal.user.email, email);
+    let first_id = first.principal.as_ref().unwrap().user.id;
+    assert_eq!(second.principal.as_ref().unwrap().user.id, first_id);
+    assert_eq!(second.principal.as_ref().unwrap().user.email, email);
 }
 
 #[tokio::test]
@@ -142,7 +143,10 @@ async fn a_verified_email_links_the_identity() {
         .oauth_login(&identity(&email), true)
         .await
         .expect("the email match resolves the account");
-    assert_eq!(session.principal.user.id, registered.user.id);
+    assert_eq!(
+        session.principal.as_ref().unwrap().user.id,
+        registered.user.id
+    );
 
     // The link is on record, so the next login resolves by provider id — the
     // row the match created.
@@ -173,8 +177,11 @@ async fn a_new_identity_registers_a_whole_account() {
     // The full shape a registration has: verified email (the provider already
     // checked it), a personal organization owned by the user, and a first API
     // key — all of it in the transaction that landed.
-    assert!(session.principal.user.email_verified);
-    assert_eq!(session.principal.role, oxsum_core::Role::Owner);
+    assert!(session.principal.as_ref().unwrap().user.email_verified);
+    assert_eq!(
+        session.principal.as_ref().unwrap().role,
+        oxsum_core::Role::Owner
+    );
     let (verified, keys): (bool, i64) = sqlx::query_as(
         "SELECT u.email_verified_at IS NOT NULL, \
                 (SELECT count(*) FROM oxsum.api_keys k JOIN oxsum.organizations o \
@@ -182,8 +189,8 @@ async fn a_new_identity_registers_a_whole_account() {
                  WHERE o.organization_id = $2) \
          FROM oxsum.users u WHERE u.user_id = $1",
     )
-    .bind(session.principal.user.id)
-    .bind(session.principal.organization.id)
+    .bind(session.principal.as_ref().unwrap().user.id)
+    .bind(session.principal.as_ref().unwrap().organization.id)
     .fetch_one(&pool)
     .await
     .unwrap();
@@ -219,7 +226,10 @@ async fn an_invite_mode_deployment_refuses_new_accounts() {
         .oauth_login(&identity(&email), false)
         .await
         .expect("an existing account logs in regardless of signup mode");
-    assert_eq!(session.principal.user.id, registered.user.id);
+    assert_eq!(
+        session.principal.as_ref().unwrap().user.id,
+        registered.user.id
+    );
 }
 
 #[tokio::test]

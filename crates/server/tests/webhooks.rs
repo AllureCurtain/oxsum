@@ -45,6 +45,7 @@ async fn world() -> Option<(Router, Db, Metrics)> {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool);
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let config = Config::new(Signup::Open, None)
         .with_secret(sealing_key())
         .with_admin_token(ADMIN_TOKEN);

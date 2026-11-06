@@ -143,6 +143,7 @@ async fn world_for(url: &str) -> World {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
 
     let suffix = uuid::Uuid::new_v4().simple().to_string()[..8].to_owned();
     // `model` is the model both channels share — what every test but the

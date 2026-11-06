@@ -234,6 +234,7 @@ async fn world(database_url: &str) -> World {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool);
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
 
     let (issuer, seen) = start_idp().await;
     let provider = oxsum_server::oidc::OidcProvider::new(
@@ -409,4 +410,35 @@ async fn an_unknown_state_fails_the_login() {
     assert_eq!(status, StatusCode::SEE_OTHER);
     assert_eq!(location.as_deref(), Some("/app/login?error=oauth"));
     assert!(cookie.is_none());
+}
+
+#[tokio::test]
+async fn saved_invite_policy_refuses_oidc_even_with_legacy_open_config() {
+    let world = world_or_skip!();
+    oxsum_testkit::set_registration_fixture(world.db.pool(), false).await;
+    let (_, location, _, _) = call(&world.app, "/api/v1/auth/oauth/oidc:test").await;
+    let callback = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap()
+        .get(location.unwrap())
+        .send()
+        .await
+        .unwrap();
+    let back = callback.headers()[reqwest::header::LOCATION]
+        .to_str()
+        .unwrap();
+    let query = back.split('?').nth(1).unwrap();
+    let (_, location, cookie, _) = call(
+        &world.app,
+        &format!("/api/v1/auth/oauth/oidc:test/callback?{query}"),
+    )
+    .await;
+    assert_eq!(location.as_deref(), Some("/app/login?error=oauth"));
+    assert!(cookie.is_none());
+    let created: i64 = sqlx::query_scalar("SELECT count(*) FROM oxsum.oauth_accounts")
+        .fetch_one(world.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(created, 0);
 }

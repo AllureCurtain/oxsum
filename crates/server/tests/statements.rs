@@ -59,6 +59,7 @@ async fn admin_app(database_url: &str) -> (Router, PgPool) {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let config = Config::new(Signup::Open, None)
         .with_secret(secret())
         .with_admin_token(TOKEN);
@@ -996,6 +997,7 @@ async fn a_signed_anchor_verifies_the_head_that_follows_it() {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool2.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let config = Config::new(Signup::Open, None)
         .with_secret(secret())
         .with_admin_token(TOKEN)
@@ -1096,6 +1098,7 @@ async fn the_proof_bundle_verifies_off_its_own_answer() {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let config = Config::new(Signup::Open, None)
         .with_secret(secret())
         .with_admin_token(TOKEN)

@@ -45,6 +45,7 @@ async fn online_app(url: &str) -> (Router, Db) {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     (
         support::app(
             db.clone(),
@@ -1351,6 +1352,7 @@ async fn mailing_app(url: &str) -> (Router, Db, SmtpStub) {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let stub = smtp_stub().await;
     let mailer = Mailer::new(
         &stub.url,

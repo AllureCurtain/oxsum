@@ -8,6 +8,7 @@ import type {
   TotpEnrollResponse,
   TotpLoginRequest,
   TotpRequired,
+  SessionContextInfo,
 } from "./types";
 
 export function useSession() {
@@ -27,7 +28,7 @@ export function useLogin() {
     // still gates the session. The caller must branch on `requiresTotp` —
     // only the `SessionInfo` arm should invalidate and navigate away.
     mutationFn: (body: { email: string; password: string }) =>
-      api<SessionInfo | TotpRequired>("/auth/login", { method: "POST", body }),
+      api<SessionInfo | SessionContextInfo | TotpRequired>("/auth/login", { method: "POST", body }),
     onSuccess: (data) => {
       if (!("requiresTotp" in data)) client.invalidateQueries();
     },
@@ -41,7 +42,7 @@ export function useTotpLogin() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (body: TotpLoginRequest) =>
-      api<SessionInfo>("/auth/totp", { method: "POST", body }),
+      api<SessionInfo | SessionContextInfo>("/auth/totp", { method: "POST", body }),
     onSuccess: () => client.invalidateQueries(),
   });
 }

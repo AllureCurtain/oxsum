@@ -303,7 +303,7 @@ Copy `.env.example` to `.env` and the server and the tests pick it up automatica
 | Variable | Notes |
 | --- | --- |
 | `DATABASE_URL` | Each organization gets a `ledger_<tenant_id>` schema in this database, plus the shared `oxsum` schema for users, organizations and keys. Tests read it too; without it, oxsum's database tests skip automatically |
-| `OXSUM_SIGNUP` | Optional; `invite` (default) or `open`. `invite` refuses `POST /api/v1/auth/register` with 403 — an invitation link (`POST /api/v1/org/invitations` → `/app/invite?token=…`) is the way in — so a public instance cannot be signed up by whoever arrives first; `open` is what a demo or a private instance wants |
+| `OXSUM_SIGNUP` | Legacy parsed `invite`/`open` value retained for configuration compatibility. It never overrides business policy. Fresh/upgraded installations are invite-only until the initialized owner sets `open` through `/api/v1/business/registration`. |
 | `OXSUM_SIGNUP_BONUS_MINOR` | Optional; credits a new organization's wallet starts with, in minor units, default 0. Booked at self-registration as an adjustment carrying "signup bonus" as its reason; an invited account joins an existing organization and is granted nothing |
 | `OXSUM_DB_MAX_CONNECTIONS` | Optional; size of the one pool every tenant shares (default 20). Each connection is a PostgreSQL backend process, so this is the process's whole budget rather than a per-tenant allowance. Stay below the database's own `max_connections` (PostgreSQL's default is 100); size it at roughly twice the expected number of concurrent gateway requests, floor 10 — saturation answers 429 `POOL_BUSY` with `Retry-After`, never a 500 |
 | `OXSUM_ADDR` | Optional listen address; defaults to `127.0.0.1:3000` |
@@ -368,7 +368,7 @@ against a real provider, set the variables below and point an OpenAI SDK at
 `http://127.0.0.1:3000/v1`:
 
 ```bash
-OXSUM_SIGNUP=open OXSUM_UPSTREAM_BASE_URL=https://api.deepseek.com/v1 \
+OXSUM_UPSTREAM_BASE_URL=https://api.deepseek.com/v1 \
   OXSUM_UPSTREAM_API_KEY=sk-... \
   OXSUM_SECRET_KEY="$(openssl rand -base64 32)" \
   OXSUM_ADMIN_TOKEN="$(openssl rand -hex 24)" \
@@ -959,3 +959,7 @@ Inspect `GET /api/v1/admin/business` with deployment authority after startup. `i
 After inspecting the ownership preview/receipt, use the deployment token to POST `/api/v1/admin/business/setup-tokens` with a unique `idempotencyKey` and the intended `ownerEmail`. Deliver its returned secret directly to that person; do not log it or append it to a URL. It expires after 30 minutes. An existing account logs in and POSTs `/api/v1/business/setup` with `{token, businessName}` using the session cookie. A fresh install uses `/api/v1/business/setup/register` with the same fields plus the invited email and a password of at least 12 characters, then logs in through the normal route. Store the returned initial customer API key securely; it is not business authority.
 
 Check `/api/v1/admin/business`: initialization should be non-null and the migration receipt remains unchanged. A process restart never reopens setup. If the mint response was lost, its retry reveals metadata only; mint a new key. If acceptance timed out, inspect initialized status before retrying. Invalid/expired tokens change nothing; initialized businesses require the separate ownership-transfer/recovery workflow, not another public setup. This API stage does not add a setup UI or complete staff role/policy enforcement (T03.b/T24). Use an isolated database for rehearsal; Deploy is not a test command.
+
+### Business authority validation (#630)
+
+Use `cargo nextest run -p oxsum-core -p oxsum-server -E 'binary(business_staff) or binary(business_setup) or binary(oidc) or binary(oauth) or binary(totp)'` for setup, context, policy and second-factor boundaries. These suites create isolated PostgreSQL databases and use real setup/session APIs. Legacy HTTP suites call the scratch-only `oxsum_testkit::set_registration_fixture` when their purpose assumes open registration; it refuses databases outside the test prefix and is never linked into production policy handling. New installs must complete owner setup and set registration policy before following public signup examples.

@@ -21,6 +21,7 @@ export type Statement = components["schemas"]["Statement"];
 export type StatementLine = components["schemas"]["StatementLine"];
 export type UserOrganization = components["schemas"]["UserOrganization"];
 export type AuthMethods = components["schemas"]["AuthMethods"];
+export type SessionContextInfo = components["schemas"]["SessionContextInfo"];
 export type TotpRequired = components["schemas"]["TotpRequired"];
 export type TotpLoginRequest = components["schemas"]["TotpLoginRequest"];
 export type TotpCodeRequest = components["schemas"]["TotpCodeRequest"];

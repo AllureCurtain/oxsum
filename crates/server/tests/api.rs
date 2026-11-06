@@ -40,6 +40,7 @@ async fn online_app(url: &str, signup: Signup) -> (Router, PgPool) {
         .expect("connects to PostgreSQL");
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), signup == Signup::Open).await;
     (support::app(db, Config::new(signup, None)), pool)
 }
 
@@ -134,8 +135,8 @@ async fn the_ledger_and_the_organization_are_behind_a_key() {
 }
 
 #[tokio::test]
-async fn registration_is_closed_unless_signup_is_open() {
-    let app = offline_app(Signup::Invite);
+async fn registration_is_closed_unless_business_policy_is_open() {
+    let (app, _pool) = app_or_skip!(Signup::Invite);
     let (status, body) = call(
         &app,
         "POST",
