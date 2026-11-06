@@ -32,6 +32,7 @@ mod keys;
 mod log;
 mod merchant_events;
 mod merchants;
+mod orders;
 mod org;
 mod report_links;
 pub(crate) mod requests;
@@ -125,6 +126,15 @@ pub fn router(state: AppState) -> Router {
         .route("/topups/hyperswitch", post(billing::hyperswitch_topup))
         .route("/topups/x402", post(billing::x402_topup))
         .route("/redemptions", post(billing::redeem))
+        .route(
+            "/orders",
+            get(orders::list_orders).post(orders::create_order),
+        )
+        .route("/orders/{order_id}", get(orders::get_order))
+        .route(
+            "/orders/{order_id}/fulfillment",
+            get(orders::order_fulfillment),
+        )
         .route("/holds", get(billing::list_holds).post(billing::hold))
         .route("/bills", get(billing::bills))
         .route("/entries", get(log::entries))
@@ -210,6 +220,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/business/merchants/{merchant}/events",
             get(merchant_events::events),
+        )
+        .route(
+            "/business/payment-reconciliation",
+            get(orders::reconciliation),
         )
         .route(
             "/webhooks/merchants/{merchant}/versions/{version}",

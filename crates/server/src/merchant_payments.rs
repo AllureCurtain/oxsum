@@ -1,7 +1,66 @@
-//! Bridge the durable merchant inbox to the core legacy-deposit adapter.
+//! Bridge the durable merchant inbox to the core legacy-deposit adapter and to
+//! the T15 payment-order ledger.
 use oxsum_core::{
     Db, MerchantEventKind, MerchantEventReceipt, MerchantPaymentPurpose, Tenants, WalletError,
 };
+/// Apply a verified event to the payment order it names: marks `paid` (never
+/// fulfilled — that is [`recover`]'s separate step) or a terminal
+/// `failed`/`expired`, and parks a term mismatch in `needs_attention`. Order
+/// bindings (`purpose='order'`) are the only ones this path serves; the legacy
+/// deposit adapter owns the rest.
+pub(crate) async fn apply_order_event(
+    db: &Db,
+    receipt: &MerchantEventReceipt,
+) -> Result<(), WalletError> {
+    if receipt.state != "accepted" {
+        return Ok(());
+    }
+    let Some(payment_id) = receipt.payment_id else {
+        return Ok(());
+    };
+    let Some(binding) = db.merchant_payment_binding(payment_id).await? else {
+        return Ok(());
+    };
+    if binding.purpose != MerchantPaymentPurpose::Order {
+        return Ok(());
+    }
+    db.apply_order_event(receipt).await
+}
+
+/// Recovery's order pass: re-mark any `accepted` order event still short of
+/// `applied`, then drain `paid`-unfulfilled orders — each grant is idempotent
+/// under the order-derived ledger key, so a restart that re-runs a fulfillment
+/// still credits once.
+pub(crate) async fn recover_orders(db: &Db, tenants: &Tenants) -> Result<(), WalletError> {
+    for order in db.unfulfilled_payment_orders(100).await? {
+        let wallet = match order_wallet(db, tenants, order.organization_id).await? {
+            Some(wallet) => wallet,
+            None => continue,
+        };
+        db.fulfill_payment_order(order.order_id, &wallet, crate::today())
+            .await?;
+    }
+    Ok(())
+}
+
+/// The wallet a payment order's organization owns — the tenant the grant posts
+/// to. `None` when the organization has no tenant yet (it cannot have paid).
+async fn order_wallet(
+    db: &Db,
+    tenants: &Tenants,
+    organization: uuid::Uuid,
+) -> Result<Option<std::sync::Arc<oxsum_core::Wallet>>, WalletError> {
+    let tenant: Option<String> =
+        sqlx::query_scalar("SELECT tenant_id FROM oxsum.organizations WHERE organization_id=$1")
+            .bind(organization)
+            .fetch_optional(db.pool())
+            .await?;
+    match tenant {
+        Some(tenant_id) => Ok(Some(tenants.get(&tenant_id).await?)),
+        None => Ok(None),
+    }
+}
+
 /// The verified event drives the same deposit settles the legacy webhook did:
 /// a success credits, an expiry closes, a refund or dispute settles the standing
 /// — each operation is itself idempotent, so replaying a retained event is safe.
@@ -77,7 +136,12 @@ pub(crate) async fn recover(db: &Db, tenants: &Tenants) -> Result<(), WalletErro
     for event in db.recoverable_merchant_events(100).await? {
         let event = db.retry_merchant_event(event.id).await?;
         apply_legacy_event(db, tenants, &event).await?;
+        apply_order_event(db, &event).await?;
     }
+    // Paid orders still short of fulfillment are the sweep's other half: a
+    // crash between the grant and the fulfillment row leaves a paid order this
+    // re-runs, and the order-derived ledger key keeps the retry a single grant.
+    recover_orders(db, tenants).await?;
     Ok(())
 }
 
