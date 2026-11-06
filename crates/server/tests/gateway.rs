@@ -10,6 +10,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod support;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -875,7 +877,7 @@ async fn world_on_pool(url: &str, top_up: i64, protocol: &str, connections: u32)
     oxsum_server::prepare(&db, &config)
         .await
         .expect("the deployment is prepared");
-    let (app, billing, _metrics) = oxsum_server::app_with_billing(db, config);
+    let (app, billing, _metrics) = support::app_with_billing(db, config);
     let tenants = Tenants::new(pool.clone());
 
     let (registration, key) = register(&app).await;
@@ -895,7 +897,7 @@ async fn world_on_pool(url: &str, top_up: i64, protocol: &str, connections: u32)
         call(
             &app,
             "POST",
-            "/api/v1/topups",
+            "/__test/funding",
             Some(json!({"idempotencyKey": "top-1", "amountMinor": top_up})),
             Some(&key),
         )
@@ -922,7 +924,7 @@ fn admin_app(world: &World) -> Router {
     let config = Config::new(Signup::Open, None)
         .with_secret(oxsum_core::SecretKey::from_bytes([7; 32]))
         .with_admin_token(OPERATOR_TOKEN);
-    oxsum_server::app(Db::from_pool(world.pool.clone()), config)
+    support::app(Db::from_pool(world.pool.clone()), config)
 }
 
 /// Registers an organization and returns its document and its first API key.
@@ -2007,7 +2009,7 @@ async fn an_unreachable_upstream_charges_nothing() {
         .await
         .expect("the channel is repointed");
     let config = Config::new(Signup::Open, None).with_secret(secret);
-    let app = oxsum_server::app(db, config);
+    let app = support::app(db, config);
 
     let response = chat(&app, &world.key, simple(&world.model("ok"))).await;
     let id = request_id(&response);
@@ -3651,7 +3653,7 @@ async fn a_refusal_before_the_wallet_releases_its_key() {
     call(
         &world.app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "fix-1", "amountMinor": 1_000_000_000})),
         Some(&world.key),
     )

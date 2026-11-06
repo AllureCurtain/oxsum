@@ -2237,3 +2237,12 @@ The Airwallex rail is now sandbox-verified end-to-end at the API and webhook lay
 - Compatibility: keep IDs, balances, postings, tenant origins, old proof formats and legacy period policies. Unsafe customer self-credit/raw settlement is deliberately removed, documented as a breaking authority correction. Customer registration never creates staff authority. Cache remains customer scoped.
 - Rejected: seller organizations replacing customer identities, a duplicate customer wallet layer, hosted seller marketplace, oxsum-project payment collection, and interpreting existing quota rollover or deposit reversal as proof of a complete commercial lifecycle.
 - Validation: A01–A31 in the tracked contract. Unit green and adopted specification do not establish completion. Baseline PR CI runs only the fast tier; perform relevant isolated runtime checks before risky merges, then T29 supplies candidate gate alignment. Publication, live deployment/data migration, paid calls and independent-pilot contact require separate authorization; never run Deploy as implementation validation.
+
+
+## 2026-11-05 — Retire customer self-credit; authorize manual receipts before money (#624)
+
+- Status: Adopted, T01.a under #592.
+- Customer ownership is not payment evidence. Retire POST /topups with authenticated 403, and remove its form. Keep legitimate checkout/webhook/redemption paths.
+- Deployment authority explicitly records out-of-band receipts with required reason/reference. Persist immutable intent and audit before crediting, use receipt UUID for ledger idempotency, and reject changed terms or deployment-wide duplicate payment references. Retry the identical request to recover interrupted fulfillment. Staff authority and payment-order currency conversion remain dependent tasks.
+- Historical manual deposits/ledger entries are untouched. Do not mutate legacy IDs or add an unsafe compatibility switch. The new receipt table uses an oxsum migration; no engine change.
+- Tests: production-router role/key denial with unchanged ledger, concurrent receipt replay, altered terms, cross-customer reference collision, missing evidence and interruption recovery. Existing funding fixtures are explicitly test-only and no longer exercise the retired endpoint as a successful customer action.

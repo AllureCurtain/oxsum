@@ -10,6 +10,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod support;
+
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -129,7 +131,7 @@ async fn world(url: &str, top_up: i64) -> World {
     oxsum_server::prepare(&db, &config)
         .await
         .expect("the deployment is prepared");
-    let app = oxsum_server::app(db.clone(), config);
+    let app = support::app(db.clone(), config);
 
     // The billable event's price book entry: an `event`-mode price on a fresh
     // channel — metering never calls the upstream, so the address only has to
@@ -175,7 +177,7 @@ async fn world(url: &str, top_up: i64) -> World {
         let (status, body) = call(
             &app,
             "POST",
-            "/api/v1/topups",
+            "/__test/funding",
             Some(json!({"idempotencyKey": "top-1", "amountMinor": top_up})),
             Some(&org_key),
         )

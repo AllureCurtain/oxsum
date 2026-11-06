@@ -8,6 +8,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod support;
+
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -55,7 +57,7 @@ async fn app_for(database_url: &str) -> (Router, PgPool) {
     oxsum_server::prepare(&db, &config)
         .await
         .expect("the deployment is prepared");
-    (oxsum_server::app(db, config), pool)
+    (support::app(db, config), pool)
 }
 
 struct Res {
@@ -217,7 +219,7 @@ async fn top_up(app: &Router, key: &str, idem: &str, minor: i64) {
     let res = call(
         app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": idem, "amountMinor": minor})),
         Some(key),
         None,

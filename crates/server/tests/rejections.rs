@@ -212,7 +212,7 @@ async fn a_credentialed_endpoint_refuses_a_bad_body_in_the_envelope() {
     let (app, _pool) = app_or_skip!();
     let key = register(&app).await;
 
-    for path in ["/api/v1/topups", "/api/v1/holds", "/api/v1/settlements"] {
+    for path in ["/api/v1/holds", "/api/v1/settlements"] {
         assert_envelope_rejection(&app, "POST", path, Some(&key), &WRONG_BODIES).await;
     }
 

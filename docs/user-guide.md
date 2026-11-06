@@ -384,8 +384,11 @@ Purpose: add balance to the organization's wallet.
 
 Steps:
 
-1. `POST /api/v1/topups` with `idempotencyKey` and `amountMinor` in the body.
-2. Save the returned `contentHash`; you will need it to verify the bill later.
+1. Open Top up and choose a configured checkout or redeem a code. Credit arrives after payment verification.
+2. For a bank payment, ask the business to verify and record its payment reference. Customers cannot manually credit their own balance; the former `POST /api/v1/topups` returns 403.
+3. Save the credited transaction's `contentHash` for later verification.
+
+Deployment administrators use `POST /api/v1/admin/organizations/{organizationId}/manual-receipts` with `idempotencyKey`, `amountMinor`, `reference` and `reason`. Repeat identical terms after an interrupted response; never invent a second reference for the same payment. Use adjustments for promotions. Amounts are credit minor units; display currency does not convert them.
 
 With a redemption code instead: `POST /api/v1/redemptions` with `{"code": "oxr-…"}` —
 no idempotency key, the code is its own. The answer is the credit's receipt plus
@@ -685,7 +688,7 @@ own copy is `GET /api/v1/admin/statements/{statementId}/export.pdf`.
 
 Paying a statement needs no dedicated call: any top-up or redemption repays the
 credit line first, and repayments always land on the oldest open statement — so a
-`POST /api/v1/topups` while a statement is outstanding settles it. `paymentStatus`
+A verified payment or authorized manual receipt while a statement is outstanding repays it. `paymentStatus`
 reads `pending` until the due date has passed (then `overdue`), `suspended` while
 the platform holds the bill, and `paid` once repayments cover it. When the
 platform has opted the organization into dunning, a statement unpaid past

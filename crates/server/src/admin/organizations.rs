@@ -470,3 +470,21 @@ pub(crate) async fn update_organization(
         available_minor: wallet.available().await?,
     })
 }
+
+/// The deployment middleware is the authority; a customer credential cannot
+/// reach this call even when it names its own organization.
+pub(crate) async fn manual_receipt(
+    State(state): State<AppState>,
+    Path(organization_id): Path<Uuid>,
+    ApiJson(request): ApiJson<oxsum_core::ManualReceiptRequest>,
+) -> ApiResult<oxsum_core::Receipt> {
+    ok(state
+        .db
+        .manual_receipt(
+            oxsum_core::FundingAuthority::Deployment,
+            &state.tenants,
+            organization_id,
+            &request,
+        )
+        .await?)
+}

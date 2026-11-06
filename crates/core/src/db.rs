@@ -285,6 +285,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0070_request_groups",
         include_str!("../migrations/0070_request_groups.sql"),
     ),
+    (
+        "0071_manual_receipts",
+        include_str!("../migrations/0071_manual_receipts.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.

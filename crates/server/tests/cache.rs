@@ -12,6 +12,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod support;
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -173,7 +175,7 @@ fn admin_app(world: &World) -> Router {
     let config = Config::new(Signup::Open, None)
         .with_secret(oxsum_core::SecretKey::from_bytes([7; 32]))
         .with_admin_token(OPERATOR_TOKEN);
-    oxsum_server::app(Db::from_pool(world.pool.clone()), config)
+    support::app(Db::from_pool(world.pool.clone()), config)
 }
 
 fn url() -> Option<String> {
@@ -237,7 +239,7 @@ async fn build_world(url: &str) -> World {
     oxsum_server::prepare(&db, &config)
         .await
         .expect("the deployment is prepared");
-    let app = oxsum_server::app(db, config);
+    let app = support::app(db, config);
     let tenants = Tenants::new(pool.clone());
 
     let (registration, key) = register(&app).await;
@@ -252,7 +254,7 @@ async fn build_world(url: &str) -> World {
     let (status, body) = call(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "top-1", "amountMinor": 100_000_000})),
         Some(&key),
     )
@@ -597,7 +599,7 @@ async fn a_hit_never_crosses_organizations() {
     let (status, body) = call(
         &world.app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "top-other", "amountMinor": 100_000_000})),
         Some(&other_key),
     )

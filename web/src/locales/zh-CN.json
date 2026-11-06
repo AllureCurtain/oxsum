@@ -173,6 +173,7 @@
     "benchReleaseFailed": "释放失败"
   },
   "topup": {
+    "paymentRequired": "余额仅在付款确认或兑换成功后增加。银行转账请联系商家核实并登记付款参考号。",
     "title": "充值",
     "balance": "余额",
     "available": "可用",

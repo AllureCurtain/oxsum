@@ -20,7 +20,7 @@ An OpenAI- and Anthropic-compatible AI gateway. Users point base_url at oxsum an
 The piece must let a first-time visitor walk this path in minutes:
 
 1. `docker compose up`, create the platform admin from the command line.
-2. The admin configures one upstream channel (say DeepSeek) on the channels and prices page (`/admin/channels`, or `/api/v1/admin` with the operator token) and tops up an organization through its own credential (`POST /api/v1/topups`, the chat page's top-up form).
+2. The admin configures one upstream channel (say DeepSeek) on the channels and prices page (`/admin/channels`, or `/api/v1/admin` with the operator token) and records a verified payment through the deployment-authorized manual-receipts API, or the customer uses a configured checkout.
 3. Create an API key, change base_url in any OpenAI SDK or ChatBox, and start chatting.
 4. The dashboard shows each in-flight freeze with its streaming progress live, and the newest settled entries below it.
 5. Open `/verify` — linked from every settled chat turn with both fields prefilled, and from every row of the bills page (`/app/bills`), which lists each transaction with its content hash and exports the list as CSV or JSON — and browser-local verification passes; change one number in the bundle and it fails.
@@ -98,11 +98,11 @@ Who may do what, and the gaps that are closed on purpose:
 
 ## Where credit comes from
 
-v1 has no payment integration. Credit has four designed sources; the table says which of them the code implements today, and what the ledger actually records.
+Credit comes from the verified payment and operator-authorized sources below. Customer credentials cannot assert that money arrived.
 
 | Source | Who | Notes |
 | --- | --- | --- |
-| Top-up | Any credential of the organization — session or API key | **Shipped.** `POST /api/v1/topups` sits behind the same credential check as every other organization endpoint (`crates/server/src/routes`, the `authenticated` router), so a logged-in user self-tops-up; the chat page's top-up button is exactly this call (`web/src/pages/Chat.tsx`). The request carries an amount and an idempotency key and **no reason**: the endpoint takes no description. Admin-gated top-ups with a required reason are the rejected alternative in docs/decisions.md. |
+| Manual receipt | Deployment administrator | **Shipped** (#624). `POST /api/v1/admin/organizations/{organizationId}/manual-receipts` requires a positive amount, idempotency key, unique payment reference and reason. Authorization/audit commits before crediting purchased funds; identical retries recover safely. Customer `POST /api/v1/topups` is retired and returns 403. Promotional grants remain adjustments. |
 | Signup bonus | Automatic | **Shipped** (issue #60). `OXSUM_SIGNUP_BONUS_MINOR`, default 0: self-registration credits the new organization's bonus pool with the amount, booked as an adjustment carrying "signup bonus" as its reason — an invitation's redeem joins an existing organization and grants nothing. At 0, registration still writes no ledger entry. |
 | Adjustment | Platform admin | **Shipped** (issue #60). `POST /api/v1/admin/organizations/{organizationId}/adjustments`, and an "Adjust" form on each row of `/admin/organizations`. Positive grants, negative deducts; the reason is required and becomes the entry's description, covered by its proof. A grant lands in the bonus pool; a deduction draws the bonus pool first and only spills into purchased credit once granted money is gone — the platform takes back what it gave before touching what the user paid for. A deduction deeper than the combined balance is the ledger's own no-overdraft refusal — `402 INSUFFICIENT_FUNDS`. |
 | Redemption code | Operator mints, any credential redeems | **Shipped** (issue #118, decision D2). `POST /api/v1/admin/redemption-codes` mints a batch under the operator token — `oxr-` plus 32 random bytes, only the SHA-256 is stored, so the mint answer is the only place the codes are readable. The holder redeems through `POST /api/v1/redemptions` and the amount lands in the purchased pool: the code's row is claimed atomically (`FOR UPDATE`), the deposit and the ledger credit follow under the fixed idempotency key `redemption:<code_id>`, so a retried or concurrent redeem of one code credits once. Unknown, spent and expired codes are all the same `NOT_FOUND`. On-chain rails join the same `deposits` table later; a top-up is the `manual` rail of it already. |

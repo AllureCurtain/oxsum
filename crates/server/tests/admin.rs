@@ -9,6 +9,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod support;
+
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -64,7 +66,7 @@ async fn admin_app(database_url: &str, token: Option<&str>) -> (Router, PgPool) 
     oxsum_server::prepare(&db, &config)
         .await
         .expect("the deployment is prepared");
-    (oxsum_server::app(db, config), pool)
+    (support::app(db, config), pool)
 }
 
 /// A channel name of this test's own, so tests sharing the database never collide.
@@ -621,7 +623,7 @@ async fn the_organizations_list_shows_every_organization_with_its_balance() {
     let (status, body) = call_with(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "topup-orgview-1", "amountMinor": 7_500_000})),
         Some(&key),
     )
@@ -1159,7 +1161,7 @@ async fn closing_a_month_seals_it_everywhere() {
     let (status, body) = call_with(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": fresh("topup-closing"), "amountMinor": 5_000_000})),
         Some(&key),
     )
@@ -1257,7 +1259,7 @@ async fn closing_a_month_seals_it_everywhere() {
     let (status, body) = call_with(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": fresh("topup-after-close"), "amountMinor": 1_000_000})),
         Some(&key),
     )
@@ -1373,7 +1375,7 @@ async fn the_deposits_view_lists_money_in() {
     let (status, body) = call_with(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({
             "idempotencyKey": "dep-1",
             "amountMinor": 5_000_000,
@@ -1449,7 +1451,7 @@ async fn a_credited_deposit_reverses_once() {
     let (status, body) = call_with(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "rev-dep-1", "amountMinor": 5_000_000})),
         Some(&key),
     )
@@ -1458,7 +1460,7 @@ async fn a_credited_deposit_reverses_once() {
     let (status, body) = call_with(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "rev-dep-2", "amountMinor": 2_000_000})),
         Some(&key),
     )
@@ -1588,7 +1590,7 @@ async fn a_deposit_reversal_the_wallet_cannot_cover_is_refused() {
     let (status, body) = call_with(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "rev-short-1", "amountMinor": 5_000_000})),
         Some(&key),
     )
@@ -1824,11 +1826,11 @@ async fn grants_and_topups_share_one_balance_across_pools() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
-    // Purchased credit, booked by the organization.
+    // Purchased credit, seeded by the funding fixture.
     let (status, body) = call_with(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "pool-topup-1", "amountMinor": 4_000_000})),
         Some(&key),
     )
@@ -1950,7 +1952,7 @@ async fn the_signup_bonus_credits_a_new_organization_at_registration() {
     oxsum_server::prepare(&db, &config)
         .await
         .expect("the deployment is prepared");
-    let app = oxsum_server::app(db, config);
+    let app = support::app(db, config);
 
     let (_org, key) = register(&app, "bonus").await;
     let (status, body) = call_with(&app, "GET", "/api/v1/balance", None, Some(&key)).await;
@@ -2273,7 +2275,7 @@ async fn codes_validate_their_mint_and_their_expiry() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
-/// `POST /api/v1/topups` is the manual deposit rail: beside the ledger entry it
+/// The funding fixture seeds the legacy manual deposit shape: beside the ledger entry it
 /// writes a `deposits` row naming the entry, keyed by the caller's idempotency
 /// key — a replayed top-up sees its own row rather than a second record.
 #[tokio::test]
@@ -2285,7 +2287,7 @@ async fn a_topup_records_its_manual_deposit() {
     let (status, body) = call_with(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": idem, "amountMinor": 3_000_000})),
         Some(&key),
     )
@@ -2310,7 +2312,7 @@ async fn a_topup_records_its_manual_deposit() {
     let (status, body) = call_with(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": idem, "amountMinor": 3_000_000})),
         Some(&key),
     )
@@ -2368,7 +2370,7 @@ async fn a_credit_limit_is_granted_drawn_and_repaid() {
     let (status, body) = call_with(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "cl-topup", "amountMinor": 5_000_000})),
         Some(&key),
     )
@@ -2452,7 +2454,7 @@ async fn a_credit_limit_is_granted_drawn_and_repaid() {
     let (status, body) = call_with(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "cl-repay", "amountMinor": 9_000_000})),
         Some(&key),
     )

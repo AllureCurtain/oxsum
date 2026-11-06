@@ -20,6 +20,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod support;
+
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -128,7 +130,7 @@ async fn fixture(world: &World) -> Fixture {
     oxsum_server::prepare(&db, &config)
         .await
         .expect("the deployment is prepared");
-    let (app, _billing, _metrics) = oxsum_server::app_with_billing(db.clone(), config);
+    let (app, _billing, _metrics) = support::app_with_billing(db.clone(), config);
     let tenants = Tenants::new(pool);
 
     let email = format!("e2e_{}@example.com", suffix);
@@ -248,7 +250,7 @@ async fn real_provider_bill_verifies() {
     let (status, body) = call(
         &fixture.app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "e2e-topup", "amountMinor": 10_000_000})),
         Some(&fixture.key),
     )

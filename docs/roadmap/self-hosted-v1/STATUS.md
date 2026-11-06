@@ -2,12 +2,12 @@
 
 Updated: 2026-11-05. Contract issue: [#591](https://github.com/AllureCurtain/oxsum/issues/591).
 
-Implementation: in progress. Release: not ready. T00 adopts the target; no implementation card is complete.
+Implementation: in progress. Release: not ready. T00 is integrated; T01.a is under validation. No release readiness claimed.
 
 | Task | Issue | State | Depends on |
 | --- | --- | --- | --- |
-| T00 — Adopt the release contract and baseline | [#591](https://github.com/AllureCurtain/oxsum/issues/591) | in_progress | None |
-| T01 — Restrict financial and metering authority | [#592](https://github.com/AllureCurtain/oxsum/issues/592) | pending | T00 |
+| T00 — Adopt the release contract and baseline | [#591](https://github.com/AllureCurtain/oxsum/issues/591) | integrated (PR #623) | None |
+| T01 — Restrict financial and metering authority | [#592](https://github.com/AllureCurtain/oxsum/issues/592) | in_progress | T00 |
 | T02 — Add business and customer ownership without moving ledgers | [#593](https://github.com/AllureCurtain/oxsum/issues/593) | pending | T00 |
 | T03 — Business staff, setup and session contexts | [#594](https://github.com/AllureCurtain/oxsum/issues/594) | pending | T01, T02 |
 | T04 — Customer profile and team lifecycle | [#595](https://github.com/AllureCurtain/oxsum/issues/595) | pending | T02, T03 |
@@ -41,7 +41,9 @@ Implementation: in progress. Release: not ready. T00 adopts the target; no imple
 
 ## Current checkpoint
 
-T00: accepted product/design/tasks/acceptance specification is tracked here; BASELINE.md records source reconciliation. Worktree `.worktrees/self-hosted-contract`, branch `docs/self-hosted-contract`. Pending documentation validation and normal PR integration. Next: T01 (#592), then T02 (#593).
+T00 merged through [PR #623](https://github.com/AllureCurtain/oxsum/pull/623), commit `aadde114ca61cf97d5254ae3ea45d0a18e4542ba`. [CI](https://github.com/AllureCurtain/oxsum/actions/runs/41869652216) passed relevant documentation gates; heavy suites were skipped by path policy. Local and GitHub main synchronized.
+
+T01 split: [#624](https://github.com/AllureCurtain/oxsum/issues/624) (T01.a) removes self-credit and adds authorized manual receipts; [#625](https://github.com/AllureCurtain/oxsum/issues/625) (T01.b) removes raw customer holds/settlements and finishes the financial route audit. Both are required. Current branch `fix/financial-authority`, worktree `.worktrees/financial-authority`. T01.a is locally validated: 1481 workspace tests, 26 process-shared tests, 29 engine Postgres tests, final 11 authority/audit checks, clippy, frontend build and the changed browser flow passed; see [evidence](evidence/T01-a.md). Pending PR/CI integration. Next: integrate #624 after green checks, then #625, then T02.
 
 ## External gates
 

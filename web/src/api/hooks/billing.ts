@@ -207,21 +207,6 @@ export function useWitnessCheckpoint() {
   });
 }
 
-export function useTopup() {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: (amountMinor: number) =>
-      api<Receipt>("/topups", {
-        method: "POST",
-        body: { amountMinor, idempotencyKey: crypto.randomUUID() },
-      }),
-    onSuccess: () => {
-      client.invalidateQueries({ queryKey: ["balance"] });
-      client.invalidateQueries({ queryKey: ["bills"] });
-    },
-  });
-}
-
 export function useStripeTopup() {
   return useMutation({
     mutationFn: (amountMinor: number) =>

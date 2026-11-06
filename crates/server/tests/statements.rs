@@ -11,6 +11,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod support;
+
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -63,7 +65,7 @@ async fn admin_app(database_url: &str) -> (Router, PgPool) {
     oxsum_server::prepare(&db, &config)
         .await
         .expect("the deployment is prepared");
-    (oxsum_server::app(db, config), pool)
+    (support::app(db, config), pool)
 }
 
 fn secret() -> SecretKey {
@@ -514,11 +516,11 @@ async fn a_self_serve_topup_pays_the_oldest_statement_first() {
         assert_eq!(status, StatusCode::OK, "{body}");
     }
 
-    // The organization's own top-up repays the line: August settles first.
+    // Fixture purchased funding repays the line: August settles first.
     let (status, body) = call_with(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "stmt-topup", "amountMinor": 5_000_000})),
         Some(&key),
     )
@@ -998,7 +1000,7 @@ async fn a_signed_anchor_verifies_the_head_that_follows_it() {
         .with_secret(secret())
         .with_admin_token(TOKEN)
         .with_head_signing_seed([42; 32]);
-    let app = oxsum_server::app(db, config);
+    let app = support::app(db, config);
     let pool = pool2;
 
     let (statement_id, key) = a_finalized_statement(&app, &pool, "anchor-signed").await;
@@ -1098,7 +1100,7 @@ async fn the_proof_bundle_verifies_off_its_own_answer() {
         .with_secret(secret())
         .with_admin_token(TOKEN)
         .with_head_signing_seed([42; 32]);
-    let app = oxsum_server::app(db, config);
+    let app = support::app(db, config);
 
     let (statement_id, key) = a_finalized_statement(&app, &pool, "proof").await;
 
@@ -1351,7 +1353,7 @@ async fn the_statement_lifecycle_suspends_and_reinstates() {
     let (status, body) = call_with(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "dunning-topup", "amountMinor": total})),
         Some(&key),
     )
