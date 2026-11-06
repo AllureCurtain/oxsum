@@ -962,3 +962,9 @@ For an internal provider, explicitly list its server IP addresses in the owner c
 ### Model visibility and routing permissions
 
 Your model list and price catalog show routes allowed by your customer tier. A consumption key can narrow that list with its own model allowlist and request group. To use an alias with a restricted key, include both its public name and the provider model it resolves to; the request group must permit the alias's channel. Experiments and fallback models need the same grants. The bill retains the original requested and actually served names. Generic asynchronous tasks currently use direct task model names and do not accept signed spend mandates; see the [protocol matrix](roadmap/self-hosted-v1/PROTOCOL-MATRIX.md) for the current scope.
+
+### Configure a business payment merchant
+
+In business context, the owner can create a merchant with `POST /api/v1/business/merchants`, using a saved idempotency key and reason. Choose the provider account ID and test/live mode explicitly. Hyperswitch with the Stripe connector is the primary path. Configuration is initially disabled and reports `locallyValidated`: no payment or network credential check is made by saving. Keep API keys and webhook secrets outside logs and preserve the deployment's `OXSUM_SECRET_KEY` backup.
+
+Read settings and history through the [merchant API](api.md#business-merchant-configuration-apiv1businessmerchants). Rotate with a full new version; old versions remain available to in-flight payments. Disable future checkout selection with the merchant status endpoint. Retry interrupted requests with the identical key and body to recover the original receipt. Admin, finance and viewer roles can inspect redacted settings, but only the current owner can change credentials. The business-console controls, scoped callbacks and order-based customer checkout are dependent release work; creating settings alone does not switch legacy payment traffic.
