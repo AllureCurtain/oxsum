@@ -1,10 +1,24 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.121.0
+  version: 0.122.0
   x-consumption-cache: Response cache v2 binds the exact complete request, concrete endpoint and semantic headers, customer/key permissions, selected experiment/mandate, alias targets, and every admitted route's price, destination, settings and credential configuration. A primary route without an available credential cannot serve a cache hit. Text case and whitespace are significant; old digests miss. Legacy excludeSystem is accepted but ignored.
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
+
+    0.122.0 adds the version-2 evidence bundle (issue #616): a whole-period
+    customer-verifiable export — `POST /api/v1/org/evidence-bundles` mints a
+    manifest-bound bundle committing usage records, plan statements, invoice
+    journals, payment orders, refunds, disputes, credit notes and the
+    day-seal digests; `GET …/{bundleId}` serves the stored bytes verbatim
+    under a `data` envelope; `POST …/{bundleId}/share` mints a bearer
+    `oxe-…` token (`expiresAt`/`maxDownloads`, revocable via
+    `DELETE …/share`) that `GET /api/v1/evidence/{token}` resolves without
+    a session — every dead-token case answers the same `410`. The offline
+    `oxsum_verify::verify_evidence_bundle` re-digests the served manifest
+    and artifacts and adopt-verifies each committed entry into the head.
+    `upstreamCostMinor` redacts by default (`OXSUM_EVIDENCE_UPSTREAM_COST`
+    opts in for internal-audit deployments).
 
     0.121.0 adds the financial-facts read model and reconciliation (issue
     #613): `GET /api/v1/business/financial-facts` exposes the eight-category
@@ -4818,6 +4832,327 @@ paths:
                   data: { $ref: "#/components/schemas/ReportLink" }
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/evidence-bundles:
+    get:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
+      summary: List the organization's minted evidence bundles (issue #616)
+      description: |
+        Every evidence bundle the organization has minted, newest first — the
+        descriptors a member's dashboard browses. The list carries no artifact
+        rows or proofs: a mint is rare, so the descriptor alone is enough to
+        pick the bundle whose bytes `GET .../evidence-bundles/{bundleId}` then
+        serves.
+      responses:
+        "403": { $ref: "#/components/responses/Error" }
+        "200":
+          description: The minted bundles, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [rows]
+                    properties:
+                      rows:
+                        type: array
+                        items: { $ref: "#/components/schemas/EvidenceBundleSummary" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    post:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
+      summary: Mint a period evidence bundle over a closed span (issue #616)
+      description: |
+        A usage report answers "what did this `endUser` cost me" for one
+        downstream customer. An evidence bundle answers the wider question the
+        *organization itself* asks of its operator: "what did this closed
+        period commit me to, and can I check it offline?" One bundle carries
+        every artifact the scope commits — the usage records settled in the
+        span, the plan statements and invoice journals they billed through, the
+        payment orders and fulfillments that paid them, the refunds, disputes
+        and credit notes that adjusted them, and the day seals that closed the
+        days they booked on — plus a `scope` block that spells honestly what it
+        does not attest (the platform's own upstream costs, another
+        organization's rows, history outside the span, in-flight operations).
+
+        Producing the bundle appends a self-balancing marker entry
+        (`oxsum/evidence-bundle/v1`) to the organization's own ledger whose
+        `DocumentRef` binds the *manifest digest* — `H(oxsum/evidence-manifest/v1)`
+        over the canonical manifest, which names every artifact's own digest
+        (`oxsum/evidence-artifact/v1/<kind>` over each artifact's canonical
+        bytes), sorted by `(kind, id)`. One marker per
+        `(organization, from, to)`, ever: the marker's idempotency key is
+        derived from the span and a unique index pins the scope, so a second
+        request for the same span replays the standing bundle rather than
+        committing a second manifest — an org cannot commit one artifact set
+        to the ledger and serve the customer another.
+
+        Both dates are inclusive UTC `YYYY-MM-DD`, and `to` must be a fully
+        ended day: the manifest commits a complete artifact set and an open
+        day can still book rows the bundle would omit. A span over an open day
+        or longer than 366 days is `VALIDATION_ERROR`. The bundle's JSON is
+        frozen at mint and served byte-identically on re-download — the
+        digests commit the artifacts as they stood at mint.
+
+        A `verifier` runs `oxsum_verify::verify_evidence_bundle` over the body
+        with no second call: every artifact re-digests to what the manifest
+        names, every artifact the manifest commits is present, the marker
+        proves the manifest is the one the ledger committed, and the money
+        artifacts' ledger entries adopt-verify and include in the signed head.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [from, to]
+              properties:
+                from:
+                  type: string
+                  format: date
+                  description: first UTC day of the span, inclusive
+                to:
+                  type: string
+                  format: date
+                  description: last UTC day of the span, inclusive — must be fully ended
+      responses:
+        "403": { $ref: "#/components/responses/Error" }
+        "200":
+          description: The minted bundle's descriptor — `GET .../{bundleId}` serves the bytes
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/EvidenceBundleSummary" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/evidence-bundles/{bundleId}:
+    get:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
+      summary: Download one minted evidence bundle (issue #616)
+      description: |
+        `bundleId` is the marker entry's own id — the same id the `POST`
+        answers and the one a verifier resolves to the marker's inclusion
+        proof. The committed artifact set is frozen at mint: the response is
+        the stored `bundle_json` verbatim, never a re-query, so a bundle cannot
+        grow to absorb rows the org omitted the first time. The body is the
+        `data` object `oxsum_verify::verify_evidence_bundle` consumes directly.
+        A bundle of another organization answers 404.
+      parameters:
+        - name: bundleId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "403": { $ref: "#/components/responses/Error" }
+        "200":
+          description: The evidence bundle — the manifest, artifacts, entries, head and signed note
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/EvidenceBundle" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/evidence-bundles/{bundleId}/share:
+    post:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
+      summary: Mint a share token for one evidence bundle (issue #616)
+      description: |
+        The bundle's recipient holds no account, so the token is the
+        capability: the plaintext is answered once, only its SHA-256 is stored,
+        and the organization can revoke it. The token opens the public
+        `GET /api/v1/evidence/{token}` download without a session — the token
+        is the authorization, not a login. `expiresAt` defaults to 30 days from
+        now and may not be more than 90 days out; `maxDownloads` bounds how
+        many times the token resolves before it goes dead (absent means
+        unbounded until expiry); `label` is the organization's own note for the
+        recipient. The bundle must belong to the acting organization: an id
+        guessed from another tenant answers 404.
+      parameters:
+        - name: bundleId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateEvidenceShareRequest" }
+      responses:
+        "403": { $ref: "#/components/responses/Error" }
+        "200":
+          description: The share descriptor and its one-time token
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/CreatedEvidenceShare" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    get:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
+      summary: List the share tokens on one evidence bundle (issue #616)
+      description: |
+        Every share the organization minted on the bundle, newest first —
+        descriptors only, never tokens. `downloadCount` is the audit figure
+        `maxDownloads` spends down; `lastDownloadAt` is the operator's signal
+        the recipient opened the bundle; `revokedAt` and `expiresAt` are the
+        two ways a token stops resolving.
+      parameters:
+        - name: bundleId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "403": { $ref: "#/components/responses/Error" }
+        "200":
+          description: The bundle's shares, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [rows]
+                    properties:
+                      rows:
+                        type: array
+                        items: { $ref: "#/components/schemas/EvidenceShare" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    delete:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
+      summary: Revoke every share token on one evidence bundle (issue #616)
+      description: |
+        Stamps `revokedAt` on every live share the bundle carries, so the
+        public download goes dead at once. Idempotent: revoking an
+        already-fully-revoked bundle answers the same count of zero. A bundle
+        of another organization answers 404.
+      parameters:
+        - name: bundleId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "403": { $ref: "#/components/responses/Error" }
+        "200":
+          description: How many live shares the call revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [revoked]
+                    properties:
+                      revoked:
+                        type: integer
+                        format: int64
+                        description: live shares this call stamped revoked
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/statements/{statementId}/evidence:
+    get:
+      x-customer-role-access: owner-admin
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
+      summary: Mint or fetch the evidence bundle for one plan statement (issue #616)
+      description: |
+        The statement-scoped bundle: the one `plan_statements` row, its lines,
+        the `invoice_journals` receivable it wraps, and every order, refund,
+        dispute, credit note and day seal that touched it — the same manifest
+        and marker machinery as a period bundle, scoped to a single document.
+        One bundle per `(organization, statement)`, ever: a second request
+        replays the standing bytes. The statement must belong to the acting
+        organization and be a real issued document — a foreign, missing or
+        `open` id answers 404.
+      parameters:
+        - name: statementId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "403": { $ref: "#/components/responses/Error" }
+        "200":
+          description: The statement's evidence bundle — the manifest, artifacts, entries, head and signed note
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/EvidenceBundle" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/evidence/{token}:
+    get:
+      summary: Download an evidence bundle by share token (issue #616)
+      description: |
+        The public, session-free download a share token opens: `token` is the
+        plaintext the `POST .../share` mint answered once, presented as the
+        path's own credential — the token *is* the authorization, so no session
+        or API key is asked for. The response is the same frozen `bundle_json`
+        the owner download serves.
+
+        A token resolves while it is unexpired, unrevoked and within its
+        `maxDownloads` budget; each successful download spends one. An
+        expired, revoked, exhausted or unknown token all answer 410 — the
+        caller cannot tell which, so a guessed token leaks nothing about which
+        shares exist.
+      security: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The evidence bundle — the manifest, artifacts, entries, head and signed note
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/EvidenceBundle" }
+        "410":
+          description: the token is expired, revoked, out of downloads, or never existed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/estimate-price:
     post:
@@ -11882,6 +12217,243 @@ components:
         subsetHash:
           type: string
           pattern: "^[0-9a-f]{64}$"
+    EvidenceBundle:
+      type: object
+      description: |
+        A version-2 customer evidence bundle (issue #616): the manifest the
+        ledger's marker committed, every artifact the manifest names, the
+        ledger entries the money artifacts point at, and the signed head every
+        proof anchors to — everything `oxsum_verify::verify_evidence_bundle`
+        needs to check the bundle offline with no second call. `version` is
+        always `2`: the dispatch field a v1 bill bundle lacks, which routes it
+        to `verify_evidence_bundle` rather than `verify_bundle`.
+      required: [version, kind, bundleId, organizationId, manifestDigest, anchorLogIndex, scope, artifacts, manifest, entries, head]
+      properties:
+        version:
+          type: integer
+          enum: [2]
+          description: always 2 — the field `verify_bundle`'s legacy wire lacks
+        kind:
+          type: string
+          enum: [period, statement]
+          description: a closed-span bundle or a single-statement bundle
+        bundleId:
+          type: string
+          format: uuid
+          description: the marker entry's own id — `GET .../entries/{id}/proof` resolves it
+        organizationId:
+          type: string
+          description: the customer the bundle is for — a bundle minted for another org fails the verifier here
+        manifestDigest:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+          description: "the manifest digest `H(oxsum/evidence-manifest/v1)` over the canonical manifest — the digest the marker's DocumentRef binds"
+        periodFrom:
+          type: string
+          format: date
+          nullable: true
+          description: first UTC day of the covered span, present on `period`
+        periodTo:
+          type: string
+          format: date
+          nullable: true
+          description: last UTC day of the covered span, present on `period`
+        statementId:
+          type: string
+          format: uuid
+          nullable: true
+          description: the statement a `statement` bundle wraps
+        anchorLogIndex:
+          type: integer
+          format: int64
+          description: the marker's position in the ledger
+        scope:
+          type: object
+          description: |
+            The honest-scope block — the committed claims. `covered` names the
+            artifact classes the bundle attests; `excluded` names what it does
+            not (the platform's own upstream costs, another organization's
+            rows, history outside the span, in-flight operations). Part of the
+            committed bytes, so a bundle cannot quietly drop the honesty.
+          required: [covered, excluded, upstreamCostIncluded]
+          properties:
+            covered:
+              type: array
+              items: { type: string }
+              description: the artifact classes the bundle commits
+            excluded:
+              type: array
+              items: { type: string }
+              description: the claim classes the bundle says it does not attest
+            upstreamCostIncluded:
+              type: boolean
+              description: whether `upstreamCostMinor` exported — the `OXSUM_EVIDENCE_UPSTREAM_COST` opt-in
+        artifacts:
+          type: object
+          description: |
+            The committed artifacts, grouped `{kind: {id: json}}` — a two-level
+            object so a verifier names the missing row without index
+            arithmetic. Every value re-canonicalizes and digests to the
+            manifest row that names it.
+        manifest:
+          type: array
+          description: every committed artifact's `(kind, id, digest)` row, sorted by `(kind, id)` — order is load-bearing in the fold
+          items:
+            type: object
+            required: [kind, id, digest]
+            properties:
+              kind: { type: string, description: "the artifact class, `evidence-artifact/v1/<kind>`'s suffix" }
+              id: { type: string, description: the artifact's own id within its class }
+              digest:
+                type: string
+                pattern: "^[0-9a-f]{64}$"
+                description: "the artifact digest `H(oxsum/evidence-artifact/v1/<kind>)` over the artifact's canonical bytes"
+        entries:
+          type: array
+          description: |
+            The ledger entries the bundle carries, `{entry, contentHash,
+            proof, forKind, forId}` like a usage-report row — `entries[0]` is
+            the marker whose DocumentRef binds the manifest digest; the rest
+            are the money artifacts' ledger links, each proven against `head`.
+          items:
+            type: object
+            required: [entry, contentHash, proof, forKind, forId]
+            properties:
+              entry:
+                type: object
+                description: the ledger entry, doubleentry's serde encoding — re-derived with `adopt_verified`
+              contentHash:
+                type: string
+                pattern: "^[0-9a-f]{64}$"
+                description: the hash the Merkle log commits to
+              proof:
+                type: object
+                description: this entry's inclusion proof into `head`
+              forKind: { type: string, description: the artifact class this entry proves — `bundle` for the marker }
+              forId: { type: string, description: the artifact id this entry proves }
+        head:
+          type: object
+          description: the tree head every proof anchors to, at mint
+          properties:
+            size: { type: integer, format: int64 }
+            root: { type: string, pattern: "^[0-9a-f]{64}$" }
+        note:
+          type: string
+          nullable: true
+          description: the operator-signed head note, when the deployment signs heads
+        keyName: { type: string, nullable: true }
+        publicKey: { type: string, nullable: true, description: the operator's Ed25519 verifying key, hex }
+        keyHash: { type: string, nullable: true, description: the signature-line selector, hex }
+    EvidenceBundleSummary:
+      type: object
+      description: |
+        A minted evidence bundle's descriptor — what `GET
+        .../evidence-bundles` lists and the `POST` answers. Carries no
+        artifacts or proofs; `GET .../evidence-bundles/{bundleId}` serves the
+        full bundle.
+      required: [bundleId, kind, manifestDigest, anchorLogIndex, entryCount, createdAt]
+      properties:
+        bundleId:
+          type: string
+          format: uuid
+          description: the marker entry's own id — the bundle's `GET` path parameter
+        kind:
+          type: string
+          enum: [period, statement]
+        periodFrom:
+          type: string
+          format: date
+          nullable: true
+          description: first UTC day of the span, present on `period`
+        periodTo:
+          type: string
+          format: date
+          nullable: true
+          description: last UTC day of the span, present on `period`
+        statementId:
+          type: string
+          format: uuid
+          nullable: true
+          description: the wrapped statement, present on `statement`
+        manifestDigest:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+        anchorLogIndex:
+          type: integer
+          format: int64
+        entryCount:
+          type: integer
+          format: int64
+          description: ledger entries the bundle carries
+        createdAt: { type: string, format: date-time }
+    EvidenceShare:
+      type: object
+      description: |
+        A share token's descriptor — the API's list answer, never the token,
+        which exists only in the create response.
+      required: [shareId, bundleId, createdAt, expiresAt, downloadCount]
+      properties:
+        shareId:
+          type: string
+          format: uuid
+          description: the share's own id
+        bundleId:
+          type: string
+          format: uuid
+          description: the bundle it opens
+        label:
+          type: string
+          nullable: true
+          description: the organization's own note for the recipient
+        createdAt: { type: string, format: date-time }
+        expiresAt:
+          type: string
+          format: date-time
+          description: when the token stops resolving
+        maxDownloads:
+          type: integer
+          nullable: true
+          description: the download budget at mint; absent means unbounded until expiry
+        downloadCount:
+          type: integer
+          description: how many downloads the token has served — the audit figure
+        revokedAt:
+          type: string
+          format: date-time
+          nullable: true
+        lastDownloadAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: when the token last served a download
+    CreatedEvidenceShare:
+      type: object
+      required: [share, token]
+      properties:
+        share: { $ref: "#/components/schemas/EvidenceShare" }
+        token:
+          type: string
+          description: |
+            the plaintext capability token, answered once — the public
+            `GET /api/v1/evidence/{token}` resolves it and the database keeps
+            only its SHA-256
+    CreateEvidenceShareRequest:
+      type: object
+      properties:
+        label:
+          type: string
+          maxLength: 128
+          nullable: true
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: defaults to 30 days from now; at most 90 days out
+        maxDownloads:
+          type: integer
+          minimum: 1
+          nullable: true
+          description: how many times the token resolves before it dies; absent means unbounded until expiry
     LinkScope:
       type: string
       enum: [report, end_user]

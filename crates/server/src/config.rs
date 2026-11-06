@@ -363,6 +363,13 @@ pub struct Config {
     /// and dashboard chrome. All three optional — a deployment that sets none
     /// answers the compiled-in default.
     branding: Branding,
+    /// Whether evidence bundles export `upstreamCostMinor` on usage records,
+    /// `OXSUM_EVIDENCE_UPSTREAM_COST` (issue #616). `false` — the default —
+    /// redacts the platform's own supplier cost, which is internal: the
+    /// bundle's `costBasis` still says how the charge was priced, and the
+    /// scope block's `upstreamCostFigures` exclusion says the figure is not
+    /// attested either way.
+    evidence_upstream_cost: bool,
 }
 
 impl Config {
@@ -397,6 +404,7 @@ impl Config {
             x402: None,
             bill_provider: None,
             branding: Branding::default(),
+            evidence_upstream_cost: false,
         }
     }
 
@@ -584,6 +592,7 @@ impl Config {
             x402,
             bill_provider,
             branding: branding_of()?,
+            evidence_upstream_cost: evidence_upstream_cost_of()?,
         })
     }
 
@@ -892,6 +901,24 @@ impl Config {
         provider: impl oxsum_core::UpstreamBillProvider + 'static,
     ) -> Self {
         self.bill_provider = Some(std::sync::Arc::new(provider));
+        self
+    }
+
+    /// Whether evidence bundles export `upstreamCostMinor` on usage records
+    /// (issue #616). `false` — the default — redacts the platform's supplier
+    /// cost: it is internal, and the bundle's `costBasis` plus the scope
+    /// block's `upstreamCostFigures` exclusion say what is and is not attested
+    /// without it. A deployment opts in with `OXSUM_EVIDENCE_UPSTREAM_COST`.
+    #[must_use]
+    pub fn evidence_upstream_cost(&self) -> bool {
+        self.evidence_upstream_cost
+    }
+
+    /// Sets the upstream-cost export flag. Tests use this; the server reads
+    /// `OXSUM_EVIDENCE_UPSTREAM_COST`.
+    #[must_use]
+    pub fn with_evidence_upstream_cost(mut self, enabled: bool) -> Self {
+        self.evidence_upstream_cost = enabled;
         self
     }
 
@@ -1206,6 +1233,23 @@ fn upstream_price_sync_of(raw: String) -> Result<bool, String> {
             "OXSUM_UPSTREAM_PRICE_SYNC must be true or false, got {other:?}"
         )),
     }
+}
+
+/// Parses `OXSUM_EVIDENCE_UPSTREAM_COST` (issue #616): whether evidence
+/// bundles export `upstreamCostMinor` on usage records. `true`/`1` opt in;
+/// `false`/`0`/absent keep the platform's supplier cost redacted — the
+/// default. Anything else refuses to start rather than guess.
+fn evidence_upstream_cost_of() -> Result<bool, String> {
+    var("OXSUM_EVIDENCE_UPSTREAM_COST")
+        .map(|raw| match raw.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" => Ok(true),
+            "false" | "0" => Ok(false),
+            other => Err(format!(
+                "OXSUM_EVIDENCE_UPSTREAM_COST must be true or false, got {other:?}"
+            )),
+        })
+        .transpose()
+        .map(|opt| opt.unwrap_or(false))
 }
 
 /// Parses `OXSUM_RATE_LIMIT_BACKEND` (issue #498) — `memory`/`postgres`, absent

@@ -39,5 +39,12 @@ serde_json.workspace = true
 # JSON strings, so the page needs no generated TypeScript.
 wasm-bindgen = { version = "0.2", optional = true }
 
+[dev-dependencies]
+# The evidence tests seal real entries: `Entry::new` takes a `time::Date` and
+# an `EntryId` built from a `uuid::Uuid`, both workspace-versioned so the test
+# fixture agrees with doubleentry's own encoding.
+time.workspace = true
+uuid.workspace = true
+
 [lints]
 workspace = true

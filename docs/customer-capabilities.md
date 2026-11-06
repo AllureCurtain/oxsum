@@ -81,6 +81,13 @@ Every row below names an actual OpenAPI operation; path variables use the contra
 | `GET /api/v1/org/usage-reports/links` | 403 | 403 | Allowed |
 | `POST /api/v1/org/usage-reports/links` | 403 | 403 | Allowed |
 | `DELETE /api/v1/org/usage-reports/links/{linkId}` | 403 | 403 | Allowed |
+| `GET /api/v1/org/evidence-bundles` | 403 | 403 | Allowed |
+| `POST /api/v1/org/evidence-bundles` | 403 | 403 | Allowed |
+| `GET /api/v1/org/evidence-bundles/{bundleId}` | 403 | 403 | Allowed |
+| `POST /api/v1/org/evidence-bundles/{bundleId}/share` | 403 | 403 | Allowed |
+| `GET /api/v1/org/evidence-bundles/{bundleId}/share` | 403 | 403 | Allowed |
+| `DELETE /api/v1/org/evidence-bundles/{bundleId}/share` | 403 | 403 | Allowed |
+| `GET /api/v1/org/statements/{statementId}/evidence` | 403 | 403 | Allowed |
 | `POST /api/v1/estimate-price` | Metadata/estimate | Metadata/estimate | Metadata/estimate |
 | `GET /api/v1/pricing` | Metadata/estimate | Metadata/estimate | Metadata/estimate |
 | `GET /api/v1/entries/{entryId}/proof` | Own attributed records | Scoped history | Full customer history |
@@ -223,6 +230,7 @@ The following inventory covers every remaining OpenAPI operation. A listed token
 | GET /dashboard/bills/export.csv and /dashboard/bills/export.json | Personal customer session; member scoped history or full owner/admin history. Explicit machine credential returns 401 even with a valid cookie. |
 | GET /ws/billing | Personal customer session; scoped initial snapshot and every live event. Explicit machine credential returns 401. Current membership, customer and context are rechecked before delivery and every 30 seconds while idle; changed context/customer, logout or removal closes the old socket. |
 | GET /bill/{token} | Explicit owner/admin-issued report share capability, checked for expiry/revocation; the capability authorizes either one report or the named end-user report history. Customer/key identity adds no authority. |
+| GET /api/v1/evidence/{token} | Explicit owner/admin-issued evidence-share capability (`oxe-…`), checked for expiry/revocation and its remaining download budget; the capability authorizes exactly one minted bundle. Expired, revoked, exhausted and unknown tokens answer the same 410; each download is audited on the share row. Customer/key identity adds no authority. |
 | /verify and static verifier assets | Public verification of caller-supplied evidence; ?sample uses a fixed public fixture without any database access. No private customer data is selected by an unauthenticated ID or display name. |
 | /app and legacy dashboard/auth/admin redirects | Public app shell/redirects; data and mutations retain the API gates above. |
 | Gateway/task Idempotency-Key | Fingerprint binds key, protocol/path model and request body. Mismatch returns 422 without releasing or overwriting the original claim. Legacy unbound records conflict until their original 24-hour expiry. Task replays preserve the exact original response body. |

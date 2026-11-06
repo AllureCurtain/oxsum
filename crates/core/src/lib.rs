@@ -28,6 +28,7 @@ mod display;
 mod email_tokens;
 mod entitlement;
 mod error;
+mod evidence;
 mod experiments;
 mod financial_facts;
 mod groups;
@@ -147,6 +148,12 @@ pub use entitlement::{
     MandateVerdict, RpmVerdict, TpmVerdict,
 };
 pub use error::WalletError;
+pub use evidence::{
+    EVIDENCE_ARTIFACT_DOMAIN, EVIDENCE_BUNDLE_DOCUMENT, EVIDENCE_MANIFEST_DOMAIN, EvidenceBundle,
+    EvidenceBundleRow, EvidenceEntryBundle, EvidenceKind, EvidenceManifestV1, EvidenceScope,
+    EvidenceShare, ManifestEntry, MintedEvidenceShare, ResolvedEvidenceShare,
+    evidence_artifact_digest, evidence_manifest_digest,
+};
 pub use experiments::{Experiment, ExperimentBinding, Variant, VariantResult, pick_variant};
 pub use financial_facts::{
     CostBasisCount, CostCoverage, CostCoverageDay, FactFilter, FailedAttempts, FinancialFacts,

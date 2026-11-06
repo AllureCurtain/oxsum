@@ -381,6 +381,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0096_reconciliation",
         include_str!("../migrations/0096_reconciliation.sql"),
     ),
+    (
+        "0097_evidence_bundles",
+        include_str!("../migrations/0097_evidence_bundles.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.
