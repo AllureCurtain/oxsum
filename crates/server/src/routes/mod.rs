@@ -28,6 +28,7 @@ mod business_prices;
 mod business_providers;
 mod device;
 mod experiments;
+mod journals;
 mod keys;
 mod log;
 mod merchant_events;
@@ -115,6 +116,9 @@ pub fn router(state: AppState) -> Router {
         .route("/org/plan", get(plans::my_plan))
         .route("/org/plan/cancel", post(plans::cancel_my_plan))
         .route("/org/plan/change", post(plans::change_my_plan))
+        // The caller's plan-fee journals (issue #611, T20).
+        .route("/org/plan/journals", get(journals::my_journals))
+        .route("/org/plan/journals/{journal_id}", get(journals::my_journal))
         .route(
             "/webhooks",
             get(webhooks::list_webhooks).post(webhooks::create_webhook),
@@ -361,6 +365,16 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/business/customers/{organization_id}/plan/cancel",
             post(plans::cancel_customer_plan),
+        )
+        // The staff plan-fee journal read and void (issue #611, T20).
+        .route("/business/journals", get(journals::business_journals))
+        .route(
+            "/business/journals/{journal_id}",
+            get(journals::business_journal),
+        )
+        .route(
+            "/business/journals/{journal_id}/void",
+            post(journals::void_journal),
         )
         .route(
             "/business/customers/{organization_id}/lifecycle",
