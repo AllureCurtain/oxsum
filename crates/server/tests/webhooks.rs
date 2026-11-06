@@ -4,6 +4,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod support;
+
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -455,8 +457,10 @@ async fn a_refused_hold_on_credit_enqueues_credit_limit_exceeded() {
     let (status, body) = call(
         &app,
         "POST",
-        "/api/v1/holds",
-        Some(json!({"idempotencyKey": "h-ok", "amountMinor": 500_000})),
+        "/v1/chat/completions",
+        Some(support::chat_body(
+            &support::flat_model(&db, &sealing_key(), 500_000).await,
+        )),
         Some(&key),
     )
     .await;
@@ -464,8 +468,10 @@ async fn a_refused_hold_on_credit_enqueues_credit_limit_exceeded() {
     let (status, _body) = call(
         &app,
         "POST",
-        "/api/v1/holds",
-        Some(json!({"idempotencyKey": "h-over", "amountMinor": 9_000_000})),
+        "/v1/chat/completions",
+        Some(support::chat_body(
+            &support::flat_model(&db, &sealing_key(), 9_000_000).await,
+        )),
         Some(&key),
     )
     .await;

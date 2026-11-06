@@ -1844,7 +1844,7 @@ async fn grants_and_topups_share_one_balance_across_pools() {
     let (status, body) = call_with(
         &app,
         "POST",
-        "/api/v1/holds",
+        "/__test/holds",
         Some(json!({"idempotencyKey": "pool-hold-1", "amountMinor": 6_000_000})),
         Some(&key),
     )
@@ -1859,7 +1859,7 @@ async fn grants_and_topups_share_one_balance_across_pools() {
     let (status, body) = call_with(
         &app,
         "POST",
-        "/api/v1/settlements",
+        "/__test/settlements",
         Some(json!({"holdKey": "pool-hold-1", "actualMinor": 5_000_000})),
         Some(&key),
     )
@@ -2379,7 +2379,7 @@ async fn a_credit_limit_is_granted_drawn_and_repaid() {
     let (status, body) = call_with(
         &app,
         "POST",
-        "/api/v1/holds",
+        "/__test/holds",
         Some(json!({"idempotencyKey": "cl-hold", "amountMinor": 12_000_000})),
         Some(&key),
     )
@@ -2388,7 +2388,7 @@ async fn a_credit_limit_is_granted_drawn_and_repaid() {
     let (status, body) = call_with(
         &app,
         "POST",
-        "/api/v1/holds",
+        "/__test/holds",
         Some(json!({"idempotencyKey": "cl-hold-2", "amountMinor": 4_000_000})),
         Some(&key),
     )
@@ -2399,7 +2399,7 @@ async fn a_credit_limit_is_granted_drawn_and_repaid() {
     let (status, body) = call_with(
         &app,
         "POST",
-        "/api/v1/settlements",
+        "/__test/settlements",
         Some(json!({"holdKey": "cl-hold", "actualMinor": 12_000_000})),
         Some(&key),
     )

@@ -409,11 +409,11 @@ async fn an_open_hold_fills_the_concurrent_cap_and_reports_the_count() {
     let (status, _) = patch_key(&world, json!({"maxConcurrentHolds": 1})).await;
     assert_eq!(status, StatusCode::OK);
 
-    // One outstanding hold — `POST /api/v1/holds` reserves it.
+    // Seed one historical key-attributed hold for the entitlement read.
     let (status, body) = call(
         &world.app,
         "POST",
-        "/api/v1/holds",
+        "/__test/holds",
         Some(json!({"idempotencyKey": format!("h-{}", &world.key_id[..8]), "amountMinor": 1_000_000})),
         Some(&world.key),
         &[],

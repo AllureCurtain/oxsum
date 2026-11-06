@@ -231,16 +231,23 @@ async fn top_up(app: &Router, key: &str, idem: &str, minor: i64) {
 /// One hold attempt, answered `(status, body)`.
 async fn hold(
     app: &Router,
+    pool: &PgPool,
     auth: Option<&str>,
     cookie: Option<&str>,
-    idem: &str,
+    _idem: &str,
     minor: i64,
 ) -> Res {
+    let model = support::flat_model(
+        &oxsum_core::Db::from_pool(pool.clone()),
+        &SecretKey::from_bytes([7; 32]),
+        minor,
+    )
+    .await;
     call(
         app,
         "POST",
-        "/api/v1/holds",
-        Some(json!({"idempotencyKey": idem, "amountMinor": minor})),
+        "/v1/chat/completions",
+        Some(support::chat_body(&model)),
         auth,
         cookie,
     )
@@ -295,11 +302,11 @@ async fn suspension_round_trips_through_the_admin_patch() {
 /// admits them again. The refusal is FORBIDDEN, the code the contract names.
 #[tokio::test]
 async fn a_suspended_organization_reserves_nothing() {
-    let (app, _) = app_or_skip!();
+    let (app, pool) = app_or_skip!();
     let account = register(&app, "gate").await;
     top_up(&app, &account.key, "top-1", 10_000_000).await;
     assert_eq!(
-        hold(&app, Some(&account.key), None, "h-ok", 1_000_000)
+        hold(&app, &pool, Some(&account.key), None, "h-ok", 1_000_000)
             .await
             .status,
         StatusCode::OK
@@ -312,11 +319,19 @@ async fn a_suspended_organization_reserves_nothing() {
     )
     .await;
 
-    let res = hold(&app, Some(&account.key), None, "h-key", 1_000_000).await;
+    let res = hold(&app, &pool, Some(&account.key), None, "h-key", 1_000_000).await;
     assert_eq!(res.status, StatusCode::FORBIDDEN, "{}", res.body);
     assert_eq!(res.body["error"]["code"], "FORBIDDEN");
-    let res = hold(&app, None, Some(&account.cookie), "h-session", 1_000_000).await;
-    assert_eq!(res.status, StatusCode::FORBIDDEN, "{}", res.body);
+    let res = hold(
+        &app,
+        &pool,
+        None,
+        Some(&account.cookie),
+        "h-session",
+        1_000_000,
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::UNAUTHORIZED, "{}", res.body);
 
     patch_organization(
         &app,
@@ -325,7 +340,7 @@ async fn a_suspended_organization_reserves_nothing() {
     )
     .await;
     assert_eq!(
-        hold(&app, Some(&account.key), None, "h-back", 1_000_000)
+        hold(&app, &pool, Some(&account.key), None, "h-back", 1_000_000)
             .await
             .status,
         StatusCode::OK
@@ -336,7 +351,7 @@ async fn a_suspended_organization_reserves_nothing() {
 /// a role change uses, and caps committed spend across the member's keys.
 #[tokio::test]
 async fn a_member_budget_spans_minted_keys() {
-    let (app, _) = app_or_skip!();
+    let (app, pool) = app_or_skip!();
     let account = register(&app, "mbud").await;
     top_up(&app, &account.key, "top-1", 100_000_000).await;
 
@@ -383,12 +398,12 @@ async fn a_member_budget_spans_minted_keys() {
 
     // 6 + 6 over a 10 cap: each key alone would fit; together they may not.
     assert_eq!(
-        hold(&app, Some(&keys[0]), None, "mb-1", 6_000_000)
+        hold(&app, &pool, Some(&keys[0]), None, "mb-1", 6_000_000)
             .await
             .status,
         StatusCode::OK
     );
-    let res = hold(&app, Some(&keys[1]), None, "mb-2", 6_000_000).await;
+    let res = hold(&app, &pool, Some(&keys[1]), None, "mb-2", 6_000_000).await;
     assert_eq!(res.status, StatusCode::TOO_MANY_REQUESTS, "{}", res.body);
     assert_eq!(res.body["error"]["code"], "KEY_LIMIT_EXCEEDED");
 
@@ -405,7 +420,7 @@ async fn a_member_budget_spans_minted_keys() {
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
     assert!(res.body["data"]["budgetLimitMinor"].is_null());
     assert_eq!(
-        hold(&app, Some(&keys[1]), None, "mb-3", 6_000_000)
+        hold(&app, &pool, Some(&keys[1]), None, "mb-3", 6_000_000)
             .await
             .status,
         StatusCode::OK

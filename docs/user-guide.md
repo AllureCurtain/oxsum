@@ -334,7 +334,7 @@ A mandate hands a bearer who does not hold the key a strictly narrower slice of 
 
 - `POST /api/v1/org/keys/{keyId}/mandates` mints one: `{"capMinor": …, "notAfter": "<rfc3339>"}`, plus an optional `models` allowlist, an optional `requiredPolicies` subset and a `notBefore` to delay the window. The answer carries the `mandateId` and the `mandateBlob` — the signed, base64url string the delegate sends. A mandate may only narrow the key: a cap above the key's `spendLimitMinor`, a model outside its `modelAllowlist`, a policy outside its `requiredPolicies`, or an inverted window is refused `VALIDATION_ERROR` rather than minted.
 - `GET /api/v1/org/keys/{keyId}/mandates` lists what the key has issued — id, cap, models, window, creation time. Members list only the keys they created; a mandate id on someone else's key answers `NOT_FOUND`, so ids are not probeable.
-- The delegate sends the blob in `X-Oxsum-Mandate: <blob>` on the gateway (`/v1/*`) or on `POST /api/v1/holds`. A blob that fails to verify is 403 `INVALID_MANDATE`; outside its window is `MANDATE_NOT_YET_VALID`/`MANDATE_EXPIRED`; a hold that would push the mandate's committed spend past `capMinor` is 429 `MANDATE_EXCEEDED` — committed meaning settled charges plus still-open holds, counted from the ledger itself.
+- The delegate sends the blob in `X-Oxsum-Mandate: <blob>` on the gateway (`/v1/*`). A blob that fails to verify is 403 `INVALID_MANDATE`; outside its window is `MANDATE_NOT_YET_VALID`/`MANDATE_EXPIRED`; a hold that would push the mandate's committed spend past `capMinor` is 429 `MANDATE_EXCEEDED` — committed meaning settled charges plus still-open holds, counted from the ledger itself.
 - A mandate is short-lived by design and is never revoked: to cut a delegate off, tighten the key's own constraint or revoke the key — the delegate's window just runs out.
 - A settled delegated turn names the mandate in its settlement description (`{id, hash}` over the blob), so `/verify` proves which delegation authorized the charge.
 
@@ -620,25 +620,11 @@ permission to reach a model is re-judged per hop, never inherited. The settlemen
 readers that predate the field; on a cross-model failover it also records `requestedModel`, the name
 you asked for.
 
-### By hand
+### Reservation and settlement authority
 
-Purpose: reserve credit before the call, charge actual usage after it, refund the unspent rest.
+Send consumption through the gateway. It computes the upper bound, reserves credit and settles the recorded usage. Customer sessions and consumption keys cannot call `POST /api/v1/holds` or `POST /api/v1/settlements`: both return 403 `FORBIDDEN`, including requests to release a known hold or choose its charge.
 
-Steps:
-
-1. Before calling the LLM, `POST /api/v1/holds` to freeze an upper bound of what the call can cost.
-   - A 402 `INSUFFICIENT_FUNDS` response means the balance is too low; do not start the call.
-2. After the call finishes (success or failure), `POST /api/v1/settlements`:
-   - `holdKey`: the `idempotencyKey` the hold was taken under
-   - `actualMinor`: the actual spend; use 0 for a failed call and the whole hold is refunded
-
-Notes:
-
-- The settlement names the hold it releases; its own idempotency key is derived from the hold's.
-- After a network timeout, retry with the same hold key and the same actual; you will not be charged twice.
-- `actualMinor` must not exceed what the hold reserved.
-- Naming a hold that was never taken, or one that is already settled, is refused (404, 409) — not free credit. Settle the hold you took, for the amount you took it for.
-- A hold that is never settled does not stay frozen forever: the hold sweeper (issue #13) releases holds older than `OXSUM_HOLD_TIMEOUT` (default 30 minutes) at 0 with settlement kind `swept`, recorded as an anomaly. REST holds count since issue #485: a `POST /api/v1/holds` reservation shows on `GET /api/v1/holds` like a gateway hold does, and an unsettled one is reclaimed the same way — settle the holds you take.
+Business services that report externally measured usage use the separate service credential and `/api/v1/metering` contract. Customer credentials cannot become metering authority. `GET /api/v1/holds` still lists in-flight reservations. Historical raw holds remain recoverable by the sweeper; contact the business about an unresolved reservation.
 
 ## Balance
 
@@ -658,7 +644,7 @@ the drawn part is repaid — shrinking below the debt is refused, and a top-up i
 the debt shrinks.
 
 If the platform suspends the organization, the balance still reads and money still
-lands — but new holds refuse `FORBIDDEN`, so gateway calls and `POST /api/v1/holds`
+lands — but new holds refuse `FORBIDDEN`, so new gateway calls
 fail until the operator reinstates it. Holds already open still settle, and a
 subscribed webhook hears `org.suspended` at the moment it happens.
 

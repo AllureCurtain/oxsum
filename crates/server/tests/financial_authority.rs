@@ -112,10 +112,26 @@ async fn all_customer_roles_and_keys_cannot_create_money_or_use_operator_finance
                 format!("/api/v1/admin/deposits/{}/reverse", Uuid::new_v4()),
                 format!("/api/v1/admin/statements/{}/payments", Uuid::new_v4()),
                 "/api/v1/metering/settlements".into(),
+                "/api/v1/metering/holds".into(),
+                "/api/v1/metering/settle".into(),
+                "/api/v1/metering/release".into(),
             ] {
                 let (status, body) = call(&app, &path, terms(), bearer, cookie).await;
                 assert_eq!(status, StatusCode::UNAUTHORIZED, "{role}: {path}: {body}");
             }
+            let mut request = Request::patch(format!(
+                "/api/v1/admin/organizations/{}",
+                reg.organization.id
+            ))
+            .header("content-type", "application/json");
+            if let Some(token) = bearer {
+                request = request.header("authorization", format!("Bearer {token}"));
+            }
+            if let Some(token) = cookie {
+                request = request.header("cookie", format!("oxsum_session={token}"));
+            }
+            let denied = app.clone().oneshot(request.body(Body::from(json!({"idempotencyKey":"forged-credit", "creditLimitMinor":100_000_000}).to_string())).unwrap()).await.unwrap();
+            assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
         }
     }
     assert_eq!(wallet.available().await.unwrap(), 0);
@@ -255,4 +271,127 @@ async fn interrupted_authorization_recovers_and_missing_evidence_never_credits()
     assert_eq!(replay["data"]["isNew"], false);
     assert_eq!(first["data"]["entryId"], replay["data"]["entryId"]);
     assert_eq!(wallet.available().await.unwrap(), 5_000_000);
+}
+
+#[tokio::test]
+async fn customer_roles_cannot_create_or_settle_a_trusted_hold() {
+    let Some((app, db, tenants, reg)) = world().await else {
+        eprintln!("DATABASE_URL absent: skipped");
+        return;
+    };
+    let wallet = tenants.get(&reg.organization.tenant_id).await.unwrap();
+    let day = time::OffsetDateTime::now_utc().date();
+    wallet
+        .top_up("fixture-funds", 5_000_000, day)
+        .await
+        .unwrap();
+    let hold_key = format!("req-{}:hold", Uuid::new_v4());
+    wallet
+        .hold(&hold_key, "trusted admission", 1_000_000, day)
+        .await
+        .unwrap();
+    db.note_open_hold(&oxsum_core::OpenHold {
+        hold_key: hold_key.clone(),
+        tenant_id: reg.organization.tenant_id.clone(),
+        request_id: "trusted-request".into(),
+        model: "fixture".into(),
+        channel: "fixture".into(),
+        price_version: 1,
+        input_price: 1,
+        output_price: 1,
+        freeze_minor: 1_000_000,
+        key_id: Some(reg.api_key.key.id),
+        mandate_id: None,
+        end_user: None,
+        service_tier: None,
+        tags: Default::default(),
+        sweep_attempts: 0,
+        last_error: None,
+        dead_at: None,
+    })
+    .await
+    .unwrap();
+    let head = wallet.log_size().await.unwrap();
+    let before: Value =
+        sqlx::query_scalar("SELECT to_jsonb(h) FROM oxsum.open_holds h WHERE hold_key=$1")
+            .bind(&hold_key)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    let oxsum_core::totp::LoginOutcome::Session(session) =
+        db.login(&reg.user.email, PASSWORD).await.unwrap()
+    else {
+        panic!("session");
+    };
+    for role in ["owner", "admin", "member"] {
+        sqlx::query("UPDATE oxsum.memberships SET role=$3 WHERE organization_id=$1 AND user_id=$2")
+            .bind(reg.organization.id)
+            .bind(reg.user.id)
+            .bind(role)
+            .execute(db.pool())
+            .await
+            .unwrap();
+        for (bearer, cookie) in [
+            (Some(reg.api_key.secret.as_str()), None),
+            (None, Some(session.token.as_str())),
+        ] {
+            for (path, body) in [
+                (
+                    "/api/v1/holds",
+                    json!({"idempotencyKey":"forged", "amountMinor":1}),
+                ),
+                (
+                    "/api/v1/settlements",
+                    json!({"holdKey":hold_key,"actualMinor":0}),
+                ),
+                (
+                    "/api/v1/settlements",
+                    json!({"holdKey":hold_key,"actualMinor":1_000_000}),
+                ),
+                ("/api/v1/holds", Value::Null),
+                ("/api/v1/settlements", Value::Null),
+            ] {
+                let (status, response) = call(&app, path, body, bearer, cookie).await;
+                assert_eq!(status, StatusCode::FORBIDDEN, "{role}: {path}: {response}");
+                assert_eq!(response["error"]["code"], "FORBIDDEN");
+            }
+        }
+    }
+    assert_eq!(wallet.available().await.unwrap(), 4_000_000);
+    assert_eq!(wallet.reserved().await.unwrap(), 1_000_000);
+    assert_eq!(wallet.log_size().await.unwrap(), head);
+    let after: Value =
+        sqlx::query_scalar("SELECT to_jsonb(h) FROM oxsum.open_holds h WHERE hold_key=$1")
+            .bind(&hold_key)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(before, after, "denial cannot remove or edit recovery state");
+    let response = app
+        .oneshot(
+            Request::get("/api/v1/holds")
+                .header("authorization", format!("Bearer {}", reg.api_key.secret))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert!(
+        body["data"]["holds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["requestId"] == "trusted-request")
+    );
+    // Recovery retains authority after all customer attempts are refused.
+    wallet
+        .settle(&hold_key, "trusted recovery", 300_000, day)
+        .await
+        .unwrap();
+    db.clear_open_hold(&hold_key).await.unwrap();
+    assert_eq!(wallet.available().await.unwrap(), 4_700_000);
+    assert_eq!(wallet.reserved().await.unwrap(), 0);
 }

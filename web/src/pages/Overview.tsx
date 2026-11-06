@@ -1,11 +1,10 @@
 import { Link } from "react-router-dom";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ArrowDownRight,
   ArrowUpRight,
   CreditCard,
-  FlaskConical,
   Snowflake,
   TrendingUp,
   Wallet,
@@ -13,24 +12,19 @@ import {
 import {
   useBalance,
   useBudget,
-  useCreateHold,
   useDisplay,
   useEntries,
   useHolds,
   useSession,
-  useSettleHold,
   useUsage,
 } from "../api/hooks";
 import { Progress } from "../components/ui";
 import { GettingStartedCard } from "../components/GettingStartedCard";
-import { Button } from "../components/ui";
-import { TextInput } from "../components/ui";
 import {
   Cr,
   Banner,
   Card,
   EmptyRows,
-  Field,
   Skeleton,
   Sparkline,
   StatChip,
@@ -329,7 +323,6 @@ export function Overview() {
               </EmptyRows>
             ) : null}
           </TableShell>
-          <HoldBench />
         </Card>
 
         <Card
@@ -424,118 +417,5 @@ export function Overview() {
         </div>
       ) : null}
     </div>
-  );
-}
-
-/** A hold you take by hand — the key is the idempotencyKey you pick, so the
- *  settle form below already knows what to name. Settling at 0 is the release.
- *  This is a dev bench (`POST /holds` / `POST /settlements`), not a product
- *  action — it collapses behind a `<details>` so the read surface stays read. */
-function HoldBench() {
-  const { t } = useTranslation();
-  const [amount, setAmount] = useState("");
-  const [holdKey, setHoldKey] = useState("");
-  const [actual, setActual] = useState("0");
-  const [msg, setMsg] = useState<{ text: string; failed: boolean } | null>(null);
-  const hold = useCreateHold();
-  const settle = useSettleHold();
-
-  return (
-    <details className="mt-3 border-t border-line pt-3.5">
-      <summary className="flex cursor-pointer list-none items-center gap-2 text-xs font-medium text-muted hover:text-ink [&::-webkit-details-marker]:hidden">
-        <FlaskConical className="size-3.5" />
-        {t("overview.holdBench")}
-      </summary>
-      <div className="mt-2.5 flex flex-wrap items-end gap-2">
-        <Field label={t("overview.holdCredits")}>
-          <TextInput
-            type="number"
-            min="0"
-            step="any"
-            value={amount}
-            onChange={(e) => setAmount(e.target.value)}
-            className="w-28"
-          />
-        </Field>
-        <Button
-          type="button"
-          isLoading={hold.isPending}
-          loadingText={t("overview.holding")}
-          onClick={async () => {
-            setMsg(null);
-            const key = `manual-${Date.now()}`;
-            try {
-              await hold.mutateAsync({
-                idempotencyKey: key,
-                amountMinor: Math.round(Number(amount) * 1_000_000),
-              });
-              setHoldKey(key);
-              setMsg({ text: t("overview.benchHeld", { key }), failed: false });
-            } catch (err) {
-              setMsg({
-                text: err instanceof Error ? err.message : t("overview.benchHoldFailed"),
-                failed: true,
-              });
-            }
-          }}
-        >
-          {t("overview.benchHold")}
-        </Button>
-        <Field label={t("overview.actualCredits")}>
-          <TextInput
-            type="number"
-            min="0"
-            step="any"
-            value={actual}
-            onChange={(e) => setActual(e.target.value)}
-            className="w-28"
-          />
-        </Field>
-        <Button
-          type="button"
-          disabled={!holdKey}
-          isLoading={settle.isPending}
-          loadingText={t("overview.settling")}
-          onClick={async () => {
-            setMsg(null);
-            try {
-              await settle.mutateAsync({
-                holdKey,
-                actualMinor: Math.round(Number(actual) * 1_000_000),
-              });
-              setMsg({ text: t("overview.benchSettled", { key: holdKey }), failed: false });
-              setHoldKey("");
-            } catch (err) {
-              setMsg({
-                text: err instanceof Error ? err.message : t("overview.benchSettleFailed"),
-                failed: true,
-              });
-            }
-          }}
-        >
-          {t("overview.benchSettle")}
-        </Button>
-        <Button
-          type="button"
-          disabled={!holdKey}
-          onClick={async () => {
-            setMsg(null);
-            try {
-              await settle.mutateAsync({ holdKey, actualMinor: 0 });
-              setMsg({ text: t("overview.benchReleased", { key: holdKey }), failed: false });
-              setHoldKey("");
-            } catch (err) {
-              setMsg({
-                text: err instanceof Error ? err.message : t("overview.benchReleaseFailed"),
-                failed: true,
-              });
-            }
-          }}
-        >
-          {t("overview.benchRelease")}
-        </Button>
-      </div>
-      {msg ? <Banner tone={msg.failed ? "error" : "info"}>{msg.text}</Banner> : null}
-    </details>
   );
 }

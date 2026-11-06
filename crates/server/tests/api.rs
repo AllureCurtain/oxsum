@@ -281,7 +281,7 @@ async fn registering_rejects_bad_input() {
 }
 
 #[tokio::test]
-async fn wallet_round_trip() {
+async fn ledger_fixtures_round_trip_through_customer_reads() {
     let (app, _pool) = app_or_skip!(Signup::Open);
     let (_registration, key) = register(&app, "roundtrip").await;
 
@@ -312,7 +312,7 @@ async fn wallet_round_trip() {
     let (status, body) = call(
         &app,
         "POST",
-        "/api/v1/holds",
+        "/__test/holds",
         Some(json!({"idempotencyKey": "h1", "amountMinor": 9_000_000})),
         Some(&key),
     )
@@ -325,7 +325,7 @@ async fn wallet_round_trip() {
     let (status, _) = call(
         &app,
         "POST",
-        "/api/v1/holds",
+        "/__test/holds",
         Some(json!({"idempotencyKey": "h2", "amountMinor": 3_000_000})),
         Some(&key),
     )
@@ -338,7 +338,7 @@ async fn wallet_round_trip() {
     let (status, _) = call(
         &app,
         "POST",
-        "/api/v1/settlements",
+        "/__test/settlements",
         Some(json!({"holdKey": "h2", "actualMinor": 2_000_000})),
         Some(&key),
     )
@@ -361,7 +361,7 @@ async fn wallet_round_trip() {
 }
 
 #[tokio::test]
-async fn a_settlement_naming_no_hold_is_not_found() {
+async fn ledger_fixture_refuses_missing_or_already_settled_holds() {
     let (app, _pool) = app_or_skip!(Signup::Open);
     let (_registration, key) = register(&app, "unheld").await;
 
@@ -380,7 +380,7 @@ async fn a_settlement_naming_no_hold_is_not_found() {
     let (status, body) = call(
         &app,
         "POST",
-        "/api/v1/settlements",
+        "/__test/settlements",
         Some(json!({"holdKey": "ghost", "actualMinor": 0})),
         Some(&key),
     )
@@ -393,7 +393,7 @@ async fn a_settlement_naming_no_hold_is_not_found() {
     let (status, _) = call(
         &app,
         "POST",
-        "/api/v1/holds",
+        "/__test/holds",
         Some(json!({"idempotencyKey": "h1", "amountMinor": 2_000_000})),
         Some(&key),
     )
@@ -402,7 +402,7 @@ async fn a_settlement_naming_no_hold_is_not_found() {
     let (status, _) = call(
         &app,
         "POST",
-        "/api/v1/settlements",
+        "/__test/settlements",
         Some(json!({"holdKey": "h1", "actualMinor": 1_000_000})),
         Some(&key),
     )
@@ -411,7 +411,7 @@ async fn a_settlement_naming_no_hold_is_not_found() {
     let (status, body) = call(
         &app,
         "POST",
-        "/api/v1/settlements",
+        "/__test/settlements",
         Some(json!({"holdKey": "h1", "actualMinor": 0})),
         Some(&key),
     )
@@ -425,13 +425,10 @@ async fn a_settlement_naming_no_hold_is_not_found() {
     assert_eq!(body["data"]["availableMinor"], 4_000_000);
 }
 
-/// A REST hold is watched like a gateway hold (issue #485): the sweeper only
-/// reclaims holds it sees in `oxsum.open_holds`, and `POST /api/v1/holds` used to
-/// freeze the reservation without writing a watch row — invisible to the
-/// sweeper, to `GET /holds`, and to `/bills`. The hold must register the row so
-/// a process that never settles is reclaimed at the hold timeout.
+/// Retained raw holds from older releases must remain visible and recoverable.
+/// Only the explicit test fixture creates them; production customer writes deny.
 #[tokio::test]
-async fn a_rest_hold_is_watched_and_swept() {
+async fn legacy_raw_holds_remain_readable_and_sweepable() {
     let (app, pool) = app_or_skip!(Signup::Open);
     let (_registration, key) = register(&app, "watched-hold").await;
     let db = Db::from_pool(pool.clone());
@@ -447,11 +444,11 @@ async fn a_rest_hold_is_watched_and_swept() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // Take a REST hold — the idempotency key is the hold key.
+    // Seed a historical raw hold; the retired customer route cannot create one.
     let (status, _) = call(
         &app,
         "POST",
-        "/api/v1/holds",
+        "/__test/holds",
         Some(json!({"idempotencyKey": "rest-h1", "amountMinor": 2_000_000})),
         Some(&key),
     )
@@ -489,7 +486,7 @@ async fn a_rest_hold_is_watched_and_swept() {
     let (status, _) = call(
         &app,
         "POST",
-        "/api/v1/settlements",
+        "/__test/settlements",
         Some(json!({"holdKey": "rest-h1", "actualMinor": 500_000})),
         Some(&key),
     )
@@ -505,7 +502,7 @@ async fn a_rest_hold_is_watched_and_swept() {
     let (status, _) = call(
         &app,
         "POST",
-        "/api/v1/holds",
+        "/__test/holds",
         Some(json!({"idempotencyKey": "rest-h2", "amountMinor": 1_000_000})),
         Some(&key),
     )
@@ -539,7 +536,7 @@ async fn a_rest_hold_is_watched_and_swept() {
 }
 
 #[tokio::test]
-async fn a_reused_key_with_different_content_is_a_conflict() {
+async fn ledger_fixture_conflict_keeps_the_original_receipt() {
     let (app, _pool) = app_or_skip!(Signup::Open);
     let (_registration, key) = register(&app, "reuse").await;
 
@@ -575,7 +572,7 @@ async fn a_reused_key_with_different_content_is_a_conflict() {
     let (status, body) = call(
         &app,
         "POST",
-        "/api/v1/holds",
+        "/__test/holds",
         Some(json!({"idempotencyKey": "t1", "amountMinor": 1_000_000})),
         Some(&key),
     )
@@ -972,305 +969,4 @@ async fn key_constraints_reject_malformed_input() {
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     }
-}
-
-#[tokio::test]
-async fn key_spend_limit_is_enforced_on_wallet_holds() {
-    let (app, _pool) = app_or_skip!(Signup::Open);
-    let (_registration, key) = register(&app, "keyhold").await;
-
-    let (status, _) = call(
-        &app,
-        "POST",
-        "/__test/funding",
-        Some(json!({"idempotencyKey": "t1", "amountMinor": 5_000_000})),
-        Some(&key),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-
-    // A key capped at one credit.
-    let (status, body) = call(
-        &app,
-        "POST",
-        "/api/v1/org/keys",
-        Some(json!({"name": "capped", "spendLimitMinor": 1_000_000})),
-        Some(&key),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let capped_secret = body["data"]["secret"].as_str().unwrap().to_owned();
-
-    // A hold that fits lands.
-    let (status, _) = call(
-        &app,
-        "POST",
-        "/api/v1/holds",
-        Some(json!({"idempotencyKey": "h1", "amountMinor": 600_000})),
-        Some(&capped_secret),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-
-    // One that would push the key past its limit is a quota refusal, not a balance one —
-    // and it names the limit code the contract promises.
-    let (status, body) = call(
-        &app,
-        "POST",
-        "/api/v1/holds",
-        Some(json!({"idempotencyKey": "h2", "amountMinor": 500_000})),
-        Some(&capped_secret),
-    )
-    .await;
-    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
-    assert_eq!(body["error"]["code"], "KEY_LIMIT_EXCEEDED");
-
-    // The organization's first key has no limit: the same hold fits under the balance.
-    let (status, _) = call(
-        &app,
-        "POST",
-        "/api/v1/holds",
-        Some(json!({"idempotencyKey": "h3", "amountMinor": 500_000})),
-        Some(&key),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-}
-
-/// A key's `requestsPerMinute` is spent at admission: a second hold inside the
-/// same minute is refused 429 with `RATE_LIMITED`, `Retry-After` and the
-/// `X-RateLimit-*` headers — and it never reaches the wallet.
-#[tokio::test]
-async fn a_requests_per_minute_cap_refuses_at_admission() {
-    let (app, _pool) = app_or_skip!(Signup::Open);
-    let (_registration, key) = register(&app, "keyrpm").await;
-    let (status, _) = call(
-        &app,
-        "POST",
-        "/__test/funding",
-        Some(json!({"idempotencyKey": "t1", "amountMinor": 10_000_000})),
-        Some(&key),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-
-    let (status, body) = call(
-        &app,
-        "POST",
-        "/api/v1/org/keys",
-        Some(json!({"requestsPerMinute": 1})),
-        Some(&key),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let capped_secret = body["data"]["secret"].as_str().unwrap().to_owned();
-
-    let (status, _) = call(
-        &app,
-        "POST",
-        "/api/v1/holds",
-        Some(json!({"idempotencyKey": "h1", "amountMinor": 100_000})),
-        Some(&capped_secret),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-
-    // The second request inside the same minute is refused: the answer names the
-    // code and carries the backoff headers the contract promises. `call` drops
-    // the headers, so this one goes raw.
-    let request = Request::builder()
-        .method("POST")
-        .uri("/api/v1/holds")
-        .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {capped_secret}"))
-        .body(Body::from(
-            json!({"idempotencyKey": "h2", "amountMinor": 100_000}).to_string(),
-        ))
-        .unwrap();
-    let response = app.clone().oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-    assert!(response.headers().get("retry-after").is_some());
-    assert_eq!(response.headers().get("x-ratelimit-limit").unwrap(), "1");
-    let body =
-        serde_json::from_slice::<Value>(&response.into_body().collect().await.unwrap().to_bytes())
-            .unwrap();
-    assert_eq!(body["error"]["code"], "RATE_LIMITED");
-
-    // The allowance is the key's own: the uncapped key still holds freely.
-    let (status, _) = call(
-        &app,
-        "POST",
-        "/api/v1/holds",
-        Some(json!({"idempotencyKey": "h3", "amountMinor": 100_000})),
-        Some(&key),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-}
-
-/// A key's `tokensPerMinute` is judged at admission too (issue #203): an
-/// amount-only hold spends no tokens, so it is refused 429 `TOKENS_PER_MINUTE`
-/// only once the key's settled-token window is already full — the durable
-/// window the test seeds straight into `oxsum.tpm_windows`, the same rows a
-/// settlement would have written.
-#[tokio::test]
-async fn a_tokens_per_minute_cap_refuses_the_hold_when_the_window_is_full() {
-    let (app, pool) = app_or_skip!(Signup::Open);
-    let (_registration, key) = register(&app, "keytpm").await;
-    let (status, _) = call(
-        &app,
-        "POST",
-        "/__test/funding",
-        Some(json!({"idempotencyKey": "t1", "amountMinor": 10_000_000})),
-        Some(&key),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-
-    let (status, body) = call(
-        &app,
-        "POST",
-        "/api/v1/org/keys",
-        Some(json!({"tokensPerMinute": 1000})),
-        Some(&key),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let capped_secret = body["data"]["secret"].as_str().unwrap().to_owned();
-    let capped_id: uuid::Uuid = body["data"]["id"].as_str().unwrap().parse().unwrap();
-
-    // Below the cap the hold admits freely: the window has room.
-    let (status, _) = call(
-        &app,
-        "POST",
-        "/api/v1/holds",
-        Some(json!({"idempotencyKey": "h1", "amountMinor": 100_000})),
-        Some(&capped_secret),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-
-    // Seed the window full, the way two settled turns would have left it: two
-    // one-second buckets inside the trailing minute (a plain `now()` pair can
-    // share a truncated second and collide on the primary key).
-    for (key_id, seconds_ago, tokens) in [(capped_id, 0i32, 600i64), (capped_id, 1, 500)] {
-        sqlx::query(
-            "INSERT INTO oxsum.tpm_windows (key_id, window_start, tokens) \
-             VALUES ($1, date_trunc('second', now()) - make_interval(secs => $2), $3)",
-        )
-        .bind(key_id)
-        .bind(seconds_ago)
-        .bind(tokens)
-        .execute(&pool)
-        .await
-        .expect("the window row lands");
-    }
-
-    // The window is full (1100 settled of 1000): the amount-only hold is refused.
-    let request = Request::builder()
-        .method("POST")
-        .uri("/api/v1/holds")
-        .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {capped_secret}"))
-        .body(Body::from(
-            json!({"idempotencyKey": "h2", "amountMinor": 100_000}).to_string(),
-        ))
-        .unwrap();
-    let response = app.clone().oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-    assert!(response.headers().get("retry-after").is_some());
-    assert_eq!(response.headers().get("x-ratelimit-limit").unwrap(), "1000");
-    let body =
-        serde_json::from_slice::<Value>(&response.into_body().collect().await.unwrap().to_bytes())
-            .unwrap();
-    assert_eq!(body["error"]["code"], "TOKENS_PER_MINUTE");
-
-    // Age the window's rows out: deleting them is the stand-in for the wall-clock
-    // minute no test waits through — an UPDATE would merge the two buckets onto
-    // one timestamp and collide on the primary key.
-    sqlx::query("DELETE FROM oxsum.tpm_windows WHERE key_id = $1")
-        .bind(capped_id)
-        .execute(&pool)
-        .await
-        .expect("the rows age out");
-
-    let (status, _) = call(
-        &app,
-        "POST",
-        "/api/v1/holds",
-        Some(json!({"idempotencyKey": "h3", "amountMinor": 100_000})),
-        Some(&capped_secret),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "the window freed the key again");
-}
-
-/// A key's `maxConcurrentHolds` caps reservations outstanding at once: the
-/// second hold is refused 429 `TOO_MANY_HOLDS`, and settling the first frees
-/// the slot it took.
-#[tokio::test]
-async fn a_max_concurrent_holds_cap_refuses_the_extra_hold() {
-    let (app, _pool) = app_or_skip!(Signup::Open);
-    let (_registration, key) = register(&app, "keycap").await;
-    let (status, _) = call(
-        &app,
-        "POST",
-        "/__test/funding",
-        Some(json!({"idempotencyKey": "t1", "amountMinor": 10_000_000})),
-        Some(&key),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-
-    let (status, body) = call(
-        &app,
-        "POST",
-        "/api/v1/org/keys",
-        Some(json!({"maxConcurrentHolds": 1})),
-        Some(&key),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let capped_secret = body["data"]["secret"].as_str().unwrap().to_owned();
-
-    let (status, _) = call(
-        &app,
-        "POST",
-        "/api/v1/holds",
-        Some(json!({"idempotencyKey": "h1", "amountMinor": 100_000})),
-        Some(&capped_secret),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-
-    let (status, body) = call(
-        &app,
-        "POST",
-        "/api/v1/holds",
-        Some(json!({"idempotencyKey": "h2", "amountMinor": 100_000})),
-        Some(&capped_secret),
-    )
-    .await;
-    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
-    assert_eq!(body["error"]["code"], "TOO_MANY_HOLDS");
-
-    // A settled hold no longer counts: the cap frees the slot it took.
-    let (status, _) = call(
-        &app,
-        "POST",
-        "/api/v1/settlements",
-        Some(json!({"holdKey": "h1", "actualMinor": 100_000})),
-        Some(&capped_secret),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    let (status, _) = call(
-        &app,
-        "POST",
-        "/api/v1/holds",
-        Some(json!({"idempotencyKey": "h3", "amountMinor": 100_000})),
-        Some(&capped_secret),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
 }
