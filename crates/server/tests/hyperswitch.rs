@@ -114,16 +114,29 @@ async fn world() -> Option<(Router, Db, SwitchStub)> {
     let (api_url, stub) = stub_switch().await;
     *stub.answer_id.lock().unwrap() = "pay_test_123".to_owned();
     *stub.answer_secret.lock().unwrap() = "pay_test_123_secret".to_owned();
+    let rail = oxsum_server::hyperswitch::Hyperswitch::new(
+        "snd_test_key".to_owned(),
+        WEBHOOK_SECRET.to_owned(),
+        api_url,
+        PUBLISHABLE_KEY.to_owned(),
+        "http://localhost:3000".to_owned(),
+        "https://sdk.example.test/v1".to_owned(),
+    );
     let config = Config::new(Signup::Open, None)
         .with_secret(sealing_key())
-        .with_hyperswitch(oxsum_server::hyperswitch::Hyperswitch::new(
-            "snd_test_key".to_owned(),
-            WEBHOOK_SECRET.to_owned(),
-            api_url,
-            PUBLISHABLE_KEY.to_owned(),
-            "http://localhost:3000".to_owned(),
-            "https://sdk.example.test/v1".to_owned(),
-        ));
+        .with_public_url("http://localhost:3000")
+        .with_merchant_bootstrap(rail.merchant_bootstrap(
+            "merchant_test".to_owned(),
+            oxsum_core::MerchantMode::Test,
+            oxsum_core::ProviderDestinationPolicy {
+                network: oxsum_core::ProviderNetwork::Internal,
+                allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+            },
+        ))
+        .with_hyperswitch(rail);
+    oxsum_server::prepare(&db, &config)
+        .await
+        .expect("the deployment is prepared");
     let (app, _events, _metrics) = oxsum_server::app_with_billing(db.clone(), config);
     Some((app, db, stub))
 }
@@ -408,9 +421,12 @@ async fn an_unconfigured_deployment_refuses_cleanly() {
     );
 }
 
-/// `payment_cancelled` closes the deposit: the wallet stays where it was.
+/// `payment_cancelled` closes the deposit: the wallet stays where it was. An
+/// authoritative `payment_succeeded` delivered afterwards revives the row —
+/// paid evidence outranks an earlier expiration notice, and the credit still
+/// lands exactly once under the deposit's own amount.
 #[tokio::test]
-async fn a_cancelled_payment_credits_nothing() {
+async fn a_cancelled_payment_is_revived_only_by_authoritative_success() {
     let Some((app, _db, _stub)) = world().await else {
         return;
     };
@@ -436,16 +452,16 @@ async fn a_cancelled_payment_credits_nothing() {
     assert_eq!(post_webhook(&app, headers, body).await, StatusCode::OK);
     assert_eq!(balance(&app, &key).await, before);
 
-    // A later success cannot revive a cancelled deposit — the row is no longer
-    // pending, so the webhook finds nothing to confirm.
+    // The provider later reports the payment actually succeeded: the success is
+    // authoritative, so the deposit revives and credits its pinned amount once.
     let event = json!({
         "event_id": "evt_late",
         "event_type": "payment_succeeded",
-        "content": {"type": "payment_details", "object": {"payment_id": "pay_test_123", "amount": 2000}}
+        "content": {"type": "payment_details", "object": {"payment_id": "pay_test_123", "amount": 2000, "currency": "USD"}}
     });
     let (headers, body) = signed_webhook(WEBHOOK_SECRET, &event.to_string());
     assert_eq!(post_webhook(&app, headers, body).await, StatusCode::OK);
-    assert_eq!(balance(&app, &key).await, before);
+    assert_eq!(balance(&app, &key).await - before, 2000);
 }
 
 /// An event naming a payment no deposit knows is acknowledged, not an error:
@@ -465,12 +481,12 @@ async fn an_unknown_payment_is_still_acknowledged() {
     assert_eq!(post_webhook(&app, headers, body).await, StatusCode::OK);
 }
 
-/// The amount the switch reports is recorded, never used to credit: the
-/// deposit's own amount is what the ledger moved, so a mismatch cannot
-/// silently inflate the wallet.
+/// A reported amount that disagrees with the pinned expectation is rejected
+/// before it can reach the ledger: the intake retains the event for review and
+/// the wallet never moves on a mismatch.
 #[tokio::test]
-async fn an_amount_mismatch_credits_the_deposit_amount() {
-    let Some((app, _db, _stub)) = world().await else {
+async fn an_amount_mismatch_never_credits() {
+    let Some((app, db, _stub)) = world().await else {
         return;
     };
     let key = register_session(&app).await;
@@ -489,12 +505,19 @@ async fn an_amount_mismatch_credits_the_deposit_amount() {
     let event = json!({
         "event_id": "evt_mismatch",
         "event_type": "payment_succeeded",
-        "content": {"type": "payment_details", "object": {"payment_id": "pay_test_123", "amount": 9999}}
+        "content": {"type": "payment_details", "object": {"payment_id": "pay_test_123", "amount": 9999, "currency": "USD"}}
     });
     let (headers, body) = signed_webhook(WEBHOOK_SECRET, &event.to_string());
     assert_eq!(post_webhook(&app, headers, body).await, StatusCode::OK);
-    // The deposit's amount (3000) is what moved; 9999 is only recorded.
-    assert_eq!(balance(&app, &key).await - before, 3000);
+    // The mismatch cannot credit the wallet: the event is durably rejected.
+    assert_eq!(balance(&app, &key).await, before);
+    let state: String = sqlx::query_scalar(
+        "SELECT state FROM oxsum.merchant_event_inbox WHERE event_id='evt_mismatch'",
+    )
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(state, "rejected");
 }
 
 const ADMIN_TOKEN: &str = "operator-token-refund";
@@ -514,17 +537,27 @@ async fn admin_world() -> Option<(Router, Db, SwitchStub)> {
     let (api_url, stub) = stub_switch().await;
     *stub.answer_id.lock().unwrap() = "pay_test_123".to_owned();
     *stub.answer_secret.lock().unwrap() = "pay_test_123_secret".to_owned();
+    let rail = oxsum_server::hyperswitch::Hyperswitch::new(
+        "snd_test_key".to_owned(),
+        WEBHOOK_SECRET.to_owned(),
+        api_url,
+        PUBLISHABLE_KEY.to_owned(),
+        "http://localhost:3000".to_owned(),
+        "https://sdk.example.test/v1".to_owned(),
+    );
     let config = Config::new(Signup::Open, None)
         .with_secret(sealing_key())
         .with_admin_token(ADMIN_TOKEN)
-        .with_hyperswitch(oxsum_server::hyperswitch::Hyperswitch::new(
-            "snd_test_key".to_owned(),
-            WEBHOOK_SECRET.to_owned(),
-            api_url,
-            PUBLISHABLE_KEY.to_owned(),
-            "http://localhost:3000".to_owned(),
-            "https://sdk.example.test/v1".to_owned(),
-        ));
+        .with_public_url("http://localhost:3000")
+        .with_merchant_bootstrap(rail.merchant_bootstrap(
+            "merchant_test".to_owned(),
+            oxsum_core::MerchantMode::Test,
+            oxsum_core::ProviderDestinationPolicy {
+                network: oxsum_core::ProviderNetwork::Internal,
+                allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+            },
+        ))
+        .with_hyperswitch(rail);
     oxsum_server::prepare(&db, &config)
         .await
         .expect("the deployment is prepared");
@@ -555,7 +588,7 @@ async fn a_reversal_issues_the_switch_refund() {
     let event = json!({
         "event_id": "evt_credit_ref1",
         "event_type": "payment_succeeded",
-        "content": {"type": "payment_details", "object": {"payment_id": "pay_test_123", "amount": 4000}}
+        "content": {"type": "payment_details", "object": {"payment_id": "pay_test_123", "amount": 4000, "currency": "USD"}}
     });
     let (headers, body) = signed_webhook(WEBHOOK_SECRET, &event.to_string());
     assert_eq!(post_webhook(&app, headers, body).await, StatusCode::OK);
@@ -620,7 +653,7 @@ async fn a_refused_refund_is_recorded_and_retried() {
     let event = json!({
         "event_id": "evt_credit_ref2",
         "event_type": "payment_succeeded",
-        "content": {"type": "payment_details", "object": {"payment_id": "pay_test_123", "amount": 2000}}
+        "content": {"type": "payment_details", "object": {"payment_id": "pay_test_123", "amount": 2000, "currency": "USD"}}
     });
     let (headers, body) = signed_webhook(WEBHOOK_SECRET, &event.to_string());
     assert_eq!(post_webhook(&app, headers, body).await, StatusCode::OK);
@@ -679,7 +712,7 @@ async fn a_refund_webhook_settles_the_standing() {
     let event = json!({
         "event_id": "evt_credit_ref3",
         "event_type": "payment_succeeded",
-        "content": {"type": "payment_details", "object": {"payment_id": "pay_test_123", "amount": 1500}}
+        "content": {"type": "payment_details", "object": {"payment_id": "pay_test_123", "amount": 1500, "currency": "USD"}}
     });
     let (headers, body) = signed_webhook(WEBHOOK_SECRET, &event.to_string());
     assert_eq!(post_webhook(&app, headers, body).await, StatusCode::OK);
@@ -752,7 +785,7 @@ async fn a_dispute_opened_is_recorded() {
     let event = json!({
         "event_id": "evt_credit_disp1",
         "event_type": "payment_succeeded",
-        "content": {"type": "payment_details", "object": {"payment_id": "pay_test_123", "amount": 5000}}
+        "content": {"type": "payment_details", "object": {"payment_id": "pay_test_123", "amount": 5000, "currency": "USD"}}
     });
     let (headers, body) = signed_webhook(WEBHOOK_SECRET, &event.to_string());
     assert_eq!(post_webhook(&app, headers, body).await, StatusCode::OK);
