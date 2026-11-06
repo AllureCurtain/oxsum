@@ -4482,6 +4482,29 @@ paths:
                         items: { $ref: "#/components/schemas/PricedModel" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/branding:
+    get:
+      summary: The deployment's seller branding
+      description: |
+        The public branding the customer portal applies (issue #614, T23): the
+        seller's display name, an optional logo URL and an optional accent
+        color, configured through `OXSUM_BUSINESS_NAME`,
+        `OXSUM_BRAND_LOGO_URL` and `OXSUM_BRAND_ACCENT_COLOR`. No credential —
+        the login and register pages brand themselves before a session exists.
+        Fields the operator never set answer `null`; `name` falls back to the
+        deployment default.
+      security: []
+      responses:
+        "200":
+          description: The branding the portal renders
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/Branding" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/entries/{entryId}/proof:
     get:
       security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
@@ -9745,6 +9768,20 @@ components:
       description: "`hit` when the semantic cache answered instead of upstream (issue #497): the stored body re-served, billed at the cache-read rate, the settlement's v10 `cache` block naming the original turn's entry. Absent on a miss, a stream, or a channel that never opted in."
       schema: { type: string, enum: [hit] }
   schemas:
+    Branding:
+      type: object
+      required: [name, logoUrl, accentColor]
+      properties:
+        name:
+          type: string
+          description: the seller's display name — `OXSUM_BUSINESS_NAME`, or the deployment default when unset
+        logoUrl:
+          type: [string, "null"]
+          description: an optional logo image URL — `OXSUM_BRAND_LOGO_URL`
+        accentColor:
+          type: [string, "null"]
+          pattern: '^#[0-9A-Fa-f]{6}$'
+          description: an optional accent color as `#rrggbb` — `OXSUM_BRAND_ACCENT_COLOR`; the portal maps it onto the `primary` token
     BusinessCustomer:
       type: object
       required: [organizationId, businessId, externalId, name, contactEmail, state, manualSuspendedAt, dunningSuspendedAt, suspended, createdAt]
