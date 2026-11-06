@@ -6,6 +6,11 @@ info:
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
+    0.112.0 binds resolved customer sale terms into bill evidence: a v14 settlement
+    may commit a `sale` snapshot digest, the proof bundle carries a `sale` link to
+    the operator-signed snapshot checkpoint (`GET /api/v1/log/sale-head`), and the
+    canonical snapshot binds only customer-visible terms — never supplier rates.
+
     0.111.0 adds business-owned customer sale books, immutable draft revisions and
     published versions, scheduled default/assigned terms and per-model overrides.
     Preview resolves override then assigned book then default book, pinning one
@@ -3946,6 +3951,12 @@ paths:
                         $ref: "#/components/schemas/PriceLink"
                         # Absent on a non-settlement entry, a bundle made before price
                         # binding, or a deployment that signs no heads.
+                      sale:
+                        $ref: "#/components/schemas/SaleLink"
+                        # Absent on a non-settlement entry, a settlement that priced
+                        # under the wholesale channel catalog rather than a sale book
+                        # (v14's optional `sale` digest), or a deployment that signs
+                        # no heads.
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
@@ -4114,6 +4125,75 @@ paths:
                 required: [data]
                 properties:
                   data: { $ref: "#/components/schemas/SignedPriceHead" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/log/sale-head:
+    get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
+      summary: "A customer sale snapshot, signed by the operator"
+      description: |
+        The signed checkpoint of one resolved customer sale snapshot — the
+        customer-visible terms a settlement priced under — as a C2SP signed-note
+        under the same Ed25519 key that signs tree heads (issue #600). The body
+        reuses the tlog-checkpoint shape: `origin` is the business's sale catalog
+        `oxsum/sale-catalog/<businessId>`, the note's size slot carries the
+        snapshot's book `version` (0 when the snapshot names none), and its root
+        carries the tagged-BLAKE3 digest of the canonical snapshot bytes — the
+        same `sale.digest` a v14 settlement description commits. The canonical
+        bytes bind the *customer* terms only: organization, model, the
+        book/version/draft/legacy provenance, the effective window and the sale
+        price plus discount. Supplier (`upstream`) rates are never part of a sale
+        snapshot, so the evidence they produce cannot attest a supplier cost.
+        Signing is stateless and deterministic over (key, origin, digest, row), so
+        a snapshot already served re-signs identically whenever it is asked for:
+        a bill that named an older snapshot stays verifiable after the sale book
+        moves on, and no snapshot table exists to drift. Look the snapshot up by
+        `digest` — the value a settlement records — or by `organizationId`,
+        `model` and `at` to re-resolve what was in force. Verify the note
+        signature against `publicKey` exactly as for `GET /api/v1/log/head`; the
+        same key is published at `GET /api/v1/log/key`. A deployment with no
+        `OXSUM_HEAD_SIGNING_KEY` answers 503.
+      parameters:
+        - name: digest
+          in: query
+          required: false
+          schema: { type: string, pattern: "^[0-9a-f]{64}$" }
+          description: |
+            The snapshot digest a settlement records, lowercase hex. When given,
+            it selects the snapshot directly and `organizationId`/`model`/`at`
+            are ignored.
+        - name: organizationId
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+          description: The customer organization whose sale terms are signed; required without `digest`.
+        - name: model
+          in: query
+          required: false
+          schema: { type: string }
+          description: The model whose sale snapshot is signed; required without `digest`.
+        - name: at
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+          description: |
+            The instant to resolve the snapshot at; defaults to the current time.
+            A bill names the digest it priced under — pass that, not `at`, to
+            verify an older snapshot.
+      responses:
+        "200":
+          description: The signed sale-snapshot checkpoint
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/SignedSaleHead" }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
@@ -11501,6 +11581,21 @@ components:
         keyName: { type: string }
         publicKey: { type: string, description: "the operator's Ed25519 verifying key, base64 of 32 bytes" }
         keyHash: { type: string, description: "the 4-byte selector this key's note signatures carry, lowercase hex" }
+    SignedSaleHead:
+      type: object
+      required: [note, origin, businessId, organizationId, model, version, digest, rowHash, keyName, publicKey, keyHash]
+      properties:
+        note: { type: string, description: "the complete C2SP signed-note text: body, blank line, signature lines" }
+        origin: { type: string, description: "the sale catalog this checkpoint belongs to: `oxsum/sale-catalog/<businessId>`" }
+        businessId: { type: string, format: uuid, description: "the business whose sale catalog the snapshot belongs to" }
+        organizationId: { type: string, format: uuid, description: "the customer organization the sale terms priced" }
+        model: { type: string, description: "the model the snapshot prices" }
+        version: { type: integer, format: int64, description: "the snapshot's book version (0 when it names none); the note's size slot carries it" }
+        digest: { type: string, description: "the snapshot digest a v14 settlement commits, lowercase hex" }
+        rowHash: { type: string, description: "hash of the canonical sale snapshot bytes, lowercase hex; the note's root carries it — equal to `digest`" }
+        keyName: { type: string }
+        publicKey: { type: string, description: "the operator's Ed25519 verifying key, base64 of 32 bytes" }
+        keyHash: { type: string, description: "the 4-byte selector this key's note signatures carry, lowercase hex" }
     PriceLink:
       type: object
       required: [channel, model, version, row, note, keyName, publicKey, keyHash]
@@ -11517,6 +11612,29 @@ components:
         version: { type: integer, format: int64, description: "the price version the checkpoint attests" }
         row: { type: string, description: "the canonical JSON the checkpoint root commits to — the exact bytes hashed, hashed verbatim" }
         note: { type: string, description: "the C2SP signed-note attesting `row`'s hash under `version`" }
+        keyName: { type: string, description: "the key name the operator signs under" }
+        publicKey: { type: string, description: "the operator's Ed25519 verifying key, lowercase hex of 32 bytes" }
+        keyHash: { type: string, description: "the 4-byte selector this key's note signatures carry, lowercase hex" }
+    SaleLink:
+      type: object
+      required: [organizationId, model, digest, row, note, keyName, publicKey, keyHash]
+      description: |
+        The signed link a settlement's proof bundle carries between the customer
+        sale terms it records (v14's `sale.digest`) and the resolved sale
+        snapshot it priced under (issue #600). Self-contained: the canonical
+        snapshot bytes, the checkpoint note, and the published key, so the
+        verifier never asks the server twice. The canonical `row` binds only
+        *customer-visible* terms — organization, model, the book/version/draft/
+        legacy provenance, the effective window, and the sale price plus
+        discount; supplier (`upstream`) rates are never part of a sale snapshot.
+        `publicKey` and `keyHash` spell lowercase hex here — the encoding a
+        verifier reads — unlike the base64 the endpoint response uses.
+      properties:
+        organizationId: { type: string, format: uuid, description: "the customer organization the sale terms priced" }
+        model: { type: string, description: "the model the snapshot prices" }
+        digest: { type: string, description: "the snapshot digest the settlement commits, lowercase hex; equals `row`'s digest and the note's root" }
+        row: { type: string, description: "the canonical JSON the checkpoint root commits to — the exact bytes hashed, hashed verbatim" }
+        note: { type: string, description: "the C2SP signed-note attesting `row`'s hash under the snapshot's version" }
         keyName: { type: string, description: "the key name the operator signs under" }
         publicKey: { type: string, description: "the operator's Ed25519 verifying key, lowercase hex of 32 bytes" }
         keyHash: { type: string, description: "the 4-byte selector this key's note signatures carry, lowercase hex" }

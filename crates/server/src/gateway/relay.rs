@@ -902,6 +902,10 @@ impl Plan {
                     id: &binding.experiment_id,
                     variant: &binding.variant,
                 }),
+            // The gateway prices under the wholesale channel catalog today; a
+            // sale-book-priced turn names its digest here once serving resolves
+            // sale terms (issue #600, wired in the coordinated-settlement task).
+            sale: None,
         };
         let description = settlement.description()?;
         // The wallet settles only its own share: the hold took `freeze -
