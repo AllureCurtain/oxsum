@@ -979,6 +979,16 @@ A bill's own proof shows one entry was not altered. A statement's anchor closes 
 
 Note: like a bill's proof, the anchor proves the *record* — that the committed window and rollup are what the ledger holds — and on a signing deployment that the operator signed the head containing the marker. It does not prove upstream really returned those tokens; that honesty question sits one layer up.
 
+## Exporting a whole period's evidence (v2 bundle)
+
+Purpose: hand an auditor — or your own archive — one file that commits *everything* a closed billing period contains, not just one bill or one customer's subset.
+
+A version-2 evidence bundle (issue #616) is minted against a fully ended `[from, to]` day span or against one plan statement, and it carries every artifact the scope commits: usage records, plan statements, invoice journals, payment orders and fulfillments, refunds, disputes, credit notes, and the day's seal digests. The ledger commits the bundle's *manifest* — the list of every artifact's digest — through a marker entry, once ever per span: re-minting the same period replays the standing bundle, so the committed set can never grow a second version.
+
+Minting and downloading is an owner/admin session surface (`POST /api/v1/org/evidence-bundles` with `{"from","to"}` to mint, `GET /api/v1/org/evidence-bundles` to list, `GET /api/v1/org/evidence-bundles/{bundleId}` to download the frozen bytes; `GET /api/v1/org/statements/{statementId}/evidence` for the single-statement export). Sharing works like bill links but is stricter: `POST /api/v1/org/evidence-bundles/{bundleId}/share` mints an `oxe-…` token you may bound with `expiresAt` and `maxDownloads`; the recipient downloads through `GET /api/v1/evidence/{token}` with no account, and `DELETE` on the same path revokes. Expired, revoked, exhausted and guessed tokens all answer `410`, and every download is counted — `GET …/share` shows `downloadCount` and `lastDownloadAt`.
+
+The check runs offline with `verifyEvidenceBundle` from the `verify-oxsum-bill` package (or `oxsum_verify::verify_evidence_bundle` in Rust): every artifact the manifest names re-digests to the committed figure, the manifest re-digests to what the marker bound, the money rows' ledger entries sit inside the signed head, and the head verifies under the operator key. A dropped row, a changed amount or a bundle minted for a different organization each fail by name. The bundle's `scope` block states what it does *not* cover — the platform's own supplier costs (redacted unless the operator sets `OXSUM_EVIDENCE_UPSTREAM_COST`; `costBasis` always exports), other organizations' rows, history outside the span, and in-flight operations. See [Verifying an oxsum bill](verify-your-bill.md) for the customer-facing walkthrough.
+
 ## Platform admin
 
 Purpose: manage the deployment itself — the upstream channels the gateway relays to and the price each model charges.

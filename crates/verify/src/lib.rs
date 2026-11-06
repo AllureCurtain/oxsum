@@ -14,11 +14,13 @@
 use doubleentry::{Balanced, Draft, Entry, InclusionProof, MerkleAccumulator};
 
 mod charge;
+mod evidence;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
 
 pub use charge::{ChargeCheck, verify_charge};
 pub use doubleentry::{ConsistencyProof, Hash, TreeHead};
+pub use evidence::{EvidenceError, verify_evidence_bundle};
 
 /// Money precision: 6 decimal places; 1 credit = 1_000_000 minor, fine enough
 /// for per-token pricing. Re-exported by `oxsum-core`.

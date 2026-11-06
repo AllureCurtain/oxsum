@@ -27,6 +27,7 @@ mod business;
 mod business_prices;
 mod business_providers;
 mod device;
+mod evidence;
 mod experiments;
 mod financial_facts;
 mod journals;
@@ -127,6 +128,25 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/org/statements/{statement_id}",
             get(statements::my_statement),
+        )
+        // The statement-scoped evidence bundle (issue #616, T25): mint on
+        // first ask, serve the standing bytes after.
+        .route(
+            "/org/statements/{statement_id}/evidence",
+            get(evidence::statement_evidence),
+        )
+        // The complete-period evidence bundles (issue #616, T25): mint, list,
+        // download, and the share tokens that open the public download.
+        .route(
+            "/org/evidence-bundles",
+            get(evidence::list).post(evidence::mint_period),
+        )
+        .route("/org/evidence-bundles/{bundle_id}", get(evidence::download))
+        .route(
+            "/org/evidence-bundles/{bundle_id}/share",
+            get(evidence::list_shares)
+                .post(evidence::create_share)
+                .delete(evidence::revoke_shares),
         )
         .route(
             "/webhooks",
@@ -506,6 +526,10 @@ pub fn router(state: AppState) -> Router {
         .route("/device/token", post(device::device_token))
         // The operator's tree-head verifying key: a public key, so no credential.
         .route("/log/key", get(log::log_key))
+        // The public evidence download (issue #616): the share token in the
+        // path is the credential, so it sits open like the webhooks — the
+        // token resolves or it does not, and a dead one earns 410.
+        .route("/evidence/{token}", get(evidence::public_download))
         // Stripe's webhook: the provider calls here, the `Stripe-Signature`
         // header is the credential — org-agnostic, so it must not sit behind
         // the session or the API key.

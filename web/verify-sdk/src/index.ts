@@ -82,6 +82,11 @@ interface VerifyWasmModule {
   ): Promise<string>;
   verifyPriceHead(json: string): Promise<string>;
   verifySaleHead(json: string): Promise<string>;
+  verifyEvidenceBundle(
+    json: string,
+    expectedOrganization: string,
+    keyJson?: string | null,
+  ): Promise<string>;
 }
 
 let modulePromise: Promise<VerifyWasmModule> | null = null;
@@ -312,4 +317,36 @@ export async function verifyPriceHead(json: string): Promise<CheckVerdict> {
 export async function verifySaleHead(json: string): Promise<CheckVerdict> {
   const m = await load();
   return parse(await m.verifySaleHead(json));
+}
+
+/**
+ * Verifies a version-2 customer evidence bundle (issue #616): every artifact
+ * the manifest commits re-digests to the figure the ledger's marker bound, the
+ * money artifacts' ledger entries include in the signed head, and the head's
+ * signature verifies. The ledger origin is read out of the bundle's own signed
+ * note — the bundle names its tenant, so a bundle minted elsewhere answers
+ * under its own origin rather than silently inheriting a caller-supplied one.
+ *
+ * @param json the bundle `data` object — what
+ *   `GET /api/v1/org/evidence-bundles/{bundleId}` or the public
+ *   `GET /api/v1/evidence/{token}` answers.
+ * @param expectedOrganization the customer the bundle should be for — a bundle
+ *   minted for another organization fails closed.
+ * @param keyJson the published operator key `{keyName, publicKey, keyHash}` —
+ *   or `null` to check the digests and inclusion alone, which is what an
+ *   unsigned deployment leaves verifiable.
+ */
+export async function verifyEvidenceBundle(
+  json: string,
+  expectedOrganization: string,
+  keyJson?: string | null,
+): Promise<CheckVerdict> {
+  const m = await load();
+  return parse(
+    await m.verifyEvidenceBundle(
+      json,
+      expectedOrganization,
+      keyJson ? normalizedKeyJson(keyJson) : keyJson,
+    ),
+  );
 }

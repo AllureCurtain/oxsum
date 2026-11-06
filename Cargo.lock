@@ -3504,6 +3504,8 @@ dependencies = [
  "doubleentry",
  "serde",
  "serde_json",
+ "time",
+ "uuid",
  "wasm-bindgen",
 ]
 

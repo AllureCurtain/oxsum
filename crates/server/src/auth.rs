@@ -232,6 +232,10 @@ fn customer_route_capability(method: &str, path: &str) -> oxsum_core::CustomerCa
             | "/org/usage-reports"
             | "/org/usage-reports/{report_id}"
             | "/org/usage-reports/links"
+            | "/org/evidence-bundles"
+            | "/org/evidence-bundles/{bundle_id}"
+            | "/org/evidence-bundles/{bundle_id}/share"
+            | "/org/statements/{statement_id}/evidence"
             | "/org/experiments"
             | "/org/experiments/{experiment_id}/results",
         )
@@ -241,9 +245,16 @@ fn customer_route_capability(method: &str, path: &str) -> oxsum_core::CustomerCa
             | "/org/usage-reports"
             | "/org/usage-reports/links"
             | "/org/usage-reports/{report_id}/links"
+            | "/org/evidence-bundles"
+            | "/org/evidence-bundles/{bundle_id}/share"
             | "/org/experiments/{name}/end",
         )
-        | ("DELETE", "/webhooks/{endpoint_id}" | "/org/usage-reports/links/{link_id}")
+        | (
+            "DELETE",
+            "/webhooks/{endpoint_id}"
+            | "/org/usage-reports/links/{link_id}"
+            | "/org/evidence-bundles/{bundle_id}/share",
+        )
         | ("PUT", "/org/experiments/{name}") => C::AccountManage,
         (
             "GET",

@@ -18,16 +18,24 @@
  *   consistency.json         GET /api/v1/log/consistency?from=1 `data`
  *   checkpoint.json          GET /api/v1/log/checkpoint (no witnesses here)
  *
+ * A second, optional set carries the version-2 complete-period evidence
+ * bundle (issue #616):
+ *
+ *   evidence-bundle.json      GET /api/v1/org/evidence-bundles/{id} `data`
+ *   evidence-manifest.json    the bundle id, organization id and ledger origin
+ *   evidence-operator-key.json the `{keyName, publicKey, keyHash}` the bundle serves
+ *
  * The rejection checks mutate the inputs in memory; nothing is written.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
   verifyBill,
   verifyConsistency,
+  verifyEvidenceBundle,
   verifySignedHead,
   verifyWitnesses,
 } from "verify-oxsum-bill";
@@ -101,6 +109,19 @@ async function main() {
   const checkpoint = readJson(join(dir, "checkpoint.json"));
   const expectedHash = args.hash ?? manifest.contentHash;
 
+  // The v2 evidence-bundle fixture: a complete-period bundle minted for one
+  // organization, the published operator key it carries, and the manifest
+  // naming the organization and ledger origin the check binds. Optional — a
+  // fixtures dir without it simply skips the v2 block.
+  const evidencePath = join(dir, "evidence-bundle.json");
+  const evidence = existsSync(evidencePath) ? readJson(evidencePath) : null;
+  const evidenceManifest = evidence
+    ? readJson(join(dir, "evidence-manifest.json"))
+    : null;
+  const evidenceKey = evidence
+    ? readJson(join(dir, "evidence-operator-key.json"))
+    : null;
+
   const servedHead = JSON.stringify({ size: head.size, root: head.root });
   const keyJson = JSON.stringify(key);
   let failures = 0;
@@ -151,6 +172,78 @@ async function main() {
     if (!report("witnesses: cosignatures against the pinset", allOk, witnesses.ok ? witnesses.map((w) => `${w.witnessUrl}: ${w.detail}`).join("; ") : witnesses.detail)) {
       failures += 1;
     }
+  }
+
+  if (evidence) {
+    console.log();
+    console.log("== Version-2 evidence bundle ==");
+    console.log(`bundle ${evidenceManifest.bundleId}`);
+    console.log(`organization ${evidenceManifest.organizationId}`);
+    console.log(`ledger ${evidenceManifest.origin}`);
+    console.log();
+
+    const evidenceKeyJson = JSON.stringify(evidenceKey);
+    const bundleJson = JSON.stringify(evidence);
+    const checked = await attempt(() =>
+      verifyEvidenceBundle(bundleJson, evidenceManifest.organizationId, evidenceKeyJson),
+    );
+    if (
+      !report(
+        "evidence bundle: manifest, artifacts, entries, signed head",
+        checked.ok,
+        checked.detail,
+      )
+    ) {
+      failures += 1;
+    }
+
+    // A tampered artifact: the usage figure no longer digests to what the
+    // manifest committed.
+    const tamperedArtifact = structuredClone(evidence);
+    for (const bucket of Object.values(tamperedArtifact.artifacts ?? {})) {
+      for (const artifact of Object.values(bucket ?? {})) {
+        if (artifact && typeof artifact === "object" && "chargedMinor" in artifact) {
+          artifact.chargedMinor += 1;
+        }
+      }
+    }
+    const tamperedVerdict = await attempt(() =>
+      verifyEvidenceBundle(
+        JSON.stringify(tamperedArtifact),
+        evidenceManifest.organizationId,
+        evidenceKeyJson,
+      ),
+    );
+    if (!expectRejected("a tampered committed artifact", tamperedVerdict)) {
+      failures += 1;
+    }
+
+    // A dropped manifest row: the bundle no longer serves every artifact the
+    // ledger committed.
+    const dropped = structuredClone(evidence);
+    dropped.manifest = (dropped.manifest ?? []).slice(1);
+    const droppedVerdict = await attempt(() =>
+      verifyEvidenceBundle(
+        JSON.stringify(dropped),
+        evidenceManifest.organizationId,
+        evidenceKeyJson,
+      ),
+    );
+    if (!expectRejected("a missing committed row", droppedVerdict)) {
+      failures += 1;
+    }
+
+    // A bundle for a different customer fails closed — the manifest's
+    // organizationId is part of what the marker committed.
+    const wrongOrgVerdict = await attempt(() =>
+      verifyEvidenceBundle(bundleJson, "not-the-customer", evidenceKeyJson),
+    );
+    if (!expectRejected("a bundle for a different customer", wrongOrgVerdict)) {
+      failures += 1;
+    }
+  } else {
+    console.log();
+    console.log("[SKIP] evidence bundle: no evidence-bundle.json fixture in this directory");
   }
 
   console.log();

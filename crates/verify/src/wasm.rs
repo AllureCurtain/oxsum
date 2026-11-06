@@ -31,10 +31,10 @@ use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
 
 use crate::{
-    AnchorError, ConsistencyProof, Hash, PriceError, PublishedKey, SaleError, StatementAnchorCheck,
-    TreeHead, UsageReportError, WitnessNote, WitnessPin, WitnessVerdict, verify_bill,
-    verify_consistency, verify_price_head, verify_sale_head, verify_signed_head,
-    verify_statement_anchor, verify_usage_report, verify_witnesses,
+    AnchorError, ConsistencyProof, EvidenceError, Hash, PriceError, PublishedKey, SaleError,
+    StatementAnchorCheck, TreeHead, UsageReportError, WitnessNote, WitnessPin, WitnessVerdict,
+    verify_bill, verify_consistency, verify_evidence_bundle, verify_price_head, verify_sale_head,
+    verify_signed_head, verify_statement_anchor, verify_usage_report, verify_witnesses,
 };
 
 /// The JSON shape every exported verdict shares: `{"ok": bool, "detail":
@@ -360,6 +360,62 @@ pub fn verify_usage_report_js(
     match verify_usage_report(json, &origin, expected_end_user, key.as_ref()) {
         Ok(()) => Ok(verdict(true, "the usage report verifies")),
         Err(UsageReportError::Unsigned) | Err(UsageReportError::BadSignature) => {
+            Ok(verdict(false, "the head's signature does not verify"))
+        }
+        Err(error) => Err(JsError::new(&error.to_string())),
+    }
+}
+
+/// Verifies a version-2 customer evidence bundle (issue #616): `json` is the
+/// `data` object `GET /api/v1/org/evidence-bundles/{id}/download` or the public
+/// `GET /api/v1/evidence/{token}` answers. `expected_organization` names the
+/// customer the bundle should be for. `key_json` is the published key
+/// `{keyName, publicKey, keyHash}` — or `null` to check the digests and
+/// inclusion alone, which is what an unsigned deployment leaves verifiable.
+///
+/// The ledger origin is read from the bundle's own signed note, the same way
+/// `verifyUsageReport` resolves it: the bundle names its tenant, so a bundle
+/// minted elsewhere answers under its own origin rather than silently
+/// inheriting one the caller passed.
+///
+/// # Errors
+///
+/// [`JsError`] on malformed input or a failed check — the `EvidenceError`
+/// text. An absent `note` on an unsigned deployment is a pass, not an error.
+#[wasm_bindgen(js_name = verifyEvidenceBundle)]
+pub fn verify_evidence_bundle_js(
+    json: &str,
+    expected_organization: &str,
+    key_json: Option<String>,
+) -> Result<String, JsError> {
+    let origin = serde_json::from_str::<serde_json::Value>(json)
+        .map_err(|_| JsError::new("the bundle did not parse as JSON"))?
+        .get("note")
+        .and_then(|v| v.as_str())
+        .and_then(|note| doubleentry::witness::SignedTreeHead::parse(note).ok())
+        .map(|parsed| parsed.origin.as_str().to_owned())
+        .unwrap_or_default();
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Key {
+        key_name: String,
+        public_key: String,
+        key_hash: String,
+    }
+    let key: Option<Key> = key_json
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    let key = key.as_ref().map(|k| PublishedKey {
+        key_name: &k.key_name,
+        public_key: &k.public_key,
+        key_hash: &k.key_hash,
+    });
+    match verify_evidence_bundle(json, &origin, expected_organization, key.as_ref()) {
+        Ok(()) => Ok(verdict(true, "the evidence bundle verifies")),
+        Err(EvidenceError::Unsigned) | Err(EvidenceError::BadSignature) => {
             Ok(verdict(false, "the head's signature does not verify"))
         }
         Err(error) => Err(JsError::new(&error.to_string())),
