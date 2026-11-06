@@ -4649,6 +4649,113 @@ impl Wallet {
         })
     }
 
+    /// Appends an evidence-bundle marker — the entry that commits a customer
+    /// evidence bundle's manifest digest into the tenant ledger (issue #616).
+    /// `pub(crate)`: only [`crate::Db::mint_period_evidence`] and
+    /// [`crate::Db::mint_statement_evidence`] call it.
+    ///
+    /// One ledger entry per `(kind, scope)`: a 1-minor balanced
+    /// `Equity:Adjustments` debit/credit (the posting amount is immaterial —
+    /// the marker is metadata, not money), idempotency-keyed
+    /// `evidence-bundle/<scope>` so a re-request for the same span or
+    /// statement replays the standing marker rather than committing a second
+    /// manifest — the once-per-scope rule the manifest's completeness claim
+    /// rests on. The entry's [`DocumentRef`] binds the marker to the manifest
+    /// digest, and its description carries the scope and figures.
+    ///
+    /// # Errors
+    ///
+    /// Storage and ledger failures surface as [`WalletError`].
+    pub(crate) async fn anchor_evidence_bundle(
+        &self,
+        scope_key: &str,
+        description_json: &str,
+        manifest_digest: Hash,
+    ) -> Result<(EntryId, u64), WalletError> {
+        let key = format!("evidence-bundle/{scope_key}");
+        let minor = Credits::from_minor(1);
+        let entry = Entry::<Draft, SCALE>::new(
+            entry_id_for(&key),
+            idem(&key)?,
+            OffsetDateTime::now_utc().date(),
+        )
+        .with_document(
+            DocumentRef::new(crate::evidence::EVIDENCE_BUNDLE_DOCUMENT, manifest_digest)
+                .map_err(invalid)?,
+        )
+        .with_description(description_of(description_json)?)
+        .debit(self.adjustments, minor, currency())
+        .credit(self.adjustments, minor, currency());
+        let receipt = match self.append(entry).await {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                // A raced mint lands on the same idempotency key; the standing
+                // entry is the same bundle either way, so read it back.
+                let Some(stored) = self.store.get(entry_id_for(&key)).await? else {
+                    return Err(error);
+                };
+                stored_receipt(&stored)
+            }
+        };
+        let index = receipt.log_index.ok_or_else(|| {
+            WalletError::InvalidInput("the evidence marker did not sequence".into())
+        })?;
+        Ok((receipt.entry_id, index))
+    }
+
+    /// The marker plus every entry `ids` names, each proven against the one
+    /// head — the `entries` array an evidence bundle serializes (issue #616).
+    /// Proving every row against a single read head keeps the bundle
+    /// internally consistent while the ledger grows, the same discipline
+    /// `usage_report_bundle` keeps.
+    ///
+    /// `ids` pairs each entry id with the `(kind, id)` of the artifact that
+    /// wants its proof; the marker comes first, tagged `("bundle", its id)`.
+    /// `signed_head` — `signed_head_at(head.size)` under the caller's key —
+    /// is left to the caller, which already holds the optional key.
+    ///
+    /// Returns `(head, marker, entries)` in the bundle's own order.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::InvalidInput`] when an id no longer resolves, or a stored
+    /// entry's hash disagrees with what the artifact committed; storage and
+    /// ledger failures surface as [`WalletError`].
+    pub(crate) async fn evidence_entry_bundles(
+        &self,
+        marker_id: EntryId,
+        ids: &[(EntryId, String, String)],
+    ) -> Result<
+        (
+            doubleentry::TreeHead,
+            crate::evidence::EvidenceEntryBundle,
+            Vec<crate::evidence::EvidenceEntryBundle>,
+        ),
+        WalletError,
+    > {
+        let head = self.store.head().await?;
+        let marker = self.entry_bundle(marker_id, head).await?;
+        let marker = crate::evidence::EvidenceEntryBundle {
+            entry: marker.entry,
+            content_hash: marker.content_hash,
+            proof: marker.proof,
+            for_kind: "bundle".to_owned(),
+            for_id: marker_id.as_uuid().to_string(),
+        };
+        let mut entries = Vec::with_capacity(ids.len());
+        for (entry_id, for_kind, for_id) in ids {
+            let bundle = self.entry_bundle(*entry_id, head).await?;
+            entries.push(crate::evidence::EvidenceEntryBundle {
+                entry: bundle.entry,
+                content_hash: bundle.content_hash,
+                proof: bundle.proof,
+                for_kind: for_kind.clone(),
+                for_id: for_id.clone(),
+            });
+        }
+        Ok((head, marker, entries))
+    }
+
     /// A refused gateway request's billing record: one marker entry appended
     /// under `req-<request>:refused`, so a request admission turned away still
     /// lands on the billing page with its terminal status and reason (issue
