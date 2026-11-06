@@ -92,7 +92,7 @@ for the session. **Settings** carries the two-factor card: enroll shows the
 base32 secret and `otpauthUrl`, confirm with a live code shows the ten backup
 codes once, and disable needs a live code.
 
-The dashboard is the React app under `web/` (issue #234): overview, top-up, bills, requests, usage, pricing, keys, members, the transaction log, statements, webhooks, chat, settings and the admin console, built on the single component layer under `web/src/components/ui/` — Radix primitives and vendored shadcn sources, styled with the DESIGN.md palette (DESIGN.md) — all reading the same `/api/v1` surface. The server-rendered Topcoat pages retired to it (issue #256), so an old `/dashboard/*`, `/app/login` or `/admin` bookmark answers `301` to its `/app` twin — the page names below are the `/app` routes. `/verify` keeps its server-rendered form on purpose — when the wasm bundle ships, the page's loader runs the same check in your browser instead (issue #284).
+The dashboard is the React app under `web/` (issue #234): overview, top-up, orders, bills, requests, usage, pricing, keys, members, the transaction log, statements, webhooks, chat, settings and the admin console, built on the single component layer under `web/src/components/ui/` — Radix primitives and vendored shadcn sources, styled with the DESIGN.md palette (DESIGN.md) — all reading the same `/api/v1` surface. The server-rendered Topcoat pages retired to it (issue #256), so an old `/dashboard/*`, `/app/login` or `/admin` bookmark answers `301` to its `/app` twin — the page names below are the `/app` routes. `/verify` keeps its server-rendered form on purpose — when the wasm bundle ships, the page's loader runs the same check in your browser instead (issue #284).
 
 - **Overview**: the organization, who you are logged in as and in which role, the
   available balance, the frozen total (everything the organization's outstanding holds
@@ -446,6 +446,18 @@ whose amount disagrees with what the order pinned is held for the business to
 review, never credited. `GET /api/v1/orders` lists your orders and
 `GET /api/v1/orders/{orderId}/fulfillment` shows the state and what the
 fulfillment granted.
+
+The Orders pages (issue #607) are where that journey lives in the dashboard:
+`/app/orders` lists every order and manual receipt newest first, filterable by
+purpose and status; `/app/orders/new` pins a top-up or bundle order in the
+organization's display currency and lands on `/app/orders/{id}`, which mounts
+the provider's checkout element from `GET …/checkout-session` — the recovery
+read a refreshed or returned browser polls — and shows the order's truth as it
+moves `created → provider_pending → paid → fulfilled` (or `failed`, `expired`,
+`needs_attention`). A provider's return URL lands on the list page with
+`?order={id}` and bounces to the detail page; the return itself never marks
+anything paid — only the signed webhook does. A staff-recorded receipt appears
+in the same list with `source: manual` and its evidence on the detail page.
 
 On a deployment running the real rail (`OXSUM_X402_FACILITATOR_*` — an x402-rs
 facilitator sidecar verifies the authorization on-chain, settles it, and the

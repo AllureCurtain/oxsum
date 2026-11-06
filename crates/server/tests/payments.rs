@@ -56,13 +56,16 @@ fn sealing_key() -> SecretKey {
 
 /// The switch API stub: `POST /payments` records the order id it was told to
 /// carry in `metadata` and answers the payment id + client secret the test
-/// armed — each successive payment id dequeues from `answers` so a test can
-/// drive several orders through one stub.
+/// armed — with more than one armed answer each call dequeues the front, so a
+/// test can drive several orders through one stub; a single armed answer
+/// repeats (the replay tests re-arm between calls). `fail` makes the stub
+/// answer 500 — the provider-down case the checkout-session recovery drives.
 #[derive(Clone, Default)]
 struct SwitchStub {
     orders: Arc<Mutex<Vec<String>>>,
     answers: Arc<Mutex<Vec<(String, String)>>>,
     calls: Arc<Mutex<usize>>,
+    fail: Arc<Mutex<bool>>,
 }
 
 async fn stub_switch() -> (String, SwitchStub) {
@@ -73,23 +76,34 @@ async fn stub_switch() -> (String, SwitchStub) {
             post(
                 |State(stub): State<SwitchStub>, body: axum::Json<Value>| async move {
                     *stub.calls.lock().unwrap() += 1;
+                    if *stub.fail.lock().unwrap() {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            axum::Json(json!({"error": "provider down"})),
+                        );
+                    }
                     let order = body["metadata"]["order_id"]
                         .as_str()
                         .unwrap_or_default()
                         .to_owned();
                     stub.orders.lock().unwrap().push(order);
-                    let (id, secret) = stub
-                        .answers
-                        .lock()
-                        .unwrap()
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(|| ("pay_armed".into(), "secret_armed".into()));
-                    axum::Json(json!({
-                        "payment_id": id,
-                        "client_secret": secret,
-                        "status": "requires_payment_method",
-                    }))
+                    let mut armed = stub.answers.lock().unwrap();
+                    let (id, secret) = if armed.len() > 1 {
+                        armed.remove(0)
+                    } else {
+                        armed
+                            .first()
+                            .cloned()
+                            .unwrap_or_else(|| ("pay_armed".into(), "secret_armed".into()))
+                    };
+                    (
+                        StatusCode::OK,
+                        axum::Json(json!({
+                            "payment_id": id,
+                            "client_secret": secret,
+                            "status": "requires_payment_method",
+                        })),
+                    )
                 },
             ),
         )
@@ -687,4 +701,632 @@ async fn the_reconciliation_reports_paid_against_fulfilled() {
             .any(|o| o.as_str().unwrap() == order_id.to_string())
     );
     assert!(body["data"]["fulfilled"].as_i64().unwrap() >= 1);
+}
+
+// ---------------------------------------------------------------------------
+// T16 (issue #607): the customer checkout surface — the live checkout-session
+// read, the order history's filters, the staff manual receipt and the
+// cross-organization order view.
+// ---------------------------------------------------------------------------
+
+/// The checkout-session read answers the live handles and the lifecycle truth:
+/// a returned browser polls it instead of guessing at the return URL, a
+/// `provider_pending` order shows its standing handles, and `paid`/`fulfilled`
+/// carry the same truth — never a promise this surface made.
+#[tokio::test]
+async fn the_checkout_session_recovers_the_live_handles() {
+    let Some((app, db, stub, merchant, version)) = world().await else {
+        return;
+    };
+    let account = register(&app).await;
+    set_display(&db, account.organization_id).await;
+    *stub.answers.lock().unwrap() = vec![("pay_sess".into(), "secret_sess".into())];
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/orders",
+        Some(create_body("ord-sess", "walletTopup", 210)),
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let order_id = Uuid::parse_str(body["data"]["order"]["orderId"].as_str().unwrap()).unwrap();
+
+    // The session answers the same handles the create minted — a page reload
+    // or the provider's return lands on the same checkout.
+    let (status, body) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/orders/{order_id}/checkout-session"),
+        None,
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["data"]["providerPaymentId"].as_str().unwrap(),
+        "pay_sess"
+    );
+    assert_eq!(
+        body["data"]["clientSecret"].as_str().unwrap(),
+        "secret_sess"
+    );
+    assert_eq!(body["data"]["status"].as_str().unwrap(), "provider_pending");
+    assert_eq!(
+        body["data"]["publishableKey"].as_str().unwrap(),
+        "pk_snd_orders"
+    );
+    assert_eq!(
+        body["data"]["sdkUrl"].as_str().unwrap(),
+        "https://sdk.example.test/v1"
+    );
+
+    // Paid: the session still answers the handles, status now `paid` — the
+    // page reads truth, never infers it.
+    let body_text = succeeded(order_id, account.organization_id, "pay_sess", 210);
+    post_webhook(
+        &app,
+        merchant,
+        version,
+        signed(WEBHOOK_SECRET, &body_text),
+        body_text,
+    )
+    .await;
+    let (status, body) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/orders/{order_id}/checkout-session"),
+        None,
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["status"].as_str().unwrap(), "paid");
+    // No second provider call: one upstream payment the whole way.
+    assert_eq!(*stub.calls.lock().unwrap(), 1);
+}
+
+/// A provider outage at create time leaves the order `created` — the create
+/// answers 503 — and the checkout-session read re-drives the provider call
+/// under the same order UUID once the rail recovers. The retry can never
+/// charge twice: the order UUID is the provider's own idempotency key.
+#[tokio::test]
+async fn a_failed_provider_call_recovers_through_the_session() {
+    let Some((app, db, stub, _m, _v)) = world().await else {
+        return;
+    };
+    let account = register(&app).await;
+    set_display(&db, account.organization_id).await;
+    *stub.fail.lock().unwrap() = true;
+
+    // The provider is down: the order pins, the checkout drive refuses.
+    let (status, _body) = call(
+        &app,
+        "POST",
+        "/api/v1/orders",
+        Some(create_body("ord-down", "walletTopup", 210)),
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+
+    // The order exists, still `created` — never a silent pending.
+    let (status, body) = call(
+        &app,
+        "GET",
+        "/api/v1/orders?status=created",
+        None,
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let order_id = Uuid::parse_str(body["data"]["orders"][0]["orderId"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        body["data"]["orders"][0]["status"].as_str().unwrap(),
+        "created"
+    );
+
+    // The rail recovers; the session read re-issues under the same order UUID.
+    *stub.fail.lock().unwrap() = false;
+    *stub.answers.lock().unwrap() = vec![("pay_rec".into(), "secret_rec".into())];
+    let (status, body) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/orders/{order_id}/checkout-session"),
+        None,
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["data"]["providerPaymentId"].as_str().unwrap(),
+        "pay_rec"
+    );
+    assert_eq!(body["data"]["status"].as_str().unwrap(), "provider_pending");
+    // Two upstream calls total — the failed first and the recovery. The
+    // recovery still carried the same order UUID as the provider's idempotency
+    // key, so no second charge can exist.
+    assert_eq!(*stub.calls.lock().unwrap(), 2);
+    assert_eq!(
+        stub.orders.lock().unwrap().clone(),
+        vec![order_id.to_string()]
+    );
+}
+
+/// A failed provider event walks the order to `failed` — the truth the page
+/// and the list read, never a silent pending the customer cannot tell apart.
+#[tokio::test]
+async fn a_failed_event_surfaces_failed_not_pending() {
+    let Some((app, db, stub, merchant, version)) = world().await else {
+        return;
+    };
+    let account = register(&app).await;
+    set_display(&db, account.organization_id).await;
+    *stub.answers.lock().unwrap() = vec![("pay_fail".into(), "secret_fail".into())];
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/orders",
+        Some(create_body("ord-fail", "walletTopup", 210)),
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let order_id = Uuid::parse_str(body["data"]["order"]["orderId"].as_str().unwrap()).unwrap();
+
+    // The switch reports payment_failed for the bound payment.
+    let body_text = json!({
+        "merchant_id": ACCOUNT,
+        "event_id": format!("evt_{}", Uuid::new_v4().simple()),
+        "event_type": "payment_failed",
+        "livemode": false,
+        "content": {"type":"payment_details","object":{
+            "payment_id": "pay_fail",
+            "amount": 210,
+            "currency": USD,
+            "metadata": {"payment_id": order_id, "order_id": order_id, "organization_id": account.organization_id}
+        }}
+    })
+    .to_string();
+    let status = post_webhook(
+        &app,
+        merchant,
+        version,
+        signed(WEBHOOK_SECRET, &body_text),
+        body_text,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // The order read, the session and the filtered list all say `failed`.
+    let (status, body) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/orders/{order_id}"),
+        None,
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["status"].as_str().unwrap(), "failed");
+    let (status, body) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/orders/{order_id}/checkout-session"),
+        None,
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["status"].as_str().unwrap(), "failed");
+    let (status, body) = call(
+        &app,
+        "GET",
+        "/api/v1/orders?status=failed",
+        None,
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["orders"].as_array().unwrap().len(), 1);
+    let wallet = Tenants::new(db.pool().clone())
+        .get(&tenant(&db, account.organization_id).await)
+        .await
+        .unwrap();
+    assert_eq!(wallet.available().await.unwrap(), 0);
+}
+
+/// A duplicate signed callback replays to the same order state — the event's
+/// own dedup holds, and a second sweep of the same fulfillment still credits
+/// once.
+#[tokio::test]
+async fn a_duplicate_callback_replays_to_the_same_state() {
+    let Some((app, db, stub, merchant, version)) = world().await else {
+        return;
+    };
+    let account = register(&app).await;
+    set_display(&db, account.organization_id).await;
+    *stub.answers.lock().unwrap() = vec![("pay_dup".into(), "secret_dup".into())];
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/orders",
+        Some(create_body("ord-dup", "walletTopup", 210)),
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let order_id = Uuid::parse_str(body["data"]["order"]["orderId"].as_str().unwrap()).unwrap();
+
+    // The same signed event delivered twice: the inbox's dedup makes the
+    // second delivery a no-op, and the order's `paid` is set exactly once.
+    let event = json!({
+        "merchant_id": ACCOUNT,
+        "event_id": format!("evt_{}", Uuid::new_v4().simple()),
+        "event_type": "payment_succeeded",
+        "livemode": false,
+        "content": {"type":"payment_details","object":{
+            "payment_id": "pay_dup",
+            "amount": 210,
+            "currency": USD,
+            "metadata": {"payment_id": order_id, "order_id": order_id, "organization_id": account.organization_id}
+        }}
+    })
+    .to_string();
+    for _ in 0..2 {
+        let status = post_webhook(
+            &app,
+            merchant,
+            version,
+            signed(WEBHOOK_SECRET, &event),
+            event.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let (status, body) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/orders/{order_id}"),
+        None,
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["status"].as_str().unwrap(), "paid");
+    run_reconcile(&db).await;
+    let wallet = Tenants::new(db.pool().clone())
+        .get(&tenant(&db, account.organization_id).await)
+        .await
+        .unwrap();
+    assert_eq!(wallet.available().await.unwrap(), 1_500_000_000);
+}
+
+/// A double-clicked create rides the same idempotency key: the second browser
+/// submission gets the standing order and its original checkout — the stub
+/// never sees a second intent. (The replay contract, exercised at the session
+/// surface this time.)
+#[tokio::test]
+async fn a_repeated_browser_submission_returns_the_standing_checkout() {
+    let Some((app, db, stub, _m, _v)) = world().await else {
+        return;
+    };
+    let account = register(&app).await;
+    set_display(&db, account.organization_id).await;
+    *stub.answers.lock().unwrap() = vec![("pay_dbl".into(), "secret_dbl".into())];
+
+    for _ in 0..2 {
+        let (status, body) = call(
+            &app,
+            "POST",
+            "/api/v1/orders",
+            Some(create_body("ord-dbl", "walletTopup", 210)),
+            Some(&account.cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body["data"]["providerPaymentId"].as_str().unwrap(),
+            "pay_dbl"
+        );
+    }
+    assert_eq!(*stub.calls.lock().unwrap(), 1);
+}
+
+/// The order history filters: `purpose` and `status` narrow the page the
+/// customer reads, and an unknown status is a validation error, not an empty
+/// page that reads like "no orders".
+#[tokio::test]
+async fn the_order_list_filters_by_purpose_and_status() {
+    let Some((app, db, stub, _m, _v)) = world().await else {
+        return;
+    };
+    let account = register(&app).await;
+    set_display(&db, account.organization_id).await;
+    *stub.answers.lock().unwrap() = vec![
+        ("pay_flt".into(), "secret_flt".into()),
+        ("pay_flt_b".into(), "secret_flt_b".into()),
+    ];
+
+    let (status, _body) = call(
+        &app,
+        "POST",
+        "/api/v1/orders",
+        Some(create_body("ord-flt-1", "walletTopup", 210)),
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _body) = call(
+        &app,
+        "POST",
+        "/api/v1/orders",
+        Some(json!({
+            "idempotencyKey": "ord-flt-2",
+            "rail": "hyperswitch",
+            "purpose": "bundle",
+            "displayAmountMinor": 500,
+            "displayCurrency": USD,
+            "promoMinor": 50_000_000,
+        })),
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // purpose=walletTopup lists one; purpose=bundle lists the other.
+    let (status, body) = call(
+        &app,
+        "GET",
+        "/api/v1/orders?purpose=walletTopup",
+        None,
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let orders = body["data"]["orders"].as_array().unwrap();
+    assert_eq!(orders.len(), 1);
+    assert_eq!(orders[0]["purpose"].as_str().unwrap(), "walletTopup");
+
+    let (status, body) = call(
+        &app,
+        "GET",
+        "/api/v1/orders?purpose=bundle",
+        None,
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["orders"].as_array().unwrap().len(), 1);
+
+    let (status, body) = call(
+        &app,
+        "GET",
+        "/api/v1/orders?status=provider_pending",
+        None,
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["orders"].as_array().unwrap().len(), 2);
+
+    let (status, _body) = call(
+        &app,
+        "GET",
+        "/api/v1/orders?status=bogus",
+        None,
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// A staff-recorded manual receipt funds the customer's wallet through the
+/// same order + fulfillment path: the order lands `paid` on the receipt's own
+/// evidence, the fulfillment books the top-up once, the customer sees the
+/// manual order in their own history, and a replay or a reused reference
+/// cannot credit twice.
+#[tokio::test]
+async fn a_manual_receipt_fulfills_once_with_unique_evidence() {
+    let Some((app, db, _stub, _m, _v)) = world().await else {
+        return;
+    };
+    let account = register(&app).await;
+    set_display(&db, account.organization_id).await;
+    let owner = operator(&db, &app).await;
+
+    let receipt = json!({
+        "organizationId": account.organization_id,
+        "idempotencyKey": "manual-1",
+        "displayAmountMinor": 210,
+        "displayCurrency": USD,
+        "reference": "bank-txn-7f3a",
+        "reason": "wire transfer received",
+    });
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/business/orders",
+        Some(receipt.clone()),
+        Some(&owner),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let order_id = Uuid::parse_str(body["data"]["order"]["orderId"].as_str().unwrap()).unwrap();
+    assert_eq!(body["data"]["order"]["source"].as_str().unwrap(), "manual");
+    assert_eq!(
+        body["data"]["order"]["status"].as_str().unwrap(),
+        "fulfilled"
+    );
+    assert!(body["data"]["order"]["merchantId"].is_null());
+    assert_eq!(
+        body["data"]["order"]["evidence"]["reference"]
+            .as_str()
+            .unwrap(),
+        "bank-txn-7f3a"
+    );
+    assert_eq!(
+        body["data"]["fulfillment"]["purpose"].as_str().unwrap(),
+        "walletTopup"
+    );
+    // The wallet cash landed through the same grant path a webhook-paid order
+    // takes — 210 USD minor at 0.0014 USD/credit is 1.5 credits.
+    let wallet = Tenants::new(db.pool().clone())
+        .get(&tenant(&db, account.organization_id).await)
+        .await
+        .unwrap();
+    assert_eq!(wallet.available().await.unwrap(), 1_500_000_000);
+
+    // The customer reads the manual order in their own history — a funded
+    // top-up is a payment order like any other.
+    let (status, body) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/orders/{order_id}"),
+        None,
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["source"].as_str().unwrap(), "manual");
+    assert_eq!(body["data"]["status"].as_str().unwrap(), "fulfilled");
+
+    // A replayed receipt returns the standing fulfilled order — never a
+    // second grant.
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/business/orders",
+        Some(receipt.clone()),
+        Some(&owner),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["data"]["order"]["orderId"].as_str().unwrap(),
+        order_id.to_string()
+    );
+    assert_eq!(wallet.available().await.unwrap(), 1_500_000_000);
+
+    // The same receipt reference funding a second order is refused — one
+    // piece of evidence, one grant.
+    let (status, _body) = call(
+        &app,
+        "POST",
+        "/api/v1/business/orders",
+        Some(json!({
+            "organizationId": account.organization_id,
+            "idempotencyKey": "manual-2",
+            "displayAmountMinor": 100,
+            "displayCurrency": USD,
+            "reference": "bank-txn-7f3a",
+            "reason": "duplicate of the same wire",
+        })),
+        Some(&owner),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(wallet.available().await.unwrap(), 1_500_000_000);
+
+    // A customer session cannot write a manual order — the business
+    // capability is refused outside staff context.
+    let (status, _body) = call(
+        &app,
+        "POST",
+        "/api/v1/business/orders",
+        Some(json!({
+            "organizationId": account.organization_id,
+            "idempotencyKey": "manual-3",
+            "displayAmountMinor": 100,
+            "displayCurrency": USD,
+            "reference": "bank-txn-self",
+            "reason": "self-credit attempt",
+        })),
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(wallet.available().await.unwrap(), 1_500_000_000);
+}
+
+/// The operator's cross-organization read lists manual and provider orders
+/// together, filterable — the same truth the reconciliation report counts.
+#[tokio::test]
+async fn the_business_order_view_lists_across_customers() {
+    let Some((app, db, stub, _m, _v)) = world().await else {
+        return;
+    };
+    let account = register(&app).await;
+    set_display(&db, account.organization_id).await;
+    *stub.answers.lock().unwrap() = vec![("pay_biz".into(), "secret_biz".into())];
+    let owner = operator(&db, &app).await;
+
+    let (status, _body) = call(
+        &app,
+        "POST",
+        "/api/v1/orders",
+        Some(create_body("ord-biz", "walletTopup", 210)),
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _body) = call(
+        &app,
+        "POST",
+        "/api/v1/business/orders",
+        Some(json!({
+            "organizationId": account.organization_id,
+            "idempotencyKey": "manual-biz",
+            "displayAmountMinor": 500,
+            "displayCurrency": USD,
+            "reference": "wire-99",
+            "reason": "received",
+        })),
+        Some(&owner),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = call(&app, "GET", "/api/v1/business/orders", None, Some(&owner)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let orders = body["data"]["orders"].as_array().unwrap();
+    assert!(orders.len() >= 2, "{body}");
+    assert!(
+        orders
+            .iter()
+            .any(|o| o["source"].as_str() == Some("manual"))
+    );
+
+    let (status, body) = call(
+        &app,
+        "GET",
+        &format!(
+            "/api/v1/business/orders?organizationId={}",
+            account.organization_id
+        ),
+        None,
+        Some(&owner),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let orders = body["data"]["orders"].as_array().unwrap();
+    assert!(
+        orders
+            .iter()
+            .all(|o| o["organizationId"].as_str() == Some(&account.organization_id.to_string()))
+    );
+
+    // The customer session is refused the operator view entirely.
+    let (status, _body) = call(
+        &app,
+        "GET",
+        "/api/v1/business/orders",
+        None,
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }

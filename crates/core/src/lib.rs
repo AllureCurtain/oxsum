@@ -201,7 +201,7 @@ pub use orgs::{
     UserOrganization,
 };
 pub use payment_orders::{
-    NewPaymentOrder, OrderRate, PaymentFulfillment, PaymentOrder, PaymentOrderPage,
+    NewManualOrder, NewPaymentOrder, OrderRate, PaymentFulfillment, PaymentOrder, PaymentOrderPage,
     PaymentOrderPurpose, PaymentReconciliation,
 };
 pub use plans::{

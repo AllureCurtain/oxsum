@@ -16,6 +16,7 @@ import { GettingStarted } from "./pages/GettingStarted";
 import { Keys } from "./pages/Keys";
 import { Log } from "./pages/Log";
 import { Members } from "./pages/Members";
+import { OrderDetail, OrderNew, Orders } from "./pages/Orders";
 import { Overview } from "./pages/Overview";
 import { Pricing } from "./pages/Pricing";
 import { Requests } from "./pages/Requests";
@@ -49,6 +50,9 @@ export function App() {
         <Route path="webhooks" element={<Webhooks />} />
         <Route path="statements" element={<Statements />} />
         <Route path="statements/:id" element={<StatementDetail />} />
+        <Route path="orders" element={<Orders />} />
+        <Route path="orders/new" element={<OrderNew />} />
+        <Route path="orders/:id" element={<OrderDetail />} />
         <Route path="reports" element={<Reports />} />
         <Route path="log" element={<Log />} />
         <Route path="chat" element={<Chat />} />

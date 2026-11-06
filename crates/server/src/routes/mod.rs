@@ -143,6 +143,10 @@ pub fn router(state: AppState) -> Router {
             "/orders/{order_id}/fulfillment",
             get(orders::order_fulfillment),
         )
+        .route(
+            "/orders/{order_id}/checkout-session",
+            get(orders::checkout_session),
+        )
         .route("/holds", get(billing::list_holds).post(billing::hold))
         .route("/bills", get(billing::bills))
         .route("/entries", get(log::entries))
@@ -234,6 +238,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/business/payment-reconciliation",
             get(orders::reconciliation),
+        )
+        .route(
+            "/business/orders",
+            get(orders::business_orders).post(orders::create_manual_order),
         )
         .route(
             "/webhooks/merchants/{merchant}/versions/{version}",
