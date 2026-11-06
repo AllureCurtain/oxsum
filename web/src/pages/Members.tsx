@@ -1,9 +1,8 @@
 import { useTranslation } from "react-i18next";
 import { useState } from "react";
-import { Link2, Users } from "lucide-react";
+import { Users } from "lucide-react";
 import { ApiError } from "../api/client";
 import {
-  useAddMember,
   useBudget,
   useCreateInvitation,
   useDisplay,
@@ -34,14 +33,14 @@ export function Members() {
   const members = useMembers();
   const budget = useBudget();
   const display = useDisplay();
-  const add = useAddMember();
   const update = useUpdateMember();
   const remove = useRemoveMember();
   const transfer = useTransferOwnership();
   const invite = useCreateInvitation();
 
-  const [email, setEmail] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
+  const [sendEmail, setSendEmail] = useState(false);
+  const [invitationKey, setInvitationKey] = useState(() => crypto.randomUUID());
   const [inviteResult, setInviteResult] = useState<{
     url: string;
     delivery?: "sent" | "failed";
@@ -71,7 +70,6 @@ export function Members() {
           <span className="mt-1 block text-xs">{t("members.inviteOnce")}</span>
         </Banner>
       ) : null}
-      {add.error instanceof ApiError ? <Banner tone="error">{add.error.message}</Banner> : null}
 
       {budget.data ? (
         <Card title={t("members.budgetsGlance")}>
@@ -192,70 +190,38 @@ export function Members() {
 
       {canManage ? (
         <Card title={t("members.addMember")}>
-          <form
-            className="flex max-w-md gap-2"
-            onSubmit={(e) => {
-              e.preventDefault();
-              add.mutate(email, { onSuccess: () => setEmail("") });
-            }}
-          >
-            <Field label={t("common.email")}>
-              <TextInput
-                type="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
+          <form className="flex max-w-md flex-col gap-3" onSubmit={(e) => {
+            e.preventDefault();
+            const to = inviteEmail.trim();
+            invite.mutate({ idempotencyKey: invitationKey, intendedEmail: to, ...(sendEmail ? { email: to } : {}) }, {
+              onSuccess: (created) => {
+                if (created.token) setInviteResult({
+                  url: `${window.location.origin}/app/invite?token=${encodeURIComponent(created.token)}`,
+                  delivery: created.delivery,
+                  email: to,
+                });
+                setInvitationKey(crypto.randomUUID());
+              },
+            });
+          }}>
+            <Field label={t("members.inviteEmail")} hint={t("members.inviteEmailHint")}>
+              <TextInput type="email" required value={inviteEmail} onChange={(e) => {
+                setInviteEmail(e.target.value); setInvitationKey(crypto.randomUUID());
+              }} />
             </Field>
-            <div className="flex items-end">
-              <Button type="submit" disabled={add.isPending}>
-                {t("common.add")}
-              </Button>
-            </div>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={sendEmail} onChange={(e) => {
+                setSendEmail(e.target.checked); setInvitationKey(crypto.randomUUID());
+              }} />
+              {t("members.mailInvitation")}
+            </label>
+            <Button type="submit" disabled={invite.isPending}>
+              {sendEmail ? t("members.inviteAndMail") : t("members.createInvite")}
+            </Button>
+            <p className="text-xs text-muted">{t("members.addExisting")}</p>
+            {invite.error instanceof ApiError ? <p className="text-xs text-danger">{invite.error.message}</p> : null}
+            {invite.isSuccess && !invite.data.token ? <p className="text-xs text-muted">{t("members.inviteReplay")}</p> : null}
           </form>
-          <p className="mt-2 text-xs text-muted">
-            {t("members.addExisting")}
-          </p>
-
-          {/* The alternative path — someone without an account — collapses
-              behind a details, so the common action stays primary. */}
-          <details className="mt-4 border-t border-line pt-3">
-            <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium text-muted hover:text-ink [&::-webkit-details-marker]:hidden">
-              <Link2 className="size-4" /> {t("members.inviteNoAccount")}
-            </summary>
-            <div className="mt-3 flex flex-col gap-3">
-              <Field label={t("members.inviteEmail")} hint={t("members.inviteEmailHint")}>
-                <TextInput
-                  type="email"
-                  value={inviteEmail}
-                  onChange={(e) => setInviteEmail(e.target.value)}
-                  placeholder={t("members.inviteEmailPlaceholder")}
-                />
-              </Field>
-              <div>
-                <Button
-                  tone="ghost"
-                  disabled={invite.isPending}
-                  onClick={() => {
-                    const to = inviteEmail.trim();
-                    invite.mutate(to || undefined, {
-                      onSuccess: (created) =>
-                        setInviteResult({
-                          url: `${window.location.origin}/app/invite?token=${encodeURIComponent(created.token)}`,
-                          delivery: created.delivery,
-                          email: to,
-                        }),
-                    });
-                  }}
-                >
-                  {inviteEmail.trim() ? t("members.inviteAndMail") : t("members.createInvite")}
-                </Button>
-              </div>
-              {invite.error instanceof ApiError ? (
-                <p className="text-xs text-danger">{invite.error.message}</p>
-              ) : null}
-            </div>
-          </details>
         </Card>
       ) : null}
     </div>

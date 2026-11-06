@@ -63,15 +63,6 @@ export function useMembers() {
   });
 }
 
-export function useAddMember() {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: (email: string) =>
-      api<Member>("/org/members", { method: "POST", body: { email } }),
-    onSuccess: () => client.invalidateQueries({ queryKey: ["members"] }),
-  });
-}
-
 export function useUpdateMember() {
   const client = useQueryClient();
   return useMutation({
@@ -104,10 +95,10 @@ export function useTransferOwnership() {
 
 export function useCreateInvitation() {
   return useMutation({
-    mutationFn: (email?: string) =>
+    mutationFn: (body: components["schemas"]["CreateInvitationRequest"]) =>
       api<components["schemas"]["CreatedInvitation"]>("/org/invitations", {
         method: "POST",
-        body: email ? { email } : undefined,
+        body,
       }),
   });
 }

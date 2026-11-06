@@ -968,3 +968,7 @@ Use `cargo nextest run -p oxsum-core -p oxsum-server -E 'binary(business_staff) 
 ### Customer lifecycle validation (#633)
 
 Focused checks: `cargo nextest run -p oxsum-core --test customer_lifecycle --test customer_upgrade --test dunning --test suspension` and `cargo nextest run -p oxsum-server --test customer_lifecycle --test suspension`. Customer tests exercise real setup and session authority, archive/admission races, independent reasons, audit rollback and historical proof preservation in isolated PostgreSQL. The HTTP suite sends actual gateway calls to a loopback provider before/after restoration; no paid call is required.
+
+### Customer invitation upgrade and checks (#634)
+
+Migration 0076 extends existing links without changing their IDs, hashes or expiry. It adds nullable pending-customer terms and business ownership, then keeps the original organization/profile identity trigger compatible with signup/team/demo paths. Existing links remain single-use; the current API requires idempotency keys for new links and direct member POSTs return 403. No new environment setting is required. Run core `invitation_consent` and `invitation_upgrade`, server `invitation_consent` and the existing invitations/members/email/antibot suites against testkit scratch databases. The new creation/revoke endpoints send no mail unless the team request explicitly supplies `email`; tests use a local SMTP stub.

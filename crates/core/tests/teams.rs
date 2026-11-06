@@ -115,18 +115,21 @@ async fn member_with_key(world: &World, tag: &str) -> (Uuid, oxsum_core::ActingK
         })
         .await
         .unwrap();
-    let member = world
-        .db
-        .add_member(world.organization_id, owner(world), &account.user.email)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO oxsum.memberships (organization_id,user_id,role) VALUES ($1,$2,'member')",
+    )
+    .bind(world.organization_id)
+    .bind(account.user.id)
+    .execute(world.db.pool())
+    .await
+    .unwrap();
     let minted = world
         .db
         .create_key(
             world.organization_id,
             Some(tag.to_owned()),
             None,
-            Some(member.user_id),
+            Some(account.user.id),
             KeyConstraints::default(),
         )
         .await
@@ -137,7 +140,7 @@ async fn member_with_key(world: &World, tag: &str) -> (Uuid, oxsum_core::ActingK
         .await
         .unwrap()
         .unwrap();
-    (member.user_id, key)
+    (account.user.id, key)
 }
 
 /// A team's cap gates a member's holds across every key they minted — the

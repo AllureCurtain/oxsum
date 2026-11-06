@@ -266,13 +266,24 @@ async fn members_and_keys_cannot_set_the_display() {
     let add = call(
         &app,
         "POST",
-        "/api/v1/org/members",
-        Some(json!({"email": member.email})),
+        "/api/v1/org/invitations",
+        Some(json!({"idempotencyKey":"display-member", "intendedEmail": member.email})),
         None,
         Some(&owner.cookie),
     )
     .await;
     assert_eq!(add.status, StatusCode::OK, "{}", add.text());
+
+    let accepted = call(
+        &app,
+        "POST",
+        "/api/v1/invitations/accept",
+        Some(json!({"token":add.json()["data"]["token"]})),
+        None,
+        Some(&member.cookie),
+    )
+    .await;
+    assert_eq!(accepted.status, StatusCode::OK, "{}", accepted.text());
 
     // Switch the member's session to the shared organization, then PATCH.
     let switch = call(

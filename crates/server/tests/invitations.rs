@@ -165,7 +165,7 @@ async fn invite(app: &Router, cookie: &str) -> String {
         app,
         "POST",
         "/api/v1/org/invitations",
-        None,
+        Some(json!({"idempotencyKey": Uuid::new_v4().to_string()})),
         None,
         Some(cookie),
     )
@@ -224,7 +224,7 @@ async fn an_owner_invites_and_the_link_registers_a_member() {
         &app,
         "POST",
         "/api/v1/org/invitations",
-        None,
+        Some(json!({"idempotencyKey": Uuid::new_v4().to_string()})),
         None,
         Some(&cookie),
     )
@@ -294,7 +294,7 @@ async fn only_an_owner_or_admin_session_mints_a_link() {
         &app,
         "POST",
         "/api/v1/org/invitations",
-        None,
+        Some(json!({"idempotencyKey": Uuid::new_v4().to_string()})),
         None,
         Some(&member_cookie),
     )
@@ -322,7 +322,7 @@ async fn only_an_owner_or_admin_session_mints_a_link() {
         &app,
         "POST",
         "/api/v1/org/invitations",
-        None,
+        Some(json!({"idempotencyKey": Uuid::new_v4().to_string()})),
         None,
         Some(&member_cookie),
     )
@@ -334,7 +334,7 @@ async fn only_an_owner_or_admin_session_mints_a_link() {
         &app,
         "POST",
         "/api/v1/org/invitations",
-        None,
+        Some(json!({"idempotencyKey": Uuid::new_v4().to_string()})),
         Some(&owner.key),
         None,
     )
@@ -371,7 +371,7 @@ async fn an_expired_link_is_not_valid() {
         &app,
         "POST",
         "/api/v1/org/invitations",
-        None,
+        Some(json!({"idempotencyKey": Uuid::new_v4().to_string()})),
         None,
         Some(&cookie),
     )

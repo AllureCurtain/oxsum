@@ -549,7 +549,7 @@ async fn inviting_with_an_address_mails_the_link() {
         &app,
         "POST",
         "/api/v1/org/invitations",
-        Some(json!({"email": invitee})),
+        Some(json!({"idempotencyKey": uuid::Uuid::new_v4().to_string(), "email": invitee})),
         None,
         Some(&cookie),
     )
@@ -575,7 +575,7 @@ async fn an_invitation_address_without_a_mailer_is_refused() {
         &app,
         "POST",
         "/api/v1/org/invitations",
-        Some(json!({"email": "invitee@example.com"})),
+        Some(json!({"idempotencyKey": uuid::Uuid::new_v4().to_string(), "email": "invitee@example.com"})),
         None,
         Some(&cookie),
     )
@@ -587,7 +587,7 @@ async fn an_invitation_address_without_a_mailer_is_refused() {
         &app,
         "POST",
         "/api/v1/org/invitations",
-        None,
+        Some(json!({"idempotencyKey": uuid::Uuid::new_v4().to_string()})),
         None,
         Some(&cookie),
     )
@@ -614,7 +614,7 @@ async fn redeeming_an_invitation_mails_the_verification_link() {
         &app,
         "POST",
         "/api/v1/org/invitations",
-        None,
+        Some(json!({"idempotencyKey": uuid::Uuid::new_v4().to_string()})),
         None,
         Some(&cookie),
     )

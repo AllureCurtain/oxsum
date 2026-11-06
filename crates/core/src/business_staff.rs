@@ -212,11 +212,11 @@ pub(crate) async fn lock_business(tx: &mut Transaction<'_, Postgres>) -> Result<
             .await?,
     )
 }
-struct Identity {
+pub(crate) struct Identity {
     session: Uuid,
-    user: User,
-    organization: Option<Uuid>,
-    context: String,
+    pub(crate) user: User,
+    pub(crate) organization: Option<Uuid>,
+    pub(crate) context: String,
     second_factor_satisfied: bool,
 }
 async fn identity(
@@ -236,6 +236,19 @@ async fn identity(
         context: row.try_get("context")?,
         second_factor_satisfied: row.try_get("second_factor_satisfied")?,
     })
+}
+/// Personal consent and team writes use the current session inside the mutation.
+pub(crate) async fn personal_identity(
+    tx: &mut Transaction<'_, Postgres>,
+    token: &str,
+) -> Result<Identity, WalletError> {
+    let actor = identity(tx, token).await?;
+    if !actor.second_factor_satisfied {
+        return Err(WalletError::Forbidden(
+            "a second-factor verified login is required".into(),
+        ));
+    }
+    Ok(actor)
 }
 async fn staff(
     tx: &mut Transaction<'_, Postgres>,

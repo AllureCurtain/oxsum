@@ -173,59 +173,32 @@ pub(crate) struct RedeemReq {
     turnstile_token: Option<String>,
 }
 
-/// The optional body of `POST /api/v1/org/invitations`: an address to mail the
-/// link to (issue #567). With no body the token is only answered, as before.
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct CreateInvitationReq {
-    email: Option<String>,
-}
-
-/// A freshly minted invitation. `delivery` is present only when the request
-/// named an address: `sent` when the mailer accepted the message, `failed`
-/// when it did not — the token is valid either way, so the operator can still
-/// pass the link along by hand.
+/// A token is present on first creation only; retries cannot resend it.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreatedInvitationRes {
-    id: Uuid,
-    token: String,
-    #[serde(with = "time::serde::rfc3339")]
-    expires_at: time::OffsetDateTime,
+    #[serde(flatten)]
+    invitation: oxsum_core::CreatedInvitation,
     #[serde(skip_serializing_if = "Option::is_none")]
     delivery: Option<&'static str>,
 }
-
-/// Mints an invitation link into the session's organization: the token is answered
-/// once, here. Owner or admin only — the same rule every membership write follows.
-/// With an `email` in the body the link is also mailed; without one it is the
-/// caller's to pass along.
 pub(crate) async fn create_invitation(
     State(state): State<AppState>,
-    Extension(principal): Extension<Principal>,
-    body: Option<ApiJson<CreateInvitationReq>>,
+    headers: axum::http::HeaderMap,
+    ApiJson(request): ApiJson<oxsum_core::TeamInvitationRequest>,
 ) -> ApiResult<CreatedInvitationRes> {
-    let actor = principal.membership_actor()?;
-    let body = body.map_or_else(CreateInvitationReq::default, |ApiJson(body)| body);
-    let email = super::recipient_email(body.email.as_deref())?;
-    // An address on a deployment with no mailer is a caller mistake: refusing
-    // before the mint keeps the operator from believing a link was mailed.
+    let token = super::business::personal_token(&headers)?;
+    let email = super::recipient_email(request.email.as_deref())?;
     if email.is_some() && state.config.mailer().is_none() {
         return Err(
             WalletError::InvalidInput("this deployment has no mailer configured".into()).into(),
         );
     }
-    let minted = state
-        .db
-        .create_invitation(actor, principal.organization().id)
-        .await?;
-    let delivery = match (email, state.config.mailer()) {
-        (None, _) => None,
-        (Some(to), Some(mailer)) => {
-            match mailer
-                .send_invitation(to, &minted.token, &principal.organization().name)
-                .await
-            {
+    let minted = state.db.create_invitation(&token, &request).await?;
+    let delivery = match (email, state.config.mailer(), minted.token.as_deref()) {
+        (Some(to), Some(mailer), Some(secret)) => {
+            let organization = state.db.organization_by_id(minted.organization_id).await?;
+            match mailer.send_invitation(to, secret, &organization.name).await {
                 Ok(()) => Some("sent"),
                 Err(error) => {
                     tracing::warn!(%error, "the invitation mail was not sent");
@@ -233,16 +206,38 @@ pub(crate) async fn create_invitation(
                 }
             }
         }
-        // The check above makes this unreachable; answering a failure rather
-        // than panicking keeps a misconfiguration from losing the token.
-        (Some(_), None) => Some("failed"),
+        _ => None,
     };
     ok(CreatedInvitationRes {
-        id: minted.id,
-        token: minted.token,
-        expires_at: minted.expires_at,
+        invitation: minted,
         delivery,
     })
+}
+pub(crate) async fn accept_invitation(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    ApiJson(request): ApiJson<oxsum_core::InvitationAcceptRequest>,
+) -> ApiResult<oxsum_core::InvitationAcceptance> {
+    ok(state
+        .db
+        .accept_invitation(&super::business::personal_token(&headers)?, &request.token)
+        .await?)
+}
+pub(crate) async fn revoke_invitation(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+    ApiJson(request): ApiJson<oxsum_core::InvitationRevokeRequest>,
+) -> ApiResult<oxsum_core::BusinessMutationResult> {
+    ok(state
+        .db
+        .revoke_invitation(
+            &super::business::personal_token(&headers)?,
+            id,
+            false,
+            &request,
+        )
+        .await?)
 }
 
 /// Registers through an invitation link. Open in every signup mode — an `invite`
@@ -268,14 +263,6 @@ pub(crate) async fn redeem_invitation(
         .await?;
     registration.verification_sent = send_verification(&state, registration.user.id).await;
     ok(registration)
-}
-
-/// What `POST /api/v1/auth/verify/request` answers: whether a verification mail
-/// went out, or that the address was verified already.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct AddMemberReq {
-    email: String,
 }
 
 #[derive(Deserialize)]
@@ -344,16 +331,11 @@ pub(crate) struct MembersRes {
     members: Vec<Member>,
 }
 
-pub(crate) async fn add_member(
-    State(state): State<AppState>,
-    Extension(principal): Extension<Principal>,
-    ApiJson(r): ApiJson<AddMemberReq>,
-) -> ApiResult<Member> {
-    let actor = principal.membership_actor()?;
-    ok(state
-        .db
-        .add_member(principal.organization().id, actor, &r.email)
-        .await?)
+pub(crate) async fn add_member() -> ApiResult<Member> {
+    Err(WalletError::Forbidden(
+        "direct membership addition is retired; invite the person and require acceptance".into(),
+    )
+    .into())
 }
 
 pub(crate) async fn remove_member(
@@ -529,4 +511,11 @@ pub(crate) async fn subscription_periods(
         .db
         .subscription_periods(subscription.subscription_id)
         .await?)
+}
+
+pub(crate) async fn preview_invitation(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<oxsum_core::InvitationAcceptRequest>,
+) -> ApiResult<oxsum_core::InvitationPreview> {
+    ok(state.db.invitation_preview(&request.token).await?)
 }

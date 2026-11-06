@@ -16,3 +16,5 @@ Existing balances, organization/key IDs, ledger origins, entries and proofs rema
 ## Independent customer admission restrictions (#633)
 
 Manual `suspended: false` on the deployment organization PATCH now clears only manual suspension. It cannot override dunning or archived customer state. Reconcile overdue payment or disable the configured dunning policy to remove its reason, and explicitly restore an archived customer. Existing balances, IDs, historical evidence and active settlement are preserved.
+
+- **Customer joining consent (#634):** `POST /api/v1/org/members` now returns 403. Use `POST /org/invitations` with an idempotency key and optional bound email, then explicit `/invitations/accept` for signed-in users or `/invitations/redeem` for new users. Creation retries return null token and do not resend mail. Existing unspent links survive upgrade. New business customer invitations reserve external identity until intended-recipient consent; no staff or funds are granted.

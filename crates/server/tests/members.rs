@@ -99,6 +99,30 @@ async fn call(
     }
 }
 
+/// Exercise consent rather than provisioning a membership through the retired API.
+async fn invite_and_accept(app: &Router, owner: &str, email: &str) -> Res {
+    let invite = call(
+        app,
+        "POST",
+        "/api/v1/org/invitations",
+        Some(json!({"idempotencyKey":Uuid::new_v4().to_string(),"intendedEmail":email})),
+        None,
+        Some(owner),
+    )
+    .await;
+    assert_eq!(invite.status, StatusCode::OK, "{}", invite.body);
+    let recipient = login(app, email).await;
+    call(
+        app,
+        "POST",
+        "/api/v1/invitations/accept",
+        Some(json!({"token":invite.body["data"]["token"]})),
+        None,
+        Some(&recipient),
+    )
+    .await
+}
+
 /// A registered account: the user signup created, the personal organization it gave them,
 /// and the first key.
 struct Account {
@@ -268,21 +292,12 @@ async fn an_owner_adds_an_existing_account_and_the_organization_becomes_a_team()
     .await;
     assert_eq!(before.body["data"]["kind"], "personal", "{}", before.body);
 
-    let res = call(
-        &app,
-        "POST",
-        "/api/v1/org/members",
-        Some(json!({"email": new_member.email})),
-        None,
-        Some(&f.owner_cookie),
-    )
-    .await;
+    let res = invite_and_accept(&app, &f.owner_cookie, &new_member.email).await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
-    assert_eq!(res.body["data"]["email"], new_member.email.as_str());
     assert_eq!(res.body["data"]["role"], "member");
     assert_eq!(
-        res.body["data"]["userId"],
-        new_member.user_id.to_string().as_str()
+        res.body["data"]["organizationId"],
+        f.owner.organization_id.to_string()
     );
 
     // The second person makes it a team; the ledger does not move, so the organization
@@ -302,51 +317,32 @@ async fn an_owner_adds_an_existing_account_and_the_organization_becomes_a_team()
     assert_eq!(role_of(&list, &new_member.email).as_deref(), Some("member"));
 }
 
-/// An unknown email is refused and nothing is stored: pending invitations are issue #59.
+/// The retired direct-add route refuses even a valid target without consent.
 #[tokio::test]
-async fn an_unknown_email_is_not_found_and_a_second_add_is_a_conflict() {
+async fn direct_add_is_forbidden_without_changing_membership() {
     let (app, pool) = app_or_skip!();
-    let f = fixture(&app, &pool, "unknown").await;
+    let f = fixture(&app, &pool, "retired").await;
     let before = members(&app, &f.owner_cookie).await;
-
-    let res = call(
-        &app,
-        "POST",
-        "/api/v1/org/members",
-        Some(json!({"email": "nobody@example.com"})),
+    for body in [
+        Some(json!({"email":f.admin.email})),
+        Some(json!({"email":"nobody@example.com"})),
         None,
-        Some(&f.owner_cookie),
-    )
-    .await;
-    assert_eq!(res.status, StatusCode::NOT_FOUND, "{}", res.body);
-    assert_eq!(res.body["error"]["code"], "NOT_FOUND");
-    assert!(
-        res.body["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("nobody@example.com"),
-        "the refusal names the address: {}",
-        res.body
-    );
-
-    // Nothing was added, and a malformed address is a validation failure, not a 404.
-    let after = members(&app, &f.owner_cookie).await;
+    ] {
+        let res = call(
+            &app,
+            "POST",
+            "/api/v1/org/members",
+            body,
+            None,
+            Some(&f.owner_cookie),
+        )
+        .await;
+        assert_eq!(res.status, StatusCode::FORBIDDEN, "{}", res.body);
+    }
     assert_eq!(
         roles_of(&before),
-        roles_of(&after),
-        "the refused add changed nothing"
+        roles_of(&members(&app, &f.owner_cookie).await)
     );
-    let res = call(
-        &app,
-        "POST",
-        "/api/v1/org/members",
-        Some(json!({"email": "not-an-address"})),
-        None,
-        Some(&f.owner_cookie),
-    )
-    .await;
-    assert_eq!(res.status, StatusCode::BAD_REQUEST, "{}", res.body);
-    assert_eq!(res.body["error"]["code"], "VALIDATION_ERROR");
 }
 
 /// An owner changes a member's role and removes the membership; the removed person's session
@@ -371,15 +367,7 @@ async fn an_owner_changes_a_role_and_removes_a_member() {
     // The role is read fresh from the membership on every request, so the same session is an
     // admin now — and admins may add members.
     let extra = register(&app, "roles_extra").await;
-    let res = call(
-        &app,
-        "POST",
-        "/api/v1/org/members",
-        Some(json!({"email": extra.email})),
-        None,
-        Some(&f.member_cookie),
-    )
-    .await;
+    let res = invite_and_accept(&app, &f.member_cookie, &extra.email).await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
 
     // Setting the role a member already has is a no-op, not a conflict.
@@ -472,15 +460,7 @@ async fn an_owner_transfers_ownership_and_becomes_an_admin() {
 
     // The previous owner still manages members as an admin, but may not transfer ownership.
     let extra = register(&app, "transfer_extra").await;
-    let res = call(
-        &app,
-        "POST",
-        "/api/v1/org/members",
-        Some(json!({"email": extra.email})),
-        None,
-        Some(&f.owner_cookie),
-    )
-    .await;
+    let res = invite_and_accept(&app, &f.owner_cookie, &extra.email).await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
     let res = call(
         &app,
@@ -516,15 +496,7 @@ async fn an_admin_manages_members_but_may_not_touch_the_owner() {
 
     // Add, change a role, remove: all allowed for an admin.
     let extra = register(&app, "admin_extra").await;
-    let res = call(
-        &app,
-        "POST",
-        "/api/v1/org/members",
-        Some(json!({"email": extra.email})),
-        None,
-        Some(&f.admin_cookie),
-    )
-    .await;
+    let res = invite_and_accept(&app, &f.admin_cookie, &extra.email).await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
     let res = call(
         &app,
@@ -731,15 +703,7 @@ async fn another_organization_manages_only_its_own_memberships() {
 
     // Adding an org A member to this organization is legitimate — one account may be in many
     // organizations — and it changes nothing in org A.
-    let res = call(
-        &app,
-        "POST",
-        "/api/v1/org/members",
-        Some(json!({"email": f.member.email})),
-        None,
-        Some(&admin_cookie),
-    )
-    .await;
+    let res = invite_and_accept(&app, &admin_cookie, &f.member.email).await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
     let owned = members(&app, &f.owner_cookie).await;
     assert_eq!(role_of(&owned, &f.owner.email).as_deref(), Some("owner"));

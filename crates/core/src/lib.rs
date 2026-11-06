@@ -142,7 +142,10 @@ pub use holds::{
     SweepReport, sweep_stale_holds,
 };
 pub use idempotency::{Claim, fingerprint};
-pub use invitations::CreatedInvitation;
+pub use invitations::{
+    CreatedInvitation, CustomerInvitationRequest, InvitationAcceptRequest, InvitationAcceptance,
+    InvitationPreview, InvitationRevokeRequest, TeamInvitationRequest,
+};
 pub use jobs::{
     CLAIM_LEASE_SECS, DEAD_RESCHEDULE, Job, JobOutcome, MAX_ATTEMPTS, Retention, RetentionReport,
     StatementReport, kinds, leader_lock_key, next_run, requires_leader,
