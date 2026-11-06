@@ -1,6 +1,6 @@
 # TODO
 
-Updated: 2026-11-05
+Updated: 2026-11-06
 
 ## In progress
 
@@ -9,15 +9,15 @@ Updated: 2026-11-05
 The accepted contract and evidence live in [docs/roadmap/self-hosted-v1](docs/roadmap/self-hosted-v1/README.md). Each issue below has its own completion criteria; no implementation is complete merely because this plan is adopted.
 
 - [x] [#591](https://github.com/AllureCurtain/oxsum/issues/591) — Adopt the release contract and baseline (T00): integrated in PR #623.
-- [ ] [#592](https://github.com/AllureCurtain/oxsum/issues/592) — Restrict financial and metering authority (T01): in progress; requires both children below.
-- [ ] [#624](https://github.com/AllureCurtain/oxsum/issues/624) — Prevent customer self-credit and audit manual receipts (T01.a): PR #626; CI green, independent review pending.
-- [ ] [#625](https://github.com/AllureCurtain/oxsum/issues/625) — Remove customer raw hold and settlement authority (T01.b): PR #628; integration depends on T01.a.
-- [ ] [#593](https://github.com/AllureCurtain/oxsum/issues/593) — Add business and customer ownership without moving ledgers (T02): PR #627; CI green, independent review pending.
-- [ ] [#594](https://github.com/AllureCurtain/oxsum/issues/594) — Business staff, setup and session contexts (T03): in progress on combined T01/T02 prerequisites; integration pending their reviews.
-- [ ] [#629](https://github.com/AllureCurtain/oxsum/issues/629) — Initialize the business through expiring owner consent (T03.a): locally validated; PR review pending.
-- [ ] [#630](https://github.com/AllureCurtain/oxsum/issues/630) — Business staff capabilities and session contexts (T03.b): PR #632; locally validated, CI/review pending.
+- [x] [#592](https://github.com/AllureCurtain/oxsum/issues/592) — Restrict financial and metering authority (T01): both children integrated; final release acceptance remains separately tracked.
+- [x] [#624](https://github.com/AllureCurtain/oxsum/issues/624) — Prevent customer self-credit and audit manual receipts (T01.a): integrated in PR #626.
+- [x] [#625](https://github.com/AllureCurtain/oxsum/issues/625) — Remove customer raw hold and settlement authority (T01.b): integrated in PR #628.
+- [x] [#593](https://github.com/AllureCurtain/oxsum/issues/593) — Add business and customer ownership without moving ledgers (T02): integrated in PR #627.
+- [x] [#594](https://github.com/AllureCurtain/oxsum/issues/594) — Business staff, setup and session contexts (T03): both children integrated; final release acceptance remains separately tracked.
+- [x] [#629](https://github.com/AllureCurtain/oxsum/issues/629) — Initialize the business through expiring owner consent (T03.a): integrated in PR #631.
+- [x] [#630](https://github.com/AllureCurtain/oxsum/issues/630) — Business staff capabilities and session contexts (T03.b): integrated in PR #632.
 - [ ] [#595](https://github.com/AllureCurtain/oxsum/issues/595) — Customer profile and team lifecycle (T04): in progress; profile/lifecycle #633 and invitation consent #634 both required.
-- [ ] [#633](https://github.com/AllureCurtain/oxsum/issues/633) — Customer profiles and independent admission restrictions (T04.a): locally validated at `50c7db4`; PR pending.
+- [ ] [#633](https://github.com/AllureCurtain/oxsum/issues/633) — Customer profiles and independent admission restrictions (T04.a): reviewed and locally validated; PR #635 integration CI pending.
 - [ ] [#634](https://github.com/AllureCurtain/oxsum/issues/634) — Customer and team invitation consent (T04.b): pending T04.a.
 - [ ] [#596](https://github.com/AllureCurtain/oxsum/issues/596) — Scoped consumption and integration credentials (T05): pending.
 - [ ] [#597](https://github.com/AllureCurtain/oxsum/issues/597) — Business-owned provider configuration (T06): pending.

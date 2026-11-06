@@ -1,15 +1,15 @@
 # Release status
 
-Updated: 2026-11-05. Contract issue: [#591](https://github.com/AllureCurtain/oxsum/issues/591).
+Updated: 2026-11-06. Contract issue: [#591](https://github.com/AllureCurtain/oxsum/issues/591).
 
-Implementation: in progress. Release: not ready. T00 is integrated; T01.a and T02 are in review; T01.b is in review (PR #628); T03.a is in review (PR #631); T03.b is in review (PR #632, CI green; Entire requires independent approval). T04.a is locally validated; PR creation pending. No release readiness claimed.
+Implementation: in progress. Release: not ready. T04.a is reviewed and locally validated; PR #635 is awaiting integration CI. Prerequisite integration is recorded below. No release readiness claimed.
 
 | Task | Issue | State | Depends on |
 | --- | --- | --- | --- |
 | T00 — Adopt the release contract and baseline | [#591](https://github.com/AllureCurtain/oxsum/issues/591) | integrated (PR #623) | None |
-| T01 — Restrict financial and metering authority | [#592](https://github.com/AllureCurtain/oxsum/issues/592) | in_progress | T00 |
-| T02 — Add business and customer ownership without moving ledgers | [#593](https://github.com/AllureCurtain/oxsum/issues/593) | in_review (PR #627) | T00 |
-| T03 — Business staff, setup and session contexts | [#594](https://github.com/AllureCurtain/oxsum/issues/594) | in_progress | T01, T02 |
+| T01 — Restrict financial and metering authority | [#592](https://github.com/AllureCurtain/oxsum/issues/592) | integrated (PR #626, PR #628) | T00 |
+| T02 — Add business and customer ownership without moving ledgers | [#593](https://github.com/AllureCurtain/oxsum/issues/593) | integrated (PR #627) | T00 |
+| T03 — Business staff, setup and session contexts | [#594](https://github.com/AllureCurtain/oxsum/issues/594) | integrated (PR #631, PR #632) | T01, T02 |
 | T04 — Customer profile and team lifecycle | [#595](https://github.com/AllureCurtain/oxsum/issues/595) | in_progress | T02, T03 |
 | T05 — Scoped consumption and integration credentials | [#596](https://github.com/AllureCurtain/oxsum/issues/596) | pending | T03, T04 |
 | T06 — Business-owned provider configuration | [#597](https://github.com/AllureCurtain/oxsum/issues/597) | pending | T02, T03 |
@@ -39,7 +39,15 @@ Implementation: in progress. Release: not ready. T00 is integrated; T01.a and T0
 | T30 — Final integrated acceptance and launch materials | [#621](https://github.com/AllureCurtain/oxsum/issues/621) | pending | T23, T24, T26, T27, T28, T29 |
 | T31 — External certification and promotion gates | [#622](https://github.com/AllureCurtain/oxsum/issues/622) | pending | T30 |
 
-## Current checkpoint
+## Integration checkpoint — 2026-11-06
+
+Normal merges completed: T01.a PR #626 at `624437b`; T01.b PR #628 at `5cfae3c`; T02 PR #627 at `f51f862`; T03.a PR #631 at `cb594e3`; T03.b PR #632 at `1c53d0a`. PR #635 merges main `1c53d0a` into its original branch; source, tests, migrations, OpenAPI and generated frontend types remain byte-identical to validated head `f92bd63`. Only progress/evidence documentation differs. Its new head must pass required technical CI before a normal merge. See [current task evidence](evidence/T04-a.md).
+
+Live GitHub protection was inspected on 2026-11-06: required checks are `fmt`, `clippy`, `test`, `wasm` and `frontend`, with no required approval rule or repository ruleset. The optional Entire check reports missing trail approvals; this is not a required merge gate. Source review is performed independently here, normal merges enforce the configured technical checks, and no policy, reviewer identity or bypass flag is changed. The earlier notes treating Entire approval as a mandatory integration blocker are superseded by this verified policy.
+
+The implementation history below records earlier checkpoints. Its pending-integration and Entire-approval statements are superseded by this checkpoint; runtime results and outstanding release acceptance boundaries remain evidence.
+
+## Historical implementation checkpoint
 
 T00 merged through [PR #623](https://github.com/AllureCurtain/oxsum/pull/623), commit `aadde114ca61cf97d5254ae3ea45d0a18e4542ba`. [CI](https://github.com/AllureCurtain/oxsum/actions/runs/41869652216) passed relevant documentation gates; heavy suites were skipped by path policy. Local and GitHub main synchronized.
 
