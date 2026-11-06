@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: oxsum API
   version: 0.110.0
-  x-consumption-cache: Response cache v2 binds the exact complete request, protocol and semantic headers, customer/key permissions, selected experiment/mandate, alias targets, price and route configuration. Text case and whitespace are significant; old digests miss. Legacy excludeSystem is accepted but ignored.
+  x-consumption-cache: Response cache v2 binds the exact complete request, concrete endpoint and semantic headers, customer/key permissions, selected experiment/mandate, alias targets, and every admitted route's price, destination, settings and credential configuration. A primary route without an available credential cannot serve a cache hit. Text case and whitespace are significant; old digests miss. Legacy excludeSystem is accepted but ignored.
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -33,7 +33,9 @@ info:
     of complete request and serving context. System/instructions, tools, media and generation
     parameters always participate. Legacy excludeSystem is accepted but has no effect.
     Only matching exact customer/key, current authorization, route/alias/configuration and
-    protocol/semantic-header context can reuse a whole response. Old cache rows miss.
+    concrete endpoint/semantic-header context can reuse a whole response. Credential
+    additions, removals and status changes participate, as do fallback alias targets
+    and route configurations. Old cache rows miss.
 
     0.109.0 filters customer catalogs, estimates and serving routes by business,
     customer tier, current consumption key model grants and request-group channels.

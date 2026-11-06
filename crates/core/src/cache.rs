@@ -45,7 +45,6 @@ pub struct CachePolicy {
     /// The rows' lifetime in seconds; `None` is no expiry — a forever-reusable
     /// answer is a deliberate deployment choice, not a default.
     pub ttl_seconds: Option<i64>,
-
 }
 
 impl CachePolicy {
@@ -107,6 +106,7 @@ pub struct ResponseCacheContext<'a> {
     pub semantic_headers: &'a Value,
     pub key_constraints: &'a Value,
     pub experiment: &'a Value,
+    pub mandate: &'a Value,
     pub routes: &'a Value,
     pub discount_percent: Option<i64>,
 }
@@ -311,15 +311,186 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use serde_json::json;
+    use uuid::Uuid;
 
     use super::*;
 
+    /// A complete context whose fields a test may vary one at a time.
+    struct Fixture {
+        access: crate::ServingAccess,
+        surface: &'static str,
+        requested_model: &'static str,
+        requested_upstream: Option<&'static str>,
+        served_model: &'static str,
+        upstream_model: Option<&'static str>,
+        request: Value,
+        forwarded: Value,
+        semantic_headers: Value,
+        key_constraints: Value,
+        experiment: Value,
+        mandate: Value,
+        routes: Value,
+        discount_percent: Option<i64>,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            Self {
+                access: crate::ServingAccess::sample(
+                    Uuid::from_u128(1),
+                    Some(Uuid::from_u128(2)),
+                    Uuid::from_u128(3),
+                    Some(&["gpt-4"]),
+                    Some(&["gpt-4", "gpt-4.1"]),
+                    &[Uuid::from_u128(4)],
+                    Some(60),
+                ),
+                surface: "openai",
+                requested_model: "gpt-4",
+                requested_upstream: None,
+                served_model: "gpt-4",
+                upstream_model: None,
+                request: json!({"messages": [{"role": "user", "content": "hello"}]}),
+                forwarded: json!({"model": "gpt-4", "messages": [{"role": "user", "content": "hello"}]}),
+                semantic_headers: json!({}),
+                key_constraints: json!({"tokensPerMinute": 1000}),
+                experiment: Value::Null,
+                mandate: Value::Null,
+                routes: json!({"servedModel": "gpt-4", "primary": {"channelId": "c"}}),
+                discount_percent: None,
+            }
+        }
+
+        fn digest(&self, secret: &crate::SecretKey) -> String {
+            let context = ResponseCacheContext {
+                access: &self.access,
+                surface: self.surface,
+                requested_model: self.requested_model,
+                requested_upstream: self.requested_upstream,
+                served_model: self.served_model,
+                upstream_model: self.upstream_model,
+                request: &self.request,
+                forwarded: &self.forwarded,
+                semantic_headers: &self.semantic_headers,
+                key_constraints: &self.key_constraints,
+                experiment: &self.experiment,
+                mandate: &self.mandate,
+                routes: &self.routes,
+                discount_percent: self.discount_percent,
+            };
+            response_cache_digest(secret, &context).unwrap()
+        }
+    }
+
+    #[test]
+    fn every_admitted_context_field_changes_the_digest() {
+        let secret = crate::SecretKey::from_bytes([7; 32]);
+        let base = Fixture::new();
+        let expected = base.digest(&secret);
+        assert!(expected.starts_with("v2:"), "the digest is versioned");
+
+        let mut cases: Vec<Fixture> = Vec::new();
+        let mut changed = Fixture::new();
+        changed.access = crate::ServingAccess::sample(
+            Uuid::from_u128(1),
+            None,
+            Uuid::from_u128(3),
+            Some(&["gpt-4"]),
+            Some(&["gpt-4", "gpt-4.1"]),
+            &[Uuid::from_u128(4)],
+            Some(60),
+        );
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.access = crate::ServingAccess::sample(
+            Uuid::from_u128(1),
+            Some(Uuid::from_u128(2)),
+            Uuid::from_u128(3),
+            Some(&["gpt-4"]),
+            Some(&["gpt-4"]),
+            &[Uuid::from_u128(4)],
+            Some(60),
+        );
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.access = crate::ServingAccess::sample(
+            Uuid::from_u128(1),
+            Some(Uuid::from_u128(2)),
+            Uuid::from_u128(3),
+            Some(&["gpt-4"]),
+            Some(&["gpt-4", "gpt-4.1"]),
+            &[Uuid::from_u128(5)],
+            Some(60),
+        );
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.surface = "anthropic";
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.requested_model = "alias";
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.requested_upstream = Some("gpt-4");
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.served_model = "gpt-4.1";
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.upstream_model = Some("gpt-4-0613");
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.request = json!({"messages": [{"role": "user", "content": "Hello"}]});
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.forwarded = json!({"model": "gpt-4", "temperature": 1});
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.semantic_headers = json!({"version": "2023-06-01"});
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.key_constraints = json!({"tokensPerMinute": 1001});
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.experiment = json!({"experimentId": "e", "variant": "gpt-4"});
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.mandate = json!({"mandateId": "m", "hash": "h"});
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.routes = json!({"servedModel": "gpt-4", "primary": {"channelId": "d"}});
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.discount_percent = Some(10);
+        cases.push(changed);
+
+        for (index, case) in cases.iter().enumerate() {
+            assert_ne!(
+                base.digest(&secret),
+                case.digest(&secret),
+                "context field case {index} did not change the digest"
+            );
+        }
+        // Rebuilding the same context is stable.
+        assert_eq!(expected, Fixture::new().digest(&secret));
+        // A different deployment key separates deployments.
+        assert_ne!(
+            expected,
+            base.digest(&crate::SecretKey::from_bytes([8; 32]))
+        );
+    }
+
     #[test]
     fn canonical_objects_preserve_exact_strings_arrays_and_nulls() {
-        let first: Value = serde_json::from_str(r#"{"z":["A  B",null],"a":{"b":1,"a":2}}"#).unwrap();
-        let reordered: Value = serde_json::from_str(r#"{"a":{"a":2,"b":1},"z":["A  B",null]}"#).unwrap();
+        let first: Value =
+            serde_json::from_str(r#"{"z":["A  B",null],"a":{"b":1,"a":2}}"#).unwrap();
+        let reordered: Value =
+            serde_json::from_str(r#"{"a":{"a":2,"b":1},"z":["A  B",null]}"#).unwrap();
         let secret = crate::SecretKey::from_bytes([7; 32]);
-        let digest = |value| secret.cache_fingerprint(&serde_json::to_vec(&canonical(value)).unwrap()).unwrap();
+        let digest = |value| {
+            secret
+                .cache_fingerprint(&serde_json::to_vec(&canonical(value)).unwrap())
+                .unwrap()
+        };
         assert_eq!(digest(first.clone()), digest(reordered));
         for different in [
             json!({"z":["a  b",null],"a":{"b":1,"a":2}}),
@@ -331,7 +502,9 @@ mod tests {
         }
         assert_ne!(
             digest(first.clone()),
-            crate::SecretKey::from_bytes([8;32]).cache_fingerprint(&serde_json::to_vec(&canonical(first)).unwrap()).unwrap()
+            crate::SecretKey::from_bytes([8; 32])
+                .cache_fingerprint(&serde_json::to_vec(&canonical(first)).unwrap())
+                .unwrap()
         );
     }
 

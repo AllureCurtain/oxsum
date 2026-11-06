@@ -299,6 +299,9 @@ pub struct Serving {
     pub settings: serde_json::Value,
     /// Connection/settings generation read in the same snapshot as credentials.
     pub configuration_updated_at: OffsetDateTime,
+    /// Keyed fingerprint of every configured credential, including disabled ones.
+    /// Health timestamps are excluded; secret ciphertext never leaves core.
+    pub credential_configuration: String,
     /// The price version this request is billed at, which the settlement records.
     pub version: i64,
     /// The route's relative preference for leading a request (issue #168).
@@ -742,6 +745,8 @@ impl Db {
                 base_url: row.try_get("base_url")?,
                 protocol: row.try_get("protocol")?,
                 credentials: Self::open_pool(connection, channel_id, key).await?,
+                credential_configuration: Self::pool_fingerprint(connection, channel_id, key)
+                    .await?,
                 settings: row.try_get("settings")?,
                 configuration_updated_at: row.try_get("updated_at")?,
                 version: i64::from(row.try_get::<i32, _>("version")?),
@@ -1254,6 +1259,8 @@ impl Db {
                     base_url: row.try_get("base_url")?,
                     protocol: row.try_get("protocol")?,
                     credentials: Self::open_pool(connection, channel_id, key).await?,
+                    credential_configuration: Self::pool_fingerprint(connection, channel_id, key)
+                        .await?,
                     settings: row.try_get("settings")?,
                     configuration_updated_at: row.try_get("updated_at")?,
                     version: i64::from(row.try_get::<i32, _>("version")?),

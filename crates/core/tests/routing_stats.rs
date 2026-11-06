@@ -11,6 +11,7 @@ use oxsum_core::{Price, RouteStats, Serving};
 /// `weight` and `price`, so the rest is filler that keeps the struct honest.
 fn serving(channel: &str, weight: i64, input_price: i64) -> Serving {
     Serving {
+        credential_configuration: "test-configuration".to_owned(),
         configuration_updated_at: time::OffsetDateTime::UNIX_EPOCH,
         channel: channel.to_owned(),
         channel_id: uuid::Uuid::new_v4(),

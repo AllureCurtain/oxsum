@@ -204,6 +204,38 @@ impl Affinity {
 }
 
 impl Db {
+    /// Stable configuration identity read within the route's repeatable-read
+    /// snapshot. Every configured key participates even while disabled; routine
+    /// health/affinity writes do not invalidate otherwise identical responses.
+    pub(crate) async fn pool_fingerprint(
+        connection: &mut sqlx::PgConnection,
+        channel_id: Uuid,
+        secret: &crate::SecretKey,
+    ) -> Result<String, WalletError> {
+        let rows = sqlx::query(
+            "SELECT credential_id,api_key_sealed,position,status \
+             FROM oxsum.channel_credentials WHERE channel_id=$1 ORDER BY credential_id",
+        )
+        .bind(channel_id)
+        .fetch_all(connection)
+        .await?;
+        let mut credentials = Vec::with_capacity(rows.len());
+        for row in rows {
+            credentials.push(serde_json::json!({
+                "id": row.try_get::<Uuid, _>("credential_id")?,
+                "sealed": row.try_get::<String, _>("api_key_sealed")?,
+                "position": row.try_get::<i32, _>("position")?,
+                "status": row.try_get::<String, _>("status")?,
+            }));
+        }
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "credentialConfiguration": credentials,
+            "channelId": channel_id,
+        }))
+        .map_err(|_| WalletError::Misconfigured("invalid credential configuration".into()))?;
+        secret.cache_fingerprint(&bytes)
+    }
+
     /// Every credential of one channel, ordered by `position`: the pool as the
     /// admin API lists it — sealed keys, last four only, health state included
     /// so the list shows *why* a credential sits out.
