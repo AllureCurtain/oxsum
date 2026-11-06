@@ -286,6 +286,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../migrations/0070_request_groups.sql"),
     ),
     (
+        "0071_manual_receipts",
+        include_str!("../migrations/0071_manual_receipts.sql"),
+    ),
+    (
         "0072_business_ownership",
         include_str!("../migrations/0072_business_ownership.sql"),
     ),

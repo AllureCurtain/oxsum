@@ -8,6 +8,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod support;
+
 use axum::Json;
 use axum::Router;
 use axum::body::Body;
@@ -124,7 +126,7 @@ async fn world(database_url: &str) -> World {
     oxsum_server::prepare(&db, &config)
         .await
         .expect("the deployment is prepared");
-    let app = oxsum_server::app(db, config);
+    let app = support::app(db, config);
 
     let email = format!(
         "ent_{}@example.com",
@@ -151,7 +153,7 @@ async fn world(database_url: &str) -> World {
     let (status, body) = call(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": format!("top-{suffix}"), "amountMinor": 100_000_000})),
         Some(&key),
         &[],
@@ -407,11 +409,11 @@ async fn an_open_hold_fills_the_concurrent_cap_and_reports_the_count() {
     let (status, _) = patch_key(&world, json!({"maxConcurrentHolds": 1})).await;
     assert_eq!(status, StatusCode::OK);
 
-    // One outstanding hold — `POST /api/v1/holds` reserves it.
+    // Seed one historical key-attributed hold for the entitlement read.
     let (status, body) = call(
         &world.app,
         "POST",
-        "/api/v1/holds",
+        "/__test/holds",
         Some(json!({"idempotencyKey": format!("h-{}", &world.key_id[..8]), "amountMinor": 1_000_000})),
         Some(&world.key),
         &[],

@@ -94,8 +94,7 @@ checkout.
 - [x] Chat page — streams `/v1/chat/completions` with a per-browser `chat` key,
       model picker from `/v1/models`; tabs also drive `/v1/messages`,
       `/v1/embeddings` and `/v1/rerank` as billed one-shot probes
-- [x] Manual hold/settle/release bench on the overview (`POST /holds`,
-      `POST /settlements`)
+- [x] Customer overview exposes in-flight holds as reads only; raw hold/settle/release controls retired (#625)
 - [x] Top up — manual rail, Stripe checkout redirect, Airwallex hosted page,
       in-page Hyperswitch Unified Checkout (issue #320), redemption-code claim
       (`POST /topups`, `/topups/stripe`, `/topups/airwallex`,

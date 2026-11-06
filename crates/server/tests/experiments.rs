@@ -13,6 +13,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod support;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -255,7 +257,7 @@ async fn world_for(url: &str, top_up: i64) -> World {
     oxsum_server::prepare(&db, &config)
         .await
         .expect("the deployment is prepared");
-    let (app, _billing, _metrics) = oxsum_server::app_with_billing(db, config);
+    let (app, _billing, _metrics) = support::app_with_billing(db, config);
     let tenants = Tenants::new(pool.clone());
 
     let (registration, key, cookie) = register(&app).await;
@@ -272,7 +274,7 @@ async fn world_for(url: &str, top_up: i64) -> World {
         call(
             &app,
             "POST",
-            "/api/v1/topups",
+            "/__test/funding",
             Some(json!({"idempotencyKey": "top-1", "amountMinor": top_up})),
             Some(&key),
             None,

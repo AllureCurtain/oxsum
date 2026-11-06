@@ -12,6 +12,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod support;
+
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::State;
@@ -210,7 +212,7 @@ async fn world_for(url: &str) -> World {
     oxsum_server::prepare(&db, &config)
         .await
         .expect("the deployment is prepared");
-    let (app, billing, _metrics) = oxsum_server::app_with_billing(db, config);
+    let (app, billing, _metrics) = support::app_with_billing(db, config);
     let tenants = Tenants::new(pool.clone());
 
     let (registration, key) = register(&app).await;
@@ -225,7 +227,7 @@ async fn world_for(url: &str) -> World {
     call(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "top-1", "amountMinor": 10_000_000})),
         Some(&key),
     )
@@ -350,7 +352,7 @@ fn admin_app(world: &World) -> Router {
     let config = Config::new(Signup::Open, None)
         .with_secret(oxsum_core::SecretKey::from_bytes([7; 32]))
         .with_admin_token(OPERATOR_TOKEN);
-    oxsum_server::app(Db::from_pool(world.pool.clone()), config)
+    support::app(Db::from_pool(world.pool.clone()), config)
 }
 
 // ── the tests ────────────────────────────────────────────────────────────────
@@ -612,7 +614,7 @@ async fn a_fallback_resolves_only_the_groups_channels() {
     call(
         &world.app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "top-2", "amountMinor": 10_000_000})),
         Some(&other_key),
     )

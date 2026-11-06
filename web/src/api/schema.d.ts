@@ -1666,11 +1666,10 @@ export interface paths {
          *     hold whatever its age; without it the cap is cumulative over all time.
          *     `budgetDuration` is meaningless without a limit and is refused without one.
          *     `modelAllowlist` lists the gateway models the key may call; a hold naming a
-         *     model outside it is refused 403 `FORBIDDEN`. The `/api/v1/holds` endpoint
-         *     takes no model and is not governed by the list.
+         *     model outside it is refused 403 `FORBIDDEN`. Customer raw holds are forbidden.
          *
          *     `requestsPerMinute` caps how many requests the key may start inside a
-         *     rolling minute — on the gateway and on `POST /api/v1/holds` alike. A request
+         *     rolling minute on the gateway. A request
          *     past it is refused 429 `RATE_LIMITED`, answering `Retry-After` and the
          *     `X-RateLimit-Limit`/`X-RateLimit-Remaining`/`X-RateLimit-Reset` headers.
          *     `maxConcurrentHolds` caps how many holds the key may have outstanding at
@@ -1684,9 +1683,8 @@ export interface paths {
          *     transaction, never a hold. A gateway request is refused 429
          *     `TOKENS_PER_MINUTE` when the tokens already settled inside the minute plus
          *     this request's own estimate (the input bound plus the output bound — the
-         *     same figures the freeze prices) exceed the cap; `POST /api/v1/holds`,
-         *     amount-only, is refused 429 `TOKENS_PER_MINUTE` only once the window is
-         *     already full. Both answer `Retry-After` and the `X-RateLimit-*` headers.
+         *     same figures the freeze prices) exceed the cap. Refusals answer
+         *     `Retry-After` and the `X-RateLimit-*` headers.
          *
          *     A hold that would push the key past its limit is refused with 429
          *     `KEY_LIMIT_EXCEEDED`, atomically with the ledger append, so concurrent requests
@@ -1778,7 +1776,7 @@ export interface paths {
          * Mint a spend mandate for a key
          * @description Delegates a strictly narrower slice of the key's authority to a bearer who does not
          *     hold the key. The answer's `mandate` is the base64url body the delegate presents in
-         *     `X-Oxsum-Mandate` on `/v1/*` and `POST /api/v1/holds`; it is signed once, at mint,
+         *     `X-Oxsum-Mandate` on `/v1/*`; it is signed once, at mint,
          *     under the key's `mandateSigningSeed`, and the delegate verifies nothing — the hold
          *     path does. A mandate can only narrow the key's own constraints: `capMinor` and
          *     `models` must sit inside the key's, and `notAfter` bounds how long it lives. Every
@@ -3001,11 +2999,11 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Top up credits
-         * @description The `manual` deposit rail: the caller asserts money arrived out of band and the credit
-         *     lands in the purchased pool. The credit is also recorded on `oxsum.deposits`
-         *     (`rail = manual`, `payment_ref` = the idempotency key) so every funding event has one
-         *     record for reconciliation.
+         * Retired customer manual top-up
+         * @deprecated
+         * @description Always refuses authenticated customer credentials with 403. Customers may initiate
+         *     a configured payment checkout or redeem an issued code, but cannot assert money arrived.
+         *     Deployment-authorized out-of-band receipts use the admin manual-receipts endpoint.
          */
         post: {
             parameters: {
@@ -3014,15 +3012,62 @@ export interface paths {
                 path?: never;
                 cookie?: never;
             };
+            requestBody?: never;
+            responses: {
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/organizations/{organizationId}/manual-receipts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record verified out-of-band money received
+         * @description Deployment authority only. Requires a unique payment reference and reason.
+         *     The immutable authorization and audit commit before crediting; repeating the same
+         *     request recovers interrupted fulfillment without crediting twice. Changed terms conflict.
+         *     Reference uniqueness is deployment-wide; idempotency keys are customer-scoped.
+         *     Amounts are credits in integer minor units, not a fiat conversion assertion.
+         *     Promotional grants use adjustments instead. Repays existing credit debt before adding
+         *     purchased funds. New business currency/conversion payment orders arrive separately.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    organizationId: string;
+                };
+                cookie?: never;
+            };
             requestBody: {
                 content: {
-                    "application/json": components["schemas"]["AmountRequest"];
+                    "application/json": {
+                        idempotencyKey: string;
+                        /** Format: int64 */
+                        amountMinor: number;
+                        reference: string;
+                        reason: string;
+                    };
                 };
             };
             responses: {
                 200: components["responses"]["Receipt"];
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
                 409: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -3569,45 +3614,24 @@ export interface paths {
         };
         put?: never;
         /**
-         * Hold credits (before a streaming call starts)
-         * @description A hold taken with an API key is checked against the key's constraints when it
-         *     has them: when settled charges plus outstanding holds attributed to the key
-         *     would exceed `spendLimitMinor`, the hold is refused with 429
-         *     `KEY_LIMIT_EXCEEDED`, checked under a per-key lock and atomic with the ledger
-         *     append, so concurrent holds cannot together exceed it. `requestsPerMinute`
-         *     refuses a request over the key's rolling-minute allowance with 429
-         *     `RATE_LIMITED` — the answer carries `Retry-After` and the `X-RateLimit-*`
-         *     headers — and `maxConcurrentHolds` refuses a hold over the outstanding-holds
-         *     cap with 429 `TOO_MANY_HOLDS`. `tokensPerMinute` refuses an amount-only hold
-         *     only once the key's settled-token window is already full — the hold spends
-         *     no tokens itself, so it is refused 429 `TOKENS_PER_MINUTE` rather than let a
-         *     settled-out key freeze more credit. A session holds unattributed, with no
-         *     limit to check. An `X-Oxsum-Mandate` header binds the hold inside the
-         *     mandate's bounds on top of the key's own (issue #262).
+         * Customer raw holds are forbidden
+         * @deprecated
+         * @description Authenticated customer sessions and API keys receive 403 before body parsing
+         *     or any ledger/watch mutation. The gateway owns request admission; trusted
+         *     service integrations use the separately authenticated metering API.
+         *     GET /api/v1/holds remains available.
          */
         post: {
             parameters: {
                 query?: never;
-                header?: {
-                    /** @description a signed spend mandate (issue #262): base64url of the canonical-JSON body plus its Ed25519 signature, minted by `POST /api/v1/org/keys/{keyId}/mandates`. Presented on `/v1/*` and `POST /api/v1/holds`, it binds the request inside the mandate's `capMinor`, `models` and validity window — a refusal reads `invalid_mandate`, `mandate_expired` or `mandate_exceeded`, distinct from the key's own limits */
-                    "X-Oxsum-Mandate"?: components["parameters"]["Mandate"];
-                };
+                header?: never;
                 path?: never;
                 cookie?: never;
             };
-            requestBody: {
-                content: {
-                    "application/json": components["schemas"]["AmountRequest"];
-                };
-            };
+            requestBody?: never;
             responses: {
-                200: components["responses"]["Receipt"];
-                400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
-                402: components["responses"]["Error"];
-                409: components["responses"]["Error"];
-                429: components["responses"]["Error"];
-                500: components["responses"]["Error"];
+                403: components["responses"]["Error"];
             };
         };
         delete?: never;
@@ -3626,8 +3650,11 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Settle a hold: release it and charge the actual usage
-         * @description A settlement names the hold it releases (`holdKey`); the server reads the hold's amount from the hold entry in the ledger, so there is no amount to assert. One hold settles at most once: the settlement entry's idempotency key is derived from the hold's key (`oxsum_core::settlement_key_for`), and the ledger's idempotency gate refuses a second settlement of the same hold with 409, inside the append, so concurrent settlements naming one hold cannot both release it. Retrying the identical settlement replays it. Naming a hold that is not outstanding is 404, even when other holds would cover the amount; the wallet's limit still refuses a release the outstanding reservations cannot cover, as the backstop behind the pairing.
+         * Customer raw settlements are forbidden
+         * @deprecated
+         * @description Authenticated customer sessions and API keys receive 403 before body parsing.
+         *     Customers cannot set a charge or release a gateway-managed hold. Gateway,
+         *     recovery and service-metering settlement keep their own trusted authority.
          */
         post: {
             parameters: {
@@ -3636,18 +3663,10 @@ export interface paths {
                 path?: never;
                 cookie?: never;
             };
-            requestBody: {
-                content: {
-                    "application/json": components["schemas"]["SettleRequest"];
-                };
-            };
+            requestBody?: never;
             responses: {
-                200: components["responses"]["Receipt"];
-                400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
-                404: components["responses"]["Error"];
-                409: components["responses"]["Error"];
-                500: components["responses"]["Error"];
+                403: components["responses"]["Error"];
             };
         };
         delete?: never;
@@ -8340,7 +8359,10 @@ export interface paths {
          *     `tier.delete`, …), what it acted on, the request's detail with
          *     credentials redacted, and the idempotency key it carried. Rows are
          *     written only after the mutation commits, so a crash may omit one but
-         *     the log never describes a change that did not happen. Newest first;
+         *     the log never describes a change that did not happen. Manual receipts are
+         *     the exception: `manual_receipt.authorized` records the immutable authority
+         *     before crediting, so it may describe a receipt still awaiting fulfillment.
+         *     Newest first;
          *     a full page answers `nextCursor`, echoed back as `cursor` — opaque,
          *     never constructed by hand; absent means the log is read out.
          *     `action` narrows to one action's rows exactly.
@@ -8610,7 +8632,7 @@ export interface paths {
                 header?: {
                     /** @description makes a retried request the same turn: the same key under the same request body replays the first response, under a different body it is refused 422, and while the first turn is still running it is refused 409 */
                     "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
-                    /** @description a signed spend mandate (issue #262): base64url of the canonical-JSON body plus its Ed25519 signature, minted by `POST /api/v1/org/keys/{keyId}/mandates`. Presented on `/v1/*` and `POST /api/v1/holds`, it binds the request inside the mandate's `capMinor`, `models` and validity window — a refusal reads `invalid_mandate`, `mandate_expired` or `mandate_exceeded`, distinct from the key's own limits */
+                    /** @description a signed spend mandate (issue #262): base64url of the canonical-JSON body plus its Ed25519 signature, minted by `POST /api/v1/org/keys/{keyId}/mandates`. Presented on `/v1/*`, it binds the request inside the mandate's `capMinor`, `models` and validity window — a refusal reads `invalid_mandate`, `mandate_expired` or `mandate_exceeded`, distinct from the key's own limits */
                     "X-Oxsum-Mandate"?: components["parameters"]["Mandate"];
                 };
                 path?: never;
@@ -8701,7 +8723,7 @@ export interface paths {
                 header?: {
                     /** @description makes a retried request the same turn: the same key under the same request body replays the first response, under a different body it is refused 422, and while the first turn is still running it is refused 409 */
                     "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
-                    /** @description a signed spend mandate (issue #262): base64url of the canonical-JSON body plus its Ed25519 signature, minted by `POST /api/v1/org/keys/{keyId}/mandates`. Presented on `/v1/*` and `POST /api/v1/holds`, it binds the request inside the mandate's `capMinor`, `models` and validity window — a refusal reads `invalid_mandate`, `mandate_expired` or `mandate_exceeded`, distinct from the key's own limits */
+                    /** @description a signed spend mandate (issue #262): base64url of the canonical-JSON body plus its Ed25519 signature, minted by `POST /api/v1/org/keys/{keyId}/mandates`. Presented on `/v1/*`, it binds the request inside the mandate's `capMinor`, `models` and validity window — a refusal reads `invalid_mandate`, `mandate_expired` or `mandate_exceeded`, distinct from the key's own limits */
                     "X-Oxsum-Mandate"?: components["parameters"]["Mandate"];
                 };
                 path?: never;
@@ -8795,7 +8817,7 @@ export interface paths {
                 header?: {
                     /** @description makes a retried request the same turn: the same key under the same request body replays the first response, under a different body it is refused 422, and while the first turn is still running it is refused 409 */
                     "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
-                    /** @description a signed spend mandate (issue #262): base64url of the canonical-JSON body plus its Ed25519 signature, minted by `POST /api/v1/org/keys/{keyId}/mandates`. Presented on `/v1/*` and `POST /api/v1/holds`, it binds the request inside the mandate's `capMinor`, `models` and validity window — a refusal reads `invalid_mandate`, `mandate_expired` or `mandate_exceeded`, distinct from the key's own limits */
+                    /** @description a signed spend mandate (issue #262): base64url of the canonical-JSON body plus its Ed25519 signature, minted by `POST /api/v1/org/keys/{keyId}/mandates`. Presented on `/v1/*`, it binds the request inside the mandate's `capMinor`, `models` and validity window — a refusal reads `invalid_mandate`, `mandate_expired` or `mandate_exceeded`, distinct from the key's own limits */
                     "X-Oxsum-Mandate"?: components["parameters"]["Mandate"];
                 };
                 path?: never;
@@ -8985,7 +9007,7 @@ export interface paths {
                 header?: {
                     /** @description makes a retried request the same turn: the same key under the same request body replays the first response, under a different body it is refused 422, and while the first turn is still running it is refused 409 */
                     "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
-                    /** @description a signed spend mandate (issue #262): base64url of the canonical-JSON body plus its Ed25519 signature, minted by `POST /api/v1/org/keys/{keyId}/mandates`. Presented on `/v1/*` and `POST /api/v1/holds`, it binds the request inside the mandate's `capMinor`, `models` and validity window — a refusal reads `invalid_mandate`, `mandate_expired` or `mandate_exceeded`, distinct from the key's own limits */
+                    /** @description a signed spend mandate (issue #262): base64url of the canonical-JSON body plus its Ed25519 signature, minted by `POST /api/v1/org/keys/{keyId}/mandates`. Presented on `/v1/*`, it binds the request inside the mandate's `capMinor`, `models` and validity window — a refusal reads `invalid_mandate`, `mandate_expired` or `mandate_exceeded`, distinct from the key's own limits */
                     "X-Oxsum-Mandate"?: components["parameters"]["Mandate"];
                     /** @description forwarded to upstream; `2023-06-01` is sent when absent */
                     "anthropic-version"?: string;
@@ -9066,7 +9088,7 @@ export interface paths {
                 header?: {
                     /** @description makes a retried request the same turn: the same key under the same request body replays the first response, under a different body it is refused 422, and while the first turn is still running it is refused 409 */
                     "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
-                    /** @description a signed spend mandate (issue #262): base64url of the canonical-JSON body plus its Ed25519 signature, minted by `POST /api/v1/org/keys/{keyId}/mandates`. Presented on `/v1/*` and `POST /api/v1/holds`, it binds the request inside the mandate's `capMinor`, `models` and validity window — a refusal reads `invalid_mandate`, `mandate_expired` or `mandate_exceeded`, distinct from the key's own limits */
+                    /** @description a signed spend mandate (issue #262): base64url of the canonical-JSON body plus its Ed25519 signature, minted by `POST /api/v1/org/keys/{keyId}/mandates`. Presented on `/v1/*`, it binds the request inside the mandate's `capMinor`, `models` and validity window — a refusal reads `invalid_mandate`, `mandate_expired` or `mandate_exceeded`, distinct from the key's own limits */
                     "X-Oxsum-Mandate"?: components["parameters"]["Mandate"];
                 };
                 path?: never;
@@ -9135,7 +9157,7 @@ export interface paths {
                 header?: {
                     /** @description makes a retried request the same turn: the same key under the same request body replays the first response, under a different body it is refused 422, and while the first turn is still running it is refused 409 */
                     "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
-                    /** @description a signed spend mandate (issue #262): base64url of the canonical-JSON body plus its Ed25519 signature, minted by `POST /api/v1/org/keys/{keyId}/mandates`. Presented on `/v1/*` and `POST /api/v1/holds`, it binds the request inside the mandate's `capMinor`, `models` and validity window — a refusal reads `invalid_mandate`, `mandate_expired` or `mandate_exceeded`, distinct from the key's own limits */
+                    /** @description a signed spend mandate (issue #262): base64url of the canonical-JSON body plus its Ed25519 signature, minted by `POST /api/v1/org/keys/{keyId}/mandates`. Presented on `/v1/*`, it binds the request inside the mandate's `capMinor`, `models` and validity window — a refusal reads `invalid_mandate`, `mandate_expired` or `mandate_exceeded`, distinct from the key's own limits */
                     "X-Oxsum-Mandate"?: components["parameters"]["Mandate"];
                 };
                 path?: never;
@@ -9216,7 +9238,7 @@ export interface paths {
                 header?: {
                     /** @description makes a retried request the same turn: the same key under the same request body replays the first response, under a different body it is refused 422, and while the first turn is still running it is refused 409 */
                     "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
-                    /** @description a signed spend mandate (issue #262): base64url of the canonical-JSON body plus its Ed25519 signature, minted by `POST /api/v1/org/keys/{keyId}/mandates`. Presented on `/v1/*` and `POST /api/v1/holds`, it binds the request inside the mandate's `capMinor`, `models` and validity window — a refusal reads `invalid_mandate`, `mandate_expired` or `mandate_exceeded`, distinct from the key's own limits */
+                    /** @description a signed spend mandate (issue #262): base64url of the canonical-JSON body plus its Ed25519 signature, minted by `POST /api/v1/org/keys/{keyId}/mandates`. Presented on `/v1/*`, it binds the request inside the mandate's `capMinor`, `models` and validity window — a refusal reads `invalid_mandate`, `mandate_expired` or `mandate_exceeded`, distinct from the key's own limits */
                     "X-Oxsum-Mandate"?: components["parameters"]["Mandate"];
                 };
                 path: {
@@ -9286,7 +9308,7 @@ export interface paths {
                 header?: {
                     /** @description makes a retried request the same turn: the same key under the same request body replays the first response, under a different body it is refused 422, and while the first turn is still running it is refused 409 */
                     "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
-                    /** @description a signed spend mandate (issue #262): base64url of the canonical-JSON body plus its Ed25519 signature, minted by `POST /api/v1/org/keys/{keyId}/mandates`. Presented on `/v1/*` and `POST /api/v1/holds`, it binds the request inside the mandate's `capMinor`, `models` and validity window — a refusal reads `invalid_mandate`, `mandate_expired` or `mandate_exceeded`, distinct from the key's own limits */
+                    /** @description a signed spend mandate (issue #262): base64url of the canonical-JSON body plus its Ed25519 signature, minted by `POST /api/v1/org/keys/{keyId}/mandates`. Presented on `/v1/*`, it binds the request inside the mandate's `capMinor`, `models` and validity window — a refusal reads `invalid_mandate`, `mandate_expired` or `mandate_exceeded`, distinct from the key's own limits */
                     "X-Oxsum-Mandate"?: components["parameters"]["Mandate"];
                 };
                 path: {
@@ -9643,7 +9665,7 @@ export interface components {
             budgetDuration?: "daily" | "weekly" | "monthly" | null;
             /** @description the gateway models this key may call; null (the default) allows all served models */
             modelAllowlist?: string[] | null;
-            /** @description requests the key may start inside a rolling minute, on the gateway and on /api/v1/holds; null (the default) is uncapped */
+            /** @description requests the key may start inside a rolling minute, on the gateway; null (the default) is uncapped */
             requestsPerMinute?: number | null;
             /** @description holds the key may have outstanding at once; null (the default) is uncapped */
             maxConcurrentHolds?: number | null;
@@ -10925,7 +10947,7 @@ export interface components {
             tier?: string | null;
             /**
              * @description suspend the organization's spend (true) or reinstate it (false). A suspended
-             *     organization's new holds refuse — 403 on `/v1` and `POST /api/v1/holds` alike —
+             *     organization's new holds refuse — 403 on `/v1` —
              *     while its in-flight holds still settle and money-in still lands; suspending enqueues
              *     `org.suspended` to its subscribed webhook endpoints. A manual suspension is
              *     never the dunning sweep's to lift — reinstating here also clears any marker a
@@ -11349,7 +11371,7 @@ export interface components {
             recordedAt: string;
             /** @description who acted — "operator" today; the single admin token is the only admin identity */
             actor: string;
-            /** @description the mutating call, as a dotted name — channel.set, channel.price.append, organization.adjust, organization.update, tier.set, tier.delete, discount.create, discount.end, user.password_reset, codes.mint, closing.close, statement.generate, statement.finalize, statement.payment, statement.suspend */
+            /** @description the mutating call, as a dotted name — manual_receipt.authorized, channel.set, channel.price.append, organization.adjust, organization.update, tier.set, tier.delete, discount.create, discount.end, user.password_reset, codes.mint, closing.close, statement.generate, statement.finalize, statement.payment, statement.suspend */
             action: string;
             /** @description what the action acted on — a channel name, an organization id, a statement id */
             target?: string | null;
@@ -12704,7 +12726,7 @@ export interface components {
         EndpointId: string;
         /** @description makes a retried request the same turn: the same key under the same request body replays the first response, under a different body it is refused 422, and while the first turn is still running it is refused 409 */
         IdempotencyKey: string;
-        /** @description a signed spend mandate (issue #262): base64url of the canonical-JSON body plus its Ed25519 signature, minted by `POST /api/v1/org/keys/{keyId}/mandates`. Presented on `/v1/*` and `POST /api/v1/holds`, it binds the request inside the mandate's `capMinor`, `models` and validity window — a refusal reads `invalid_mandate`, `mandate_expired` or `mandate_exceeded`, distinct from the key's own limits */
+        /** @description a signed spend mandate (issue #262): base64url of the canonical-JSON body plus its Ed25519 signature, minted by `POST /api/v1/org/keys/{keyId}/mandates`. Presented on `/v1/*`, it binds the request inside the mandate's `capMinor`, `models` and validity window — a refusal reads `invalid_mandate`, `mandate_expired` or `mandate_exceeded`, distinct from the key's own limits */
         Mandate: string;
     };
     requestBodies: never;

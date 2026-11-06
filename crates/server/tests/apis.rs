@@ -8,6 +8,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod support;
+
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -31,7 +33,7 @@ async fn online_app(url: &str) -> (Router, Db) {
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
     (
-        oxsum_server::app(db.clone(), Config::new(Signup::Open, None)),
+        support::app(db.clone(), Config::new(Signup::Open, None)),
         db,
     )
 }
@@ -118,7 +120,7 @@ async fn top_up(app: &Router, key: &str, amount_minor: i64) {
     let (status, body) = call(
         app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": Uuid::new_v4().to_string(), "amountMinor": amount_minor})),
         Some(key),
     )

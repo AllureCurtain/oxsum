@@ -72,6 +72,10 @@ pub fn router(state: AppState) -> Router<AppState> {
         )
         .route("/organizations", get(organizations::organizations))
         .route(
+            "/organizations/{organization_id}/manual-receipts",
+            post(organizations::manual_receipt),
+        )
+        .route(
             "/organizations/{organization_id}",
             patch(organizations::update_organization),
         )

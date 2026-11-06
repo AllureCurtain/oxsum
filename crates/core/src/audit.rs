@@ -50,6 +50,7 @@ pub mod action {
     pub const CHANNEL_CREDENTIAL_ADD: &str = "channel.credential.add";
     pub const CHANNEL_CREDENTIAL_STATUS: &str = "channel.credential.status";
     pub const CHANNEL_CREDENTIAL_DROP: &str = "channel.credential.drop";
+    pub const MANUAL_RECEIPT_AUTHORIZED: &str = "manual_receipt.authorized";
     pub const ORGANIZATION_ADJUST: &str = "organization.adjust";
     pub const CREDIT_NOTE_ISSUE: &str = "credit_note.issue";
     pub const ORGANIZATION_UPDATE: &str = "organization.update";
@@ -88,6 +89,7 @@ pub mod action {
         CHANNEL_CREDENTIAL_ADD,
         CHANNEL_CREDENTIAL_STATUS,
         CHANNEL_CREDENTIAL_DROP,
+        MANUAL_RECEIPT_AUTHORIZED,
         ORGANIZATION_ADJUST,
         ORGANIZATION_UPDATE,
         TIER_SET,

@@ -8,6 +8,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod support;
+
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode};
@@ -53,7 +55,7 @@ async fn app_for(database_url: &str) -> (Router, PgPool) {
     oxsum_server::prepare(&db, &config)
         .await
         .expect("the deployment is prepared");
-    (oxsum_server::app(db, config), pool)
+    (support::app(db, config), pool)
 }
 
 /// One response, with the body kept as bytes — the exports are files, not JSON
@@ -360,7 +362,7 @@ async fn the_exports_render_the_display() {
     let topup = call(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"amountMinor": 5_000_000i64, "idempotencyKey": "t-1"})),
         Some(&account.key),
         None,
@@ -437,7 +439,7 @@ async fn the_exports_carry_empty_display_columns_when_unset() {
     call(
         &app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"amountMinor": 1_000_000i64, "idempotencyKey": "t-1"})),
         Some(&account.key),
         None,

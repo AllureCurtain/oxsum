@@ -515,6 +515,7 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "invitations".to_owned(),
             "jobs".to_owned(),
             "mandates".to_owned(),
+            "manual_receipts".to_owned(),
             "memberships".to_owned(),
             "model_aliases".to_owned(),
             "model_fallbacks".to_owned(),

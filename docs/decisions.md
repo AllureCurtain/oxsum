@@ -2238,6 +2238,22 @@ The Airwallex rail is now sandbox-verified end-to-end at the API and webhook lay
 - Rejected: seller organizations replacing customer identities, a duplicate customer wallet layer, hosted seller marketplace, oxsum-project payment collection, and interpreting existing quota rollover or deposit reversal as proof of a complete commercial lifecycle.
 - Validation: A01–A31 in the tracked contract. Unit green and adopted specification do not establish completion. Baseline PR CI runs only the fast tier; perform relevant isolated runtime checks before risky merges, then T29 supplies candidate gate alignment. Publication, live deployment/data migration, paid calls and independent-pilot contact require separate authorization; never run Deploy as implementation validation.
 
+
+## 2026-11-05 — Retire customer self-credit; authorize manual receipts before money (#624)
+
+- Status: Adopted, T01.a under #592.
+- Customer ownership is not payment evidence. Retire POST /topups with authenticated 403, and remove its form. Keep legitimate checkout/webhook/redemption paths.
+- Deployment authority explicitly records out-of-band receipts with required reason/reference. Persist immutable intent and audit before crediting, use receipt UUID for ledger idempotency, and reject changed terms or deployment-wide duplicate payment references. Retry the identical request to recover interrupted fulfillment. Staff authority and payment-order currency conversion remain dependent tasks.
+- Historical manual deposits/ledger entries are untouched. Do not mutate legacy IDs or add an unsafe compatibility switch. The new receipt table uses an oxsum migration; no engine change.
+- Tests: production-router role/key denial with unchanged ledger, concurrent receipt replay, altered terms, cross-customer reference collision, missing evidence and interruption recovery. Existing funding fixtures are explicitly test-only and no longer exercise the retired endpoint as a successful customer action.
+
+## 2026-11-05 — Raw reservation and settlement are billing authority (#625)
+
+- Customer `POST /holds` and `/settlements` are denied before body parsing. A customer who knows a gateway hold key must not choose its charge or release it. Reading holds and trusted gateway/recovery/service-metering behavior continue unchanged.
+- Removed the manual customer hold bench and mutation hooks. No deployment-token compatibility bypass is added to these customer routes.
+- Tests that exercised obsolete customer mutation permission now drive the production gateway for mandates, member budgets, suspension and metrics. Existing gateway tests cover key spend/RPM/TPM/concurrent caps; historical ledger/read tests seed explicit test-only hold/settlement fixtures. Dedicated production-router denial tests assert unchanged money, ledger head and watch rows across customer roles and keys.
+- This is a breaking authority correction under T01/A01/A02. Staff capability expansion remains T03, credential scope tightening T05, and operation recovery improvements T10–T13.
+
 ## 2026-11-05 — Preserve customer ledgers while adding singleton seller ownership (#593)
 
 - Status: Adopted, T02 implementation of D01/D08.

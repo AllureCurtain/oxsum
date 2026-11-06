@@ -13,6 +13,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod support;
+
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode};
@@ -38,7 +40,7 @@ async fn online_app(url: &str) -> (Router, Db) {
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
     (
-        oxsum_server::app(db.clone(), Config::new(Signup::Open, None)),
+        support::app(db.clone(), Config::new(Signup::Open, None)),
         db,
     )
 }
@@ -306,7 +308,7 @@ async fn top_up(app: &Router, cookie: &str, tag: &str, amount_minor: i64) -> (St
     let res = call(
         app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": format!("bills-{tag}:topup-{amount_minor}"), "amountMinor": amount_minor})),
         Some(cookie),
     )
@@ -336,7 +338,7 @@ async fn seed(app: &Router, cookie: &str, tag: &str, held: i64, charged: i64) ->
     let res = call(
         app,
         "POST",
-        "/api/v1/holds",
+        "/__test/holds",
         Some(json!({"idempotencyKey": hold_key, "amountMinor": held})),
         Some(cookie),
     )
@@ -350,7 +352,7 @@ async fn seed(app: &Router, cookie: &str, tag: &str, held: i64, charged: i64) ->
     let res = call(
         app,
         "POST",
-        "/api/v1/settlements",
+        "/__test/settlements",
         Some(json!({"holdKey": hold_key, "actualMinor": charged})),
         Some(cookie),
     )

@@ -10,6 +10,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod support;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -875,7 +877,7 @@ async fn world_on_pool(url: &str, top_up: i64, protocol: &str, connections: u32)
     oxsum_server::prepare(&db, &config)
         .await
         .expect("the deployment is prepared");
-    let (app, billing, _metrics) = oxsum_server::app_with_billing(db, config);
+    let (app, billing, _metrics) = support::app_with_billing(db, config);
     let tenants = Tenants::new(pool.clone());
 
     let (registration, key) = register(&app).await;
@@ -895,7 +897,7 @@ async fn world_on_pool(url: &str, top_up: i64, protocol: &str, connections: u32)
         call(
             &app,
             "POST",
-            "/api/v1/topups",
+            "/__test/funding",
             Some(json!({"idempotencyKey": "top-1", "amountMinor": top_up})),
             Some(&key),
         )
@@ -922,7 +924,7 @@ fn admin_app(world: &World) -> Router {
     let config = Config::new(Signup::Open, None)
         .with_secret(oxsum_core::SecretKey::from_bytes([7; 32]))
         .with_admin_token(OPERATOR_TOKEN);
-    oxsum_server::app(Db::from_pool(world.pool.clone()), config)
+    support::app(Db::from_pool(world.pool.clone()), config)
 }
 
 /// Registers an organization and returns its document and its first API key.
@@ -2007,7 +2009,7 @@ async fn an_unreachable_upstream_charges_nothing() {
         .await
         .expect("the channel is repointed");
     let config = Config::new(Signup::Open, None).with_secret(secret);
-    let app = oxsum_server::app(db, config);
+    let app = support::app(db, config);
 
     let response = chat(&app, &world.key, simple(&world.model("ok"))).await;
     let id = request_id(&response);
@@ -2482,6 +2484,24 @@ async fn a_stalled_turn_is_swept_when_its_hold_times_out() {
     // purpose: staleness is global, so the test scopes it with age and other tests' young rows
     // stay untouched.
     let hold_key = format!("req-{id}:hold");
+    // The actual gateway stream is still live. Its customer knows the hold
+    // key but must not be able to release it or choose a cheaper settlement.
+    let reserved = wallet.reserved().await.unwrap();
+    let head = wallet.log_size().await.unwrap();
+    for actual in [0, 1] {
+        let (status, denied) = call(
+            &world.app,
+            "POST",
+            "/api/v1/settlements",
+            Some(json!({"holdKey": hold_key, "actualMinor": actual})),
+            Some(&world.key),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{denied}");
+    }
+    assert_eq!(wallet.reserved().await.unwrap(), reserved);
+    assert_eq!(wallet.log_size().await.unwrap(), head);
+    assert!(db.open_hold(&hold_key).await.unwrap().is_some());
     sqlx::query("UPDATE oxsum.open_holds SET opened_at = $1 WHERE hold_key = $2")
         .bind(OffsetDateTime::now_utc() - Duration::from_secs(3600))
         .bind(&hold_key)
@@ -2880,7 +2900,7 @@ async fn a_model_allowlist_gates_the_gateway() {
     assert_eq!(world.script.seen().len(), 1);
     assert_eq!(world.wallet().await.reserved().await.unwrap(), 0);
 
-    // The generic hold endpoint names no model, so the list does not constrain it.
+    // Raw holds are forbidden even when a key has a model allowlist.
     let (status, body) = call(
         &world.app,
         "POST",
@@ -2889,7 +2909,7 @@ async fn a_model_allowlist_gates_the_gateway() {
         Some(&world.key),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
 
     // Clearing the list lets every model through again.
     let (status, body) = call(
@@ -3651,7 +3671,7 @@ async fn a_refusal_before_the_wallet_releases_its_key() {
     call(
         &world.app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": "fix-1", "amountMinor": 1_000_000_000})),
         Some(&world.key),
     )

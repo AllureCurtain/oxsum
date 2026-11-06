@@ -1,14 +1,16 @@
 //! HTTP tests for the signed spend mandates (issue #262): minting and listing
 //! under `POST`/`GET /api/v1/org/keys/{keyId}/mandates`, and the delegated hold
-//! under `POST /api/v1/holds` carrying `X-Oxsum-Mandate`.
+//! through the production gateway carrying `X-Oxsum-Mandate`.
 //!
 //! The tests register an organization, top it up, mint a mandate on its key
-//! and exercise the hold endpoint with the signed blob — covering the refusal
+//! and exercise the gateway with the signed blob — covering the refusal
 //! codes (`INVALID_MANDATE`, `MANDATE_NOT_YET_VALID`/`MANDATE_EXPIRED`,
 //! `MANDATE_EXCEEDED`) as well as a hold the mandate admits. Needs
 //! DATABASE_URL and skips without it, like the other server suites.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+mod support;
 
 use axum::Router;
 use axum::body::Body;
@@ -38,12 +40,16 @@ async fn online_app(url: &str) -> (Router, Db) {
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
     (
-        oxsum_server::app(
+        support::app(
             db.clone(),
             Config::new(Signup::Open, None).with_secret(secret()),
         ),
         db,
     )
+}
+
+async fn model_for(db: &Db) -> String {
+    support::flat_model(db, &secret(), 2).await
 }
 
 /// The DATABASE_URL the tests need, or None to skip.
@@ -124,7 +130,7 @@ async fn top_up(app: &Router, key: &str, amount_minor: i64) {
     let (status, body) = call(
         app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": Uuid::new_v4().to_string(), "amountMinor": amount_minor})),
         Some(key),
         None,
@@ -164,7 +170,7 @@ fn rfc3339(t: OffsetDateTime) -> String {
 /// The whole mandate lifecycle: mint, list, then a hold the blob admits.
 #[tokio::test]
 async fn a_mandate_is_minted_listed_and_honored() {
-    let (app, _db) = app_or_skip!();
+    let (app, db) = app_or_skip!();
     let (key_id, key) = register(&app, "mandate").await;
     top_up(&app, &key, 50_000_000).await;
 
@@ -201,8 +207,8 @@ async fn a_mandate_is_minted_listed_and_honored() {
     let (status, body) = call(
         &app,
         "POST",
-        "/api/v1/holds",
-        Some(json!({"idempotencyKey": Uuid::new_v4().to_string(), "amountMinor": 1_000_000})),
+        "/v1/chat/completions",
+        Some(support::chat_body(&model_for(&db).await)),
         Some(&key),
         Some(&blob),
     )
@@ -214,7 +220,7 @@ async fn a_mandate_is_minted_listed_and_honored() {
 /// caller cannot tell which step caught it.
 #[tokio::test]
 async fn a_blob_that_does_not_verify_is_refused() {
-    let (app, _db) = app_or_skip!();
+    let (app, db) = app_or_skip!();
     let (key_id, key) = register(&app, "badmandate").await;
     top_up(&app, &key, 50_000_000).await;
 
@@ -250,8 +256,8 @@ async fn a_blob_that_does_not_verify_is_refused() {
         let (status, body) = call(
             &app,
             "POST",
-            "/api/v1/holds",
-            Some(json!({"idempotencyKey": Uuid::new_v4().to_string(), "amountMinor": 1_000_000})),
+            "/v1/chat/completions",
+            Some(support::chat_body(&model_for(&db).await)),
             Some(&key),
             Some(blob),
         )
@@ -264,7 +270,7 @@ async fn a_blob_that_does_not_verify_is_refused() {
 /// A mandate whose window does not cover the request refuses with the right code.
 #[tokio::test]
 async fn a_mandate_outside_its_window_is_refused() {
-    let (app, _db) = app_or_skip!();
+    let (app, db) = app_or_skip!();
     let (key_id, key) = register(&app, "window").await;
     top_up(&app, &key, 50_000_000).await;
 
@@ -287,8 +293,8 @@ async fn a_mandate_outside_its_window_is_refused() {
     let (status, body) = call(
         &app,
         "POST",
-        "/api/v1/holds",
-        Some(json!({"idempotencyKey": Uuid::new_v4().to_string(), "amountMinor": 1_000_000})),
+        "/v1/chat/completions",
+        Some(support::chat_body(&model_for(&db).await)),
         Some(&key),
         Some(&future),
     )
@@ -314,8 +320,8 @@ async fn a_mandate_outside_its_window_is_refused() {
     let (status, body) = call(
         &app,
         "POST",
-        "/api/v1/holds",
-        Some(json!({"idempotencyKey": Uuid::new_v4().to_string(), "amountMinor": 1_000_000})),
+        "/v1/chat/completions",
+        Some(support::chat_body(&model_for(&db).await)),
         Some(&key),
         Some(&expired),
     )
@@ -328,7 +334,7 @@ async fn a_mandate_outside_its_window_is_refused() {
 /// refused `MANDATE_EXCEEDED` — under the cap itself is admitted, past it is not.
 #[tokio::test]
 async fn a_mandate_refuses_spend_past_its_cap() {
-    let (app, _db) = app_or_skip!();
+    let (app, db) = app_or_skip!();
     let (key_id, key) = register(&app, "cap").await;
     top_up(&app, &key, 50_000_000).await;
 
@@ -347,8 +353,8 @@ async fn a_mandate_refuses_spend_past_its_cap() {
     let (status, body) = call(
         &app,
         "POST",
-        "/api/v1/holds",
-        Some(json!({"idempotencyKey": Uuid::new_v4().to_string(), "amountMinor": 2})),
+        "/v1/chat/completions",
+        Some(support::chat_body(&model_for(&db).await)),
         Some(&key),
         Some(&blob),
     )
@@ -358,8 +364,8 @@ async fn a_mandate_refuses_spend_past_its_cap() {
     let (status, body) = call(
         &app,
         "POST",
-        "/api/v1/holds",
-        Some(json!({"idempotencyKey": Uuid::new_v4().to_string(), "amountMinor": 2})),
+        "/v1/chat/completions",
+        Some(support::chat_body(&model_for(&db).await)),
         Some(&key),
         Some(&blob),
     )

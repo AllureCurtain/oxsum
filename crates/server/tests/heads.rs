@@ -7,6 +7,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod support;
+
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -37,7 +39,7 @@ fn offline_app(seed: Option<[u8; 32]>) -> Router {
     if let Some(seed) = seed {
         config = config.with_head_signing_seed(seed);
     }
-    oxsum_server::app(Db::from_pool(unused_pool()), config)
+    support::app(Db::from_pool(unused_pool()), config)
 }
 
 /// An app over a real database with oxsum's tables migrated.
@@ -63,7 +65,7 @@ async fn online_app_with(
     if let Some(seed) = seed {
         config = config.with_head_signing_seed(seed);
     }
-    (oxsum_server::app(db, config), pool)
+    (support::app(db, config), pool)
 }
 
 /// The DATABASE_URL tests need, or None to skip.
@@ -134,7 +136,7 @@ async fn top_up(app: &Router, key: &str, minor: i64) {
     let (status, body) = call(
         app,
         "POST",
-        "/api/v1/topups",
+        "/__test/funding",
         Some(json!({"idempotencyKey": uuid::Uuid::new_v4().to_string(), "amountMinor": minor})),
         Some(key),
     )
