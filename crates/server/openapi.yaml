@@ -22,11 +22,12 @@ info:
 
     0.120.0 adds the self-hosted install surface (issue #619): `GET /readyz`
     is the readiness probe — 200 only when the database answers and
-    `oxsum._migrations` is current — and `GET /api/v1/version` returns
-    `{version, gitSha, schemaVersion}`. The binary gains
-    `oxsum --migrate-only` and `oxsum --check-config` for the operator
-    runbooks; `OXSUM_RAILS` and `OXSUM_CUSTOMER_SELF_REGISTER` validate at
-    boot.
+    `oxsum._migrations` is current, 503 naming the gap — and
+    `GET /api/v1/version` returns `{version, gitSha, schemaVersion}` so a
+    deploy can name what is running. The binary gains `oxsum --migrate-only`
+    and `oxsum --check-config` for the operator runbooks; operator intent
+    (`OXSUM_RAILS`, `OXSUM_CUSTOMER_SELF_REGISTER`) validates at boot rather
+    than configuring state.
 
     0.119.0 adds the customer portal's branding read (issue #614):
     `GET /api/v1/branding` is a public endpoint returning
@@ -933,7 +934,11 @@ security:
 paths:
   /healthz:
     get:
-      summary: Health check
+      summary: Liveness check
+      description: |
+        The process is up and answering. Says nothing about the database —
+        `/readyz` is the readiness probe a load balancer or a compose
+        `healthcheck` should gate on.
       security: []
       responses:
         "200":
@@ -941,6 +946,35 @@ paths:
           content:
             text/plain:
               schema: { type: string, example: ok }
+  /readyz:
+    get:
+      summary: "Readiness check (issue #619)"
+      description: |
+        Whether the deployment is ready to serve: the database answers **and**
+        its `oxsum._migrations` ledger has run to the schema version this
+        binary serves. A database nothing has migrated yet answers 503, which
+        is what makes the compose `oxsum-migrate` ordering visible —
+        `docker compose ps` shows the serving container as `(healthy)` only
+        once readiness holds, never merely because the process is up.
+
+        200 carries the applied schema version as its body; 503 carries a short
+        reason (`database unreachable`, or the applied-vs-served versions).
+        Unauthenticated: a probe arrives before any account exists and the
+        answer reveals nothing a login page would not.
+      security: []
+      responses:
+        "200":
+          description: Database reachable, migrations current
+          content:
+            text/plain:
+              schema: { type: string, example: "ready (0095_plan_statements)" }
+        "503":
+          description: Database unreachable or schema not current
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "schema at 0094_invoice_journals, this binary serves 0095_plan_statements"
   /metrics:
     get:
       security: [{ adminToken: [] }]
@@ -1014,6 +1048,42 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /api/v1/version:
+    get:
+      summary: "The deployment's own identity (issue #619)"
+      description: |
+        What this deployment is running: the binary's package version, the
+        commit it was built from (`unknown` when the source was a tarball the
+        build could not name), and the newest schema version its migration
+        runner carries — the same value `/readyz` reports as current.
+
+        The install and upgrade runbooks read this to confirm a pull or a
+        rollback landed the intended build. Unauthenticated and cheap: the
+        values say nothing about tenants and reveal nothing the login page
+        would not.
+      security: []
+      responses:
+        "200":
+          description: The running build's identity
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [version, gitSha, schemaVersion]
+                    properties:
+                      version:
+                        type: string
+                        example: 0.1.0
+                      gitSha:
+                        type: string
+                        example: e635e8a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7
+                      schemaVersion:
+                        type: string
+                        example: 0095_plan_statements
   /api/v1/auth/register:
     post:
       summary: Register a user, its personal organization and the first API key

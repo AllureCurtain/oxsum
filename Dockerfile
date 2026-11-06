@@ -68,6 +68,13 @@ RUN bash scripts/build-verify-wasm.sh
 # ---------- builder ----------
 FROM rust:bookworm AS builder
 
+# The commit the image is built from, baked into the binary for
+# `GET /api/v1/version` — .git is not in the build context, so the caller
+# passes it (`docker build --build-arg GIT_SHA=$(git rev-parse HEAD) .`) and
+# crates/server/build.rs forwards it. `unknown` when unset.
+ARG GIT_SHA=unknown
+ENV OXSUM_GIT_SHA=$GIT_SHA
+
 # .cargo/config.toml forces mold as the linker on Linux; without it the
 # release link fails with "cannot find 'ld'".
 RUN apt-get update \
@@ -110,8 +117,14 @@ RUN cargo build --release \
 # ---------- runtime ----------
 FROM debian:bookworm-slim
 
+# The same build arg the builder stage baked into the binary — re-declared so
+# the image's labels carry what GET /api/v1/version reports (issue #619).
+ARG GIT_SHA=unknown
+LABEL org.opencontainers.image.revision=$GIT_SHA \
+      org.opencontainers.image.source=https://github.com/AllureCurtain/oxsum
+
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/oxsum /usr/local/bin/oxsum

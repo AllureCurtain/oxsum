@@ -465,6 +465,67 @@ impl Db {
         &self.pool
     }
 
+    /// The latest schema version this binary carries — the last entry of
+    /// `MIGRATIONS`, which the version endpoint reports as `schemaVersion`.
+    #[must_use]
+    pub fn latest_schema_version() -> &'static str {
+        // MIGRATIONS is a compile-time constant and never empty.
+        MIGRATIONS[MIGRATIONS.len() - 1].0
+    }
+
+    /// How far the database's migration ledger has run, for the readiness probe.
+    ///
+    /// `None` means the migration ledger itself is absent — a database nothing
+    /// has ever migrated, which `/readyz` reports as not ready rather than as
+    /// version zero: the schema was never created.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the pool or the query fails with; the caller maps it to
+    /// not-ready.
+    pub async fn applied_schema_version(&self) -> Result<Option<String>, WalletError> {
+        let ledger_exists: bool = sqlx::query_scalar(&format!(
+            "SELECT to_regclass('{SCHEMA}._migrations') IS NOT NULL"
+        ))
+        .fetch_one(self.pool())
+        .await?;
+        if !ledger_exists {
+            return Ok(None);
+        }
+        let latest: Option<String> =
+            sqlx::query_scalar(&format!("SELECT max(version) FROM {SCHEMA}._migrations"))
+                .fetch_one(self.pool())
+                .await?;
+        Ok(latest)
+    }
+
+    /// Whether any organization exists — the demo seed's guard: it only ever
+    /// writes to a database nothing has used yet (issue #619).
+    ///
+    /// Answers `false` on an unmigrated database too, so the seed's ordering —
+    /// check first, then migrate, then write — never has to special-case a
+    /// schema that is not there yet.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the pool or the query fails with.
+    pub async fn any_organizations(&self) -> Result<bool, WalletError> {
+        let table_exists: bool = sqlx::query_scalar(&format!(
+            "SELECT to_regclass('{SCHEMA}.organizations') IS NOT NULL"
+        ))
+        .fetch_one(self.pool())
+        .await?;
+        if !table_exists {
+            return Ok(false);
+        }
+        sqlx::query_scalar(&format!(
+            "SELECT EXISTS(SELECT 1 FROM {SCHEMA}.organizations)"
+        ))
+        .fetch_one(self.pool())
+        .await
+        .map_err(Into::into)
+    }
+
     /// Creates the `oxsum` schema and applies every pending migration.
     ///
     /// Idempotent, and safe to run from several processes at once.

@@ -1,0 +1,34 @@
+# oxsum self-hosted payment profile (issue #619): layered over the core file,
+# this turns a wallet into a collecting business — merchant deposit rails and
+# the operator configuration that enables them.
+#
+#   docker compose -f deploy/docker-compose.core.yml \
+#                   -f deploy/docker-compose.payment.yml \
+#                   --env-file .env up -d
+#
+# Every rail lives inside the same binary, enabled by the `OXSUM_<RAIL>_*` sets
+# in .env (deploy/operator.env.example): Stripe, Airwallex, the x402 rail and
+# Hyperswitch each read an all-or-nothing set, and a half-configured set
+# refuses to boot with the missing variable named. This file exists so the
+# two deployment shapes — wallet-only and wallet-plus-rails — are explicit:
+# the core file alone is a valid serving deployment, and adding this file
+# changes nothing except which configuration the operator is declaring.
+#
+# A self-hosted Hyperswitch switch is a second compose stack, not a service
+# here: infra/hyperswitch/ carries the supported local shape, and
+# OXSUM_HYPERSWITCH_BASE_URL / OXSUM_HYPERSWITCH_SDK_URL point oxsum at it
+# (defaults below are the hosted sandbox).
+
+services:
+  oxsum:
+    environment:
+      # The sidecar-relative defaults a *self-hosted* switch would want when
+      # one runs beside this stack; the hosted-sandbox defaults stand when the
+      # operator sets neither. Both are overridable in .env.
+      OXSUM_HYPERSWITCH_BASE_URL: ${OXSUM_HYPERSWITCH_BASE_URL:-https://sandbox.hyperswitch.io}
+      OXSUM_HYPERSWITCH_SDK_URL: ${OXSUM_HYPERSWITCH_SDK_URL:-https://beta.hyperswitch.io/v1}
+      # Which deposit rails this deployment activates is env config, not
+      # compose topology — documented here so `docker compose config` shows the
+      # seam: set OXSUM_RAILS to the comma-separated subset the .env actually
+      # completes (see deploy/operator.env.example).
+      OXSUM_RAILS: ${OXSUM_RAILS:-}

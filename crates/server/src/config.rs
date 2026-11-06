@@ -538,6 +538,23 @@ impl Config {
         // Parsed before `secret` moves into the struct — it only reads the
         // env flag and the sealing key's presence, not the struct itself.
         let bill_provider = bill_provider_of(secret.as_ref())?;
+        let x402 = x402_of()?;
+        // Operator-intent cross-checks (issue #619): `OXSUM_RAILS` declares the
+        // deposit rails the operator means to run and `OXSUM_CUSTOMER_SELF_REGISTER`
+        // the registration shape — both validated against what the rest of the
+        // environment actually configured, so a contradictory .env fails the
+        // boot here with the named variable instead of inside a request.
+        rails_intent_of(
+            var("OXSUM_RAILS").as_deref(),
+            stripe.as_ref(),
+            airwallex.as_ref(),
+            hyperswitch.as_ref(),
+            x402.as_ref(),
+        )?;
+        self_register_intent_of(
+            var("OXSUM_CUSTOMER_SELF_REGISTER").as_deref(),
+            mailer.as_ref(),
+        )?;
         Ok(Self {
             signup,
             gateway: Gateway::from_env()?,
@@ -564,7 +581,7 @@ impl Config {
             witness_keys,
             witness_serve,
             display_currency,
-            x402: x402_of()?,
+            x402,
             bill_provider,
             branding: branding_of()?,
         })
@@ -1650,6 +1667,88 @@ fn x402_of() -> Result<Option<std::sync::Arc<dyn oxsum_core::RailVerifier>>, Str
         .map_err(|error| error.to_string())
 }
 
+/// Cross-checks `OXSUM_RAILS` (issue #619): the comma-separated deposit rails
+/// the operator declares — `stripe`, `airwallex`, `hyperswitch`, `x402` — must
+/// match the rails the environment actually completes. Naming a rail whose
+/// `OXSUM_<RAIL>_*` set is absent or partial fails the boot with the rail
+/// named, and *configuring* a rail the list omits also fails: a rail that is
+/// on without the operator meaning it is the worse half of the same
+/// contradiction. `None` means no declaration — every configured rail stands,
+/// the single-binary default.
+fn rails_intent_of(
+    raw: Option<&str>,
+    stripe: Option<&crate::stripe::Stripe>,
+    airwallex: Option<&crate::airwallex::Airwallex>,
+    hyperswitch: Option<&crate::hyperswitch::Hyperswitch>,
+    x402: Option<&std::sync::Arc<dyn oxsum_core::RailVerifier>>,
+) -> Result<(), String> {
+    let Some(raw) = raw else {
+        return Ok(());
+    };
+    let configured: [(&str, bool); 4] = [
+        ("stripe", stripe.is_some()),
+        ("airwallex", airwallex.is_some()),
+        ("hyperswitch", hyperswitch.is_some()),
+        ("x402", x402.is_some()),
+    ];
+    let declared: Vec<&str> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    for rail in &declared {
+        let Some((_, on)) = configured.iter().find(|(name, _)| name == rail) else {
+            return Err(format!(
+                "OXSUM_RAILS entry {rail:?} is not a deposit rail: \
+                 expected stripe, airwallex, hyperswitch or x402"
+            ));
+        };
+        if !on {
+            return Err(format!(
+                "OXSUM_RAILS declares {rail:?} but its OXSUM_{} set is not complete",
+                rail.to_uppercase()
+            ));
+        }
+    }
+    for (name, on) in configured {
+        if on && !declared.contains(&name) {
+            return Err(format!(
+                "OXSUM_{} is configured but OXSUM_RAILS does not declare {name:?} — \
+                 add it to the list or remove the credentials",
+                name.to_uppercase()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Cross-checks `OXSUM_CUSTOMER_SELF_REGISTER` (issue #619): whether the
+/// deployment intends customers to register themselves once the business
+/// enables open registration. `true`/`1` requires the mailer — a registration
+/// that cannot send its verification mail only fails inside the request, the
+/// failure shape this check exists to move to boot. `false`/`0` and absence
+/// declare nothing and check nothing.
+fn self_register_intent_of(
+    raw: Option<&str>,
+    mailer: Option<&crate::mail::Mailer>,
+) -> Result<(), String> {
+    let Some(raw) = raw else {
+        return Ok(());
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" if mailer.is_none() => Err(
+            "OXSUM_CUSTOMER_SELF_REGISTER=true needs the mailer — OXSUM_SMTP_URL, \
+             OXSUM_MAIL_FROM and OXSUM_PUBLIC_URL — a self-registering customer \
+             must receive the verification mail"
+                .into(),
+        ),
+        "true" | "1" | "false" | "0" => Ok(()),
+        other => Err(format!(
+            "OXSUM_CUSTOMER_SELF_REGISTER must be true or false, got {other:?}"
+        )),
+    }
+}
+
 /// Parses the Turnstile pair: `OXSUM_TURNSTILE_SITE_KEY` and
 /// `OXSUM_TURNSTILE_SECRET_KEY` together or not at all — a lone key is a
 /// startup error, because a half-configured check only fails inside a
@@ -1847,6 +1946,43 @@ mod tests {
         assert!(super::hold_timeout_of("30s".to_owned()).is_err());
         assert!(super::hold_timeout_of("59s".to_owned()).is_err());
         assert!(super::hold_timeout_of("60s".to_owned()).is_ok());
+    }
+
+    #[test]
+    fn the_rails_declaration_must_match_the_configured_rails() {
+        // Undeclared intent: any configured set is fine — the default.
+        assert!(super::rails_intent_of(None, None, None, None, None).is_ok());
+
+        // A declared rail without credentials names the rail.
+        let err = super::rails_intent_of(Some("stripe"), None, None, None, None).unwrap_err();
+        assert!(err.contains("stripe"), "{err}");
+        assert!(err.contains("OXSUM_STRIPE"), "{err}");
+
+        // A rail that is not a rail is a typo, not a config.
+        assert!(
+            super::rails_intent_of(Some("paypal"), None, None, None, None)
+                .unwrap_err()
+                .contains("not a deposit rail")
+        );
+
+        // A configured rail the list omits is the other half of the same
+        // contradiction — covered at the binary level by the --check-config
+        // test in tests/install_ops.rs (the rails need real structs here).
+    }
+
+    #[test]
+    fn self_registration_intent_requires_the_mailer() {
+        let err = super::self_register_intent_of(Some("true"), None).unwrap_err();
+        assert!(err.contains("OXSUM_CUSTOMER_SELF_REGISTER"), "{err}");
+        assert!(err.contains("OXSUM_SMTP_URL"), "{err}");
+        assert!(super::self_register_intent_of(Some("false"), None).is_ok());
+        // `1` is `true` — it fails on the mailer, not on the parse.
+        let err = super::self_register_intent_of(Some("1"), None).unwrap_err();
+        assert!(err.contains("needs the mailer"), "{err}");
+        // A non-boolean value is the parse failure instead.
+        let err = super::self_register_intent_of(Some("yes"), None).unwrap_err();
+        assert!(err.contains("must be true or false"), "{err}");
+        assert!(super::self_register_intent_of(None, None).is_ok());
     }
 
     #[test]
