@@ -12209,23 +12209,23 @@ export interface components {
             /** Format: int64 */
             maxOutputTokens?: number;
             /** Format: int64 */
-            cacheReadPricePerMillion?: number;
+            cacheReadPricePerMillion?: number | null;
             /** Format: int64 */
-            cacheWrite5mPricePerMillion?: number;
+            cacheWrite5mPricePerMillion?: number | null;
             /** Format: int64 */
-            cacheWrite1hPricePerMillion?: number;
+            cacheWrite1hPricePerMillion?: number | null;
             /** Format: int64 */
-            reasoningPricePerMillion?: number;
+            reasoningPricePerMillion?: number | null;
             /** Format: int64 */
-            costPerRequest?: number;
+            costPerRequest?: number | null;
         };
         /** @description At least one condition; inclusive token bounds. Equal-specificity overlapping rules are refused. */
         SalePriceMatch: {
-            serviceTier?: string;
+            serviceTier?: string | null;
             /** Format: int64 */
-            minInputTokens?: number;
+            minInputTokens?: number | null;
             /** Format: int64 */
-            maxInputTokens?: number;
+            maxInputTokens?: number | null;
         };
         SalePriceRule: {
             match: components["schemas"]["SalePriceMatch"];
@@ -12240,15 +12240,15 @@ export interface components {
             /** Format: int64 */
             maxOutputTokens?: number;
             /** Format: int64 */
-            cacheReadPricePerMillion?: number;
+            cacheReadPricePerMillion?: number | null;
             /** Format: int64 */
-            cacheWrite5mPricePerMillion?: number;
+            cacheWrite5mPricePerMillion?: number | null;
             /** Format: int64 */
-            cacheWrite1hPricePerMillion?: number;
+            cacheWrite1hPricePerMillion?: number | null;
             /** Format: int64 */
-            reasoningPricePerMillion?: number;
+            reasoningPricePerMillion?: number | null;
             /** Format: int64 */
-            costPerRequest?: number;
+            costPerRequest?: number | null;
             /**
              * @default chat
              * @enum {string}
@@ -12270,7 +12270,7 @@ export interface components {
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
-            operation: "CreateSaleBook";
+            operation: "createBook";
             name: string;
         };
         SaveSaleDraft: {
@@ -12278,7 +12278,7 @@ export interface components {
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
-            operation: "SaveSaleDraft";
+            operation: "saveDraft";
             /** Format: uuid */
             bookId: string;
             /** Format: int64 */
@@ -12292,7 +12292,7 @@ export interface components {
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
-            operation: "PublishSaleDraft";
+            operation: "publishDraft";
             /** Format: uuid */
             bookId: string;
             /** Format: int64 */
@@ -12303,13 +12303,13 @@ export interface components {
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
-            operation: "ScheduleDefaultSaleBook";
+            operation: "scheduleDefault";
             /** Format: uuid */
             bookId: string;
             /** Format: int64 */
             version: number;
             /** Format: date-time */
-            effectiveFrom?: string;
+            effectiveFrom?: string | null;
             /** Format: date-time */
             effectiveUntil?: string | null;
             /** Format: uuid */
@@ -12320,7 +12320,7 @@ export interface components {
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
-            operation: "AssignCustomerSaleBook";
+            operation: "assignBook";
             /** Format: uuid */
             organizationId: string;
             /** Format: uuid */
@@ -12328,7 +12328,7 @@ export interface components {
             /** Format: int64 */
             version: number;
             /** Format: date-time */
-            effectiveFrom?: string;
+            effectiveFrom?: string | null;
             /** Format: date-time */
             effectiveUntil?: string | null;
             /** Format: uuid */
@@ -12339,13 +12339,13 @@ export interface components {
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
-            operation: "OverrideCustomerSaleModel";
+            operation: "overrideModel";
             /** Format: uuid */
             organizationId: string;
             model: string;
             terms: components["schemas"]["SaleTerms"];
             /** Format: date-time */
-            effectiveFrom?: string;
+            effectiveFrom?: string | null;
             /** Format: date-time */
             effectiveUntil?: string | null;
             /** Format: uuid */
@@ -12356,7 +12356,7 @@ export interface components {
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
-            operation: "EndSaleSchedule";
+            operation: "endSchedule";
             /** Format: uuid */
             scheduleId: string;
             /** Format: date-time */
@@ -12443,14 +12443,14 @@ export interface components {
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
-            kind: "EffectiveSaleSelector";
+            kind: "effective";
         };
         DraftSaleSelector: {
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
-            kind: "DraftSaleSelector";
+            kind: "draft";
             /** Format: uuid */
             bookId: string;
             /** Format: int64 */
@@ -12461,7 +12461,7 @@ export interface components {
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
-            kind: "LegacySaleSelector";
+            kind: "legacy";
             channel: string;
             version: number;
         };
@@ -12500,7 +12500,7 @@ export interface components {
             organizationId: string;
             model: string;
             /** Format: date-time */
-            at?: string;
+            at?: string | null;
             source?: components["schemas"]["SalePreviewSource"];
             usage: components["schemas"]["SalePreviewUsage"];
         };

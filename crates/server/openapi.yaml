@@ -9145,19 +9145,19 @@ components:
         inputPricePerMillion: { type: integer, format: int64, minimum: 0 }
         outputPricePerMillion: { type: integer, format: int64, minimum: 0 }
         maxOutputTokens: { type: integer, format: int64, minimum: 0 }
-        cacheReadPricePerMillion: { type: integer, format: int64, minimum: 0 }
-        cacheWrite5mPricePerMillion: { type: integer, format: int64, minimum: 0 }
-        cacheWrite1hPricePerMillion: { type: integer, format: int64, minimum: 0 }
-        reasoningPricePerMillion: { type: integer, format: int64, minimum: 0 }
-        costPerRequest: { type: integer, format: int64, minimum: 0 }
+        cacheReadPricePerMillion: { type: [integer, "null"], format: int64, minimum: 0 }
+        cacheWrite5mPricePerMillion: { type: [integer, "null"], format: int64, minimum: 0 }
+        cacheWrite1hPricePerMillion: { type: [integer, "null"], format: int64, minimum: 0 }
+        reasoningPricePerMillion: { type: [integer, "null"], format: int64, minimum: 0 }
+        costPerRequest: { type: [integer, "null"], format: int64, minimum: 0 }
     SalePriceMatch:
       type: object
       additionalProperties: false
       description: At least one condition; inclusive token bounds. Equal-specificity overlapping rules are refused.
       properties:
-        serviceTier: { type: string, minLength: 1, maxLength: 64 }
-        minInputTokens: { type: integer, format: int64, minimum: 0 }
-        maxInputTokens: { type: integer, format: int64, minimum: 0 }
+        serviceTier: { type: [string, "null"], minLength: 1, maxLength: 64 }
+        minInputTokens: { type: [integer, "null"], format: int64, minimum: 0 }
+        maxInputTokens: { type: [integer, "null"], format: int64, minimum: 0 }
     SalePriceRule:
       type: object
       additionalProperties: false
@@ -9174,11 +9174,11 @@ components:
         inputPricePerMillion: { type: integer, format: int64, minimum: 0 }
         outputPricePerMillion: { type: integer, format: int64, minimum: 0 }
         maxOutputTokens: { type: integer, format: int64, minimum: 0 }
-        cacheReadPricePerMillion: { type: integer, format: int64, minimum: 0 }
-        cacheWrite5mPricePerMillion: { type: integer, format: int64, minimum: 0 }
-        cacheWrite1hPricePerMillion: { type: integer, format: int64, minimum: 0 }
-        reasoningPricePerMillion: { type: integer, format: int64, minimum: 0 }
-        costPerRequest: { type: integer, format: int64, minimum: 0 }
+        cacheReadPricePerMillion: { type: [integer, "null"], format: int64, minimum: 0 }
+        cacheWrite5mPricePerMillion: { type: [integer, "null"], format: int64, minimum: 0 }
+        cacheWrite1hPricePerMillion: { type: [integer, "null"], format: int64, minimum: 0 }
+        reasoningPricePerMillion: { type: [integer, "null"], format: int64, minimum: 0 }
+        costPerRequest: { type: [integer, "null"], format: int64, minimum: 0 }
         mode: { type: string, enum: [chat, embeddings, rerank, event], default: chat }
         rules: { type: array, maxItems: 100, items: { $ref: "#/components/schemas/SalePriceRule" } }
     SaleTerms:
@@ -9221,7 +9221,7 @@ components:
         operation: { const: scheduleDefault }
         bookId: { type: string, format: uuid }
         version: { type: integer, format: int64, minimum: 1 }
-        effectiveFrom: { type: string, format: date-time }
+        effectiveFrom: { type: [string, "null"], format: date-time }
         effectiveUntil: { type: [string, "null"], format: date-time }
         replaces: { type: [string, "null"], format: uuid }
     AssignCustomerSaleBook:
@@ -9233,7 +9233,7 @@ components:
         organizationId: { type: string, format: uuid }
         bookId: { type: string, format: uuid }
         version: { type: integer, format: int64, minimum: 1 }
-        effectiveFrom: { type: string, format: date-time }
+        effectiveFrom: { type: [string, "null"], format: date-time }
         effectiveUntil: { type: [string, "null"], format: date-time }
         replaces: { type: [string, "null"], format: uuid }
     OverrideCustomerSaleModel:
@@ -9245,7 +9245,7 @@ components:
         organizationId: { type: string, format: uuid }
         model: { type: string, minLength: 1, maxLength: 200 }
         terms: { $ref: "#/components/schemas/SaleTerms" }
-        effectiveFrom: { type: string, format: date-time }
+        effectiveFrom: { type: [string, "null"], format: date-time }
         effectiveUntil: { type: [string, "null"], format: date-time }
         replaces: { type: [string, "null"], format: uuid }
     EndSaleSchedule:
@@ -9265,7 +9265,16 @@ components:
         - $ref: "#/components/schemas/AssignCustomerSaleBook"
         - $ref: "#/components/schemas/OverrideCustomerSaleModel"
         - $ref: "#/components/schemas/EndSaleSchedule"
-      discriminator: { propertyName: operation }
+      discriminator:
+        propertyName: operation
+        mapping:
+          createBook: '#/components/schemas/CreateSaleBook'
+          saveDraft: '#/components/schemas/SaveSaleDraft'
+          publishDraft: '#/components/schemas/PublishSaleDraft'
+          scheduleDefault: '#/components/schemas/ScheduleDefaultSaleBook'
+          assignBook: '#/components/schemas/AssignCustomerSaleBook'
+          overrideModel: '#/components/schemas/OverrideCustomerSaleModel'
+          endSchedule: '#/components/schemas/EndSaleSchedule'
     SaleChangeRequest:
       type: object
       additionalProperties: false
@@ -9370,7 +9379,12 @@ components:
         - $ref: "#/components/schemas/EffectiveSaleSelector"
         - $ref: "#/components/schemas/DraftSaleSelector"
         - $ref: "#/components/schemas/LegacySaleSelector"
-      discriminator: { propertyName: kind }
+      discriminator:
+        propertyName: kind
+        mapping:
+          effective: '#/components/schemas/EffectiveSaleSelector'
+          draft: '#/components/schemas/DraftSaleSelector'
+          legacy: '#/components/schemas/LegacySaleSelector'
     SalePreviewUsage:
       type: object
       additionalProperties: false
@@ -9397,7 +9411,7 @@ components:
       properties:
         organizationId: { type: string, format: uuid }
         model: { type: string, minLength: 1, maxLength: 200 }
-        at: { type: string, format: date-time }
+        at: { type: [string, "null"], format: date-time }
         source: { $ref: "#/components/schemas/SalePreviewSource" }
         usage: { $ref: "#/components/schemas/SalePreviewUsage" }
     SalePriceSnapshot:
