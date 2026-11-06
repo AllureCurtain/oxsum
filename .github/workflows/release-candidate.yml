@@ -397,7 +397,7 @@ jobs:
         run: |
           version="$(sed -n 's/^  version: //p' crates/server/openapi.yaml | head -1)"
           {
-            echo "# Release candidate ${needs.resolve.outputs.sha}"
+            echo "# Release candidate ${{ needs.resolve.outputs.sha }}"
             echo
             echo "Contract version: ${version}"
             echo "Gated by workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
