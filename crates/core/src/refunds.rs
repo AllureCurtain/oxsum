@@ -1307,6 +1307,113 @@ impl Db {
             next_cursor,
         })
     }
+
+    /// The business's finance audit — one immutable row per staff financial
+    /// action, newest first. `action` narrows to one audited action. This is
+    /// the staff console's audit page (T24): the same `finance_audit` the
+    /// refund/dispute/journal/statement/reconciliation writes already land.
+    /// `after` is the previous page's last audit id; the keyset resolves its
+    /// `created_at` back under the same business so the cursor stays opaque.
+    pub async fn business_finance_audit(
+        &self,
+        token: &str,
+        after: Option<Uuid>,
+        action: Option<&str>,
+        limit: i64,
+    ) -> Result<FinanceAuditPage, WalletError> {
+        if !(1..=100).contains(&limit) {
+            return Err(invalid("limit must be 1..100"));
+        }
+        let mut tx = self.pool().begin().await?;
+        let business = authority::lock_business(&mut tx).await?;
+        authority::require_capability(&mut tx, business, token, BusinessCapability::ReportsRead)
+            .await?;
+        // Resolve the cursor's audit id to its `(created_at, audit_id)` keyset
+        // under this business; a foreign or unknown id pages from the top.
+        let cursor: Option<(OffsetDateTime, Uuid)> = match after {
+            Some(id) => {
+                let row = sqlx::query(
+                    "SELECT created_at, audit_id FROM oxsum.finance_audit \
+                     WHERE business_id=$1 AND audit_id=$2",
+                )
+                .bind(business)
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?;
+                match row {
+                    Some(r) => Some((r.try_get("created_at")?, r.try_get("audit_id")?)),
+                    None => None,
+                }
+            }
+            None => None,
+        };
+        // One row over the page is the "there is more" signal. The keyset is
+        // (created_at, audit_id) descending — the audit's own ordering.
+        let rows = sqlx::query(
+            "SELECT audit_id,actor_user_id,action,target,detail,note_id,created_at \
+             FROM oxsum.finance_audit \
+             WHERE business_id=$1 \
+               AND ($2::text IS NULL OR action=$2) \
+               AND ($3::timestamptz IS NULL OR (created_at,audit_id)<($3,$4)) \
+             ORDER BY created_at DESC, audit_id DESC LIMIT $5",
+        )
+        .bind(business)
+        .bind(action)
+        .bind(cursor.map(|c| c.0))
+        .bind(cursor.map(|c| c.1))
+        .bind(limit + 1)
+        .fetch_all(&mut *tx)
+        .await?;
+        let mut entries = rows
+            .iter()
+            .map(|row| {
+                Ok(FinanceAuditEntry {
+                    audit_id: row.try_get("audit_id")?,
+                    actor_user_id: row.try_get("actor_user_id")?,
+                    action: row.try_get("action")?,
+                    target: row.try_get("target")?,
+                    detail: row.try_get("detail")?,
+                    note_id: row.try_get("note_id")?,
+                    created_at: row.try_get("created_at")?,
+                })
+            })
+            .collect::<Result<Vec<FinanceAuditEntry>, WalletError>>()?;
+        let more = entries.len() > limit as usize;
+        entries.truncate(limit as usize);
+        let next_cursor = if more {
+            entries.last().map(|e| e.audit_id)
+        } else {
+            None
+        };
+        tx.commit().await?;
+        Ok(FinanceAuditPage {
+            entries,
+            next_cursor,
+        })
+    }
+}
+
+/// One immutable `finance_audit` row as the audit page answers it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinanceAuditEntry {
+    pub audit_id: Uuid,
+    pub actor_user_id: Uuid,
+    pub action: String,
+    pub target: String,
+    pub detail: serde_json::Value,
+    pub note_id: Option<Uuid>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinanceAuditPage {
+    pub entries: Vec<FinanceAuditEntry>,
+    /// The last row's audit id; the next call resolves it back to the
+    /// `(created_at, audit_id)` keyset against the same business.
+    pub next_cursor: Option<Uuid>,
 }
 
 fn dispute_from_row(row: &PgRow) -> Result<OrderDispute, WalletError> {

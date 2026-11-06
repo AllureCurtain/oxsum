@@ -336,6 +336,10 @@ The platform admin surface is the `/api/v1/admin` REST API under the operator to
 
 Every mutating call on the admin surface is also audited (issue #160): one append-only `oxsum.admin_audit` row per write — the action, its target, the request's safe fields (never a credential) and its idempotency key — readable newest-first through `GET /api/v1/admin/audit`, cursor-paged, and listed in the console at `/admin/audit` (when, actor, action, target and detail). Like margin, the page shows the newest page and the API adds the narrowing (`?action=`) and the cursor.
 
+### Business staff console
+
+The staff surface is the `/api/v1/business` REST API under a personal session's business context, and the React console at `/app/business` (issue #615) drives it directly — the sidebar shows the item only once `GET /api/v1/session/context` answers a business principal, and opening the console switches the session into business context so a staff member never calls staff APIs under a customer context by accident. Sections group by job — operations (setup checklist, customers, payments, refunds, disputes), receivables (statements, aging, reports, the reconciliation-exception work list), catalog (channels, prices, plans) and access (staff, integrations, audit) — and each hides behind the `BusinessCapability` it needs; the API's `require_capability` is still the guard, the nav is the convenience. Every mutating control takes a reason and a fresh idempotency key and lands an immutable `oxsum.finance_audit` row the audit section reads back through `GET /api/v1/business/audit` (`ReportsRead`, `?action=` filter, `after`/`limit` keyset paging) — the one read the console added, since `finance_audit` was write-only before it.
+
 ## Phase C: chat page (shipped)
 
 - The chat page lives in the dashboard (`/app/chat`), behind the login session. Top-up runs on the session; the chat itself goes through the gateway, which takes an API key only (#17) — so the page mints a key named `chat` and keeps it in the browser's local storage. The user never handles it by hand, but there *is* a key on the wire: product.md's earlier "no API key needed" is revised to match.

@@ -111,6 +111,14 @@ checkout.
 - [x] Bill rows open the proof bundle in-page (`GET /entries/{entryId}/proof`)
 - [x] Admin covers statement ops (finalize / record payment / suspend), the
       organization suspend toggle, and user password reset
+- [x] Business console (`/app/business`, issue #615) — the staff surface:
+      setup checklist, customers (detail + plan binding + lifecycle +
+      suspension), channels & prices, plans CRUD, payments (cross-org orders,
+      manual receipt, reconciliation strip), refunds/disputes resolve,
+      statements & receivables (release-review, journal void, aging),
+      reports & the reconciliation-exception work list (resolve/waive/repair),
+      staff, integrations and the `finance_audit` read — each section
+      capability-gated, every write reasoned and idempotent
 - [ ] Public `/verify` — stays server-rendered: verification must answer
       without trusting the server's own code, and a server-served JS bundle
       cannot certify that. `/verify` stays outside `/app` on purpose.
