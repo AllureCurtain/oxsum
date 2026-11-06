@@ -5400,6 +5400,183 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/business/setup-tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Authorize an expiring owner setup invitation
+         * @description One business per deployment. Deployment authority binds a 30-minute, one-use
+         *     setup token to the intended owner's email. The owner supplies their own session
+         *     or creates a new account with that email. Initialization, owner membership,
+         *     token consumption and redacted audit commit together. An initialized business
+         *     cannot be claimed again. A token is returned only once; an identical mint retry
+         *     returns its metadata with token null. Unknown/expired/wrong-owner tokens are 404
+         *     before initialization; initialized businesses answer 409 on any further setup.
+         *     The setup policy is invite-only; staff sessions and registration policy enforcement
+         *     are a separate dependent change. No provider/payment call is made.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessSetupTokenRequest"];
+                };
+            };
+            responses: {
+                /** @description Setup authorization or initialized business (registration includes the initial customer key) */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["BusinessSetupToken"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Accept business ownership as the invited logged-in user
+         * @description One business per deployment. Deployment authority binds a 30-minute, one-use
+         *     setup token to the intended owner's email. The owner supplies their own session
+         *     or creates a new account with that email. Initialization, owner membership,
+         *     token consumption and redacted audit commit together. An initialized business
+         *     cannot be claimed again. A token is returned only once; an identical mint retry
+         *     returns its metadata with token null. Unknown/expired/wrong-owner tokens are 404
+         *     before initialization; initialized businesses answer 409 on any further setup.
+         *     The setup policy is invite-only; staff sessions and registration policy enforcement
+         *     are a separate dependent change. No provider/payment call is made.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessSetupRequest"];
+                };
+            };
+            responses: {
+                /** @description Setup authorization or initialized business (registration includes the initial customer key) */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["BusinessSetupResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/setup/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Register the invited initial owner and initialize the business
+         * @description One business per deployment. Deployment authority binds a 30-minute, one-use
+         *     setup token to the intended owner's email. The owner supplies their own session
+         *     or creates a new account with that email. Initialization, owner membership,
+         *     token consumption and redacted audit commit together. An initialized business
+         *     cannot be claimed again. A token is returned only once; an identical mint retry
+         *     returns its metadata with token null. Unknown/expired/wrong-owner tokens are 404
+         *     before initialization; initialized businesses answer 409 on any further setup.
+         *     The setup policy is invite-only; staff sessions and registration policy enforcement
+         *     are a separate dependent change. No provider/payment call is made.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessSetupRegistrationRequest"];
+                };
+            };
+            responses: {
+                /** @description Setup authorization or initialized business (registration includes the initial customer key) */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["BusinessSetupResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/business": {
         parameters: {
             query?: never;
@@ -9358,6 +9535,38 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        BusinessSetupTokenRequest: {
+            idempotencyKey: string;
+            /** Format: email */
+            ownerEmail: string;
+        };
+        BusinessSetupToken: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            businessId: string;
+            /** Format: email */
+            ownerEmail: string;
+            /** @description Shown only at first mint; never stored in plaintext. */
+            token: string | null;
+            /** Format: date-time */
+            expiresAt: string;
+        };
+        BusinessSetupRequest: {
+            token: string;
+            businessName: string;
+        };
+        BusinessSetupRegistrationRequest: {
+            token: string;
+            businessName: string;
+            /** Format: email */
+            email: string;
+            password: string;
+        };
+        BusinessSetupResult: {
+            ownership: components["schemas"]["BusinessOwnership"];
+            registration: components["schemas"]["Registration"] | null;
+        };
         BusinessOwnership: {
             business: {
                 /** Format: uuid */

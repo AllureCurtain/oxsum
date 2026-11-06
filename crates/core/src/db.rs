@@ -293,6 +293,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0072_business_ownership",
         include_str!("../migrations/0072_business_ownership.sql"),
     ),
+    (
+        "0073_business_setup",
+        include_str!("../migrations/0073_business_setup.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.100.0
+  version: 0.101.0
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -3950,6 +3950,111 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/business/setup-tokens:
+    post:
+      summary: Authorize an expiring owner setup invitation
+      description: |
+        One business per deployment. Deployment authority binds a 30-minute, one-use
+        setup token to the intended owner's email. The owner supplies their own session
+        or creates a new account with that email. Initialization, owner membership,
+        token consumption and redacted audit commit together. An initialized business
+        cannot be claimed again. A token is returned only once; an identical mint retry
+        returns its metadata with token null. Unknown/expired/wrong-owner tokens are 404
+        before initialization; initialized businesses answer 409 on any further setup.
+        The setup policy is invite-only; staff sessions and registration policy enforcement
+        are a separate dependent change. No provider/payment call is made.
+      security: [{ adminToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessSetupTokenRequest" }
+      responses:
+        "200":
+          description: Setup authorization or initialized business (registration includes the initial customer key)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessSetupToken" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/setup:
+    post:
+      summary: Accept business ownership as the invited logged-in user
+      description: |
+        One business per deployment. Deployment authority binds a 30-minute, one-use
+        setup token to the intended owner's email. The owner supplies their own session
+        or creates a new account with that email. Initialization, owner membership,
+        token consumption and redacted audit commit together. An initialized business
+        cannot be claimed again. A token is returned only once; an identical mint retry
+        returns its metadata with token null. Unknown/expired/wrong-owner tokens are 404
+        before initialization; initialized businesses answer 409 on any further setup.
+        The setup policy is invite-only; staff sessions and registration policy enforcement
+        are a separate dependent change. No provider/payment call is made.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessSetupRequest" }
+      responses:
+        "200":
+          description: Setup authorization or initialized business (registration includes the initial customer key)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessSetupResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/setup/register:
+    post:
+      summary: Register the invited initial owner and initialize the business
+      description: |
+        One business per deployment. Deployment authority binds a 30-minute, one-use
+        setup token to the intended owner's email. The owner supplies their own session
+        or creates a new account with that email. Initialization, owner membership,
+        token consumption and redacted audit commit together. An initialized business
+        cannot be claimed again. A token is returned only once; an identical mint retry
+        returns its metadata with token null. Unknown/expired/wrong-owner tokens are 404
+        before initialization; initialized businesses answer 409 on any further setup.
+        The setup policy is invite-only; staff sessions and registration policy enforcement
+        are a separate dependent change. No provider/payment call is made.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessSetupRegistrationRequest" }
+      responses:
+        "200":
+          description: Setup authorization or initialized business (registration includes the initial customer key)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessSetupResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/admin/business:
     get:
       summary: Read the deployment business and ownership migration receipt
@@ -6738,6 +6843,47 @@ components:
       description: "`hit` when the semantic cache answered instead of upstream (issue #497): the stored body re-served, billed at the cache-read rate, the settlement's v10 `cache` block naming the original turn's entry. Absent on a miss, a stream, or a channel that never opted in."
       schema: { type: string, enum: [hit] }
   schemas:
+    BusinessSetupTokenRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, ownerEmail]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        ownerEmail: { type: string, format: email }
+    BusinessSetupToken:
+      type: object
+      required: [id, businessId, ownerEmail, token, expiresAt]
+      properties:
+        id: { type: string, format: uuid }
+        businessId: { type: string, format: uuid }
+        ownerEmail: { type: string, format: email }
+        token: { type: [string, "null"], description: "Shown only at first mint; never stored in plaintext." }
+        expiresAt: { type: string, format: date-time }
+    BusinessSetupRequest:
+      type: object
+      additionalProperties: false
+      required: [token, businessName]
+      properties:
+        token: { type: string }
+        businessName: { type: string, minLength: 1, maxLength: 120 }
+    BusinessSetupRegistrationRequest:
+      type: object
+      additionalProperties: false
+      required: [token, businessName, email, password]
+      properties:
+        token: { type: string }
+        businessName: { type: string, minLength: 1, maxLength: 120 }
+        email: { type: string, format: email }
+        password: { type: string, minLength: 12, maxLength: 256, writeOnly: true }
+    BusinessSetupResult:
+      type: object
+      required: [ownership, registration]
+      properties:
+        ownership: { $ref: "#/components/schemas/BusinessOwnership" }
+        registration:
+          oneOf:
+            - { $ref: "#/components/schemas/Registration" }
+            - { type: "null" }
     BusinessOwnership:
       type: object
       required: [business, migration]

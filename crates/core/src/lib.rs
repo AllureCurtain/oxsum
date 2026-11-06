@@ -12,6 +12,7 @@ mod anomaly;
 mod audit;
 mod billing;
 mod business;
+mod business_setup;
 mod cache;
 mod channels;
 mod credit_notes;
@@ -80,6 +81,10 @@ pub use billing::{
 };
 pub use business::{
     Business, BusinessMigration, BusinessMigrationPreview, BusinessOwnership, CustomerProfile,
+};
+pub use business_setup::{
+    BusinessSetupRegistrationRequest, BusinessSetupRequest, BusinessSetupResult,
+    BusinessSetupToken, BusinessSetupTokenRequest, SetupAuthority,
 };
 pub use cache::{CachePolicy, CacheStore, CachedAnswer, PromptPart, prompt_digest};
 pub use channels::{

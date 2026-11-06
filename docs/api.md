@@ -410,3 +410,9 @@ The SPA's dashboard pages read these (issue #234); all are session or key scoped
 ## Deployment business ownership (#593)
 
 `GET /api/v1/admin/business` returns the singleton business and immutable ownership-migration receipt. `GET /api/v1/admin/business/customers/{organizationId}` returns the customer profile within that business. Both require the deployment token; customer sessions/consumption keys cannot inspect seller administration. Customer wire IDs continue to use `organizationId` and `tenantId` for compatibility. A foreign or unknown ownership pair is not found. These reads do not initialize an owner, change registration policy or move money.
+
+## Initial business owner consent (#629)
+
+Deployment authority calls `POST /api/v1/admin/business/setup-tokens` with `idempotencyKey` and `ownerEmail`. The response includes a token only on its first mint, with a 30-minute expiry. Identical mint retries return the same ID/expiry with `token: null`; changed owner/email conflicts. Treat the token as a secret, pass it directly to the intended owner, and do not put it in URLs or logs. A lost token requires a new mint key while the business is still uninitialized.
+
+An existing user accepts through `POST /api/v1/business/setup` with their personal session cookie and `{token, businessName}`; explicit Bearer credentials are refused. A new owner instead uses `POST /api/v1/business/setup/register` with `{token, businessName, email, password}`. The email must match the invitation; an existing address uses the session flow rather than resetting its password. New-owner registration returns the ordinary customer registration/key once, and the owner logs in normally afterwards. Both acceptance routes return `ownership`; `registration` is null for an existing owner. An initialized business refuses further setup with 409, and invalid/expired invitations refuse with 404. Inspect the deployment business read after a lost acceptance response.

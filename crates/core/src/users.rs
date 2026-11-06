@@ -79,54 +79,15 @@ impl Db {
     /// after a failed registration is safe.
     pub async fn register(&self, new: NewUser) -> Result<Registration, WalletError> {
         let email = validate_email(&new.email)?;
-        let email_normalized = email.to_lowercase();
         validate_password(&new.password)?;
         let organization_name = organization_name(new.organization_name.as_deref(), &email)?;
 
-        // Argon2 is deliberately slow (~100ms), and it runs before the transaction opens,
-        // so hashing never holds a database connection. `generate_hash` is infallible.
         let password_hash = generate_hash(&new.password);
-
-        let user_id = Uuid::new_v4();
-        let organization_id = Uuid::new_v4();
         let mut tx = self.pool().begin().await?;
-        sqlx::query(
-            "INSERT INTO oxsum.users (user_id, email, email_normalized, password_hash) \
-             VALUES ($1, $2, $3, $4)",
-        )
-        .bind(user_id)
-        .bind(&email)
-        .bind(&email_normalized)
-        .bind(&password_hash)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| {
-            keys::conflict_or_storage(e, "users_email_normalized_key", "email already registered")
-        })?;
-        let organization =
-            orgs::insert(&mut tx, organization_id, &organization_name, Kind::Personal).await?;
-        orgs::add_member(&mut tx, organization_id, user_id, Role::Owner).await?;
-        let api_key = keys::insert(
-            &mut tx,
-            organization_id,
-            Some(FIRST_KEY_NAME.to_owned()),
-            None,
-            Some(user_id),
-            keys::KeyConstraints::default(),
-        )
-        .await?;
+        let registration =
+            insert_registration(&mut tx, email, &organization_name, &password_hash).await?;
         tx.commit().await?;
-
-        Ok(Registration {
-            user: User {
-                id: user_id,
-                email,
-                email_verified: false,
-            },
-            organization,
-            api_key,
-            verification_sent: false,
-        })
+        Ok(registration)
     }
 
     /// Resets a user's password and revokes every session they hold, in one
@@ -420,4 +381,40 @@ pub(crate) fn organization_name(given: Option<&str>, email: &str) -> Result<Stri
     }
     let local = email.split('@').next().unwrap_or("personal");
     Ok(local.chars().take(MAX_ORG_NAME).collect())
+}
+
+/// Shared transaction boundary for ordinary signup and initial owner consent.
+/// Inputs are validated and the slow password hash computed before opening it.
+pub(crate) async fn insert_registration(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    email: String,
+    organization_name: &str,
+    password_hash: &str,
+) -> Result<Registration, WalletError> {
+    let user_id = Uuid::new_v4();
+    let organization_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO oxsum.users (user_id,email,email_normalized,password_hash) VALUES ($1,$2,$3,$4)")
+        .bind(user_id).bind(&email).bind(email.to_lowercase()).bind(password_hash)
+        .execute(&mut **tx).await.map_err(|e| keys::conflict_or_storage(e,"users_email_normalized_key","email already registered"))?;
+    let organization = orgs::insert(tx, organization_id, organization_name, Kind::Personal).await?;
+    orgs::add_member(tx, organization_id, user_id, Role::Owner).await?;
+    let api_key = keys::insert(
+        tx,
+        organization_id,
+        Some(FIRST_KEY_NAME.into()),
+        None,
+        Some(user_id),
+        keys::KeyConstraints::default(),
+    )
+    .await?;
+    Ok(Registration {
+        user: User {
+            id: user_id,
+            email,
+            email_verified: false,
+        },
+        organization,
+        api_key,
+        verification_sent: false,
+    })
 }

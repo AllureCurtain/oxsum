@@ -12,8 +12,10 @@ The accepted contract and evidence live in [docs/roadmap/self-hosted-v1](docs/ro
 - [x] [#592](https://github.com/AllureCurtain/oxsum/issues/592) — Restrict financial and metering authority (T01): both children integrated; final browser acceptance remains part of the release gate.
 - [x] [#624](https://github.com/AllureCurtain/oxsum/issues/624) — Prevent customer self-credit and audit manual receipts (T01.a): integrated in PR #626.
 - [x] [#625](https://github.com/AllureCurtain/oxsum/issues/625) — Remove customer raw hold and settlement authority (T01.b): integrated in PR #628.
-- [ ] [#593](https://github.com/AllureCurtain/oxsum/issues/593) — Add business and customer ownership without moving ledgers (T02): PR #627; source review complete, merging current main preserves both prerequisite migrations; integration CI pending.
-- [ ] [#594](https://github.com/AllureCurtain/oxsum/issues/594) — Business staff, setup and session contexts (T03): locally validated in PRs #631/#632; integration follows T02.
+- [x] [#593](https://github.com/AllureCurtain/oxsum/issues/593) — Add business and customer ownership without moving ledgers (T02): integrated in PR #627.
+- [ ] [#594](https://github.com/AllureCurtain/oxsum/issues/594) — Business staff, setup and session contexts (T03): locally validated in PRs #631/#632; integration in progress.
+- [ ] [#629](https://github.com/AllureCurtain/oxsum/issues/629) — Initialize the business through expiring owner consent (T03.a): source review complete; PR #631 integration CI pending.
+- [ ] [#630](https://github.com/AllureCurtain/oxsum/issues/630) — Business staff capabilities and session contexts (T03.b): locally validated and reviewed in PR #632; integration follows T03.a.
 - [ ] [#595](https://github.com/AllureCurtain/oxsum/issues/595) — Customer profile and team lifecycle (T04): pending.
 - [ ] [#596](https://github.com/AllureCurtain/oxsum/issues/596) — Scoped consumption and integration credentials (T05): pending.
 - [ ] [#597](https://github.com/AllureCurtain/oxsum/issues/597) — Business-owned provider configuration (T06): pending.
