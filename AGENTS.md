@@ -41,6 +41,83 @@ and skips doctest compilation, so a workspace run is markedly faster than
 `cargo test --workspace`. `cargo test` remains the fallback and the only
 runner for doctests (`cargo test --doc`).
 
+### Testing scope
+
+Default to the narrowest run that still covers the change:
+
+```bash
+cargo nextest run -p oxsum-<crate>                     # one crate's suites
+cargo nextest run -p oxsum-server --test <suite>       # one test binary
+cargo nextest run -p oxsum-core --test <suite> --test <other>   # several, one selection
+```
+
+`cargo nextest run --workspace` is **not** the iteration command — it compiles
+and runs every test binary (~7 minutes, dozens of `de_*`/`oxsum_test_*`
+scratch databases). Reach for it only when the change crosses crates (a shared
+trait, a migration ordering rule, a workspace dependency) or right before a
+merge whose red CI would cost more than the suite. PR-required CI (`fmt`,
+`clippy`, `test`, `wasm`, `frontend`) stays cheap because the `test` job is
+`--lib`/`--doc` only; the heavy integration shards run post-merge on `main`,
+not on pull requests.
+
+### Test scratch databases
+
+Suites create their own PostgreSQL databases on the shared dev cluster and
+drop them at process exit:
+
+- `oxsum_test_<slug>_<unix_ts>_<pid>` — one per `tests/*.rs` file, created by
+  `oxsum-testkit`, dropped via `#[ctor::dtor]`
+- `de_<32 hex>` — one per `doubleentry` Postgres conformance test, dropped in
+  the harness's `Drop` impl (fire-and-forget `WITH (FORCE)`)
+
+A run that is killed (Ctrl-C, `timeout`, a crashed laptop) never reaches its
+drop code, so residue accumulates on the dev cluster. The sweep is the next
+run's job, not the test's own — CI runs `scripts/drop-test-scratch.sql` before
+`nextest`, and you can run the same file by hand:
+
+```bash
+docker exec -i oxsum-postgres-1 psql -U postgres -d postgres -f - < scripts/drop-test-scratch.sql
+```
+
+The pattern is strict enough that a real database cannot match it. Do **not**
+manually `DROP DATABASE` a live suite mid-run — if a `de_*` or
+`oxsum_test_*` name is under 24 h old, assume it still belongs to a colleague's
+in-flight run on the shared cluster. Anything matching the pattern that has
+survived a day is safe to delete.
+
+### Shared build output
+
+Every worktree reads `.worktrees/.cargo/config.toml` (gitignored), which points
+the whole family at one shared target directory *inside* the worktree parent:
+
+```toml
+[build]
+target-dir = "/Users/yao/dev/projects/oxsum/.worktrees/target"
+```
+
+Dependency crates compile once per machine, not once per worktree — this is
+what keeps five parallel worktrees from producing five multi-GB `target/`
+trees. Putting it inside `.worktrees/` (which is gitignored) means the whole
+artifact cache disappears with a `rm -rf .worktrees/` and never pollutes
+`$HOME`. Serialize heavy `cargo`/`nextest` invocations across worktrees so the
+shared lock does not serialize them anyway; everything else (fmt, docs,
+`cargo check -p <crate>`) runs fine in parallel.
+
+### Worktree lifecycle
+
+Every task gets a `.worktrees/<slug>` created from the latest `main`. When its
+PR merges:
+
+```bash
+git worktree remove .worktrees/<slug>
+git branch -d <type>/<slug>
+```
+
+Merged worktrees accumulate fast — check `git worktree list` against
+`gh pr list --state merged` and remove the ones whose branch has merged. Keep
+the worktree until its dependents are safe (another open PR branched off it);
+after that it is clutter, not history.
+
 ## Before pushing
 
 CI runs the full gate — lib/doc tests, the three nextest shards, the process-shared suites and the doubleentry Postgres conformance run — and every job sits on the required-check chain, so a regression cannot reach main through a PR. The local gate is the fast half:
