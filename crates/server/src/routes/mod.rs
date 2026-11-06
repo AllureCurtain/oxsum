@@ -99,6 +99,7 @@ pub fn router(state: AppState) -> Router {
             "/org/experiments/{experiment_id}/results",
             get(experiments::experiment_results),
         )
+        .route("/org/promo-lots", get(org::promo_lots))
         .route("/org/ownership", post(org::transfer_ownership))
         .route("/org/subscription", get(org::subscription))
         .route(
