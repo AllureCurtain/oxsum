@@ -499,7 +499,7 @@ async fn the_header_serves_a_variant_and_records_the_binding() {
         "the variant's model answered, not the requested one"
     );
     let record = world.settlement_within(&id).await;
-    assert_eq!(record["v"], 13, "the description is v13: {record}");
+    assert_eq!(record["v"], 14, "the description is v14: {record}");
     assert_eq!(record["servedModel"], var_a);
     assert_eq!(record["model"], var_a, "model stays the served name");
     assert_eq!(

@@ -218,3 +218,10 @@ pub async fn prepare(db: &Db, config: &Config) -> Result<(), WalletError> {
 pub(crate) fn today() -> time::Date {
     OffsetDateTime::now_utc().date()
 }
+
+/// The admission instant of a request — the wall clock the sale-terms
+/// resolution reads (issue #603), kept beside `today` so both halves of a
+/// turn's clock come from the same place.
+pub(crate) fn today_at() -> OffsetDateTime {
+    OffsetDateTime::now_utc()
+}

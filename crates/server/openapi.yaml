@@ -6,6 +6,16 @@ info:
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
+    0.114.0 coordinates admission with settlement (issue #603): a resolved sale
+    snapshot reprices the freeze at admission and a sale-priced turn commits its
+    `sale` digest on the requested model only — sale terms never ride a fallback
+    model. A turn whose entitlement draw covers the whole freeze no longer takes
+    a token wallet hold; its settlement is a typed zero-cost receipt on an empty
+    wallet (the ledger's balanced `usage_receipt` marker, never a fabricated
+    hold). The daily `usage-anchors` pass defers an organization while it still
+    owns open `request_operations` that could settle into the closed day, so a
+    committed anchor map is always final.
+
     0.113.0 makes every billable turn a durable operation (issue #601): one
     `request_operations` row parents the turn from hold to settlement, leased
     to the serving worker and recovered by the sweeper when the lease lapses,
@@ -11799,6 +11809,8 @@ components:
         failed: { type: integer, format: int64 }
         needsAttention: { type: integer, format: int64 }
         paidUnfulfilled: { type: array, items: { type: string, format: uuid }, description: the paid orders the recovery sweep still owes a fulfillment }
+=======
+>>>>>>> origin/main
     ProviderMutationResult:
       type: object
       required: [id, resourceId, version]
