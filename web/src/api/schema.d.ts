@@ -3302,6 +3302,270 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/org/plan/journals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the caller's plan-fee journals
+         * @description The customer organization's own invoice journals (issue #611, T20),
+         *     newest first — the per-period bills the plan lifecycle writes at each
+         *     close: base fee, usage overage, discounts and promo coverage as the
+         *     lines sum to `totalMinor`. `posted` journals are the open receivable —
+         *     the same fact the plan's `pastDue` state carries. `settledMinor` is how
+         *     much of the total is already covered; `paidOrderId` names the
+         *     `planPeriod` order whose payment completed the settlement.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    after?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The organization's journals, newest first */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["InvoiceJournalPage"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/org/plan/journals/{journalId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One journal plus its lines
+         * @description The journal's header and its itemized lines — the bill's charges and
+         *     credits, each naming the fact it came from (`sourceRef`: the
+         *     `planPeriods` row, a `creditNotes` id, a promo lot or grant). A journal
+         *     of another organization is `404`, the same scoping the order read uses.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    journalId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The journal and its lines */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["InvoiceJournalDetail"];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/journals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List plan-fee journals across customers
+         * @description The staff finance list (issue #611, T20): every customer's journals,
+         *     newest first — `state=posted` is the dunning work list of open
+         *     receivables. `ReportsRead` capability, a personal session token, never
+         *     a machine credential.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    state?: "posted" | "paid" | "void";
+                    customerPlanId?: string;
+                    periodIndex?: number;
+                    after?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The journals matching the filters, newest first */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["InvoiceJournalPage"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/journals/{journalId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One journal plus its lines
+         * @description The journal and its itemized lines as the staff surface reads them —
+         *     `ReportsRead` capability.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    journalId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The journal and its lines */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["InvoiceJournalDetail"];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/journals/{journalId}/void": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Void a journal
+         * @description Cancels the journal (issue #611, T20): reversing lines append so the
+         *     bill nets to zero — never an edit, never a delete — the mirroring
+         *     ledger entry posts the open receivable back off a `posted` journal, or
+         *     unwinds the settlement to `Liabilities:RefundPayable` on a `paid` one,
+         *     and a `finance_audit` row records the actor and reason. A correction
+         *     that needs a different bill reissues under `replacesJournalId`.
+         *     `FundsWrite` capability; the replay of an `idempotencyKey` answers the
+         *     standing voided journal.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    journalId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["VoidJournalRequest"];
+                };
+            };
+            responses: {
+                /** @description The voided journal and its full line set */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["InvoiceJournalDetail"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/webhooks": {
         parameters: {
             query?: never;
@@ -16124,6 +16388,96 @@ export interface components {
             plan: components["schemas"]["CustomerPlan"];
             /** @description every period the plan has authorized, in index order */
             periods: components["schemas"]["PlanPeriod"][];
+        };
+        InvoiceJournal: {
+            /** Format: uuid */
+            journalId: string;
+            /** Format: uuid */
+            customerPlanId: string;
+            /** Format: uuid */
+            organizationId: string;
+            /**
+             * Format: uuid
+             * @description the `planPeriods` row this journal bills; null on a staff-issued correction journal
+             */
+            planPeriodId: string | null;
+            periodIndex: number;
+            /**
+             * @description `posted` is the open receivable — the journal is billed, not yet settled. `draft` exists only inside the close transaction and never answers a read.
+             * @enum {string}
+             */
+            state: "posted" | "paid" | "void";
+            /**
+             * Format: int64
+             * @description the lines' sum — charges positive, credits negative; what the receivable was opened for
+             */
+            totalMinor: number;
+            /**
+             * Format: int64
+             * @description how much of `totalMinor` the clearing legs (prepayment, order payments) already covered
+             */
+            settledMinor: number;
+            currency: string;
+            /**
+             * Format: uuid
+             * @description the `planPeriod` order whose payment completed the settlement — the link a refund or dispute hangs its correction on
+             */
+            paidOrderId: string | null;
+            /**
+             * Format: int64
+             * @description what open disputes contest of this journal's receivable
+             */
+            disputedMinor: number;
+            /**
+             * Format: uuid
+             * @description the journal this one reissues after a staff void
+             */
+            replacesJournalId: string | null;
+            voidReason: string | null;
+            /** Format: date-time */
+            postedAt: string | null;
+            /** Format: date-time */
+            paidAt: string | null;
+            /** Format: date-time */
+            voidedAt: string | null;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        InvoiceJournalLine: {
+            /** Format: uuid */
+            lineId: string;
+            /** Format: uuid */
+            journalId: string;
+            /**
+             * @description `baseFee` the sold version's price, `usageOverage` the overage-enabled plan's wallet-billed overflow at par, `discount` a credit note or grant write-off, `promoCredit` promo money covering the fee, `tax` reserved
+             * @enum {string}
+             */
+            kind: "baseFee" | "usageOverage" | "discount" | "promoCredit" | "tax";
+            /**
+             * Format: int64
+             * @description signed — charges positive, credits negative; `totalMinor` is their sum
+             */
+            amountMinor: number;
+            description: string;
+            /**
+             * Format: uuid
+             * @description the fact the line came from — a `planPeriods` id, a `creditNotes` id, a promo lot or grant key, or the line a void reversal mirrors
+             */
+            sourceRef: string | null;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        InvoiceJournalDetail: components["schemas"]["InvoiceJournal"] & {
+            lines: components["schemas"]["InvoiceJournalLine"][];
+        };
+        InvoiceJournalPage: {
+            journals: components["schemas"]["InvoiceJournal"][];
+            /** Format: uuid */
+            nextCursor: string | null;
+        };
+        VoidJournalRequest: {
+            idempotencyKey: string;
+            reason: string;
         };
         PublishPlanRequest: {
             /**
