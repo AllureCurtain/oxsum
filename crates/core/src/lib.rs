@@ -46,6 +46,7 @@ mod metering;
 mod oauth;
 mod operations;
 mod orgs;
+mod payment_orders;
 mod pools;
 mod proof;
 mod provider_destination;
@@ -197,6 +198,10 @@ pub use operations::{
 pub use orgs::{
     AdminOrganization, Kind, Member, MembershipActor, Organization, Ownership, Role,
     UserOrganization,
+};
+pub use payment_orders::{
+    NewPaymentOrder, OrderRate, PaymentFulfillment, PaymentOrder, PaymentOrderPage,
+    PaymentOrderPurpose, PaymentReconciliation,
 };
 pub use pools::{
     Affinity, CREDENTIAL_COOLDOWN, ChannelCredential, PoolCredential, order as credential_order,
