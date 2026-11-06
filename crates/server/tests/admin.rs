@@ -1120,6 +1120,11 @@ async fn the_margin_view_sums_charges_against_upstream_costs() {
             charged_minor: *charged,
             freeze_minor: 100,
             upstream_cost_minor: *upstream,
+            cost_basis: if upstream.is_some() {
+                oxsum_core::CostBasis::RealAttempt
+            } else {
+                oxsum_core::CostBasis::Missing
+            },
             upstream_attempts: 1,
         })
         .await
