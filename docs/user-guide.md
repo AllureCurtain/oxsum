@@ -661,9 +661,10 @@ Business services that report externally measured usage use the separate service
 Purpose: check the currently available balance.
 
 Step: `GET /api/v1/balance`. The returned `availableMinor` already subtracts unsettled holds.
-The number is one balance: granted credit (signup bonus, admin grants), purchased
-credit (top-ups) and an organization's credit line are separate pools inside the
-ledger, the pools are drawn in that order, and the API sums the three.
+The number is one balance: promotional credit in live lots, granted credit
+(signup bonus, admin grants), purchased credit (top-ups) and an organization's
+credit line are separate pools inside the ledger, the pools are drawn in that
+order — perishable money first — and the API sums the four.
 
 When the platform admin has granted the organization a credit limit,
 `creditLimitMinor` and `creditUsedMinor` come along: the limit is spendable credit

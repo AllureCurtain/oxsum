@@ -41,7 +41,7 @@ The accepted contract and evidence live in [docs/roadmap/self-hosted-v1](docs/ro
 - [ ] [#606](https://github.com/AllureCurtain/oxsum/issues/606) — Payment orders and durable fulfillment (T15): in progress on this worktree — `payment_orders`/`payment_fulfillments`/`payment_outbox`, server-rated conversion, purpose-scoped fulfillment, recovery sweep; focused nextest suites green.
 - [ ] [#607](https://github.com/AllureCurtain/oxsum/issues/607) — Customer checkout and purchased funding (T16): pending.
 - [ ] [#608](https://github.com/AllureCurtain/oxsum/issues/608) — Corrections, partial refunds and disputes (T17): pending.
-- [ ] [#609](https://github.com/AllureCurtain/oxsum/issues/609) — Promotional lots and prepaid bundles (T18): pending.
+- [ ] [#609](https://github.com/AllureCurtain/oxsum/issues/609) — Promotional lots and prepaid bundles (T18): in progress on this worktree — `oxsum.promo_lots`/`promo_draws` (migration 0089), `Equity:Promo` first-pool draw with expiry-ordered admission pinning, `Equity:PromoExpiry` burn on expiry/cancel/closed-lot release, `expire-lots` job, bundle promo leg, lazy legacy-bonus migration, admin + org endpoints; focused nextest suites green.
 - [ ] [#610](https://github.com/AllureCurtain/oxsum/issues/610) — Customer entitlement and paid plan lifecycle (T19): pending.
 - [ ] [#611](https://github.com/AllureCurtain/oxsum/issues/611) — Plan fee journals and revenue allocation (T20): pending.
 - [ ] [#612](https://github.com/AllureCurtain/oxsum/issues/612) — Customer credit, statements and overdue handling (T21): pending.
