@@ -667,6 +667,11 @@ async fn every_settlement_kind_proves_and_recomputes() {
             charged_minor: charged,
             freeze_minor: *freeze,
             upstream_cost_minor: upstream_cost,
+            cost_basis: if upstream_cost.is_some() {
+                oxsum_core::CostBasis::RealAttempt
+            } else {
+                oxsum_core::CostBasis::Missing
+            },
             upstream_attempts: 1,
         })
         .await

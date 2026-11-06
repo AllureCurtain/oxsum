@@ -557,6 +557,13 @@ impl Db {
                 charged_minor: charged,
                 freeze_minor: freeze,
                 upstream_cost_minor,
+                // A seeded turn replays a real attempt's usage report (issue
+                // #604): `missing` when the price carries no upstream block.
+                cost_basis: if upstream_cost_minor.is_some() {
+                    crate::usage::CostBasis::RealAttempt
+                } else {
+                    crate::usage::CostBasis::Missing
+                },
                 upstream_attempts: 1,
             },
             available,

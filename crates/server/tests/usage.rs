@@ -377,6 +377,7 @@ async fn seed_request(
         charged_minor: cost_minor,
         freeze_minor,
         upstream_cost_minor: None,
+        cost_basis: oxsum_core::CostBasis::Missing,
         upstream_attempts: 1,
     })
     .await

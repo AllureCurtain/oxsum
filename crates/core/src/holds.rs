@@ -616,6 +616,7 @@ async fn sweep_one(
                     "recording the swept turn's usage row failed");
             }
             db.clear_open_hold(&hold.hold_key).await?;
+            sweep_metered_operation(db, hold).await;
             Ok(())
         }
         Err(WalletError::HoldNotFound(_)) | Err(WalletError::Conflict(_)) => {
@@ -631,9 +632,49 @@ async fn sweep_one(
                 }
             }
             db.clear_open_hold(&hold.hold_key).await?;
+            sweep_metered_operation(db, hold).await;
             Ok(())
         }
         Err(error) => Err(error),
+    }
+}
+
+/// Closes a metered event's operation when the open-holds sweep releases its
+/// stale hold (issue #604): metering operations are excluded from the
+/// gateway-lease sweep, so this is the only pass that ends one — a metered
+/// hold the reporting service let lapse goes `timed_out` under `swept`, the
+/// same terminal a gateway turn's lapsed lease takes. Best-effort: a miss is
+/// a thinner recovery record, never a failed sweep.
+async fn sweep_metered_operation(db: &Db, hold: &OpenHold) {
+    // The metering operation's fingerprint is its hold_key; a customer surface
+    // never binds that spelling, so a hit here is always the metered event's
+    // row. The tenant id is the organization's ledger id, which is also its
+    // `organization_id` on the row — the sweep's only caller writes both from
+    // the same source.
+    let Ok(organization_id) = uuid::Uuid::parse_str(&hold.tenant_id) else {
+        return;
+    };
+    let operation = match db
+        .operation_by_fingerprint(organization_id, &hold.hold_key)
+        .await
+    {
+        Ok(Some(operation)) if operation.surface == crate::operations::METERING_SURFACE => {
+            operation
+        }
+        _ => return,
+    };
+    if let Err(error) = db
+        .settle_operation(
+            operation.operation_id,
+            "sweeper",
+            crate::operations::OperationState::TimedOut,
+            0,
+            "swept",
+        )
+        .await
+    {
+        tracing::error!(%error, hold_key = %hold.hold_key,
+            "closing a swept metered operation failed");
     }
 }
 
@@ -668,8 +709,10 @@ async fn record_swept_usage(db: &Db, wallet: &Wallet, hold: &OpenHold) -> Result
             charged_minor: 0,
             freeze_minor: hold.freeze_minor,
             // The watch row carries no price, so a swept turn's upstream cost is
-            // untracked rather than zero — `upstream_cost_minor` stays NULL.
+            // untracked rather than zero — `upstream_cost_minor` stays NULL and
+            // the basis is `missing` (issue #604).
             upstream_cost_minor: None,
+            cost_basis: crate::usage::CostBasis::Missing,
             upstream_attempts: 1,
         },
         available,
