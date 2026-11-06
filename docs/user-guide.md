@@ -962,3 +962,14 @@ For an internal provider, explicitly list its server IP addresses in the owner c
 ### Model visibility and routing permissions
 
 Your model list and price catalog show routes allowed by your customer tier. A consumption key can narrow that list with its own model allowlist and request group. To use an alias with a restricted key, include both its public name and the provider model it resolves to; the request group must permit the alias's channel. Experiments and fallback models need the same grants. The bill retains the original requested and actually served names. Generic asynchronous tasks currently use direct task model names and do not accept signed spend mandates; see the [protocol matrix](roadmap/self-hosted-v1/PROTOCOL-MATRIX.md) for the current scope.
+
+
+### Prepare customer sale books
+
+Select business context and use the [sale-book API](api.md#customer-sale-books-apiv1businesssale-books-599). Owner/admin creates a named book, saves its full model map with `expectedRevision: 0` for the first draft, and publishes that exact draft revision. Later edits save a new revision; the previous publication is unchanged. Each model has customer rates and one optional percentage discount. Provider costs belong to provider configuration and are refused here.
+
+Schedule a published version as the business default, or have owner/finance assign a version to one customer. Owner/finance may override an individual customer model. Previews use the override, then the assigned book, then the default for a missing model. Supply normalized usage to see line items, the matched conditional rule, the selected terms and the final integer charge. A draft preview can compare a proposed change before publishing.
+
+Use a future `effectiveFrom` to schedule a change. `replaces` ends an existing schedule of the same scope at that instant and starts its replacement atomically. To cancel a future schedule, append an `endSchedule` at its start. Saves cannot backdate or overlap terms. Save each mutation's idempotency key; retry the same request after a connection failure instead of issuing a new change. An already ended schedule cannot be extended or have its end rewritten.
+
+These API controls currently prepare and preview sale terms. Gateway adoption and signed customer evidence follow in T09–T13; the business console follows in T24. Existing gateway billing continues using its original channel price versions until that integration.
