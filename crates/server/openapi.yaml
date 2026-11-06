@@ -1,10 +1,19 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.112.0
+  version: 0.113.0
   x-consumption-cache: Response cache v2 binds the exact complete request, concrete endpoint and semantic headers, customer/key permissions, selected experiment/mandate, alias targets, and every admitted route's price, destination, settings and credential configuration. A primary route without an available credential cannot serve a cache hit. Text case and whitespace are significant; old digests miss. Legacy excludeSystem is accepted but ignored.
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
+
+    0.113.0 makes every billable turn a durable operation (issue #601): one
+    `request_operations` row parents the turn from hold to settlement, leased
+    to the serving worker and recovered by the sweeper when the lease lapses,
+    with one `request_attempts` row per upstream try — the failover audit.
+    `GET /api/v1/operations` lists the organization's operations (a consumption
+    key reads only the ones it admitted), `GET /api/v1/operations/{operationId}`
+    reads one with its attempts, and `GET /api/v1/admin/operations` is the
+    operator's all-organizations read.
 
     0.111.0 adds business-owned customer sale books, immutable draft revisions and
     published versions, scheduled default/assigned terms and per-model overrides.
@@ -3564,6 +3573,88 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/operations:
+    get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records
+      summary: The organization's durable operations, newest first (issue #601)
+      description: |
+        One row per billable turn — the durable parent that outlives the
+        request: a gateway call or task submit writes it before the hold
+        binds, the serving worker holds it under a lease, and the settlement
+        (or the sweeper, when the lease lapses) closes it. The lifecycle is
+        `created` → `leased` → `running` → one of `succeeded`, `failed`,
+        `cancelled`, `timed_out`; `holdKey` names the `open_holds` watch row
+        the operation binds while it is open. A session lists every operation
+        in its organization; a consumption key lists only the operations its
+        own credential admitted — the same record scope `GET /api/v1/requests`
+        keeps.
+      parameters:
+        - name: state
+          in: query
+          schema:
+            type: string
+            enum: [created, leased, running, succeeded, failed, cancelled, timed_out]
+          description: only operations in this lifecycle state
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+          description: rows per page
+        - name: cursor
+          in: query
+          schema: { type: string }
+          description: An earlier answer's `nextCursor`, echoed verbatim.
+      responses:
+        "200":
+          description: One page of operations, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/OperationListPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/operations/{operationId}:
+    get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records
+      summary: One operation with its upstream attempts
+      description: |
+        The operation plus every `request_attempts` row it made — the
+        failover audit: which channel each try went to, how it ended, and the
+        usage the winning attempt reported. A session reads any operation in
+        its organization; a consumption key reads only one its own credential
+        admitted — a foreign id answers 404, because an operation's existence
+        is not an oracle for another key.
+      parameters:
+        - name: operationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The operation and its attempts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    allOf:
+                      - $ref: "#/components/schemas/RequestOperation"
+                      - type: object
+                        required: [attempts]
+                        properties:
+                          attempts:
+                            type: array
+                            items: { $ref: "#/components/schemas/OperationAttempt" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/usage-reports:
     get:
       x-customer-role-access: owner-admin
@@ -5996,6 +6087,50 @@ paths:
                       nextCursor:
                         type: string
                         description: The cursor the next page asks with; absent at the log's start.
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/operations:
+    get:
+      summary: Every organization's durable operations (issue #601)
+      description: |
+        The operator's read of the same `request_operations` the member
+        endpoint serves: one row per billable turn across every organization,
+        newest first. Where a member's read is locked to their own
+        organization, this one reads all of them and narrows with
+        `organizationId` — the SRE query "show me every operation stuck
+        `running` past its lease" runs here.
+      security:
+        - adminToken: []
+      parameters:
+        - name: organizationId
+          in: query
+          schema: { type: string, format: uuid }
+          description: only this organization's operations; omit for every organization
+        - name: state
+          in: query
+          schema:
+            type: string
+            enum: [created, leased, running, succeeded, failed, cancelled, timed_out]
+          description: only operations in this lifecycle state
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+          description: rows per page
+        - name: cursor
+          in: query
+          schema: { type: string }
+          description: An earlier answer's `nextCursor`, echoed verbatim.
+      responses:
+        "200":
+          description: One page of operations, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/OperationListPage" }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
@@ -10293,6 +10428,120 @@ components:
           type: string
           format: date-time
           description: when the row was written — just after the turn settled
+    RequestOperation:
+      type: object
+      description: >
+        One billable turn's durable record (issue #601): the parent row every
+        gateway call and task submit writes before the hold binds, leased to
+        the serving worker while it is open and closed by the settlement — or
+        by the sweeper, which claims a lapsed lease and ends the operation
+        `timed_out` with `chargedMinor` 0. Read by `GET /api/v1/operations`
+        (org-scoped), `GET /api/v1/operations/{operationId}` (with attempts)
+        and `GET /api/v1/admin/operations` (all organizations).
+      required: [operationId, surface, boundMinor, state, model, createdAt]
+      properties:
+        operationId:
+          type: string
+          format: uuid
+          description: the operation's id — the gateway turn's request id, or the task's `taskId`
+        organizationId:
+          type: string
+          format: uuid
+          description: the organization the turn billed; present on the admin read, elided on the member read
+        keyId:
+          type: string
+          format: uuid
+          description: the consumption key that admitted the turn; absent when none did
+        surface:
+          type: string
+          description: which surface admitted it — `chat`, `responses`, `messages`, `embeddings`, `rerank`, or `task:{kind}`
+        boundMinor:
+          type: integer
+          format: int64
+          minimum: 0
+          description: the upper bound frozen when the turn started, in minor units
+        holdKey:
+          type: string
+          description: the `open_holds` watch row this operation binds (`req-<id>:hold`); absent until the hold lands
+        state:
+          type: string
+          enum: [created, leased, running, succeeded, failed, cancelled, timed_out]
+          description: >
+            the lifecycle: `created` → `leased` → `running` while the worker
+            owns it, then a terminal state — `succeeded` when usage settled,
+            `failed` on an upstream or admission failure, `cancelled` when the
+            caller walked away, `timed_out` when the sweeper recovered a
+            lapsed lease
+        chargedMinor:
+          type: integer
+          format: int64
+          description: what the settlement charged, in minor units; absent until the operation is terminal
+        outcomeKind:
+          type: string
+          description: the settlement kind or terminal cause — `usage`, `estimated`, `swept`, `released`, …
+        model:
+          type: string
+          description: the model the turn asked for
+        channel:
+          type: string
+          description: the channel that answered; absent until one did
+        createdAt:
+          type: string
+          format: date-time
+          description: when the operation was admitted
+        completedAt:
+          type: string
+          format: date-time
+          description: when the operation went terminal; absent while it is open
+    OperationAttempt:
+      type: object
+      description: >
+        One upstream try inside an operation (issue #601): a failover or
+        fallback makes several — one `answered` attempt carries the usage the
+        settlement charged, the `refused`/`unreachable` ones are the audit of
+        what was tried first.
+      required: [attemptId, channel, status, startedAt]
+      properties:
+        attemptId:
+          type: string
+          format: uuid
+        channel:
+          type: string
+          description: the channel this try went to
+        credentialId:
+          type: string
+          format: uuid
+          description: the upstream credential the try spent
+        externalId:
+          type: string
+          description: the upstream's own response id (`chatcmpl-…`, the task id), when the answer carried one
+        status:
+          type: string
+          enum: [started, answered, refused, unreachable]
+          description: how the try ended — `answered` is the one the settlement bills
+        usageJson:
+          type: object
+          description: the usage the upstream reported, verbatim; present on the winning `answered` attempt
+        error:
+          type: string
+          description: why the try failed, on a `refused`/`unreachable` one
+        startedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+          description: absent while the try is still in flight
+    OperationListPage:
+      type: object
+      required: [operations]
+      properties:
+        operations:
+          type: array
+          items: { $ref: "#/components/schemas/RequestOperation" }
+        nextCursor:
+          type: string
+          description: The cursor the next page asks with; absent at the list's start.
     EstimatePriceRequest:
       type: object
       required: [model]

@@ -30,7 +30,7 @@ The accepted contract and evidence live in [docs/roadmap/self-hosted-v1](docs/ro
 - [ ] [#645](https://github.com/AllureCurtain/oxsum/issues/645) — Complete response cache serving context (T07.b): PR #653.
 - [ ] [#599](https://github.com/AllureCurtain/oxsum/issues/599) — Versioned customer sale books (T08): PR #652.
 - [ ] [#600](https://github.com/AllureCurtain/oxsum/issues/600) — Bind sale terms into evidence (T09): pending.
-- [ ] [#601](https://github.com/AllureCurtain/oxsum/issues/601) — Durable request operation (T10): pending.
+- [ ] [#601](https://github.com/AllureCurtain/oxsum/issues/601) — Durable request operation (T10): implemented on branch `feat/durable-request-operation`; PR pending.
 - [ ] [#602](https://github.com/AllureCurtain/oxsum/issues/602) — Transaction-aware ledger effects and zero-cost receipts (T11): pending.
 - [ ] [#603](https://github.com/AllureCurtain/oxsum/issues/603) — Coordinated customer admission and settlement (T12): pending.
 - [ ] [#604](https://github.com/AllureCurtain/oxsum/issues/604) — Cover every serving and metering path (T13): pending.
