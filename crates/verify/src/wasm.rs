@@ -31,10 +31,10 @@ use wasm_bindgen::JsError;
 use wasm_bindgen::prelude::wasm_bindgen;
 
 use crate::{
-    AnchorError, ConsistencyProof, Hash, PriceError, PublishedKey, StatementAnchorCheck, TreeHead,
-    UsageReportError, WitnessNote, WitnessPin, WitnessVerdict, verify_bill, verify_consistency,
-    verify_price_head, verify_signed_head, verify_statement_anchor, verify_usage_report,
-    verify_witnesses,
+    AnchorError, ConsistencyProof, Hash, PriceError, PublishedKey, SaleError, StatementAnchorCheck,
+    TreeHead, UsageReportError, WitnessNote, WitnessPin, WitnessVerdict, verify_bill,
+    verify_consistency, verify_price_head, verify_sale_head, verify_signed_head,
+    verify_statement_anchor, verify_usage_report, verify_witnesses,
 };
 
 /// The JSON shape every exported verdict shares: `{"ok": bool, "detail":
@@ -65,8 +65,9 @@ fn expected_hash(hex: &str) -> Result<Hash, JsError> {
 ///
 /// `bundle_json` is the `ProofBundle` (or its `{"data": …}` envelope).
 /// `expected_hash_hex` is the 64-character content hash the user recorded with
-/// the bill. Answers `{"ok", "detail", "charge", "price"}`, where `charge` and
-/// `price` carry the same sentences the server-rendered verdict appends.
+/// the bill. Answers `{"ok", "detail", "charge", "price", "sale"}`, where
+/// `charge`, `price` and `sale` carry the same sentences the server-rendered
+/// verdict appends — `sale` absent on a wholesale-priced or pre-v14 bill.
 ///
 /// # Errors
 ///
@@ -97,6 +98,9 @@ pub fn verify_bundle_js(bundle_json: &str, expected_hash_hex: &str) -> Result<St
         "verdict": bill.verdict,
         "charge": bill.charge,
         "price": bill.price,
+        // Absent on a wholesale-priced or pre-v14 bill; present when the
+        // settlement committed a `sale` digest (issue #600).
+        "sale": bill.sale,
     })
     .to_string())
 }
@@ -374,6 +378,25 @@ pub fn verify_price_head_js(json: &str) -> Result<String, JsError> {
     match verify_price_head(json) {
         Ok(()) => Ok(verdict(true, "the price binding verifies")),
         Err(PriceError::Absent) => Ok(verdict(false, PriceError::Absent.to_string())),
+        Err(error) => Err(JsError::new(&error.to_string())),
+    }
+}
+
+/// Verifies a bundle's signed sale binding: `json` is the `ProofBundle` (or its
+/// envelope) carrying `entry` and `sale`.
+///
+/// # Errors
+///
+/// [`JsError`] on malformed input or a failed check — the `SaleError` text. An
+/// absent `sale` field or a wholesale-priced settlement reports in-band, not as
+/// an exception.
+#[wasm_bindgen(js_name = verifySaleHead)]
+pub fn verify_sale_head_js(json: &str) -> Result<String, JsError> {
+    match verify_sale_head(json) {
+        Ok(()) => Ok(verdict(true, "the sale binding verifies")),
+        Err(error @ (SaleError::Absent | SaleError::NotSalePriced)) => {
+            Ok(verdict(false, error.to_string()))
+        }
         Err(error) => Err(JsError::new(&error.to_string())),
     }
 }

@@ -21,6 +21,8 @@ export interface BillVerdict {
   verdict: "pass" | "chargeMismatch" | "fail" | string;
   charge?: string;
   price?: string;
+  /** Present only when the settlement committed a `sale` digest (issue #600). */
+  sale?: string | null;
 }
 
 /** `verifySignedHead` / `verifyConsistency` answer this. */
@@ -79,6 +81,7 @@ interface VerifyWasmModule {
     keyJson?: string | null,
   ): Promise<string>;
   verifyPriceHead(json: string): Promise<string>;
+  verifySaleHead(json: string): Promise<string>;
 }
 
 let modulePromise: Promise<VerifyWasmModule> | null = null;
@@ -299,4 +302,14 @@ export async function verifyUsageReport(
 export async function verifyPriceHead(json: string): Promise<CheckVerdict> {
   const m = await load();
   return parse(await m.verifyPriceHead(json));
+}
+
+/**
+ * Verifies a bundle's signed sale binding — the customer sale terms a
+ * sale-priced settlement committed (issue #600). `json` is the `ProofBundle`
+ * (or its envelope) carrying `entry` and `sale`.
+ */
+export async function verifySaleHead(json: string): Promise<CheckVerdict> {
+  const m = await load();
+  return parse(await m.verifySaleHead(json));
 }
