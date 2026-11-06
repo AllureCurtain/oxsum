@@ -47,6 +47,33 @@ impl ServingAccess {
     }
 }
 
+#[cfg(test)]
+impl ServingAccess {
+    /// A synthetic snapshot for digest tests: the DB-backed constructor needs
+    /// a live database, while a cache-key test needs only controlled fields.
+    pub(crate) fn sample(
+        customer_id: Uuid,
+        key_id: Option<Uuid>,
+        business_id: Uuid,
+        key_models: Option<&[&str]>,
+        customer_models: Option<&[&str]>,
+        channels: &[Uuid],
+        requests_per_minute: Option<i32>,
+    ) -> Self {
+        Self {
+            customer_id,
+            key_id,
+            business_id,
+            key_models: key_models
+                .map(|names| names.iter().map(|name| (*name).to_owned()).collect()),
+            customer_models: customer_models
+                .map(|names| names.iter().map(|name| (*name).to_owned()).collect()),
+            channels: channels.iter().copied().collect(),
+            requests_per_minute,
+        }
+    }
+}
+
 fn models(value: Option<serde_json::Value>) -> Result<Option<BTreeSet<String>>, WalletError> {
     value
         .map(serde_json::from_value)

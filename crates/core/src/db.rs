@@ -322,6 +322,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../migrations/0079_provider_destinations.sql"),
     ),
     (
+        "0080_response_cache_v2",
+        include_str!("../migrations/0080_response_cache_v2.sql"),
+    ),
+    (
         "0081_sale_books",
         include_str!("../migrations/0081_sale_books.sql"),
     ),

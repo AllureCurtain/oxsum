@@ -12374,11 +12374,15 @@ export interface components {
              */
             protocol?: "openai" | "anthropic" | "gemini";
             destinationPolicy?: components["schemas"]["ProviderDestinationPolicy"];
-            /** @description the channel's semantic response cache policy (issue #497): `{enabled, ttlSeconds?, excludeSystem?}` — `enabled` gates the whole feature; `ttlSeconds` bounds a stored answer's lifetime (absent means no expiry); `excludeSystem` drops the system/instructions share from the prompt digest so two asks differing only there still hit. Omit to leave the stored policy untouched; explicit null clears `settings.semanticCache`; a non-object or a malformed policy is VALIDATION_ERROR. */
+            /** @description the channel's semantic response cache policy (issue #497): `{enabled, ttlSeconds?, excludeSystem?}` — `enabled` gates the whole feature; `ttlSeconds` bounds a stored answer's lifetime (absent means no expiry); `excludeSystem` is deprecated and ignored; system/instructions always participate in the complete request digest. Omit to leave the stored policy untouched; explicit null clears `settings.semanticCache`; a non-object or a malformed policy is VALIDATION_ERROR. */
             semanticCache?: ({
                 enabled?: boolean;
                 /** Format: int64 */
                 ttlSeconds?: number;
+                /**
+                 * @deprecated
+                 * @description Accepted for compatibility, ignored; system/instructions always participate in the cache key.
+                 */
                 excludeSystem?: boolean;
             } & {
                 [key: string]: unknown;
@@ -14654,6 +14658,10 @@ export interface components {
                     enabled: boolean;
                     /** Format: int64 */
                     ttlSeconds?: number | null;
+                    /**
+                     * @deprecated
+                     * @description Accepted for compatibility, ignored; system/instructions always participate in the cache key.
+                     */
                     excludeSystem?: boolean;
                 } | null;
             };
