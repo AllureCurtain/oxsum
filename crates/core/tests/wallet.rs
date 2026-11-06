@@ -367,18 +367,20 @@ async fn opening_a_wallet_tightens_a_ledger_written_under_the_old_rule() {
     // A ledger created before the reservation rule existed stored the weaker limit
     // on every balance account — and for the credit pool and the facility, codes
     // the old constraint's domain knows too, so the narrowed check still fits.
+    // The promo pair joined the pools under the same rule (issue #609), so the
+    // simulated old ledger weakens them the same way.
     // The schema is assembled from this test's own generated tenant id, never
     // from input.
     let weakened = sqlx::query(&format!(
         "UPDATE ledger_{tenant}.accounts SET balance_limit = CASE \
              WHEN path = 'Assets:CreditFacility' THEN 'unlimited' ELSE 'no_debit' END \
-         WHERE path IN ('Liabilities:Wallet', 'Equity:Bonus', 'Liabilities:CreditLine', \
-                        'Assets:CreditFacility')"
+         WHERE path IN ('Liabilities:Wallet', 'Equity:Bonus', 'Equity:Promo', \
+                        'Liabilities:CreditLine', 'Assets:CreditFacility')"
     ))
     .execute(&pool)
     .await
     .unwrap();
-    assert_eq!(weakened.rows_affected(), 4);
+    assert_eq!(weakened.rows_affected(), 5);
 
     // Including the constraint that stored code was allowed by. `CREATE TABLE IF NOT EXISTS`
     // would leave it exactly as it is, so the migration has to widen it — otherwise the limit
@@ -400,18 +402,19 @@ async fn opening_a_wallet_tightens_a_ledger_written_under_the_old_rule() {
     let w = Wallet::open(pool.clone(), &tenant).await.unwrap();
     let stored: Vec<String> = sqlx::query_scalar(&format!(
         "SELECT balance_limit FROM ledger_{tenant}.accounts \
-         WHERE path IN ('Liabilities:Wallet', 'Equity:Bonus', 'Liabilities:CreditLine', \
-                        'Assets:CreditFacility') ORDER BY path"
+         WHERE path IN ('Liabilities:Wallet', 'Equity:Bonus', 'Equity:Promo', \
+                        'Liabilities:CreditLine', 'Assets:CreditFacility') ORDER BY path"
     ))
     .fetch_all(&pool)
     .await
     .unwrap();
-    // Ordered by path: Assets:CreditFacility first, then the three pools —
-    // Equity:Bonus, Liabilities:CreditLine, Liabilities:Wallet.
+    // Ordered by path: Assets:CreditFacility first, then the four pools —
+    // Equity:Bonus, Equity:Promo, Liabilities:CreditLine, Liabilities:Wallet.
     assert_eq!(
         stored,
         [
             "no_credit",
+            "funded_reservations",
             "funded_reservations",
             "funded_reservations",
             "funded_reservations"
@@ -1307,8 +1310,10 @@ async fn concurrent_holds_cannot_overdraw_the_line() {
     }
     let mut held = 0;
     for j in joins {
-        if j.await.unwrap().is_ok() {
-            held += 1;
+        match j.await.unwrap() {
+            Ok(_) => held += 1,
+            Err(WalletError::InsufficientFunds) => {}
+            Err(e) => panic!("unexpected: {e:?}"),
         }
     }
     assert_eq!(held, 10);

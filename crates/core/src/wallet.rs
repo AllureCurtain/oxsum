@@ -41,6 +41,16 @@ pub(crate) const WALLET: &str = "Liabilities:Wallet";
 /// docs/decisions.md). Equity, because the platform contributes it and no cash
 /// ever stood behind it.
 pub(crate) const BONUS: &str = "Equity:Bonus";
+/// Promotional credit — the grant pool the `oxsum.promo_lots` rows project
+/// (issue #609). A promo lot is a grant with a provenance and an optional
+/// expiry, so its money spends before every other pool: it is the balance that
+/// can be lost. Equity like the bonus pool, and never refundable — expiry and
+/// correction burn it to [`PROMO_EXPIRY`], never back to cash.
+pub(crate) const PROMO: &str = "Equity:Promo";
+/// Where expired or cancelled promo credit goes: `debit Promo / credit
+/// PromoExpiry` is the net-zero marker that records the lapse beside the grant
+/// — the amount leaves the spendable pool and can never return to one.
+pub(crate) const PROMO_EXPIRY: &str = "Equity:PromoExpiry";
 const CASH: &str = "Assets:Cash";
 const REVENUE: &str = "Income:Usage";
 /// Operator-side money that is neither cash received nor usage revenue: admin
@@ -69,6 +79,13 @@ pub(crate) const FACILITY: &str = "Assets:CreditFacility";
 /// a charge, so it must not count as settled wallet spend.
 const RECLASS_KEY: &str = "pool-reclassification";
 
+/// The idempotency key under which the promo-lots migration (issue #609) posts
+/// its `debit Bonus, credit Promo` entry — the aggregate legacy bonus moving
+/// into a `legacy_migration` lot. Fixed like [`RECLASS_KEY`]: a re-open finds
+/// the entry and does nothing, and spend reads exclude the rebalancing the
+/// same way.
+const LEGACY_PROMO_KEY: &str = "legacy-promo-migration";
+
 /// How many times a pool-splitting write recomputes its split before giving up.
 /// Each retry re-reads pool balances, so a loser only loops while racing appends
 /// keep moving the pools under it; a write the combined balance genuinely cannot
@@ -96,11 +113,24 @@ const KEY_QUEUE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 /// loser only loops while racers keep landing in between.
 const OPEN_RACE_ATTEMPTS: usize = 3;
 
-/// How one amount divides across the funded pools — bonus, then purchased
-/// wallet, then the credit line. Any side may be zero; the parts always sum to
-/// the amount the split was computed for.
+/// How many times a `hold` may lose the ledger's append lock to a racing writer
+/// before refusing `PoolBusy`: each miss drops the transaction's connection and
+/// sleeps `LOCK_WAIT_BACKOFF` off the pool, so the count times the patience
+/// window, not the contention depth. Sized so a queued burst drains — a busy
+/// ledger appends in milliseconds — rather than on the pool's acquire timeout.
+const LOCK_WAIT_ATTEMPTS: usize = 250;
+
+/// How long a hold that lost the append-lock claim sleeps before re-checking —
+/// async time, so the wait costs no connection.
+const LOCK_WAIT_BACKOFF: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// How one amount divides across the funded pools — promo first (it is the
+/// money that can expire), then the bonus pool, the purchased wallet, and the
+/// credit line last. Any side may be zero; the parts always sum to the amount
+/// the split was computed for.
 #[derive(Clone, Copy)]
 struct PoolSplit {
+    promo: i64,
     bonus: i64,
     wallet: i64,
     credit: i64,
@@ -108,7 +138,7 @@ struct PoolSplit {
 
 impl PoolSplit {
     fn total(&self) -> i64 {
-        self.bonus + self.wallet + self.credit
+        self.promo + self.bonus + self.wallet + self.credit
     }
 }
 
@@ -136,16 +166,23 @@ const FACILITY_LIMIT: BalanceLimit = BalanceLimit::NoCreditBalance;
 
 /// One tenant's wallet ledger.
 ///
-/// Seven fixed accounts:
+/// Nine fixed accounts:
 /// - wallet: the purchased balance owed to the user, a liability. Carries
 ///   `FundedReservations`: no overdraft, and no release beyond what was reserved.
 /// - bonus: granted credit, equity. Carries the same limit — a pool is what a
 ///   hold reserves against and a settlement draws down, so the same invariants
 ///   apply on both sides of the split.
+/// - promo: promotional credit, equity under the same limit again, and the
+///   pool every funded draw takes first because it is the money that can
+///   expire. The `oxsum.promo_lots` rows say which grant still funds how much
+///   of it; `promo_draws` pins which lots each hold reserved.
+/// - promo expiry: the equity sink an expired or cancelled lot's unspent
+///   remainder posts to — a net-zero marker, never a return to refundable
+///   money.
 /// - credit line: the drawable part of the operator-granted credit facility, a
 ///   liability under the same limit again. Holds and settlements draw it only
-///   after bonus and purchased funds exhaust; the organization owes limit minus
-///   its balance.
+///   after promo, bonus and purchased funds exhaust; the organization owes
+///   limit minus its balance.
 /// - credit facility: the committed limit, an asset kept gross of draws.
 /// - cash: money received from top-ups.
 /// - revenue: income recognized on settlement.
@@ -156,6 +193,8 @@ pub struct Wallet {
     registry: AccountRegistry,
     wallet: AccountId,
     bonus: AccountId,
+    promo: AccountId,
+    promo_expiry: AccountId,
     credit_line: AccountId,
     facility: AccountId,
     cash: AccountId,
@@ -391,11 +430,55 @@ impl Wallet {
                         && e.constraint() == Some("pg_namespace_nspname_index")) => {}
             r => r.map(|_| ())?,
         }
+        // An open that raced another opener through `migrate` can deadlock with
+        // the loser's schema DDL: the winner's `persist_accounts` or lazy-
+        // migration appends write into tables the loser's `IF NOT EXISTS`
+        // re-walk still touches with DDL-grade locks, and a deadlock picks one
+        // to kill. `40P01` is that race, not corruption — every stage is
+        // idempotent (the migrate lock, the upserts, the marker-keyed lazy
+        // migrations), so the whole open simply restarts.
+        let mut open_attempts = OPEN_RACE_ATTEMPTS;
+        let registry = loop {
+            match Self::bootstrap(&store, tenant_id).await {
+                Err(e) if open_attempts > 0 && is_deadlock(&e) => {
+                    open_attempts -= 1;
+                }
+                r => break r?,
+            }
+        };
+
+        let wallet = Self {
+            wallet: find_account(&registry, WALLET)?,
+            bonus: find_account(&registry, BONUS)?,
+            promo: find_account(&registry, PROMO)?,
+            promo_expiry: find_account(&registry, PROMO_EXPIRY)?,
+            credit_line: find_account(&registry, CREDIT_LINE)?,
+            facility: find_account(&registry, FACILITY)?,
+            cash: find_account(&registry, CASH)?,
+            revenue: find_account(&registry, REVENUE)?,
+            adjustments: find_account(&registry, ADJUSTMENTS)?,
+            store,
+            registry,
+
+            policy: LedgerPolicy::default(),
+            tenant_id: tenant_id.to_owned(),
+            key_queue: std::sync::Arc::default(),
+        };
+        Ok(wallet)
+    }
+
+    /// The restartable body of [`open`](Self::open): schema, account registry
+    /// and the lazy migrations, for the deadlock retry to re-run. Returns the
+    /// converged registry; the caller's `store` is the same one throughout.
+    async fn bootstrap(
+        store: &PostgresStore<SCALE>,
+        tenant_id: &str,
+    ) -> Result<AccountRegistry, WalletError> {
         store.migrate().await?;
 
         // Account handles must be restored from storage on restart. Re-registering by
         // path could mint different handle numbers and mispoint historical entries.
-        // The seven the wallet needs are registered wherever the store lacks them —
+        // The nine the wallet needs are registered wherever the store lacks them —
         // a second opener can read while the first is still mid-bootstrap, and a read
         // that finds some of them has to converge, not fail on the half it can see.
         let mut attempts = OPEN_RACE_ATTEMPTS;
@@ -405,6 +488,8 @@ impl Wallet {
             for path in [
                 WALLET,
                 BONUS,
+                PROMO,
+                PROMO_EXPIRY,
                 CREDIT_LINE,
                 FACILITY,
                 CASH,
@@ -422,15 +507,16 @@ impl Wallet {
             // tightened here instead of keeping that rule for the rest of its life.
             let wallet = find_account(&registry, WALLET)?;
             let bonus = find_account(&registry, BONUS)?;
+            let promo = find_account(&registry, PROMO)?;
             let credit_line = find_account(&registry, CREDIT_LINE)?;
             let facility = find_account(&registry, FACILITY)?;
             let weakened = registry.records().iter().any(|r| {
-                ((r.id == wallet || r.id == bonus || r.id == credit_line)
+                ((r.id == wallet || r.id == bonus || r.id == promo || r.id == credit_line)
                     && r.account.limit != WALLET_LIMIT)
                     || (r.id == facility && r.account.limit != FACILITY_LIMIT)
             });
             if weakened {
-                for account in [wallet, bonus, credit_line] {
+                for account in [wallet, bonus, promo, credit_line] {
                     registry.set_limit(account, WALLET_LIMIT).map_err(invalid)?;
                 }
                 registry
@@ -443,7 +529,7 @@ impl Wallet {
             // same rows. The upsert's arbiter is the handle, though: a racer that commits
             // between our read and our write leaves the loser's insert to violate the *path*
             // unique constraint instead — read the winner's rows again and converge on them.
-            match persist_accounts(&store, &registry).await {
+            match persist_accounts(store, &registry).await {
                 Ok(()) => break registry,
                 Err(error) if attempts > 0 && is_unique_violation(&error) => {
                     attempts -= 1;
@@ -452,29 +538,38 @@ impl Wallet {
             }
         };
 
-        let wallet = Self {
-            wallet: find_account(&registry, WALLET)?,
-            bonus: find_account(&registry, BONUS)?,
-            credit_line: find_account(&registry, CREDIT_LINE)?,
-            facility: find_account(&registry, FACILITY)?,
-            cash: find_account(&registry, CASH)?,
-            revenue: find_account(&registry, REVENUE)?,
-            adjustments: find_account(&registry, ADJUSTMENTS)?,
-            store,
-            registry,
-
-            policy: LedgerPolicy::default(),
-            tenant_id: tenant_id.to_owned(),
-            key_queue: std::sync::Arc::default(),
-        };
         // Ledgers opened for the first time under the two-pool model move their
         // unspent historical grants into Bonus here — once per ledger, marked by
         // the entry's fixed idempotency key. Doing it at open keeps the migration
         // lazy: a tenant pays for its own reclassification the first time it is
         // used under the new code rather than every `Db::migrate` paying for all
-        // of them under the global lock.
+        // of them under the global lock. The promo-lots model (issue #609)
+        // migrates the aggregate bonus pool's unreserved balance into a
+        // `legacy_migration` lot the same lazy way — the money never leaves the
+        // pools, so net balances cannot move. Both run through a bootstrap
+        // `Wallet` built on the freshly-read registry: the handles are the
+        // store's own account ids, so the migrations' appends land exactly where
+        // the returned `Wallet` will read them.
+        let wallet = Self {
+            wallet: find_account(&registry, WALLET)?,
+            bonus: find_account(&registry, BONUS)?,
+            promo: find_account(&registry, PROMO)?,
+            promo_expiry: find_account(&registry, PROMO_EXPIRY)?,
+            credit_line: find_account(&registry, CREDIT_LINE)?,
+            facility: find_account(&registry, FACILITY)?,
+            cash: find_account(&registry, CASH)?,
+            revenue: find_account(&registry, REVENUE)?,
+            adjustments: find_account(&registry, ADJUSTMENTS)?,
+            store: store.clone(),
+            registry: registry.clone(),
+
+            policy: LedgerPolicy::default(),
+            tenant_id: tenant_id.to_owned(),
+            key_queue: std::sync::Arc::default(),
+        };
         wallet.reclassify_grants().await?;
-        Ok(wallet)
+        wallet.migrate_legacy_bonus().await?;
+        Ok(registry)
     }
 
     /// The tenant id this ledger belongs to: the identity its signed tree heads carry.
@@ -1050,23 +1145,81 @@ impl Wallet {
                 ));
             }
         }
-        let mut last_err = None;
-        for _ in 0..POOL_SPLIT_ATTEMPTS {
-            // The split's read borrows a connection only for itself: holding one
-            // while the append waits for another would starve the pool under
-            // concurrent holds.
-            let split = {
-                let mut conn = self.store.pool().acquire().await?;
-                self.pool_split(&mut conn, minor).await?
-            };
+        // The lock-wait itself is bounded off the pool: `pg_try_advisory_xact_lock`
+        // answers immediately, so a hold that loses the race drops its
+        // connection and sleeps on async time rather than pinning it through a
+        // lock wait — enough queued holds on one tenant would otherwise exhaust
+        // the shared pool behind the append lock (issue #486's doctrine, moved
+        // one level down to the ledger lock the tx ends on). Waiters past the
+        // patience window get the same `PoolBusy` a saturated checkout answers.
+        let mut lock_waits = LOCK_WAIT_ATTEMPTS;
+        let mut split_attempts = POOL_SPLIT_ATTEMPTS;
+        loop {
+            // The split, the pinned promo draws and the hold append share one
+            // transaction: the `promo_draws` rows name the lots whose
+            // `remaining_minor` this hold decremented, so settlement debits the
+            // rows admission picked rather than re-scanning, and the pending
+            // debit the entry posts commits beside them or not at all (issue
+            // #609). Holding the transaction's connection through the append
+            // costs nothing the split's borrowed read did not already — the
+            // append is the same connection the draw-pinning rides.
+            let mut tx = self.store.pool().begin().await?;
+            // Claim the ledger's append lock up front, without waiting on the
+            // connection: the engine takes it re-entrantly inside `append_in`
+            // (`pg_advisory_xact_lock` counts per session), so a held lock
+            // here means the append below never waits — and a lost claim means
+            // this hold frees the connection it would have waited on. A
+            // lock-wait miss is not a split attempt — the balance read has not
+            // happened yet, so there is nothing a racing append invalidated.
+            let claimed: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
+                .bind(self.store.append_lock())
+                .fetch_one(&mut *tx)
+                .await?;
+            if !claimed {
+                tx.rollback().await?;
+                lock_waits -= 1;
+                if lock_waits == 0 {
+                    return Err(WalletError::PoolBusy);
+                }
+                tokio::time::sleep(LOCK_WAIT_BACKOFF).await;
+                continue;
+            }
+            let split = self.pool_split(&mut tx, minor).await?;
+            if split.promo > 0 {
+                self.pin_promo_draws_in(&mut tx, key, split.promo).await?;
+            }
             let receipt = self
-                .append(self.hold_entry(key, &description, split, actor.clone(), on)?)
+                .append_in(
+                    &mut tx,
+                    self.hold_entry(key, &description, split, actor.clone(), on)?,
+                )
                 .await;
             match receipt {
-                Err(error @ WalletError::InsufficientFunds) => last_err = Some(error),
+                Err(error @ WalletError::InsufficientFunds) => {
+                    tx.rollback().await?;
+                    split_attempts -= 1;
+                    if split_attempts == 0 {
+                        return Err(error);
+                    }
+                }
+                // A concurrent `Wallet::open` on this same tenant can still be
+                // walking `apply_schema`'s DDL when this hold writes: AccessExclusive
+                // on the ledger tables against the append's RowExclusive is a
+                // textbook cycle — a `40P01`, not corruption. The append is
+                // deterministic against committed state, so the retry re-reads
+                // and lands.
+                Err(error) if is_deadlock(&error) => {
+                    tx.rollback().await?;
+                    lock_waits -= 1;
+                    if lock_waits == 0 {
+                        return Err(error);
+                    }
+                    tokio::time::sleep(LOCK_WAIT_BACKOFF).await;
+                }
                 // The key was taken between our read and the append — by a
                 // racing copy of this same request or by a different one.
                 Err(WalletError::Conflict(_)) => {
+                    tx.rollback().await?;
                     return match self.store.get(entry_id).await? {
                         Some(stored) => {
                             self.hold_replay(&stored, &description, actor.as_ref(), minor, key)
@@ -1076,10 +1229,16 @@ impl Wallet {
                         ))),
                     };
                 }
-                other => return other,
+                Ok(receipt) => {
+                    tx.commit().await?;
+                    return Ok(receipt);
+                }
+                Err(error) => {
+                    tx.rollback().await?;
+                    return Err(error);
+                }
             }
         }
-        Err(last_err.unwrap_or(WalletError::InsufficientFunds))
     }
 
     /// Answers for a key that already has a committed entry: the stored
@@ -1126,8 +1285,9 @@ impl Wallet {
         }
     }
 
-    /// The split of `minor` across the pools, own funds first: the bonus pool
-    /// funds what it can, the purchased wallet carries what it can, and the
+    /// The split of `minor` across the pools, most-restricted money first: the
+    /// promo pool funds what it can — it is the balance that can expire — then
+    /// the bonus pool, the purchased wallet carries what it can, and the
     /// credit line picks up the rest. `split.total() == minor` always; any side
     /// may be zero, and `credit` above what the line still carries is what the
     /// append's `FundedReservations` check refuses.
@@ -1136,12 +1296,15 @@ impl Wallet {
         conn: &mut sqlx::PgConnection,
         minor: i64,
     ) -> Result<PoolSplit, WalletError> {
-        let bonus = minor.min(self.pool_available_in(conn, self.bonus).await?.max(0));
-        let wallet = (minor - bonus).min(self.pool_available_in(conn, self.wallet).await?.max(0));
+        let promo = minor.min(self.pool_available_in(conn, self.promo).await?.max(0));
+        let bonus = (minor - promo).min(self.pool_available_in(conn, self.bonus).await?.max(0));
+        let wallet =
+            (minor - promo - bonus).min(self.pool_available_in(conn, self.wallet).await?.max(0));
         Ok(PoolSplit {
+            promo,
             bonus,
             wallet,
-            credit: minor - bonus - wallet,
+            credit: minor - promo - bonus - wallet,
         })
     }
 
@@ -1163,6 +1326,7 @@ impl Wallet {
             draft = draft.with_provenance(actor);
         }
         for (account, part) in [
+            (self.promo, split.promo),
             (self.bonus, split.bonus),
             (self.wallet, split.wallet),
             (self.credit_line, split.credit),
@@ -1354,9 +1518,7 @@ impl Wallet {
                 }
             }
             let split = self.pool_split(&mut tx, minor).await?;
-            let entry = self
-                .seal(self.hold_entry(idem_key, &description, split, Some(actor.clone()), on)?)
-                .await?;
+            let draft = self.hold_entry(idem_key, &description, split, Some(actor.clone()), on)?;
             {
                 use sqlx::Row;
                 // Like the limit, the allowlist guards new spend: a replayed hold answers
@@ -1478,7 +1640,17 @@ impl Wallet {
                     }
                 }
             }
-            match self.append_sealed(entry).await {
+            // The promo part of the split pins its lots here, inside the hold's
+            // transaction, just before the entry appends into the same one:
+            // `promo_draws` names which lots fund `split.promo`, so the
+            // settlement debits the rows admission picked and a release returns
+            // to exactly them — never a re-scan. The draw decrement and the
+            // pending debit commit or roll back together (issue #609).
+            if split.promo > 0 {
+                self.pin_promo_draws_in(&mut tx, idem_key, split.promo)
+                    .await?;
+            }
+            match self.append_in(&mut tx, draft).await {
                 Err(error @ WalletError::InsufficientFunds) => {
                     tx.rollback().await?;
                     last_err = Some(error);
@@ -2138,14 +2310,20 @@ impl Wallet {
                 "actual must be within 0..=held".into(),
             ));
         }
-        let (bonus_held, wallet_held, credit_held, outstanding_actor, outstanding_correlation) =
-            self.outstanding_hold(hold_key).await?;
-        if actual_minor > bonus_held + wallet_held + credit_held {
+        let (
+            promo_held,
+            bonus_held,
+            wallet_held,
+            credit_held,
+            outstanding_actor,
+            outstanding_correlation,
+        ) = self.outstanding_hold(hold_key).await?;
+        if actual_minor > promo_held + bonus_held + wallet_held + credit_held {
             return Err(WalletError::InvalidInput(
                 "actual must be within 0..=held".into(),
             ));
         }
-        let held = Credits::from_minor(bonus_held + wallet_held + credit_held);
+        let held = Credits::from_minor(promo_held + bonus_held + wallet_held + credit_held);
         let settle_key = settlement_key_for(hold_key);
         let mut draft =
             Entry::<Draft, SCALE>::new(entry_id_for(&settle_key), idem(&settle_key)?, on)
@@ -2168,6 +2346,7 @@ impl Wallet {
         }
         // The release returns exactly what the hold reserved in each pool.
         for (account, held_part) in [
+            (self.promo, promo_held),
             (self.bonus, bonus_held),
             (self.wallet, wallet_held),
             (self.credit_line, credit_held),
@@ -2181,14 +2360,17 @@ impl Wallet {
         }
         draft = draft.post(Posting::debit(self.revenue, held, currency()).in_layer(Layer::Pending));
         if actual_minor > 0 {
-            // The charge draws the bonus pool first, then the purchased wallet, then
-            // the credit line — never more than this hold reserved in each, because
-            // taking another hold's reservation is exactly what the per-pool split
-            // exists to prevent.
-            let bonus_take = actual_minor.min(bonus_held);
-            let wallet_take = (actual_minor - bonus_take).min(wallet_held);
-            let credit_take = actual_minor - bonus_take - wallet_take;
+            // The charge draws the promo pool first — it is the money that can
+            // expire — then the bonus pool, the purchased wallet, then the
+            // credit line; never more than this hold reserved in each, because
+            // taking another hold's reservation is exactly what the per-pool
+            // split exists to prevent.
+            let promo_take = actual_minor.min(promo_held);
+            let bonus_take = (actual_minor - promo_take).min(bonus_held);
+            let wallet_take = (actual_minor - promo_take - bonus_take).min(wallet_held);
+            let credit_take = actual_minor - promo_take - bonus_take - wallet_take;
             for (account, take) in [
+                (self.promo, promo_take),
                 (self.bonus, bonus_take),
                 (self.wallet, wallet_take),
                 (self.credit_line, credit_take),
@@ -2199,13 +2381,44 @@ impl Wallet {
             }
             draft = draft.credit(self.revenue, Credits::from_minor(actual_minor), currency());
         }
-        match self.append(draft).await {
+        // The pinned promo draws consume the same transaction the settlement
+        // entry lands in: the uncharged share of a hold's draw returns to the
+        // lot it was pinned on — or burns to `Equity:PromoExpiry` when the lot
+        // already expired or was cancelled — never to refundable money. The
+        // row updates run before the entry; the burn posts after it, because
+        // the release's pending credits are what let the burn's settled debit
+        // keep the pool's `FundedReservations` invariant.
+        let mut tx = self.store.pool().begin().await?;
+        let burn = self
+            .consume_promo_draws_in(&mut tx, hold_key, promo_held, actual_minor)
+            .await?;
+        match self.append_in(&mut tx, draft).await {
+            Ok(receipt) => {
+                if burn > 0 {
+                    // Released into a closed lot: the burn posts after the
+                    // release's pending credits, so the promo pool's settled
+                    // balance still covers the debit it takes.
+                    if let Err(error) = self
+                        .burn_promo_in(&mut tx, &format!("{hold_key}:promo-burn"), burn, on)
+                        .await
+                    {
+                        tx.rollback().await?;
+                        return Err(error);
+                    }
+                }
+                tx.commit().await?;
+                Ok(receipt)
+            }
             // The settlement's idempotency key is derived from the hold's key, so a key
             // conflict here means exactly one thing: the hold was already settled.
             Err(WalletError::Conflict(_)) => {
+                tx.rollback().await?;
                 Err(WalletError::Conflict("hold already settled".into()))
             }
-            other => other,
+            Err(error) => {
+                tx.rollback().await?;
+                Err(error)
+            }
         }
     }
 
@@ -2244,14 +2457,20 @@ impl Wallet {
                 "actual must be within 0..=held".into(),
             ));
         }
-        let (bonus_held, wallet_held, credit_held, outstanding_actor, outstanding_correlation) =
-            self.outstanding_hold(hold_key).await?;
-        if actual_minor > bonus_held + wallet_held + credit_held {
+        let (
+            promo_held,
+            bonus_held,
+            wallet_held,
+            credit_held,
+            outstanding_actor,
+            outstanding_correlation,
+        ) = self.outstanding_hold(hold_key).await?;
+        if actual_minor > promo_held + bonus_held + wallet_held + credit_held {
             return Err(WalletError::InvalidInput(
                 "actual must be within 0..=held".into(),
             ));
         }
-        let held = Credits::from_minor(bonus_held + wallet_held + credit_held);
+        let held = Credits::from_minor(promo_held + bonus_held + wallet_held + credit_held);
         let settle_key = settlement_key_for(hold_key);
         let mut draft =
             Entry::<Draft, SCALE>::new(entry_id_for(&settle_key), idem(&settle_key)?, on)
@@ -2267,6 +2486,7 @@ impl Wallet {
             draft = draft.with_provenance(provenance);
         }
         for (account, held_part) in [
+            (self.promo, promo_held),
             (self.bonus, bonus_held),
             (self.wallet, wallet_held),
             (self.credit_line, credit_held),
@@ -2280,10 +2500,12 @@ impl Wallet {
         }
         draft = draft.post(Posting::debit(self.revenue, held, currency()).in_layer(Layer::Pending));
         if actual_minor > 0 {
-            let bonus_take = actual_minor.min(bonus_held);
-            let wallet_take = (actual_minor - bonus_take).min(wallet_held);
-            let credit_take = actual_minor - bonus_take - wallet_take;
+            let promo_take = actual_minor.min(promo_held);
+            let bonus_take = (actual_minor - promo_take).min(bonus_held);
+            let wallet_take = (actual_minor - promo_take - bonus_take).min(wallet_held);
+            let credit_take = actual_minor - promo_take - bonus_take - wallet_take;
             for (account, take) in [
+                (self.promo, promo_take),
                 (self.bonus, bonus_take),
                 (self.wallet, wallet_take),
                 (self.credit_line, credit_take),
@@ -2294,11 +2516,27 @@ impl Wallet {
             }
             draft = draft.credit(self.revenue, Credits::from_minor(actual_minor), currency());
         }
+        // The pinned promo draws consume inside the caller's transaction: the
+        // charged part debits the lots the hold named, the released part
+        // returns to them — or burns to `Equity:PromoExpiry` for a closed lot.
+        // The burn posts after the release's pending credits, like `settle`'s.
+        let burn = self
+            .consume_promo_draws_in(tx, hold_key, promo_held, actual_minor)
+            .await?;
         match self.append_in(tx, draft).await {
             Err(WalletError::Conflict(_)) => {
                 Err(WalletError::Conflict("hold already settled".into()))
             }
-            other => other,
+            other => match other {
+                Ok(receipt) => {
+                    if burn > 0 {
+                        self.burn_promo_in(tx, &format!("{hold_key}:promo-burn"), burn, on)
+                            .await?;
+                    }
+                    Ok(receipt)
+                }
+                Err(error) => Err(error),
+            },
         }
     }
 
@@ -2469,7 +2707,7 @@ impl Wallet {
     /// Storage failures surface as [`WalletError`].
     pub async fn available_in(&self, conn: &mut sqlx::PgConnection) -> Result<i64, WalletError> {
         let mut total = 0i64;
-        for account in [self.bonus, self.wallet, self.credit_line] {
+        for account in [self.promo, self.bonus, self.wallet, self.credit_line] {
             total += self.pool_available_in(conn, account).await?;
         }
         Ok(total)
@@ -2719,7 +2957,7 @@ impl Wallet {
     /// The gross debits, not the layer's net: a top-up credits the same layer, and
     /// subtracting the credits would read a month of top-ups as negative spend. Holds
     /// live in the pending layer, so an outstanding hold is not spend either, the
-    /// pool reclassification is excluded by its idempotency key — moving money
+    /// pool reclassifications are excluded by their idempotency keys — moving money
     /// between pools is not spend — and a credit-limit change is excluded by the
     /// facility leg it always carries: shrinking the line debits the credit pool,
     /// but giving the organization less credit is not charging it. A window in
@@ -2732,7 +2970,7 @@ impl Wallet {
              JOIN ledger_{schema}.entries e ON e.entry_id = p.entry_id \
              WHERE p.account_index = ANY($1) AND p.direction = 'D' AND p.layer = 'settled' \
                AND e.log_index IS NOT NULL AND e.booking_date >= $2 \
-               AND e.idempotency_key <> $3 \
+               AND e.idempotency_key <> ALL($3) \
                AND NOT EXISTS (SELECT 1 FROM ledger_{schema}.postings f \
                                WHERE f.entry_id = p.entry_id AND f.account_index = $4)",
             schema = self.tenant_id,
@@ -2741,10 +2979,14 @@ impl Wallet {
             .bind(vec![
                 self.wallet.index() as i32,
                 self.bonus.index() as i32,
+                self.promo.index() as i32,
                 self.credit_line.index() as i32,
             ])
             .bind(from)
-            .bind(RECLASS_KEY.as_bytes())
+            .bind(vec![
+                RECLASS_KEY.as_bytes().to_vec(),
+                LEGACY_PROMO_KEY.as_bytes().to_vec(),
+            ])
             .bind(self.facility.index() as i32)
             .fetch_one(&mut *conn)
             .await?;
@@ -2847,10 +3089,10 @@ impl Wallet {
         self.store.seals().await.map_err(Into::into)
     }
 
-    /// What the hold taken under `hold_key` reserved in each pool — the bonus
-    /// part, the wallet part, then the credit-line part — plus the provenance
-    /// actor the hold attributed to: the API key whose spend it counts toward,
-    /// if the hold named one.
+    /// What the hold taken under `hold_key` reserved in each pool — the promo
+    /// part first, then the bonus, the wallet and the credit-line parts — plus
+    /// the provenance actor the hold attributed to: the API key whose spend it
+    /// counts toward, if the hold named one.
     ///
     /// The hold entry is found by the id it was given when the hold was taken
     /// ([`entry_id_for`] of the key), and the amounts are the entry's pending-layer
@@ -2860,12 +3102,13 @@ impl Wallet {
     async fn outstanding_hold(
         &self,
         hold_key: &str,
-    ) -> Result<(i64, i64, i64, Option<String>, Option<String>), WalletError> {
+    ) -> Result<(i64, i64, i64, i64, Option<String>, Option<String>), WalletError> {
         let Some(stored) = self.store.get(entry_id_for(hold_key)).await? else {
             return Err(WalletError::HoldNotFound(format!(
                 "no hold under key {hold_key:?}"
             )));
         };
+        let mut promo_held = 0;
         let mut bonus_held = 0;
         let mut wallet_held = 0;
         let mut credit_held = 0;
@@ -2877,7 +3120,9 @@ impl Wallet {
                 Direction::Debit => p.amount.to_minor(),
                 Direction::Credit => -p.amount.to_minor(),
             };
-            if p.account == self.bonus {
+            if p.account == self.promo {
+                promo_held += signed;
+            } else if p.account == self.bonus {
                 bonus_held += signed;
             } else if p.account == self.wallet {
                 wallet_held += signed;
@@ -2885,7 +3130,7 @@ impl Wallet {
                 credit_held += signed;
             }
         }
-        if bonus_held + wallet_held + credit_held <= 0 {
+        if promo_held + bonus_held + wallet_held + credit_held <= 0 {
             return Err(WalletError::HoldNotFound(format!(
                 "key {hold_key:?} does not name a hold"
             )));
@@ -2899,7 +3144,14 @@ impl Wallet {
             .correlation
             .as_ref()
             .map(|correlation| correlation.as_str().to_owned());
-        Ok((bonus_held, wallet_held, credit_held, actor, correlation))
+        Ok((
+            promo_held,
+            bonus_held,
+            wallet_held,
+            credit_held,
+            actor,
+            correlation,
+        ))
     }
 
     /// The one-time pool migration (decision D1): moves the unspent remainder of
@@ -3006,7 +3258,382 @@ impl Wallet {
         }
     }
 
-    /// Builds the proof bundle for one entry. Returns None when the entry does not exist.
+    /// The one-time promo migration (issue #609): moves the aggregate bonus
+    /// pool's *unreserved* balance into a `legacy_migration` promo lot, so the
+    /// historical grants the two-pool reclassification parked in `Equity:Bonus`
+    /// become a lot like every other — the ledger balance moves `debit Bonus /
+    /// credit Promo`, a net-zero rebalancing between two spend-first pools.
+    ///
+    /// Only the *available* part of the bonus pool migrates: a hold taken
+    /// before this build keeps its pending debit on Bonus, and its settlement
+    /// still releases and charges through that pool — so the migration moves
+    /// `settled + pending-net`, leaving the exact amount the in-flight
+    /// reservations may still draw. The lot the remainder lands in never
+    /// expires (`expires_at NULL`), and its `source_ref` is the tenant id, so
+    /// the unique lot anchor and the fixed entry key both make a rerun a
+    /// no-op. Returns whether a lot was written.
+    async fn migrate_legacy_bonus(&self) -> Result<bool, WalletError> {
+        // The marker is the migration lot's own row plus the ledger entry's
+        // fixed key: either alone proves the move ran, but checking the ledger
+        // key first keeps the path identical to `reclassify_grants`.
+        let schema = &self.tenant_id;
+        let amount = {
+            let mut conn = self.store.pool().acquire().await?;
+            let done: bool = sqlx::query_scalar(&format!(
+                "SELECT EXISTS (SELECT 1 FROM ledger_{schema}.entries WHERE idempotency_key = $1)"
+            ))
+            .bind(LEGACY_PROMO_KEY.as_bytes())
+            .fetch_one(&mut *conn)
+            .await?;
+            if done {
+                return Ok(false);
+            }
+            // What the bonus pool can still fund: its settled balance minus the
+            // reservations pending holds already carry. Migrating that figure
+            // leaves every in-flight bonus hold the settled balance it may
+            // settle against.
+            self.pool_available_in(&mut conn, self.bonus).await?.max(0)
+        };
+        if amount == 0 {
+            // Nothing to migrate — but the marker still lands, so a wallet that
+            // earned bonus credit later (impossible under this build: `adjust`
+            // credits Bonus only) or that reopens cannot re-run the move.
+            return Ok(false);
+        }
+        let on = OffsetDateTime::now_utc().date();
+        let mut tx = self.store.pool().begin().await?;
+        // The lot row and the ledger move are one transaction: the grant
+        // cannot exist without the projection that names it.
+        let lot_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO oxsum.promo_lots\
+             (lot_id, organization_id, source, source_ref, amount_minor, remaining_minor, expires_at) \
+             VALUES ($1, $2, 'legacy_migration', $3, $4, $4, NULL) \
+             ON CONFLICT (organization_id, source, source_ref) DO NOTHING",
+        )
+        .bind(lot_id)
+        .bind(self.organization_id_hint().await?)
+        .bind(&self.tenant_id)
+        .bind(amount)
+        .execute(&mut *tx)
+        .await?;
+        let amt = Credits::from_minor(amount);
+        let appended = self
+            .append_in(
+                &mut tx,
+                Entry::<Draft, SCALE>::new(
+                    entry_id_for(LEGACY_PROMO_KEY),
+                    idem(LEGACY_PROMO_KEY)?,
+                    on,
+                )
+                .with_description(description_of("legacy bonus migrates to a promo lot")?)
+                .debit(self.bonus, amt, currency())
+                .credit(self.promo, amt, currency()),
+            )
+            .await;
+        match appended {
+            Ok(_) => {
+                tx.commit().await?;
+                Ok(true)
+            }
+            Err(e) => {
+                tx.rollback().await?;
+                // A racing open may have committed while this one read; the
+                // fixed key is the arbiter, like `reclassify_grants`.
+                let mut conn = self.store.pool().acquire().await?;
+                let done: bool = sqlx::query_scalar(&format!(
+                    "SELECT EXISTS (SELECT 1 FROM ledger_{schema}.entries WHERE idempotency_key = $1)"
+                ))
+                .bind(LEGACY_PROMO_KEY.as_bytes())
+                .fetch_one(&mut *conn)
+                .await?;
+                if done { Ok(false) } else { Err(e) }
+            }
+        }
+    }
+
+    /// The organization id this wallet's tenant belongs to, looked up for the
+    /// migration lot's `organization_id` — `promo_lots` keys on the
+    /// `oxsum.organizations` identity, not the tenant string. `None` for a bare
+    /// ledger schema with no oxsum row (the generative model world), where the
+    /// migration has nothing to write.
+    async fn organization_id_hint(&self) -> Result<Option<Uuid>, WalletError> {
+        let table: Option<String> =
+            sqlx::query_scalar("SELECT to_regclass('oxsum.organizations')::text")
+                .fetch_one(self.store.pool())
+                .await?;
+        if table.is_none() {
+            return Ok(None);
+        }
+        let organization = sqlx::query_scalar(
+            "SELECT organization_id FROM oxsum.organizations WHERE tenant_id = $1",
+        )
+        .bind(&self.tenant_id)
+        .fetch_optional(self.store.pool())
+        .await?;
+        Ok(organization)
+    }
+
+    /// The promo draw-pinning [`hold`](Self::hold) and
+    /// [`hold_for_key`](Self::hold_for_key) run inside the hold's transaction:
+    /// walks this organization's open lots in deterministic draw order —
+    /// soonest expiry first, never-expiring last — decrements each lot's
+    /// `remaining_minor` by what the hold's promo share takes from it, and
+    /// records each pick in `promo_draws` so the settlement debits the rows
+    /// admission named (issue #609).
+    ///
+    /// The caller already computed `promo_minor` from the ledger's own pool
+    /// availability inside this same transaction, so the lots' rows and the
+    /// pool agree by construction: `FOR UPDATE` serializes the decrement
+    /// against a racing hold's allocation and against the expiry pass, and the
+    /// lot's `CHECK (remaining_minor >= 0)` is the last-line guard a stale read
+    /// could never over-draw.
+    async fn pin_promo_draws_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        hold_key: &str,
+        promo_minor: i64,
+    ) -> Result<(), WalletError> {
+        let Some(organization) = self.organization_id_hint().await? else {
+            // A bare ledger schema has no oxsum rows at all: the promo pool
+            // stays empty there and `pool_split` would never take from it, so
+            // reaching here means the model world asked for promo money it
+            // cannot name — an internal contradiction, not user error.
+            return Err(WalletError::InvalidInput(
+                "promo draws need an organization".into(),
+            ));
+        };
+        let mut left = promo_minor;
+        // Lock in the allocation's own order so two racing holds cannot
+        // deadlock: both walk the same list in the same order. An open lot is
+        // pinnable even past its `expires_at`: the ledger pool counts its
+        // remainder until the expiry pass burns it, so the pin and the split
+        // must agree — and pinning a due lot first is exactly the
+        // most-restricted-money-first order the pools draw in. The pass closes
+        // the row under the same `FOR UPDATE`; a settlement that releases into
+        // the closed lot burns rather than refunds.
+        let lots = sqlx::query(
+            "SELECT lot_id, remaining_minor FROM oxsum.promo_lots \
+             WHERE organization_id = $1 AND closed_at IS NULL AND remaining_minor > 0 \
+             ORDER BY expires_at ASC NULLS LAST, lot_id FOR UPDATE",
+        )
+        .bind(organization)
+        .fetch_all(&mut **tx)
+        .await?;
+        for lot in &lots {
+            use sqlx::Row;
+            if left <= 0 {
+                break;
+            }
+            let lot_id: Uuid = lot.try_get("lot_id")?;
+            let remaining: i64 = lot.try_get("remaining_minor")?;
+            let take = left.min(remaining);
+            sqlx::query(
+                "UPDATE oxsum.promo_lots SET remaining_minor = remaining_minor - $2 \
+                 WHERE lot_id = $1",
+            )
+            .bind(lot_id)
+            .bind(take)
+            .execute(&mut **tx)
+            .await?;
+            sqlx::query(
+                "INSERT INTO oxsum.promo_draws (hold_key, tenant_id, lot_id, amount_minor) \
+                 VALUES ($1, $2, $3, $4)",
+            )
+            .bind(hold_key)
+            .bind(&self.tenant_id)
+            .bind(lot_id)
+            .bind(take)
+            .execute(&mut **tx)
+            .await?;
+            left -= take;
+        }
+        if left > 0 {
+            // The ledger's pool availability and the lots' rows drifted apart —
+            // the invariant tests check — so the hold cannot name the lots its
+            // promo share funds. Refusing is honest; drawing unattributed
+            // promo would let settlement pick a different lot than admission.
+            return Err(WalletError::InsufficientFunds);
+        }
+        Ok(())
+    }
+
+    /// The draw-consumption [`settle`](Self::settle) and
+    /// [`settle_in`](Self::settle_in) run inside the settlement's transaction
+    /// *before* the entry appends: walks the hold's pinned `promo_draws` in
+    /// the order admission took them, marks each row's
+    /// `charged_minor`/`released_minor` (summing to its `amount_minor`
+    /// exactly), and returns each released share to its lot while the lot is
+    /// still open — or totals it for the caller to burn after the entry lands,
+    /// because only the release's pending credits let the burn's settled debit
+    /// keep `FundedReservations`. Returns the amount to burn via
+    /// [`burn_promo_in`](Self::burn_promo_in); 0 when every released share
+    /// went home.
+    ///
+    /// `promo_charged` is `min(actual, promo_held)`: the promo part of the
+    /// charge the entry writes. A drawn-from closed lot burns rather than
+    /// refunds — expiry and correction never turn promo into cash (issue
+    /// #609).
+    async fn consume_promo_draws_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        hold_key: &str,
+        promo_held: i64,
+        actual_minor: i64,
+    ) -> Result<i64, WalletError> {
+        use sqlx::Row;
+        if promo_held <= 0 {
+            return Ok(0);
+        }
+        let promo_charged = actual_minor.min(promo_held);
+        let mut charge_left = promo_charged;
+        let draws = sqlx::query(
+            "SELECT d.lot_id, d.amount_minor, l.closed_at \
+             FROM oxsum.promo_draws d JOIN oxsum.promo_lots l ON l.lot_id = d.lot_id \
+             WHERE d.hold_key = $1 AND d.charged_minor IS NULL \
+             ORDER BY l.expires_at ASC NULLS LAST, d.lot_id \
+             FOR UPDATE OF d, l",
+        )
+        .bind(hold_key)
+        .fetch_all(&mut **tx)
+        .await?;
+        let mut burn = 0i64;
+        for draw in &draws {
+            let lot_id: Uuid = draw.try_get("lot_id")?;
+            let reserved: i64 = draw.try_get("amount_minor")?;
+            let charged = charge_left.min(reserved);
+            charge_left -= charged;
+            let released = reserved - charged;
+            sqlx::query(
+                "UPDATE oxsum.promo_draws SET charged_minor = $2, released_minor = $3 \
+                 WHERE hold_key = $1 AND lot_id = $4",
+            )
+            .bind(hold_key)
+            .bind(charged)
+            .bind(released)
+            .bind(lot_id)
+            .execute(&mut **tx)
+            .await?;
+            if released > 0 {
+                let closed: Option<OffsetDateTime> = draw.try_get("closed_at")?;
+                if closed.is_none() {
+                    // Open lot: the released share returns to the row it was
+                    // pinned on — the deterministic un-draw.
+                    sqlx::query(
+                        "UPDATE oxsum.promo_lots SET remaining_minor = remaining_minor + $2 \
+                         WHERE lot_id = $1",
+                    )
+                    .bind(lot_id)
+                    .bind(released)
+                    .execute(&mut **tx)
+                    .await?;
+                } else {
+                    // Expired or cancelled: the released share can never be
+                    // spent or refunded — the caller burns it to
+                    // `Equity:PromoExpiry` once the release has landed.
+                    burn += released;
+                }
+            }
+        }
+        Ok(burn)
+    }
+
+    /// The promo-leg grant a bundle fulfillment or an admin grant posts:
+    /// `debit Adjustments / credit Promo`, booked inside the caller's
+    /// transaction beside the `promo_lots` row it belongs to. `source` and
+    /// `source_ref` are the lot's provenance and idempotency anchor — the
+    /// unique pair makes a replayed grant a no-op; `expires_at` of `NULL`
+    /// never expires.
+    ///
+    /// Returns `(lot_id, receipt)`; a replay finds the standing lot and its
+    /// standing entry through the anchors rather than granting twice.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn grant_promo_lot_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        organization: Uuid,
+        source: &str,
+        source_ref: &str,
+        ledger_key: &str,
+        minor: i64,
+        expires_at: Option<OffsetDateTime>,
+        on: Date,
+    ) -> Result<(Uuid, Receipt), WalletError> {
+        let amt = positive(minor)?;
+        // Replay first: the standing lot answers with its own id and the entry
+        // id its grant landed under — the anchors make the pair a fact.
+        if let Some(row) = sqlx::query(
+            "SELECT lot_id FROM oxsum.promo_lots \
+             WHERE organization_id = $1 AND source = $2 AND source_ref = $3",
+        )
+        .bind(organization)
+        .bind(source)
+        .bind(source_ref)
+        .fetch_optional(&mut **tx)
+        .await?
+        {
+            use sqlx::Row;
+            let lot_id: Uuid = row.try_get("lot_id")?;
+            let receipt = match self.store.get(entry_id_for(ledger_key)).await? {
+                Some(stored) => stored_receipt(&stored),
+                None => {
+                    return Err(WalletError::InvalidInput(
+                        "the promo grant's ledger entry is missing".into(),
+                    ));
+                }
+            };
+            return Ok((lot_id, receipt));
+        }
+        let lot_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO oxsum.promo_lots\
+             (lot_id, organization_id, source, source_ref, amount_minor, remaining_minor, expires_at) \
+             VALUES ($1, $2, $3, $4, $5, $5, $6)",
+        )
+        .bind(lot_id)
+        .bind(organization)
+        .bind(source)
+        .bind(source_ref)
+        .bind(amt.to_minor())
+        .bind(expires_at)
+        .execute(&mut **tx)
+        .await?;
+        let receipt = self
+            .append_in(
+                tx,
+                Entry::<Draft, SCALE>::new(entry_id_for(ledger_key), idem(ledger_key)?, on)
+                    .with_description(description_of("promo lot grant")?)
+                    .debit(self.adjustments, amt, currency())
+                    .credit(self.promo, amt, currency()),
+            )
+            .await?;
+        Ok((lot_id, receipt))
+    }
+
+    /// The burn posting an expiry or a cancellation writes: `debit Promo /
+    /// credit PromoExpiry`, a net-zero move out of the spendable pool that can
+    /// never return to refundable money (issue #609). `burn_key` names the
+    /// event — `promo-expire:<lot>` or `promo-cancel:<lot>` — so a replayed
+    /// pass posts the same entry once. Runs inside the caller's transaction
+    /// beside the lot's own close, so the burn and the row update commit or
+    /// roll back together.
+    pub(crate) async fn burn_promo_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        burn_key: &str,
+        minor: i64,
+        on: Date,
+    ) -> Result<Receipt, WalletError> {
+        let amt = positive(minor)?;
+        self.append_in(
+            tx,
+            Entry::<Draft, SCALE>::new(entry_id_for(burn_key), idem(burn_key)?, on)
+                .with_description(description_of("promo lot expired")?)
+                .debit(self.promo, amt, currency())
+                .credit(self.promo_expiry, amt, currency()),
+        )
+        .await
+    }
     ///
     /// When `key` is the operator's signing key and the entry is a settlement that
     /// names a price, the bundle also carries a [`PriceLink`](oxsum_verify::PriceLink)
@@ -3900,20 +4527,26 @@ impl Wallet {
             .sum()
     }
 
-    /// The three pools' combined balance in one layer. All three are
-    /// credit-normal — the wallet and the credit line are liabilities, the bonus
-    /// pool equity — so a credit balance is the positive side on each.
+    /// The four pools' combined balance in one layer. All four are
+    /// credit-normal — the wallet and the credit line are liabilities, the
+    /// bonus and promo pools equity — so a credit balance is the positive side
+    /// on each.
     async fn pool_net(&self, layer: Layer) -> Result<i64, WalletError> {
         Ok(self.account_net(self.wallet, layer).await?
             + self.account_net(self.bonus, layer).await?
+            + self.account_net(self.promo, layer).await?
             + self.account_net(self.credit_line, layer).await?)
     }
 
     /// Whether the account is one a hold reserves against and a settlement draws:
-    /// the bonus pool, the purchased wallet, or the credit line. The facility
-    /// account is not a pool — nothing ever spends out of it.
+    /// the promo pool, the bonus pool, the purchased wallet, or the credit line.
+    /// The facility and promo-expiry accounts are not pools — nothing ever
+    /// spends out of them.
     fn is_pool(&self, account: AccountId) -> bool {
-        account == self.wallet || account == self.bonus || account == self.credit_line
+        account == self.wallet
+            || account == self.bonus
+            || account == self.promo
+            || account == self.credit_line
     }
 
     /// The bonus pool's settled balance: what a deduction may draw before it
@@ -4342,6 +4975,19 @@ fn is_unique_violation(error: &WalletError) -> bool {
     match error {
         WalletError::Storage(PostgresError::Database(sqlx::Error::Database(e))) => {
             e.code().as_deref() == Some("23505")
+        }
+        _ => false,
+    }
+}
+
+/// Whether the storage error is a deadlock (`40P01`) — the open-path race
+/// between this open's lazy-migration appends and a racing open's schema DDL.
+/// Retrying is safe: both migrations are marker-keyed, so a second pass is a
+/// no-op where the winner's work already landed.
+fn is_deadlock(error: &WalletError) -> bool {
+    match error {
+        WalletError::Storage(PostgresError::Database(sqlx::Error::Database(e))) => {
+            e.code().as_deref() == Some("40P01")
         }
         _ => false,
     }

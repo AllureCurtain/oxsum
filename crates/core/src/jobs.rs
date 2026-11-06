@@ -60,6 +60,13 @@ pub mod kinds {
     /// answer. Unleadered — the pass is per-task, and two workers polling the
     /// same task race on the settlement's derived key, which only one can win.
     pub const POLL_TASKS: &str = "poll-tasks";
+    /// The promo-lot expiry pass (issue #609): every open lot whose
+    /// `expires_at` passed burns its unreserved remainder to
+    /// `Equity:PromoExpiry` and closes `expired`. Leader-required — a second
+    /// runner would walk the same due list at once, and although the per-lot
+    /// `FOR UPDATE` makes the overlap harmless, one pass is the honest
+    /// cadence.
+    pub const EXPIRE_LOTS: &str = "expire-lots";
 }
 
 /// How long a claimed run may take before another worker's claim assumes the
@@ -113,6 +120,7 @@ pub fn requires_leader(kind: &str) -> bool {
             | UPSTREAM_BILL_SYNC
             | USAGE_ANCHORS
             | SUBSCRIPTION_ROLLOVERS
+            | EXPIRE_LOTS
             | RECONCILE
     )
 }
@@ -196,6 +204,10 @@ pub fn next_run(kind: &str) -> Option<Duration> {
         // Hourly: often enough that an ended period closes even when no
         // request arrives, rare enough that every pass is one scan.
         SUBSCRIPTION_ROLLOVERS => Duration::hours(1),
+        // Every minute: an expiring lot should burn within a minute of its
+        // `expires_at`, because a hold admitted just before the deadline may
+        // still pin it — the pass is one indexed UPDATE per due lot, cheap.
+        EXPIRE_LOTS => Duration::minutes(1),
         _ => return None,
     })
 }

@@ -74,6 +74,7 @@ pub fn spawn_worker(db: Db, ctx: JobContext) -> tokio::task::JoinHandle<()> {
             kinds::RETENTION,
             kinds::USAGE_ANCHORS,
             kinds::SUBSCRIPTION_ROLLOVERS,
+            kinds::EXPIRE_LOTS,
         ];
         if ctx.webhook.is_some() {
             periodic.push(kinds::DELIVER_WEBHOOKS);
@@ -378,6 +379,14 @@ async fn run_one(
                 expired = report.expired,
                 "the subscription-rollover pass closed the ended periods"
             );
+        }
+        kinds::EXPIRE_LOTS => {
+            let expired = db
+                .expire_due_promo_lots(&tenants, 500, OffsetDateTime::now_utc().date())
+                .await?;
+            if expired > 0 {
+                info!(expired, "the promo-lot expiry pass burned lapsed lots");
+            }
         }
         kinds::RETENTION => {
             let report = db.run_retention(&ctx.retention).await?;

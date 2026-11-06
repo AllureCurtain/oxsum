@@ -1060,10 +1060,12 @@ impl Db {
     /// - `wallet_topup` books wallet cash via [`crate::Wallet::top_up`] — the
     ///   purchased pool only; it can repay a drawn line but never grants quota.
     /// - `bundle` books the purchased credit the same way, then the separate
-    ///   promo lot as a second ledger entry into the bonus pool — two postings
-    ///   under one fulfillment, the lot never cash-backed.
-    /// - `plan_period` activates the period via [`Db::bind_subscription`] — the
-    ///   quota grant — and never touches the wallet.
+    ///   promo lot as a `bundle_promo` `promo_lots` row plus its `debit
+    ///   Adjustments / credit Promo` entry — two postings under one
+    ///   fulfillment, the lot never cash-backed and never refundable (issue
+    ///   #609).
+    /// - `plan_period` activates the period via [`Db::activate_plan_period`] —
+    ///   the quota grant — and never touches the wallet.
     /// - `invoice_repayment` repays the drawn line via
     ///   [`crate::Wallet::repay_credit`] — `debit Cash / credit CreditLine` —
     ///   so not a minor of it can become spendable wallet balance.
@@ -1095,12 +1097,31 @@ impl Db {
             }
             PaymentOrderPurpose::Bundle => {
                 let purchased = wallet.top_up(&key, order.amount_minor, on).await?;
-                let mut promo_entry = None;
+                // The promo leg is a lot, not an anonymous bonus grant: the
+                // `bundle_promo` row names the fulfillment that issued it and
+                // carries the refund/cancellation semantics a bare adjustment
+                // cannot — expiry burns it, a refund cancels it, and neither
+                // ever returns it to refundable cash (issue #609). The ledger
+                // key derives from the order like the purchased leg's does, so
+                // a replayed fulfillment finds the standing lot and posts no
+                // second grant.
+                let mut promo_lot = None;
                 if promo_minor > 0 {
-                    let promo = wallet
-                        .adjust(&format!("{key}:promo"), "bundle promo lot", promo_minor, on)
+                    // A bundle's promo never expires at the order layer: the
+                    // `expires_at` a sale-specific promotion would carry is not
+                    // a term the order pins today.
+                    let lot = self
+                        .grant_promo_lot(
+                            wallet,
+                            order.organization_id,
+                            "bundle_promo",
+                            &order.order_id.to_string(),
+                            promo_minor,
+                            None,
+                            on,
+                        )
                         .await?;
-                    promo_entry = Some(*promo.entry_id.as_uuid());
+                    promo_lot = Some(lot.lot_id);
                 }
                 self.reconcile_statements(order.organization_id, wallet, on)
                     .await?;
@@ -1108,7 +1129,7 @@ impl Db {
                     "arm": "bundle",
                     "walletEntryId": purchased.entry_id.as_uuid(),
                     "creditedMinor": order.amount_minor,
-                    "promoEntryId": promo_entry,
+                    "promoLotId": promo_lot,
                     "promoMinor": promo_minor,
                 }))
             }

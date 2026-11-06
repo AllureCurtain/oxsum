@@ -9524,6 +9524,206 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/organizations/{organizationId}/promo-lots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * An organization's promo lots, soonest-expiring first
+         * @description Every promo lot granted into this organization's promo pool (issue
+         *     #609), in the order admission draws them — soonest expiry first,
+         *     never-expiring last. `remainingMinor` is the part new holds can still
+         *     pin, `reservedMinor` what open holds already named. `includeClosed=true`
+         *     keeps expired and cancelled lots in the answer; absent lists only what
+         *     can still fund a hold.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    includeClosed?: boolean;
+                };
+                header?: never;
+                path: {
+                    organizationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The lots, soonest-expiring first */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["PromoLot"][];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Grant a promo lot into an organization's promo pool
+         * @description Posts a granted lot: the `promo_lots` row and the `debit Adjustments /
+         *     credit Promo` ledger entry commit in one transaction, so the grant
+         *     cannot exist without the projection that names it. `idempotencyKey`
+         *     is the lot's `sourceRef` — a retried grant answers the standing lot
+         *     instead of posting twice, and a different body under the same key is
+         *     `409 CONFLICT`. `expiresAt` of absent means the lot never expires;
+         *     `amountMinor` must be positive.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    organizationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["GrantPromoLotRequest"];
+                };
+            };
+            responses: {
+                /** @description The lot as granted */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["PromoLot"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/organizations/{organizationId}/promo-lots/{lotId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel a promo lot's unspent remainder
+         * @description Burns the lot's unreserved remainder to `Equity:PromoExpiry` and closes
+         *     it `cancelled`: the part open holds still reserve keeps its reservation
+         *     until those holds release into the closed lot, where it burns too. The
+         *     promo is a grant, not a liability — a refund's correction cancels it
+         *     here, never converting it back into refundable cash (issue #609). A
+         *     retried or repeated cancel answers the standing closed lot.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    organizationId: string;
+                    lotId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CancelPromoLotRequest"];
+                };
+            };
+            responses: {
+                /** @description The lot as it now stands — closed `cancelled` */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["PromoLot"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/org/promo-lots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The organization's promo lots, soonest-expiring first
+         * @description The member's own list of the organization's promo lots (issue #609) —
+         *     granted credit that spends before every other pool because it is the
+         *     money that can lapse. `includeClosed=true` keeps expired and cancelled
+         *     lots in the answer.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    includeClosed?: boolean;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The lots, soonest-expiring first */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["PromoLot"][];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/organizations/{organizationId}": {
         parameters: {
             query?: never;
@@ -15011,6 +15211,78 @@ export interface components {
             /** Format: int64 */
             amountMinor: number;
             reason: string;
+            idempotencyKey: string;
+        };
+        /**
+         * @description One promo lot (issue #609): granted credit with a provenance and an
+         *     optional expiry. The lot row is the projection of the ledger's
+         *     `Equity:Promo` pool — `remainingMinor` is what new holds can still pin,
+         *     `reservedMinor` what open holds already named. `closedAt`/`closeReason`
+         *     mark a terminal close that was not an ordinary draw-down: `expired`
+         *     burned to `Equity:PromoExpiry`, `cancelled` the same burn booked by a
+         *     correction. Promo is a grant, not a liability — it can never refund to
+         *     cash.
+         */
+        PromoLot: {
+            /** Format: uuid */
+            lotId: string;
+            /** Format: uuid */
+            organizationId: string;
+            /**
+             * @description where the lot came from — an admin grant, a bundle fulfillment's promo leg, or the bonus-pool migration
+             * @enum {string}
+             */
+            source: "grant" | "admin" | "bundle_promo" | "legacy_migration";
+            /** @description the source event's own identity — the idempotency anchor */
+            sourceRef: string;
+            /**
+             * Format: int64
+             * @description what the grant posted, immutable
+             */
+            amountMinor: number;
+            /**
+             * Format: int64
+             * @description the unreserved part still fundable by new holds
+             */
+            remainingMinor: number;
+            /**
+             * Format: int64
+             * @description the part open holds currently reserve against the lot
+             */
+            reservedMinor: number;
+            /**
+             * Format: date-time
+             * @description when the lot lapses — null never expires
+             */
+            expiresAt: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description when a terminal close landed — null while the lot is open
+             */
+            closedAt: string | null;
+            /**
+             * @description why the lot closed
+             * @enum {string|null}
+             */
+            closeReason: "expired" | "cancelled" | null;
+        };
+        GrantPromoLotRequest: {
+            /** Format: int64 */
+            amountMinor: number;
+            /**
+             * Format: date-time
+             * @description when the lot lapses — absent never expires
+             */
+            expiresAt?: string | null;
+            /** @description the grant's reason — also the ledger entry's description */
+            reason?: string;
+            idempotencyKey: string;
+        };
+        CancelPromoLotRequest: {
+            /** @description the cancellation's reason, recorded in the audit detail */
+            reason?: string;
             idempotencyKey: string;
         };
         AdminCreditLimit: {

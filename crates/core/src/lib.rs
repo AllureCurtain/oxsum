@@ -49,6 +49,7 @@ mod orgs;
 mod payment_orders;
 mod plans;
 mod pools;
+mod promo_lots;
 mod proof;
 mod provider_destination;
 mod ratelimit;
@@ -211,6 +212,7 @@ pub use plans::{
 pub use pools::{
     Affinity, CREDENTIAL_COOLDOWN, ChannelCredential, PoolCredential, order as credential_order,
 };
+pub use promo_lots::PromoLot;
 pub use proof::{ChargeCheck, ProofBundle, verify_bundle, verify_charge};
 pub use provider_destination::{
     DESTINATION_POLICY_KEY, ProviderDestinationPolicy, ProviderNetwork, public_address,

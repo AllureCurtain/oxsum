@@ -271,6 +271,129 @@ pub(crate) async fn credit_notes(
     })
 }
 
+/// The body of `POST …/promo-lots`: the granted amount, the optional expiry and
+/// the idempotency key that anchors the grant to its source event (issue #609).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct GrantPromoLotReq {
+    amount_minor: i64,
+    /// When the lot lapses; absent means it never expires.
+    expires_at: Option<OffsetDateTime>,
+    /// The grant's reason — also the ledger entry's description.
+    reason: Option<String>,
+    idempotency_key: String,
+}
+
+/// The promo-lot list query: whether closed lots ride the list.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct AdminPromoLotsQuery {
+    include_closed: Option<bool>,
+}
+
+/// Grants a promo lot into the named organization's promo pool: the
+/// `promo_lots` row and the `debit Adjustments / credit Promo` entry commit in
+/// one transaction, so the grant cannot exist without the projection that
+/// names it. `source='admin'` and `source_ref=idempotencyKey` make a retried
+/// grant answer the standing lot instead of posting twice.
+pub(crate) async fn grant_promo_lot(
+    State(state): State<AppState>,
+    Path(organization_id): Path<Uuid>,
+    ApiJson(request): ApiJson<GrantPromoLotReq>,
+) -> ApiResult<oxsum_core::PromoLot> {
+    let organization = state.db.organization_by_id(organization_id).await?;
+    let wallet = state.tenants.get(&organization.tenant_id).await?;
+    let reason = request
+        .reason
+        .clone()
+        .unwrap_or_else(|| "admin grant".into());
+    let lot = state
+        .db
+        .grant_promo_lot(
+            &wallet,
+            organization_id,
+            "admin",
+            &request.idempotency_key,
+            request.amount_minor,
+            request.expires_at,
+            today(),
+        )
+        .await?;
+    record(
+        &state,
+        audit_action::ORGANIZATION_ADJUST,
+        Some(organization_id.to_string()),
+        serde_json::json!({
+            "amountMinor": request.amount_minor,
+            "reason": reason,
+            "lotId": lot.lot_id,
+            "expiresAt": lot.expires_at,
+        }),
+        Some(&request.idempotency_key),
+    )
+    .await?;
+    ok(lot)
+}
+
+/// The named organization's promo lots, soonest-expiring first — the order
+/// admission draws them in.
+pub(crate) async fn promo_lots(
+    State(state): State<AppState>,
+    Path(organization_id): Path<Uuid>,
+    crate::error::ApiQuery(query): crate::error::ApiQuery<AdminPromoLotsQuery>,
+) -> ApiResult<Vec<oxsum_core::PromoLot>> {
+    // The lookup answers 404 for an organization that does not exist, rather
+    // than an empty list that reads like "never granted".
+    state.db.organization_by_id(organization_id).await?;
+    ok(state
+        .db
+        .promo_lots(organization_id, query.include_closed.unwrap_or(false))
+        .await?)
+}
+
+/// Cancels a lot's unspent remainder: the unreserved part burns to
+/// `Equity:PromoExpiry`, the open draws keep their reservation until their
+/// holds release into the closed lot — and the released share burns there too.
+/// The promo is a grant, not a liability: it can never refund to cash.
+pub(crate) async fn cancel_promo_lot(
+    State(state): State<AppState>,
+    Path((organization_id, lot_id)): Path<(Uuid, Uuid)>,
+    ApiJson(request): ApiJson<CancelPromoLotReq>,
+) -> ApiResult<oxsum_core::PromoLot> {
+    let organization = state.db.organization_by_id(organization_id).await?;
+    let wallet = state.tenants.get(&organization.tenant_id).await?;
+    // A lot of another organization is a not-found, the same scoping every
+    // admin org-scoped write applies.
+    let lot = state.db.promo_lot(lot_id).await?;
+    match lot {
+        Some(lot) if lot.organization_id == organization_id => {}
+        _ => return Err(oxsum_core::WalletError::NotFound("unknown promo lot".into()).into()),
+    }
+    let lot = state.db.cancel_promo_lot(&wallet, lot_id, today()).await?;
+    record(
+        &state,
+        audit_action::ORGANIZATION_ADJUST,
+        Some(organization_id.to_string()),
+        serde_json::json!({
+            "lotId": lot.lot_id,
+            "cancelledMinor": lot.amount_minor - lot.remaining_minor,
+            "reason": request.reason,
+        }),
+        Some(&request.idempotency_key),
+    )
+    .await?;
+    ok(lot)
+}
+
+/// The body of `POST …/promo-lots/{lotId}/cancel`: the idempotency key and an
+/// optional reason recorded in the audit detail.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct CancelPromoLotReq {
+    reason: Option<String>,
+    idempotency_key: String,
+}
+
 /// The body of `PATCH …/organizations/{id}`: the billing terms to set — the credit
 /// line absolute, the payment-terms day count, the tier assignment, the dunning
 /// grace, the display unit — and the idempotency key that makes a retried

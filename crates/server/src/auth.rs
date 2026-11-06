@@ -201,6 +201,7 @@ fn customer_route_capability(method: &str, path: &str) -> oxsum_core::CustomerCa
             | "/org/keys/{key_id}/entitlement"
             | "/holds"
             | "/bills"
+            | "/org/promo-lots"
             | "/entries"
             | "/usage"
             | "/billing-records"

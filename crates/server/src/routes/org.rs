@@ -74,6 +74,34 @@ pub(crate) async fn update_display(
     ok(organization)
 }
 
+/// The `GET /api/v1/org/promo-lots` query: whether closed lots ride the list.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct PromoLotsQuery {
+    /// `true` keeps expired and cancelled lots in the answer; absent lists
+    /// only what can still fund a hold.
+    include_closed: Option<bool>,
+}
+
+/// The organization's promo lots, soonest-expiring first — the order admission
+/// draws them in. Any member may read them: a lot is the organization's own
+/// granted credit, the same visibility the balance carries. The response is
+/// the read model behind the wallet's promo pool — `remainingMinor` is what
+/// new holds can still pin, `reservedMinor` what open holds already named.
+pub(crate) async fn promo_lots(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    crate::error::ApiQuery(query): crate::error::ApiQuery<PromoLotsQuery>,
+) -> ApiResult<Vec<oxsum_core::PromoLot>> {
+    ok(state
+        .db
+        .promo_lots(
+            principal.organization().id,
+            query.include_closed.unwrap_or(false),
+        )
+        .await?)
+}
+
 /// Who may act on memberships of *several* organizations: a person, never a key.
 ///
 /// Listing, creating and switching between organizations are all a person's actions —
