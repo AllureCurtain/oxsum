@@ -2995,6 +2995,324 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/financial-facts:
+    get:
+      summary: Eight-category financial facts
+      description: |
+        The financial-facts read model (issue #613, T22): the eight figures a
+        period's books answer — `usage` (Σ settled `charged_minor`), `rated`
+        (the same turns at catalog rate, before discount), `entitlement`
+        (subscription draws plus plan-period quota consumed), `funding` (paid
+        orders plus credited deposits), `earned` (posted/paid invoice-journal
+        totals), `collected` (the settled share of those journals), `refund`
+        (succeeded refunds plus credit lines) and `receivable` (issued/past-due
+        statements' outstanding plus posted journals not yet surfaced).
+        `ReportsRead` capability, a personal session, never a machine
+        credential. `timeBasis` picks the clock: `booking` reads the settle
+        instant, `service` the ledger `booking_date`, `payment` the money
+        tables' own paid stamps.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: organizationId, in: query, required: false, schema: { type: string, format: uuid } }
+        - { name: model, in: query, required: false, schema: { type: string } }
+        - { name: channel, in: query, required: false, schema: { type: string } }
+        - { name: from, in: query, required: false, schema: { type: string, format: date } }
+        - { name: to, in: query, required: false, schema: { type: string, format: date } }
+        - { name: timeBasis, in: query, required: false, schema: { type: string, enum: [booking, service, payment], default: booking } }
+      responses:
+        "200":
+          description: The eight-category figures for the filter
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/FinancialFacts" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/usage-report:
+    get:
+      summary: The caller's own eight-category projection
+      description: |
+        The customer's financial-facts projection (issue #613, T22): the same
+        `financial_facts` read the staff surface runs, scoped to the caller's
+        own organization — a projection, never a second total, so the
+        customer's figures reconcile to the business sum for the same
+        organization by construction.
+      security: [{ sessionCookie: [], apiKey: [] }]
+      parameters:
+        - { name: from, in: query, required: false, schema: { type: string, format: date } }
+        - { name: to, in: query, required: false, schema: { type: string, format: date } }
+        - { name: timeBasis, in: query, required: false, schema: { type: string, enum: [booking, service, payment], default: booking } }
+      responses:
+        "200":
+          description: The caller's eight-category figures
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/FinancialFacts" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/cost-coverage:
+    get:
+      summary: Cost-basis coverage and provider/day granularity
+      description: |
+        The cost-coverage report (issue #613, T22): settled turns broken into
+        `cost_basis` buckets — `realAttempt` (a reported-usage attempt priced
+        it), `cacheReuse` (no upstream call ran), `estimate` (a local estimate
+        priced it), `missing` (untracked: no `upstream` block, a swept turn,
+        history) and `providerReconciled` — plus the failed-attempt count
+        (errored and refused turns, separated so a failed-but-billed upstream
+        charge is never mistaken for a clean zero) and the
+        `(serviceDate, channel, model)` grain the upstream-bill reconciliation
+        reads. `ReportsRead` capability.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: organizationId, in: query, required: false, schema: { type: string, format: uuid } }
+        - { name: from, in: query, required: false, schema: { type: string, format: date } }
+        - { name: to, in: query, required: false, schema: { type: string, format: date } }
+      responses:
+        "200":
+          description: The cost-coverage report
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/CostCoverage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/reconciliation-runs:
+    get:
+      summary: List reconciliation runs
+      description: |
+        The run history (issue #613, T22): every reconciliation pass, newest
+        first — `daily` the scheduled job, `periodClose` a close-time pass,
+        `manual` a staff-requested re-run. `ReportsRead` capability.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: after, in: query, required: false, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+      responses:
+        "200":
+          description: The reconciliation runs, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/ReconciliationRun" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Request a manual reconciliation run
+      description: |
+        A staff-requested run over `[periodStart, periodEnd]` (issue #613,
+        T22): recomputes the eight categories per organization, diffs the
+        conservation invariants and writes the run plus its exceptions.
+        `FundsWrite` capability — a financial action, audited in
+        `finance_audit`. A replayed `idempotencyKey` re-runs under the run's
+        own `(kind, period)` identity rather than minting a second run.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReconciliationRunRequest" }
+      responses:
+        "200":
+          description: The completed run
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ReconciliationRun" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/reconciliation-runs/{runId}:
+    get:
+      summary: One reconciliation run
+      description: The run and its frozen expected/actual totals — `ReportsRead`.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: runId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The run
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ReconciliationRun" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/reconciliation-runs/{runId}/exceptions:
+    get:
+      summary: A run's exceptions
+      description: |
+        The disagreed facts the run opened (issue #613, T22) — `open=true`
+        narrows to what still needs a human. `ReportsRead` capability.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: runId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: open, in: query, required: false, schema: { type: boolean } }
+      responses:
+        "200":
+          description: The run's exceptions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/ReconciliationException" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/reconciliation-exceptions:
+    get:
+      summary: The open exception work list
+      description: |
+        Every open exception across runs — the work list the console drains
+        (issue #613, T22). `ReportsRead` capability.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: open, in: query, required: false, schema: { type: boolean, default: true } }
+      responses:
+        "200":
+          description: The exceptions matching the filter
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/ReconciliationException" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/reconciliation-exceptions/{exceptionId}/resolve:
+    post:
+      summary: Resolve an exception
+      description: |
+        The explicit close (issue #613, T22): `resolution` names the corrective
+        outcome — an exception never goes silent. `FundsWrite` capability +
+        `finance_audit`.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: exceptionId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReconciliationCloseRequest" }
+      responses:
+        "200":
+          description: The resolved exception
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ReconciliationException" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/reconciliation-exceptions/{exceptionId}/waive:
+    post:
+      summary: Waive an exception
+      description: |
+        The close that names why the drift is not a defect (issue #613, T22) —
+        `resolution` carries the reason. `FundsWrite` capability +
+        `finance_audit`.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: exceptionId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReconciliationCloseRequest" }
+      responses:
+        "200":
+          description: The waived exception
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ReconciliationException" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/reconciliation-exceptions/{exceptionId}/repairs:
+    post:
+      summary: Run a corrective repair on an exception
+      description: |
+        A corrective action against an open exception (issue #613, T22):
+        `reclassifyCost` rewrites a usage row's `costBasis`/`upstreamCostMinor`
+        with a before/after snapshot, `markDuplicate` records that a flagged
+        row is a second write of one fact, `adjustJournal`/`linkPayment` record
+        the corrective instruction whose append/bind lands through its own
+        write path. A repair is an explicit financial action, never a balance
+        overwrite — it writes the correcting row and re-checks the exception,
+        it does not mutate a money column in place. `FundsWrite` capability +
+        `finance_audit` + a `reconciliation_repairs` row.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: exceptionId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReconciliationRepairRequest" }
+      responses:
+        "200":
+          description: The recorded repair
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ReconciliationRepair" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/plan/journals:
     get:
       summary: List the caller's plan-fee journals
@@ -13394,6 +13712,129 @@ components:
         failed: { type: integer, format: int64 }
         needsAttention: { type: integer, format: int64 }
         paidUnfulfilled: { type: array, items: { type: string, format: uuid }, description: the paid orders the recovery sweep still owes a fulfillment }
+    FinancialFacts:
+      type: object
+      required: [usageMinor, ratedMinor, entitlementMinor, fundingMinor, earnedMinor, collectedMinor, refundMinor, receivableMinor]
+      description: The eight-category figures a period's books answer, all integer minor units — the customer's `/api/v1/org/usage-report` and the staff's `/api/v1/business/financial-facts` derive from the same source rows, so the filtered view is a projection, never a second total.
+      properties:
+        usageMinor: { type: integer, format: int64, description: "Σ settled `charged_minor` — what the turns cost the customer" }
+        ratedMinor: { type: integer, format: int64, description: the same turns at catalog rate before discount — `rated − usage` is the granted discount }
+        entitlementMinor: { type: integer, format: int64, description: subscription draws plus plan-period quota consumed — what the plan covered }
+        fundingMinor: { type: integer, format: int64, description: paid orders plus credited deposits — cash in }
+        earnedMinor: { type: integer, format: int64, description: posted/paid invoice-journal totals — what the business billed }
+        collectedMinor: { type: integer, format: int64, description: the settled share of those journals — what was collected }
+        refundMinor: { type: integer, format: int64, description: succeeded refunds plus journal credit lines — money back }
+        receivableMinor: { type: integer, format: int64, description: "issued/past-due statements' outstanding plus unsurfaced posted journals — still owed" }
+    CostBasisCount:
+      type: object
+      required: [turns, costMinor, untrackedTurns]
+      description: >-
+        One `cost_basis` bucket — "cost not tracked" is never blurred with
+        "cost was zero": a `missing` bucket's turns with no `costMinor` is the
+        coverage gap, while a `realAttempt` `0` is a failed-but-billed attempt.
+      properties:
+        turns: { type: integer, format: int64 }
+        costMinor: { type: integer, format: int64 }
+        untrackedTurns: { type: integer, format: int64 }
+    CostCoverageDay:
+      type: object
+      required: [serviceDate, channel, model, turns, costMinor, cacheReuseTurns, untrackedTurns]
+      description: One `(serviceDate, channel, model)` grain — the provider's own cost roll-up's day.
+      properties:
+        serviceDate: { type: string, format: date }
+        channel: { type: string }
+        model: { type: string }
+        turns: { type: integer, format: int64 }
+        costMinor: { type: integer, format: int64 }
+        cacheReuseTurns: { type: integer, format: int64, description: "turns with `upstream_attempts = 0` — no upstream call ran" }
+        untrackedTurns: { type: integer, format: int64 }
+    CostCoverage:
+      type: object
+      required: [realAttempt, cacheReuse, estimate, missing, providerReconciled, failedAttempts, byProviderDay]
+      properties:
+        realAttempt: { $ref: "#/components/schemas/CostBasisCount" }
+        cacheReuse: { $ref: "#/components/schemas/CostBasisCount" }
+        estimate: { $ref: "#/components/schemas/CostBasisCount" }
+        missing: { $ref: "#/components/schemas/CostBasisCount" }
+        providerReconciled: { $ref: "#/components/schemas/CostBasisCount" }
+        failedAttempts:
+          type: object
+          required: [errored, refused]
+          properties:
+            errored: { type: integer, format: int64 }
+            refused: { type: integer, format: int64 }
+        byProviderDay: { type: array, items: { $ref: "#/components/schemas/CostCoverageDay" } }
+    ReconciliationRun:
+      type: object
+      required: [runId, kind, periodStart, periodEnd, state, expectedTotals, actualTotals, exceptionCount, requestedBy, startedAt, finishedAt, lastError]
+      properties:
+        runId: { type: string, format: uuid }
+        kind: { type: string, enum: [daily, period_close, manual] }
+        periodStart: { type: string, format: date }
+        periodEnd: { type: string, format: date }
+        state: { type: string, enum: [running, matched, exceptions, failed] }
+        expectedTotals: { type: object, description: the eight-category figures the projections claimed, frozen at run time }
+        actualTotals: { type: object, description: the same categories recomputed — the exceptions are the disagreements the figures cannot hide }
+        exceptionCount: { type: integer, format: int64 }
+        requestedBy: { type: [string, "null"], format: uuid, description: the staff actor on a manual run, null on a scheduled pass }
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: [string, "null"], format: date-time }
+        lastError: { type: [string, "null"] }
+    ReconciliationException:
+      type: object
+      required: [exceptionId, runId, organizationId, kind, expectedMinor, actualMinor, sourceTable, sourceRef, detail, state, resolvedBy, resolution, resolvedAt, createdAt]
+      properties:
+        exceptionId: { type: string, format: uuid }
+        runId: { type: string, format: uuid }
+        organizationId: { type: [string, "null"], format: uuid }
+        kind: { type: string, enum: [unmatched_usage, unmatched_journal, unmatched_payment, amount_drift, missing_cost, double_entry] }
+        expectedMinor: { type: [integer, "null"], format: int64 }
+        actualMinor: { type: [integer, "null"], format: int64 }
+        sourceTable: { type: [string, "null"], description: the blamed projection — usage_records, invoice_journals, payment_orders, plan_statements, ledger }
+        sourceRef: { type: [string, "null"], description: the blamed row's identifier — a request id, journal id, order id or entry id }
+        detail: { type: [string, "null"], description: the check's own diff summary }
+        state: { type: string, enum: [open, resolved, waived] }
+        resolvedBy: { type: [string, "null"], format: uuid }
+        resolution: { type: [string, "null"], description: required on a close — an exception never goes silent }
+        resolvedAt: { type: [string, "null"], format: date-time }
+        createdAt: { type: string, format: date-time }
+    ReconciliationRepair:
+      type: object
+      required: [repairId, exceptionId, actorUserId, action, before, after, auditRef, reason, createdAt]
+      properties:
+        repairId: { type: string, format: uuid }
+        exceptionId: { type: string, format: uuid }
+        actorUserId: { type: string, format: uuid }
+        action: { type: string, enum: [reclassify_cost, adjust_journal, link_payment, mark_duplicate] }
+        before: { type: object, description: the row's fields before the corrective write }
+        after: { type: object, description: the row's fields after }
+        auditRef: { type: [string, "null"], format: uuid, description: the finance_audit row authorizing the write }
+        reason: { type: string }
+        createdAt: { type: string, format: date-time }
+    ReconciliationRunRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, periodStart, periodEnd]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        periodStart: { type: string, format: date }
+        periodEnd: { type: string, format: date }
+    ReconciliationCloseRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, resolution]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        resolution: { type: string, minLength: 1, maxLength: 500, description: the corrective outcome (resolve) or why the drift is not a defect (waive) }
+    ReconciliationRepairRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, action, reason]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        action: { type: string, enum: [reclassifyCost, adjustJournal, linkPayment, markDuplicate] }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        patch: { type: object, description: "the action's arguments — `reclassifyCost` takes `costBasis` and an optional `upstreamCostMinor`" }
     RefundRequestBody:
       type: object
       additionalProperties: false
