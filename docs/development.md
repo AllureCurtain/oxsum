@@ -1005,3 +1005,7 @@ Focused checks: `cargo nextest run -p oxsum-core --test provider_destination_upg
 ### Customer serving permissions (#644)
 
 Run `cargo nextest run -p oxsum-core --test serving_access -p oxsum-server --test serving_catalog --test gateway --test fallbacks --test experiments --test tasks --test groups --test heads --test apis --no-fail-fast` with the isolated local test database. Core checks verify key/customer/channel intersections, permission snapshots, denied credential opening and fail-closed unknown/revoked/expired keys. HTTP regressions check catalog/estimate/checkpoint filtering, original experiment names, fallback aliases and task recovery after permission edits. The [protocol matrix](roadmap/self-hosted-v1/PROTOCOL-MATRIX.md) records current adapter limits; full cross-crate validation remains required.
+
+### Merchant encryption startup check
+
+Business merchant versions use the existing `OXSUM_SECRET_KEY` AES-GCM key. The server refuses startup when any current or historical merchant credential cannot open, or when merchant rows exist without the key. Preserve this key with database backups: rotated historical signing contexts still need it. Merchant settings saves validate structure and destination syntax locally and make no external request. Core and router regression tests are `cargo nextest run -p oxsum-core -p oxsum-server --test merchants`; they use isolated scratch databases and no real merchant credentials or payment calls.
