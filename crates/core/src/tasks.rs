@@ -569,6 +569,32 @@ pub async fn settle_task(
         Err(error) => return Err(error),
     }
 
+    // The operation's terminal write (issue #601): the task's operation_id is
+    // its task_id — the same figure the submit minted — so the durable parent
+    // goes terminal under the same outcome the settlement wrote. `succeeded`
+    // bills the usage; `failed`/`cancelled` release at zero. The CAS makes a
+    // raced sweeper-or-second-poll settle `AlreadySettled`, not an error; a
+    // failed write is logged like the usage row's, never the settle's failure.
+    let operation_state = match outcome.state {
+        TaskState::Succeeded => crate::operations::OperationState::Succeeded,
+        TaskState::Failed => crate::operations::OperationState::Failed,
+        TaskState::Cancelled => crate::operations::OperationState::Cancelled,
+        _ => unreachable!("settle_task is terminal-only"),
+    };
+    if let Err(error) = db
+        .settle_operation(
+            task.task_id,
+            "task-settle",
+            operation_state,
+            charged,
+            kind.as_str(),
+        )
+        .await
+    {
+        tracing::error!(%error, task = %task.task_id,
+            "the task's operation terminal write failed");
+    }
+
     let settlement_id = *entry_id_for(&settlement_key_for(&task.hold_key)).as_uuid();
     let available = wallet.available().await.ok();
 

@@ -588,6 +588,30 @@ impl Db {
         Ok(())
     }
 
+    /// Stamps upstream's own request/task id onto an attempt row, once the
+    /// body it answered names one — the chat completion's `id`, or the task
+    /// relay's `external_task_id`. `WHERE external_id IS NULL` keeps the
+    /// first stamp: a patch-up field never overwrites.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn note_attempt_external(
+        &self,
+        attempt_id: Uuid,
+        external_id: &str,
+    ) -> Result<(), WalletError> {
+        sqlx::query(
+            "UPDATE oxsum.request_attempts SET external_id = $2 \
+             WHERE attempt_id = $1 AND external_id IS NULL",
+        )
+        .bind(attempt_id)
+        .bind(external_id)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
     /// One operation's attempts, oldest first — the failover audit the detail
     /// read serves.
     ///

@@ -508,6 +508,7 @@ async fn gateway(
         &request_id,
         &headers,
         surface,
+        &bound_fingerprint,
     )
     .await;
     if let Err(error) = &outcome {
@@ -721,6 +722,11 @@ fn replay(status: i32, body: Value, request_id: &str) -> Response {
 }
 
 /// The turn itself, from the freeze to the settlement.
+///
+/// `bound_fingerprint` is the scoped idempotency digest the gateway computed
+/// before the claim — the same figure the operation row inserts under, so a
+/// replay names the operation its claim already scoped to (issue #601).
+#[allow(clippy::too_many_arguments)]
 async fn run(
     state: &AppState,
     organization: &Organization,
@@ -729,6 +735,7 @@ async fn run(
     request_id: &str,
     headers: &HeaderMap,
     surface: Surface,
+    bound_fingerprint: &str,
 ) -> Result<Response, GatewayError> {
     // The turn's OTLP span (issue #224): created once the model is known,
     // held by the settlement plan so it stays open until the charge is
@@ -1300,6 +1307,7 @@ async fn run(
             std::mem::take(&mut pending_flags),
             experiment.clone(),
             &requested_model,
+            bound_fingerprint,
         )
         .await;
     }
@@ -1307,6 +1315,37 @@ async fn run(
     let wallet = state.tenants.get(&organization.tenant_id).await?;
     let hold_key = format!("req-{request_id}:hold");
     let description = hold_description(request_id, &request.model, freeze)?;
+    // The operation row (issue #601): the turn's durable parent, created once
+    // the freeze is known but before the hold binds — `bound_minor` stays
+    // honest because the row is written where the freeze exists, not
+    // create-then-update. The scoped fingerprint is the replay lookup: a retry
+    // under the same claim names this row rather than writing a second. The
+    // write is best-effort like the usage record's — a turn whose operation
+    // write fails still holds, relays and settles, and the sweeper recovers it
+    // through the watch row as it always has.
+    let operation = match state
+        .db
+        .insert_operation(&oxsum_core::NewOperation {
+            operation_id: Uuid::parse_str(request_id).unwrap_or_else(|_| Uuid::new_v4()),
+            organization_id: organization.id,
+            key_id: Some(key.key_id),
+            surface: surface.operation_name().to_owned(),
+            fingerprint: bound_fingerprint.to_owned(),
+            bound_minor: freeze,
+            model: request.model.clone(),
+            channel: Some(primary.channel.clone()),
+            customer_id: None,
+            terms_version: Some(primary.version),
+        })
+        .await
+    {
+        Ok(pair) => Some(pair),
+        Err(error) => {
+            tracing::error!(%error, request = %request_id,
+                "writing the turn's operation row failed; the hold proceeds without it");
+            None
+        }
+    };
     // The watch row goes in before the hold is taken: a row without a hold heals itself — the
     // sweeper deletes it when the hold is not there — while a hold without a row would be
     // invisible to the sweeper if this process died.
@@ -1335,6 +1374,32 @@ async fn run(
     {
         tracing::error!(%error, "recording the open hold failed");
         return Err(error.into());
+    }
+    // The operation binds its hold once the watch row exists: `bind_hold` is a
+    // `created`-only CAS, so a replayed admission — the same fingerprint, an
+    // existing row — never re-binds. `false` is logged, not refused: the turn
+    // still owns its hold, and a replay that found the row already bound is
+    // the same turn continuing, not a billing error.
+    if let Some((operation, fresh)) = &operation {
+        match state
+            .db
+            .bind_hold(operation.operation_id, &hold_key, &state.instance_id)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) if *fresh => {
+                tracing::warn!(request = %request_id, operation_id = %operation.operation_id,
+                    "a fresh operation would not bind its hold — another admission raced it");
+            }
+            Ok(false) => {
+                tracing::info!(request = %request_id, operation_id = %operation.operation_id,
+                    "the operation was already bound — a replayed admission continuing");
+            }
+            Err(error) => {
+                tracing::error!(%error, request = %request_id,
+                    "binding the operation's hold failed; the sweeper recovers through the watch row");
+            }
+        }
     }
     // The subscription's share of the freeze, drawn before the wallet's: a
     // bound plan covers what its period still holds, and the wallet holds the
@@ -1407,6 +1472,12 @@ async fn run(
     // Only request-attributed cost leaves through the consumption credential.
     let cost = CostHead { freeze };
 
+    let operation_ctx = operation
+        .as_ref()
+        .map(|(operation, _)| relay::OperationContext {
+            operation_id: operation.operation_id,
+            lease_owner: state.instance_id.clone(),
+        });
     let mut turn = Turn::new(
         state.db.clone(),
         wallet,
@@ -1428,6 +1499,7 @@ async fn run(
         subscription,
         organization.id,
         guardrails.clone(),
+        operation_ctx,
     );
     turn.note_requested_model(&requested_model);
     turn.note_input_count(request.counted_input);
@@ -1494,6 +1566,29 @@ async fn run(
         let routes = &model_routes[*model_index];
         let candidate = &routes.ordered[*route_index];
         attempts += 1;
+        // The operation's child row (issue #601): one attempt per upstream
+        // call — the failover audit. Best-effort like the usage record: a
+        // row that cannot write only means the operation's failover detail
+        // is thinner, never a failed turn. `external_id` patches in later
+        // when the body's `id` names it.
+        let attempt_id = match &operation {
+            Some((operation, _)) => state
+                .db
+                .record_attempt(
+                    operation.operation_id,
+                    &candidate.channel,
+                    Some(credential.credential_id),
+                    None,
+                )
+                .await
+                .map_err(|error| {
+                    tracing::warn!(%error, request = %request_id,
+                        "recording the operation's attempt failed");
+                    error
+                })
+                .ok(),
+            None => None,
+        };
         let attempt_started = Instant::now();
         // The body is rebuilt per attempt: the `model` it names is the serving
         // model's own upstream resolution — its alias target when it is one, its
@@ -1580,6 +1675,22 @@ async fn run(
                     Some(attempt_started.elapsed().as_secs_f64() * 1_000.0),
                     false,
                 );
+                // The winning attempt (issue #601): the operation goes
+                // `running` on first acceptance, and the attempt row is the
+                // one `Plan::write` completes with the usage the settle
+                // priced from. `note_running` is CAS — a second acceptance
+                // under a failover stays `running`, never re-runs.
+                if let (Some((operation, _)), Some(attempt_id)) = (&operation, attempt_id) {
+                    if let Err(error) = state
+                        .db
+                        .note_running(operation.operation_id, &state.instance_id)
+                        .await
+                    {
+                        tracing::warn!(%error, request = %request_id,
+                            "marking the operation running failed");
+                    }
+                    turn.note_winning_attempt(attempt_id);
+                }
                 break ((*model_index, *route_index), Ok(response));
             }
             Ok(response) => {
@@ -1597,6 +1708,23 @@ async fn run(
                     true,
                 );
                 let retriable = status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
+                // A refused attempt completes its row (issue #601): the
+                // failover audit records the refusal and the error's preview
+                // before the loop moves to the next route.
+                if let Some(attempt_id) = attempt_id
+                    && let Err(error) = state
+                        .db
+                        .complete_attempt(
+                            attempt_id,
+                            oxsum_core::AttemptStatus::Refused,
+                            None,
+                            Some(&format!("upstream answered {status}")),
+                        )
+                        .await
+                {
+                    tracing::warn!(%error, request = %request_id,
+                        "completing a refused attempt failed");
+                }
                 if retriable {
                     // A refusal the credential produced — its own rate wall or
                     // quota — cools it in the pool so the next request's pick
@@ -1664,6 +1792,22 @@ async fn run(
                 // The routing window: an unreachable attempt gives no latency
                 // sample (upstream never answered) but counts full as an error.
                 state.db.route_stats().note(&candidate.channel, None, true);
+                // An unreachable attempt completes its row (issue #601): the
+                // failover audit names the route that never answered.
+                if let Some(attempt_id) = attempt_id
+                    && let Err(complete) = state
+                        .db
+                        .complete_attempt(
+                            attempt_id,
+                            oxsum_core::AttemptStatus::Unreachable,
+                            None,
+                            Some("upstream is unreachable"),
+                        )
+                        .await
+                {
+                    tracing::warn!(%complete, request = %request_id,
+                        "completing an unreachable attempt failed");
+                }
                 // An unreachable upstream is the channel's problem, not the
                 // credential's: the key never got to refuse, so nothing cools.
                 if index + 1 < attempts_list.len() {
@@ -1772,6 +1916,12 @@ async fn run(
                         // way.
                         if let Some(usage) = adapter.usage(&value) {
                             turn.note_usage(usage);
+                        }
+                        // The attempt's external id (issue #601): upstream's
+                        // own request id, when the body's `id` names one —
+                        // the row the bill names "which call answered".
+                        if let Some(id) = value.get("id").and_then(Value::as_str) {
+                            turn.note_attempt_external(id.to_owned());
                         }
                         turn.note_text(&adapter.answer_text(&value));
 
@@ -1956,6 +2106,7 @@ async fn serve_cache_hit(
     pending_flags: Vec<oxsum_core::SettlementGuardrailOwned>,
     experiment: Option<oxsum_core::ExperimentBinding>,
     requested_model: &str,
+    bound_fingerprint: &str,
 ) -> Result<Response, GatewayError> {
     let wallet = state.tenants.get(&organization.tenant_id).await?;
     let hold_key = format!("req-{request_id}:hold");
@@ -1964,6 +2115,32 @@ async fn serve_cache_hit(
     // a discounted charge lands under it, which is what a bound is for.
     let freeze = primary.price.itemize(&hit.usage, true)?.total_minor()?;
     let description = hold_description(request_id, &request.model, freeze)?;
+    // A cache hit is a billable turn like any other (issue #601): it writes
+    // its operation row under the same scoped fingerprint, so a replayed
+    // request names the hit's operation rather than starting a second one.
+    let operation = match state
+        .db
+        .insert_operation(&oxsum_core::NewOperation {
+            operation_id: Uuid::parse_str(request_id).unwrap_or_else(|_| Uuid::new_v4()),
+            organization_id: organization.id,
+            key_id: Some(key.key_id),
+            surface: surface.operation_name().to_owned(),
+            fingerprint: bound_fingerprint.to_owned(),
+            bound_minor: freeze,
+            model: request.model.clone(),
+            channel: Some(primary.channel.clone()),
+            customer_id: None,
+            terms_version: Some(primary.version),
+        })
+        .await
+    {
+        Ok(pair) => Some(pair),
+        Err(error) => {
+            tracing::error!(%error, request = %request_id,
+                "writing the cache hit's operation row failed");
+            None
+        }
+    };
     if let Err(error) = state
         .db
         .note_open_hold(&OpenHold {
@@ -1989,6 +2166,16 @@ async fn serve_cache_hit(
     {
         tracing::error!(%error, "recording a cache hit's open hold failed");
         return Err(error.into());
+    }
+    if let Some((operation, fresh)) = &operation
+        && let Err(error) = state
+            .db
+            .bind_hold(operation.operation_id, &hold_key, &state.instance_id)
+            .await
+    {
+        let _ = fresh;
+        tracing::error!(%error, request = %request_id,
+            "binding the cache hit's operation hold failed");
     }
     // A hit draws on the subscription like any other turn: the entitlement
     // pays the replay's price the same way it would a fresh one's, and a plan
@@ -2044,6 +2231,12 @@ async fn serve_cache_hit(
         tracing::info!(oxsum.hold.freeze_minor = freeze, "cache hit hold taken");
     });
     let cost = CostHead { freeze };
+    let operation_ctx = operation
+        .as_ref()
+        .map(|(operation, _)| relay::OperationContext {
+            operation_id: operation.operation_id,
+            lease_owner: state.instance_id.clone(),
+        });
     let mut turn = Turn::new(
         state.db.clone(),
         wallet,
@@ -2065,6 +2258,7 @@ async fn serve_cache_hit(
         subscription,
         organization.id,
         response_guardrails.clone(),
+        operation_ctx,
     );
     turn.note_requested_model(requested_model);
     turn.note_attempts(0);

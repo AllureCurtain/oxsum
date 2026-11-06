@@ -111,6 +111,21 @@ impl Surface {
     pub fn is_model_in_path(self) -> bool {
         matches!(self, Self::Gemini { .. })
     }
+
+    /// The spelling `request_operations.surface` stores (issue #601): which
+    /// client surface served the turn. Named after the path segment the surface
+    /// answers under rather than the enum variant — `chat` covers OpenAI and
+    /// Gemini alike because a Gemini turn *is* a chat turn to the row that
+    /// records it, and `messages` is the Anthropic dialect's own name.
+    pub fn operation_name(self) -> &'static str {
+        match self {
+            Self::OpenAi | Self::Gemini { .. } => "chat",
+            Self::Responses => "responses",
+            Self::Anthropic => "messages",
+            Self::Embeddings => "embeddings",
+            Self::Rerank => "rerank",
+        }
+    }
 }
 
 /// One parsed gateway request: the body to forward, and the texts the freeze depends on.
