@@ -28,7 +28,7 @@ The accepted contract and evidence live in [docs/roadmap/self-hosted-v1](docs/ro
 - [ ] [#598](https://github.com/AllureCurtain/oxsum/issues/598) — Model catalog and private serving context (T07): in progress; #644 and #645 both required.
 - [ ] [#644](https://github.com/AllureCurtain/oxsum/issues/644) — Customer catalog and serving permissions (T07.a): PR #647; locally validated at `0a2b087` with 1,547 workspace, 26 shared-process, 29 doctest and Clippy/frontend checks passing; independent review and prerequisite integration pending.
 - [ ] [#645](https://github.com/AllureCurtain/oxsum/issues/645) — Complete response-cache context (T07.b): pending T07.a.
-- [ ] [#599](https://github.com/AllureCurtain/oxsum/issues/599) — Versioned customer sale books (T08): implemented at `99b0cfa`; 19 focused/identity checks pass, remaining local gate and review pending.
+- [ ] [#599](https://github.com/AllureCurtain/oxsum/issues/599) — Versioned customer sale books (T08): implemented at `ceceb3e`; 19 focused/identity checks, strict Clippy and frontend pass; root source review found no blocker, broad gate/CI/integration pending.
 - [ ] [#600](https://github.com/AllureCurtain/oxsum/issues/600) — Bind sale terms into evidence (T09): pending.
 - [ ] [#601](https://github.com/AllureCurtain/oxsum/issues/601) — Durable request operation (T10): pending.
 - [ ] [#602](https://github.com/AllureCurtain/oxsum/issues/602) — Transaction-aware ledger effects and zero-cost receipts (T11): pending.
