@@ -62,7 +62,7 @@ pub const CREDENTIAL_COOLDOWN: Duration = Duration::from_secs(60);
 /// One credential in a channel's pool, as the pick orders it: the opened key
 /// for the upstream `Authorization` header, its id for the health writes a
 /// refusal or a served attempt records, and the pick inputs.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PoolCredential {
     /// The row's id: what `note_used`/`cool_down` write health against.
     pub credential_id: Uuid,
@@ -72,6 +72,17 @@ pub struct PoolCredential {
     pub position: i64,
     /// When this credential last led an upstream call — `None` is never used.
     pub last_used_at: Option<OffsetDateTime>,
+}
+
+impl std::fmt::Debug for PoolCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PoolCredential")
+            .field("credential_id", &self.credential_id)
+            .field("api_key", &"[redacted]")
+            .field("position", &self.position)
+            .field("last_used_at", &self.last_used_at)
+            .finish()
+    }
 }
 
 /// A channel as the admin API presents its pool: one entry per credential,
@@ -253,6 +264,8 @@ impl Db {
         let api_key = crate::channels::credential_text(api_key)?;
         let sealed = key.seal(api_key)?;
         let last4 = crate::channels::last_chars(api_key, crate::channels::LAST4);
+        let mut tx = self.pool().begin().await?;
+        crate::channels::lock_configuration(&mut tx).await?;
         let row = sqlx::query(
             "INSERT INTO oxsum.channel_credentials \
                  (credential_id, channel_id, api_key_sealed, api_key_last4, position) \
@@ -268,13 +281,14 @@ impl Db {
         .bind(sealed)
         .bind(last4)
         .bind(channel)
-        .fetch_optional(self.pool())
+        .fetch_optional(&mut *tx)
         .await?;
         let Some(row) = row else {
             return Err(WalletError::InvalidInput(format!(
                 "no channel named {channel:?}"
             )));
         };
+        tx.commit().await?;
         Ok(ChannelCredential {
             credential_id: row.try_get("credential_id")?,
             api_key_last4: crate::channels::last_chars(api_key, crate::channels::LAST4),
@@ -305,6 +319,8 @@ impl Db {
                 "status must be active or disabled, got {status:?}"
             )));
         }
+        let mut tx = self.pool().begin().await?;
+        crate::channels::lock_configuration(&mut tx).await?;
         let touched = sqlx::query(
             "UPDATE oxsum.channel_credentials cr SET status = $3 \
              FROM oxsum.channels c \
@@ -313,9 +329,10 @@ impl Db {
         .bind(credential_id)
         .bind(channel)
         .bind(status)
-        .execute(self.pool())
+        .execute(&mut *tx)
         .await?
         .rows_affected();
+        tx.commit().await?;
         Ok(touched > 0)
     }
 
@@ -334,6 +351,7 @@ impl Db {
         credential_id: Uuid,
     ) -> Result<bool, WalletError> {
         let mut tx = self.pool().begin().await?;
+        crate::channels::lock_configuration(&mut tx).await?;
         // What the drop would leave pickable: rows still `active` besides the
         // one going — a cooling credential counts, because its cool-down ends
         // on its own. `disabled` does not: it stays out until an operator puts
@@ -422,38 +440,38 @@ impl Db {
     pub fn affinity(&self) -> &Affinity {
         &self.affinity
     }
+}
 
-    /// The pool's health filter: every credential of `channel_id` worth picking
-    /// — `active`, and either never cooled or cooled past its window. Ordered
-    /// by `position`; the [`order`] pick re-ranks inside that.
-    ///
-    /// Returned sealed: the caller opens each under [`crate::channels::SecretKey`]
-    /// only for the request it is about to serve.
-    pub(crate) async fn healthy_credentials(
-        &self,
-        channel_id: Uuid,
-    ) -> Result<Vec<(Uuid, String, i64, Option<OffsetDateTime>)>, WalletError> {
-        let rows = sqlx::query(
-            "SELECT credential_id, api_key_sealed, position, last_used_at \
+/// The pool's health filter: every credential of `channel_id` worth picking
+/// — `active`, and either never cooled or cooled past its window. Ordered
+/// by `position`; the [`order`] pick re-ranks inside that.
+///
+/// Returned sealed: the caller opens each under [`crate::channels::SecretKey`]
+/// only for the request it is about to serve.
+pub(crate) async fn healthy_credentials(
+    connection: &mut sqlx::PgConnection,
+    channel_id: Uuid,
+) -> Result<Vec<(Uuid, String, i64, Option<OffsetDateTime>)>, WalletError> {
+    let rows = sqlx::query(
+        "SELECT credential_id, api_key_sealed, position, last_used_at \
              FROM oxsum.channel_credentials \
              WHERE channel_id = $1 AND status = 'active' \
                AND (cooldown_until IS NULL OR cooldown_until <= now()) \
              ORDER BY position, created_at",
-        )
-        .bind(channel_id)
-        .fetch_all(self.pool())
-        .await?;
-        rows.iter()
-            .map(|row| {
-                Ok((
-                    row.try_get::<Uuid, _>("credential_id")?,
-                    row.try_get::<String, _>("api_key_sealed")?,
-                    i64::from(row.try_get::<i32, _>("position")?),
-                    row.try_get::<Option<OffsetDateTime>, _>("last_used_at")?,
-                ))
-            })
-            .collect()
-    }
+    )
+    .bind(channel_id)
+    .fetch_all(connection)
+    .await?;
+    rows.iter()
+        .map(|row| {
+            Ok((
+                row.try_get::<Uuid, _>("credential_id")?,
+                row.try_get::<String, _>("api_key_sealed")?,
+                i64::from(row.try_get::<i32, _>("position")?),
+                row.try_get::<Option<OffsetDateTime>, _>("last_used_at")?,
+            ))
+        })
+        .collect()
 }
 
 /// The shared handle: `Db` holds one `Arc` so its cheap clones share the map.

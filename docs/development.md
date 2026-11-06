@@ -985,3 +985,8 @@ Run it against isolated test funds first. The production-router test
 client against loopback PostgreSQL-backed fixtures and checks replay/isolation.
 See the [example runbook](../examples/scoped-integration/README.md) for issuance,
 required event prices and exact negative cases. No paid provider is called.
+
+
+### Business provider authority tests (#641)
+
+`cargo nextest run -p oxsum-core --test business_providers --test provider_upgrade --test channels -p oxsum-server --test business_providers --test admin` exercises real setup/session authority, atomic audit faults, replay/rotation, pool concurrency across business and recovery paths, foreign configuration and pre-0078 provider preservation. Use isolated PostgreSQL 17 testkit databases. No provider call is made on configuration save. The focused command does not replace cross-crate workspace/shared-process gates or T06.b destination-policy tests.

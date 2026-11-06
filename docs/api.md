@@ -145,6 +145,22 @@ An authorization row pins the original operation, body, price/discount and freez
 
 Every metered settlement writes a usage row with `upstreamAttempts: 0` — nothing was relayed — and a settlement description at schema v6: the reporting service's name in `service`, the `eventType`, the pinned `priceVersion` and the itemized `lines`, so the organization's bills page and `verify_charge` recompute it like every other charge. A service's entries attribute to `svc-<credentialId>` rather than to any key or user.
 
+## Business provider configuration (`/api/v1/business/channels`)
+
+Current business-context personal sessions manage provider configuration. The owner can set a channel's connection/protocol, replace/add/disable/remove provider credentials, and set or clear its billing credential. Owner/admin can append versioned prices, claim/remove aliases, configure the existing cache policy and set model fallback chains. Other roles, consumption keys, integration credentials and deployment bearers cannot use these business routes. Deployment-token routes remain the separately authenticated recovery surface.
+
+Every mutation takes `{idempotencyKey, reason, config}` and returns `{id, resourceId, version}`. Nullable result fields remain present. The complete typed request is bound to a keyed digest; plaintext secrets are neither audited nor logged. Exact retry returns the original receipt, including its original price version or credential ID, even after later changes; altered input returns 409. Current session/TOTP/role is checked before replay. Configuration, result and immutable audit share one transaction. Use a new key only for a deliberate new operation. A deployment sealing-key rotation makes pre-rotation request fingerprints conflict safely.
+
+`GET /channels?after=<uuid>&limit=50` filters business ownership before keyset pagination (limit 1–100). Prices and aliases use `GET /channels/{channelName}/prices|aliases`; the fallback read is `GET /model-fallbacks/{model}`. Metadata has no plaintext/sealed key; legacy error text, URL credentials/query/fragment and unknown cache settings are excluded. Provider metadata is owner/admin only.
+
+`POST /channels` takes `config: {name, baseUrl, protocol, apiKeys?}`. A new channel needs 1–100 keys. Omitted/null `apiKeys` preserves an existing pool; an empty pool fails. Destination/protocol changes require explicitly supplied keys and clear the existing billing key. New endpoints reject embedded URL credentials, query and fragment. Saves make no provider call. Credentials require 8–8192 bytes with no controls; only their last four characters are displayed.
+
+Channel mutations append to `/channels/{channelName}`: `POST /credentials` (`{apiKey}`), `/billing-credential` (`{apiKey}` or `{apiKey: null}`), `/credentials/{credentialId}/status` (`{status: active|disabled}`), `/credentials/{credentialId}/remove` (`{}`), `/cache` (`{policy}` or `{policy: null}`), `/prices` (`{model, price, weight}`), `/aliases` (`{alias, upstreamModel}`), and `/aliases/{alias}/remove` (`{}`). The `price` object uses existing integer price fields and requires explicit input/output/max-output fields. Alias targets must be served by that channel. The last active pool member cannot be removed; disable it explicitly when intentionally stopping service. Foreign channel/credential lookups return 404.
+
+`PUT /model-fallbacks/{model}` takes `config: {fallbacks: [...]}`: at most 16 distinct owned served model/alias names, excluding the requested model. Empty clears. Cache policy accepts only required `enabled` plus optional `ttlSeconds` and `excludeSystem`; invalid/unknown fields fail before mutation. Channel identity, historical price rows and already resolved Serving snapshots remain intact after changes.
+
+Destination DNS/redirect/internal-network policy and explicit connection probes are the required T06.b follow-up (#642); this intermediate contract does not certify provider connectivity. Customer sale books remain T08.
+
 ## Platform admin (`/api/v1/admin`)
 
 Whoever deploys oxsum, and nobody else: the credential is the operator token from `OXSUM_ADMIN_TOKEN`, sent as a bearer token, compared in constant time, and refused unless it is at least 16 characters when the server starts. An organization's API key does not open this surface, and this token does not open an organization's.

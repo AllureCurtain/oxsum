@@ -49,6 +49,18 @@ pub const MAX_WEIGHT: i64 = 1000;
 /// empty database do not both insert the bootstrap channel.
 const SEED_LOCK: i64 = i64::from_be_bytes(*b"oxsumchn");
 
+/// Shared by business writes and deployment recovery. Independent of business
+/// migrations so historical upgrade fixtures and bootstrap keep working.
+pub(crate) async fn lock_configuration(
+    connection: &mut sqlx::PgConnection,
+) -> Result<(), WalletError> {
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(i64::from_be_bytes(*b"oxsprcfg"))
+        .execute(connection)
+        .await?;
+    Ok(())
+}
+
 /// The key that seals upstream credentials at rest.
 ///
 /// It is deployment configuration, not data: the database holds what this key sealed, and a
@@ -101,6 +113,17 @@ impl SecretKey {
         let mut record = nonce_bytes.to_vec();
         record.extend_from_slice(&sealed);
         Ok(BASE64.encode(record))
+    }
+
+    /// Keyed request fingerprint for replay, without retaining secret plaintext.
+    pub(crate) fn request_fingerprint(&self, request: &[u8]) -> Result<String, WalletError> {
+        use hmac::{Hmac, KeyInit as HmacKeyInit, Mac};
+        use sha2::Sha256;
+        let mut mac = <Hmac<Sha256> as HmacKeyInit>::new_from_slice(&self.0)
+            .map_err(|_| WalletError::Misconfigured("invalid fingerprint key".into()))?;
+        mac.update(b"oxsum/provider-configuration/v1\0");
+        mac.update(request);
+        Ok(BASE64.encode(mac.finalize().into_bytes()))
     }
 
     /// Opens what [`seal`](Self::seal) wrote.
@@ -229,7 +252,7 @@ impl ModelPrice {
 /// A channel's probe coordinates for `SYNC_UPSTREAM_PRICES` (issue #222): the
 /// catalog endpoint to call and a credential to send it, still sealed. The
 /// job opens `api_key_sealed` only to build the `Authorization` header.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ProbeChannel {
     /// The channel's name.
     pub name: String,
@@ -243,7 +266,7 @@ pub struct ProbeChannel {
 }
 
 /// What one request relays to and is charged by, resolved once when the request starts.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Serving {
     pub channel: String,
     /// The channel's id, the key the conversation-affinity map sticks under.
@@ -266,6 +289,33 @@ pub struct Serving {
     /// The route's relative preference for leading a request (issue #168).
     pub weight: i64,
     pub price: Price,
+}
+
+impl std::fmt::Debug for ProbeChannel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProbeChannel")
+            .field("name", &self.name)
+            .field("protocol", &self.protocol)
+            .field("base_url", &"[redacted]")
+            .field(
+                "api_key_sealed",
+                &self.api_key_sealed.as_ref().map(|_| "[redacted]"),
+            )
+            .finish()
+    }
+}
+impl std::fmt::Debug for Serving {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Serving")
+            .field("channel", &self.channel)
+            .field("channel_id", &self.channel_id)
+            .field("base_url", &"[redacted]")
+            .field("protocol", &self.protocol)
+            .field("credentials", &self.credentials)
+            .field("version", &self.version)
+            .field("weight", &self.weight)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A public model name that resolves to one channel's upstream model (issue
@@ -339,6 +389,7 @@ impl Db {
         }
         crate::adapters::known_protocol(protocol)?;
         let mut tx = self.pool().begin().await?;
+        lock_configuration(&mut tx).await?;
         let channel_id: Uuid = sqlx::query_scalar(
             "INSERT INTO oxsum.channels \
              (channel_id, name, base_url, protocol) \
@@ -417,6 +468,8 @@ impl Db {
             }
             None => (None, None),
         };
+        let mut tx = self.pool().begin().await?;
+        lock_configuration(&mut tx).await?;
         let touched = sqlx::query(
             "UPDATE oxsum.channels SET bill_key_sealed = $2, bill_key_last4 = $3, \
              updated_at = now() WHERE name = $1",
@@ -424,12 +477,13 @@ impl Db {
         .bind(channel)
         .bind(sealed)
         .bind(last4)
-        .execute(self.pool())
+        .execute(&mut *tx)
         .await?
         .rows_affected();
         if touched == 0 {
             return Err(WalletError::NotFound(format!("channel {channel:?}")));
         }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -456,6 +510,8 @@ impl Db {
                 crate::cache::SETTINGS_KEY: policy
             })))?;
         }
+        let mut tx = self.pool().begin().await?;
+        lock_configuration(&mut tx).await?;
         let touched = match policy {
             Some(policy) => {
                 sqlx::query(
@@ -466,7 +522,7 @@ impl Db {
                 )
                 .bind(channel)
                 .bind(policy)
-                .execute(self.pool())
+                .execute(&mut *tx)
                 .await?
             }
             None => {
@@ -476,13 +532,14 @@ impl Db {
                      WHERE name = $1",
                 )
                 .bind(channel)
-                .execute(self.pool())
+                .execute(&mut *tx)
                 .await?
             }
         };
         if touched.rows_affected() == 0 {
             return Err(WalletError::NotFound(format!("channel {channel:?}")));
         }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -513,6 +570,7 @@ impl Db {
             )));
         }
         let mut tx = self.pool().begin().await?;
+        lock_configuration(&mut tx).await?;
         let channel_id: Uuid =
             sqlx::query_scalar("SELECT channel_id FROM oxsum.channels WHERE name = $1 FOR UPDATE")
                 .bind(channel)
@@ -521,50 +579,9 @@ impl Db {
                 .ok_or_else(|| {
                     WalletError::InvalidInput(format!("no channel named {channel:?}"))
                 })?;
-        let version: i32 = sqlx::query_scalar(
-            "INSERT INTO oxsum.channel_prices \
-                 (channel_id, model, version, input_price_per_million, output_price_per_million, \
-                  max_output_tokens, cache_read_price_per_million, \
-                  cache_write_5m_price_per_million, cache_write_1h_price_per_million, \
-                  reasoning_price_per_million, cost_per_request, mode, upstream_prices, rules, \
-                  weight) \
-             SELECT $1, $2, COALESCE(max(version), 0) + 1, $3, $4, $5, $6, $7, $8, $9, $10, $11, \
-                    $12, $13, $14 \
-             FROM oxsum.channel_prices WHERE channel_id = $1 AND model = $2 \
-             RETURNING version",
-        )
-        .bind(channel_id)
-        .bind(model)
-        .bind(price.input_price_per_million)
-        .bind(price.output_price_per_million)
-        .bind(price.max_output_tokens)
-        .bind(price.cache_read_price_per_million)
-        .bind(price.cache_write_5m_price_per_million)
-        .bind(price.cache_write_1h_price_per_million)
-        .bind(price.reasoning_price_per_million)
-        .bind(price.cost_per_request)
-        .bind(price.mode.as_str())
-        .bind(
-            price
-                .upstream
-                .as_ref()
-                .map(serde_json::to_value)
-                .transpose()
-                .map_err(|error| WalletError::InvalidInput(format!("upstream prices: {error}")))?,
-        )
-        .bind(if price.rules.is_empty() {
-            None
-        } else {
-            Some(
-                serde_json::to_value(&price.rules)
-                    .map_err(|error| WalletError::InvalidInput(format!("price rules: {error}")))?,
-            )
-        })
-        .bind(weight)
-        .fetch_one(&mut *tx)
-        .await?;
+        let version = append_price_in(&mut tx, channel_id, model, &price, weight).await?;
         tx.commit().await?;
-        Ok(i64::from(version))
+        Ok(version)
     }
 
     /// Every channel with the current version of each of its models, oldest first.
@@ -630,6 +647,17 @@ impl Db {
         model: &str,
         key: &SecretKey,
     ) -> Result<Vec<Serving>, WalletError> {
+        let mut tx = self.pool().begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *tx)
+            .await?;
+        Self::servings_in(&mut tx, model, key).await
+    }
+    async fn servings_in(
+        connection: &mut sqlx::PgConnection,
+        model: &str,
+        key: &SecretKey,
+    ) -> Result<Vec<Serving>, WalletError> {
         let rows = sqlx::query(
             "SELECT c.channel_id, c.name, c.base_url, c.protocol, c.settings, p.version, p.weight, \
                     p.input_price_per_million, p.output_price_per_million, p.max_output_tokens, \
@@ -644,7 +672,7 @@ impl Db {
              ORDER BY c.name",
         )
         .bind(model)
-        .fetch_all(self.pool())
+        .fetch_all(&mut *connection)
         .await?;
         let mut servings = Vec::with_capacity(rows.len());
         for row in &rows {
@@ -654,7 +682,7 @@ impl Db {
                 channel_id,
                 base_url: row.try_get("base_url")?,
                 protocol: row.try_get("protocol")?,
-                credentials: self.open_pool(channel_id, key).await?,
+                credentials: Self::open_pool(connection, channel_id, key).await?,
                 settings: row.try_get("settings")?,
                 version: i64::from(row.try_get::<i32, _>("version")?),
                 weight: i64::from(row.try_get::<i32, _>("weight")?),
@@ -786,6 +814,7 @@ impl Db {
             }
         }
         let mut tx = self.pool().begin().await?;
+        lock_configuration(&mut tx).await?;
         sqlx::query("DELETE FROM oxsum.model_fallbacks WHERE model = $1")
             .bind(model)
             .execute(&mut *tx)
@@ -807,10 +836,13 @@ impl Db {
 
     /// Removes a model's fallback chain, answering whether it had one.
     pub async fn clear_fallbacks(&self, model: &str) -> Result<bool, WalletError> {
+        let mut tx = self.pool().begin().await?;
+        lock_configuration(&mut tx).await?;
         let result = sqlx::query("DELETE FROM oxsum.model_fallbacks WHERE model = $1")
             .bind(model)
-            .execute(self.pool())
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         Ok(result.rows_affected() > 0)
     }
 
@@ -837,6 +869,7 @@ impl Db {
         let alias = model_name(alias)?;
         let upstream_model = model_name(upstream_model)?;
         let mut tx = self.pool().begin().await?;
+        lock_configuration(&mut tx).await?;
         let channel_id: Uuid =
             sqlx::query_scalar("SELECT channel_id FROM oxsum.channels WHERE name = $1")
                 .bind(channel)
@@ -934,15 +967,18 @@ impl Db {
     /// a hard delete, and bills already written still name the alias the caller
     /// used.
     pub async fn delete_alias(&self, channel: &str, alias: &str) -> Result<bool, WalletError> {
+        let mut tx = self.pool().begin().await?;
+        lock_configuration(&mut tx).await?;
         let dropped = sqlx::query(
             "DELETE FROM oxsum.model_aliases a USING oxsum.channels c \
              WHERE a.alias = $1 AND a.channel_id = c.channel_id AND c.name = $2",
         )
         .bind(alias)
         .bind(channel)
-        .execute(self.pool())
+        .execute(&mut *tx)
         .await?
         .rows_affected();
+        tx.commit().await?;
         Ok(dropped > 0)
     }
 
@@ -995,11 +1031,11 @@ impl Db {
     /// past any cool-down, each sealed record unsealed under `key` — the pool
     /// the gateway's pick walks. Empty when every credential sits out.
     async fn open_pool(
-        &self,
+        connection: &mut sqlx::PgConnection,
         channel_id: Uuid,
         key: &SecretKey,
     ) -> Result<Vec<crate::pools::PoolCredential>, WalletError> {
-        self.healthy_credentials(channel_id)
+        crate::pools::healthy_credentials(connection, channel_id)
             .await?
             .into_iter()
             .map(|(credential_id, sealed, position, last_used_at)| {
@@ -1031,14 +1067,20 @@ impl Db {
         model: &str,
         key: &SecretKey,
     ) -> Result<(Vec<Serving>, Option<String>), WalletError> {
-        let Some((channel, upstream_model)) = self.resolve_alias(model).await? else {
-            return Ok((self.servings(model, key).await?, None));
+        let mut tx = self.pool().begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *tx)
+            .await?;
+        let alias: Option<(String, String)> = sqlx::query_as("SELECT c.name,a.upstream_model FROM oxsum.model_aliases a JOIN oxsum.channels c USING(channel_id) WHERE a.alias=$1")
+            .bind(model).fetch_optional(&mut *tx).await?;
+        let Some((channel, upstream_model)) = alias else {
+            return Ok((Self::servings_in(&mut tx, model, key).await?, None));
         };
         // The alias's own price wins when the channel wrote one; the upstream
         // model's is the fallback that keeps an unpriced public name servable.
-        let serving = match self.serving_on(&channel, model, key).await? {
+        let serving = match Self::serving_on(&mut tx, &channel, model, key).await? {
             Some(serving) => Some(serving),
-            None => self.serving_on(&channel, &upstream_model, key).await?,
+            None => Self::serving_on(&mut tx, &channel, &upstream_model, key).await?,
         };
         Ok((serving.into_iter().collect(), Some(upstream_model)))
     }
@@ -1047,7 +1089,7 @@ impl Db {
     /// alias-path half of [`servings_named`](Self::servings_named): the route is
     /// pinned, the name is whichever price the alias rule resolved to.
     async fn serving_on(
-        &self,
+        connection: &mut sqlx::PgConnection,
         channel: &str,
         model: &str,
         key: &SecretKey,
@@ -1067,7 +1109,7 @@ impl Db {
         )
         .bind(channel)
         .bind(model)
-        .fetch_optional(self.pool())
+        .fetch_optional(&mut *connection)
         .await?;
         match row {
             Some(row) => {
@@ -1077,7 +1119,7 @@ impl Db {
                     channel_id,
                     base_url: row.try_get("base_url")?,
                     protocol: row.try_get("protocol")?,
-                    credentials: self.open_pool(channel_id, key).await?,
+                    credentials: Self::open_pool(connection, channel_id, key).await?,
                     settings: row.try_get("settings")?,
                     version: i64::from(row.try_get::<i32, _>("version")?),
                     weight: i64::from(row.try_get::<i32, _>("weight")?),
@@ -1202,6 +1244,7 @@ impl Db {
     ) -> Result<bool, WalletError> {
         crate::adapters::known_protocol(protocol)?;
         let mut tx = self.pool().begin().await?;
+        lock_configuration(&mut tx).await?;
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
             .bind(SEED_LOCK)
             .execute(&mut *tx)
@@ -1479,9 +1522,69 @@ pub async fn price_row(
     .transpose()
 }
 
+/// Shared append inside an already authorized, channel-locked transaction.
+pub(crate) async fn append_price_in(
+    connection: &mut sqlx::PgConnection,
+    channel_id: Uuid,
+    model: &str,
+    price: &Price,
+    weight: i64,
+) -> Result<i64, WalletError> {
+    let version: i32 = sqlx::query_scalar(
+        "INSERT INTO oxsum.channel_prices \
+                 (channel_id, model, version, input_price_per_million, output_price_per_million, \
+                  max_output_tokens, cache_read_price_per_million, \
+                  cache_write_5m_price_per_million, cache_write_1h_price_per_million, \
+                  reasoning_price_per_million, cost_per_request, mode, upstream_prices, rules, \
+                  weight) \
+             SELECT $1, $2, COALESCE(max(version), 0) + 1, $3, $4, $5, $6, $7, $8, $9, $10, $11, \
+                    $12, $13, $14 \
+             FROM oxsum.channel_prices WHERE channel_id = $1 AND model = $2 \
+             RETURNING version",
+    )
+    .bind(channel_id)
+    .bind(model)
+    .bind(price.input_price_per_million)
+    .bind(price.output_price_per_million)
+    .bind(price.max_output_tokens)
+    .bind(price.cache_read_price_per_million)
+    .bind(price.cache_write_5m_price_per_million)
+    .bind(price.cache_write_1h_price_per_million)
+    .bind(price.reasoning_price_per_million)
+    .bind(price.cost_per_request)
+    .bind(price.mode.as_str())
+    .bind(
+        price
+            .upstream
+            .as_ref()
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(|error| WalletError::InvalidInput(format!("upstream prices: {error}")))?,
+    )
+    .bind(if price.rules.is_empty() {
+        None
+    } else {
+        Some(
+            serde_json::to_value(&price.rules)
+                .map_err(|error| WalletError::InvalidInput(format!("price rules: {error}")))?,
+        )
+    })
+    .bind(weight)
+    .fetch_one(&mut *connection)
+    .await?;
+    Ok(i64::from(version))
+}
+
 /// One version per model (`latest`), or all of them.
 async fn prices_of(
     db: &Db,
+    channel_id: Uuid,
+    latest: Option<i32>,
+) -> Result<Vec<ModelPrice>, WalletError> {
+    prices_in(&mut *db.pool().acquire().await?, channel_id, latest).await
+}
+pub(crate) async fn prices_in(
+    connection: &mut sqlx::PgConnection,
     channel_id: Uuid,
     latest: Option<i32>,
 ) -> Result<Vec<ModelPrice>, WalletError> {
@@ -1498,7 +1601,7 @@ async fn prices_of(
     )
     .bind(channel_id)
     .bind(latest)
-    .fetch_all(db.pool())
+    .fetch_all(connection)
     .await?;
     rows.iter()
         .map(|row| {
@@ -1563,7 +1666,7 @@ fn catalog_from_row(row: &sqlx::postgres::PgRow) -> Result<CatalogModel, WalletE
 }
 
 /// A channel name: what the admin URL path can carry.
-fn channel_name(name: &str) -> Result<&str, WalletError> {
+pub(crate) fn channel_name(name: &str) -> Result<&str, WalletError> {
     let name = name.trim();
     if name.is_empty() || name.len() > MAX_NAME {
         return Err(WalletError::InvalidInput(format!(
@@ -1582,7 +1685,7 @@ fn channel_name(name: &str) -> Result<&str, WalletError> {
 }
 
 /// A model name, which upstream has to accept back.
-fn model_name(model: &str) -> Result<&str, WalletError> {
+pub(crate) fn model_name(model: &str) -> Result<&str, WalletError> {
     let model = model.trim();
     if model.is_empty() || model.len() > MAX_MODEL {
         return Err(WalletError::InvalidInput(format!(
@@ -1598,7 +1701,7 @@ fn model_name(model: &str) -> Result<&str, WalletError> {
 }
 
 /// The channel's address, without a trailing slash: the gateway appends `/chat/completions`.
-fn base_url_of(base_url: &str) -> Result<String, WalletError> {
+pub(crate) fn base_url_of(base_url: &str) -> Result<String, WalletError> {
     let url = Url::parse(base_url.trim())
         .map_err(|error| WalletError::InvalidInput(format!("baseUrl is not a URL: {error}")))?;
     if url.scheme() != "http" && url.scheme() != "https" {
