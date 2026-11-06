@@ -322,6 +322,55 @@ pub enum CountsProvenance {
     None,
 }
 
+/// How a settled turn's `upstream_cost_minor` was derived (issue #604, roadmap
+/// T13): the provenance a cost-allocation pass reads so a NULL figure is never
+/// mistaken for a zero the platform really paid, and a reused answer is never
+/// billed as a fresh upstream attempt.
+///
+/// `CountsProvenance` says who counted the billed *tokens*; `CostBasis` says
+/// how the platform's own *cost* figure was produced. The two are independent:
+/// a real attempt and a local estimate can both carry `Some` upstream cost, and
+/// a swept turn carries neither figure nor basis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CostBasis {
+    /// A real upstream attempt reported usage and the price's `upstream` block
+    /// priced it — including a failed-but-billed attempt upstream still charged
+    /// for (partial bytes, a timeout after accept). The cost is real, never a
+    /// fabricated zero.
+    RealAttempt,
+    /// A semantic-cache hit: no upstream call ran this turn
+    /// (`upstream_attempts` is 0), so the reused answer's cost was already paid
+    /// once by the turn that produced it.
+    CacheReuse,
+    /// The priced usage came from a local estimate — the degraded policy, or a
+    /// client-cancel estimate — not an upstream report.
+    Estimate,
+    /// `upstream_cost_minor` is NULL: the price carried no `upstream` block, a
+    /// swept turn had no price to price from, or the row predates the column.
+    /// The platform's cost is untracked, not zero.
+    #[default]
+    Missing,
+    /// Reserved: a later pass reconciled this row's figure against the
+    /// provider's own bill (`oxsum.upstream_bills`, at (channel, day) grain).
+    /// No writer sets it yet; the value reserves the spelling so an allocation
+    /// backfill never has to invent one.
+    ProviderReconciled,
+}
+
+impl CostBasis {
+    /// The spelling `usage_records.cost_basis` stores.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::RealAttempt => "real_attempt",
+            Self::CacheReuse => "cache_reuse",
+            Self::Estimate => "estimate",
+            Self::Missing => "missing",
+            Self::ProviderReconciled => "provider_reconciled",
+        }
+    }
+}
+
 /// One settled turn's row in `oxsum.usage_records`: the normalized record plus
 /// the context of what charged it.
 ///
@@ -377,6 +426,11 @@ pub struct UsageRow {
     /// untracked, not zero: a price with no `upstream` block, a swept turn
     /// whose watch row carries no price, or history from before the column.
     pub upstream_cost_minor: Option<i64>,
+    /// How the `upstream_cost_minor` figure was derived (issue #604): a real
+    /// attempt's report, a cache hit, a local estimate, or untracked. Kept
+    /// beside the figure so a cost-allocation pass never has to infer it from
+    /// `kind`.
+    pub cost_basis: CostBasis,
     /// How many upstream calls the turn made (issue #168): above 1 means it
     /// failed over between channels under the one hold, or waited out a
     /// bounded `Retry-After` on a lone channel's 429.
@@ -455,10 +509,10 @@ impl Db {
               charged_minor, freeze_minor, upstream_cost_minor, upstream_attempts, \
               provider_input_tokens, provider_output_tokens, \
               local_input_tokens, local_output_tokens, \
-              status, failure_reason) \
+              status, failure_reason, cost_basis) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, \
                      $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, \
-                     $30, $31, $32, $33, $34, $35, $36) \
+                     $30, $31, $32, $33, $34, $35, $36, $37) \
              ON CONFLICT (request_id) DO NOTHING",
         )
         .bind(&row.request_id)
@@ -512,6 +566,7 @@ impl Db {
         })
         .bind(&row.status)
         .bind(&row.failure_reason)
+        .bind(row.cost_basis.as_str())
         .execute(&mut **tx)
         .await?
         .rows_affected();

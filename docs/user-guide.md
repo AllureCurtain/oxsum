@@ -92,7 +92,7 @@ for the session. **Settings** carries the two-factor card: enroll shows the
 base32 secret and `otpauthUrl`, confirm with a live code shows the ten backup
 codes once, and disable needs a live code.
 
-The dashboard is the React app under `web/` (issue #234): overview, top-up, bills, requests, usage, pricing, keys, members, the transaction log, statements, webhooks, chat, settings and the admin console, built on the single component layer under `web/src/components/ui/` — Radix primitives and vendored shadcn sources, styled with the DESIGN.md palette (DESIGN.md) — all reading the same `/api/v1` surface. The server-rendered Topcoat pages retired to it (issue #256), so an old `/dashboard/*`, `/app/login` or `/admin` bookmark answers `301` to its `/app` twin — the page names below are the `/app` routes. `/verify` keeps its server-rendered form on purpose — when the wasm bundle ships, the page's loader runs the same check in your browser instead (issue #284).
+The dashboard is the React app under `web/` (issue #234): overview, top-up, orders, bills, requests, usage, pricing, keys, members, the transaction log, statements, webhooks, chat, settings and the admin console, built on the single component layer under `web/src/components/ui/` — Radix primitives and vendored shadcn sources, styled with the DESIGN.md palette (DESIGN.md) — all reading the same `/api/v1` surface. The server-rendered Topcoat pages retired to it (issue #256), so an old `/dashboard/*`, `/app/login` or `/admin` bookmark answers `301` to its `/app` twin — the page names below are the `/app` routes. `/verify` keeps its server-rendered form on purpose — when the wasm bundle ships, the page's loader runs the same check in your browser instead (issue #284).
 
 - **Overview**: the organization, who you are logged in as and in which role, the
   available balance, the frozen total (everything the organization's outstanding holds
@@ -447,6 +447,18 @@ review, never credited. `GET /api/v1/orders` lists your orders and
 `GET /api/v1/orders/{orderId}/fulfillment` shows the state and what the
 fulfillment granted.
 
+The Orders pages (issue #607) are where that journey lives in the dashboard:
+`/app/orders` lists every order and manual receipt newest first, filterable by
+purpose and status; `/app/orders/new` pins a top-up or bundle order in the
+organization's display currency and lands on `/app/orders/{id}`, which mounts
+the provider's checkout element from `GET …/checkout-session` — the recovery
+read a refreshed or returned browser polls — and shows the order's truth as it
+moves `created → provider_pending → paid → fulfilled` (or `failed`, `expired`,
+`needs_attention`). A provider's return URL lands on the list page with
+`?order={id}` and bounces to the detail page; the return itself never marks
+anything paid — only the signed webhook does. A staff-recorded receipt appears
+in the same list with `source: manual` and its evidence on the detail page.
+
 On a deployment running the real rail (`OXSUM_X402_FACILITATOR_*` — an x402-rs
 facilitator sidecar verifies the authorization on-chain, settles it, and the
 chain transaction hash lands on the deposit row) or pinning a stand-in payer key
@@ -753,6 +765,43 @@ without a `stripePriceId` are bound by the operator only. The bill still
 verifies: a settled turn's record names the `subscriptionId` and `periodId`
 its draw ran under beside `drawnMinor`/`chargedMinor`, so what the period paid
 is provable, not just claimed.
+
+## Paid plans (sold catalogue)
+
+Purpose: buy the plan a business actually sells — a priced entitlement with a
+real lifecycle, not an operator-bound quota.
+
+A business publishes its catalogue as immutable versions
+(`GET /api/v1/business/plans` for staff; `POST` mints a new version, never
+rewrites a sold one). `GET /api/v1/plans` is the on-sale read any credential
+may make: each entry is one version's terms — `priceMinor`, `quotaMinor` per
+period, `periodKind` (`calendarMonth` ends at the next UTC month boundary;
+`anniversary` rolls on the activation date's day-of-month, clamped into
+shorter months — a January 31 plan renews February 28, then March 31), and
+`overageEnabled`, the opt-in that lets an exhausted period draw past quota
+against the wallet.
+
+Buying is a two-step the business staff drives:
+
+1. `PUT /api/v1/business/customers/{organizationId}/plan` with
+   `{"planVersionId"}` binds you — `pendingPayment` for a priced plan, active
+   immediately for a free one bound with `{"complimentaryGrant": "<uuid>"}`.
+2. Pay through a `planPeriod` order (`POST /api/v1/orders` with
+   `purpose: "planPeriod"` and `purposeRef` = your `customerPlanId`): once the
+   signed webhook marks it paid and fulfillment lands, period 0 activates and
+   your plan turns `active`. `GET /api/v1/org/plan` shows the state plus every
+   period you have authorized — each carrying its bounds and what authorized
+   it (`paymentOrder` or `complimentary`).
+
+A period only ever exists because its authorization does — the rollover timer
+can never open an unpaid one. When the boundary passes without a paid
+renewal the plan goes `pastDue`: the ended period's unspent remainder still
+serves your requests, but no new quota issues until a renewal order
+fulfills — and that period chains off the previous end, so a late renewal
+does not skip the gap. `POST /api/v1/org/plan/cancel` marks
+`cancelAtPeriodEnd` — the paid period still serves to its end, then the plan
+closes without renewing. `POST /api/v1/org/plan/change` books a swap to
+another version at the next boundary; there is no mid-period pro-rating.
 
 ## Webhooks
 

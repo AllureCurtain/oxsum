@@ -54,7 +54,11 @@ async fn identity_snapshot(db: &Db) -> Value {
         "usage_records",
         "usage_daily",
     ] {
-        let rows:Value=sqlx::query_scalar(&format!("SELECT COALESCE(jsonb_agg(v ORDER BY v::text),'[]'::jsonb) FROM (SELECT to_jsonb(t) AS v FROM oxsum.{table} t) s")).fetch_one(db.pool()).await.unwrap();
+        // `cost_basis` is a column the upgrade adds to `usage_records`: its key
+        // is absent from `to_jsonb` before the migration and `NULL` after, so it
+        // is stripped to compare the *history content* the snapshot exists for —
+        // a migration adding a column is schema change, not history change.
+        let rows:Value=sqlx::query_scalar(&format!("SELECT COALESCE(jsonb_agg(v ORDER BY v::text),'[]'::jsonb) FROM (SELECT to_jsonb(t)-'cost_basis' AS v FROM oxsum.{table} t) s")).fetch_one(db.pool()).await.unwrap();
         out.insert(table.into(), rows);
     }
     Value::Object(out)
@@ -113,32 +117,26 @@ async fn ownership_upgrade_preserves_history_and_maps_new_customers_without_staf
             .unwrap();
     }
     sqlx::query("INSERT INTO oxsum.subscription_plans (plan_id,name,quota_minor,reset_period) VALUES ($1,'legacy',100,'monthly')").bind(Uuid::new_v4()).execute(db.pool()).await.unwrap();
-    db.record_usage(&oxsum_core::UsageRow {
-        request_id: "legacy-request".into(),
-        tenant_id: registered.organization.tenant_id.clone(),
-        key_id: Some(registered.api_key.key.id),
-        mandate_id: None,
-        model: "test-model".into(),
-        channel: "legacy".into(),
-        price_version: 1,
-        kind: oxsum_core::SettlementKind::Usage,
-        entry_id: *receipt.entry_id.as_uuid(),
-        status: "settled".into(),
-        failure_reason: None,
-        usage: oxsum_core::UsageRecord {
-            input_tokens: 100,
-            output_tokens: 50,
-            ..Default::default()
-        },
-        counts: oxsum_core::CountsProvenance::Provider {
-            input: 100,
-            output: 50,
-        },
-        charged_minor: 700_000,
-        freeze_minor: 1_000_000,
-        upstream_cost_minor: None,
-        upstream_attempts: 1,
-    })
+    // The pre-0089 usage_records shape: `cost_basis` is a column the upgrade
+    // adds, so the historical fixture writes the row under the column set the
+    // old schema actually had — leaving `cost_basis` NULL, exactly as a real
+    // pre-column row reads after the migration lands.
+    sqlx::query(
+        "INSERT INTO oxsum.usage_records \
+         (request_id, tenant_id, key_id, mandate_id, model, channel, price_version, kind, entry_id, \
+          input_tokens, output_tokens, charged_minor, freeze_minor, upstream_cost_minor, \
+          upstream_attempts, provider_input_tokens, provider_output_tokens, status) \
+         VALUES ($1,$2,$3,NULL,$4,$5,$6,$7,$8,100,50,700000,1000000,NULL,1,100,50,'settled')",
+    )
+    .bind("legacy-request")
+    .bind(&registered.organization.tenant_id)
+    .bind(registered.api_key.key.id)
+    .bind("test-model")
+    .bind("legacy")
+    .bind(1_i32)
+    .bind(oxsum_core::SettlementKind::Usage.as_str())
+    .bind(*receipt.entry_id.as_uuid())
+    .execute(db.pool())
     .await
     .unwrap();
     let org = db

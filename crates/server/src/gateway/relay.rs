@@ -796,7 +796,11 @@ impl Plan {
         });
         // A cache hit's provenance: the source entry id has to outlive the
         // match that produces `usage` — the `SettlementCache` below borrows
-        // it — so it is named here, on the plan's own stack frame.
+        // it — so it is named here, on the plan's own stack frame. The flag
+        // also decides the cost basis (issue #604): a cache reuse made no
+        // upstream call, a local estimate priced no upstream report.
+        let charge_cached = matches!(charge, Charge::Cached { .. });
+        let charge_estimated = matches!(charge, Charge::Estimated);
         let cache_source_id = match &charge {
             Charge::Cached {
                 source_entry_id, ..
@@ -1092,6 +1096,43 @@ impl Plan {
             | SettlementKind::Released
             | SettlementKind::Refused => oxsum_core::OperationState::Failed,
         };
+        // The operation's outcome names cache reuse apart from a fresh serve
+        // (issue #604): the usage row's `kind` stays the settlement's honest
+        // `usage`, but the operation's `outcome_kind` is `cache_hit` when the
+        // answer came off the semantic cache — so a cost read never confuses a
+        // re-served answer with one a fresh upstream attempt produced.
+        let operation_outcome_kind = if charge_cached {
+            "cache_hit"
+        } else {
+            kind.as_str()
+        };
+        // The platform's own cost for the same usage, under the set the turn
+        // priced with — `None` when it carries no `upstream` block, which is
+        // untracked rather than free (issue #112). Bound to a variable so the
+        // cost basis below reads the same figure the row records.
+        let upstream_cost_minor =
+            self.price
+                .upstream_cost(&usage, billable)
+                .unwrap_or_else(|error| {
+                    tracing::error!(%error, request = %self.request,
+                    "pricing upstream's cost failed; the row records untracked");
+                    None
+                });
+        // How the platform's cost figure was derived (issue #604): a cache hit
+        // made no upstream call, a local estimate priced no report, a NULL
+        // figure is untracked, and anything else is a real attempt's priced
+        // cost — including a failed-but-billed one, which records its cost
+        // rather than fabricating a zero.
+        let cost_basis = if charge_cached {
+            oxsum_core::CostBasis::CacheReuse
+        } else if charge_estimated {
+            oxsum_core::CostBasis::Estimate
+        } else {
+            match upstream_cost_minor {
+                Some(_) => oxsum_core::CostBasis::RealAttempt,
+                None => oxsum_core::CostBasis::Missing,
+            }
+        };
         // The turn's usage row rides inside the settlement transaction it
         // describes: `ON CONFLICT (request_id)` keeps a raced replay a no-op.
         let usage_row = UsageRow {
@@ -1110,16 +1151,8 @@ impl Plan {
             counts,
             charged_minor: charged,
             freeze_minor: self.freeze,
-            // The platform's own cost for the same usage, under the set the
-            // turn priced with — `None` when it carries no `upstream`
-            // block, which is untracked rather than free (issue #112).
-            upstream_cost_minor: self.price.upstream_cost(&usage, billable).unwrap_or_else(
-                |error| {
-                    tracing::error!(%error, request = %self.request,
-                        "pricing upstream's cost failed; the row records untracked");
-                    None
-                },
-            ),
+            upstream_cost_minor,
+            cost_basis,
             upstream_attempts: self.upstream_attempts,
         };
         let usage_json = answered
@@ -1207,7 +1240,7 @@ impl Plan {
                         &operation.lease_owner,
                         operation_state,
                         charged,
-                        kind.as_str(),
+                        operation_outcome_kind,
                     )
                     .await?
                 {

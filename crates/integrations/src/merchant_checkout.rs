@@ -187,6 +187,47 @@ pub async fn create(
     };
     Ok(result)
 }
+/// The return/cancel overrides a create may carry (issue #607): absent, the
+/// provider returns the browser to the order's own `/app/orders?order={id}`
+/// page. An absolute http(s) URL is used as given; a site-absolute path
+/// (`/...`) resolves under the deployment's public URL; anything else is
+/// refused by the route before it reaches here.
+#[derive(Default)]
+pub struct ReturnUrls {
+    pub return_url: Option<String>,
+    pub cancel_url: Option<String>,
+}
+
+impl ReturnUrls {
+    /// The provider's return destination: the override, or the order's own
+    /// status page. `suffix` carries the rail's distinguishing query (the
+    /// switch's `hyperswitch=return`, Stripe's `session=success`).
+    fn resolve(&self, public_url: &str, payment_id: uuid::Uuid, suffix: &str) -> String {
+        let base = public_url.trim_end_matches('/');
+        let default = format!("{base}/app/orders?order={payment_id}{suffix}");
+        match self.return_url.as_deref() {
+            Some(url) if url.starts_with("http://") || url.starts_with("https://") => {
+                url.to_owned()
+            }
+            Some(path) if path.starts_with('/') => format!("{base}{path}"),
+            _ => default,
+        }
+    }
+
+    /// Stripe's separate cancel destination: the override, or the return
+    /// resolution with the cancel suffix.
+    fn resolve_cancel(&self, public_url: &str, payment_id: uuid::Uuid) -> String {
+        let base = public_url.trim_end_matches('/');
+        match self.cancel_url.as_deref() {
+            Some(url) if url.starts_with("http://") || url.starts_with("https://") => {
+                url.to_owned()
+            }
+            Some(path) if path.starts_with('/') => format!("{base}{path}"),
+            _ => format!("{base}/app/orders?order={payment_id}&session=cancel"),
+        }
+    }
+}
+
 /// A purpose-scoped order checkout (issue #606): like [`create`], but the
 /// charged amount/currency are the order's display terms, which may be any
 /// ISO-4217 fiat — the binding pins what the provider charges, and the credit
@@ -203,6 +244,7 @@ pub async fn create_order(
     description: &str,
     http: &ProviderHttp,
     public_url: &str,
+    urls: &ReturnUrls,
 ) -> Result<MerchantCheckoutHandle, MerchantCheckoutError> {
     if payment.merchant_id != context.merchant_id || payment.version_id != context.version.id {
         return Err(MerchantCheckoutError);
@@ -212,9 +254,10 @@ pub async fn create_order(
     let policy = &context.version.destination_policy;
     let result = match context.rail {
         MerchantRail::Hyperswitch => {
+            let return_url = urls.resolve(public_url, payment.payment_id, "&hyperswitch=return");
             let response=http.request(Method::POST,base,policy,&["payments"]).await.map_err(|_|MerchantCheckoutError)?
                 .header("api-key",context.api_key()).header("idempotency-key",payment.payment_id.to_string())
-                .json(&json!({"amount":payment.amount_minor,"currency":payment.currency,"confirm":false,"capture_method":"automatic","description":description,"return_url":format!("{}/app/orders?order={}&hyperswitch=return",public_url.trim_end_matches('/'),payment.payment_id),"metadata":metadata}))
+                .json(&json!({"amount":payment.amount_minor,"currency":payment.currency,"confirm":false,"capture_method":"automatic","description":description,"return_url":return_url,"metadata":metadata}))
                 .send().await.map_err(|_|MerchantCheckoutError)?;
             if !response.status().is_success() {
                 return Err(MerchantCheckoutError);
@@ -227,6 +270,8 @@ pub async fn create_order(
             }
         }
         MerchantRail::Stripe => {
+            let success_url = urls.resolve(public_url, payment.payment_id, "&session=success");
+            let cancel_url = urls.resolve_cancel(public_url, payment.payment_id);
             let response = http
                 .request(Method::POST, base, policy, &["v1", "checkout", "sessions"])
                 .await
@@ -241,22 +286,8 @@ pub async fn create_order(
                         "metadata[organization_id]",
                         payment.organization_id.to_string(),
                     ),
-                    (
-                        "success_url",
-                        format!(
-                            "{}/app/orders?order={}&session=success",
-                            public_url.trim_end_matches('/'),
-                            payment.payment_id
-                        ),
-                    ),
-                    (
-                        "cancel_url",
-                        format!(
-                            "{}/app/orders?order={}&session=cancel",
-                            public_url.trim_end_matches('/'),
-                            payment.payment_id
-                        ),
-                    ),
+                    ("success_url", success_url),
+                    ("cancel_url", cancel_url),
                     ("line_items[0][quantity]", "1".into()),
                     (
                         "line_items[0][price_data][currency]",
@@ -323,11 +354,7 @@ pub async fn create_order(
                 amount: &amount,
                 currency: &payment.currency,
                 merchant_order_id: payment.payment_id.to_string(),
-                return_url: format!(
-                    "{}/app/orders?order={}",
-                    public_url.trim_end_matches('/'),
-                    payment.payment_id
-                ),
+                return_url: urls.resolve(public_url, payment.payment_id, ""),
                 metadata,
             };
             let response = http

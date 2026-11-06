@@ -40,6 +40,18 @@ pub const LEASE_SECS: i64 = 60;
 /// CAS — which is the point of claiming rather than locking.
 pub const SWEEPER_OWNER: &str = "sweeper";
 
+/// The `request_operations.surface` spelling a metered event's operation
+/// carries (issue #604): the privileged service-credential intake, distinct
+/// from every customer surface's name, so a coverage read can tell an internal
+/// metered event from a customer-billable gateway turn.
+pub const METERING_SURFACE: &str = "metering";
+
+/// The `outcome_kind` a privileged metered event's operation closes under
+/// (issue #604): `metered`, never `usage` — so a cost-allocation read over the
+/// operation rows never confuses a staff-triggered internal event with the
+/// customer-billable usage a real upstream attempt produced.
+pub const METERED_OUTCOME: &str = "metered";
+
 /// Where an operation is in its life — `created`, `leased` and `running` are
 /// open, everything else is terminal and means the settle CAS already ran.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -354,6 +366,32 @@ impl Db {
         .fetch_one(self.pool())
         .await?;
         Ok((operation_from_row(&row)?, false))
+    }
+
+    /// Looks an operation up by its scoped fingerprint — the replay anchor the
+    /// metering surface uses (issue #604): a metered event's `hold_key` is the
+    /// operation's fingerprint, so the settle names the row the hold wrote
+    /// rather than carrying an id it never saw. `None` covers absent and
+    /// foreign alike — an operation's existence is not an oracle across
+    /// organizations.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn operation_by_fingerprint(
+        &self,
+        organization_id: Uuid,
+        fingerprint: &str,
+    ) -> Result<Option<RequestOperation>, WalletError> {
+        let row = sqlx::query(&format!(
+            "SELECT {OPERATION_COLS} FROM oxsum.request_operations \
+             WHERE organization_id = $1 AND fingerprint = $2"
+        ))
+        .bind(organization_id)
+        .bind(fingerprint)
+        .fetch_optional(self.pool())
+        .await?;
+        row.map(|row| operation_from_row(&row)).transpose()
     }
 
     /// Reads one operation — the caller's detail read, owned by
@@ -813,6 +851,13 @@ impl Db {
     /// operation and binding the hold. Bounded per pass so a backlog drains
     /// over ticks.
     ///
+    /// `metering` operations are excluded (issue #604): a metered event binds
+    /// no heartbeating worker, so the 60-second gateway lease would claim a
+    /// hold that is legitimately open while the reporting service holds it.
+    /// Its lifecycle rides the `open_holds` sweep instead — the same watch row
+    /// its bound `hold_key` already names — and `sweep_one` closes the
+    /// operation when it releases the stale metered hold.
+    ///
     /// # Errors
     ///
     /// Storage failures surface as [`WalletError`].
@@ -822,12 +867,14 @@ impl Db {
     ) -> Result<Vec<RequestOperation>, WalletError> {
         let rows = sqlx::query(&format!(
             "SELECT {OPERATION_COLS} FROM oxsum.request_operations \
-             WHERE (state IN ('leased', 'running') AND leased_until < now()) \
-                OR (state = 'created' AND created_at < now() - ($1 || ' seconds')::interval) \
+             WHERE surface <> $3 \
+               AND ((state IN ('leased', 'running') AND leased_until < now()) \
+                OR (state = 'created' AND created_at < now() - ($1 || ' seconds')::interval)) \
              ORDER BY created_at LIMIT $2"
         ))
         .bind(LEASE_SECS)
         .bind(limit)
+        .bind(METERING_SURFACE)
         .fetch_all(self.pool())
         .await?;
         rows.iter().map(operation_from_row).collect()

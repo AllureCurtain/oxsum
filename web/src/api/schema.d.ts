@@ -3056,6 +3056,252 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/plans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the published plan catalogue
+         * @description Every sold plan version still on sale (issue #610): the versioned
+         *     catalogue a business sells from. Each entry is one immutable version
+         *     — `priceMinor`, `quotaMinor` per period, `periodKind`
+         *     (`calendarMonth` for the legacy UTC-month boundary or `anniversary`
+         *     for the activation date's monthly roll, clamped to the month's last
+         *     day) and the opt-in `overageEnabled`. A customer binding references
+         *     one version; later catalogue edits mint new versions and never
+         *     rewrite what was sold.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The catalogue versions on sale */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["SoldPlan"][];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/plans/{planVersionId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read one sold plan version
+         * @description The exact terms a `planVersionId` names — the version a bind or a
+         *     `planPeriod` order's `purposeRef` buys into. Unpublished or retired
+         *     versions answer `404` on this surface.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    planVersionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The sold version */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["SoldPlan"];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/org/plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The caller's own plan and its periods
+         * @description The customer organization's live plan — `pendingPayment` through
+         *     `pastDue` — plus every period it has authorized (issue #610, D06):
+         *     each `planPeriods` row carries its bounds, its quota, and the
+         *     authorization that opened it (`paymentOrder` for a paid period,
+         *     `complimentary` for a free plan's grant). A timer alone never opens
+         *     one. `plan` is `null` while the customer has no live binding.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The live plan and its authorized periods */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["OrgPlanView"];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/org/plan/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel the caller's plan at the period end
+         * @description Marks `cancelAtPeriodEnd`: the paid period still serves to its end —
+         *     the draws it funded are honored — but the boundary does not renew
+         *     (issue #610). No mid-period pro-rating; cancelling keeps serving
+         *     through what was already paid for.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The plan as it now stands */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["CustomerPlan"];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/org/plan/change": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Book a plan change at the next boundary
+         * @description Schedules a swap to another sold plan version effective at the next
+         *     period boundary (issue #610): the current period serves to its end,
+         *     and the new version's first period authorizes at that boundary — a
+         *     `planPeriod` order for a priced target, a complimentary grant for a
+         *     free one. `404` without a live plan or for an unsellable target.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["PlanChangeRequest"];
+                };
+            };
+            responses: {
+                /** @description The plan as it now stands */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["CustomerPlan"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/webhooks": {
         parameters: {
             query?: never;
@@ -6017,6 +6263,285 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/business/plans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the sold plan catalogue
+         * @description The whole catalogue — drafts, live versions and retired ones —
+         *     newest version per plan (issue #610). Current business staff with
+         *     `catalogWrite`; a personal session, never a machine credential.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The catalogue */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["SoldPlan"][];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Publish a sold plan version
+         * @description Mints a version: absent `planId` opens a new plan at version 1, a
+         *     `planId` naming an existing plan publishes its next version — a
+         *     catalogue edit is a new row, never a rewrite of the sold form
+         *     (issue #610). `priceMinor` is the ledger-minor catalogue price (0 is a
+         *     free plan, activated on a complimentary grant); `quotaMinor` is the
+         *     per-period credit quota, `null` unmetered; `periodKind` is
+         *     `calendarMonth` or `anniversary`; `overageEnabled` opts the exhausted
+         *     period into wallet draw.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["PublishPlanRequest"];
+                };
+            };
+            responses: {
+                /** @description The published version */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["SoldPlan"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/plans/{planVersionId}/retire": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retire a sold plan version
+         * @description Stops the version accepting new binds; subscriptions already running
+         *     under it keep their terms to their boundaries (issue #610). Current
+         *     business staff with `catalogWrite`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    planVersionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The version was retired */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: {
+                                retired: boolean;
+                            };
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/customers/{organizationId}/plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read a customer's plan
+         * @description The customer's live plan and every period it has authorized — the
+         *     staff's entitlement read (issue #610). `plan` is `null` while the
+         *     customer has no live binding. Current business staff with
+         *     `customersRead`.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    organizationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The plan and its authorized periods */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["OrgPlanView"];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        /**
+         * Bind a customer to a sold plan version
+         * @description Opens the customer's `customerPlan` (issue #610): a priced version
+         *     binds `pendingPayment` and activates when its `planPeriod` order
+         *     fulfills; a free version (`priceMinor` 0) activates at once on the
+         *     explicit `complimentaryGrant` the request names — never on a
+         *     fabricated paid record. One live plan per customer; a second bind is
+         *     `409` — a change books `scheduledChange` through the customer's own
+         *     surface instead.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    organizationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BindPlanRequest"];
+                };
+            };
+            responses: {
+                /** @description The customer's plan as it now stands */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["CustomerPlan"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/customers/{organizationId}/plan/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel a customer's plan at the period end
+         * @description The staff-side boundary-cancel (issue #610): same semantics as the
+         *     customer's own `POST /api/v1/org/plan/cancel` — the paid period
+         *     serves to its end but does not renew. Current business staff with
+         *     `customersWrite`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    organizationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The plan as it now stands */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["CustomerPlan"];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/webhooks/merchants/{merchantId}/versions/{versionId}": {
         parameters: {
             query?: never;
@@ -6368,13 +6893,15 @@ export interface paths {
         };
         /**
          * List the caller's payment orders
-         * @description The customer organization's own orders, paged by cursor. An order of another organization is never listed.
+         * @description The customer organization's own orders, newest first, paged by cursor. An order of another organization is never listed. `purpose` and `status` narrow the page — the order history's own filters.
          */
         get: {
             parameters: {
                 query?: {
                     after?: string;
                     limit?: number;
+                    purpose?: components["schemas"]["OrderPurpose"];
+                    status?: "created" | "provider_pending" | "paid" | "fulfilled" | "expired" | "failed" | "needs_attention";
                 };
                 header?: never;
                 path?: never;
@@ -6532,6 +7059,141 @@ export interface paths {
         };
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/orders/{orderId}/checkout-session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read an order's live checkout session
+         * @description The recovery read a returned or refreshed browser polls (issue
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    orderId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The live checkout session */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["OrderCheckoutSession"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/orders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List orders across customers
+         * @description Current business staff with report-read capability; a personal session, never a machine credential. Every customer's payment orders — provider and manual — newest first, filterable by organization, purpose and status. The operator's view of the same history the customer reads scoped.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    organizationId?: string;
+                    purpose?: components["schemas"]["OrderPurpose"];
+                    status?: "created" | "provider_pending" | "paid" | "fulfilled" | "expired" | "failed" | "needs_attention";
+                    after?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The cross-organization order page */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["PaymentOrderPage"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Record a manual receipt as a payment order
+         * @description Current business staff with funds-write capability; a personal session, never a machine credential (issue
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ManualOrderRequest"];
+                };
+            };
+            responses: {
+                /** @description The fulfilled manual order and its grant record */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ManualOrderResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;
@@ -14332,7 +14994,7 @@ export interface components {
              * @description the consumption key that admitted the turn; absent when none did
              */
             keyId?: string;
-            /** @description which surface admitted it — `chat`, `responses`, `messages`, `embeddings`, `rerank`, or `task:{kind}` */
+            /** @description which surface admitted it — `chat`, `responses`, `messages`, `embeddings`, `rerank`, `task:{kind}` for the async relay, or `metering` for a privileged service-credential event (issue #604). `metering` operations carry no `keyId`: the caller is a service credential, not a consumption key. */
             surface: string;
             /**
              * Format: int64
@@ -14351,7 +15013,7 @@ export interface components {
              * @description what the settlement charged, in minor units; absent until the operation is terminal
              */
             chargedMinor?: number;
-            /** @description the settlement kind or terminal cause — `usage`, `estimated`, `swept`, `released`, … */
+            /** @description the settlement kind or terminal cause — `usage`, `estimated`, `swept`, `released`, `cache_hit` when the answer came off the semantic cache rather than a fresh upstream attempt, or `metered` for a privileged service-credential event (issue #604). `cache_hit` and `metered` let a cost-allocation read tell re-served and internal usage apart from customer-billable upstream turns. */
             outcomeKind?: string;
             /** @description the model the turn asked for */
             model: string;
@@ -14944,6 +15606,163 @@ export interface components {
              * @description must name an enabled plan with a `stripePriceId`
              */
             planId: string;
+        };
+        SoldPlan: {
+            /**
+             * Format: uuid
+             * @description the version row's own id — what a binding and a `planPeriod` order's `purposeRef` name
+             */
+            planVersionId: string;
+            /**
+             * Format: uuid
+             * @description the plan's stable identity across versions
+             */
+            planId: string;
+            /** Format: uuid */
+            businessId: string;
+            /** @description monotonic within the plan; a catalogue edit mints the next one */
+            version: number;
+            name: string;
+            /**
+             * Format: int64
+             * @description the catalogue price in ledger minor units; 0 is a free plan activated on a complimentary grant
+             */
+            priceMinor: number;
+            /** @description the display currency the price is quoted in */
+            currency: string;
+            /**
+             * Format: int64
+             * @description quota per period in credit minor units; null is unmetered
+             */
+            quotaMinor: number | null;
+            /**
+             * @description `calendarMonth` keeps the legacy UTC-month boundary; `anniversary` rolls on the activation date's monthly anniversary, clamped to the month's last day
+             * @enum {string}
+             */
+            periodKind: "calendarMonth" | "anniversary";
+            /** @description opt-in — an exhausted period may draw past quota against the wallet at the plan's rates */
+            overageEnabled: boolean;
+            sortOrder: number;
+            /**
+             * Format: date-time
+             * @description when the version went on sale; null is a draft
+             */
+            publishedAt: string | null;
+            /**
+             * Format: date-time
+             * @description when the version stopped accepting new binds; existing subscriptions run under it to their boundaries
+             */
+            retiredAt: string | null;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        CustomerPlan: {
+            /** Format: uuid */
+            customerPlanId: string;
+            /** Format: uuid */
+            organizationId: string;
+            /**
+             * Format: uuid
+             * @description the exact sold version the customer bought
+             */
+            planVersionId: string;
+            /**
+             * Format: uuid
+             * @description the quota engine row this entitlement runs on; null until the first period activates
+             */
+            subscriptionId: string | null;
+            /**
+             * @description D06: pendingPayment → active → renewalPending/pastDue → active|expired; cancelled the explicit exit
+             * @enum {string}
+             */
+            state: "pendingPayment" | "active" | "renewalPending" | "pastDue" | "expired" | "cancelled";
+            /** Format: date-time */
+            activatedAt: string | null;
+            /** @description serves through the paid period but blocks renewal */
+            cancelAtPeriodEnd: boolean;
+            /**
+             * Format: uuid
+             * @description a booked plan-version swap effective at the next boundary; null when unscheduled
+             */
+            scheduledChange: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        PlanPeriod: {
+            /** Format: uuid */
+            planPeriodId: string;
+            /** Format: uuid */
+            customerPlanId: string;
+            /** @description 0-based; period 0 is the activation period */
+            periodIndex: number;
+            /** Format: date-time */
+            periodStart: string;
+            /** Format: date-time */
+            periodEnd: string;
+            /** Format: int64 */
+            quotaMinor: number | null;
+            /** Format: int64 */
+            consumedMinor: number;
+            /**
+             * @description what authorized the period — a paid `paymentOrders` row, or a free plan's grant
+             * @enum {string}
+             */
+            authorizationKind: "paymentOrder" | "complimentary";
+            /**
+             * Format: uuid
+             * @description the authorizing fact — the order id or the grant key
+             */
+            authorizationRef: string;
+            /** @enum {string} */
+            state: "active" | "closed" | "expired";
+            /** Format: date-time */
+            createdAt: string;
+        };
+        OrgPlanView: {
+            /** @description the live plan, or null while the customer has none */
+            plan: components["schemas"]["CustomerPlan"];
+            /** @description every period the plan has authorized, in index order */
+            periods: components["schemas"]["PlanPeriod"][];
+        };
+        PublishPlanRequest: {
+            /**
+             * Format: uuid
+             * @description publish the next version of this plan; absent mints a new plan at version 1
+             */
+            planId?: string | null;
+            name: string;
+            /** Format: int64 */
+            priceMinor: number;
+            currency: string;
+            /** Format: int64 */
+            quotaMinor: number | null;
+            /** @enum {string} */
+            periodKind: "calendarMonth" | "anniversary";
+            /** @default false */
+            overageEnabled: boolean;
+            /** @default 0 */
+            sortOrder: number;
+        };
+        BindPlanRequest: {
+            /**
+             * Format: uuid
+             * @description must name a published, unretired sold version
+             */
+            planVersionId: string;
+            /**
+             * Format: uuid
+             * @description required for a free plan — the grant key period 0 authorizes under; refused on a priced plan
+             */
+            complimentaryGrant?: string | null;
+        };
+        PlanChangeRequest: {
+            /**
+             * Format: uuid
+             * @description the sold version the change books, effective at the next boundary
+             */
+            planVersionId: string;
         };
         AuditEntry: {
             /** Format: uuid */
@@ -15571,7 +16390,7 @@ export interface components {
             displayCurrency: string;
             /**
              * Format: uuid
-             * @description the plan a `planPeriod` activates or the receivable an `invoiceRepayment` settles
+             * @description the `customerPlanId` a `planPeriod` activates or renews
              */
             purposeRef?: string | null;
             /**
@@ -15579,14 +16398,24 @@ export interface components {
              * @description a `bundle` order's promo lot in credit-minor
              */
             promoMinor?: number | null;
+            /** @description where the provider returns the browser — an absolute http(s) URL or a site-absolute path; absent, the order's own `/app/orders?order={orderId}` page */
+            returnUrl?: string | null;
+            /** @description the rail's cancel destination where one exists (Stripe); ignored by single-return rails */
+            cancelUrl?: string | null;
         };
         PaymentOrder: {
             /** Format: uuid */
             orderId: string;
-            /** Format: uuid */
-            merchantId: string;
-            /** Format: uuid */
-            merchantVersionId: string;
+            /**
+             * Format: uuid
+             * @description the merchant the checkout was offered under — null on a `manual` order
+             */
+            merchantId: string | null;
+            /**
+             * Format: uuid
+             * @description the immutable merchant version — null on a `manual` order
+             */
+            merchantVersionId: string | null;
             /** Format: uuid */
             organizationId: string;
             purpose: components["schemas"]["OrderPurpose"];
@@ -15600,7 +16429,7 @@ export interface components {
             displayCurrency: string;
             /**
              * Format: int64
-             * @description the fiat amount the provider charged
+             * @description the fiat amount the provider charged or the receipt evidenced
              */
             displayAmountMinor: number;
             /**
@@ -15615,6 +16444,13 @@ export interface components {
             /** Format: int64 */
             promoMinor: number;
             providerPaymentId: string | null;
+            /**
+             * @description how the order's payment arrived — a rail's signed webhook or a staff-recorded receipt
+             * @enum {string}
+             */
+            source: "provider" | "manual";
+            /** @description a manual order's audit payload (`reference`, `reason`, `recordedBy`); `{}` on provider orders */
+            evidence: Record<string, never>;
             /** @enum {string} */
             status: "created" | "provider_pending" | "paid" | "fulfilled" | "expired" | "failed" | "needs_attention";
             /** Format: date-time */
@@ -15657,6 +16493,46 @@ export interface components {
             status: string;
             /** Format: date-time */
             paidAt: string | null;
+            fulfillment: components["schemas"]["PaymentFulfillment"] | null;
+        };
+        /** @description The live checkout handles and lifecycle truth the returned or refreshed browser polls — a recovery read, never a paid promise. */
+        OrderCheckoutSession: {
+            /** @enum {string} */
+            status: "created" | "provider_pending" | "paid" | "fulfilled" | "expired" | "failed" | "needs_attention";
+            providerPaymentId: string | null;
+            clientSecret: string | null;
+            /** Format: uri */
+            checkoutUrl: string | null;
+            /** @description the pinned merchant version's publishable key — null on a manual order */
+            publishableKey: string | null;
+            /** Format: uri */
+            sdkUrl: string | null;
+        };
+        /** @description A verified out-of-band receipt. The credit amount rates server-side at the customer's display rate — a staff-supplied ledger figure never enters. `reference` is the receipt's unique evidence. */
+        ManualOrderRequest: {
+            /**
+             * Format: uuid
+             * @description the customer the receipt funds
+             */
+            organizationId: string;
+            idempotencyKey: string;
+            /**
+             * @description fixed — a receipt only funds wallet cash
+             * @enum {string|null}
+             */
+            purpose?: "walletTopup" | null;
+            /**
+             * Format: int64
+             * @description the fiat minor amount the receipt evidences
+             */
+            displayAmountMinor: number;
+            displayCurrency: string;
+            /** @description the receipt's own reference — a bank transaction id or remittance note */
+            reference: string;
+            reason: string;
+        };
+        ManualOrderResult: {
+            order: components["schemas"]["PaymentOrder"];
             fulfillment: components["schemas"]["PaymentFulfillment"] | null;
         };
         PaymentReconciliation: {

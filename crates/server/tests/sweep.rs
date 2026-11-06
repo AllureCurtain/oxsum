@@ -367,6 +367,7 @@ async fn a_usage_row_replay_is_ignored() {
         charged_minor: 12,
         freeze_minor: 100,
         upstream_cost_minor: Some(4),
+        cost_basis: oxsum_core::CostBasis::RealAttempt,
         upstream_attempts: 1,
     };
     world.db.record_usage(&row).await.expect("writes the row");

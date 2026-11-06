@@ -133,6 +133,7 @@ async fn turn(
         charged_minor: charged,
         freeze_minor: freeze,
         upstream_cost_minor: None,
+        cost_basis: oxsum_core::CostBasis::Missing,
         upstream_attempts: 1,
     };
     f.db.record_usage(&row)
@@ -339,6 +340,7 @@ async fn customer_turn(
         charged_minor: charged,
         freeze_minor: 10 * ONE,
         upstream_cost_minor: None,
+        cost_basis: oxsum_core::CostBasis::Missing,
         upstream_attempts: 1,
     };
     f.db.record_usage(&row)

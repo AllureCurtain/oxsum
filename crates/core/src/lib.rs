@@ -47,6 +47,7 @@ mod oauth;
 mod operations;
 mod orgs;
 mod payment_orders;
+mod plans;
 mod pools;
 mod promo_lots;
 mod proof;
@@ -193,16 +194,20 @@ pub use merchants::{
 pub use metering::{MeteredEvent, MeteredHold, MeteredOutcome};
 pub use oauth::{ConsumedState, OAuthIdentity};
 pub use operations::{
-    AttemptStatus, LEASE_SECS, NewOperation, OperationAttempt, OperationSettle, OperationState,
-    RequestOperation, SWEEPER_OWNER,
+    AttemptStatus, LEASE_SECS, METERED_OUTCOME, METERING_SURFACE, NewOperation, OperationAttempt,
+    OperationSettle, OperationState, RequestOperation, SWEEPER_OWNER,
 };
 pub use orgs::{
     AdminOrganization, Kind, Member, MembershipActor, Organization, Ownership, Role,
     UserOrganization,
 };
 pub use payment_orders::{
-    NewPaymentOrder, OrderRate, PaymentFulfillment, PaymentOrder, PaymentOrderPage,
+    NewManualOrder, NewPaymentOrder, OrderRate, PaymentFulfillment, PaymentOrder, PaymentOrderPage,
     PaymentOrderPurpose, PaymentReconciliation,
+};
+pub use plans::{
+    CustomerPlan, CustomerPlanState, NewSoldPlan, PeriodAuthorization, PeriodKind,
+    PlanAuthorizationKind, PlanPeriod, PlanPeriodState, SoldPlan, period_end_for,
 };
 pub use pools::{
     Affinity, CREDENTIAL_COOLDOWN, ChannelCredential, PoolCredential, order as credential_order,
@@ -246,8 +251,8 @@ pub use upstream_bills::{
 };
 pub use upstream_sync::{FieldDrift, ModelPair, ProbeOutcome, diff_upstream};
 pub use usage::{
-    Attribution, CountsProvenance, MAX_CONTEXT_NAME, MAX_END_USER, MAX_TAG, MAX_TAGS, Margin,
-    UsageDay, UsageRecord, UsageRow, validate_attribution,
+    Attribution, CostBasis, CountsProvenance, MAX_CONTEXT_NAME, MAX_END_USER, MAX_TAG, MAX_TAGS,
+    Margin, UsageDay, UsageRecord, UsageRow, validate_attribution,
 };
 pub use usage_anchors::UsageAnchorReport;
 pub use usage_completeness::{

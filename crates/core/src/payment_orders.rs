@@ -72,8 +72,10 @@ impl PaymentOrderPurpose {
 #[serde(rename_all = "camelCase")]
 pub struct PaymentOrder {
     pub order_id: Uuid,
-    pub merchant_id: Uuid,
-    pub merchant_version_id: Uuid,
+    /// The merchant/version the checkout was offered under. `None` on a
+    /// `source: manual` order — a recorded receipt never transited a rail.
+    pub merchant_id: Option<Uuid>,
+    pub merchant_version_id: Option<Uuid>,
     pub organization_id: Uuid,
     pub purpose: PaymentOrderPurpose,
     /// Ledger terms: integer minor units of one credit, frozen at create.
@@ -93,6 +95,12 @@ pub struct PaymentOrder {
     /// the same checkout. Transient, never part of the frozen terms.
     #[serde(skip_serializing)]
     pub checkout: serde_json::Value,
+    /// How the order's payment arrived: `provider` through a rail's signed
+    /// webhook, `manual` for a staff-recorded receipt (issue #607).
+    pub source: String,
+    /// A manual order's audit payload — the receipt `reference`, the operator's
+    /// `reason` and the staff `recordedBy`. `{}` on provider orders.
+    pub evidence: serde_json::Value,
     pub status: String,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
@@ -161,6 +169,26 @@ pub struct NewPaymentOrder {
     pub promo_minor: i64,
 }
 
+/// A staff-recorded manual receipt (issue #607): the fiat amount that arrived
+/// out of band, the receipt's reference, and the customer it funds. The ledger
+/// amount rates server-side like a provider order's — a staff-supplied credit
+/// figure never enters. `purpose` is pinned to `walletTopup`: a receipt books
+/// wallet cash or it is not a receipt.
+#[derive(Debug, Clone)]
+pub struct NewManualOrder {
+    pub organization: Uuid,
+    pub purpose: PaymentOrderPurpose,
+    /// The fiat minor amount the receipt evidences, in `display_currency`.
+    pub display_amount_minor: i64,
+    pub display_currency: String,
+    pub idempotency_key: String,
+    /// The receipt's own reference — a bank transaction id, a remittance note —
+    /// unique per business among manual orders.
+    pub reference: String,
+    /// The operator's note: why this receipt funds this customer.
+    pub reason: String,
+}
+
 fn invalid(message: &str) -> WalletError {
     WalletError::InvalidInput(message.into())
 }
@@ -185,6 +213,8 @@ fn order(row: &PgRow) -> Result<PaymentOrder, WalletError> {
         promo_minor: row.try_get("promo_minor")?,
         provider_payment_id: row.try_get("provider_payment_id")?,
         checkout: row.try_get("checkout")?,
+        source: row.try_get("source")?,
+        evidence: row.try_get("evidence")?,
         status: row.try_get("status")?,
         created_at: row.try_get("created_at")?,
         paid_at: row.try_get("paid_at")?,
@@ -232,9 +262,21 @@ async fn fulfillment_in(
     row.as_ref().map(fulfillment).transpose()
 }
 
+/// The lifecycle states the status filter accepts — the same vocabulary the
+/// `status` column's CHECK enumerates.
+const ORDER_STATUSES: &[&str] = &[
+    "created",
+    "provider_pending",
+    "paid",
+    "fulfilled",
+    "expired",
+    "failed",
+    "needs_attention",
+];
+
 const ORDER_COLS: &str = "order_id,merchant_id,merchant_version_id,organization_id,\
      purpose,amount_minor,currency,display_currency,display_amount_minor,\
-     rate_mantissa,rate_scale,purpose_ref,promo_minor,provider_payment_id,checkout,status,created_at,paid_at";
+     rate_mantissa,rate_scale,purpose_ref,promo_minor,provider_payment_id,checkout,source,evidence,status,created_at,paid_at";
 
 impl Db {
     /// Creates a payment order: pins the expected payment under the order's own
@@ -408,24 +450,92 @@ impl Db {
         row.as_ref().map(order).transpose()
     }
 
-    /// An organization's orders, newest reads page by `created_at`/id cursor.
+    /// An organization's orders, newest first, paged by the cursor the previous
+    /// page returned — the last order id, resolved back to its `created_at` so
+    /// the keyset stays stable under inserts (issue #607: the page the order
+    /// history reads, so order is newest-first, not arbitrary uuid order).
+    /// `purpose`/`status` narrow the page when present.
     pub async fn organization_payment_orders(
         &self,
         organization: Uuid,
+        after: Option<Uuid>,
+        limit: i64,
+        purpose: Option<PaymentOrderPurpose>,
+        status: Option<&str>,
+    ) -> Result<PaymentOrderPage, WalletError> {
+        if !(1..=100).contains(&limit) {
+            return Err(invalid("limit must be 1..100"));
+        }
+        if let Some(status) = status
+            && !ORDER_STATUSES.contains(&status)
+        {
+            return Err(invalid("invalid payment order status filter"));
+        }
+        let rows = sqlx::query(&format!(
+            "SELECT {ORDER_COLS} FROM oxsum.payment_orders \
+             WHERE organization_id=$1 \
+               AND ($4::text IS NULL OR purpose=$4) \
+               AND ($5::text IS NULL OR status=$5) \
+               AND ($2::uuid IS NULL OR (created_at, order_id) < \
+                    (SELECT created_at, order_id FROM oxsum.payment_orders WHERE order_id=$2)) \
+             ORDER BY created_at DESC, order_id DESC LIMIT $3"
+        ))
+        .bind(organization)
+        .bind(after)
+        .bind(limit + 1)
+        .bind(purpose.map(|p| p.as_str()))
+        .bind(status)
+        .fetch_all(self.pool())
+        .await?;
+        let mut orders = rows.iter().map(order).collect::<Result<Vec<_>, _>>()?;
+        let more = orders.len() > limit as usize;
+        orders.truncate(limit as usize);
+        let next_cursor = if more {
+            orders.last().map(|o| o.order_id)
+        } else {
+            None
+        };
+        Ok(PaymentOrderPage {
+            orders,
+            next_cursor,
+        })
+    }
+
+    /// The operator's cross-organization order read (issue #607): every order
+    /// the business's customers hold, newest first, paged by the same cursor
+    /// rule as [`Self::organization_payment_orders`]. `organization` narrows to
+    /// one customer; `purpose`/`status` filter like the customer read.
+    /// `ReportsRead` capability is checked by the caller before this runs.
+    pub async fn business_payment_orders(
+        &self,
+        organization: Option<Uuid>,
+        purpose: Option<PaymentOrderPurpose>,
+        status: Option<&str>,
         after: Option<Uuid>,
         limit: i64,
     ) -> Result<PaymentOrderPage, WalletError> {
         if !(1..=100).contains(&limit) {
             return Err(invalid("limit must be 1..100"));
         }
+        if let Some(status) = status
+            && !ORDER_STATUSES.contains(&status)
+        {
+            return Err(invalid("invalid payment order status filter"));
+        }
         let rows = sqlx::query(&format!(
             "SELECT {ORDER_COLS} FROM oxsum.payment_orders \
-             WHERE organization_id=$1 AND ($2::uuid IS NULL OR order_id>$2) \
-             ORDER BY order_id LIMIT $3"
+             WHERE ($3::uuid IS NULL OR organization_id=$3) \
+               AND ($4::text IS NULL OR purpose=$4) \
+               AND ($5::text IS NULL OR status=$5) \
+               AND ($1::uuid IS NULL OR (created_at, order_id) < \
+                    (SELECT created_at, order_id FROM oxsum.payment_orders WHERE order_id=$1)) \
+             ORDER BY created_at DESC, order_id DESC LIMIT $2"
         ))
-        .bind(organization)
         .bind(after)
         .bind(limit + 1)
+        .bind(organization)
+        .bind(purpose.map(|p| p.as_str()))
+        .bind(status)
         .fetch_all(self.pool())
         .await?;
         let mut orders = rows.iter().map(order).collect::<Result<Vec<_>, _>>()?;
@@ -455,6 +565,145 @@ impl Db {
         .fetch_optional(self.pool())
         .await?;
         row.as_ref().map(fulfillment).transpose()
+    }
+
+    /// Records a verified out-of-band receipt as a `manual` payment order
+    /// (issue #607): the business staff's authorized finance action. The
+    /// receipt's fiat amount rates to credits at the organization's own display
+    /// rate — the same conversion a provider order would pin — and the order
+    /// lands already `paid`, its evidence the receipt itself, so the caller's
+    /// next step is [`Self::fulfill_payment_order`]: the identical grant path a
+    /// webhook-paid order takes, never a ledger bypass.
+    ///
+    /// `token` is the staff personal session; `FundsWrite` is required inside
+    /// the order's own transaction. `evidence.reference` is unique per business
+    /// among manual orders — a receipt already recorded is a `409`, never a
+    /// second grant — and the `(organization, idempotencyKey)` replay returns
+    /// the standing order exactly like a provider order's create.
+    ///
+    /// The order carries no merchant and no expected-payment binding: nothing
+    /// external ever confirms it, and `apply_order_event` can never reach it.
+    pub async fn create_manual_payment_order(
+        &self,
+        token: &str,
+        new: &NewManualOrder,
+        rate: &OrderRate,
+    ) -> Result<PaymentOrder, WalletError> {
+        authority::validate(&new.idempotency_key, Some(&new.reason))?;
+        if new.display_amount_minor <= 0
+            || new.display_currency.len() != 3
+            || !new.display_currency.bytes().all(|c| c.is_ascii_uppercase())
+            || !identifier(&new.idempotency_key)
+            || new.reference.trim().is_empty()
+            || new.reference.chars().count() > 200
+            || new.purpose != PaymentOrderPurpose::WalletTopup
+        {
+            return Err(invalid("invalid manual payment order terms"));
+        }
+        let display = crate::display::display_currency(
+            Some(&new.display_currency),
+            Some(&decimal_text(rate)),
+            2,
+        )?
+        .ok_or_else(|| invalid("the organization has no rated display currency"))?;
+        let amount_minor = display
+            .to_credit_minor(new.display_amount_minor)
+            .ok_or_else(|| invalid("the display amount does not rate to a credit figure"))?;
+        let mut tx = self.pool().begin().await?;
+        let business = authority::lock_business(&mut tx).await?;
+        let actor =
+            authority::require_capability(&mut tx, business, token, BusinessCapability::FundsWrite)
+                .await?;
+        // The order's own UUID serializes its create: two racing receipts of
+        // the same idempotency key lock the same anchor.
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+            .bind(format!(
+                "payment-order:{}:{}",
+                new.organization, new.idempotency_key
+            ))
+            .execute(&mut *tx)
+            .await?;
+        // The customer must be a live profile of this business — the same gate
+        // the provider create applies.
+        let allowed = sqlx::query(
+            "SELECT organization_id FROM oxsum.customer_profiles \
+             WHERE organization_id=$1 AND business_id=$2",
+        )
+        .bind(new.organization)
+        .bind(business)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if allowed.is_none() {
+            return Err(WalletError::NotFound("unknown customer".into()));
+        }
+        let existing = sqlx::query(
+            "SELECT * FROM oxsum.payment_orders WHERE organization_id=$1 AND idempotency_key=$2",
+        )
+        .bind(new.organization)
+        .bind(&new.idempotency_key)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(existing) = existing {
+            let standing = order(&existing)?;
+            if standing.purpose != new.purpose
+                || standing.display_amount_minor != new.display_amount_minor
+                || standing.display_currency != new.display_currency
+                || standing.evidence["reference"].as_str() != Some(new.reference.as_str())
+            {
+                return Err(WalletError::Conflict(
+                    "payment order terms changed for the same idempotency key".into(),
+                ));
+            }
+            tx.commit().await?;
+            return Ok(standing);
+        }
+        let order_id = Uuid::new_v4();
+        // The evidence freezes who recorded what receipt — the audit a later
+        // dispute or reconciliation reads, immutable with the terms.
+        let evidence = json!({
+            "reference": new.reference,
+            "reason": new.reason,
+            "recordedBy": actor.user_id,
+        });
+        sqlx::query(
+            "INSERT INTO oxsum.payment_orders\
+             (order_id,business_id,merchant_id,merchant_version_id,organization_id,\
+              purpose,amount_minor,currency,display_currency,display_amount_minor,\
+              rate_mantissa,rate_scale,purpose_ref,promo_minor,idempotency_key,\
+              source,evidence,status,paid_at) \
+             VALUES($1,$2,NULL,NULL,$3,$4,$5,'USD',$6,$7,$8,$9,NULL,0,$10,'manual',$11,'paid',now())",
+        )
+        .bind(order_id)
+        .bind(business)
+        .bind(new.organization)
+        .bind(new.purpose.as_str())
+        .bind(amount_minor)
+        .bind(&new.display_currency)
+        .bind(new.display_amount_minor)
+        .bind(rate.mantissa as i64)
+        .bind(rate.scale as i32)
+        .bind(&new.idempotency_key)
+        .bind(&evidence)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            // The manual-reference unique index surfaces as a constraint error:
+            // the same receipt funding a second order is a conflict, never a
+            // storage failure the caller reads as retryable.
+            if let sqlx::Error::Database(db) = &e
+                && db.constraint() == Some("payment_orders_manual_reference")
+            {
+                return WalletError::Conflict(
+                    "this receipt reference already funds a manual order".into(),
+                );
+            }
+            WalletError::Storage(e.into())
+        })?;
+        let created = order_in(&mut tx, order_id)
+            .await?
+            .ok_or_else(|| invalid("the payment order did not land"))?;
+        tx.commit().await?;
+        Ok(created)
     }
 }
 
@@ -815,8 +1064,8 @@ impl Db {
     ///   Adjustments / credit Promo` entry — two postings under one
     ///   fulfillment, the lot never cash-backed and never refundable (issue
     ///   #609).
-    /// - `plan_period` activates the period via [`Db::bind_subscription`] — the
-    ///   quota grant — and never touches the wallet.
+    /// - `plan_period` activates the period via [`Db::activate_plan_period`] —
+    ///   the quota grant — and never touches the wallet.
     /// - `invoice_repayment` repays the drawn line via
     ///   [`crate::Wallet::repay_credit`] — `debit Cash / credit CreditLine` —
     ///   so not a minor of it can become spendable wallet balance.
@@ -885,17 +1134,17 @@ impl Db {
                 }))
             }
             PaymentOrderPurpose::PlanPeriod => {
-                let plan = order
+                let customer_plan = order
                     .purpose_ref
-                    .ok_or_else(|| invalid("a plan period order carries no plan"))?;
-                let subscription = self
-                    .bind_subscription(order.organization_id, plan, "payment-order", None)
+                    .ok_or_else(|| invalid("a plan period order carries no customer plan"))?;
+                let plan = self
+                    .activate_plan_period(order.order_id, customer_plan)
                     .await?;
                 Ok(json!({
                     "arm": "plan_period",
-                    "subscriptionId": subscription.subscription_id,
-                    "planId": plan,
-                    "quotaMinor": subscription.quota_minor,
+                    "customerPlanId": plan.customer_plan_id,
+                    "subscriptionId": plan.subscription_id,
+                    "planVersionId": plan.plan_version_id,
                 }))
             }
             PaymentOrderPurpose::InvoiceRepayment => {
