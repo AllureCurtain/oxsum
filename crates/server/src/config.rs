@@ -238,6 +238,31 @@ pub struct WitnessServe {
     pub trust: Vec<WitnessTrust>,
 }
 
+/// The seller branding `GET /api/v1/branding` serves (issue #614, T23): the
+/// display name the portal chrome carries plus the optional logo and accent
+/// color a self-hosted seller dresses its customer pages with. Every field is
+/// a cosmetic override — none of it reaches the ledger, pricing or a proof.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Branding {
+    /// The display name, `OXSUM_BUSINESS_NAME` or the compiled-in default.
+    pub name: String,
+    /// An optional logo image URL, `OXSUM_BRAND_LOGO_URL`.
+    pub logo_url: Option<String>,
+    /// An optional `#rrggbb` accent color, `OXSUM_BRAND_ACCENT_COLOR`.
+    pub accent_color: Option<String>,
+}
+
+impl Default for Branding {
+    fn default() -> Self {
+        Self {
+            name: "oxsum".to_owned(),
+            logo_url: None,
+            accent_color: None,
+        }
+    }
+}
+
 /// An environment variable that counts as unset when it is absent or blank.
 fn var(name: &str) -> Option<String> {
     std::env::var(name)
@@ -332,6 +357,12 @@ pub struct Config {
     /// open `bill_key_sealed`), a test's stub otherwise. `None` — the default —
     /// schedules no `upstream-bill-sync` pass.
     bill_provider: Option<std::sync::Arc<dyn oxsum_core::UpstreamBillProvider>>,
+    /// The seller branding the portal serves on `GET /api/v1/branding`
+    /// (issue #614, T23): `OXSUM_BUSINESS_NAME` overrides the display name,
+    /// `OXSUM_BRAND_LOGO_URL` and `OXSUM_BRAND_ACCENT_COLOR` dress the login
+    /// and dashboard chrome. All three optional — a deployment that sets none
+    /// answers the compiled-in default.
+    branding: Branding,
 }
 
 impl Config {
@@ -365,6 +396,7 @@ impl Config {
             display_currency: None,
             x402: None,
             bill_provider: None,
+            branding: Branding::default(),
         }
     }
 
@@ -551,6 +583,7 @@ impl Config {
             display_currency,
             x402,
             bill_provider,
+            branding: branding_of()?,
         })
     }
 
@@ -867,6 +900,24 @@ impl Config {
     #[must_use]
     pub fn otlp_endpoint(&self) -> Option<&str> {
         self.otlp_endpoint.as_deref()
+    }
+
+    /// The seller branding the portal serves (issue #614, T23): the display
+    /// name plus the optional logo and accent the `OXSUM_BUSINESS_NAME` /
+    /// `OXSUM_BRAND_*` variables configured, the compiled-in default when they
+    /// did not.
+    #[must_use]
+    pub fn branding(&self) -> &Branding {
+        &self.branding
+    }
+
+    /// Sets the seller branding. Tests use this; the server reads
+    /// `OXSUM_BUSINESS_NAME`, `OXSUM_BRAND_LOGO_URL` and
+    /// `OXSUM_BRAND_ACCENT_COLOR`.
+    #[must_use]
+    pub fn with_branding(mut self, branding: Branding) -> Self {
+        self.branding = branding;
+        self
     }
 
     /// Sets the public origin. Tests use this; the server reads
@@ -1230,6 +1281,35 @@ fn display_currency_of() -> Result<Option<oxsum_core::Display>, String> {
         .unwrap_or(2);
     oxsum_core::display_currency(code.as_deref(), rate.as_deref(), decimals)
         .map_err(|error| format!("OXSUM_DISPLAY_CURRENCY / OXSUM_DISPLAY_RATE_PER_CREDIT: {error}"))
+}
+
+/// Parses the `OXSUM_BUSINESS_NAME` / `OXSUM_BRAND_*` set (issue #614, T23).
+/// Each field is independently optional — a deployment dresses the surfaces it
+/// cares about and leaves the rest at the compiled-in default. The accent is
+/// validated as `#rrggbb` so a typo fails at startup, not as a broken CSS
+/// custom property on every page.
+fn branding_of() -> Result<Branding, String> {
+    let name = var("OXSUM_BUSINESS_NAME").unwrap_or_else(|| "oxsum".to_owned());
+    if name.chars().count() > 80 {
+        return Err(format!(
+            "OXSUM_BUSINESS_NAME must be at most 80 characters, got {name:?}"
+        ));
+    }
+    let logo_url = var("OXSUM_BRAND_LOGO_URL");
+    let accent_color = var("OXSUM_BRAND_ACCENT_COLOR")
+        .map(|raw| {
+            let ok = raw.len() == 7
+                && raw.starts_with('#')
+                && raw[1..].chars().all(|c| c.is_ascii_hexdigit());
+            if ok { Ok(raw) } else { Err(raw) }
+        })
+        .transpose()
+        .map_err(|raw| format!("OXSUM_BRAND_ACCENT_COLOR must be a #rrggbb color, got {raw:?}"))?;
+    Ok(Branding {
+        name,
+        logo_url,
+        accent_color,
+    })
 }
 
 /// Parses one `OXSUM_RETENTION_*` variable: a positive day count — `0` would

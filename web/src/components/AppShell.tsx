@@ -4,8 +4,10 @@ import {
   ArrowLeftRight,
   ChartColumn,
   ChevronRight,
+  CreditCard,
   FileText,
   KeyRound,
+  Layers,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -23,6 +25,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  useBranding,
   useCreateOrganization,
   useLogout,
   useOrganizations,
@@ -30,6 +33,7 @@ import {
   useSwitchOrganization,
 } from "../api/hooks";
 import { ApiError } from "../api/client";
+import { applyBranding } from "../lib/branding";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button, IconButton, TextInput } from "./ui";
@@ -57,11 +61,13 @@ const NAV_GROUPS = [
       { to: "/members", labelKey: "nav.members", Icon: Users },
       { to: "/webhooks", labelKey: "nav.webhooks", Icon: Webhook },
       { to: "/pricing", labelKey: "nav.pricing", Icon: Tags },
+      { to: "/plans", labelKey: "nav.plans", Icon: Layers },
     ],
   },
   {
     labelKey: "nav.account",
     items: [
+      { to: "/billing", labelKey: "nav.billing", Icon: CreditCard },
       { to: "/statements", labelKey: "nav.statements", Icon: FileText },
       { to: "/reports", labelKey: "nav.reports", Icon: Newspaper },
       { to: "/log", labelKey: "nav.log", Icon: ScrollText },
@@ -86,6 +92,7 @@ NAV_INDEX["/admin"] = { labelKey: "nav.admin" };
 NAV_INDEX["/statements/:id"] = { labelKey: "nav.statement", parent: "/statements" };
 NAV_INDEX["/orders/new"] = { labelKey: "nav.orderNew", parent: "/orders" };
 NAV_INDEX["/orders/:id"] = { labelKey: "nav.order", parent: "/orders" };
+NAV_INDEX["/billing/:id"] = { labelKey: "nav.billingStatement", parent: "/billing" };
 
 /** Pathname (+hash) → breadcrumb trail, e.g. /statements/s_123 → [Statements, s_123]. */
 function breadcrumb(
@@ -237,6 +244,14 @@ export function AppShell() {
   const navigate = useNavigate();
   const location = useLocation();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const branding = useBranding();
+
+  // The seller's accent repaints the `primary` token family; a `null` accent
+  // clears the override. Applied once per read — the token lives on `:root`,
+  // so every page and component follows without a prop thread.
+  useEffect(() => {
+    applyBranding(branding.data);
+  }, [branding.data]);
 
   // No session → the login page; `GET /session` answers 401 for an
   // unauthenticated caller, which useSession surfaces as an ApiError.
@@ -286,7 +301,11 @@ export function AppShell() {
           >
             <div className="mb-5 flex items-center justify-between px-2.5">
               <p className="text-xl font-bold tracking-tight text-white">
-                ox<span className="text-primary">sum</span>
+                {branding.data?.logoUrl ? (
+                  <img src={branding.data.logoUrl} alt={branding.data.name} className="h-7" />
+                ) : (
+                  (branding.data?.name ?? "oxsum")
+                )}
               </p>
               <IconButton
                 label={t("nav.closeNav")}
@@ -304,10 +323,18 @@ export function AppShell() {
       {/* ---- rail: 224px ≥1024px, icon strip 640–1024px, drawer below ---- */}
       <nav className="sticky top-0 hidden h-screen w-16 shrink-0 flex-col overflow-y-auto bg-rail px-3 py-5 sm:flex lg:w-56">
         <p className="mb-5 hidden px-2.5 text-xl font-bold tracking-tight text-white lg:block">
-          ox<span className="text-primary">sum</span>
+          {branding.data?.logoUrl ? (
+            <img src={branding.data.logoUrl} alt={branding.data.name} className="h-7" />
+          ) : (
+            (branding.data?.name ?? "oxsum")
+          )}
         </p>
         <p className="mb-5 px-2.5 text-xl font-bold tracking-tight text-white lg:hidden">
-          o<span className="text-primary">.</span>
+          {branding.data?.logoUrl ? (
+            <img src={branding.data.logoUrl} alt={branding.data.name} className="h-7 w-7 object-contain" />
+          ) : (
+            (branding.data?.name ?? "ox").slice(0, 2)
+          )}
         </p>
         <CollapsedNav />
         <ExpandedNav />
