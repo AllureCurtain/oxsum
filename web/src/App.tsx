@@ -10,6 +10,7 @@ import {
   ResetPassword,
   VerifyEmail,
 } from "./pages/auth";
+import { Billing, BillingStatement } from "./pages/Billing";
 import { Bills } from "./pages/Bills";
 import { Chat } from "./pages/Chat";
 import { GettingStarted } from "./pages/GettingStarted";
@@ -18,6 +19,7 @@ import { Log } from "./pages/Log";
 import { Members } from "./pages/Members";
 import { OrderDetail, OrderNew, Orders } from "./pages/Orders";
 import { Overview } from "./pages/Overview";
+import { Plans } from "./pages/Plans";
 import { Pricing } from "./pages/Pricing";
 import { Requests } from "./pages/Requests";
 import { Reports } from "./pages/Reports";
@@ -41,6 +43,9 @@ export function App() {
         <Route path="getting-started" element={<GettingStarted />} />
         <Route path="topup" element={<Topup />} />
         <Route path="pricing" element={<Pricing />} />
+        <Route path="plans" element={<Plans />} />
+        <Route path="billing" element={<Billing />} />
+        <Route path="billing/:id" element={<BillingStatement />} />
         <Route path="settings" element={<Settings />} />
         <Route path="bills" element={<Bills />} />
         <Route path="requests" element={<Requests />} />

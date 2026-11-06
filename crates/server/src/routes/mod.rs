@@ -459,6 +459,9 @@ pub fn router(state: AppState) -> Router {
         // and the second leg trades a challenge plus a code for one — the
         // challenge is the credential, so it stays open.
         .route("/auth/totp", post(auth::totp_login))
+        // The seller branding (issue #614, T23): a public cosmetic read — the
+        // login and register pages brand themselves before any session exists.
+        .route("/branding", get(branding))
         // OAuth is a browser redirect, not a JSON endpoint: the provider sends
         // the browser here, so both answers are `Location` headers, and every
         // failure lands back on /login rather than on an error body.
@@ -606,6 +609,15 @@ pub(crate) type ApiResult<T> = Result<Json<Data<T>>, ApiError>;
 
 pub(crate) fn ok<T>(data: T) -> ApiResult<T> {
     Ok(Json(Data { data }))
+}
+
+/// `GET /api/v1/branding` (issue #614, T23): the seller branding the customer
+/// portal applies — a pure config read, so no credential and no store. Every
+/// field is cosmetic: none of it reaches pricing, the ledger or a proof.
+async fn branding(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> ApiResult<crate::config::Branding> {
+    ok(state.config.branding().clone())
 }
 /// Who a login authenticated, as the API presents it: the user, the organization the
 /// session acts as, the role in it, and the session itself.

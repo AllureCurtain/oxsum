@@ -470,6 +470,12 @@ The SPA's dashboard pages read these (issue #234); all are session or key scoped
 | `GET /api/v1/org/usage-reports/links` | every link's descriptor — label, expiry, revocation, last use; never a token |
 | `DELETE /api/v1/org/usage-reports/links/{linkId}` | revoke a link, idempotently |
 
+One public read sits outside that scope: `GET /api/v1/branding` answers the
+deployment's seller branding `{name, logoUrl, accentColor}` (issue #614) with
+no credential — the login and register pages brand themselves before a session
+exists. It is a pure config read off `OXSUM_BUSINESS_NAME`/`OXSUM_BRAND_*`,
+cosmetic only; nothing it serves reaches pricing, the ledger or a proof.
+
 ## Change process
 
 1. Change `crates/server/openapi.yaml`

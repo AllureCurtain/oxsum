@@ -77,3 +77,39 @@ export function useCreateOrder() {
     onSuccess: () => client.invalidateQueries({ queryKey: ["orders"] }),
   });
 }
+
+// ---- refunds (issue #608, T17): the customer's ask for review — never a
+// self-grant. `useOrderRefunds` reads the order's refund history plus the
+// refundable remainder; `useRequestRefund` records the ask under an
+// idempotency key a replay answers the standing refund under.
+
+export type OrderRefund = components["schemas"]["OrderRefund"];
+export type OrderRefundList = components["schemas"]["OrderRefundList"];
+
+/** `GET /api/v1/orders/{id}/refunds`: the refunds on one order plus
+ * `refundableMinor` — what may still be asked back. */
+export function useOrderRefunds(orderId: string | undefined) {
+  return useQuery({
+    queryKey: ["order-refunds", orderId],
+    queryFn: () => api<OrderRefundList>(`/orders/${orderId}/refunds`),
+    enabled: Boolean(orderId),
+  });
+}
+
+/** `POST /api/v1/orders/{id}/refund-request`: the recorded `requested` refund —
+ * a review record staff resolves; it never grants money itself. `amountMinor`
+ * absent asks for the whole refundable remainder. */
+export function useRequestRefund(orderId: string | undefined) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { reason: string; amountMinor?: number | null }) =>
+      api<OrderRefund>(`/orders/${orderId}/refund-request`, {
+        method: "POST",
+        body: { idempotencyKey: crypto.randomUUID(), ...body },
+      }),
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: ["order-refunds", orderId] });
+      client.invalidateQueries({ queryKey: ["order", orderId] });
+    },
+  });
+}
