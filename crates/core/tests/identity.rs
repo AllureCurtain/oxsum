@@ -545,6 +545,7 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "sale_mutation_results".to_owned(),
             "sale_schedule_ends".to_owned(),
             "sale_schedules".to_owned(),
+            "sale_snapshot_digests".to_owned(),
             "sale_versions".to_owned(),
             "service_credentials".to_owned(),
             "sessions".to_owned(),
