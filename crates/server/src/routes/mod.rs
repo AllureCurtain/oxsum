@@ -35,6 +35,7 @@ mod merchants;
 pub(crate) mod operations;
 mod orders;
 mod org;
+mod plans;
 mod report_links;
 pub(crate) mod requests;
 pub(crate) mod usage;
@@ -106,6 +107,12 @@ pub fn router(state: AppState) -> Router {
             post(billing::subscription_checkout),
         )
         .route("/org/subscription/periods", get(org::subscription_periods))
+        // The sold-plan catalogue and the caller's own plan (issue #610).
+        .route("/plans", get(plans::list_plans))
+        .route("/plans/{plan_version_id}", get(plans::get_plan))
+        .route("/org/plan", get(plans::my_plan))
+        .route("/org/plan/cancel", post(plans::cancel_my_plan))
+        .route("/org/plan/change", post(plans::change_my_plan))
         .route(
             "/webhooks",
             get(webhooks::list_webhooks).post(webhooks::create_webhook),
@@ -300,6 +307,24 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/business/customers/{organization_id}",
             get(business::customer).patch(business::update_customer),
+        )
+        // The sold-plan catalogue staff CRUD and a customer's binding
+        // (issue #610).
+        .route(
+            "/business/plans",
+            get(plans::staff_plans).post(plans::publish_plan),
+        )
+        .route(
+            "/business/plans/{plan_version_id}/retire",
+            post(plans::retire_plan),
+        )
+        .route(
+            "/business/customers/{organization_id}/plan",
+            get(plans::customer_plan).put(plans::bind_customer_plan),
+        )
+        .route(
+            "/business/customers/{organization_id}/plan/cancel",
+            post(plans::cancel_customer_plan),
         )
         .route(
             "/business/customers/{organization_id}/lifecycle",
