@@ -985,3 +985,27 @@ Run it against isolated test funds first. The production-router test
 client against loopback PostgreSQL-backed fixtures and checks replay/isolation.
 See the [example runbook](../examples/scoped-integration/README.md) for issuance,
 required event prices and exact negative cases. No paid provider is called.
+
+
+### Business provider authority tests (#641)
+
+`cargo nextest run -p oxsum-core --test business_providers --test provider_upgrade --test channels -p oxsum-server --test business_providers --test admin` exercises real setup/session authority, atomic audit faults, replay/rotation, pool concurrency across business and recovery paths, foreign configuration and pre-0078 provider preservation. Use isolated PostgreSQL 17 testkit databases. No provider call is made on configuration save. The focused command does not replace cross-crate workspace/shared-process gates or T06.b destination-policy tests.
+
+
+### Provider destination policy (#642)
+
+New/legacy channels default to public HTTPS. Approve an internal service through the owner connection API (or authenticated deployment recovery) with `destinationPolicy: {"network":"internal","allowedIps":["10.0.0.10"]}`. The allowlist is exact, at most 16 addresses, and changes require owner authority. DNS answering an unapproved address refuses the request. Use network DNS/firewall configuration that matches these explicit addresses; environment HTTP proxy variables do not affect provider requests. Redirects are never followed. A TLS certificate must still match the configured hostname. Link-local metadata and special infrastructure addresses remain forbidden even with an internal approval.
+
+The bootstrap environment accepts `OXSUM_UPSTREAM_DESTINATION_POLICY` as the same JSON object; default is public. It is used only when seeding an empty channel directory, never to overwrite a running deployment's settings. Existing HTTP/internal channels must be reviewed and reauthorized before traffic resumes; migration preserves their secrets and history but does not infer approval. Use the explicit owner connection check for a non-inference HEAD, then independently test supported model behavior with separate billable-call authorization.
+
+Migration 0079 snapshots upgrade-time coordinates for old task rows. Stop admission and drain old tasks before upgrading whenever possible: earlier versions did not retain the submitting endpoint/credential, so the upgrade cannot recover a route already changed before it ran. New tasks retain their original sealed credential and destination policy until terminal. Preserve the sealing key for these snapshots in backups/restore; changing a channel key or endpoint does not revoke an already admitted task. Cancel/drain old tasks and revoke the provider credential upstream when required. No new cross-customer ledger or proof identity is introduced.
+
+Focused checks: `cargo nextest run -p oxsum-core --test provider_destination_upgrade --test business_providers -p oxsum-server --test provider_destinations --test tasks --test gateway`. The policy/DNS/redirect matrix is in the core and integrations lib tests. All test providers are loopback stubs with explicit internal approval; no paid call is part of the gate.
+
+### Customer serving permissions (#644)
+
+Run `cargo nextest run -p oxsum-core --test serving_access -p oxsum-server --test serving_catalog --test gateway --test fallbacks --test experiments --test tasks --test groups --test heads --test apis --no-fail-fast` with the isolated local test database. Core checks verify key/customer/channel intersections, permission snapshots, denied credential opening and fail-closed unknown/revoked/expired keys. HTTP regressions check catalog/estimate/checkpoint filtering, original experiment names, fallback aliases and task recovery after permission edits. The [protocol matrix](roadmap/self-hosted-v1/PROTOCOL-MATRIX.md) records current adapter limits; full cross-crate validation remains required.
+
+### Merchant encryption startup check
+
+Business merchant versions use the existing `OXSUM_SECRET_KEY` AES-GCM key. The server refuses startup when any current or historical merchant credential cannot open, or when merchant rows exist without the key. Preserve this key with database backups: rotated historical signing contexts still need it. Merchant settings saves validate structure and destination syntax locally and make no external request. Core and router regression tests are `cargo nextest run -p oxsum-core -p oxsum-server --test merchants`; they use isolated scratch databases and no real merchant credentials or payment calls.

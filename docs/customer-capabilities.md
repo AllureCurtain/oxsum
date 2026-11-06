@@ -1,6 +1,6 @@
 # Customer capability and evidence inventory
 
-Contract: OpenAPI 0.106.0, issues #637/#638 (T05). The exact method/MatchedPath matrix in `crates/server/src/auth.rs` fails closed for every unclassified customer route or method. Authentication resolves the current membership for each request. Business and deployment credentials use separate gates; customer roles grant no business authority.
+Contract: OpenAPI 0.110.0, issues #637/#638 (T05) #641/#642 (T06) #644 (T07.a) and #645 (T07.b). The exact method/MatchedPath matrix in `crates/server/src/auth.rs` fails closed for every unclassified customer route or method. Authentication resolves the current membership for each request. Business and deployment credentials use separate gates; customer roles grant no business authority.
 
 ## Record policy
 
@@ -226,7 +226,7 @@ The following inventory covers every remaining OpenAPI operation. A listed token
 | /verify and static verifier assets | Public verification of caller-supplied evidence; ?sample uses a fixed public fixture without any database access. No private customer data is selected by an unauthenticated ID or display name. |
 | /app and legacy dashboard/auth/admin redirects | Public app shell/redirects; data and mutations retain the API gates above. |
 | Gateway/task Idempotency-Key | Fingerprint binds key, protocol/path model and request body. Mismatch returns 422 without releasing or overwriting the original claim. Legacy unbound records conflict until their original 24-hour expiry. Task replays preserve the exact original response body. |
-| Response cache | Digests bind the exact key plus customer/channel/model/prompt; sibling keys and legacy unbound digests miss. No historical ledger row is rewritten. Full serving-context evolution remains T07/T13. |
+| Response cache | The cache key binds the exact complete request and admitted context: customer/key permissions, protocol headers, experiment/mandate, alias targets, route configuration and price. Sibling keys, changed permissions/configuration and legacy rows miss. No historical ledger row is rewritten. T13 must extend the same authority and price evidence to every task and metering path. |
 
 Ledger scans and SQL request-log queries filter immutable provenance before pagination. Internal WebSocket key IDs are not serialized. Gateway responses and insufficient-funds errors expose the request bound/charge, never the customer's wallet balance. Own entitlement preview retains effective key/member/team admission constraints.
 
@@ -243,3 +243,34 @@ Evidence: `crates/core/tests/customer_authority.rs`, `crates/server/tests/consum
 | GET /api/v1/business/customers and /customers/{organizationId} | Existing staff customersRead, or integration customersRead with selected customer filtering before pagination |
 
 No other business/customer/personal/gateway/deployment route accepts integration authority. Explicit bearer prevents cookie fallback; unsupported header credentials fail closed. Legacy oxs-svc- credentials never authenticate. Metering binds the current integration grant to original and terminal requests in core. External eventId/endUser is attribution, never customer selection or global operation identity.
+
+
+## Business provider additions (#641)
+
+All these routes require a current personal business-context session/TOTP. Explicit bearer/API-key headers prevent cookie fallback. Integration/consumption/deployment bearers have no authority here. Core checks current role/ownership in the mutation transaction before replay.
+
+| Method and path | Required authority |
+| --- | --- |
+| GET /api/v1/business/channels | Owner/admin; owned metadata page |
+| POST /api/v1/business/channels | Owner; connection and provider pool |
+| POST /api/v1/business/channels/{channelName}/credentials | Owner |
+| POST /api/v1/business/channels/{channelName}/billing-credential | Owner |
+| POST /api/v1/business/channels/{channelName}/credentials/{credentialId}/status | Owner, exact channel/credential |
+| POST /api/v1/business/channels/{channelName}/credentials/{credentialId}/remove | Owner, exact channel/credential |
+| POST /api/v1/business/channels/{channelName}/cache | Owner/admin routingWrite |
+| GET /api/v1/business/channels/{channelName}/prices | Owner/admin, owned channel |
+| POST /api/v1/business/channels/{channelName}/prices | Owner/admin catalogWrite |
+| GET /api/v1/business/channels/{channelName}/aliases | Owner/admin, owned channel |
+| POST /api/v1/business/channels/{channelName}/aliases | Owner/admin catalogWrite |
+| POST /api/v1/business/channels/{channelName}/aliases/{alias}/remove | Owner/admin, exact channel/alias |
+| GET /api/v1/business/model-fallbacks/{model} | Owner/admin, owned served model |
+| PUT /api/v1/business/model-fallbacks/{model} | Owner/admin routingWrite, all targets owned |
+| POST /api/v1/business/channels/{channelName}/connection-check | Current owner, business context/TOTP; audited single HEAD with stable replay |
+
+Secrets are returned only as tails; audit binds full requests through a keyed fingerprint. Foreign identifiers return 404. No save triggers a network connection. Shared DNS/redirect/internal endpoint policy and explicit HEAD checks are enforced by #642.
+
+
+Internal endpoint approval is part of owner-only connection configuration. Admin/catalog permission cannot change destination policy or trigger the explicit connection check. Deployment recovery remains separately authenticated. Channel runtime requests use the admitted endpoint/policy snapshot and never follow redirects with credentials.
+
+
+Customer model metadata (`/v1/models`, pricing, estimate and direct signed-price checkpoints) intersects customer tier and business ownership with a consumption key's model and group-channel grants. Personal sessions read their tier's catalog. Public alias and resolved target must both pass. Experiment configuration accepts only customer-visible variants; runtime keys still narrow them. Task status/cancel remains an original-key read/recovery action after later model/grant edits.

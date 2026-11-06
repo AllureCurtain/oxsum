@@ -146,6 +146,11 @@ async fn submit_inner(
             message: "model is required".to_owned(),
             param: Some("model"),
         })?;
+    // This generic adapter has no signed-mandate settlement binding. Reject a
+    // presented mandate explicitly instead of treating it as unrestricted use.
+    if headers.contains_key(crate::gateway::MANDATE_HEADER) {
+        return Err(GatewayError::InvalidMandate);
+    }
     // The idempotency claim rides the body fingerprint the gateway surfaces
     // use: a retry under the same key and body replays the stored answer.
     let idem_key = headers
@@ -191,22 +196,56 @@ async fn submit_inner(
     // The candidates: channels serving this model under the `tasks` protocol,
     // weighted-ordered the way a chat turn's routes are — a refused submission
     // fails over to the next route's channel under the same hold.
-    let channel_scope = state.db.key_channel_scope(key.key_id).await?;
-    let servings = state
+    let access = state
         .db
-        .servings_named(model, state.config.secret().ok_or(GatewayError::Internal)?)
-        .await?
-        .0
+        .serving_access(organization.id, Some(key.key_id))
+        .await?;
+    let (servings, upstream_model) = state
+        .db
+        .servings_named_for_access(
+            model,
+            state.config.secret().ok_or(GatewayError::Internal)?,
+            &access,
+        )
+        .await?;
+    if !access.allows_path(model, upstream_model.as_deref()) {
+        return Err(GatewayError::Forbidden(
+            "the caller cannot access this task model".into(),
+        ));
+    }
+    if upstream_model.is_some() {
+        return Err(GatewayError::Invalid {
+            message: "task aliases are not supported; use a permitted direct task model".into(),
+            param: Some("model"),
+        });
+    }
+    let servings = servings
         .into_iter()
         .filter(|serving| serving.protocol == oxsum_core::TASKS)
-        .filter(|serving| {
-            channel_scope
-                .as_ref()
-                .is_none_or(|ids| ids.contains(&serving.channel_id))
-        })
+        .filter(|serving| access.allows_channel(serving.channel_id))
         .collect::<Vec<_>>();
     if servings.is_empty() {
         return Err(GatewayError::model_not_served(model));
+    }
+    for (id, rpm) in [
+        (organization.id, access.requests_per_minute),
+        (key.key_id, key.requests_per_minute),
+    ] {
+        if let Some(rpm) = rpm
+            && rpm > 0
+            && let Err(limited) =
+                state
+                    .rate_limiter
+                    .admit(id, rpm as u32, std::time::Instant::now())
+        {
+            crate::metrics::rate_limited(&state.metrics, "gateway");
+            return Err(GatewayError::RateLimited {
+                message: format!("task admission is limited to {rpm} requests per minute"),
+                code: "RATE_LIMITED",
+                limit: i64::from(rpm),
+                retry_after_secs: limited.retry_after.as_secs(),
+            });
+        }
     }
     // The routing window applies to the task pick the same as the chat pick
     // (issue #499): a slow or erroring channel sheds weight for the submission.
@@ -218,6 +257,29 @@ async fn submit_inner(
     let primary = ordered
         .first()
         .ok_or_else(|| GatewayError::model_not_served(model))?;
+
+    let credential = primary.credentials.first();
+    let Some(credential) = credential else {
+        return Err(GatewayError::upstream(
+            StatusCode::BAD_GATEWAY,
+            "every upstream credential is cooling or disabled".to_owned(),
+            None,
+        ));
+    };
+    let endpoint = oxsum_core::TaskProviderEndpoint {
+        base_url: primary.base_url.clone(),
+        protocol: primary.protocol.clone(),
+        destination_policy: oxsum_core::ProviderDestinationPolicy::from_settings(
+            &primary.settings,
+        )?,
+        api_key_sealed: Some(
+            state
+                .config
+                .secret()
+                .ok_or(GatewayError::Internal)?
+                .seal(&credential.api_key)?,
+        ),
+    };
 
     // The freeze: the caller's declared bound when it names one (`maxCostMinor`),
     // else the channel price's flat `cost_per_request` — a task's bound is a
@@ -305,29 +367,39 @@ async fn submit_inner(
         "input": body.get("input").cloned().unwrap_or(Value::Null),
         "params": body.get("params").cloned().unwrap_or(Value::Null),
     });
-    let credential = primary.credentials.first();
-    let Some(credential) = credential else {
-        release_task_hold(state, &hold_key).await;
-        return Err(GatewayError::upstream(
-            StatusCode::BAD_GATEWAY,
-            "every upstream credential is cooling or disabled".to_owned(),
-            None,
-        ));
-    };
-    let upstream = match state
-        .http
-        .post(format!("{}/tasks", primary.base_url))
-        .bearer_auth(&credential.api_key)
-        .json(&forwarded)
-        .send()
+    let call = match state
+        .provider_http
+        .request(
+            reqwest::Method::POST,
+            &endpoint.base_url,
+            &endpoint.destination_policy,
+            &["tasks"],
+        )
         .await
     {
-        Ok(response) => response,
+        Ok(call) => call,
         Err(error) => {
             release_task_hold(state, &hold_key).await;
             return Err(GatewayError::upstream(
                 StatusCode::BAD_GATEWAY,
-                format!("upstream is unreachable: {error}"),
+                error.to_string(),
+                None,
+            ));
+        }
+    };
+    let upstream = match call
+        .bearer_auth(&credential.api_key)
+        .json(&forwarded)
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(_) => {
+            release_task_hold(state, &hold_key).await;
+            return Err(GatewayError::upstream(
+                StatusCode::BAD_GATEWAY,
+                "upstream is unreachable".into(),
                 None,
             ));
         }
@@ -367,18 +439,21 @@ async fn submit_inner(
 
     let task = state
         .db
-        .insert_task(&NewTask {
-            task_id,
-            organization_id: organization.id,
-            key_id: Some(key.key_id),
-            channel_id: primary.channel_id,
-            channel: primary.channel.clone(),
-            external_task_id,
-            kind,
-            hold_key: hold_key.clone(),
-            freeze_minor: freeze,
-            model: model.to_owned(),
-        })
+        .insert_task_with_endpoint(
+            &NewTask {
+                task_id,
+                organization_id: organization.id,
+                key_id: Some(key.key_id),
+                channel_id: primary.channel_id,
+                channel: primary.channel.clone(),
+                external_task_id,
+                kind,
+                hold_key: hold_key.clone(),
+                freeze_minor: freeze,
+                model: model.to_owned(),
+            },
+            Some(&endpoint),
+        )
         .await?;
 
     Ok((
@@ -443,22 +518,22 @@ async fn cancel(
         Some(secret) => secret,
         None => return GatewayError::Internal.into_response(),
     };
-    let api_key = match task_credentials(&state, &task, secret).await {
-        Ok(key) => key,
-        Err(error) => {
-            tracing::warn!(%error, %task_id, "the task's credential would not open; cancelling without upstream");
-            None
-        }
-    };
-    if let Some(api_key) = api_key {
-        let _ = state
-            .http
-            .post(format!(
-                "{}/tasks/{}/cancel",
-                task_base(&state, &task).await,
-                task.external_task_id
-            ))
+    if let Ok(Some(endpoint)) = state.db.task_provider_endpoint(task_id).await
+        && let Some(sealed) = &endpoint.api_key_sealed
+        && let Ok(api_key) = secret.open(sealed)
+        && let Ok(call) = state
+            .provider_http
+            .request(
+                reqwest::Method::POST,
+                &endpoint.base_url,
+                &endpoint.destination_policy,
+                &["tasks", &task.external_task_id, "cancel"],
+            )
+            .await
+    {
+        let _ = call
             .bearer_auth(api_key)
+            .timeout(std::time::Duration::from_secs(10))
             .send()
             .await;
     }
@@ -496,26 +571,6 @@ async fn cancel(
         Ok(Some(task)) => task_response(&task, &task_id.to_string(), None),
         _ => GatewayError::Internal.into_response(),
     }
-}
-
-/// The task's channel's upstream base — read at use time so a poll or cancel
-/// never carries a stale directory entry the row was written with.
-async fn task_base(state: &AppState, task: &Task) -> String {
-    state
-        .db
-        .channel_base(task.channel_id)
-        .await
-        .unwrap_or_default()
-}
-
-/// One healthy credential for the task's channel, opened under the deployment
-/// secret — the poll and the cancel share it.
-async fn task_credentials(
-    state: &AppState,
-    task: &Task,
-    secret: &oxsum_core::SecretKey,
-) -> Result<Option<String>, oxsum_core::WalletError> {
-    state.db.task_channel_key(task.channel_id, secret).await
 }
 
 /// Releases a task's hold when the submission itself fails before upstream

@@ -35,11 +35,14 @@ const OPERATOR_TOKEN: &str = "operator-token-0123456789";
 
 // ── the scripted upstream ────────────────────────────────────────────────────
 
+type SemanticHeader = (String, Option<String>);
+
 /// The upstream's state: the answer it gives every model, and what it has been
 /// asked — the count is how a test proves a hit never went upstream.
 #[derive(Clone, Default)]
 struct Script {
     seen: Arc<Mutex<Vec<Value>>>,
+    semantic_headers: Arc<Mutex<Vec<SemanticHeader>>>,
 }
 
 impl Script {
@@ -55,6 +58,8 @@ impl Script {
 async fn start_upstream(script: Script) -> String {
     let app = Router::new()
         .route("/v1/chat/completions", post(upstream))
+        .route("/v1/responses", post(responses_upstream))
+        .route("/v1/messages", post(messages_upstream))
         .with_state(script);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -84,6 +89,45 @@ async fn upstream(State(script): State<Script>, axum::Json(body): axum::Json<Val
             "completion_tokens": 2,
             "total_tokens": 12
         }
+    }))
+    .into_response()
+}
+
+async fn responses_upstream(
+    State(script): State<Script>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    script.seen.lock().unwrap().push(body.clone());
+    axum::Json(json!({
+        "id": "resp-cached",
+        "object": "response",
+        "model": body["model"],
+        "status": "completed",
+        "output": [{"type": "message", "role": "assistant", "content": [
+            {"type": "output_text", "text": "the responses answer"}
+        ]}],
+        "usage": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12}
+    }))
+    .into_response()
+}
+
+async fn messages_upstream(
+    State(script): State<Script>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    script.seen.lock().unwrap().push(body.clone());
+    script.semantic_headers.lock().unwrap().push((
+        headers["anthropic-version"].to_str().unwrap().to_owned(),
+        headers
+            .get("anthropic-beta")
+            .map(|value| value.to_str().unwrap().to_owned()),
+    ));
+    axum::Json(json!({
+        "id": "msg-cached", "type": "message", "role": "assistant", "model": body["model"],
+        "content": [{"type": "text", "text": "the cached message"}],
+        "stop_reason": "end_turn", "stop_sequence": null,
+        "usage": {"input_tokens": 10, "output_tokens": 2}
     }))
     .into_response()
 }
@@ -211,9 +255,19 @@ async fn build_world(url: &str) -> World {
     let secret = oxsum_core::SecretKey::from_bytes([7; 32]);
     let script = Script::default();
     let base_url = start_upstream(script.clone()).await;
-    db.set_channel(&channel, &base_url, "upstream-secret", "openai", &secret)
-        .await
-        .expect("the channel is written");
+    db.set_channel_pool_policy(
+        &channel,
+        &base_url,
+        Some(&["upstream-secret".to_owned()]),
+        "openai",
+        &secret,
+        Some(&oxsum_core::ProviderDestinationPolicy {
+            network: oxsum_core::ProviderNetwork::Internal,
+            allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+        }),
+    )
+    .await
+    .expect("the channel is written");
     // 1 credit a token fresh, a tenth of that on the cached-read dimension —
     // the hit's bill reads plainly against the miss's.
     let book = oxsum_core::PriceBook::from_json(
@@ -334,11 +388,34 @@ async fn call(
 /// A chat request, answered with its headers and status — the cache marker
 /// rides the head, not the body.
 async fn chat(app: &Router, key: &str, body: Value) -> (StatusCode, HeaderMap, Value) {
-    let request = Request::builder()
+    gateway(app, key, "/v1/chat/completions", body).await
+}
+
+async fn gateway(
+    app: &Router,
+    key: &str,
+    path: &str,
+    body: Value,
+) -> (StatusCode, HeaderMap, Value) {
+    gateway_with_headers(app, key, path, body, &[]).await
+}
+
+async fn gateway_with_headers(
+    app: &Router,
+    key: &str,
+    path: &str,
+    body: Value,
+    semantic_headers: &[(&str, &str)],
+) -> (StatusCode, HeaderMap, Value) {
+    let mut request = Request::builder()
         .method("POST")
-        .uri("/v1/chat/completions")
+        .uri(path)
         .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {key}"))
+        .header("authorization", format!("Bearer {key}"));
+    for (name, value) in semantic_headers {
+        request = request.header(*name, *value);
+    }
+    let request = request
         .body(Body::from(body.to_string()))
         .expect("the test's own request");
     let response = app
@@ -391,6 +468,144 @@ async fn row_within(pool: &PgPool, organization_id: &str) -> Value {
     panic!("the answer was never cached");
 }
 
+/// Wait for the exact source receipt, not an earlier row from this customer.
+async fn cached_request(world: &World, path: &str, body: Value) -> Value {
+    let (status, headers, response) = gateway(&world.app, &world.key, path, body).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert!(headers.get("x-oxsum-cache").is_none(), "expected a miss");
+    let request_id = headers["x-oxsum-request-id"].to_str().unwrap();
+    cached_source_within(world, request_id).await;
+    response
+}
+
+async fn cached_source_within(world: &World, request_id: &str) {
+    let source = *oxsum_core::entry_id_for(&oxsum_core::settlement_key_for(&format!(
+        "req-{request_id}:hold"
+    )))
+    .as_uuid();
+    for _ in 0..250 {
+        let stored: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM oxsum.cached_responses WHERE source_entry_id=$1)",
+        )
+        .bind(source)
+        .fetch_one(&world.pool)
+        .await
+        .unwrap();
+        if stored {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("this response was never cached");
+}
+
+#[tokio::test]
+async fn anthropic_version_and_beta_are_part_of_the_forwarded_cache_context() {
+    let world = world!();
+    world.semantic_cache(json!({"enabled": true})).await;
+    let db = Db::from_pool(world.pool.clone());
+    db.set_channel_pool_policy(
+        &world.channel,
+        &world.base_url,
+        Some(&["anthropic-upstream-secret".to_owned()]),
+        "anthropic",
+        &oxsum_core::SecretKey::from_bytes([7; 32]),
+        Some(&oxsum_core::ProviderDestinationPolicy {
+            network: oxsum_core::ProviderNetwork::Internal,
+            allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+        }),
+    )
+    .await
+    .unwrap();
+    let body = json!({"model": world.model, "messages": [{"role": "user", "content": "hello"}], "max_tokens": 8});
+    cached_request(&world, "/v1/messages", body.clone()).await;
+    let (status, headers, response) = gateway_with_headers(
+        &world.app,
+        &world.key,
+        "/v1/messages",
+        body.clone(),
+        &[("anthropic-version", "2023-06-01")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(headers["x-oxsum-cache"], "hit");
+    let variants = [
+        vec![("anthropic-beta", "feature-a")],
+        vec![("anthropic-beta", "feature-b")],
+        vec![
+            ("anthropic-version", "2024-01-01"),
+            ("anthropic-beta", "feature-b"),
+        ],
+    ];
+    for semantic_headers in variants {
+        let (status, headers, response) = gateway_with_headers(
+            &world.app,
+            &world.key,
+            "/v1/messages",
+            body.clone(),
+            &semantic_headers,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{response}");
+        assert!(headers.get("x-oxsum-cache").is_none());
+        cached_source_within(&world, headers["x-oxsum-request-id"].to_str().unwrap()).await;
+        let (status, headers, response) = gateway_with_headers(
+            &world.app,
+            &world.key,
+            "/v1/messages",
+            body.clone(),
+            &semantic_headers,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{response}");
+        assert_eq!(headers["x-oxsum-cache"], "hit");
+    }
+    assert_eq!(world.script.seen().len(), 4);
+    assert_eq!(
+        *world.script.semantic_headers.lock().unwrap(),
+        vec![
+            ("2023-06-01".into(), None),
+            ("2023-06-01".into(), Some("feature-a".into())),
+            ("2023-06-01".into(), Some("feature-b".into())),
+            ("2024-01-01".into(), Some("feature-b".into())),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn current_guardrails_recheck_cached_requests_and_answers_without_charging_blocks() {
+    let world = world!();
+    world.semantic_cache(json!({"enabled": true})).await;
+    let body = ask(&world.model, "hello");
+    cached_request(&world, "/v1/chat/completions", body.clone()).await;
+    let before = world.wallet().await.available().await.unwrap();
+    for pattern in ["the cached answer", "hello"] {
+        let policy = format!("guard-{}", world.channel);
+        let (status, response) = call(
+            &world.app,
+            "PUT",
+            &format!("/api/v1/admin/guardrail-policies/{policy}"),
+            Some(json!({"kind": "keyword", "config": {"patterns": [{"re": pattern, "action": "block"}]}})),
+            Some(OPERATOR_TOKEN),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{response}");
+        let (status, response) = call(
+            &world.app,
+            "PUT",
+            &format!("/api/v1/admin/guardrail-bindings/channel/{}", world.channel),
+            Some(json!({"policies": [policy]})),
+            Some(OPERATOR_TOKEN),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{response}");
+        let (status, _, response) = chat(&world.app, &world.key, body.clone()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{response}");
+        assert_eq!(world.script.seen().len(), 1);
+        assert_eq!(world.wallet().await.available().await.unwrap(), before);
+    }
+}
+
 // ── the tests ────────────────────────────────────────────────────────────────
 
 /// The whole feature in one pass: a channel opted in re-serves a repeat ask —
@@ -412,10 +627,10 @@ async fn a_repeat_ask_is_served_from_the_cache_and_billed_as_a_hit() {
         .to_owned();
     let _ = row_within(&world.pool, &world.organization_id).await;
 
-    // The same words, differently cased and spaced — the digest normalizes
-    // both away, so the second ask is the same question.
+    // The same exact question: the complete request body is the key, so the
+    // second ask repeats it byte for byte.
     let (status, headers, hit_body) =
-        chat(&world.app, &world.key, ask(&world.model, "  HELLO?  ")).await;
+        chat(&world.app, &world.key, ask(&world.model, "hello?")).await;
     assert_eq!(status, StatusCode::OK, "the hit failed: {hit_body}");
     assert_eq!(
         headers.get("x-oxsum-cache").and_then(|v| v.to_str().ok()),
@@ -484,6 +699,217 @@ async fn a_repeat_ask_is_served_from_the_cache_and_billed_as_a_hit() {
     );
 }
 
+/// The v2 digest binds the complete request body: case, whitespace, tools and
+/// generation parameters are all part of the question.
+#[tokio::test]
+async fn the_complete_request_body_is_the_cache_key() {
+    let world = world!();
+    world.semantic_cache(json!({"enabled": true})).await;
+    let ask_with = |text: &str, temperature: i64, tools: bool| {
+        let mut body = json!({
+            "model": world.model,
+            "temperature": temperature,
+            "messages": [{"role": "user", "content": text}],
+        });
+        if tools {
+            body["tools"] = json!([{
+                "type": "function",
+                "function": {"name": "lookup", "parameters": {"type": "object"}},
+            }]);
+        }
+        body
+    };
+    chat(&world.app, &world.key, ask_with("hello?", 0, false)).await;
+    let _ = row_within(&world.pool, &world.organization_id).await;
+
+    let (_, headers, _) = chat(&world.app, &world.key, ask_with("  HELLO?  ", 0, false)).await;
+    assert!(
+        headers.get("x-oxsum-cache").is_none(),
+        "text is exact in v2"
+    );
+
+    let (_, headers, _) = chat(&world.app, &world.key, ask_with("hello?", 1, false)).await;
+    assert!(
+        headers.get("x-oxsum-cache").is_none(),
+        "a different generation parameter is a different question"
+    );
+
+    cached_request(&world, "/v1/chat/completions", ask_with("hello?", 0, true)).await;
+
+    assert_eq!(world.script.seen().len(), 4);
+    // An exact repeat of the last body hits the row that body wrote.
+    let (_, headers, _) = chat(&world.app, &world.key, ask_with("hello?", 0, true)).await;
+    assert_eq!(
+        headers.get("x-oxsum-cache").and_then(|v| v.to_str().ok()),
+        Some("hit")
+    );
+    assert_eq!(world.script.seen().len(), 4);
+}
+
+#[tokio::test]
+async fn chat_and_responses_cannot_share_even_identical_forwarded_bodies() {
+    let world = world!();
+    world.semantic_cache(json!({"enabled": true})).await;
+    let body = json!({
+        "model": world.model,
+        "messages": [{"role": "user", "content": "hello"}],
+        "input": "hello",
+        "max_tokens": 8,
+        "max_output_tokens": 8,
+    });
+    let chat_body = cached_request(&world, "/v1/chat/completions", body.clone()).await;
+    assert_eq!(chat_body["object"], "chat.completion");
+    let response_body = cached_request(&world, "/v1/responses", body.clone()).await;
+    assert_eq!(response_body["object"], "response");
+    let seen = world.script.seen();
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[0], seen[1], "the endpoint is the distinguishing input");
+    for (path, expected) in [
+        ("/v1/chat/completions", "chat.completion"),
+        ("/v1/responses", "response"),
+    ] {
+        let (status, headers, answer) = gateway(&world.app, &world.key, path, body.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers["x-oxsum-cache"], "hit");
+        assert_eq!(answer["object"], expected);
+    }
+    assert_eq!(world.script.seen().len(), 2);
+}
+
+#[tokio::test]
+async fn credential_changes_invalidate_cache_and_disabling_the_pool_stops_hits() {
+    let world = world!();
+    world.semantic_cache(json!({"enabled": true})).await;
+    let db = Db::from_pool(world.pool.clone());
+    let secret = oxsum_core::SecretKey::from_bytes([7; 32]);
+    let original = db
+        .channel_credentials(&world.channel)
+        .await
+        .unwrap()
+        .unwrap()[0]
+        .credential_id;
+    let body = ask(&world.model, "credential context");
+    cached_request(&world, "/v1/chat/completions", body.clone()).await;
+    let added = db
+        .add_credential(&world.channel, "replacement-upstream-secret", &secret)
+        .await
+        .unwrap();
+    cached_request(&world, "/v1/chat/completions", body.clone()).await;
+    db.set_credential_status(&world.channel, original, "disabled")
+        .await
+        .unwrap();
+    cached_request(&world, "/v1/chat/completions", body.clone()).await;
+    db.drop_credential(&world.channel, original).await.unwrap();
+    cached_request(&world, "/v1/chat/completions", body.clone()).await;
+    assert_eq!(world.script.seen().len(), 4);
+    let balance = world.wallet().await.available().await.unwrap();
+    db.set_credential_status(&world.channel, added.credential_id, "disabled")
+        .await
+        .unwrap();
+    let (status, headers, _) = chat(&world.app, &world.key, body).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert!(headers.get("x-oxsum-cache").is_none());
+    assert_eq!(world.script.seen().len(), 4);
+    assert_eq!(world.wallet().await.available().await.unwrap(), balance);
+}
+
+#[tokio::test]
+async fn fallback_target_and_route_changes_invalidate_a_primary_answer() {
+    let world = world!();
+    world.semantic_cache(json!({"enabled": true})).await;
+    let db = Db::from_pool(world.pool.clone());
+    let secret = oxsum_core::SecretKey::from_bytes([7; 32]);
+    let fallback = format!("{}-fallback", world.channel);
+    db.set_channel_pool_policy(
+        &fallback,
+        &world.base_url,
+        Some(&["fallback-secret".to_owned()]),
+        "openai",
+        &secret,
+        Some(&oxsum_core::ProviderDestinationPolicy {
+            network: oxsum_core::ProviderNetwork::Internal,
+            allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+        }),
+    )
+    .await
+    .unwrap();
+    let targets = [format!("{}-a", world.model), format!("{}-b", world.model)];
+    let alias = format!("{}-alias", world.model);
+    let price: oxsum_core::Price = serde_json::from_value(json!({
+        "inputPricePerMillion": 1_000_000,
+        "outputPricePerMillion": 1_000_000,
+        "maxOutputTokens": 1000,
+    }))
+    .unwrap();
+    for target in &targets {
+        db.append_price(&fallback, target, price.clone(), 100)
+            .await
+            .unwrap();
+    }
+    db.create_alias(&fallback, &alias, &targets[0])
+        .await
+        .unwrap();
+    db.set_fallbacks(&world.model, std::slice::from_ref(&alias))
+        .await
+        .unwrap();
+    let body = ask(&world.model, "fallback config");
+    cached_request(&world, "/v1/chat/completions", body.clone()).await;
+    db.delete_alias(&fallback, &alias).await.unwrap();
+    db.create_alias(&fallback, &alias, &targets[1])
+        .await
+        .unwrap();
+    cached_request(&world, "/v1/chat/completions", body.clone()).await;
+    db.append_price(&fallback, &targets[1], price, 101)
+        .await
+        .unwrap();
+    cached_request(&world, "/v1/chat/completions", body.clone()).await;
+    let (status, headers, _) = chat(&world.app, &world.key, body).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["x-oxsum-cache"], "hit");
+    assert_eq!(world.script.seen().len(), 3);
+}
+
+#[tokio::test]
+async fn a_changed_permission_snapshot_misses_and_revocation_refuses_a_cached_ask() {
+    let world = world!();
+    world.semantic_cache(json!({"enabled": true})).await;
+    let db = Db::from_pool(world.pool.clone());
+    let (org, key) = db.authenticate(&world.key).await.unwrap().unwrap();
+    let body = ask(&world.model, "permission snapshot");
+    cached_request(&world, "/v1/chat/completions", body.clone()).await;
+    db.update_key_constraints(
+        org.id,
+        key.key_id,
+        oxsum_core::KeyScope::All,
+        oxsum_core::KeyConstraints {
+            model_allowlist: Some(vec![world.model.clone()]),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    cached_request(&world, "/v1/chat/completions", body.clone()).await;
+    db.update_key_constraints(
+        org.id,
+        key.key_id,
+        oxsum_core::KeyScope::All,
+        oxsum_core::KeyConstraints {
+            model_allowlist: Some(vec!["excluded-model".into()]),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let balance = world.wallet().await.available().await.unwrap();
+    let (status, headers, _) = chat(&world.app, &world.key, body).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(headers.get("x-oxsum-cache").is_none());
+    assert_eq!(world.script.seen().len(), 2);
+    assert_eq!(world.wallet().await.available().await.unwrap(), balance);
+}
+
 /// A channel that never opted in caches nothing: two identical asks both go
 /// upstream, no marker rides the answer, and no row is written.
 #[tokio::test]
@@ -550,10 +976,10 @@ async fn a_row_older_than_its_ttl_is_a_miss() {
     assert_eq!(world.script.seen().len(), 2);
 }
 
-/// `excludeSystem` folds the preamble out of the question: two asks that
-/// differ only in `system` text still digest to the same row.
+/// `excludeSystem` is accepted for compatibility but ignored: the complete
+/// request is the key, so the system preamble always participates.
 #[tokio::test]
-async fn exclude_system_drops_the_preamble_from_the_digest() {
+async fn exclude_system_is_accepted_but_ignored() {
     let world = world!();
     world
         .semantic_cache(json!({"enabled": true, "excludeSystem": true}))
@@ -578,12 +1004,29 @@ async fn exclude_system_drops_the_preamble_from_the_digest() {
         ]}),
     )
     .await;
+    assert!(
+        headers.get("x-oxsum-cache").is_none(),
+        "a different preamble is a different question even under excludeSystem"
+    );
+    assert_eq!(world.script.seen().len(), 2);
+    let _ = row_within(&world.pool, &world.organization_id).await;
+
+    // The exact original body still hits the row it wrote.
+    let (_, headers, _) = chat(
+        &world.app,
+        &world.key,
+        json!({"model": world.model, "messages": [
+            {"role": "system", "content": "be terse"},
+            {"role": "user", "content": "hello?"},
+        ]}),
+    )
+    .await;
     assert_eq!(
         headers.get("x-oxsum-cache").and_then(|v| v.to_str().ok()),
         Some("hit"),
-        "a different preamble still hits under excludeSystem"
+        "an exact repeat hits"
     );
-    assert_eq!(world.script.seen().len(), 1);
+    assert_eq!(world.script.seen().len(), 2);
 }
 
 /// The org boundary is the privacy rule: a second organization's identical
@@ -688,17 +1131,10 @@ async fn cached_response_does_not_cross_sibling_keys_or_legacy_digests() {
     assert_eq!(world.script.seen().len(), 2);
     let (_, headers, _) = chat(&world.app, &world.key, ask(&world.model, "private answer")).await;
     assert_eq!(headers["x-oxsum-cache"], "hit");
-    // A pre-upgrade row has the old prompt-only digest, so no credential may hit it.
-    let legacy = oxsum_core::prompt_digest(
-        "openai",
-        &world.model,
-        &[oxsum_core::PromptPart {
-            role: "user",
-            text: "legacy answer".into(),
-        }],
-        false,
-    )
-    .unwrap();
+    // A pre-upgrade row was keyed by an old normalized-prompt digest. The
+    // upgrade deletes those rows; even an old-format value inserted by hand
+    // can never match a v2 keyed digest.
+    let legacy = "0".repeat(64);
     sqlx::query("UPDATE oxsum.cached_responses SET prompt_digest=$2 WHERE cache_id=(SELECT cache_id FROM oxsum.cached_responses WHERE organization_id=$1 LIMIT 1)")
         .bind(world.organization_id.parse::<uuid::Uuid>().unwrap()).bind(legacy).execute(&world.pool).await.unwrap();
     let (status, headers, _) =

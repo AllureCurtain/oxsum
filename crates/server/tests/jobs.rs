@@ -328,7 +328,17 @@ async fn a_price_sync_run_opens_drift_and_chains_a_day_out() {
     let channel = fresh("chan");
     world
         .db
-        .set_channel(&channel, &base_url, "sk-stub-secret", "openai", &secret)
+        .set_channel_pool_policy(
+            &channel,
+            &base_url,
+            Some(&["sk-stub-secret".to_owned()]),
+            "openai",
+            &secret,
+            Some(&oxsum_core::ProviderDestinationPolicy {
+                network: oxsum_core::ProviderNetwork::Internal,
+                allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+            }),
+        )
         .await
         .unwrap();
     world

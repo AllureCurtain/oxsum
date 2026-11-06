@@ -75,8 +75,9 @@ pub trait UpstreamBillProvider: Debug + Send + Sync {
 /// `api_key_sealed` deliberately stays a relay secret); `None` on a channel
 /// that never had one configured, which the provider impl can treat as an
 /// immediate `None` — no bill is fetchable without it.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ChannelBilling {
+    pub destination_policy: crate::ProviderDestinationPolicy,
     /// The channel's row id — the bill's `channel_id`.
     pub channel_id: Uuid,
     /// The channel's display name, for the provider's `group_by` and for logs.
@@ -90,6 +91,18 @@ pub struct ChannelBilling {
     /// The opened admin billing credential (`bill_key_sealed` unsealed), or
     /// `None` when the channel carries none.
     pub bill_key: Option<String>,
+}
+
+impl std::fmt::Debug for ChannelBilling {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChannelBilling")
+            .field("channel_id", &self.channel_id)
+            .field("name", &self.name)
+            .field("protocol", &self.protocol)
+            .field("base_url", &"[redacted]")
+            .field("bill_key", &self.bill_key.as_ref().map(|_| "[redacted]"))
+            .finish()
+    }
 }
 
 /// One `upstream_bills` row, as the margin join reads it back.
@@ -146,7 +159,7 @@ impl Db {
         key: &crate::channels::SecretKey,
     ) -> Result<Vec<ChannelBilling>, WalletError> {
         let rows = sqlx::query(
-            "SELECT channel_id, name, protocol, base_url, bill_key_sealed \
+            "SELECT channel_id, name, protocol, base_url, bill_key_sealed, settings \
              FROM oxsum.channels ORDER BY name",
         )
         .fetch_all(self.pool())
@@ -155,6 +168,9 @@ impl Db {
         for row in &rows {
             let sealed: Option<String> = row.try_get("bill_key_sealed")?;
             channels.push(ChannelBilling {
+                destination_policy: crate::ProviderDestinationPolicy::from_settings(
+                    &row.try_get::<serde_json::Value, _>("settings")?,
+                )?,
                 channel_id: row.try_get("channel_id")?,
                 name: row.try_get("name")?,
                 protocol: row.try_get("protocol")?,

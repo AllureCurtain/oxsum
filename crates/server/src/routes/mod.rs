@@ -24,10 +24,12 @@ use crate::error::ApiError;
 mod auth;
 pub(crate) mod billing;
 mod business;
+mod business_providers;
 mod device;
 mod experiments;
 mod keys;
 mod log;
+mod merchants;
 mod org;
 mod report_links;
 pub(crate) mod requests;
@@ -185,6 +187,62 @@ pub fn router(state: AppState) -> Router {
             get(business::context).post(business::select_context),
         )
         .route("/business", get(business::business))
+        .route(
+            "/business/merchants",
+            get(merchants::list).post(merchants::create),
+        )
+        .route(
+            "/business/merchants/{merchant}/versions",
+            get(merchants::versions).post(merchants::rotate),
+        )
+        .route(
+            "/business/merchants/{merchant}/status",
+            post(merchants::status),
+        )
+        .route(
+            "/business/channels/{channel}/connection-check",
+            post(business_providers::connection_check),
+        )
+        .route(
+            "/business/channels",
+            get(business_providers::channels).post(business_providers::set_channel),
+        )
+        .route(
+            "/business/channels/{channel}/prices",
+            get(business_providers::prices).post(business_providers::append_price),
+        )
+        .route(
+            "/business/channels/{channel}/aliases",
+            get(business_providers::aliases).post(business_providers::set_alias),
+        )
+        .route(
+            "/business/channels/{channel}/aliases/{alias}/remove",
+            post(business_providers::remove_alias),
+        )
+        .route(
+            "/business/channels/{channel}/credentials",
+            post(business_providers::add_credential),
+        )
+        .route(
+            "/business/channels/{channel}/credentials/{credential}/status",
+            post(business_providers::credential_status),
+        )
+        .route(
+            "/business/channels/{channel}/credentials/{credential}/remove",
+            post(business_providers::remove_credential),
+        )
+        .route(
+            "/business/channels/{channel}/billing-credential",
+            post(business_providers::bill_key),
+        )
+        .route(
+            "/business/channels/{channel}/cache",
+            post(business_providers::cache),
+        )
+        .route(
+            "/business/model-fallbacks/{model}",
+            get(business_providers::fallbacks).put(business_providers::set_fallbacks),
+        )
         .route(
             "/business/integration-credentials",
             get(business::integration_credentials).post(business::create_integration_credential),

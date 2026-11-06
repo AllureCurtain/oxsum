@@ -85,6 +85,7 @@ mod tests {
 
     fn channel(protocol: &str) -> ChannelBilling {
         ChannelBilling {
+            destination_policy: Default::default(),
             channel_id: Uuid::new_v4(),
             name: "ch".into(),
             protocol: protocol.into(),

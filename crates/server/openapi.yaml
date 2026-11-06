@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.106.0
-  x-consumption-cache: Cached responses are bound to the exact consumption key as well as customer, channel, model and prompt. Pre-upgrade cache digests are misses.
+  version: 0.112.0
+  x-consumption-cache: Response cache v2 binds the exact complete request, concrete endpoint and semantic headers, customer/key permissions, selected experiment/mandate, alias targets, and every admitted route's price, destination, settings and credential configuration. A primary route without an available credential cannot serve a cache hit. Text case and whitespace are significant; old digests miss. Legacy excludeSystem is accepted but ignored.
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
@@ -28,6 +28,33 @@ info:
     revocation and one-time secrets. Legacy global service credentials are disabled;
     deployment-token issuance is retired. Metering binds the credential, customer,
     original request and finalization body before any financial effect.
+
+    0.110.0 replaces incomplete normalized prompt cache keys with versioned keyed digests
+    of complete request and serving context. System/instructions, tools, media and generation
+    parameters always participate. Legacy excludeSystem is accepted but has no effect.
+    Only matching exact customer/key, current authorization, route/alias/configuration and
+    concrete endpoint/semantic-header context can reuse a whole response. Credential
+    additions, removals and status changes participate, as do fallback alias targets
+    and route configurations. Old cache rows miss.
+
+    0.109.0 filters customer catalogs, estimates and serving routes by business,
+    customer tier, current consumption key model grants and request-group channels.
+    Alias public names and resolved targets must both be allowed. Experiments and
+    fallbacks never widen these permissions, and retain the original requested name.
+    Tasks use the same admission rules; status/cancel remain bound to their original key.
+
+    0.108.0 enforces destination policy on channel gateway, task, catalog and billing requests.
+    Public endpoints require HTTPS and public DNS addresses. Internal endpoints
+    require owner-approved exact IP addresses. Resolution is pinned for the connection;
+    proxies and redirects are disabled. Saved credentials never follow redirects.
+    Connection checks are explicit, audited HEAD requests with durable replay results.
+
+    0.107.0 adds business provider configuration. Current business sessions and
+    capabilities are checked with each configuration/audit/idempotency transaction.
+    Only owners can change connection destinations, protocols and provider secrets.
+    Owner/admin can manage catalog, cache and fallback configuration. Provider reads
+    are owner/admin only and never expose plaintext or sealed secrets. Saves do not
+    make provider calls. Destination connection checks are a separate explicit action.
 
     Three surfaces, deliberately different:
 
@@ -2392,6 +2419,8 @@ paths:
       security: [{ sessionCookie: [] }]
       summary: Create or replace an experiment
       description: |
+        Every variant must be visible in the current customer-authorized catalog.
+        Runtime key/group and alias-target restrictions are checked again at admission.
         Creates the named experiment or replaces its whole variant set atomically —
         config, not ledger, so the write is a `PUT` of the full
         `{variants: [{model, weight}]}` rather than an append. Every variant's `model`
@@ -3804,11 +3833,14 @@ paths:
       summary: Price a declared token shape
       description: |
         The number the gateway would freeze for a request with this shape: the dearest
-        applicable price set over the declared input tokens and the output ceiling
+        permitted price set over the declared input tokens and the output ceiling
         (`outputTokens` clamped to the model's `maxOutputTokens`). Nothing is held or
         charged — the answer is the upper bound a real request could cost, and a real
         settle never exceeds it. An unknown model answers `VALIDATION`; a shape the
-        model's price cannot express answers the same.
+        model's price cannot express answers the same. Customer tier limits apply;
+        consumption keys additionally restrict model names and group channels. Aliases
+        require both the public and resolved model name to be allowed. Unavailable or
+        forbidden names return the same validation error, without hidden route details.
       requestBody:
         required: true
         content:
@@ -3843,15 +3875,19 @@ paths:
     get:
       security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
       x-consumption-key-access: own-records-or-metadata
-      summary: The public price catalog
+      summary: The customer-authorized price catalog
       description: |
-        Every route the operator sells — a model may be served by several
+        Every route this customer may use — a model may be served by several
         channels, and each `(model, channel)` pair lists its own row with the
         current price version and the route's `weight`, the relative preference
         for leading a request. These are the same rows `POST
         /v1/chat/completions` is priced by, without the channel's credential. A
         caller that wants a version's full rule set reads the flattened price on
-        each row; estimate-price answers what one shape costs.
+        each row; estimate-price answers what one shape costs. The customer tier filters
+        model names, and consumption keys also apply their own model and request-group
+        channel restrictions. Alias names and their resolved targets must both be allowed.
+        Customer sessions see the tier-authorized catalog, without a key-specific grant.
+        Alias prices use the alias version when present, otherwise the target version.
       responses:
         "200":
           description: The catalog, one row per route
@@ -4030,6 +4066,8 @@ paths:
       x-consumption-key-access: own-records-or-metadata
       summary: "A channel-model price row, signed by the operator"
       description: |
+        Current customer/key model and channel grants filter this direct price read.
+        Historical proof bundles already exported remain independently verifiable.
         The signed checkpoint of one `(channel, model)` price row — `version`'s exact
         row, or the latest when `version` is omitted — as a C2SP signed-note under the
         same Ed25519 key that signs tree heads (issue #204). The body reuses the
@@ -4522,6 +4560,537 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/merchants:
+    get:
+      summary: List business merchant settings
+      description: Current business staff with report-read capability. Account identity, test/live mode, immutable current version and checkout enablement are explicit. Hyperswitch with Stripe is the primary rail; direct Stripe and Airwallex are compatibility rails. Saves validate locally and do not certify credentials or make provider calls.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: after, in: query, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200":
+          description: Authorized merchant result; no credential or ciphertext fields
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/MerchantPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Create an encrypted merchant configuration
+      description: Current business owner only. Creates a disabled merchant and its first immutable version. Account identity, rail, mode and name cannot change; credential rotation appends a version. Mutation, replay receipt and redacted audit commit atomically.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MerchantCreateRequest" }
+      responses:
+        "200":
+          description: Authorized merchant result; no credential or ciphertext fields
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/MerchantMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/business/merchants/{merchantId}/versions:
+    get:
+      summary: List immutable merchant versions
+      description: Current business staff with report-read capability. Versions remain available for pinned orders and historical callback verification after rotation or checkout disablement. No secrets or ciphertexts are returned.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: merchantId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: after, in: query, schema: { type: integer, format: int64, minimum: 0 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200":
+          description: Authorized merchant result; no credential or ciphertext fields
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/MerchantVersionPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Rotate a merchant configuration
+      description: Current business owner only. Appends a complete immutable version and selects it for future checkouts; existing references retain their original version. All credentials must be resupplied. Keeps the merchant current checkout enablement. Exact retry returns its original version even after a later rotation.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: merchantId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MerchantVersionRequest" }
+      responses:
+        "200":
+          description: Authorized merchant result; no credential or ciphertext fields
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/MerchantMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/business/merchants/{merchantId}/status:
+    post:
+      summary: Set merchant checkout enablement
+      description: Current business owner only. Disabling refuses future checkouts without invalidating pinned versions or historical callbacks. This is configuration enablement; it does not certify provider credentials or activate customer checkout before T15/T16.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: merchantId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MerchantStatusRequest" }
+      responses:
+        "200":
+          description: Authorized merchant result; no credential or ciphertext fields
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/MerchantMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/business/channels:
+    get:
+      summary: List business provider channels
+      description: Current owner/admin in business context. Ownership filters apply before pagination or child lookup. No secret material is returned.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: after, in: query, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessChannelPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Set an owned provider connection
+      description: Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner only. apiKeys absent preserves the existing pool; a new channel needs a nonempty pool. Changing destination or protocol requires freshly supplied keys and clears an existing billing credential to prevent implicit credential forwarding.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessChannelRequest" }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ProviderMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/channels/{channelName}/connection-check:
+    post:
+      summary: Explicitly check an owned provider connection without inference
+      description: Current business owner only. Commits intent and audit before one HEAD request to the configured base URL with the channel credential and destination policy. Does not generate tokens. Exact replay returns the saved result and never repeats the network request; pending means interrupted or still running, so a deliberate new check needs a new key. No provider body, redirect target or transport error detail is exposed.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: channelName, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessProviderRemoveRequest" }
+      responses:
+        "200":
+          description: Durable connection-check result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ProviderConnectionCheck" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/channels/{channelName}/credentials:
+    post:
+      summary: Add an owned provider credential
+      description: Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner only.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: channelName, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessProviderCredentialRequest" }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ProviderMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/channels/{channelName}/billing-credential:
+    post:
+      summary: Set or clear the provider billing credential
+      description: Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner only; null clears.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: channelName, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessProviderBillKeyRequest" }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ProviderMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/channels/{channelName}/cache:
+    post:
+      summary: Configure an owned channel cache
+      description: Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner/admin; null clears.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: channelName, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessProviderCacheRequest" }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ProviderMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/channels/{channelName}/prices:
+    post:
+      summary: Append an owned model price version
+      description: Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner/admin. Published historical versions remain unchanged.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: channelName, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessProviderPriceRequest" }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ProviderMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    get:
+      summary: Read owned channel prices
+      description: Current owner/admin in business context. Ownership filters apply before pagination or child lookup. No secret material is returned.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: channelName, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/ModelPrice" } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/channels/{channelName}/aliases:
+    post:
+      summary: Claim an owned model alias
+      description: Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner/admin. Target must be a served model on this channel.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: channelName, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessProviderAliasRequest" }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ProviderMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    get:
+      summary: Read owned channel aliases
+      description: Current owner/admin in business context. Ownership filters apply before pagination or child lookup. No secret material is returned.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: channelName, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/ModelAlias" } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/channels/{channelName}/credentials/{credentialId}/status:
+    post:
+      summary: Set provider credential status
+      description: Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner only; credential ID must belong to this channel.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: channelName, in: path, required: true, schema: { type: string } }
+        - { name: credentialId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessProviderStatusRequest" }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ProviderMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/channels/{channelName}/credentials/{credentialId}/remove:
+    post:
+      summary: Remove a provider credential
+      description: Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner only; credential ID must belong to this channel. The last active credential cannot be removed; disable it explicitly to stop serving.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: channelName, in: path, required: true, schema: { type: string } }
+        - { name: credentialId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessProviderRemoveRequest" }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ProviderMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/channels/{channelName}/aliases/{alias}/remove:
+    post:
+      summary: Remove an owned model alias
+      description: Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner/admin.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: channelName, in: path, required: true, schema: { type: string } }
+        - { name: alias, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessProviderRemoveRequest" }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ProviderMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/model-fallbacks/{model}:
+    get:
+      summary: Read owned model fallbacks
+      description: Current owner/admin in business context. Ownership filters apply before pagination or child lookup. No secret material is returned.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: model, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ModelFallbackChain" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    put:
+      summary: Set owned model fallbacks
+      description: Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner/admin. Every model must resolve inside this business; distinct ordered names, no self fallback, at most 16. Empty clears.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: model, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessProviderFallbackRequest" }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ProviderMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/business/integration-credentials:
     get:
       summary: List scoped integration credentials
@@ -6929,11 +7498,15 @@ paths:
       description: |
         Only models with a relayable price are listed: a model the gateway cannot price cannot be
         frozen, so it cannot be served — and a `mode: event` price is a billable code for
-        `/api/v1/metering`, not a model any `/v1` surface relays, so it is not listed either.
+        `/api/v1/metering`, so it is omitted unless the channel uses the generic `tasks`
+        protocol. Task entries identify the generic task adapter, not certified media support.
         `owned_by` is the channel that serves the model, and `created` is when the version in force
         was written. Model aliases are listed beside the direct names (issue
         #286): a caller writes the public name and the channel relays the
-        upstream model it renames.
+        upstream model it renames. Only the authenticated customer's business channels,
+        tier-authorized models, key-authorized models and request-group channels appear.
+        Both public alias and resolved target must be allowed; denied or unpriced aliases
+        are omitted. Catalog reads never open provider credentials.
       responses:
         "200":
           description: The model list
@@ -7095,7 +7668,10 @@ paths:
         minutes — an image render, a video generation, a batch — where neither
         side wants a socket held open. The surface serves only channels whose
         `protocol` is `tasks`; upstream is called at `{baseUrl}/tasks` with the
-        channel credential as `Authorization: Bearer`.
+        channel credential as `Authorization: Bearer`. Customer tier, consumption-key
+        model and group-channel restrictions apply. Public aliases and signed spend
+        mandates are not supported by this generic task adapter and are refused
+        before provider contact. Use a permitted direct task model.
 
         Submission freezes the request's declared upper bound (`maxCostMinor`,
         or the channel price's own bound when the request names none), relays
@@ -8526,14 +9102,15 @@ components:
           description: "the channel's credential pool (issue #444): the whole ordered set of upstream keys — a `set` re-credentials the channel wholesale, so every key the pool should hold goes here. Absent leaves the stored pool untouched; a present empty array is VALIDATION_ERROR — a channel with no key cannot serve. One of `apiKey`/`apiKeys` is required when creating a channel."
         billKey: { type: string, minLength: 1, nullable: true, description: "the admin billing credential the upstream-bill-sync pass reads the provider's cost API under (issue #283) — sealed beside the metering keys, deliberately separate so a relay credential never reads the org's bill. Omit to leave any stored billing key untouched; explicit null clears it." }
         protocol: { type: string, enum: [openai, anthropic, gemini], description: "the upstream protocol the channel speaks, which selects the usage adapter its reports are normalized by and which surface serves its models: `/v1/*` for `openai` and `anthropic`, `/v1beta/*` for `gemini`; defaults to `openai` — any other name is VALIDATION_ERROR" }
+        destinationPolicy: { $ref: "#/components/schemas/ProviderDestinationPolicy" }
         semanticCache:
           type: object
           nullable: true
-          description: "the channel's semantic response cache policy (issue #497): `{enabled, ttlSeconds?, excludeSystem?}` — `enabled` gates the whole feature; `ttlSeconds` bounds a stored answer's lifetime (absent means no expiry); `excludeSystem` drops the system/instructions share from the prompt digest so two asks differing only there still hit. Omit to leave the stored policy untouched; explicit null clears `settings.semanticCache`; a non-object or a malformed policy is VALIDATION_ERROR."
+          description: "the channel's semantic response cache policy (issue #497): `{enabled, ttlSeconds?, excludeSystem?}` — `enabled` gates the whole feature; `ttlSeconds` bounds a stored answer's lifetime (absent means no expiry); `excludeSystem` is deprecated and ignored; system/instructions always participate in the complete request digest. Omit to leave the stored policy untouched; explicit null clears `settings.semanticCache`; a non-object or a malformed policy is VALIDATION_ERROR."
           properties:
             enabled: { type: boolean }
             ttlSeconds: { type: integer, format: int64, minimum: 1 }
-            excludeSystem: { type: boolean }
+            excludeSystem: { type: boolean, deprecated: true, description: "Accepted for compatibility, ignored; system/instructions always participate in the cache key." }
           additionalProperties: true
     ChannelCredential:
       type: object
@@ -8560,7 +9137,7 @@ components:
           description: "the channel's credential pool (issue #444): one entry per upstream key, ordered by position, each showing only its last four plus the health state the pick reads"
           items: { $ref: "#/components/schemas/ChannelCredential" }
         billKeyLast4: { type: string, nullable: true, description: "the last four characters of the admin billing credential (issue #283), and nothing more of it; null when the channel carries none" }
-        settings: { type: object, description: "the channel's free-form settings (issue #497): `semanticCache` and any future channel-scoped knobs, exactly as written through `ChannelRequest.semanticCache` — `{}` when nothing was ever set" }
+        settings: { type: object, description: "the channel's free-form settings (issue #497): `semanticCache` and `destinationPolicy` configuration — `{}` when nothing was ever set" }
         createdAt: { type: string, format: date-time }
         models:
           type: array
@@ -10073,6 +10650,275 @@ components:
           description: "`usage` when the declared usage priced inside the freeze, `capped` when it priced above and the freeze was charged, `released` when the hold was let go at zero"
         priceVersion: { type: integer, minimum: 1, description: the price version the usage priced at — the hold's pin on `settle`/`release`, the latest on a one-shot }
         settlementId: { type: string, format: uuid, description: the settlement ledger entry's id — derivable as `entry_id_for(settlement_key_for(holdKey))` }
+    MerchantRail:
+      type: string
+      enum: [hyperswitch, stripe, airwallex]
+    MerchantMode:
+      type: string
+      enum: [test, live]
+    MerchantVersionInput:
+      type: object
+      additionalProperties: false
+      required: [apiUrl, apiKey, webhookSecret]
+      description: Complete configuration for one immutable version. Hyperswitch requires publishableKey and sdkUrl; Airwallex requires clientId and checkoutUrl. Fields belonging only to another rail are rejected. API destination rules are shared with provider connections; browser SDK/checkout URLs must be public HTTPS URLs without user info, query or fragment. Secrets are encrypted together and never returned.
+      properties:
+        apiUrl: { type: string, format: uri }
+        apiKey: { type: string, minLength: 8, maxLength: 8192, writeOnly: true }
+        webhookSecret: { type: string, minLength: 8, maxLength: 8192, writeOnly: true }
+        clientId: { type: [string, "null"], minLength: 1, maxLength: 200, writeOnly: true }
+        publishableKey: { type: [string, "null"], minLength: 1, maxLength: 200 }
+        sdkUrl: { type: [string, "null"], format: uri }
+        checkoutUrl: { type: [string, "null"], format: uri }
+        destinationPolicy: { $ref: "#/components/schemas/ProviderDestinationPolicy" }
+    MerchantCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, name, rail, mode, accountId, config]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        name: { type: string, minLength: 1, maxLength: 80, pattern: "^[a-z0-9]+(-[a-z0-9]+)*$" }
+        rail: { $ref: "#/components/schemas/MerchantRail" }
+        mode: { $ref: "#/components/schemas/MerchantMode" }
+        accountId: { type: string, minLength: 1, maxLength: 200, description: Stable provider merchant/account identifier; unique per business, rail and mode. }
+        config: { $ref: "#/components/schemas/MerchantVersionInput" }
+    MerchantVersionRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, config]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        config: { $ref: "#/components/schemas/MerchantVersionInput" }
+    MerchantStatusRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, enabled]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        enabled: { type: boolean }
+    MerchantMutationResult:
+      type: object
+      required: [id, merchantId, versionId, revision, enabled]
+      properties:
+        id: { type: string, format: uuid }
+        merchantId: { type: string, format: uuid }
+        versionId: { type: string, format: uuid }
+        revision: { type: integer, format: int64, minimum: 1 }
+        enabled: { type: boolean }
+    MerchantVersion:
+      type: object
+      required: [id, merchantId, revision, apiUrl, publishableKey, sdkUrl, checkoutUrl, destinationPolicy, source, validationStatus, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        merchantId: { type: string, format: uuid }
+        revision: { type: integer, format: int64, minimum: 1 }
+        apiUrl: { type: string, format: uri }
+        publishableKey: { type: [string, "null"] }
+        sdkUrl: { type: [string, "null"], format: uri }
+        checkoutUrl: { type: [string, "null"], format: uri }
+        destinationPolicy: { $ref: "#/components/schemas/ProviderDestinationPolicy" }
+        source: { type: string, enum: [owner, environment] }
+        validationStatus: { type: string, enum: [locallyValidated], description: Shape and destination syntax validated; external credentials and payments remain uncertified. }
+        createdAt: { type: string, format: date-time }
+    Merchant:
+      type: object
+      required: [id, businessId, name, rail, mode, accountId, connector, supportStatus, enabled, currentVersion]
+      properties:
+        id: { type: string, format: uuid }
+        businessId: { type: string, format: uuid }
+        name: { type: string }
+        rail: { $ref: "#/components/schemas/MerchantRail" }
+        mode: { $ref: "#/components/schemas/MerchantMode" }
+        accountId: { type: string }
+        connector: { type: string, enum: [stripe, direct] }
+        supportStatus: { type: string, enum: [primary, compatibility] }
+        enabled: { type: boolean }
+        currentVersion: { $ref: "#/components/schemas/MerchantVersion" }
+    MerchantPage:
+      type: object
+      required: [merchants, nextCursor]
+      properties:
+        merchants: { type: array, items: { $ref: "#/components/schemas/Merchant" } }
+        nextCursor: { type: [string, "null"], format: uuid }
+    MerchantVersionPage:
+      type: object
+      required: [versions, nextCursor]
+      properties:
+        versions: { type: array, items: { $ref: "#/components/schemas/MerchantVersion" } }
+        nextCursor: { type: [integer, "null"], format: int64 }
+    ProviderMutationResult:
+      type: object
+      required: [id, resourceId, version]
+      properties:
+        id: { type: string, format: uuid }
+        resourceId: { type: [string, "null"], format: uuid }
+        version: { type: [integer, "null"], format: int64 }
+    BusinessChannelPage:
+      type: object
+      required: [channels, nextCursor]
+      properties:
+        channels: { type: array, items: { $ref: "#/components/schemas/Channel" } }
+        nextCursor: { type: [string, "null"], format: uuid }
+    ProviderDestinationPolicy:
+      type: object
+      additionalProperties: false
+      required: [network]
+      description: Public requires HTTPS and globally routable IPs. Internal permits HTTP(S) only to the exact allowedIps explicitly approved by the business owner or deployment recovery authority. All DNS answers must satisfy policy, and the transport uses those addresses without a second resolution. Metadata/link-local, unspecified, multicast and reserved destinations are always refused. Redirects and environment proxies are disabled. Existing channels default to public until explicitly reauthorized.
+      properties:
+        network: { type: string, enum: [public, internal] }
+        allowedIps:
+          type: array
+          maxItems: 16
+          uniqueItems: true
+          description: Required and nonempty for internal; absent or empty for public. Exact IPv4/IPv6 literals, never hostnames or CIDRs.
+          items: { type: string }
+    ProviderConnectionCheck:
+      type: object
+      required: [id, channelId, state, httpStatus]
+      properties:
+        id: { type: string, format: uuid }
+        channelId: { type: string, format: uuid }
+        state: { type: string, enum: [pending, reachable, authenticationFailed, httpError, blocked, unreachable] }
+        httpStatus: { type: [integer, "null"], minimum: 100, maximum: 599 }
+    BusinessChannelRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, config]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        config:
+          type: object
+          additionalProperties: false
+          required: [name, baseUrl, protocol]
+          properties:
+            name: { type: string, minLength: 1, maxLength: 40, pattern: "^[A-Za-z0-9._-]+$" }
+            baseUrl: { type: string, format: uri, description: "HTTPS public by default; HTTP(S) for explicitly approved internal endpoints. No user info, query or fragment; no network call on save" }
+            protocol: { type: string, enum: [openai, anthropic, gemini, tasks] }
+            apiKeys: { type: [array, "null"], minItems: 1, maxItems: 100, items: { type: string, minLength: 8, maxLength: 8192 } }
+            destinationPolicy:
+              allOf: [{ $ref: "#/components/schemas/ProviderDestinationPolicy" }]
+              description: Omitted preserves policy only at the same endpoint/protocol; new or changed connections default to public. Internal approval must be resupplied when repointing.
+    BusinessProviderCredentialRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, config]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        config:
+          type: object
+          additionalProperties: false
+          required: [apiKey]
+          properties:
+            apiKey: { type: string, minLength: 8, maxLength: 8192 }
+    BusinessProviderBillKeyRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, config]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        config:
+          type: object
+          additionalProperties: false
+          required: [apiKey]
+          properties:
+            apiKey: { type: [string, "null"], minLength: 8, maxLength: 8192 }
+    BusinessProviderStatusRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, config]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        config:
+          type: object
+          additionalProperties: false
+          required: [status]
+          properties:
+            status: { type: string, enum: [active, disabled] }
+    BusinessProviderCacheRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, config]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        config:
+          type: object
+          additionalProperties: false
+          required: [policy]
+          properties:
+            policy:
+              type: [object, "null"]
+              additionalProperties: false
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+                ttlSeconds: { type: [integer, "null"], minimum: 1, format: int64 }
+                excludeSystem: { type: boolean, deprecated: true, description: "Accepted for compatibility, ignored; system/instructions always participate in the cache key." }
+    BusinessProviderAliasRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, config]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        config:
+          type: object
+          additionalProperties: false
+          required: [alias, upstreamModel]
+          properties:
+            alias: { type: string, minLength: 1, maxLength: 200 }
+            upstreamModel: { type: string, minLength: 1, maxLength: 200 }
+    BusinessProviderPriceRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, config]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        config:
+          type: object
+          additionalProperties: false
+          required: [model, price, weight]
+          properties:
+            model: { type: string, minLength: 1, maxLength: 200 }
+            price:
+              allOf:
+                - { $ref: "#/components/schemas/PriceSet" }
+                - type: object
+                  required: [inputPricePerMillion, outputPricePerMillion, maxOutputTokens]
+                  properties:
+                    mode: { type: string, enum: [chat, embeddings, rerank, event], default: chat }
+                    rules: { type: array, items: { $ref: "#/components/schemas/PriceRule" } }
+            weight: { type: integer, minimum: 1, maximum: 1000 }
+    BusinessProviderFallbackRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, config]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        config:
+          type: object
+          additionalProperties: false
+          required: [fallbacks]
+          properties:
+            fallbacks: { type: array, maxItems: 16, uniqueItems: true, items: { type: string, minLength: 1, maxLength: 200 } }
+    BusinessProviderRemoveRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, config]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        config:
+          type: object
+          additionalProperties: false
     IntegrationScope:
       type: string
       enum: [customersRead, meteringWrite]

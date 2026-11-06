@@ -122,9 +122,19 @@ pub async fn flat_model(db: &Db, secret: &oxsum_core::SecretKey, minor: i64) -> 
         axum::serve(listener, upstream).await.unwrap();
     });
     let name = format!("fixture-{}", uuid::Uuid::new_v4().simple());
-    db.set_channel(&name, &base, "fixture-secret", "openai", secret)
-        .await
-        .unwrap();
+    db.set_channel_pool_policy(
+        &name,
+        &base,
+        Some(&["fixture-secret".to_owned()]),
+        "openai",
+        secret,
+        Some(&oxsum_core::ProviderDestinationPolicy {
+            network: oxsum_core::ProviderNetwork::Internal,
+            allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+        }),
+    )
+    .await
+    .unwrap();
     let prices = oxsum_core::PriceBook::from_json(&name, &json!({name.clone(): {"inputPricePerMillion":0,"outputPricePerMillion":0,"costPerRequest":minor,"maxOutputTokens":1}}).to_string()).unwrap();
     for (model, price) in prices.models() {
         db.append_price(&name, model, price.clone(), 100)

@@ -2669,7 +2669,9 @@ export interface paths {
         get?: never;
         /**
          * Create or replace an experiment
-         * @description Creates the named experiment or replaces its whole variant set atomically —
+         * @description Every variant must be visible in the current customer-authorized catalog.
+         *     Runtime key/group and alias-target restrictions are checked again at admission.
+         *     Creates the named experiment or replaces its whole variant set atomically —
          *     config, not ledger, so the write is a `PUT` of the full
          *     `{variants: [{model, weight}]}` rather than an append. Every variant's `model`
          *     must resolve to a served model or an alias (400 `VALIDATION` otherwise — a
@@ -4913,11 +4915,14 @@ export interface paths {
         /**
          * Price a declared token shape
          * @description The number the gateway would freeze for a request with this shape: the dearest
-         *     applicable price set over the declared input tokens and the output ceiling
+         *     permitted price set over the declared input tokens and the output ceiling
          *     (`outputTokens` clamped to the model's `maxOutputTokens`). Nothing is held or
          *     charged — the answer is the upper bound a real request could cost, and a real
          *     settle never exceeds it. An unknown model answers `VALIDATION`; a shape the
-         *     model's price cannot express answers the same.
+         *     model's price cannot express answers the same. Customer tier limits apply;
+         *     consumption keys additionally restrict model names and group channels. Aliases
+         *     require both the public and resolved model name to be allowed. Unavailable or
+         *     forbidden names return the same validation error, without hidden route details.
          */
         post: {
             parameters: {
@@ -4974,14 +4979,18 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * The public price catalog
-         * @description Every route the operator sells — a model may be served by several
+         * The customer-authorized price catalog
+         * @description Every route this customer may use — a model may be served by several
          *     channels, and each `(model, channel)` pair lists its own row with the
          *     current price version and the route's `weight`, the relative preference
          *     for leading a request. These are the same rows `POST
          *     /v1/chat/completions` is priced by, without the channel's credential. A
          *     caller that wants a version's full rule set reads the flattened price on
-         *     each row; estimate-price answers what one shape costs.
+         *     each row; estimate-price answers what one shape costs. The customer tier filters
+         *     model names, and consumption keys also apply their own model and request-group
+         *     channel restrictions. Alias names and their resolved targets must both be allowed.
+         *     Customer sessions see the tier-authorized catalog, without a key-specific grant.
+         *     Alias prices use the alias version when present, otherwise the target version.
          */
         get: {
             parameters: {
@@ -5259,7 +5268,9 @@ export interface paths {
         };
         /**
          * A channel-model price row, signed by the operator
-         * @description The signed checkpoint of one `(channel, model)` price row — `version`'s exact
+         * @description Current customer/key model and channel grants filter this direct price read.
+         *     Historical proof bundles already exported remain independently verifiable.
+         *     The signed checkpoint of one `(channel, model)` price row — `version`'s exact
          *     row, or the latest when `version` is omitted — as a C2SP signed-note under the
          *     same Ed25519 key that signs tree heads (issue #204). The body reuses the
          *     tlog-checkpoint shape: `origin` is the catalog `oxsum/price-catalog/<channel>`,
@@ -5803,6 +5814,954 @@ export interface paths {
          * @description Current customersSuspend capability. Clearing manual suspension never clears dunning or archive state. Audit and state change commit together.
          */
         post: operations["setCustomerSuspension"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/merchants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List business merchant settings
+         * @description Current business staff with report-read capability. Account identity, test/live mode, immutable current version and checkout enablement are explicit. Hyperswitch with Stripe is the primary rail; direct Stripe and Airwallex are compatibility rails. Saves validate locally and do not certify credentials or make provider calls.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    after?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Authorized merchant result; no credential or ciphertext fields */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["MerchantPage"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Create an encrypted merchant configuration
+         * @description Current business owner only. Creates a disabled merchant and its first immutable version. Account identity, rail, mode and name cannot change; credential rotation appends a version. Mutation, replay receipt and redacted audit commit atomically.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["MerchantCreateRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized merchant result; no credential or ciphertext fields */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["MerchantMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/merchants/{merchantId}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List immutable merchant versions
+         * @description Current business staff with report-read capability. Versions remain available for pinned orders and historical callback verification after rotation or checkout disablement. No secrets or ciphertexts are returned.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    after?: number;
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    merchantId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Authorized merchant result; no credential or ciphertext fields */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["MerchantVersionPage"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Rotate a merchant configuration
+         * @description Current business owner only. Appends a complete immutable version and selects it for future checkouts; existing references retain their original version. All credentials must be resupplied. Keeps the merchant current checkout enablement. Exact retry returns its original version even after a later rotation.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    merchantId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["MerchantVersionRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized merchant result; no credential or ciphertext fields */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["MerchantMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/merchants/{merchantId}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set merchant checkout enablement
+         * @description Current business owner only. Disabling refuses future checkouts without invalidating pinned versions or historical callbacks. This is configuration enablement; it does not certify provider credentials or activate customer checkout before T15/T16.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    merchantId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["MerchantStatusRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized merchant result; no credential or ciphertext fields */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["MerchantMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/channels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List business provider channels
+         * @description Current owner/admin in business context. Ownership filters apply before pagination or child lookup. No secret material is returned.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    after?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["BusinessChannelPage"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Set an owned provider connection
+         * @description Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner only. apiKeys absent preserves the existing pool; a new channel needs a nonempty pool. Changing destination or protocol requires freshly supplied keys and clears an existing billing credential to prevent implicit credential forwarding.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessChannelRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ProviderMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/channels/{channelName}/connection-check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Explicitly check an owned provider connection without inference
+         * @description Current business owner only. Commits intent and audit before one HEAD request to the configured base URL with the channel credential and destination policy. Does not generate tokens. Exact replay returns the saved result and never repeats the network request; pending means interrupted or still running, so a deliberate new check needs a new key. No provider body, redirect target or transport error detail is exposed.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    channelName: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessProviderRemoveRequest"];
+                };
+            };
+            responses: {
+                /** @description Durable connection-check result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ProviderConnectionCheck"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/channels/{channelName}/credentials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add an owned provider credential
+         * @description Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner only.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    channelName: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessProviderCredentialRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ProviderMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/channels/{channelName}/billing-credential": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set or clear the provider billing credential
+         * @description Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner only; null clears.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    channelName: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessProviderBillKeyRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ProviderMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/channels/{channelName}/cache": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Configure an owned channel cache
+         * @description Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner/admin; null clears.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    channelName: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessProviderCacheRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ProviderMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/channels/{channelName}/prices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read owned channel prices
+         * @description Current owner/admin in business context. Ownership filters apply before pagination or child lookup. No secret material is returned.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    channelName: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ModelPrice"][];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Append an owned model price version
+         * @description Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner/admin. Published historical versions remain unchanged.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    channelName: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessProviderPriceRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ProviderMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/channels/{channelName}/aliases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read owned channel aliases
+         * @description Current owner/admin in business context. Ownership filters apply before pagination or child lookup. No secret material is returned.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    channelName: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ModelAlias"][];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Claim an owned model alias
+         * @description Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner/admin. Target must be a served model on this channel.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    channelName: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessProviderAliasRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ProviderMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/channels/{channelName}/credentials/{credentialId}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set provider credential status
+         * @description Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner only; credential ID must belong to this channel.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    channelName: string;
+                    credentialId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessProviderStatusRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ProviderMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/channels/{channelName}/credentials/{credentialId}/remove": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Remove a provider credential
+         * @description Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner only; credential ID must belong to this channel. The last active credential cannot be removed; disable it explicitly to stop serving.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    channelName: string;
+                    credentialId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessProviderRemoveRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ProviderMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/channels/{channelName}/aliases/{alias}/remove": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Remove an owned model alias
+         * @description Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner/admin.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    channelName: string;
+                    alias: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessProviderRemoveRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ProviderMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/model-fallbacks/{model}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read owned model fallbacks
+         * @description Current owner/admin in business context. Ownership filters apply before pagination or child lookup. No secret material is returned.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    model: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ModelFallbackChain"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        /**
+         * Set owned model fallbacks
+         * @description Current business session with the stated capability. Configuration, immutable mutation result and redacted audit commit together. Every write requires idempotencyKey and reason. Exact retry returns the original receipt; changed request conflicts. Saves make no network call. Owner/admin. Every model must resolve inside this business; distinct ordered names, no self fallback, at most 16. Empty clears.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    model: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessProviderFallbackRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ProviderMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -9331,11 +10290,15 @@ export interface paths {
          * List the served models, in OpenAI's shape
          * @description Only models with a relayable price are listed: a model the gateway cannot price cannot be
          *     frozen, so it cannot be served — and a `mode: event` price is a billable code for
-         *     `/api/v1/metering`, not a model any `/v1` surface relays, so it is not listed either.
+         *     `/api/v1/metering`, so it is omitted unless the channel uses the generic `tasks`
+         *     protocol. Task entries identify the generic task adapter, not certified media support.
          *     `owned_by` is the channel that serves the model, and `created` is when the version in force
          *     was written. Model aliases are listed beside the direct names (issue
          *     #286): a caller writes the public name and the channel relays the
-         *     upstream model it renames.
+         *     upstream model it renames. Only the authenticated customer's business channels,
+         *     tier-authorized models, key-authorized models and request-group channels appear.
+         *     Both public alias and resolved target must be allowed; denied or unpriced aliases
+         *     are omitted. Catalog reads never open provider credentials.
          */
         get: {
             parameters: {
@@ -9570,7 +10533,10 @@ export interface paths {
          *     minutes — an image render, a video generation, a batch — where neither
          *     side wants a socket held open. The surface serves only channels whose
          *     `protocol` is `tasks`; upstream is called at `{baseUrl}/tasks` with the
-         *     channel credential as `Authorization: Bearer`.
+         *     channel credential as `Authorization: Bearer`. Customer tier, consumption-key
+         *     model and group-channel restrictions apply. Public aliases and signed spend
+         *     mandates are not supported by this generic task adapter and are refused
+         *     before provider contact. Use a permitted direct task model.
          *
          *     Submission freezes the request's declared upper bound (`maxCostMinor`,
          *     or the channel price's own bound when the request names none), relays
@@ -11155,11 +12121,16 @@ export interface components {
              * @enum {string}
              */
             protocol?: "openai" | "anthropic" | "gemini";
-            /** @description the channel's semantic response cache policy (issue #497): `{enabled, ttlSeconds?, excludeSystem?}` — `enabled` gates the whole feature; `ttlSeconds` bounds a stored answer's lifetime (absent means no expiry); `excludeSystem` drops the system/instructions share from the prompt digest so two asks differing only there still hit. Omit to leave the stored policy untouched; explicit null clears `settings.semanticCache`; a non-object or a malformed policy is VALIDATION_ERROR. */
+            destinationPolicy?: components["schemas"]["ProviderDestinationPolicy"];
+            /** @description the channel's semantic response cache policy (issue #497): `{enabled, ttlSeconds?, excludeSystem?}` — `enabled` gates the whole feature; `ttlSeconds` bounds a stored answer's lifetime (absent means no expiry); `excludeSystem` is deprecated and ignored; system/instructions always participate in the complete request digest. Omit to leave the stored policy untouched; explicit null clears `settings.semanticCache`; a non-object or a malformed policy is VALIDATION_ERROR. */
             semanticCache?: ({
                 enabled?: boolean;
                 /** Format: int64 */
                 ttlSeconds?: number;
+                /**
+                 * @deprecated
+                 * @description Accepted for compatibility, ignored; system/instructions always participate in the cache key.
+                 */
                 excludeSystem?: boolean;
             } & {
                 [key: string]: unknown;
@@ -11206,7 +12177,7 @@ export interface components {
             credentials: components["schemas"]["ChannelCredential"][];
             /** @description the last four characters of the admin billing credential (issue #283), and nothing more of it; null when the channel carries none */
             billKeyLast4: string | null;
-            /** @description the channel's free-form settings (issue #497): `semanticCache` and any future channel-scoped knobs, exactly as written through `ChannelRequest.semanticCache` — `{}` when nothing was ever set */
+            /** @description the channel's free-form settings (issue #497): `semanticCache` and `destinationPolicy` configuration — `{}` when nothing was ever set */
             settings: Record<string, never>;
             /** Format: date-time */
             createdAt: string;
@@ -12914,6 +13885,226 @@ export interface components {
              * @description the settlement ledger entry's id — derivable as `entry_id_for(settlement_key_for(holdKey))`
              */
             settlementId?: string;
+        };
+        /** @enum {string} */
+        MerchantRail: "hyperswitch" | "stripe" | "airwallex";
+        /** @enum {string} */
+        MerchantMode: "test" | "live";
+        /** @description Complete configuration for one immutable version. Hyperswitch requires publishableKey and sdkUrl; Airwallex requires clientId and checkoutUrl. Fields belonging only to another rail are rejected. API destination rules are shared with provider connections; browser SDK/checkout URLs must be public HTTPS URLs without user info, query or fragment. Secrets are encrypted together and never returned. */
+        MerchantVersionInput: {
+            /** Format: uri */
+            apiUrl: string;
+            apiKey: string;
+            webhookSecret: string;
+            clientId?: string | null;
+            publishableKey?: string | null;
+            /** Format: uri */
+            sdkUrl?: string | null;
+            /** Format: uri */
+            checkoutUrl?: string | null;
+            destinationPolicy?: components["schemas"]["ProviderDestinationPolicy"];
+        };
+        MerchantCreateRequest: {
+            idempotencyKey: string;
+            reason: string;
+            name: string;
+            rail: components["schemas"]["MerchantRail"];
+            mode: components["schemas"]["MerchantMode"];
+            /** @description Stable provider merchant/account identifier; unique per business */
+            accountId: string;
+            config: components["schemas"]["MerchantVersionInput"];
+        };
+        MerchantVersionRequest: {
+            idempotencyKey: string;
+            reason: string;
+            config: components["schemas"]["MerchantVersionInput"];
+        };
+        MerchantStatusRequest: {
+            idempotencyKey: string;
+            reason: string;
+            enabled: boolean;
+        };
+        MerchantMutationResult: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            merchantId: string;
+            /** Format: uuid */
+            versionId: string;
+            /** Format: int64 */
+            revision: number;
+            enabled: boolean;
+        };
+        MerchantVersion: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            merchantId: string;
+            /** Format: int64 */
+            revision: number;
+            /** Format: uri */
+            apiUrl: string;
+            publishableKey: string | null;
+            /** Format: uri */
+            sdkUrl: string | null;
+            /** Format: uri */
+            checkoutUrl: string | null;
+            destinationPolicy: components["schemas"]["ProviderDestinationPolicy"];
+            /** @enum {string} */
+            source: "owner" | "environment";
+            /**
+             * @description Shape and destination syntax validated; external credentials and payments remain uncertified.
+             * @enum {string}
+             */
+            validationStatus: "locallyValidated";
+            /** Format: date-time */
+            createdAt: string;
+        };
+        Merchant: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            businessId: string;
+            name: string;
+            rail: components["schemas"]["MerchantRail"];
+            mode: components["schemas"]["MerchantMode"];
+            accountId: string;
+            /** @enum {string} */
+            connector: "stripe" | "direct";
+            /** @enum {string} */
+            supportStatus: "primary" | "compatibility";
+            enabled: boolean;
+            currentVersion: components["schemas"]["MerchantVersion"];
+        };
+        MerchantPage: {
+            merchants: components["schemas"]["Merchant"][];
+            /** Format: uuid */
+            nextCursor: string | null;
+        };
+        MerchantVersionPage: {
+            versions: components["schemas"]["MerchantVersion"][];
+            /** Format: int64 */
+            nextCursor: number | null;
+        };
+        ProviderMutationResult: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            resourceId: string | null;
+            /** Format: int64 */
+            version: number | null;
+        };
+        BusinessChannelPage: {
+            channels: components["schemas"]["Channel"][];
+            /** Format: uuid */
+            nextCursor: string | null;
+        };
+        /** @description Public requires HTTPS and globally routable IPs. Internal permits HTTP(S) only to the exact allowedIps explicitly approved by the business owner or deployment recovery authority. All DNS answers must satisfy policy, and the transport uses those addresses without a second resolution. Metadata/link-local, unspecified, multicast and reserved destinations are always refused. Redirects and environment proxies are disabled. Existing channels default to public until explicitly reauthorized. */
+        ProviderDestinationPolicy: {
+            /** @enum {string} */
+            network: "public" | "internal";
+            /** @description Required and nonempty for internal; absent or empty for public. Exact IPv4/IPv6 literals, never hostnames or CIDRs. */
+            allowedIps?: string[];
+        };
+        ProviderConnectionCheck: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            channelId: string;
+            /** @enum {string} */
+            state: "pending" | "reachable" | "authenticationFailed" | "httpError" | "blocked" | "unreachable";
+            httpStatus: number | null;
+        };
+        BusinessChannelRequest: {
+            idempotencyKey: string;
+            reason: string;
+            config: {
+                name: string;
+                /**
+                 * Format: uri
+                 * @description HTTPS public by default; HTTP(S) for explicitly approved internal endpoints. No user info, query or fragment; no network call on save
+                 */
+                baseUrl: string;
+                /** @enum {string} */
+                protocol: "openai" | "anthropic" | "gemini" | "tasks";
+                apiKeys?: string[] | null;
+                /** @description Omitted preserves policy only at the same endpoint/protocol; new or changed connections default to public. Internal approval must be resupplied when repointing. */
+                destinationPolicy?: components["schemas"]["ProviderDestinationPolicy"];
+            };
+        };
+        BusinessProviderCredentialRequest: {
+            idempotencyKey: string;
+            reason: string;
+            config: {
+                apiKey: string;
+            };
+        };
+        BusinessProviderBillKeyRequest: {
+            idempotencyKey: string;
+            reason: string;
+            config: {
+                apiKey: string | null;
+            };
+        };
+        BusinessProviderStatusRequest: {
+            idempotencyKey: string;
+            reason: string;
+            config: {
+                /** @enum {string} */
+                status: "active" | "disabled";
+            };
+        };
+        BusinessProviderCacheRequest: {
+            idempotencyKey: string;
+            reason: string;
+            config: {
+                policy: {
+                    enabled: boolean;
+                    /** Format: int64 */
+                    ttlSeconds?: number | null;
+                    /**
+                     * @deprecated
+                     * @description Accepted for compatibility, ignored; system/instructions always participate in the cache key.
+                     */
+                    excludeSystem?: boolean;
+                } | null;
+            };
+        };
+        BusinessProviderAliasRequest: {
+            idempotencyKey: string;
+            reason: string;
+            config: {
+                alias: string;
+                upstreamModel: string;
+            };
+        };
+        BusinessProviderPriceRequest: {
+            idempotencyKey: string;
+            reason: string;
+            config: {
+                model: string;
+                price: components["schemas"]["PriceSet"] & {
+                    /**
+                     * @default chat
+                     * @enum {string}
+                     */
+                    mode: "chat" | "embeddings" | "rerank" | "event";
+                    rules?: components["schemas"]["PriceRule"][];
+                };
+                weight: number;
+            };
+        };
+        BusinessProviderFallbackRequest: {
+            idempotencyKey: string;
+            reason: string;
+            config: {
+                fallbacks: string[];
+            };
+        };
+        BusinessProviderRemoveRequest: {
+            idempotencyKey: string;
+            reason: string;
+            config: Record<string, never>;
         };
         /** @enum {string} */
         IntegrationScope: "customersRead" | "meteringWrite";

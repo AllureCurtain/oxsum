@@ -27,5 +27,6 @@ pub mod mail;
 pub mod oauth;
 pub mod oidc;
 pub mod openai_costs;
+pub mod provider_http;
 pub mod stripe;
 pub mod x402_facilitator;

@@ -386,6 +386,7 @@ def main() -> None:
         "OXSUM_SIGNUP": "open",
         "OXSUM_ADDR": f"127.0.0.1:{oxsum_port}",
         "OXSUM_UPSTREAM_BASE_URL": f"http://127.0.0.1:{mock_port}/v1",
+        "OXSUM_UPSTREAM_DESTINATION_POLICY": json.dumps({"network": "internal", "allowedIps": ["127.0.0.1"]}),
         "OXSUM_UPSTREAM_API_KEY": "demo-mock-key",
         "OXSUM_UPSTREAM_NAME": channel_name,
         "OXSUM_MODELS": json.dumps({MODEL: {

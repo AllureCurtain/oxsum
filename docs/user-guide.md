@@ -542,13 +542,14 @@ Steps:
    non-streamed answer or a post-hold refusal, and an HTTP trailer (`Trailer:
    x-oxsum-charged-minor` announces it) on a streamed one, since the response head is sent
    before the stream settles. `x-oxsum-cache: hit` says the answer came from the response
-   cache rather than upstream: on a channel whose operator enabled it, a repeat of an
-   earlier question (case and whitespace aside) re-serves the stored answer and bills the
-   cache-read rate instead of a fresh turn's. The match is exact — the same normalized
-   prompt digest, not a similarity score; the settlement's `cache` block carries
-   `similarity: 1.0` and names the original turn's entry, so the replay is provable on
-   `/verify` like every other charge.
-   Cached answers never cross organizations, a `stream` request is never cached, and a
+   cache rather than upstream: on a channel whose operator enabled it, an exact repeat of an
+   earlier request re-serves the stored answer and bills the cache-read rate instead of a
+   fresh turn's. The match is exact — the same complete request and admitted context (text,
+   tools, parameters, key permissions and route), not a similarity score; the settlement's
+   `cache` block carries `similarity: 1.0` and names the original turn's entry, so the replay
+   is provable on `/verify` like every other charge.
+   Cached answers never cross organizations or sibling consumption keys, a `stream` request
+   is never cached, and a
    hit's `upstreamAttempts` reads `0` because no upstream call happened.
 
 Notes:
@@ -950,3 +951,21 @@ In business context, owner/admin calls `POST /api/v1/business/customer-invitatio
 Keep your existing key for SDK inference and its own receipts, usage and entitlement preview. Sign in personally to create or revoke keys, change constraints, mint mandates, view account balance, start checkout or redeem a code. Customer-wide statements, reports/share links, experiments and webhook configuration require an owner/admin session. A consumption key receives 403 on these account operations; a sibling or foreign evidence/task ID returns 404.
 
 Use the same consumption key to poll/cancel an asynchronous task and to retry an inference request. Replays also require the same protocol, path model and body. After upgrading, retry IDs whose records used the old fingerprint conflict until their original 24-hour expiry; choose a new ID only for a genuinely new operation, never to blindly repeat uncertain inference. Response caches warm separately for each key. Existing balances and downloaded proofs remain valid.
+
+
+### Manage business provider configuration
+
+The current business owner can use the [business provider API](api.md#business-provider-configuration-apiv1businesschannels) to add or rotate an encrypted provider pool and billing credential. Owner/admin can configure models, aliases, cache and fallback order. Select business context first; customer and integration keys do not authorize these operations. Supply a saved idempotency key and reason, and retry the same body if the connection is interrupted. The returned receipt stays stable. Repointing a channel requires explicitly supplied provider keys and clears its old billing credential; existing request snapshots remain unchanged. Saving configuration makes no external call. The connection policy and explicit check are described below; the business console remains T24 work.
+
+
+For an internal provider, explicitly list its server IP addresses in the owner connection request's `destinationPolicy`. Public providers use HTTPS by default. A changed destination needs fresh keys and fresh internal approval. Use `POST /api/v1/business/channels/{name}/connection-check` with a reason and saved idempotency key to run a HEAD connection check; saving does not contact the provider. A reachable response confirms only connectivity. Redirects are refused, and interrupted pending checks do not repeat on retry. Model tests may incur provider cost and remain deliberate separate actions.
+
+### Model visibility and routing permissions
+
+Your model list and price catalog show routes allowed by your customer tier. A consumption key can narrow that list with its own model allowlist and request group. To use an alias with a restricted key, include both its public name and the provider model it resolves to; the request group must permit the alias's channel. Experiments and fallback models need the same grants. The bill retains the original requested and actually served names. Generic asynchronous tasks currently use direct task model names and do not accept signed spend mandates; see the [protocol matrix](roadmap/self-hosted-v1/PROTOCOL-MATRIX.md) for the current scope.
+
+### Configure a business payment merchant
+
+In business context, the owner can create a merchant with `POST /api/v1/business/merchants`, using a saved idempotency key and reason. Choose the provider account ID and test/live mode explicitly. Hyperswitch with the Stripe connector is the primary path. Configuration is initially disabled and reports `locallyValidated`: no payment or network credential check is made by saving. Keep API keys and webhook secrets outside logs and preserve the deployment's `OXSUM_SECRET_KEY` backup.
+
+Read settings and history through the [merchant API](api.md#business-merchant-configuration-apiv1businessmerchants). Rotate with a full new version; old versions remain available to in-flight payments. Disable future checkout selection with the merchant status endpoint. Retry interrupted requests with the identical key and body to recover the original receipt. Admin, finance and viewer roles can inspect redacted settings, but only the current owner can change credentials. The business-console controls, scoped callbacks and order-based customer checkout are dependent release work; creating settings alone does not switch legacy payment traffic.

@@ -2,14 +2,11 @@
 //! organization may be re-served for a duplicate request, charged at the
 //! cache-hit price rather than a fresh turn's.
 //!
-//! A cache row is keyed by `(organization, channel, model, prompt_digest)` —
-//! the digest is `oxsum/prompt/v1` over the surface's normalized prompt and the
-//! model, so "the same question" is a stable, exact thing rather than a
-//! similarity score. A lookup is org-scoped first and always: one
-//! organization's cached answer is never served to another, which is the
-//! privacy rule the whole feature stands on. The gateway additionally binds
-//! this digest to the exact consumption key before storing or looking it up;
-//! sibling keys and legacy unbound cache rows cannot share an answer.
+//! A cache row is keyed by `(organization, channel, model, prompt_digest)`.
+//! The historical column name now stores a v2 HMAC of the complete canonical
+//! request and admitted serving context. Exact text, tools, media, headers,
+//! permissions and route configuration participate. No prompt is persisted by
+//! this digest; old prompt-only and credential-wrapped keys cannot hit.
 //!
 //! A hit settles like a turn that reported upstream usage: the cached answer's
 //! `usage_json` prices through the same `itemize` path, so a customer pays the
@@ -20,7 +17,7 @@
 //! proves reuse against: "this answer was the one the upstream produced for
 //! entry X at time T" is a statement the verifier can check.
 
-use doubleentry::Hash;
+use serde::Serialize;
 use serde_json::Value;
 use sqlx::Row;
 use time::OffsetDateTime;
@@ -36,11 +33,6 @@ use crate::usage::UsageRecord;
 /// cached.
 pub const SETTINGS_KEY: &str = "semanticCache";
 
-/// The digest domain: `oxsum/prompt/v1` over the normalized prompt joined with
-/// the model, so an identical ask under a different model is a different row
-/// — a cached GPT-4 answer must never serve a Claude request.
-const PROMPT_DOMAIN: &[u8] = b"oxsum/prompt/v1";
-
 /// The policy a channel's `settings.semanticCache` resolves into.
 ///
 /// `enabled` is the whole gate: a channel that does not opt in is never read
@@ -53,11 +45,6 @@ pub struct CachePolicy {
     /// The rows' lifetime in seconds; `None` is no expiry — a forever-reusable
     /// answer is a deliberate deployment choice, not a default.
     pub ttl_seconds: Option<i64>,
-    /// Drop system/instructions text from the digest: two requests that differ
-    /// only in their system preamble answer the same. Defaults to false —
-    /// the system text is part of the question, and only a channel that
-    /// deliberately ignores it should be allowed to.
-    pub exclude_system: bool,
 }
 
 impl CachePolicy {
@@ -95,82 +82,58 @@ impl CachePolicy {
                 Some(seconds)
             }
         };
-        let exclude_system = map
-            .get("excludeSystem")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
         Ok(Self {
             enabled,
             ttl_seconds,
-            exclude_system,
         })
     }
 }
 
-/// One normalized prompt segment: the surface's role label and the text it
-/// carried, lowered and whitespace-folded. The role rides into the digest
-/// with the text so a `user` turn and an `assistant` turn carrying the same
-/// words do not collide.
-#[derive(Debug, Clone)]
-pub struct PromptPart {
-    pub role: &'static str,
-    pub text: String,
+/// Complete admitted context for one response-cache lookup. The body retains
+/// exact strings, nulls, arrays and unknown provider parameters. Object order
+/// alone is canonicalized. Do not add Debug: this value holds private input.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResponseCacheContext<'a> {
+    pub access: &'a crate::ServingAccess,
+    pub surface: &'a str,
+    pub requested_model: &'a str,
+    pub requested_upstream: Option<&'a str>,
+    pub served_model: &'a str,
+    pub upstream_model: Option<&'a str>,
+    pub request: &'a Value,
+    pub forwarded: &'a Value,
+    pub semantic_headers: &'a Value,
+    pub key_constraints: &'a Value,
+    pub experiment: &'a Value,
+    pub mandate: &'a Value,
+    pub routes: &'a Value,
+    pub discount_percent: Option<i64>,
 }
 
-impl PromptPart {
-    /// The normalized text: lowercase plus folded whitespace — the two
-    /// variations a paraphrase never hides behind, and the most a digest can
-    /// tolerate before "same question" stops meaning anything a bill can
-    /// defend.
-    fn normalized(text: &str) -> String {
-        text.split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .to_lowercase()
+/// Canonical object keys; preserve every array element and string byte.
+fn canonical(value: Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let sorted: std::collections::BTreeMap<_, _> = map.into_iter().collect();
+            Value::Object(sorted.into_iter().map(|(k, v)| (k, canonical(v))).collect())
+        }
+        Value::Array(items) => Value::Array(items.into_iter().map(canonical).collect()),
+        value => value,
     }
 }
 
-/// The digest a `(channel, model, prompt)` key is built on: which surface the
-/// ask came in on (the shape decides which fields count as prompt), the
-/// public model name, and the normalized parts — `exclude_system` drops the
-/// `system`/`instructions` share before hashing.
-///
-/// `None` is the answer a cache must not store: a request with no text (an
-/// embeddings call on token ids, a media-only ask) has no stable "same
-/// question" to key on, and hashing an empty shape would collide unrelated
-/// asks into one row.
-#[must_use]
-pub fn prompt_digest(
-    surface: &str,
-    model: &str,
-    parts: &[PromptPart],
-    exclude_system: bool,
-) -> Option<String> {
-    let mut canonical =
-        String::with_capacity(parts.iter().map(|p| p.text.len() + 8).sum::<usize>());
-    canonical.push_str(surface);
-    canonical.push('\n');
-    canonical.push_str(model);
-    canonical.push('\n');
-    let mut any = false;
-    for part in parts {
-        if exclude_system && part.role == "system" {
-            continue;
-        }
-        let text = PromptPart::normalized(&part.text);
-        if text.is_empty() {
-            continue;
-        }
-        canonical.push_str(part.role);
-        canonical.push(':');
-        canonical.push_str(&text);
-        canonical.push('\n');
-        any = true;
-    }
-    if !any {
-        return None;
-    }
-    Some(Hash::digest(PROMPT_DOMAIN, canonical.as_bytes()).to_hex())
+/// Fingerprint the complete response context, without storing request content.
+/// A deployment sealing-key rotation intentionally invalidates old cache rows.
+pub fn response_cache_digest(
+    secret: &crate::SecretKey,
+    context: &ResponseCacheContext<'_>,
+) -> Result<String, WalletError> {
+    let value = serde_json::to_value(context)
+        .map_err(|_| WalletError::Misconfigured("invalid response cache context".into()))?;
+    let bytes = serde_json::to_vec(&canonical(value))
+        .map_err(|_| WalletError::Misconfigured("invalid response cache context".into()))?;
+    secret.cache_fingerprint(&bytes)
 }
 
 /// A cached answer ready to serve.
@@ -203,8 +166,7 @@ pub struct CacheStore {
     pub channel_id: Uuid,
     /// The public model name the request asked for.
     pub model: String,
-    /// `oxsum/prompt/v1` of the normalized prompt — must already be computed,
-    /// so a miss that decided not to store never re-derives it.
+    /// Versioned digest of complete admitted context, computed before the call.
     pub prompt_digest: String,
     /// The upstream response verbatim.
     pub body: Value,
@@ -349,68 +311,201 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use serde_json::json;
+    use uuid::Uuid;
 
     use super::*;
 
-    fn parts(pairs: &[(&'static str, &str)]) -> Vec<PromptPart> {
-        pairs
-            .iter()
-            .map(|(role, text)| PromptPart {
-                role,
-                text: (*text).to_owned(),
-            })
-            .collect()
+    /// A complete context whose fields a test may vary one at a time.
+    struct Fixture {
+        access: crate::ServingAccess,
+        surface: &'static str,
+        requested_model: &'static str,
+        requested_upstream: Option<&'static str>,
+        served_model: &'static str,
+        upstream_model: Option<&'static str>,
+        request: Value,
+        forwarded: Value,
+        semantic_headers: Value,
+        key_constraints: Value,
+        experiment: Value,
+        mandate: Value,
+        routes: Value,
+        discount_percent: Option<i64>,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            Self {
+                access: crate::ServingAccess::sample(
+                    Uuid::from_u128(1),
+                    Some(Uuid::from_u128(2)),
+                    Uuid::from_u128(3),
+                    Some(&["gpt-4"]),
+                    Some(&["gpt-4", "gpt-4.1"]),
+                    &[Uuid::from_u128(4)],
+                    Some(60),
+                ),
+                surface: "openai",
+                requested_model: "gpt-4",
+                requested_upstream: None,
+                served_model: "gpt-4",
+                upstream_model: None,
+                request: json!({"messages": [{"role": "user", "content": "hello"}]}),
+                forwarded: json!({"model": "gpt-4", "messages": [{"role": "user", "content": "hello"}]}),
+                semantic_headers: json!({}),
+                key_constraints: json!({"tokensPerMinute": 1000}),
+                experiment: Value::Null,
+                mandate: Value::Null,
+                routes: json!({"servedModel": "gpt-4", "primary": {"channelId": "c"}}),
+                discount_percent: None,
+            }
+        }
+
+        fn digest(&self, secret: &crate::SecretKey) -> String {
+            let context = ResponseCacheContext {
+                access: &self.access,
+                surface: self.surface,
+                requested_model: self.requested_model,
+                requested_upstream: self.requested_upstream,
+                served_model: self.served_model,
+                upstream_model: self.upstream_model,
+                request: &self.request,
+                forwarded: &self.forwarded,
+                semantic_headers: &self.semantic_headers,
+                key_constraints: &self.key_constraints,
+                experiment: &self.experiment,
+                mandate: &self.mandate,
+                routes: &self.routes,
+                discount_percent: self.discount_percent,
+            };
+            response_cache_digest(secret, &context).unwrap()
+        }
     }
 
     #[test]
-    fn the_digest_is_stable_under_case_and_whitespace() {
-        let a = prompt_digest(
-            "openai",
-            "gpt-4",
-            &parts(&[("user", "  What  is\n the   ANSWER? ")]),
-            false,
+    fn every_admitted_context_field_changes_the_digest() {
+        let secret = crate::SecretKey::from_bytes([7; 32]);
+        let base = Fixture::new();
+        let expected = base.digest(&secret);
+        assert!(expected.starts_with("v2:"), "the digest is versioned");
+
+        let mut cases: Vec<Fixture> = Vec::new();
+        let mut changed = Fixture::new();
+        changed.access = crate::ServingAccess::sample(
+            Uuid::from_u128(1),
+            None,
+            Uuid::from_u128(3),
+            Some(&["gpt-4"]),
+            Some(&["gpt-4", "gpt-4.1"]),
+            &[Uuid::from_u128(4)],
+            Some(60),
         );
-        let b = prompt_digest(
-            "openai",
-            "gpt-4",
-            &parts(&[("user", "what is the answer?")]),
-            false,
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.access = crate::ServingAccess::sample(
+            Uuid::from_u128(1),
+            Some(Uuid::from_u128(2)),
+            Uuid::from_u128(3),
+            Some(&["gpt-4"]),
+            Some(&["gpt-4"]),
+            &[Uuid::from_u128(4)],
+            Some(60),
         );
-        assert_eq!(a, b, "case and whitespace fold into one digest");
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.access = crate::ServingAccess::sample(
+            Uuid::from_u128(1),
+            Some(Uuid::from_u128(2)),
+            Uuid::from_u128(3),
+            Some(&["gpt-4"]),
+            Some(&["gpt-4", "gpt-4.1"]),
+            &[Uuid::from_u128(5)],
+            Some(60),
+        );
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.surface = "anthropic";
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.requested_model = "alias";
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.requested_upstream = Some("gpt-4");
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.served_model = "gpt-4.1";
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.upstream_model = Some("gpt-4-0613");
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.request = json!({"messages": [{"role": "user", "content": "Hello"}]});
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.forwarded = json!({"model": "gpt-4", "temperature": 1});
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.semantic_headers = json!({"version": "2023-06-01"});
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.key_constraints = json!({"tokensPerMinute": 1001});
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.experiment = json!({"experimentId": "e", "variant": "gpt-4"});
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.mandate = json!({"mandateId": "m", "hash": "h"});
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.routes = json!({"servedModel": "gpt-4", "primary": {"channelId": "d"}});
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.discount_percent = Some(10);
+        cases.push(changed);
+
+        for (index, case) in cases.iter().enumerate() {
+            assert_ne!(
+                base.digest(&secret),
+                case.digest(&secret),
+                "context field case {index} did not change the digest"
+            );
+        }
+        // Rebuilding the same context is stable.
+        assert_eq!(expected, Fixture::new().digest(&secret));
+        // A different deployment key separates deployments.
+        assert_ne!(
+            expected,
+            base.digest(&crate::SecretKey::from_bytes([8; 32]))
+        );
     }
 
     #[test]
-    fn a_different_model_is_a_different_row() {
-        let parts = parts(&[("user", "same words")]);
-        let gpt = prompt_digest("openai", "gpt-4", &parts, false);
-        let claude = prompt_digest("openai", "claude", &parts, false);
-        assert_ne!(gpt, claude, "the model is part of the key");
-    }
-
-    #[test]
-    fn the_role_is_part_of_the_key() {
-        let user = prompt_digest("openai", "m", &parts(&[("user", "answer")]), false);
-        let assistant = prompt_digest("openai", "m", &parts(&[("assistant", "answer")]), false);
-        assert_ne!(user, assistant, "the same words under another role differ");
-    }
-
-    #[test]
-    fn exclude_system_drops_only_the_preamble() {
-        let with = parts(&[("system", "be terse"), ("user", "answer")]);
-        let without = parts(&[("user", "answer")]);
-        let a = prompt_digest("openai", "m", &with, true);
-        let b = prompt_digest("openai", "m", &without, true);
-        assert_eq!(a, b, "the system part folds out when asked");
-        let c = prompt_digest("openai", "m", &with, false);
-        assert_ne!(a, c, "kept by default");
-    }
-
-    #[test]
-    fn an_empty_prompt_is_never_cached() {
-        assert!(prompt_digest("openai", "m", &[], false).is_none());
-        assert!(prompt_digest("openai", "m", &parts(&[("user", "   ")]), false).is_none());
-        // A media-only ask has no text part either.
-        assert!(prompt_digest("gemini", "m", &parts(&[("user", "")]), false,).is_none());
+    fn canonical_objects_preserve_exact_strings_arrays_and_nulls() {
+        let first: Value =
+            serde_json::from_str(r#"{"z":["A  B",null],"a":{"b":1,"a":2}}"#).unwrap();
+        let reordered: Value =
+            serde_json::from_str(r#"{"a":{"a":2,"b":1},"z":["A  B",null]}"#).unwrap();
+        let secret = crate::SecretKey::from_bytes([7; 32]);
+        let digest = |value| {
+            secret
+                .cache_fingerprint(&serde_json::to_vec(&canonical(value)).unwrap())
+                .unwrap()
+        };
+        assert_eq!(digest(first.clone()), digest(reordered));
+        for different in [
+            json!({"z":["a  b",null],"a":{"b":1,"a":2}}),
+            json!({"z":["A B",null],"a":{"b":1,"a":2}}),
+            json!({"z":[null,"A  B"],"a":{"b":1,"a":2}}),
+            json!({"z":["A  B"],"a":{"b":1,"a":2}}),
+        ] {
+            assert_ne!(digest(first.clone()), digest(different));
+        }
+        assert_ne!(
+            digest(first.clone()),
+            crate::SecretKey::from_bytes([8; 32])
+                .cache_fingerprint(&serde_json::to_vec(&canonical(first)).unwrap())
+                .unwrap()
+        );
     }
 
     #[test]
@@ -421,7 +516,7 @@ mod tests {
         .unwrap();
         assert!(policy.enabled);
         assert_eq!(policy.ttl_seconds, Some(300));
-        assert!(policy.exclude_system);
+        // Legacy excludeSystem is accepted, but has no effect on the digest.
 
         // Absent or disabled is the same answer.
         assert!(!CachePolicy::of(None).unwrap().enabled);

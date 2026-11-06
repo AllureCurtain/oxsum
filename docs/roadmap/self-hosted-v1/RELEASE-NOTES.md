@@ -34,3 +34,25 @@ The balance response header is removed. Tasks, response caches and replay record
 Legacy global service secrets are disabled by migration 0077, and deployment `POST /admin/service-credentials` returns 403. Preserve old metadata/ledger evidence. The current business owner must issue an oxs-int- integration credential with selected customers, customersRead and/or meteringWrite, expiry and an audited reason. The secret is shown once; retries return null. Existing old holds remain recoverable by trusted jobs and are not transferred to replacement credentials.
 
 Save the metering response's opaque holdKey instead of deriving the old `metering:<key>:hold` spelling. Replays require the same credential, customer, operation and body. eventId remains the external label in settlement evidence, while usage/sweeper request identity uses the scoped hold key; repeated labels across customers no longer suppress usage rows. Prices/discount and bound remain pinned for retries. Broader management scopes and the complete business console remain later release work.
+
+
+### Business provider configuration (T06.a, #641)
+
+Current business sessions can configure owned provider connections, encrypted pools/billing keys, aliases, immutable price versions, cache and fallback chains. Owner-only secret/destination mutations are separate from owner/admin catalog/routing capabilities. New writes bind request/actor/reason/result and audit atomically; exact replay never repeats the mutation. Endpoint changes require explicitly supplied keys and clear the existing billing credential. Migration 0078 preserves provider IDs, sealed values and price history while pinning ownership. T06.b adds destination enforcement and explicit probes below. Provider certification and release readiness remain separate gates.
+
+
+### Provider destination policy (T06.b, #642)
+
+All channel gateway/task/catalog/billing calls use validated pinned DNS, no environment proxy and no redirects. Existing channels default to public HTTPS; internal/HTTP providers need explicit owner or deployment approval with exact IPs before use. Bootstrap accepts `OXSUM_UPSTREAM_DESTINATION_POLICY`. Metadata/link-local and special infrastructure destinations stay blocked. Saving does not probe; the owner can explicitly run an audited, idempotent HEAD check.
+
+New tasks retain their original provider coordinates and sealed credential across channel rotation. Migration 0079 captures the current directory for old tasks; drain them before upgrade since historical submission coordinates cannot be reconstructed. Preserve sealing keys for restore. This is software policy enforcement, not paid-provider certification.
+
+### Customer catalog and serving authority (T07.a, #644)
+
+Model lists, pricing/estimates and direct price checkpoints are filtered by customer/key grants. Alias public and target names both require permission. Experiments preserve the original requested name and cannot replace a forbidden original route. Denied channel credentials are never opened during resolution. Existing task ownership and connection snapshots remain stable; newly admitted direct tasks apply customer model and rate limits. The generic adapter now explicitly refuses aliases and signed mandates until T13 can pin their complete billing context. T07.b must still replace incomplete response-cache keys.
+
+### Complete response-cache context (T07.b, #645)
+
+Response-cache keys now bind the complete admitted context, not a normalized prompt: exact request and forwarded bodies (including system text, tools, media parameters and generation settings), protocol-owned headers, the customer/key permission snapshot, the selected experiment and mandate, the primary route's price version and connection generation, the fallback chain and the discount. A cached answer can only be reused by the same admitted context, and old normalized-prompt rows are discarded by migration 0080.
+
+The legacy `excludeSystem` setting is accepted but ignored, because the system preamble is part of the question. Cache rows remain rebuildable projections: no historical proof, ledger identity or balance changes. Existing gateway responses, settlement formats and the cache-hit charge are unchanged.

@@ -337,6 +337,13 @@ impl Turn {
         }
     }
 
+    /// Preserve the caller's public name across experiment selection and fallback.
+    pub fn note_requested_model(&mut self, model: &str) {
+        if let Some(plan) = self.plan.as_mut() {
+            plan.requested_model = model.to_owned();
+        }
+    }
+
     /// Records the experiment this turn serves under (issue #509): the binding
     /// whose weighted pick chose the model, written as `{id, variant}` into the
     /// v13 settlement description and the usage row's `usage_details` so a

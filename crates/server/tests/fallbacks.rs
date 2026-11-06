@@ -253,9 +253,19 @@ async fn world_for(url: &str, top_up: i64) -> World {
     let base_url = start_upstream(script.clone()).await;
     let book = oxsum_core::PriceBook::from_json(&channel, &price_list(&suffix))
         .expect("the test's own prices parse");
-    db.set_channel(&channel, &base_url, "upstream-secret", "openai", &secret)
-        .await
-        .expect("the channel is written");
+    db.set_channel_pool_policy(
+        &channel,
+        &base_url,
+        Some(&["upstream-secret".to_owned()]),
+        "openai",
+        &secret,
+        Some(&oxsum_core::ProviderDestinationPolicy {
+            network: oxsum_core::ProviderNetwork::Internal,
+            allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+        }),
+    )
+    .await
+    .expect("the channel is written");
     for (model, price) in book.models() {
         db.append_price(&channel, model, price.clone(), 100)
             .await
@@ -628,4 +638,79 @@ async fn a_clean_serve_records_the_served_model() {
 fn rfc3339(t: time::OffsetDateTime) -> String {
     t.format(&time::format_description::well_known::Rfc3339)
         .expect("the timestamp formats")
+}
+
+#[tokio::test]
+async fn a_fallback_alias_cannot_widen_the_keys_model_grant() {
+    let world = world!(10_000_000);
+    let requested = world.model("req");
+    let target = world.model("fall-a");
+    let alias = world.model("fallback-alias");
+    let db = Db::from_pool(world.pool.clone());
+    db.create_alias(&world.channel, &alias, &target)
+        .await
+        .unwrap();
+    world.answers(
+        "req",
+        Answer::Refuse {
+            status: 502,
+            body: json!({"error":{"message":"unavailable"}}),
+        },
+    );
+    world.answers(
+        "fall-a",
+        Answer::Completion {
+            usage: Some((5, 3)),
+        },
+    );
+    assert_eq!(
+        set_fallbacks(&world, &requested, &[&alias]).await,
+        StatusCode::OK
+    );
+    let (org, acting) = db.authenticate(&world.key).await.unwrap().unwrap();
+    db.update_key_constraints(
+        org.id,
+        acting.key_id,
+        oxsum_core::KeyScope::Organization,
+        oxsum_core::KeyConstraints {
+            model_allowlist: Some(vec![requested.clone(), alias.clone()]),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let response = chat(&world.app, &world.key, None, simple(&requested)).await;
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let _ = response.into_body().collect().await.unwrap();
+    assert_eq!(world.script.seen(), vec![requested.clone()]);
+    // The first upstream 502 cooled this fixture's shared credential. Advance
+    // that cooldown before the independent allowed-path admission below.
+    sqlx::query("UPDATE oxsum.channel_credentials SET cooldown_until=now()-interval '1 second' WHERE channel_id=(SELECT channel_id FROM oxsum.channels WHERE name=$1)")
+        .bind(&world.channel)
+        .execute(&world.pool)
+        .await
+        .unwrap();
+    db.update_key_constraints(
+        org.id,
+        acting.key_id,
+        oxsum_core::KeyScope::Organization,
+        oxsum_core::KeyConstraints {
+            model_allowlist: Some(vec![requested.clone(), alias.clone(), target.clone()]),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let response = chat(&world.app, &world.key, None, simple(&requested)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let id = request_id(&response);
+    let _ = response.into_body().collect().await.unwrap();
+    assert_eq!(
+        world.script.seen(),
+        vec![requested.clone(), requested.clone(), target.clone()]
+    );
+    let record = world.settlement_within(&id).await;
+    assert_eq!(record["requestedModel"], requested);
+    assert_eq!(record["servedModel"], alias);
+    assert_eq!(record["upstreamModel"], target);
 }
