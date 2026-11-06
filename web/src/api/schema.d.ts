@@ -13908,7 +13908,7 @@ export interface components {
              * @description the consumption key that admitted the turn; absent when none did
              */
             keyId?: string;
-            /** @description which surface admitted it — `chat`, `responses`, `messages`, `embeddings`, `rerank`, or `task:{kind}` */
+            /** @description which surface admitted it — `chat`, `responses`, `messages`, `embeddings`, `rerank`, `task:{kind}` for the async relay, or `metering` for a privileged service-credential event (issue #604). `metering` operations carry no `keyId`: the caller is a service credential, not a consumption key. */
             surface: string;
             /**
              * Format: int64
@@ -13927,7 +13927,7 @@ export interface components {
              * @description what the settlement charged, in minor units; absent until the operation is terminal
              */
             chargedMinor?: number;
-            /** @description the settlement kind or terminal cause — `usage`, `estimated`, `swept`, `released`, … */
+            /** @description the settlement kind or terminal cause — `usage`, `estimated`, `swept`, `released`, `cache_hit` when the answer came off the semantic cache rather than a fresh upstream attempt, or `metered` for a privileged service-credential event (issue #604). `cache_hit` and `metered` let a cost-allocation read tell re-served and internal usage apart from customer-billable upstream turns. */
             outcomeKind?: string;
             /** @description the model the turn asked for */
             model: string;
