@@ -28,6 +28,7 @@ mod business_prices;
 mod business_providers;
 mod device;
 mod experiments;
+mod financial_facts;
 mod journals;
 mod keys;
 mod log;
@@ -205,6 +206,9 @@ pub fn router(state: AppState) -> Router {
             "/org/usage-reports/{report_id}/links",
             post(report_links::create_for_report),
         )
+        // The customer's own eight-category projection (issue #613, T22) —
+        // the same facts read the staff surface runs, scoped to the caller.
+        .route("/org/usage-report", get(financial_facts::org_usage_report))
         .route("/estimate-price", post(usage::estimate_price))
         .route("/pricing", get(usage::pricing))
         .route("/entries/{entry_id}/proof", get(log::proof))
@@ -387,6 +391,45 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/business/journals/{journal_id}/void",
             post(journals::void_journal),
+        )
+        // The staff financial-facts, cost-coverage and reconciliation surface
+        // (issue #613, T22): reads under ReportsRead, the manual run and the
+        // exception close/repair under FundsWrite.
+        .route(
+            "/business/financial-facts",
+            get(financial_facts::business_financial_facts),
+        )
+        .route(
+            "/business/cost-coverage",
+            get(financial_facts::business_cost_coverage),
+        )
+        .route(
+            "/business/reconciliation-runs",
+            get(financial_facts::business_runs).post(financial_facts::request_run),
+        )
+        .route(
+            "/business/reconciliation-runs/{run_id}",
+            get(financial_facts::business_run),
+        )
+        .route(
+            "/business/reconciliation-runs/{run_id}/exceptions",
+            get(financial_facts::business_run_exceptions),
+        )
+        .route(
+            "/business/reconciliation-exceptions",
+            get(financial_facts::business_exceptions),
+        )
+        .route(
+            "/business/reconciliation-exceptions/{exception_id}/resolve",
+            post(financial_facts::resolve_exception),
+        )
+        .route(
+            "/business/reconciliation-exceptions/{exception_id}/waive",
+            post(financial_facts::waive_exception),
+        )
+        .route(
+            "/business/reconciliation-exceptions/{exception_id}/repairs",
+            post(financial_facts::repair_exception),
         )
         // The staff plan-statement read and release-review (issue #612, T21).
         .route("/business/statements", get(statements::business_statements))

@@ -228,6 +228,7 @@ fn customer_route_capability(method: &str, path: &str) -> oxsum_core::CustomerCa
             | "/statements/{statement_id}"
             | "/statements/{statement_id}/proof"
             | "/statements/{statement_id}/export.pdf"
+            | "/org/usage-report"
             | "/org/usage-reports"
             | "/org/usage-reports/{report_id}"
             | "/org/usage-reports/links"

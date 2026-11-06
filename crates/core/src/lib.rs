@@ -29,6 +29,7 @@ mod email_tokens;
 mod entitlement;
 mod error;
 mod experiments;
+mod financial_facts;
 mod groups;
 mod guardrail;
 mod heads;
@@ -147,6 +148,11 @@ pub use entitlement::{
 };
 pub use error::WalletError;
 pub use experiments::{Experiment, ExperimentBinding, Variant, VariantResult, pick_variant};
+pub use financial_facts::{
+    CostBasisCount, CostCoverage, CostCoverageDay, FactFilter, FailedAttempts, FinancialFacts,
+    ReconciliationException, ReconciliationRepair, ReconciliationReport, ReconciliationRun,
+    TimeBasis,
+};
 pub use groups::{Group, GroupChannel};
 pub use guardrail::{
     Guardrail, GuardrailBinding, GuardrailPolicy, GuardrailSet, KeywordConfig, KeywordPattern,
