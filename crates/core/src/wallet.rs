@@ -71,6 +71,26 @@ pub(crate) const CREDIT_LINE: &str = "Liabilities:CreditLine";
 /// `Revenue` — so what the organization owes is the limit minus the line's
 /// balance, not a separate counter that could drift.
 pub(crate) const FACILITY: &str = "Assets:CreditFacility";
+/// What customers owe on billed plan fees — the asset a posted
+/// `oxsum.invoice_journals` row creates (issue #611, T20). Charge lines debit
+/// it; discounts, promo coverage and order payments credit it back to zero. A
+/// journal's open receivable is this account's balance on the journal's legs.
+pub(crate) const RECEIVABLES: &str = "Assets:Receivables";
+/// Plan-fee revenue — base fees and usage overage billed at period close,
+/// kept off `Income:Usage` so metering income and subscription income report
+/// separately.
+pub(crate) const PLAN_FEES: &str = "Income:PlanFees";
+/// Contra plan-fee revenue: discounts and refund corrections book here rather
+/// than netting inside `Income:PlanFees`, so the gross fee a journal billed
+/// and the corrections it took stay separately provable.
+pub(crate) const DISCOUNTS: &str = "Income:Discounts";
+/// Plan-fee money collected ahead of the period it buys — the deferred-revenue
+/// liability a paid `planPeriod` order books at activation and the period
+/// close reclassifies into the receivable.
+pub(crate) const UNEARNED_PLAN_FEES: &str = "Liabilities:UnearnedPlanFees";
+/// Money the business owes a customer — a voided paid journal parks the
+/// settlement here until the refund rail carries it out.
+pub(crate) const REFUND_PAYABLE: &str = "Liabilities:RefundPayable";
 
 /// The idempotency key under which the one-time pool migration posts its
 /// `debit Wallet, credit Bonus` entry. Deterministic, so a second
@@ -202,6 +222,14 @@ pub struct Wallet {
     /// Operator grants and deductions: [`Self::adjust`] posts the other side of the
     /// pools here.
     adjustments: AccountId,
+    /// Plan-fee journal legs (issue #611): the billed receivable, the revenue
+    /// it recognized, the contra corrections, the prepayment liability and the
+    /// payable a voided settlement leaves.
+    receivables: AccountId,
+    plan_fees: AccountId,
+    discounts: AccountId,
+    unearned_plan_fees: AccountId,
+    refund_payable: AccountId,
     policy: LedgerPolicy,
     /// The validated tenant id this ledger belongs to: the identity its signed tree heads
     /// are published under (`oxsum/ledgers/<tenant_id>`).
@@ -457,6 +485,11 @@ impl Wallet {
             cash: find_account(&registry, CASH)?,
             revenue: find_account(&registry, REVENUE)?,
             adjustments: find_account(&registry, ADJUSTMENTS)?,
+            receivables: find_account(&registry, RECEIVABLES)?,
+            plan_fees: find_account(&registry, PLAN_FEES)?,
+            discounts: find_account(&registry, DISCOUNTS)?,
+            unearned_plan_fees: find_account(&registry, UNEARNED_PLAN_FEES)?,
+            refund_payable: find_account(&registry, REFUND_PAYABLE)?,
             store,
             registry,
 
@@ -495,6 +528,11 @@ impl Wallet {
                 CASH,
                 REVENUE,
                 ADJUSTMENTS,
+                RECEIVABLES,
+                PLAN_FEES,
+                DISCOUNTS,
+                UNEARNED_PLAN_FEES,
+                REFUND_PAYABLE,
             ] {
                 if find_account(&registry, path).is_err() {
                     registry.register_path(path, OPENED).map_err(invalid)?;
@@ -560,6 +598,11 @@ impl Wallet {
             cash: find_account(&registry, CASH)?,
             revenue: find_account(&registry, REVENUE)?,
             adjustments: find_account(&registry, ADJUSTMENTS)?,
+            receivables: find_account(&registry, RECEIVABLES)?,
+            plan_fees: find_account(&registry, PLAN_FEES)?,
+            discounts: find_account(&registry, DISCOUNTS)?,
+            unearned_plan_fees: find_account(&registry, UNEARNED_PLAN_FEES)?,
+            refund_payable: find_account(&registry, REFUND_PAYABLE)?,
             store: store.clone(),
             registry: registry.clone(),
 
@@ -1069,6 +1112,401 @@ impl Wallet {
     ) -> Result<Receipt, WalletError> {
         self.repay_credit(&format!("dispute-recharge/{dispute_id}"), minor, on)
             .await
+    }
+
+    // ── plan-fee journal legs (issue #611, T20) ──────────────────────────────
+
+    /// The accrual a closing period's journal books: charge lines
+    /// `debit Receivables / credit PlanFees`, discounts `debit Discounts /
+    /// credit Receivables`, promo coverage `debit Promo / credit Receivables`
+    /// — one entry per journal, keyed `plan-journal/<id>/accrual`, inside the
+    /// caller's transaction so the journal row, its lines and the postings
+    /// land or roll back together.
+    ///
+    /// `charges_minor` is the sum of the charge kinds (base fee, overage, tax);
+    /// `discount_minor`/`promo_minor` are positive magnitudes of the credit
+    /// legs. `promo_minor` must not exceed what the promo pool settles — the
+    /// caller clamps it, `FundedReservations` is the backstop.
+    ///
+    /// A zero-leg journal (a free plan's 0-total close) posts nothing and
+    /// returns `None` — an entry cannot carry an empty amount set.
+    pub(crate) async fn plan_journal_accrual_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        journal_id: &uuid::Uuid,
+        charges_minor: i64,
+        discount_minor: i64,
+        promo_minor: i64,
+        on: Date,
+    ) -> Result<Option<Receipt>, WalletError> {
+        if charges_minor < 0 || discount_minor < 0 || promo_minor < 0 {
+            return Err(WalletError::InvalidInput(
+                "journal leg amounts must not be negative".into(),
+            ));
+        }
+        if charges_minor + discount_minor + promo_minor == 0 {
+            return Ok(None);
+        }
+        let key = format!("plan-journal/{journal_id}/accrual");
+        let entry_id = entry_id_for(&key);
+        if let Some(stored) = self.store.get(entry_id).await? {
+            return Ok(Some(stored_receipt(&stored)));
+        }
+        let mut draft = Entry::<Draft, SCALE>::new(entry_id, idem(&key)?, on).with_description(
+            description_of(&format!("plan fee journal {journal_id}: accrual"))?,
+        );
+        if charges_minor > 0 {
+            let amt = Credits::from_minor(charges_minor);
+            draft = draft.debit(self.receivables, amt, currency()).credit(
+                self.plan_fees,
+                amt,
+                currency(),
+            );
+        }
+        if discount_minor > 0 {
+            let amt = Credits::from_minor(discount_minor);
+            draft = draft.debit(self.discounts, amt, currency()).credit(
+                self.receivables,
+                amt,
+                currency(),
+            );
+        }
+        if promo_minor > 0 {
+            let amt = Credits::from_minor(promo_minor);
+            draft =
+                draft
+                    .debit(self.promo, amt, currency())
+                    .credit(self.receivables, amt, currency());
+        }
+        match self.append_in(tx, draft).await {
+            Err(WalletError::Conflict(_)) => match self.store.get(entry_id).await? {
+                Some(stored) => Ok(Some(stored_receipt(&stored))),
+                None => Err(WalletError::Conflict(format!(
+                    "idempotency key {key:?} is already taken"
+                ))),
+            },
+            other => other.map(Some),
+        }
+    }
+
+    /// The payment a fulfilled `planPeriod` order posts against a posted
+    /// journal: `debit Cash / credit Receivables`, keyed
+    /// `payment-order/<order>/journal/<id>` so a replayed activation never
+    /// settles the same receivable twice.
+    pub(crate) async fn plan_journal_payment_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        order_id: &uuid::Uuid,
+        journal_id: &uuid::Uuid,
+        minor: i64,
+        on: Date,
+    ) -> Result<Receipt, WalletError> {
+        let amt = positive(minor)?;
+        let key = format!("payment-order/{order_id}/journal/{journal_id}");
+        let entry_id = entry_id_for(&key);
+        if let Some(stored) = self.store.get(entry_id).await? {
+            return Ok(stored_receipt(&stored));
+        }
+        let draft = Entry::<Draft, SCALE>::new(entry_id, idem(&key)?, on)
+            .with_description(description_of(&format!(
+                "plan fee journal {journal_id}: order payment"
+            ))?)
+            .debit(self.cash, amt, currency())
+            .credit(self.receivables, amt, currency());
+        match self.append_in(tx, draft).await {
+            Err(WalletError::Conflict(_)) => match self.store.get(entry_id).await? {
+                Some(stored) => Ok(stored_receipt(&stored)),
+                None => Err(WalletError::Conflict(format!(
+                    "idempotency key {key:?} is already taken"
+                ))),
+            },
+            other => other,
+        }
+    }
+
+    /// The prepayment a fulfilled `planPeriod` order books for the period it
+    /// authorizes: `debit Cash / credit UnearnedPlanFees` — deferred revenue,
+    /// not yet the receivable the period close will post. Keyed
+    /// `payment-order/<order>/prepay`; replay-idempotent like every order leg.
+    pub(crate) async fn plan_prepay_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        order_id: &uuid::Uuid,
+        minor: i64,
+        on: Date,
+    ) -> Result<Receipt, WalletError> {
+        let amt = positive(minor)?;
+        let key = format!("payment-order/{order_id}/prepay");
+        let entry_id = entry_id_for(&key);
+        if let Some(stored) = self.store.get(entry_id).await? {
+            return Ok(stored_receipt(&stored));
+        }
+        let draft = Entry::<Draft, SCALE>::new(entry_id, idem(&key)?, on)
+            .with_description(description_of(&format!(
+                "plan period prepayment for order {order_id}"
+            ))?)
+            .debit(self.cash, amt, currency())
+            .credit(self.unearned_plan_fees, amt, currency());
+        match self.append_in(tx, draft).await {
+            Err(WalletError::Conflict(_)) => match self.store.get(entry_id).await? {
+                Some(stored) => Ok(stored_receipt(&stored)),
+                None => Err(WalletError::Conflict(format!(
+                    "idempotency key {key:?} is already taken"
+                ))),
+            },
+            other => other,
+        }
+    }
+
+    /// Reclassifies prepayment into the receivable a closing journal opened:
+    /// `debit UnearnedPlanFees / credit Receivables` up to what the journal
+    /// still owes. Keyed `plan-journal/<id>/prepay-settle` — one journal
+    /// consumes prepayment exactly once.
+    pub(crate) async fn plan_prepay_settle_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        journal_id: &uuid::Uuid,
+        minor: i64,
+        on: Date,
+    ) -> Result<Option<Receipt>, WalletError> {
+        if minor <= 0 {
+            return Ok(None);
+        }
+        let amt = Credits::from_minor(minor);
+        let key = format!("plan-journal/{journal_id}/prepay-settle");
+        let entry_id = entry_id_for(&key);
+        if let Some(stored) = self.store.get(entry_id).await? {
+            return Ok(Some(stored_receipt(&stored)));
+        }
+        let draft = Entry::<Draft, SCALE>::new(entry_id, idem(&key)?, on)
+            .with_description(description_of(&format!(
+                "plan fee journal {journal_id}: prepayment applied"
+            ))?)
+            .debit(self.unearned_plan_fees, amt, currency())
+            .credit(self.receivables, amt, currency());
+        match self.append_in(tx, draft).await {
+            Err(WalletError::Conflict(_)) => match self.store.get(entry_id).await? {
+                Some(stored) => Ok(Some(stored_receipt(&stored))),
+                None => Err(WalletError::Conflict(format!(
+                    "idempotency key {key:?} is already taken"
+                ))),
+            },
+            other => other.map(Some),
+        }
+    }
+
+    /// The correction a refund on a paid plan-fee journal books: `debit
+    /// Discounts / credit Cash` — revenue contra against money the PSP
+    /// returned. The wallet pools never carried the plan-fee cash, so unlike
+    /// `refund_debit` nothing draws them. For a `posted` (unpaid) journal the
+    /// correction is `debit Discounts / credit Receivables` — less owed. Keyed
+    /// `order-refund-plan/<refund>` so a retried settle replays the standing
+    /// entry; `journal_id` goes in the description so the entry names what it
+    /// corrected.
+    pub(crate) async fn plan_journal_refund_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        journal_id: &uuid::Uuid,
+        refund_id: &uuid::Uuid,
+        minor: i64,
+        journal_paid: bool,
+        on: Date,
+    ) -> Result<Receipt, WalletError> {
+        let amt = positive(minor)?;
+        let key = format!("order-refund-plan/{refund_id}");
+        let entry_id = entry_id_for(&key);
+        if let Some(stored) = self.store.get(entry_id).await? {
+            return Ok(stored_receipt(&stored));
+        }
+        let mut draft = Entry::<Draft, SCALE>::new(entry_id, idem(&key)?, on)
+            .with_description(description_of(&format!(
+                "plan fee journal {journal_id}: refund correction"
+            ))?)
+            .debit(self.discounts, amt, currency());
+        draft = if journal_paid {
+            draft.credit(self.cash, amt, currency())
+        } else {
+            draft.credit(self.receivables, amt, currency())
+        };
+        match self.append_in(tx, draft).await {
+            Err(WalletError::Conflict(_)) => match self.store.get(entry_id).await? {
+                Some(stored) => Ok(stored_receipt(&stored)),
+                None => Err(WalletError::Conflict(format!(
+                    "idempotency key {key:?} is already taken"
+                ))),
+            },
+            other => other,
+        }
+    }
+
+    /// Restores a plan-fee receivable a lost dispute clawed back: `debit
+    /// Receivables / credit Cash` — the chargeback's mirror, under the same
+    /// `dispute-recharge/<dispute_id>` key family the wallet-funded arm uses,
+    /// so the ledger reads a contested-charge restoration, never a voluntary
+    /// repayment, and a retried settle replays the standing entry.
+    pub(crate) async fn plan_journal_dispute_recharge_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        journal_id: &uuid::Uuid,
+        dispute_id: &uuid::Uuid,
+        minor: i64,
+        on: Date,
+    ) -> Result<Receipt, WalletError> {
+        let amt = positive(minor)?;
+        let key = format!("dispute-recharge/{dispute_id}");
+        let entry_id = entry_id_for(&key);
+        if let Some(stored) = self.store.get(entry_id).await? {
+            return Ok(stored_receipt(&stored));
+        }
+        let draft = Entry::<Draft, SCALE>::new(entry_id, idem(&key)?, on)
+            .with_description(description_of(&format!(
+                "plan fee journal {journal_id}: dispute recharge"
+            ))?)
+            .debit(self.receivables, amt, currency())
+            .credit(self.cash, amt, currency());
+        match self.append_in(tx, draft).await {
+            Err(WalletError::Conflict(_)) => match self.store.get(entry_id).await? {
+                Some(stored) => Ok(stored_receipt(&stored)),
+                None => Err(WalletError::Conflict(format!(
+                    "idempotency key {key:?} is already taken"
+                ))),
+            },
+            other => other,
+        }
+    }
+
+    /// The reversal a staff void posts: every line's leg reversed in one entry
+    /// — `debit PlanFees / credit Receivables` for the charge sums,
+    /// `debit Receivables / credit Discounts` and `debit Receivables / credit
+    /// Promo` for the credit legs, so the journal nets to zero and no history
+    /// is rewritten. On a `paid` journal the receivable is already zero, so the
+    /// settlement unwinds to `RefundPayable` instead — what the customer is
+    /// owed back. `paid` selects between the two shapes.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn plan_journal_void_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        journal_id: &uuid::Uuid,
+        charges_minor: i64,
+        discount_minor: i64,
+        promo_minor: i64,
+        settled_minor: i64,
+        journal_paid: bool,
+        on: Date,
+    ) -> Result<Option<Receipt>, WalletError> {
+        let key = format!("plan-journal/{journal_id}/void");
+        let entry_id = entry_id_for(&key);
+        if let Some(stored) = self.store.get(entry_id).await? {
+            return Ok(Some(stored_receipt(&stored)));
+        }
+        let mut draft = Entry::<Draft, SCALE>::new(entry_id, idem(&key)?, on).with_description(
+            description_of(&format!("plan fee journal {journal_id}: void reversal"))?,
+        );
+        let mut legs = 0i64;
+        if journal_paid {
+            // The receivable is zero; the collected money unwinds to a payable.
+            if charges_minor > 0 {
+                let amt = Credits::from_minor(charges_minor);
+                draft = draft.debit(self.plan_fees, amt, currency()).credit(
+                    self.refund_payable,
+                    amt,
+                    currency(),
+                );
+                legs += 1;
+            }
+            // Credit legs the void backs out re-charge the payable — a
+            // discounted bill voided owes back only what was paid, so the
+            // payable nets to the journal's current total (prior cash refunds
+            // already left through the refund corrections).
+            if discount_minor > 0 {
+                let amt = Credits::from_minor(discount_minor);
+                draft = draft.debit(self.refund_payable, amt, currency()).credit(
+                    self.discounts,
+                    amt,
+                    currency(),
+                );
+                legs += 1;
+            }
+            if promo_minor > 0 {
+                let amt = Credits::from_minor(promo_minor);
+                draft = draft.debit(self.refund_payable, amt, currency()).credit(
+                    self.promo,
+                    amt,
+                    currency(),
+                );
+                legs += 1;
+            }
+        } else {
+            if charges_minor > 0 {
+                let amt = Credits::from_minor(charges_minor);
+                draft = draft.debit(self.plan_fees, amt, currency()).credit(
+                    self.receivables,
+                    amt,
+                    currency(),
+                );
+                legs += 1;
+            }
+            if discount_minor > 0 {
+                let amt = Credits::from_minor(discount_minor);
+                draft = draft.debit(self.receivables, amt, currency()).credit(
+                    self.discounts,
+                    amt,
+                    currency(),
+                );
+                legs += 1;
+            }
+            if promo_minor > 0 {
+                let amt = Credits::from_minor(promo_minor);
+                draft = draft.debit(self.receivables, amt, currency()).credit(
+                    self.promo,
+                    amt,
+                    currency(),
+                );
+                legs += 1;
+            }
+            // Any part the receivable already collected (partial settlement)
+            // is owed back rather than reversed against the open receivable.
+            if settled_minor > 0 {
+                let amt = Credits::from_minor(settled_minor);
+                draft = draft.debit(self.receivables, amt, currency()).credit(
+                    self.refund_payable,
+                    amt,
+                    currency(),
+                );
+                legs += 1;
+            }
+        }
+        if legs == 0 {
+            return Ok(None);
+        }
+        match self.append_in(tx, draft).await {
+            Err(WalletError::Conflict(_)) => match self.store.get(entry_id).await? {
+                Some(stored) => Ok(Some(stored_receipt(&stored))),
+                None => Err(WalletError::Conflict(format!(
+                    "idempotency key {key:?} is already taken"
+                ))),
+            },
+            other => other.map(Some),
+        }
+    }
+
+    /// The prepayment balance a customer plan still holds: `UnearnedPlanFees`'s
+    /// settled credits minus debits — what a period close may reclassify into
+    /// a receivable before any further order payment is needed.
+    pub(crate) async fn unearned_plan_fees_in(
+        &self,
+        conn: &mut sqlx::PgConnection,
+    ) -> Result<i64, WalletError> {
+        self.settled_net_in(conn, self.unearned_plan_fees).await
+    }
+
+    /// The promo pool's settled balance — the bound a `promo_credit` journal
+    /// line is clamped to before the accrual posts.
+    pub(crate) async fn promo_settled_in(
+        &self,
+        conn: &mut sqlx::PgConnection,
+    ) -> Result<i64, WalletError> {
+        self.settled_net_in(conn, self.promo).await
     }
 
     /// Answers for a key that already has a committed deduction entry: the

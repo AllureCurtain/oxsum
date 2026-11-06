@@ -849,23 +849,37 @@ impl Db {
         if matches!(refund.state.as_str(), "succeeded" | "declined") {
             return Ok(());
         }
+        // The order's purpose routes the correction: a `plan_period` refund
+        // corrects the journal the order settled — the plan-fee cash was
+        // never wallet money, so `refund_debit`'s pool draw has nothing to
+        // take back (issue #611). Every other purpose keeps T17's shape.
+        let purpose: Option<String> =
+            sqlx::query_scalar("SELECT purpose FROM oxsum.payment_orders WHERE order_id=$1")
+                .bind(refund.order_id)
+                .fetch_optional(self.pool())
+                .await?;
+        let plan_fee = purpose.as_deref() == Some("plan_period");
         // The ledger append runs outside any held row lock, keyed on the
         // refund id: a retried or recovered settle replays the standing entry.
         // `FundedReservations` refuses a take-back the purchased pool cannot
         // carry — the customer already spent the refunded credit — which is
         // the "failed compensation" the audit records, never a negative wallet.
-        let entry_id = match wallet
-            .refund_debit(
-                &refund.refund_id.to_string(),
-                &format!("refund of order {}", refund.order_id),
-                refund.amount_minor,
-                on,
-            )
-            .await
-        {
-            Ok(receipt) => Some(*receipt.entry_id.as_uuid()),
-            Err(WalletError::InsufficientFunds) => None,
-            Err(error) => return Err(error),
+        let mut entry_id = if plan_fee {
+            None
+        } else {
+            match wallet
+                .refund_debit(
+                    &refund.refund_id.to_string(),
+                    &format!("refund of order {}", refund.order_id),
+                    refund.amount_minor,
+                    on,
+                )
+                .await
+            {
+                Ok(receipt) => Some(*receipt.entry_id.as_uuid()),
+                Err(WalletError::InsufficientFunds) => None,
+                Err(error) => return Err(error),
+            }
         };
         let mut tx = self.pool().begin().await?;
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
@@ -894,6 +908,40 @@ impl Db {
             .bind(event.refund_id.as_deref())
             .execute(&mut *tx)
             .await?;
+        }
+        // A plan-fee refund's correction lands on the journal the order
+        // settled: the note's `discount` line, the `Discounts → Cash|Receivables`
+        // entry and the note's `applied` mark in this same transaction (issue
+        // #611). A journal not written yet — a mid-period refund — is picked
+        // up by the close's own credit-note scan instead.
+        if plan_fee {
+            let note = sqlx::query_scalar::<_, Uuid>(
+                "SELECT credit_note_id FROM oxsum.credit_notes \
+                 WHERE refund_id=$1 AND state='issued'",
+            )
+            .bind(refund.refund_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            if let Some(note_id) = note {
+                let applied = self
+                    .apply_refund_to_journal_in(
+                        &mut tx,
+                        wallet,
+                        refund.order_id,
+                        refund.refund_id,
+                        note_id,
+                        refund.amount_minor,
+                        &refund.reason,
+                        on,
+                    )
+                    .await?;
+                if applied.is_some() {
+                    // The journal path applies the note itself — the generic
+                    // apply below is skipped so the entry id it records is the
+                    // journal correction's, not a phantom take-back.
+                    entry_id = None;
+                }
+            }
         }
         // The note applies with its entry id when the take-back booked; when
         // the pool could not carry it, `issued` stays and the audit detail
@@ -1038,6 +1086,19 @@ impl Db {
         .bind(receipt.id)
         .execute(&mut *tx)
         .await?;
+        // A plan-fee order's dispute contests the journal it settled: the
+        // contested figure tracks on the journal from the moment the record
+        // opens, so the staff read never shows a silently-contested bill
+        // (issue #611).
+        let purpose: Option<String> =
+            sqlx::query_scalar("SELECT purpose FROM oxsum.payment_orders WHERE order_id=$1")
+                .bind(order_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        if purpose.as_deref() == Some("plan_period") {
+            self.track_journal_dispute_in(&mut tx, order_id, amount)
+                .await?;
+        }
         tx.commit().await?;
         Ok(())
     }
@@ -1350,13 +1411,24 @@ impl Db {
         }
         let state = resolution.as_str();
         tx.commit().await?;
+        // The order's purpose routes the re-charge: a `plan_period` dispute
+        // restores the journal's receivable (`debit Receivables / credit
+        // Cash`, journal `paid → posted`) — the contested plan fee is owed
+        // again as past-due, never a wallet line's debt (issue #611).
+        let purpose: Option<String> =
+            sqlx::query_scalar("SELECT purpose FROM oxsum.payment_orders WHERE order_id=$1")
+                .bind(dispute.order_id)
+                .fetch_optional(self.pool())
+                .await?;
+        let plan_fee = purpose.as_deref() == Some("plan_period");
         // The re-charge runs outside the held row lock, keyed on the dispute
         // id: a retried resolve replays the standing entry. `repay_credit`
         // refuses outright over the outstanding draw rather than capping, so
         // the recharge is clamped to what the line still carries — a dispute
         // contested past the receivable restores the draw, not the full order.
         let mut recharged = None;
-        let recharge = if resolution == DisputeResolution::Lost {
+        let mut recharge_entry = None;
+        let recharge = if resolution == DisputeResolution::Lost && !plan_fee {
             let drawn = wallet.credit_used().await?;
             if drawn <= 0 {
                 return Err(invalid("a lost dispute has no drawn receivable to restore"));
@@ -1367,6 +1439,36 @@ impl Db {
         } else {
             None
         };
+        if let Some(receipt) = &recharge {
+            recharge_entry = Some(*receipt.entry_id.as_uuid());
+        }
+        if resolution == DisputeResolution::Lost && plan_fee {
+            // Restore the journal's receivable inside a fresh transaction —
+            // the entry posts under the dispute's own key so a replay is a
+            // no-op, and the journal walks `paid → posted` with the contested
+            // figure already tracked. The dispute row names the same
+            // derived entry id the wallet-funded arm would record.
+            let mut jtx = self.pool().begin().await?;
+            let restored = self
+                .recharge_journal_dispute_in(
+                    &mut jtx,
+                    wallet,
+                    dispute.order_id,
+                    dispute_id,
+                    dispute.amount_minor,
+                    on,
+                )
+                .await?;
+            jtx.commit().await?;
+            if restored.is_none() {
+                return Err(invalid(
+                    "a lost dispute has no journal receivable to restore",
+                ));
+            }
+            recharged = Some(dispute.amount_minor);
+            recharge_entry =
+                Some(*crate::entry_id_for(&format!("dispute-recharge/{dispute_id}")).as_uuid());
+        }
         let amount_minor = dispute.amount_minor;
         let mut tx = self.pool().begin().await?;
         let audit_id = Uuid::new_v4();
@@ -1376,7 +1478,7 @@ impl Db {
         )
         .bind(dispute_id)
         .bind(state)
-        .bind(recharge.as_ref().map(|r| *r.entry_id.as_uuid()))
+        .bind(recharge_entry)
         .bind(actor.user_id)
         .bind(audit_id)
         .execute(&mut *tx)
@@ -1396,7 +1498,7 @@ impl Db {
             "contestedMinor": amount_minor,
             "rechargedMinor": recharged,
             "currency": dispute.currency,
-            "rechargeEntryId": recharge.as_ref().map(|r| *r.entry_id.as_uuid()),
+            "rechargeEntryId": recharge_entry,
             "reason": reason,
         }))
         .bind(idempotency_key)
