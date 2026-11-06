@@ -235,6 +235,7 @@ async fn settle_request(
         guardrail: Vec::new(),
         reason: None,
         experiment: None,
+        sale: None,
     };
     wallet
         .settle(

@@ -250,6 +250,7 @@ fn usage_settlement(request_id: &str, charged: i64, freeze: i64) -> String {
         guardrail: Vec::new(),
         reason: None,
         experiment: None,
+        sale: None,
     }
     .description()
     .expect("the test's own record builds")
