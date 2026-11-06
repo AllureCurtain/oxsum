@@ -36,6 +36,7 @@ pub(crate) mod operations;
 mod orders;
 mod org;
 mod plans;
+mod refunds;
 mod report_links;
 pub(crate) mod requests;
 pub(crate) mod usage;
@@ -148,6 +149,12 @@ pub fn router(state: AppState) -> Router {
             "/orders/{order_id}/checkout-session",
             get(orders::checkout_session),
         )
+        // The customer's refund ask: a request for review, never a grant.
+        .route(
+            "/orders/{order_id}/refund-request",
+            post(refunds::request_refund),
+        )
+        .route("/orders/{order_id}/refunds", get(refunds::order_refunds))
         .route("/holds", get(billing::list_holds).post(billing::hold))
         .route("/bills", get(billing::bills))
         .route("/entries", get(log::entries))
@@ -239,6 +246,26 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/business/payment-reconciliation",
             get(orders::reconciliation),
+        )
+        // The staff finance surface: refund resolution, corrections and
+        // contested charges (issue #608).
+        .route("/business/refunds", get(refunds::business_refunds))
+        .route(
+            "/business/refunds/{refund_id}",
+            get(refunds::business_refund),
+        )
+        .route(
+            "/business/refunds/{refund_id}/resolve",
+            post(refunds::resolve_refund),
+        )
+        .route(
+            "/business/credit-notes",
+            get(refunds::business_credit_notes),
+        )
+        .route("/business/disputes", get(refunds::business_disputes))
+        .route(
+            "/business/disputes/{dispute_id}/resolve",
+            post(refunds::resolve_dispute),
         )
         .route(
             "/business/orders",

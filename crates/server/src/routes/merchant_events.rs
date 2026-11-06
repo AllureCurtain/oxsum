@@ -82,7 +82,7 @@ async fn receive(
         .receive_merchant_event(context, &event, &digest)
         .await?;
     crate::merchant_payments::apply_legacy_event(&state.db, &state.tenants, &receipt).await?;
-    crate::merchant_payments::apply_order_event(&state.db, &receipt).await?;
+    crate::merchant_payments::apply_order_event(&state.db, &state.tenants, &receipt).await?;
     Ok(StatusCode::OK)
 }
 /// Compatibility callback URL resolves its one environment merchant first.
@@ -136,7 +136,7 @@ pub(crate) async fn environment(
             .receive_merchant_event(&context, &event, &digest)
             .await?;
         crate::merchant_payments::apply_legacy_event(&state.db, &state.tenants, &receipt).await?;
-        crate::merchant_payments::apply_order_event(&state.db, &receipt).await?;
+        crate::merchant_payments::apply_order_event(&state.db, &state.tenants, &receipt).await?;
         return Ok(StatusCode::OK);
     }
     Err(ApiError::Unauthorized)

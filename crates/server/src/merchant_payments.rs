@@ -5,11 +5,15 @@ use oxsum_core::{
 };
 /// Apply a verified event to the payment order it names: marks `paid` (never
 /// fulfilled — that is [`recover`]'s separate step) or a terminal
-/// `failed`/`expired`, and parks a term mismatch in `needs_attention`. Order
-/// bindings (`purpose='order'`) are the only ones this path serves; the legacy
-/// deposit adapter owns the rest.
+/// `failed`/`expired`, and parks a term mismatch in `needs_attention`. The
+/// refund/dispute kinds drive T17's own arms — `refund_succeeded` books the
+/// wallet take-back, `refund_failed` releases the reservation, `dispute`
+/// opens its contested record — on the order's organization ledger. Order
+/// bindings (`purpose='order'`) are the only ones this path serves; the
+/// legacy deposit adapter owns the rest.
 pub(crate) async fn apply_order_event(
     db: &Db,
+    tenants: &Tenants,
     receipt: &MerchantEventReceipt,
 ) -> Result<(), WalletError> {
     if receipt.state != "accepted" {
@@ -24,7 +28,21 @@ pub(crate) async fn apply_order_event(
     if binding.purpose != MerchantPaymentPurpose::Order {
         return Ok(());
     }
-    db.apply_order_event(receipt).await
+    match receipt.kind {
+        MerchantEventKind::RefundSucceeded
+        | MerchantEventKind::RefundFailed
+        | MerchantEventKind::Dispute => {
+            // The refund's wallet take-back and the dispute record both need
+            // the order organization's ledger; an organization with no tenant
+            // can never have paid, so a missing wallet is a skip.
+            if let Some(wallet) = order_wallet(db, tenants, binding.organization_id).await? {
+                db.apply_refund_event(&wallet, receipt, crate::today())
+                    .await?;
+            }
+            Ok(())
+        }
+        _ => db.apply_order_event(receipt).await,
+    }
 }
 
 /// Recovery's order pass: re-mark any `accepted` order event still short of
@@ -136,7 +154,7 @@ pub(crate) async fn recover(db: &Db, tenants: &Tenants) -> Result<(), WalletErro
     for event in db.recoverable_merchant_events(100).await? {
         let event = db.retry_merchant_event(event.id).await?;
         apply_legacy_event(db, tenants, &event).await?;
-        apply_order_event(db, &event).await?;
+        apply_order_event(db, tenants, &event).await?;
     }
     // Paid orders still short of fulfillment are the sweep's other half: a
     // crash between the grant and the fulfillment row leaves a paid order this
