@@ -42,7 +42,7 @@ The accepted contract and evidence live in [docs/roadmap/self-hosted-v1](docs/ro
 - [ ] [#607](https://github.com/AllureCurtain/oxsum/issues/607) — Customer checkout and purchased funding (T16): pending.
 - [ ] [#608](https://github.com/AllureCurtain/oxsum/issues/608) — Corrections, partial refunds and disputes (T17): pending.
 - [ ] [#609](https://github.com/AllureCurtain/oxsum/issues/609) — Promotional lots and prepaid bundles (T18): pending.
-- [ ] [#610](https://github.com/AllureCurtain/oxsum/issues/610) — Customer entitlement and paid plan lifecycle (T19): pending.
+- [ ] [#610](https://github.com/AllureCurtain/oxsum/issues/610) — Customer entitlement and paid plan lifecycle (T19): in progress on this worktree — versioned `sold_plans`, `customer_plans` (D06 machine), `plan_periods` authorization, `planPeriod` order arm bound to `activate_plan_period`, boundary cancel/change and past-due; focused nextest suites green.
 - [ ] [#611](https://github.com/AllureCurtain/oxsum/issues/611) — Plan fee journals and revenue allocation (T20): pending.
 - [ ] [#612](https://github.com/AllureCurtain/oxsum/issues/612) — Customer credit, statements and overdue handling (T21): pending.
 - [ ] [#613](https://github.com/AllureCurtain/oxsum/issues/613) — Financial facts, cost coverage and reconciliation (T22): pending.

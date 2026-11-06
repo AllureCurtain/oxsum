@@ -753,6 +753,43 @@ verifies: a settled turn's record names the `subscriptionId` and `periodId`
 its draw ran under beside `drawnMinor`/`chargedMinor`, so what the period paid
 is provable, not just claimed.
 
+## Paid plans (sold catalogue)
+
+Purpose: buy the plan a business actually sells — a priced entitlement with a
+real lifecycle, not an operator-bound quota.
+
+A business publishes its catalogue as immutable versions
+(`GET /api/v1/business/plans` for staff; `POST` mints a new version, never
+rewrites a sold one). `GET /api/v1/plans` is the on-sale read any credential
+may make: each entry is one version's terms — `priceMinor`, `quotaMinor` per
+period, `periodKind` (`calendarMonth` ends at the next UTC month boundary;
+`anniversary` rolls on the activation date's day-of-month, clamped into
+shorter months — a January 31 plan renews February 28, then March 31), and
+`overageEnabled`, the opt-in that lets an exhausted period draw past quota
+against the wallet.
+
+Buying is a two-step the business staff drives:
+
+1. `PUT /api/v1/business/customers/{organizationId}/plan` with
+   `{"planVersionId"}` binds you — `pendingPayment` for a priced plan, active
+   immediately for a free one bound with `{"complimentaryGrant": "<uuid>"}`.
+2. Pay through a `planPeriod` order (`POST /api/v1/orders` with
+   `purpose: "planPeriod"` and `purposeRef` = your `customerPlanId`): once the
+   signed webhook marks it paid and fulfillment lands, period 0 activates and
+   your plan turns `active`. `GET /api/v1/org/plan` shows the state plus every
+   period you have authorized — each carrying its bounds and what authorized
+   it (`paymentOrder` or `complimentary`).
+
+A period only ever exists because its authorization does — the rollover timer
+can never open an unpaid one. When the boundary passes without a paid
+renewal the plan goes `pastDue`: the ended period's unspent remainder still
+serves your requests, but no new quota issues until a renewal order
+fulfills — and that period chains off the previous end, so a late renewal
+does not skip the gap. `POST /api/v1/org/plan/cancel` marks
+`cancelAtPeriodEnd` — the paid period still serves to its end, then the plan
+closes without renewing. `POST /api/v1/org/plan/change` books a swap to
+another version at the next boundary; there is no mid-period pro-rating.
+
 ## Webhooks
 
 Purpose: be notified when money moves — a request settles, a deposit lands,
