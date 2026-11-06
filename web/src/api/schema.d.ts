@@ -5820,6 +5820,258 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/business/sale-books": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List customer sale books
+         * @description Current owner/admin/finance in business context. Machine credentials are refused. Supplier costs are never included.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    after?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["SaleBookPage"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/sale-books/{bookId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read sale book revision history
+         * @description Current owner/admin/finance in business context. Machine credentials are refused. Supplier costs are never included. Immutable draft revisions, published versions and schedules. This administrative history includes customer assignment identities.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    bookId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["SaleBookHistory"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/sale-books/changes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Change customer sale terms atomically
+         * @description Current business session. Owner/admin create books, save drafts, publish and schedule defaults. Owner/finance assign books or override customer models. Ending a schedule requires its original capability. Every change requires a reason and an idempotency key; current authority is rechecked on retry. Changed replay terms conflict. Mutations, immutable results and audit commit together.
+         *     Draft saves use expectedRevision to refuse lost edits; publication pins an exact draft revision. Schedules use UTC microsecond [effectiveFrom,effectiveUntil) windows. Omitted effectiveFrom is transaction time; explicit starts and ends cannot be backdated. Overlaps in the same scope are refused. replaces atomically ends one existing schedule at the new start, preserving history. endSchedule may cancel a future schedule at its start. Ending cannot extend an existing window or change a previous end event. Publication never activates prices by itself.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SaleChangeRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["SaleMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/customers/{organizationId}/sale-terms": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read customer sale term history
+         * @description Current owner/admin/finance in business context. Machine credentials are refused. Supplier costs are never included. Includes assignments and per-model overrides; default history is available through its book.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    organizationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["SaleScheduleList"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/sale-price-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview resolved or draft customer sale prices
+         * @description Current owner/admin/finance in business context. Machine credentials are refused. Supplier costs are never included.
+         *     Resolves each model by customer override, then assigned published book, then default published book. Missing models fall through; an explicitly zero price wins. Exactly one selected discount is applied to the complete integer numerator before one ceiling division. No active terms is NOT_FOUND. Unsupported or unknown usage dimensions are refused. Draft and explicit legacy sources are staff-only comparisons, not live sale authority. Legacy requires the exact channel, model and version; supplier costs are removed without changing the original channel snapshot. at defaults to transaction time; timestamps are truncated to UTC microseconds. Snapshot terms are self-contained for later pinning; signed proof and gateway integration are separate work.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SalePreviewRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["SalePricePreview"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/business/channels": {
         parameters: {
             query?: never;
@@ -11947,6 +12199,350 @@ export interface components {
             createdAt: string;
             /** @description one entry per model, at its current version */
             models: components["schemas"]["ModelPrice"][];
+        };
+        /** @description Customer rates only. Optional cache/reasoning rates fall back to their base input/output rate. No supplier cost fields. */
+        SalePriceSet: {
+            /** Format: int64 */
+            inputPricePerMillion: number;
+            /** Format: int64 */
+            outputPricePerMillion?: number;
+            /** Format: int64 */
+            maxOutputTokens?: number;
+            /** Format: int64 */
+            cacheReadPricePerMillion?: number;
+            /** Format: int64 */
+            cacheWrite5mPricePerMillion?: number;
+            /** Format: int64 */
+            cacheWrite1hPricePerMillion?: number;
+            /** Format: int64 */
+            reasoningPricePerMillion?: number;
+            /** Format: int64 */
+            costPerRequest?: number;
+        };
+        /** @description At least one condition; inclusive token bounds. Equal-specificity overlapping rules are refused. */
+        SalePriceMatch: {
+            serviceTier?: string;
+            /** Format: int64 */
+            minInputTokens?: number;
+            /** Format: int64 */
+            maxInputTokens?: number;
+        };
+        SalePriceRule: {
+            match: components["schemas"]["SalePriceMatch"];
+            price: components["schemas"]["SalePriceSet"];
+        };
+        /** @description Existing whole-set conditional rating. Chat requires positive maxOutputTokens; embeddings/rerank require zero output and maximum; event requires zero maximum. */
+        SalePrice: {
+            /** Format: int64 */
+            inputPricePerMillion: number;
+            /** Format: int64 */
+            outputPricePerMillion?: number;
+            /** Format: int64 */
+            maxOutputTokens?: number;
+            /** Format: int64 */
+            cacheReadPricePerMillion?: number;
+            /** Format: int64 */
+            cacheWrite5mPricePerMillion?: number;
+            /** Format: int64 */
+            cacheWrite1hPricePerMillion?: number;
+            /** Format: int64 */
+            reasoningPricePerMillion?: number;
+            /** Format: int64 */
+            costPerRequest?: number;
+            /**
+             * @default chat
+             * @enum {string}
+             */
+            mode: "chat" | "embeddings" | "rerank" | "event";
+            rules?: components["schemas"]["SalePriceRule"][];
+        };
+        /** @description The selected percentage is the only discount, applied once; zero means no discount. All amounts are credits in integer minor units. */
+        SaleTerms: {
+            price: components["schemas"]["SalePrice"];
+            /**
+             * Format: int64
+             * @default 0
+             */
+            discountPercent: number;
+        };
+        CreateSaleBook: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            operation: "CreateSaleBook";
+            name: string;
+        };
+        SaveSaleDraft: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            operation: "SaveSaleDraft";
+            /** Format: uuid */
+            bookId: string;
+            /** Format: int64 */
+            expectedRevision: number;
+            models: {
+                [key: string]: components["schemas"]["SaleTerms"];
+            };
+        };
+        PublishSaleDraft: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            operation: "PublishSaleDraft";
+            /** Format: uuid */
+            bookId: string;
+            /** Format: int64 */
+            draftRevision: number;
+        };
+        ScheduleDefaultSaleBook: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            operation: "ScheduleDefaultSaleBook";
+            /** Format: uuid */
+            bookId: string;
+            /** Format: int64 */
+            version: number;
+            /** Format: date-time */
+            effectiveFrom?: string;
+            /** Format: date-time */
+            effectiveUntil?: string | null;
+            /** Format: uuid */
+            replaces?: string | null;
+        };
+        AssignCustomerSaleBook: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            operation: "AssignCustomerSaleBook";
+            /** Format: uuid */
+            organizationId: string;
+            /** Format: uuid */
+            bookId: string;
+            /** Format: int64 */
+            version: number;
+            /** Format: date-time */
+            effectiveFrom?: string;
+            /** Format: date-time */
+            effectiveUntil?: string | null;
+            /** Format: uuid */
+            replaces?: string | null;
+        };
+        OverrideCustomerSaleModel: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            operation: "OverrideCustomerSaleModel";
+            /** Format: uuid */
+            organizationId: string;
+            model: string;
+            terms: components["schemas"]["SaleTerms"];
+            /** Format: date-time */
+            effectiveFrom?: string;
+            /** Format: date-time */
+            effectiveUntil?: string | null;
+            /** Format: uuid */
+            replaces?: string | null;
+        };
+        EndSaleSchedule: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            operation: "EndSaleSchedule";
+            /** Format: uuid */
+            scheduleId: string;
+            /** Format: date-time */
+            effectiveUntil: string;
+        };
+        SaleChange: components["schemas"]["CreateSaleBook"] | components["schemas"]["SaveSaleDraft"] | components["schemas"]["PublishSaleDraft"] | components["schemas"]["ScheduleDefaultSaleBook"] | components["schemas"]["AssignCustomerSaleBook"] | components["schemas"]["OverrideCustomerSaleModel"] | components["schemas"]["EndSaleSchedule"];
+        SaleChangeRequest: {
+            idempotencyKey: string;
+            reason: string;
+            change: components["schemas"]["SaleChange"];
+        };
+        SaleMutationResult: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            resourceId: string;
+            /** Format: int64 */
+            revision: number | null;
+        };
+        SaleBook: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        SaleBookPage: {
+            books: components["schemas"]["SaleBook"][];
+            /** Format: uuid */
+            nextAfter: string | null;
+        };
+        SaleDraft: {
+            /** Format: int64 */
+            revision: number;
+            models: {
+                [key: string]: components["schemas"]["SaleTerms"];
+            };
+            /** Format: date-time */
+            createdAt: string;
+        };
+        SaleVersion: {
+            /** Format: int64 */
+            version: number;
+            /** Format: int64 */
+            draftRevision: number;
+            models: {
+                [key: string]: components["schemas"]["SaleTerms"];
+            };
+            /** Format: date-time */
+            publishedAt: string;
+        };
+        /** @description Original schedule and its possibly shortened effective end. An end at the start cancels a future schedule; rows and end events remain immutable. */
+        SaleSchedule: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            kind: "default" | "assigned" | "override";
+            /** Format: uuid */
+            organizationId: string | null;
+            model: string | null;
+            /** Format: uuid */
+            bookId: string | null;
+            /** Format: int64 */
+            version: number | null;
+            terms: components["schemas"]["SaleTerms"] | null;
+            /** Format: date-time */
+            effectiveFrom: string;
+            /** Format: date-time */
+            scheduledUntil: string | null;
+            /** Format: date-time */
+            effectiveUntil: string | null;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        SaleBookHistory: {
+            book: components["schemas"]["SaleBook"];
+            drafts: components["schemas"]["SaleDraft"][];
+            versions: components["schemas"]["SaleVersion"][];
+            schedules: components["schemas"]["SaleSchedule"][];
+        };
+        SaleScheduleList: components["schemas"]["SaleSchedule"][];
+        EffectiveSaleSelector: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "EffectiveSaleSelector";
+        };
+        DraftSaleSelector: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "DraftSaleSelector";
+            /** Format: uuid */
+            bookId: string;
+            /** Format: int64 */
+            revision: number;
+        };
+        LegacySaleSelector: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "LegacySaleSelector";
+            channel: string;
+            version: number;
+        };
+        SalePreviewSource: components["schemas"]["EffectiveSaleSelector"] | components["schemas"]["DraftSaleSelector"] | components["schemas"]["LegacySaleSelector"];
+        /** @description Normalized usage only. Missing counts are zero. Cache reads/writes are subsets of input; reasoning is a subset of output. Unsupported positive tool/media quantities are refused. Extra fields are refused. */
+        SalePreviewUsage: {
+            /** Format: int64 */
+            inputTokens?: number;
+            /** Format: int64 */
+            outputTokens?: number;
+            /** Format: int64 */
+            cachedTokens?: number;
+            /** Format: int64 */
+            cacheWrite5mTokens?: number;
+            /** Format: int64 */
+            cacheWrite1hTokens?: number;
+            /** Format: int64 */
+            reasoningTokens?: number;
+            /** Format: int64 */
+            toolCalls?: number;
+            /** Format: int64 */
+            imageInputTokens?: number;
+            /** Format: int64 */
+            audioInputTokens?: number;
+            /** Format: int64 */
+            videoInputTokens?: number;
+            /** Format: int64 */
+            imageOutputTokens?: number;
+            /** Format: int64 */
+            audioOutputTokens?: number;
+            serviceTier?: string | null;
+            eventType?: string | null;
+        };
+        SalePreviewRequest: {
+            /** Format: uuid */
+            organizationId: string;
+            model: string;
+            /** Format: date-time */
+            at?: string;
+            source?: components["schemas"]["SalePreviewSource"];
+            usage: components["schemas"]["SalePreviewUsage"];
+        };
+        /** @description Self-contained immutable terms selected for a model and customer. This is not yet a signed sale proof. Existing legacy price identities remain explicitly distinguishable. */
+        SalePriceSnapshot: {
+            /** Format: uuid */
+            businessId: string;
+            /** Format: uuid */
+            organizationId: string;
+            model: string;
+            /** Format: date-time */
+            at: string;
+            /** @enum {string} */
+            source: "default" | "assigned" | "override" | "draft" | "legacy";
+            /** Format: uuid */
+            scheduleId: string | null;
+            /** Format: uuid */
+            bookId: string | null;
+            /** Format: int64 */
+            version: number | null;
+            /** Format: int64 */
+            draftRevision: number | null;
+            legacyChannel: string | null;
+            /** Format: date-time */
+            effectiveFrom: string;
+            /** Format: date-time */
+            effectiveUntil: string | null;
+            terms: components["schemas"]["SaleTerms"];
+        };
+        SaleBillLine: [
+            string,
+            number,
+            number
+        ];
+        SalePricePreview: {
+            snapshot: components["schemas"]["SalePriceSnapshot"];
+            lines: components["schemas"]["SaleBillLine"][];
+            matchedRule: components["schemas"]["SalePriceMatch"] | null;
+            /** Format: int64 */
+            undiscountedMinor: number;
+            /** Format: int64 */
+            chargeMinor: number;
         };
         /** @description the rates one request bills at under one mode. `outputPricePerMillion` and `maxOutputTokens` are required on a `chat` price and absent or zero on the input-only modes (`embeddings`, `rerank`) — there is no output side to price. */
         PriceSet: {
