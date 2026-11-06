@@ -116,12 +116,52 @@ different operator key, a different archived head). The package was not on npm
 as of 2026-11-04; the example validates the locally packed tarball, and the
 publication step is separate.
 
+## Verifying a whole billing period
+
+An organization can also hand you a **version-2 evidence bundle** — one file
+covering an entire closed period (usage records, statements, invoices, payment
+orders, refunds, disputes, credit notes and the day's seal digests), rather than
+a single settlement or a usage report. You reach it through an
+`/api/v1/evidence/{token}` link the organization minted for you, or your own
+account's `GET /api/v1/org/evidence-bundles` export.
+
+The verifier function is `verifyEvidenceBundle` from the same
+`verify-oxsum-bill` package:
+
+```bash
+node --input-type=module -e '
+  import { verifyEvidenceBundle } from "verify-oxsum-bill";
+  import { readFileSync } from "node:fs";
+  const bundle = readFileSync("evidence-bundle.json", "utf8");
+  console.log(await verifyEvidenceBundle(bundle, "<your organization id>", keyJson));
+'
+```
+
+The check passes when every artifact the bundle's manifest names re-digests to
+the figure the ledger committed, the manifest itself re-digests to the digest
+the ledger's marker entry bound, the money rows' ledger entries sit inside the
+signed tree head, and the head's signature verifies under the operator key.
+A dropped row, a changed amount or a bundle minted for a different organization
+each fail the check by name.
+
+The bundle's `scope` block is the honest half: it names what the bundle does
+*not* cover — the platform's own supplier costs (redacted unless the operator
+opts in), another organization's rows, history outside the committed period,
+and anything still in flight when it was minted. It proves the committed set,
+not that the operator recorded every token the model returned.
+
 ## If the link stops working
 
-A link expires — 30 days by default, 90 at most — and the operator can revoke one. An expired,
-revoked or unknown link answers the same `404`; ask the operator for a new link. A link is a
-capability: anyone holding it can read that bill, so treat it like a password and do not forward it
-more widely than you would the bill itself.
+A bill link expires — 30 days by default, 90 at most — and the operator can
+revoke one. An expired, revoked or unknown link answers the same `404`; ask the
+operator for a new link. A link is a capability: anyone holding it can read
+that bill, so treat it like a password and do not forward it more widely than
+you would the bill itself.
+
+An evidence-bundle link (`/api/v1/evidence/{token}`) works the same way but
+answers `410` when it is dead — expired, revoked or out of downloads — and each
+download is counted, so the operator can see whether the token travelled
+further than you did.
 
 ## For operators
 
