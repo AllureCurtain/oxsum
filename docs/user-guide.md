@@ -816,6 +816,24 @@ it authorizes, the close bills it, and a renewal order settles any open
 journal before prepaying its own period — so an unpaid period never reads
 as free.
 
+The journal is the accounting bill; the statement is the document you
+actually read (issue #612). `GET /api/v1/org/statements` lists yours newest
+first and `GET /api/v1/org/statements/{statementId}` reads one with its
+lines — `planFee`, `usage`, `discount`, `refundCredit` plus the
+payment-cycle `paymentApplied`/`disputeChargeback` — `totalMinor` what the
+period billed, `paidMinor` what your payments have covered, `dueAt` the
+date payment is due (`netTermsDays` after issue). A statement is `issued`
+while it waits, `paid` once a renewal order's payment covers it, `pastDue`
+past its due date, `void` if staff cancelled it. An unpaid statement past
+`dueAt + graceDays` suspends your plan's new holds — the plan reads
+`pastDue` the same way — and paying the receivable lifts the suspension in
+the same commit. `GET /api/v1/org/plan` carries the `credit` block beside
+the binding: `creditLimitMinor` the facility's cap (null when uncapped),
+`outstandingMinor` the open statements' remainder plus your current holds,
+`nextDueAt` the earliest open statement's due date. A plan over its credit
+limit refuses a wallet-billed overage draw — subscription-drawn quota is
+never refused.
+
 ## Webhooks
 
 Purpose: be notified when money moves — a request settles, a deposit lands,
