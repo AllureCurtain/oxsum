@@ -1,0 +1,115 @@
+# Release candidate and promotion
+
+How a commit becomes a release candidate, what the gate proves, and how an
+operator promotes a candidate — the T29 gate layer between "main is green"
+and "a version is published". Publishing (`release.yml`) and deploying
+(`deploy.yml`) stay manual-only; this runbook's gate never touches either.
+
+## Gate order
+
+| Gate | What runs | Where | On what |
+| --- | --- | --- | --- |
+| 0 | Full CI heavy tier — the three nextest shards, process-shared suites, doubleentry Postgres conformance | `ci.yml` post-merge push run on main | the candidate SHA, automatically |
+| 1 | `release-candidate.yml` — fmt, clippy, lib/doc tests, wasm build, frontend build, verify-consumer, candidate image build, manifest + checksums + notes draft | manual `gh workflow run release-candidate.yml -f sha=<sha>` | the exact promoted SHA |
+| 2 | `scripts/release-candidate-smoke.sh` — live smoke of the candidate image on a throwaway stack | operator's machine | the image built in gate 1 |
+| 3 | `release.yml` — build + push `latest`, `sha-<sha>`, optional version tag | manual dispatch | the reviewed candidate SHA |
+| 4 | `deploy.yml` — publish + deploy | manual dispatch, separately authorized | a published tag |
+
+Gate 0 is why gate 1 does not re-run the database suites: a candidate is a
+main commit, so the post-merge run on that commit already covered them —
+the gate *references* that run instead of duplicating ~30 runner minutes.
+If the post-merge run is missing or red for the SHA (a displaced push,
+issue #549's burst case), re-run `ci.yml` by dispatch before gating — or
+wait for the 03:17 UTC nightly, which runs the full tier regardless.
+
+## What gate 1 produces
+
+Run it against an exact commit:
+
+```bash
+gh workflow run release-candidate.yml -f sha=<40-char commit>
+```
+
+The workflow first resolves the SHA: it must be a commit *and an ancestor
+of main* — a candidate is a merged commit, not a side branch. Every job
+then checks out that SHA explicitly, so the verdict can never drift to
+whatever the branch pointed at when the run started.
+
+Per step:
+
+- **fmt / clippy / test** — the same fast tier a PR gates on
+  (`cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+  `cargo test --workspace --lib` + `--doc`).
+- **wasm** — `scripts/build-verify-wasm.sh` compiles `oxsum_verify` for
+  wasm32 with the wasm-bindgen CLI pinned to the lockfile's version; the
+  bundle uploads as the `verify-wasm` artifact.
+- **frontend** — `npm ci`, `npm run codegen` (the typed client regenerated
+  from the SHA's own openapi.yaml), `npm run build`; `web/dist` uploads as
+  `web-dist`.
+- **verify-consumer** — `scripts/check-verify-consumer.sh` packs the
+  `verify-oxsum-bill` tarball, installs it into a clean project outside the
+  repo, verifies the genuine minted bundle and rejects the tampered,
+  dropped and wrong-org fixtures — the A26/A30 evidence check, offline.
+  The exact tarball it verified uploads as `verify-oxsum-bill-tarball`.
+- **examples** — `scripts/verify-examples.sh` boots a scratch deployment
+  (postgres service + the server built at the promoted SHA) and runs every
+  shipped developer example end to end — the A27 fresh-install half.
+- **image** — the full Dockerfile at the promoted SHA with
+  `GIT_SHA=<sha>` baked in (so `/api/v1/version` inside the image answers
+  the gated commit). Loaded into the runner's daemon and inspected —
+  **never pushed**: no registry login exists in this workflow.
+- **manifest** — `candidate-manifest.json` recording the SHA, run URL,
+  image identity and per-gate verdicts; `SHA256SUMS` over every artifact;
+  `RELEASE-NOTES-DRAFT.md` cut from the candidate's own `openapi.yaml`
+  changelog paragraph for its contract version. All three plus every
+  artifact upload as `candidate-bundle` (90-day retention).
+
+## What gate 2 proves
+
+`scripts/release-candidate-smoke.sh` runs the image on a throwaway compose
+project — its own postgres volume, generated secrets, full teardown:
+
+```bash
+OXSUM_IMAGE_TAG=sha-<sha> scripts/release-candidate-smoke.sh
+```
+
+It asserts, in order: `--check-config` parses the env; `--migrate-only`
+converges the schema; `/readyz` gates green only once the schema is
+current; `/api/v1/version` reports `gitSha`; the T03 setup flow works end
+to end (operator-token setup invitation → owner register → login →
+explicit business-context switch → `GET /api/v1/business`); the staff
+customer-invitation write answers; and (unless `SMOKE_SKIP_CONSUMER=1`)
+the packed SDK verifies genuine and rejects tampered evidence. Any step's
+failure aborts the run loudly; success prints the image, version and
+per-surface verdicts.
+
+## A30 mapping
+
+| A30 requirement | Where it is covered |
+| --- | --- |
+| Same-SHA image passes full gates | gates 0+1: heavy tier on main, fast tier + wasm + frontend + image in `release-candidate.yml` |
+| Startup/version/readiness | gate 2 steps 1–3 |
+| Customer + business surfaces | gate 2 steps 4–5 |
+| Browser verifier positive + negative | gate 1 `verify-consumer` job + gate 2 step 6 (`check-verify-consumer.sh`) |
+| Clean consumer of the packed artifact | `verify-oxsum-bill-tarball` — the exact `.tgz` the consumer installed |
+| Checksums/provenance/notes | `candidate-bundle`: `SHA256SUMS`, `candidate-manifest.json`, `RELEASE-NOTES-DRAFT.md` |
+| No publication claim | nothing in the gate pushes; the manifest is evidence, not a release |
+
+## Promoting a candidate
+
+Only after gates 0–2 are green on the same SHA:
+
+1. Review `candidate-bundle` from the gate-1 run — the manifest names the
+   exact commit every gate ran against.
+2. Draft the release notes from `RELEASE-NOTES-DRAFT.md`.
+3. `gh workflow run release.yml -f image_tag=v<x.y.z>` — publishes
+   `latest`, `sha-<sha>` and the version tag to GHCR. This is the first
+   step that pushes anything, and it stays a human decision.
+4. Deploy stays separate: `deploy.yml` calls `release.yml` and adds the
+   deploy job — a separately authorized, manual action (gate 4/G5 in
+   ACCEPTANCE.md).
+
+An upgrade to the published tag follows `docs/self-hosted-upgrade.md`:
+`OXSUM_IMAGE_TAG=v<x.y.z>` in `deploy/.env`, the `oxsum-migrate` one-shot
+runs ahead of the serving container, `/api/v1/version` confirms the
+landed build.

@@ -966,6 +966,16 @@ also builds the image and runs it against PostgreSQL
 (`.github/workflows/release-image.yml`, issue #49), so the artifact a release ships is
 checked long before the release is cut.
 
+The release-candidate gate (issue #620, T29) sits between "main is green" and
+"a version is published": `gh workflow run release-candidate.yml -f sha=<sha>`
+re-runs the fast gate, the wasm/frontend builds, the packed-SDK consumer check
+and a no-push image build on one exact promoted SHA, and produces
+`candidate-bundle` — the manifest, `SHA256SUMS` and a release-notes draft.
+`scripts/release-candidate-smoke.sh` then runs the candidate image on a
+throwaway compose stack. `docs/self-hosted-release.md` is the runbook: gate
+order, artifact inventory, and the promotion path into `release.yml`'s manual
+dispatch.
+
 ## Business ownership upgrade preflight (#593)
 
 Before starting an upgraded server, back up the database and encryption/signing keys using the deployment runbook. Run the candidate binary with `oxsum ownership-preview` against the intended database to inspect customer, channel, plan and ledger-schema counts. This subcommand executes before `Db::migrate` and provider preparation; it changes no schema or ownership and makes no provider call. It handles a fresh database (zero counts) and the legacy schema. Normal server startup applies additive migration 0072 and records the mapped counts once.
