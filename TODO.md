@@ -35,6 +35,9 @@ The accepted contract and evidence live in [docs/roadmap/self-hosted-v1](docs/ro
 - [ ] [#603](https://github.com/AllureCurtain/oxsum/issues/603) — Coordinated customer admission and settlement (T12): PR #660.
 - [ ] [#604](https://github.com/AllureCurtain/oxsum/issues/604) — Cover every serving and metering path (T13): pending.
 - [ ] [#605](https://github.com/AllureCurtain/oxsum/issues/605) — Merchant settings and scoped event intake (T14): pending.
+- [ ] [#605](https://github.com/AllureCurtain/oxsum/issues/605) — Merchant settings and scoped event intake (T14): in progress; configuration #648 and scoped intake #649 both required.
+- [ ] [#648](https://github.com/AllureCurtain/oxsum/issues/648) — Versioned encrypted merchant configuration (T14.a): PR #650; focused checks passed, independent review and broad CI pending.
+- [ ] [#649](https://github.com/AllureCurtain/oxsum/issues/649) — Scoped merchant events and payment expectations (T14.b): in progress on this worktree — durable `merchant_payment_bindings`/`merchant_event_inbox` intake, path-selected signature verification, idempotent legacy-deposit adapter, environment bootstrap; focused nextest suites green.
 - [ ] [#606](https://github.com/AllureCurtain/oxsum/issues/606) — Payment orders and durable fulfillment (T15): pending.
 - [ ] [#607](https://github.com/AllureCurtain/oxsum/issues/607) — Customer checkout and purchased funding (T16): pending.
 - [ ] [#608](https://github.com/AllureCurtain/oxsum/issues/608) — Corrections, partial refunds and disputes (T17): pending.

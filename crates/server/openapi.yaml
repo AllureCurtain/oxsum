@@ -4747,6 +4747,55 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /api/v1/webhooks/merchants/{merchantId}/versions/{versionId}:
+    post:
+      summary: Accept a signed event for an immutable merchant configuration
+      description: Trusted path coordinates select the merchant and signing version before the raw body is verified. The payload cannot select a signing secret. Authenticated events are durably scoped by merchant and event ID across rotations. Reusing an ID with different signed content conflicts. Recognized payment events must match the pinned payment/customer/provider account/mode/amount/currency exactly before acceptance; unknown local payments remain pending for recovery. Receipt does not itself grant wallet credit or entitlement. Authenticated rejected and unsupported events are acknowledged without any financial effect.
+      security: []
+      parameters:
+        - { name: merchantId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: versionId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: X-Webhook-Signature-512, in: header, schema: { type: string }, description: Hyperswitch HMAC-SHA512 over exact request bytes. }
+        - { name: Stripe-Signature, in: header, schema: { type: string }, description: Stripe timestamped signature; five-minute freshness window. }
+        - { name: x-timestamp, in: header, schema: { type: string }, description: Airwallex Unix milliseconds; five-minute freshness window. }
+        - { name: x-signature, in: header, schema: { type: string }, description: Airwallex HMAC-SHA256 over timestamp plus exact request bytes. }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, description: Original provider event; normalized only after signature verification. }
+      responses:
+        "200": { description: Authenticated event durably received or replayed; not a promise of fulfillment. }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/business/merchants/{merchantId}/events:
+    get:
+      summary: Inspect redacted durable merchant intake
+      description: Current business report-read capability. Ordered by immutable receipt UUID. Only normalized coordinates, state and rejection reason are returned; no raw provider payload or secret. Pending events are retained for reconciliation instead of discarded.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: merchantId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: after, in: query, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200":
+          description: Redacted event page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/MerchantEventPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/business/merchants:
     get:
       summary: List business merchant settings
@@ -11537,6 +11586,24 @@ components:
           description: "`usage` when the declared usage priced inside the freeze, `capped` when it priced above and the freeze was charged, `released` when the hold was let go at zero"
         priceVersion: { type: integer, minimum: 1, description: the price version the usage priced at — the hold's pin on `settle`/`release`, the latest on a one-shot }
         settlementId: { type: string, format: uuid, description: the settlement ledger entry's id — derivable as `entry_id_for(settlement_key_for(holdKey))` }
+    MerchantEvent:
+      type: object
+      required: [id, merchantId, versionId, eventId, kind, paymentId, state, reason]
+      properties:
+        id: { type: string, format: uuid }
+        merchantId: { type: string, format: uuid }
+        versionId: { type: string, format: uuid }
+        eventId: { type: string }
+        kind: { type: string, enum: [succeeded, failed, expired, refundSucceeded, refundFailed, dispute, unsupported] }
+        paymentId: { type: [string, "null"], format: uuid }
+        state: { type: string, enum: [pending, accepted, applied, rejected, ignored] }
+        reason: { type: [string, "null"] }
+    MerchantEventPage:
+      type: object
+      required: [events, nextCursor]
+      properties:
+        events: { type: array, items: { $ref: "#/components/schemas/MerchantEvent" } }
+        nextCursor: { type: [string, "null"], format: uuid }
     ProviderMutationResult:
       type: object
       required: [id, resourceId, version]

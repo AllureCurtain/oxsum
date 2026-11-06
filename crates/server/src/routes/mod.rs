@@ -30,6 +30,7 @@ mod device;
 mod experiments;
 mod keys;
 mod log;
+mod merchant_events;
 mod merchants;
 pub(crate) mod operations;
 mod org;
@@ -208,6 +209,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/business/sale-price-preview",
             post(business_prices::preview),
+        )
+        .route(
+            "/business/merchants/{merchant}/events",
+            get(merchant_events::events),
+        )
+        .route(
+            "/webhooks/merchants/{merchant}/versions/{version}",
+            post(merchant_events::webhook),
         )
         .route(
             "/business/merchants",

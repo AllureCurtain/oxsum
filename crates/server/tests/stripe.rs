@@ -91,14 +91,27 @@ async fn world() -> Option<(Router, Db, StripeStub)> {
     let (api_url, stub) = stub_stripe().await;
     *stub.answer_id.lock().unwrap() = "cs_test_123".to_owned();
     *stub.answer_url.lock().unwrap() = "https://checkout.stripe.com/pay/cs_test_123".to_owned();
+    let rail = oxsum_server::stripe::Stripe::new(
+        "sk_test_123".to_owned(),
+        WEBHOOK_SECRET.to_owned(),
+        api_url,
+        "http://localhost:3000".to_owned(),
+    );
     let config = Config::new(Signup::Open, None)
         .with_secret(sealing_key())
-        .with_stripe(oxsum_server::stripe::Stripe::new(
-            "sk_test_123".to_owned(),
-            WEBHOOK_SECRET.to_owned(),
-            api_url,
-            "http://localhost:3000".to_owned(),
-        ));
+        .with_public_url("http://localhost:3000")
+        .with_merchant_bootstrap(rail.merchant_bootstrap(
+            "acct_stripe_test".to_owned(),
+            oxsum_core::MerchantMode::Test,
+            oxsum_core::ProviderDestinationPolicy {
+                network: oxsum_core::ProviderNetwork::Internal,
+                allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+            },
+        ))
+        .with_stripe(rail);
+    oxsum_server::prepare(&db, &config)
+        .await
+        .expect("the deployment is prepared");
     let (app, _events, _metrics) = oxsum_server::app_with_billing(db.clone(), config);
     Some((app, db, stub))
 }
@@ -264,6 +277,8 @@ async fn the_full_flow_credits_the_purchased_pool() {
                 "id": session_id,
                 "client_reference_id": deposit_id,
                 "amount_total": 5000,
+                "payment_status": "paid",
+                "currency": "usd",
             }
         }
     });
@@ -302,8 +317,9 @@ async fn a_replayed_webhook_credits_once() {
     assert_eq!(status, StatusCode::OK);
 
     let event = json!({
+        "id": "evt_replay_1",
         "type": "checkout.session.completed",
-        "data": { "object": { "id": "cs_test_123", "amount_total": 3000 } }
+        "data": { "object": { "id": "cs_test_123", "amount_total": 3000, "payment_status": "paid", "currency": "usd" } }
     });
     for _ in 0..3 {
         let (headers, b) = signed_webhook(WEBHOOK_SECRET, &event.to_string());
@@ -440,6 +456,7 @@ async fn an_expired_session_credits_nothing() {
     assert_eq!(status, StatusCode::OK);
 
     let event = json!({
+        "id": "evt_expired_1",
         "type": "checkout.session.expired",
         "data": { "object": { "id": "cs_test_123" } }
     });
