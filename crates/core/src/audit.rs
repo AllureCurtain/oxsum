@@ -44,6 +44,9 @@ pub struct AuditEntry {
 /// typo'd name is a 400, not a row that says nothing recognizable.
 pub mod action {
     pub const SESSION_CONTEXT: &str = "session.context";
+    pub const BUSINESS_CUSTOMER_UPDATE: &str = "business.customer.update";
+    pub const BUSINESS_CUSTOMER_LIFECYCLE: &str = "business.customer.lifecycle";
+    pub const BUSINESS_CUSTOMER_SUSPENSION: &str = "business.customer.suspension";
     pub const BUSINESS_STAFF_SET: &str = "business.staff.set";
     pub const BUSINESS_STAFF_REVOKE: &str = "business.staff.revoke";
     pub const BUSINESS_STAFF_ACCOUNT_DELETED: &str = "business.staff.account_deleted";
@@ -91,6 +94,9 @@ pub mod action {
     /// Every action the surface writes — the `action` filter's vocabulary.
     pub const ALL: &[&str] = &[
         SESSION_CONTEXT,
+        BUSINESS_CUSTOMER_UPDATE,
+        BUSINESS_CUSTOMER_LIFECYCLE,
+        BUSINESS_CUSTOMER_SUSPENSION,
         BUSINESS_STAFF_SET,
         BUSINESS_STAFF_REVOKE,
         BUSINESS_STAFF_ACCOUNT_DELETED,

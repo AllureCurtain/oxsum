@@ -300,7 +300,7 @@ impl Db {
     ) -> Result<Vec<crate::orgs::AdminOrganization>, WalletError> {
         let rows = sqlx::query(
             "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, \
-             o.payment_terms_days, o.tier, o.suspended_at, \
+             o.payment_terms_days, o.tier, COALESCE(o.suspended_at,o.dunning_suspended_at,(SELECT c.archived_at FROM oxsum.customer_profiles c WHERE c.organization_id=o.organization_id AND c.state='archived')) AS suspended_at, \
              o.dunning_grace_days, o.dunning_suspended_at, \
              o.display_currency, o.display_rate_per_credit, \
              count(m.user_id) AS members \
@@ -1074,8 +1074,8 @@ impl Db {
     /// Suspends every organization whose grace ran out — a finalized statement
     /// in `pending`/`overdue`/`suspended` standing whose `due_date` plus the
     /// organization's `dunning_grace_days` is before `today`, on an organization
-    /// that has the automation on (`dunning_grace_days` set) and is not already
-    /// suspended. Each suspension marks itself `dunning_suspended_at` so the
+    /// that has the automation on (`dunning_grace_days` set) and has no existing
+    /// dunning reason. Manual and archive reasons remain independent. Each suspension marks itself `dunning_suspended_at` so the
     /// other half of the sweep can tell it apart from an operator's manual
     /// `set_suspended`, suspends the outstanding statements, and fans out the
     /// `org.suspended` webhook — all inside the org-admission advisory lock, so
@@ -1095,7 +1095,7 @@ impl Db {
     /// Storage failures surface as [`WalletError`].
     pub async fn sweep_dunning(&self, today: Date) -> Result<(i64, i64), WalletError> {
         // The candidate rows: every grace-lapsed statement on an opted-in,
-        // not-yet-suspended organization. One org may owe several; each is
+        // organization without an existing dunning reason. One org may owe several; each is
         // suspended inside the same transaction that flags the org.
         let lapsing = sqlx::query(
             "SELECT s.statement_id, s.organization_id, s.period \
@@ -1106,7 +1106,7 @@ impl Db {
                AND s.due_date IS NOT NULL \
                AND o.dunning_grace_days IS NOT NULL \
                AND s.due_date + o.dunning_grace_days < $1 \
-               AND o.suspended_at IS NULL \
+               AND o.dunning_suspended_at IS NULL \
              ORDER BY s.organization_id, s.due_date",
         )
         .bind(today)
@@ -1119,7 +1119,7 @@ impl Db {
             let organization_id: Uuid = row.try_get("organization_id")?;
             let statement_id: Uuid = row.try_get("statement_id")?;
             // The flag write serializes against hold admission through the same
-            // advisory lock `set_suspended` takes; `suspended_at` guarded by the
+            // advisory lock `set_suspended` takes; `dunning_suspended_at` guarded by the
             // predicate makes the second statement of a lapsed pair a no-op on
             // the flag while its own row still moves to `suspended`.
             let mut tx = self.pool().begin().await?;
@@ -1129,12 +1129,15 @@ impl Db {
                 .execute(&mut *tx)
                 .await?;
             let flagged = sqlx::query(
-                "UPDATE oxsum.organizations SET suspended_at = now(), \
-                     dunning_suspended_at = now() \
-                 WHERE organization_id = $1 AND suspended_at IS NULL \
+                "UPDATE oxsum.organizations SET dunning_suspended_at = now() \
+                 WHERE organization_id = $1 AND dunning_suspended_at IS NULL AND dunning_grace_days IS NOT NULL \
+                   AND EXISTS (SELECT 1 FROM oxsum.statements s WHERE s.organization_id=$1 \
+                     AND s.status='finalized' AND s.payment_status IN ('pending','overdue','suspended') \
+                     AND s.due_date + oxsum.organizations.dunning_grace_days < $2) \
                  RETURNING organization_id",
             )
             .bind(organization_id)
+            .bind(today)
             .fetch_optional(&mut *tx)
             .await?
             .is_some();
@@ -1211,12 +1214,16 @@ impl Db {
                 .execute(&mut *tx)
                 .await?;
             let lifted = sqlx::query(
-                "UPDATE oxsum.organizations SET suspended_at = NULL, \
-                     dunning_suspended_at = NULL \
+                "UPDATE oxsum.organizations SET dunning_suspended_at = NULL \
                  WHERE organization_id = $1 AND dunning_suspended_at IS NOT NULL \
+                   AND (dunning_grace_days IS NULL OR NOT EXISTS (SELECT 1 FROM oxsum.statements s \
+                     WHERE s.organization_id=$1 AND s.status='finalized' \
+                     AND s.payment_status IN ('pending','overdue','suspended') \
+                     AND s.due_date + oxsum.organizations.dunning_grace_days < $2)) \
                  RETURNING organization_id",
             )
             .bind(organization_id)
+            .bind(today)
             .fetch_optional(&mut *tx)
             .await?
             .is_some();

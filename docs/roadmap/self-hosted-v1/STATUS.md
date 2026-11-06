@@ -2,15 +2,15 @@
 
 Updated: 2026-11-06. Contract issue: [#591](https://github.com/AllureCurtain/oxsum/issues/591).
 
-Implementation: in progress. Release: not ready. T03.b is reviewed and locally validated; PR #632 is awaiting integration CI. Prerequisite integration is recorded below. No release readiness claimed.
+Implementation: in progress. Release: not ready. T04.a is reviewed and locally validated; PR #635 is awaiting integration CI. Prerequisite integration is recorded below. No release readiness claimed.
 
 | Task | Issue | State | Depends on |
 | --- | --- | --- | --- |
 | T00 — Adopt the release contract and baseline | [#591](https://github.com/AllureCurtain/oxsum/issues/591) | integrated (PR #623) | None |
 | T01 — Restrict financial and metering authority | [#592](https://github.com/AllureCurtain/oxsum/issues/592) | integrated (PR #626, PR #628) | T00 |
 | T02 — Add business and customer ownership without moving ledgers | [#593](https://github.com/AllureCurtain/oxsum/issues/593) | integrated (PR #627) | T00 |
-| T03 — Business staff, setup and session contexts | [#594](https://github.com/AllureCurtain/oxsum/issues/594) | in_progress | T01, T02 |
-| T04 — Customer profile and team lifecycle | [#595](https://github.com/AllureCurtain/oxsum/issues/595) | pending | T02, T03 |
+| T03 — Business staff, setup and session contexts | [#594](https://github.com/AllureCurtain/oxsum/issues/594) | integrated (PR #631, PR #632) | T01, T02 |
+| T04 — Customer profile and team lifecycle | [#595](https://github.com/AllureCurtain/oxsum/issues/595) | in_progress | T02, T03 |
 | T05 — Scoped consumption and integration credentials | [#596](https://github.com/AllureCurtain/oxsum/issues/596) | pending | T03, T04 |
 | T06 — Business-owned provider configuration | [#597](https://github.com/AllureCurtain/oxsum/issues/597) | pending | T02, T03 |
 | T07 — Model catalog and private serving context | [#598](https://github.com/AllureCurtain/oxsum/issues/598) | pending | T05, T06 |
@@ -41,7 +41,7 @@ Implementation: in progress. Release: not ready. T03.b is reviewed and locally v
 
 ## Integration checkpoint — 2026-11-06
 
-Normal merges completed: T01.a PR #626 at `624437b`; T01.b PR #628 at `5cfae3c`; T02 PR #627 at `f51f862`; T03.a PR #631 at `cb594e3`. PR #632 merges main `cb594e3` into its original branch; source, tests, migrations, OpenAPI and generated frontend types remain byte-identical to validated head `c8c33b0`. Only progress/evidence documentation differs. Its new head must pass required technical CI before a normal merge. See [current task evidence](evidence/T03-b.md).
+Normal merges completed: T01.a PR #626 at `624437b`; T01.b PR #628 at `5cfae3c`; T02 PR #627 at `f51f862`; T03.a PR #631 at `cb594e3`; T03.b PR #632 at `1c53d0a`. PR #635 merges main `1c53d0a` into its original branch; source, tests, migrations, OpenAPI and generated frontend types remain byte-identical to validated head `f92bd63`. Only progress/evidence documentation differs. Its new head must pass required technical CI before a normal merge. See [current task evidence](evidence/T04-a.md).
 
 Live GitHub protection was inspected on 2026-11-06: required checks are `fmt`, `clippy`, `test`, `wasm` and `frontend`, with no required approval rule or repository ruleset. The optional Entire check reports missing trail approvals; this is not a required merge gate. Source review is performed independently here, normal merges enforce the configured technical checks, and no policy, reviewer identity or bypass flag is changed. The earlier notes treating Entire approval as a mandatory integration blocker are superseded by this verified policy.
 
@@ -57,6 +57,8 @@ T02 is independently implemented and locally validated in PR #627 (`d5b3c0f`), w
 
 
 T03 development uses `.worktrees/business-setup`, branch `feat/business-setup`, combining T01/T02 locally without merging either into main. Conflicts preserve both migrations and authority changes. The combined prerequisites passed 18 focused checks. T03.a #629 now implements expiring owner consent at `361e8c6`: 1,485 workspace tests, 26 process-shared tests, 29 doctests and 29 PostgreSQL engine tests passed, along with setup race/rollback/HTTP checks. See [evidence](evidence/T03-a.md). T03.a CI is green, with Entire Gates still failing. T03.b #630 implements staff contexts/capabilities, registration policy, last-owner lifecycle and atomic password/TOTP recovery at `ed58c3e` in `.worktrees/business-staff`: 1,489 workspace tests, 26 process-shared tests, 29 doctests, Clippy, format and frontend gates passed. See [evidence](evidence/T03-b.md). Normal integration awaits prerequisite review; business UI remains T24.
+
+T04 split: profile/lifecycle #633 is implemented in `.worktrees/customer-lifecycle`, branch `feat/customer-lifecycle`, based on validated PR #632. Independent manual/dunning/archive admission reasons, business-scoped profile APIs and preservation tests passed 1,493 workspace tests, 26 shared-process tests, 29 doctests, fmt/clippy and frontend at `50c7db4`. See [evidence](evidence/T04-a.md). Invitation and existing-team consent #634 remains required; parent #595 is not complete.
 
 ## External gates
 

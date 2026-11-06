@@ -312,7 +312,7 @@ async fn context_info(
         business: None,
     })
 }
-fn validate(key: &str, reason: Option<&str>) -> Result<(), WalletError> {
+pub(crate) fn validate(key: &str, reason: Option<&str>) -> Result<(), WalletError> {
     if key.trim().is_empty() || key.chars().count() > 200 {
         return Err(WalletError::InvalidInput(
             "idempotencyKey must contain 1 to 200 characters".into(),
@@ -325,7 +325,7 @@ fn validate(key: &str, reason: Option<&str>) -> Result<(), WalletError> {
     }
     Ok(())
 }
-async fn replay(
+pub(crate) async fn replay(
     tx: &mut Transaction<'_, Postgres>,
     scope: Uuid,
     actor: Uuid,
@@ -344,7 +344,7 @@ async fn replay(
     }
     Ok(Some(row.try_get("mutation_id")?))
 }
-async fn record(
+pub(crate) async fn record(
     tx: &mut Transaction<'_, Postgres>,
     scope: Uuid,
     actor: Uuid,

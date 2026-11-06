@@ -928,3 +928,12 @@ The owner can appoint an existing registered user with `POST /api/v1/business/st
 Only the business owner can open self-registration: `POST /api/v1/business/registration` with `idempotencyKey`, `mode: "open"` and a reason. `mode: "invite"` closes it again. Fresh and upgraded deployments begin closed; changing `OXSUM_SIGNUP` does not change this policy. Password/GitHub/OIDC registration follow the same setting, while existing users can still log in.
 
 Select customer context before visiting customer balance/team/bill APIs, using `context: "customer"` and your own `organizationId` when needed. Business context grants no customer impersonation. If you enable TOTP, sign in again with password and the second factor before using business operations; an older session or an OAuth-only login cannot supply that proof. Revoked staff can still return to their own customer membership.
+
+
+## Manage customer profiles and admission (#633)
+
+In business context, list `/api/v1/business/customers` and read a customer by `organizationId`. Owner/admin can PATCH its display `name` and `contactEmail` with an idempotency key and reason. The external ID is a permanent reference: renaming a customer does not move keys, bills or balance.
+
+POST `/api/v1/business/customers/{organizationId}/lifecycle` with `state: "archived"` to stop new consumption while keeping history and debt. Use `state: "active"` to restore it. POST the corresponding `/suspension` with `suspended: true` or `false` to control the manual reason; support staff may perform this action. Each request also requires `idempotencyKey` and `reason`.
+
+Customer state reports manual and dunning timestamps separately. Clearing a manual restriction or restoring an archived account does not clear overdue suspension. Paying an overdue bill can lift dunning while a separate manual or archive restriction still prevents new consumption. Existing requests still settle; the customer can read bills and make payments during restrictions. Business-console controls follow in T24.

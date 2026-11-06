@@ -187,6 +187,19 @@ pub fn router(state: AppState) -> Router {
             get(business::context).post(business::select_context),
         )
         .route("/business", get(business::business))
+        .route("/business/customers", get(business::customers))
+        .route(
+            "/business/customers/{organization_id}",
+            get(business::customer).patch(business::update_customer),
+        )
+        .route(
+            "/business/customers/{organization_id}/lifecycle",
+            post(business::customer_lifecycle),
+        )
+        .route(
+            "/business/customers/{organization_id}/suspension",
+            post(business::customer_suspension),
+        )
         .route(
             "/business/staff",
             get(business::staff).post(business::set_staff),

@@ -17,6 +17,7 @@ mod business_staff;
 mod cache;
 mod channels;
 mod credit_notes;
+mod customers;
 mod db;
 mod deposits;
 mod device;
@@ -99,6 +100,10 @@ pub use channels::{
     event_price, price_row, route_order, route_order_stats,
 };
 pub use credit_notes::CreditNote;
+pub use customers::{
+    BusinessCustomer, BusinessCustomerLifecycle, BusinessCustomerPage, BusinessCustomerSuspension,
+    BusinessCustomerUpdate, CustomerState,
+};
 pub use db::{Db, SCHEMA};
 pub use deposits::{
     AdminDeposit, CodeBatch, HyperswitchRefundTarget, MAX_BATCH, RAIL_HYPERSWITCH, Redemption,
