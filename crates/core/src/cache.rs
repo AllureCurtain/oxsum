@@ -109,6 +109,11 @@ pub struct ResponseCacheContext<'a> {
     pub mandate: &'a Value,
     pub routes: &'a Value,
     pub discount_percent: Option<i64>,
+    /// The resolved sale snapshot's digest when the admission priced under
+    /// customer sale terms (issue #603): the cached answer's charge recomputes
+    /// under those terms, so two different sale deals never share a stored
+    /// body. `None` on a wholesale-catalog turn.
+    pub sale_digest: Option<&'a str>,
 }
 
 /// Canonical object keys; preserve every array element and string byte.
@@ -331,6 +336,7 @@ mod tests {
         mandate: Value,
         routes: Value,
         discount_percent: Option<i64>,
+        sale_digest: Option<&'static str>,
     }
 
     impl Fixture {
@@ -358,6 +364,7 @@ mod tests {
                 mandate: Value::Null,
                 routes: json!({"servedModel": "gpt-4", "primary": {"channelId": "c"}}),
                 discount_percent: None,
+                sale_digest: None,
             }
         }
 
@@ -377,6 +384,7 @@ mod tests {
                 mandate: &self.mandate,
                 routes: &self.routes,
                 discount_percent: self.discount_percent,
+                sale_digest: self.sale_digest,
             };
             response_cache_digest(secret, &context).unwrap()
         }
@@ -461,6 +469,10 @@ mod tests {
         cases.push(changed);
         let mut changed = Fixture::new();
         changed.discount_percent = Some(10);
+        cases.push(changed);
+        let mut changed = Fixture::new();
+        changed.sale_digest =
+            Some("9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f");
         cases.push(changed);
 
         for (index, case) in cases.iter().enumerate() {

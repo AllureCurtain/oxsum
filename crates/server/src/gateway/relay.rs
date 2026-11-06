@@ -186,8 +186,15 @@ struct Plan {
     /// entry, and the `{subscriptionId, periodId, drawnMinor, chargedMinor}`
     /// the v9 description carries.
     subscription: oxsum_core::SubscriptionAdmission,
-    /// Whether the wallet holds a pending reservation under `hold_key` (issue
-    /// #602): `false` on a fully entitlement-funded turn — the subscription
+    /// The customer sale terms this turn priced under, when a sale book
+    /// served it (issue #600, wired by #603): the resolved
+    /// `SalePriceSnapshot`'s customer-facing price and discount replace the
+    /// wholesale channel catalog's, and its digest is what the v14
+    /// settlement's `sale` block commits. `None` on a wholesale-priced turn —
+    /// the common case until a customer's schedule names the model.
+    sale: Option<SalePricing>,
+    /// Whether the wallet holds a pending reservation under `hold_key` (issues
+    /// #602, #603): `false` on a fully entitlement-funded turn — the subscription
     /// draw covered the whole freeze, so no wallet hold was taken and the
     /// settlement writes the typed zero-cost receipt instead of a
     /// release-and-charge entry.
@@ -219,6 +226,25 @@ pub(crate) struct OperationContext {
     pub operation_id: uuid::Uuid,
     /// The instance id this process holds the lease under.
     pub lease_owner: String,
+}
+
+/// The customer sale terms a turn priced under (issue #600, wired by #603):
+/// everything the settlement needs once admission resolved a
+/// `SalePriceSnapshot` — the snapshot's own price and discount, so the turn
+/// never reads the wholesale catalog or the org-level discount again, and
+/// the digest the v14 `sale` block commits.
+#[derive(Clone)]
+pub(crate) struct SalePricing {
+    /// `snapshot.terms.price.price()` — the customer-facing rate the freeze
+    /// reserved and the settle itemizes under.
+    pub price: Price,
+    /// `snapshot.terms.discount_percent` — the sale book's own discount,
+    /// replacing the org-level `pricing_discounts` figure a wholesale turn
+    /// applies.
+    pub discount_percent: i64,
+    /// `sale_snapshot_hash` over the canonical snapshot — the digest T09's
+    /// `sale_snapshot_digests` row recorded and the checkpoint signs.
+    pub digest: String,
 }
 
 /// The SSE scanner: chunks in, usage and answer text out.
@@ -326,6 +352,7 @@ impl Turn {
         span: tracing::Span,
         mandate: Option<PresentedMandate>,
         subscription: oxsum_core::SubscriptionAdmission,
+        sale: Option<SalePricing>,
         wallet_held: bool,
         organization_id: uuid::Uuid,
         response_guardrails: Vec<Arc<dyn oxsum_core::Guardrail>>,
@@ -353,6 +380,7 @@ impl Turn {
                 key_id,
                 mandate,
                 subscription,
+                sale,
                 wallet_held,
                 attribution,
                 adapter,
@@ -399,6 +427,13 @@ impl Turn {
     /// (issue #500): `plan.model` becomes the name that answered — the
     /// settlement's `servedModel` — while `requested_model` keeps the caller's
     /// ask, and `upstream_model` becomes the served model's own resolution.
+    ///
+    /// A sale-priced turn never reaches here across models — admission
+    /// narrowed its chain to the model the snapshot resolved, so a reroute is
+    /// always a same-model channel failover. The wholesale `price` still
+    /// swaps: it tracks the *platform's* upstream cost under the channel that
+    /// actually served — the customer charge reads `sale.price` instead
+    /// (issue #603).
     pub fn reroute(&mut self, serving: &Serving, model: &str, upstream_model: Option<String>) {
         if let Some(plan) = self.plan.as_mut() {
             plan.channel = serving.channel.clone();
@@ -922,12 +957,22 @@ impl Plan {
             kind,
             SettlementKind::UpstreamError | SettlementKind::UpstreamUnreachable
         );
-        let itemized = self.price.itemize(&usage, billable)?;
-        // The single most favorable discount the turn's organization qualified
-        // for, applied after the gross lines — never stacked (docs/decisions.md).
-        // The freeze stays the undiscounted bound: `cost.min(freeze)` below
-        // holds under it.
-        let cost = match self.discount_percent {
+        // The rate the turn prices under: the resolved sale terms' own price
+        // when a sale book served the admission (issue #603), the wholesale
+        // channel catalog otherwise. The snapshot's price is complete — it
+        // replaces the catalog's, not layers onto it.
+        let pricing = self.sale.as_ref().map_or(&self.price, |s| &s.price);
+        let itemized = pricing.itemize(&usage, billable)?;
+        // The discount the turn applies: the sale book's own percent when it
+        // priced the turn — the snapshot's terms are the customer's whole
+        // deal, so the org-level `pricing_discounts` figure does not stack on
+        // top — else the single most favorable org discount (issue #158).
+        // Applied after the gross lines — never stacked — and the freeze
+        // stays the undiscounted bound: `cost.min(freeze)` below holds.
+        let discount = self.sale.as_ref().map_or(self.discount_percent, |s| {
+            (s.discount_percent > 0).then_some(s.discount_percent)
+        });
+        let cost = match discount {
             Some(percent) => itemized.discounted_minor(percent)?,
             None => itemized.total_minor()?,
         };
@@ -935,7 +980,7 @@ impl Plan {
         // dimension outside every price set settles for the computable part and is
         // recorded `unpriced` — the anomaly the admin page reviews — never billed at
         // zero or folded into a rate the dimension does not belong to (issue #110).
-        let unpriced = self.price.unpriced_dimensions(&usage);
+        let unpriced = pricing.unpriced_dimensions(&usage);
         let (kind, charged) = if !unpriced.is_empty() {
             tracing::error!(request = %self.request, model = %self.model, ?unpriced,
                 "upstream's usage carried dimensions the price book cannot bill");
@@ -978,7 +1023,7 @@ impl Plan {
             usage: &usage,
             lines: &itemized.lines,
             matched_rule: itemized.matched_rule.as_ref(),
-            discount_percent: self.discount_percent,
+            discount_percent: discount,
             charged,
             freeze: self.freeze,
             upstream_attempts: self.upstream_attempts,
@@ -1005,10 +1050,14 @@ impl Plan {
                     id: &binding.experiment_id,
                     variant: &binding.variant,
                 }),
-            // The gateway prices under the wholesale channel catalog today; a
-            // sale-book-priced turn names its digest here once serving resolves
-            // sale terms (issue #600, wired in the coordinated-settlement task).
-            sale: None,
+            // The sale terms the turn priced under (issue #600, wired by
+            // #603): the resolved snapshot's digest — inside the hash, so the
+            // bill proves which customer terms the charge computed from.
+            // `None` on a wholesale-catalog turn.
+            sale: self
+                .sale
+                .as_ref()
+                .map(|s| oxsum_core::SettlementSale { digest: &s.digest }),
         };
         let description = settlement.description()?;
         // The wallet settles only its own share: the hold took `freeze -

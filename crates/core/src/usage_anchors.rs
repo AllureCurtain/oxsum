@@ -32,6 +32,10 @@ pub struct UsageAnchorReport {
     pub skipped: i64,
     /// Organizations with no day-log rows up to the day — nothing to commit.
     pub without_usage: i64,
+    /// Organizations deferred on the operation watermark (issue #603): they
+    /// still own open `request_operations` rows that could settle into `day`,
+    /// so their anchor waits — the map a sealed day commits must be final.
+    pub deferred: i64,
 }
 
 impl Db {
@@ -69,6 +73,23 @@ impl Db {
             .await?;
             if anchored {
                 report.skipped += 1;
+                continue;
+            }
+            // The operation watermark (issue #603, D05): a day-close seals the
+            // map only once no open operation can still settle into it. An
+            // operation created on or before the day's end and still
+            // `created`/`leased`/`running` may yet write a settle (or be
+            // swept) into this day's leaves — the pass defers the
+            // organization rather than commit an anchor a late settle would
+            // contradict. The next pass re-reads: a lapsed lease the sweeper
+            // has since reclaimed no longer blocks.
+            let day_end = day.next_day().unwrap_or(day).midnight().assume_utc();
+            if self
+                .operations_open_before(organization_id, day_end)
+                .await?
+                > 0
+            {
+                report.deferred += 1;
                 continue;
             }
             // Each customer's day leaves up to and including the anchor day, in
